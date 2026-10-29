@@ -1,6 +1,6 @@
 // Expected installation bytes and links come only from a fresh, successful npm ci.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
 import { tmpdir } from "node:os";
@@ -25,13 +25,16 @@ const isStoreDirectoryLink = (path, entry, inventory) => {
 const isCredential = key => /(?:^|\/)_(?:auth(?:token)?|password)$/i.test(key);
 const withoutCredentials = config => Object.fromEntries(Object.entries(config).filter(([key]) => !isCredential(key)));
 
-/** Snapshots a consumer's effective npm configuration, environment and selected toolchain,
+/** Snapshots a consumer's effective npm configuration, environment, toolchain and process umask,
  * including whether an existing node_modules root changes npm's empty-install result.
  * The caller must use the same contract for its scripts-disabled installation and comparison. */
 export function npmInstallContract(project, toolchain = npmToolchain()) {
   const env = { ...process.env };
   const config = JSON.parse(runNpmNode(toolchain, [toolchain.cli, "config", "list", "--json"], { cwd: project, env }).toString());
-  return { toolchain, config, env, nodeModules: existsSync(join(project, "node_modules")) };
+  const nodeModules = join(project, "node_modules");
+  let nodeModulesMode = null;
+  try { nodeModulesMode = lstatSync(nodeModules).mode & 0o7777; } catch { /* absent root */ }
+  return { toolchain, config, env, nodeModules: nodeModulesMode !== null, nodeModulesMode, umask: process.umask() };
 }
 
 /** Inventories every node_modules path with one explicit kind, without following links.
@@ -228,6 +231,8 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
   try {
     if (!isPlainObject(lock?.packages) || !isPlainObject(manifest)) throw new Error("package-lock.json has no packages map or manifest");
     if (!installer?.config || !installer.env || typeof installer.nodeModules !== "boolean" ||
+        !Number.isInteger(installer.umask) || installer.umask < 0 || installer.umask > 0o777 ||
+        (installer.nodeModules ? !Number.isInteger(installer.nodeModulesMode) : installer.nodeModulesMode !== null) ||
         installer.toolchain?.platform !== process.platform || installer.toolchain.arch !== process.arch) {
       throw new Error("reference installation needs an explicit matching npm/platform/configuration contract");
     }
@@ -236,7 +241,11 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
     mkdirSync(project);
     // npm 11 only writes the hidden lockfile for an all-omitted tree when the
     // node_modules root already existed; reproduce that input, never its contents.
-    if (installer.nodeModules) mkdirSync(join(project, "node_modules"));
+    // npm preserves an existing root's mode, so restore the inspected one exactly.
+    if (installer.nodeModules) {
+      mkdirSync(join(project, "node_modules"));
+      chmodSync(join(project, "node_modules"), installer.nodeModulesMode);
+    }
     const unavailable = sourceEntries(lock, readArchive, installer, cache, entries, roots);
     const excluded = excludedSources(unavailable, entries, installer, scratch, manifest, lock);
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
@@ -277,7 +286,11 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
         };
       }
       require(process.argv[1]);`;
-      runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env });
+      // Reproduce the installing process's umask, not the verifier's: npm applies
+      // the inherited umask to every directory and file its child creates.
+      const previousUmask = process.umask(installer.umask);
+      try { runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env }); }
+      finally { process.umask(previousUmask); }
     } catch (cause) {
       const missing = [...unavailable].map(([location, error]) => `${location}: ${error.message}`).join("; ");
       throw new Error(cause.message + (missing ? `; source reads: ${missing}` : ""), { cause });
