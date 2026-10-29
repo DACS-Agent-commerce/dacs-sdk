@@ -125,19 +125,19 @@ const refused = async (work) => { try { await work(); return null; } catch (erro
 const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
 const notCalled = async () => { throw new Error('TEST not called'); };
 
-test('a native agent without the Vet context and delivery chain signs, commits and takes payment for nothing', async (t) => {
+test('a native agent without the Vet context opens no session and takes no payment', async (t) => {
   const w = await world(t);
   const agent = await w.agent(w.capabilities);
   t.after(() => agent.close());
   assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.synthetic))), { code: 'vet_context_required', status: 503 });
   assert.equal(agent.stageOf(w.jobId), null, 'no session is opened for the refused proposal');
-  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), { code: 'unknown_job', status: 404 });
   assert.deepEqual(await refused(() => agent.submitPayment(w.payment)), UNAVAILABLE);
   assert.deepEqual(await refused(() => agent.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), UNAVAILABLE);
   assert.deepEqual(w.reached, []);
 });
 
-test('native payment evidence and the Vet context without native delivery sign the vetted Agreement but commit and take payment for nothing', async (t) => {
+test('native commitment reaches Agreement readback without native delivery while payment stays unavailable', async (t) => {
   const w = await world(t);
   const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext() });
   t.after(() => agent.close());
@@ -146,9 +146,9 @@ test('native payment evidence and the Vet context without native delivery sign t
   assert.notEqual(unvetted?.code, 'signed', 'the synthetic Vet references are never signed');
   const vetted = await agent.receiveProposal(await w.proposalFor(w.vetted));
   assert.equal(vetted.disposition, 'complete');
-  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), { code: 'substrate_unavailable', status: 503 });
   assert.deepEqual(await refused(() => agent.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), UNAVAILABLE);
-  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), [], 'no Agreement read, publication, transfer observation or delivery');
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), ['readAgreement'], 'commitment reads the Agreement; payment makes no external call');
 });
 
 test('the complete native profile takes payment only as native payment evidence, before any transfer is observed', async (t) => {
