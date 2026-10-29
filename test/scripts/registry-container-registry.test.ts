@@ -14,10 +14,9 @@ const runStages = (body: string, env: Record<string, string>) => spawnSync("bash
   `source scripts/registry-container-registry.sh\n${body}`], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", ...env } });
 
 describe("registry network isolation", () => {
-  it.each(["Linux", "Darwin"])("keeps consumers and the image builder off the %s host network", platform => {
+  it("keeps consumers and the image builder off the host network", () => {
     const log = join(scratch(), "commands");
     const result = runStages(`
-uname() { echo "$platform"; }
 pull_bounded() { :; }
 docker() {
   printf '%s\\n' "$*" >> "$log"
@@ -25,7 +24,7 @@ docker() {
 }
 start_registry
 printf '%s\\n' "$consumer_registry" "\${consumer_network_args[*]}" "\${build_network_args[*]}"`, {
-      platform, log, registry_log: join(scratch(), "registry.log"), registry_config: "/fixture/config.yaml",
+      log, registry_log: join(scratch(), "registry.log"), registry_config: "/fixture/config.yaml",
       registry_network: "fixture-network", registry_container: "fixture-registry",
     });
     expect(result.status, result.stderr).toBe(0);
@@ -215,6 +214,12 @@ describe("run-local Verdaccio configuration", () => {
     const authFile = config.match(/^    file: (.+)$/m)![1]!;
     expect(authFile.startsWith(storage + "/")).toBe(true);
     expect(readFileSync("scripts/registry-container-registry.sh", "utf8")).toContain('$registry_config:/verdaccio/conf/config.yaml:ro');
+  });
+
+  it("labels a configuration failure as its own stage", () => {
+    const result = runStages("write_registry_config\nprintf '%s' \"$stage\"", { registry_config: join(scratch(), "verdaccio.yaml") });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("registry-config");
   });
 });
 

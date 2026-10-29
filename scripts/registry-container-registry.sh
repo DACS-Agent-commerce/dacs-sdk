@@ -28,6 +28,7 @@ require_bounded_http() {
 
 # Writes the secret-free Verdaccio configuration to $registry_config.
 write_registry_config() {
+  stage=registry-config
   cat > "$registry_config" <<'YAML' || return
 storage: /verdaccio/storage
 web:
