@@ -58,7 +58,8 @@ test('seller caller commits, accepts verified payment and delivers, but signs no
    for(const path of ['/dacs/v1/bundles/request','/dacs/v1/bundles/countersignature']){
     const body=path.endsWith('request')?{jobId}:{jobId,buyerSignature:'fixture'},rawBody=Buffer.from(JSON.stringify(body));
     const request={method:'POST',path,jobId,buyer:w.buyer.claim,seller:w.seller.claim,listingPin:w.pin,agreementHash,bodyHash:core.sha256Hex(rawBody)};
-    assert.deepEqual(await w.agent.reconcileTransport({request,body,rawBody}),{disposition:'indeterminate',reason:'bundle_finalization_unavailable'},path);
+    const held=await w.agent.reconcileTransport({request,body,rawBody});
+    assert.deepEqual([held.disposition,held.reason,held.status,held.settle],['indeterminate','bundle_finalization_unavailable',503,false],path);
    }
    unsigned();assert.equal(w.anchors.writes.length,writes,'no bundle copy is anchored');
    await w.reopen();
