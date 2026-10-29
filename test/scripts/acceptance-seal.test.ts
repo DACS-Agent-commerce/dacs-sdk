@@ -284,6 +284,21 @@ describe("sealed generated project", () => {
     expect(existsSync(context)).toBe(false);
     expect(existsSync(record)).toBe(false);
   });
+  it("removes a sealed context with read-only directories when the record cannot be published", () => {
+    const root = scratch(), project = join(root, "project"), context = join(root, "sealed", "context");
+    mkdirSync(join(root, "sealed")); mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(join(project, "src", "service.ts"), "export {};\n");
+    chmodSync(join(project, "src"), 0o555);
+    try {
+      const record = join(root, "absent-parent", "sealed-context.json");
+      const cli = spawnSync(process.execPath, ["scripts/acceptance-seal.mjs", "seal", project, context, record, "src/service.ts"], { encoding: "utf8" });
+      expect(cli.status).not.toBe(0);
+      expect(existsSync(context)).toBe(false);
+    } finally {
+      chmodSync(join(project, "src"), 0o755);
+      if (existsSync(join(context, "src"))) chmodSync(join(context, "src"), 0o755);
+    }
+  });
   it("refuses an ambiguous evidence name instead of copying a different file", () => {
     const root = scratch(), source = join(root, "exec-out"), destination = join(root, "artifacts");
     mkdirSync(source); mkdirSync(destination);

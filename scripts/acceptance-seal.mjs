@@ -2,7 +2,7 @@
 // Inert until the rehearsal calls it: the host's only way to read files that a
 // container could have written. Nothing here follows a link or replaces a file.
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fchmodSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, chmodSync, constants, existsSync, fchmodSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readBoundedFile } from "./acceptance-evidence-io.mjs";
@@ -189,7 +189,13 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
       publishFile(third, Buffer.from(JSON.stringify(sealed, null, 2) + "\n"));
     } catch (error) {
       // The record could not be published, so remove the context this run created rather than
-      // leaving a sealed tree that a retry would refuse.
+      // leaving a sealed tree that a retry would refuse. Directories copied from a read-only
+      // source get their owner-write bit back so their contents can be removed.
+      for (const name of rest) {
+        for (const directory of ancestors(name)) {
+          try { chmodSync(join(second, directory), 0o700); } catch {}
+        }
+      }
       rmSync(second, { recursive: true, force: true });
       throw error;
     }
