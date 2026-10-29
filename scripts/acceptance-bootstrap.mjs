@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { PINNED_ACCEPTANCE_NPM_VERSION } from "./publish-exact-local-registry.mjs";
 import { COMMAND_TIMEOUT_SECONDS } from "./bounded-command.mjs";
@@ -75,7 +75,7 @@ export async function bootstrapNpm({ descriptor = NPM_BOOTSTRAP_ARTIFACT,
     for (const path of [temporary, archive, cache, ...(published ? [] : [prefix])]) rmSync(path, { recursive: true, force: true });
   }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const controller = new AbortController(), stop = () => controller.abort();
   process.once("SIGTERM", stop); process.once("SIGINT", stop);
   try { await bootstrapNpm({ signal: controller.signal }); }

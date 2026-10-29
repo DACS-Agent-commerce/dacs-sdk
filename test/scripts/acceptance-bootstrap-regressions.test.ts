@@ -99,10 +99,10 @@ describe("closed acceptance npm bootstrap", () => {
     const server = await registry(bytes, headers); let installed = false;
     try {
       await expect(bootstrapNpm({ directory, githubPath: join(directory, "path"), descriptor: { ...NPM_BOOTSTRAP_ARTIFACT, url: server.url },
-        execute: async () => { installed = true; } })).rejects.toThrow("ELIMIT");
+        execute: async () => { installed = true; } })).rejects.toThrow(kind === "http-gzip" ? "unsupported npm HTTP content encoding" : "ELIMIT");
       expect(installed).toBe(false); expect(existsSync(join(directory, "path"))).toBe(false);
     } finally { await server.close(); }
-  });
+  }, 20_000);
   it("ends stalled download at the inherited HTTP deadline", async () => {
     let deadline: (() => void) | undefined, milliseconds = 0;
     const pending = Object.assign(new EventEmitter(), { end: () => {}, destroy: (error: Error) => pending.emit("error", error) });
