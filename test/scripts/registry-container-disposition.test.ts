@@ -1881,7 +1881,9 @@ describe("dependency policy over npm ci installations", () => {
     expect(spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" }).stdout)
       .toBe("unreleased-copy\n");
     expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain("cannot authenticate an unverified registry archive: node_modules/plugin");
+    // The reference cannot read a SHA-1 archive, so the replay refuses before any candidate rule.
+    expect(policy.stderr).toContain("cannot derive reference installation");
+    expect(policy.stderr).toContain("node_modules/plugin: integrity has no single sha512 digest");
     expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
