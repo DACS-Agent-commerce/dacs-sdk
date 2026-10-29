@@ -33,6 +33,7 @@
     "src/dacs/demos-sr2-adapter.mjs",
     "src/dacs/devnet-source.mjs",
     "src/dacs/fixture-anchors.mjs",
+    "src/dacs/fixture-settlement.mjs",
     "src/dacs/listing.mjs",
     "src/dacs/native-dem-delivery-consumer.mjs",
     "src/dacs/native-payment-evidence-consumer.mjs",
