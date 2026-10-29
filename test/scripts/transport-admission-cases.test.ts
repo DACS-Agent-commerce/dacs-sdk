@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
-import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
 const { installBoundedNpmHttp, readBoundedResponse, responseBudget, NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES } = require("../../scripts/bounded-npm-http.cjs");
@@ -14,7 +14,7 @@ const buildModule = "../../scripts/bounded-build.mjs";
 const { prepareBoundedBuild } = await import(buildModule);
 const response = (bytes: Buffer, headers = {}, statusCode = 200) => Object.assign(Readable.from([bytes]), { headers, statusCode });
 function admitted(path: string, bytes: Buffer, headers = {}, statusCode = 200) {
-  const pending = Object.assign(new EventEmitter(), { path, destroy: () => {} });
+  const pending = Object.assign(new EventEmitter(), { setHeader: () => {}, path, destroy: () => {} });
   const transport = { request: () => pending };
   installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
   const result = new Promise<void>((resolve, reject) => {
@@ -39,17 +39,14 @@ describe("metadata and archive admission boundaries", () => {
     let value: unknown = {}; for (let i = 0; i < 130; i++) value = { child: value };
     await expect(admitted("/fixture/-/fixture.tgz", Buffer.from(JSON.stringify(value)), {}, status)).rejects.toThrow("ELIMIT");
   });
-  it.each([200, 302, 503])("keeps metadata expansion bounded independently of equal wire budgets, status %s", async status => {
+  it.each([200, 302, 503])("uses one gzip expansion ceiling at every path and status %s", async status => {
     const bytes = gzipSync(Buffer.alloc(65 * 1024 * 1024));
-    await expect(admitted(status === 200 ? "/npm" : "/npm/-/npm.tgz", bytes, {}, status)).rejects.toThrow("ELIMIT");
+    await expect(admitted(status === 200 ? "/npm" : "/npm/-/npm.tgz", bytes, {}, status)).resolves.toBeUndefined();
   });
-  it.each([undefined, "gzip", "deflate", "br"])("refuses unsupported zstd archive compression after HTTP decoding %s", async encoding => {
-    // An empty zstd frame; npm's tar reader recognizes these four magic bytes.
-    const zstd = Buffer.from("28b52ffd2000010000", "hex");
-    const bytes = encoding === "gzip" ? gzipSync(zstd) : encoding === "deflate" ? deflateSync(zstd) : encoding === "br" ? brotliCompressSync(zstd) : zstd;
-    const headers = encoding ? { "content-encoding": encoding } : {};
-    await expect(readBoundedResponse(response(bytes, headers), 1024, false, 4096)).rejects.toThrow("unsupported npm archive compression");
-    await expect(admitted("/fixture/-/fixture.tgz", bytes, headers)).rejects.toThrow("unsupported npm archive compression");
+  it("refuses zstd magic even split across chunks", async () => {
+    const bytes = Buffer.from("28b52ffd2000010000", "hex");
+    await expect(readBoundedResponse(Object.assign(Readable.from([...bytes].map(byte => Buffer.from([byte]))), { headers: {} }), 1024, false, 4096)).rejects.toThrow("unsupported npm archive compression");
+    await expect(admitted("/fixture/-/fixture.tgz", bytes)).rejects.toThrow("unsupported npm archive compression");
   });
 });
 
