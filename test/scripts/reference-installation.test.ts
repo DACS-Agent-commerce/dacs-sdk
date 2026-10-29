@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { Worker } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -307,7 +308,8 @@ describe("installation closure", { timeout: 60_000 }, () => {
     const closure = install.closure();
     expect(closure.entries.get("node_modules/bundler/node_modules/bundled"))
       .toMatchObject({ bundledBy: "node_modules/bundler", manifest: { name: "bundled" } });
-    expect(closure.errors).toEqual(["cannot derive reference installation: bundled lock entry is not in the archive of the package bundling it: node_modules/bundler/node_modules/missing"]);
+    expect(closure.errors).toEqual([]);
+    expect(closure.entries.get("node_modules/bundler/node_modules/missing")?.present).toBe(false);
   });
 
   it.each(["optional", "dev", "devOptional"])("detects missing carried %s entries independently of the inspected tree", flag => {
@@ -378,7 +380,8 @@ describe("installation closure", { timeout: 60_000 }, () => {
     });
     mkdirSync(join(install.project, "node_modules/git-dependency/lib"), { recursive: true });
     writeFileSync(join(install.project, "node_modules/git-dependency/lib/index.js"), "");
-    expect(install.closure().entries.get("node_modules/git-dependency")?.unverified).toBe(true);
+    expect(install.closure().entries.size).toBe(0);
+    expect(install.closure().errors.join()).toContain("cannot authenticate an unverified registry archive");
     expect(install.differences()).toEqual(["reference installation did not complete"]);
     mkdirSync(join(install.project, "node_modules/git-dependency/lib/node_modules/@kynesyslabs/dacs"), { recursive: true });
     symlinkSync("index.js", join(install.project, "node_modules/git-dependency/lib/main.js"));
@@ -715,7 +718,7 @@ describe("installation closure of real npm installations", () => {
     } finally { await server.close(); }
   }, 60_000);
 
-  it("replays install-strategy=linked from authenticated archive bytes", async () => {
+  it("refuses install-strategy=linked before replay", async () => {
     const directory = temporaryDirectory();
     const project = join(directory, "project");
     const cache = join(directory, "cache");
@@ -740,14 +743,9 @@ describe("installation closure of real npm installations", () => {
       expect(lstatSync(join(project, "node_modules/linked-parent")).isSymbolicLink()).toBe(true);
       const reference = installationClosure(project, lock, (_location: string, entry: { integrity: string }) =>
         cachedArchive(cache, entry.integrity));
-      expect(reference.errors).toEqual([]);
-      expect(reference.entries.get("node_modules/linked-parent")?.present).toBe(true);
-      expect(installationDifferences(project, reference)).toEqual([]);
-      writeFileSync(join(project, "node_modules/linked-parent/package.json"),
-        manifest("linked-parent", "1.0.0", { dependencies: { "linked-child": "1.0.0" }, tampered: true }));
-      const differences = installationDifferences(project, reference);
-      expect(differences).toHaveLength(1);
-      expect(differences[0]).toMatch(/^changed: node_modules\/\.store\/.*\/package\.json$/);
+      expect(reference.inventory).toBeNull();
+      expect(reference.entries.size).toBe(0);
+      expect(reference.errors.join()).toContain("unsupported install-strategy: linked");
     } finally { await server.close(); }
   }, 60_000);
 });
@@ -1155,5 +1153,194 @@ describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }
     expect(reference.entries.get("node_modules/child").present).toBe(true);
     rmSync(join(fixture.project, "node_modules/child"), { recursive: true });
     expect(installationDifferences(fixture.project, reference)).toContain("missing: node_modules/child");
+  });
+});
+
+
+describe("observed archive replay", { timeout: 60_000 }, () => {
+  const inputFor = (fixture: ReturnType<typeof simulatedInstall>) => ({
+    manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")), lock: fixture.lock,
+    installer: npmInstallContract(fixture.project),
+    readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(join(fixture.project, ".npm"), entry.integrity),
+  });
+  const refused = (reference: ReturnType<typeof referenceInstallation>, message: string) => {
+    expect(reference.errors.join()).toContain(message);
+    expect(reference.inventory).toBeNull();
+    expect(reference.entries.size).toBe(0);
+    expect(reference.carried.size).toBe(0);
+  };
+
+  it.each(["hoisted", "nested", "shallow"])("keeps distinct bytes for a shared URL under %s", strategy => {
+    const resolved = "https://registry.invalid/shared.tgz";
+    const fixture = simulatedInstall({
+      "node_modules/parent": [{ resolved }, { "package.json": manifest("parent"), "index.js": "parent" }],
+      "node_modules/child": [{ resolved }, { "package.json": manifest("child"), "index.js": "child" }],
+    });
+    writeFileSync(join(fixture.project, ".npmrc"), `install-strategy=${strategy}\n`);
+    const input = inputFor(fixture);
+    const reference = referenceInstallation(input);
+    expect(reference.errors).toEqual([]);
+    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+    for (const name of ["parent", "child"]) {
+      expect(reference.entries.get(`node_modules/${name}`).manifest.name).toBe(name);
+      expect(reference.inventory.get(`node_modules/${name}/index.js`).digest)
+        .toBe(installationInventory(fixture.project).get(`node_modules/${name}/index.js`).digest);
+    }
+    writeFileSync(join(fixture.project, ".npmrc"), "install-strategy=linked\n");
+    refused(referenceInstallation({ ...input, installer: npmInstallContract(fixture.project) }), "unsupported install-strategy: linked");
+  });
+
+  it.each(["prefer-online=true", "cache-max=0", "cache-max=-1"])("refuses swallowed optional extraction failures with %s", config => {
+    const fixture = simulatedInstall({ "node_modules/a": [{ optional: true }, { "package.json": manifest("a") }] });
+    writeFileSync(join(fixture.project, ".npmrc"), config + "\n");
+    refused(referenceInstallation(inputFor(fixture)), config.startsWith("cache-max") ? "cannot replay cache-max" : "archive extraction failed");
+  });
+
+  it.each(["0.0.0", "999.0.0"])("refuses npm-version=%s even with all archives available", version => {
+    const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
+    const input = inputFor(fixture);
+    input.installer.config["npm-version"] = version;
+    refused(referenceInstallation(input), "npm-version differs from selected npm");
+  });
+
+  it("refuses stale optional flags after a dependency moves to dev", () => {
+    const fixture = simulatedInstall({ "node_modules/a": [{ optional: true }, { "package.json": manifest("a") }] });
+    const input = inputFor(fixture);
+    input.manifest.devDependencies = input.manifest.optionalDependencies;
+    delete input.manifest.optionalDependencies;
+    refused(referenceInstallation(input), "root dependency metadata differs");
+  });
+
+  it("refuses an unavailable eligible bundler and publishes no partial source metadata", () => {
+    const fixture = simulatedInstall({
+      "node_modules/parent": [{ optional: true }, { "package.json": manifest("parent"),
+        "node_modules/child/package.json": manifest("child") }],
+      "node_modules/parent/node_modules/child": [{ optional: true, inBundle: true }, null],
+    });
+    const input = inputFor(fixture);
+    refused(referenceInstallation({ ...input, readArchive: () => { throw Error("owner unavailable"); } }), "node_modules/parent: owner unavailable");
+  });
+
+  it("keeps a child required outside a skipped optional parent's subtree", () => {
+    const fixture = simulatedInstall({
+      "node_modules/parent": [{ optional: true, os: [`!${process.platform}`], dependencies: { child: "1.0.0" } },
+        { "package.json": manifest("parent") }],
+      "node_modules/child": [{}, { "package.json": manifest("child") }],
+    });
+    const input = inputFor(fixture);
+    refused(referenceInstallation({ ...input, readArchive: (location: string) => { throw Error("required child unavailable: " + location); } }),
+      "node_modules/child");
+    expect(referenceInstallation(input).errors).toEqual([]);
+  });
+
+  it("uses npm's decisions for a platform-skipped parent, child and grandchild", async () => {
+    const project = temporaryDirectory();
+    const cache = join(project, ".npm");
+    const parentFields = { os: [`!${process.platform}`], dependencies: { child: "1.0.0" } };
+    const childFields = { dependencies: { grandchild: "1.0.0" } };
+    const archives = new Map([ ["parent", packTarball({ "package.json": manifest("parent", "1.0.0", parentFields) })],
+      ["child", packTarball({ "package.json": manifest("child", "1.0.0", childFields) })],
+      ["grandchild", packTarball({ "package.json": manifest("grandchild") })] ]);
+    const server = await serveArchives(archives);
+    try {
+      const root = { name: "consumer", version: "1.0.0", optionalDependencies: { parent: "1.0.0" } };
+      const packages = Object.fromEntries([...archives].map(([name, archive]) => ["node_modules/" + name, {
+        version: "1.0.0", optional: true, resolved: `${server.registry}/${name}.tgz`, integrity: sri(archive),
+        ...(name === "parent" ? parentFields : name === "child" ? childFields : {}),
+      }]));
+      const lock = { lockfileVersion: 3, packages: { "": root, ...packages } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      writeFileSync(join(project, ".npmrc"), "");
+      const installer = npmInstallContract(project);
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      const input = { manifest: root, lock, installer, readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity) };
+      const reference = referenceInstallation(input);
+      expect(reference.errors).toEqual([]);
+      expect(installationDifferences(project, reference)).toEqual([]);
+      const absent = referenceInstallation({ ...input, readArchive: () => { throw Error("not acquired"); } });
+      if (Number(installer.config["npm-version"].split(".")[0]) >= 11) {
+        expect(absent.errors).toEqual([]);
+        expect(installationDifferences(project, absent)).toEqual([]);
+      } else refused(absent, "archive extraction failed"); // npm 10 requests descendants before discarding them.
+    } finally { await server.close(); }
+  });
+
+  it("matches rewritten registry archives and refuses missing optional extraction", async () => {
+    const project = temporaryDirectory();
+    const cache = join(project, ".npm");
+    const archive = packTarball({ "package.json": manifest("a") });
+    const server = await serveArchives(new Map([["a", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", optionalDependencies: { a: "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: { "": root, "node_modules/a": {
+        version: "1.0.0", optional: true, resolved: "https://registry.npmjs.org/a.tgz", integrity: sri(archive),
+      } } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      writeFileSync(join(project, ".npmrc"), `registry=${server.registry}\n`);
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      expect(existsSync(join(project, "node_modules/a/package.json"))).toBe(true);
+      const input = { manifest: root, lock, installer: npmInstallContract(project), readArchive: () => archive };
+      const reference = referenceInstallation(input);
+      expect(reference.errors).toEqual([]);
+      expect(installationDifferences(project, reference)).toEqual([]);
+      refused(referenceInstallation({ ...input, readArchive: () => { throw Error("archive unavailable"); } }), "node_modules/a: archive unavailable");
+      writeFileSync(join(project, ".npmrc"), `registry=${server.registry}\ninstall-strategy=linked\n`);
+      refused(referenceInstallation({ ...input, installer: npmInstallContract(project) }), "unsupported install-strategy: linked");
+    } finally { await server.close(); }
+  });
+
+  it.each(["missing", "unreadable", "malformed", "pacote"])("refuses an unobserved npm replay: %s", scenario => {
+    const fixture = simulatedInstall({});
+    const input = inputFor(fixture);
+    const preload = join(fixture.project, "simulate-hook.cjs");
+    writeFileSync(preload, scenario === "pacote" ? `
+      const Module = require('node:module'); const resolve = Module._resolveFilename;
+      Module._resolveFilename = function(spec, parent, ...args) {
+        const result = resolve.call(this, spec, parent, ...args);
+        return spec === 'pacote' && parent?.filename.endsWith('/arborist/reify.js') ? result + '.different' : result;
+      };` : `
+      const fs = require('node:fs'); const write = fs.writeFileSync;
+      fs.writeFileSync = function(path, ...args) {
+        if (String(path).endsWith('/archive-failures.jsonl')) {
+          ${scenario === "missing" ? "return;" : scenario === "unreadable" ? "fs.mkdirSync(path, {recursive: true}); return;" : "return write.call(this, path, 'malformed');"}
+        }
+        return write.call(this, path, ...args);
+      };`);
+    input.installer.env.NODE_OPTIONS = `${input.installer.env.NODE_OPTIONS ?? ""} --require=${preload}`;
+    refused(referenceInstallation(input), scenario === "pacote" ? "pacote instance differs" : "archive failure log");
+  });
+
+  it("builds a reference in a worker thread without changing the parent umask", async () => {
+    const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
+    const input = inputFor(fixture);
+    const workerScratch = temporaryDirectory();
+    const before = process.umask();
+    input.installer.umask = before === 0o077 ? 0o022 : 0o077;
+    const worker = new Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      process.env.TMPDIR = workerData.scratch;
+      (async () => {
+        const { referenceInstallation } = await import(workerData.module);
+        const { cachedArchive } = await import(workerData.archives);
+        const reference = referenceInstallation({ ...workerData.input,
+          readArchive: (_location, entry) => cachedArchive(workerData.cache, entry.integrity) });
+        parentPort.postMessage({ errors: reference.errors, inventory: reference.inventory });
+      })().catch(error => { throw error; });`, { eval: true, workerData: {
+      module: new URL(referenceModulePath, import.meta.url).href,
+      archives: new URL(closureModulePath, import.meta.url).href,
+      scratch: workerScratch, cache: join(fixture.project, ".npm"), input: { ...input, readArchive: undefined },
+    } });
+    const reference = await new Promise<{ errors: string[]; inventory: Map<string, { mode: number }> }>((resolve, reject) => {
+      worker.once("message", resolve); worker.once("error", reject);
+      worker.once("exit", code => { if (code) reject(Error("worker exited " + code)); });
+    });
+    expect(reference.errors).toEqual([]);
+    expect(reference.inventory.get("node_modules/a")?.mode).toBe(0o777 & ~input.installer.umask);
+    expect(process.umask()).toBe(before);
+    expect(readdirSync(workerScratch)).toEqual([]);
   });
 });
