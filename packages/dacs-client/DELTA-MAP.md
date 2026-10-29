@@ -818,6 +818,10 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | 0cf1690daa71819106208636318cbc955dd9ed8b |
 | | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | f0acee1431e672f772d9f4a10faef5f603b7fb96 |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 8cb570e3a627217ee42631ff4ea5e105edfef014 |
+| D11 | fix(client): D11 record the merged part 12 package snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 612da2ec57f6c54a3b761230040fff133b30dc49 |
+| | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` | 32ad1ee884c385874d10b016f89f7e25d50953b6 |
+| | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | f0acee1431e672f772d9f4a10faef5f603b7fb96 |
 
 ## Complete commit and file inventory
 
@@ -2977,6 +2981,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | 2b0b8344fbf1dd34d85d45f36e5b69ae54502ef7 | `packages/dacs-client/DELTA-MAP.md:1` |
 | 2b0b8344fbf1dd34d85d45f36e5b69ae54502ef7 | `packages/dacs-client/HOLD.json:1` |
 | 2b0b8344fbf1dd34d85d45f36e5b69ae54502ef7 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the merged part 12 package snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the merged part 12 package snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the merged part 12 package snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the merged part 12 package snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the merged part 12 package snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
