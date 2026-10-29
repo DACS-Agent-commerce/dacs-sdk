@@ -582,6 +582,12 @@ describe("registry/container workflow wiring", () => {
       "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh",
       "scripts/acceptance-seal.mjs", "scripts/registry-container-registry.sh",
       "scripts/publish-release-set.mjs", "scripts/verify-release-set.mjs", "scripts/check-npm-advisories.mjs",
+      // The wrapper, installer and evidence assembly that acceptance executes,
+      // and the closure their decisions are imported from.
+      "scripts/acceptance-ci.sh", "scripts/acceptance-bootstrap.mjs", "scripts/acceptance-fixtures.mjs",
+      "scripts/installation-closure.mjs", "scripts/installation-archive-worker.mjs",
+      "scripts/reference-installation.mjs", "scripts/acceptance-directory.mjs",
+      "scripts/verify-package-lifecycle.mjs", "scripts/verify-package.mjs",
       "package-lock.json", ".github/workflows/", ".github/CODEOWNERS"]) {
       expect(owners).toContain(`/${path} @randomblocker`);
     }
@@ -697,7 +703,7 @@ async function runToConsumerStage(complete = false, failStart = false, hooks: Co
   const builtLock = join(directory, "built-lock"); const lateRemovals = join(directory, "late-removals");
   const phase = (name: keyof ConsumerHooks, steps: string[]) => [`  *-${name})`, ...steps, hooks[name] ?? "", `  exit ${name === "doctor" ? complete ? 5 : 1 : 0} ;;`];
   const PATH = stubBin(directory, {
-    curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
+    curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  */-/ping*) printf \'{}\' ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
     npm: ['case "$1" in', `  install) case "$*" in *npm@11.19.0*) touch '${pinned}' ;; *) exit 92 ;; esac ;;`,
       `  --version) if [ -f '${pinned}' ]; then echo 11.19.0; else echo 10.9.9; fi ;;`, `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
       `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),

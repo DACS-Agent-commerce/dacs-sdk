@@ -1,12 +1,20 @@
 # Changes to the #191 registry/container baseline, the scripts that produce and
-# classify its findings, the scripts that publish and verify the release set,
+# classify its findings, the acceptance entrypoints that run it and assemble its
+# evidence, the scripts that publish and verify the release set,
 # the package scripts and lock that run them, and every workflow
 # (the acceptance workflows, the publication workflow that depends on them, and
 # any workflow added later) need review from a code owner.
 /scripts/registry-container-audit-baseline.json @randomblocker
 /scripts/registry-container-audit-baseline.md @randomblocker
 /scripts/registry-container-disposition.mjs @randomblocker
+/scripts/installation-closure.mjs @randomblocker
+/scripts/installation-archive-worker.mjs @randomblocker
+/scripts/reference-installation.mjs @randomblocker
+/scripts/acceptance-directory.mjs @randomblocker
 /scripts/acceptance-evidence-io.mjs @randomblocker
+/scripts/acceptance-bootstrap.mjs @randomblocker
+/scripts/acceptance-fixtures.mjs @randomblocker
+/scripts/acceptance-ci.sh @randomblocker
 /scripts/bounded-build.mjs @randomblocker
 /scripts/bounded-command.mjs @randomblocker
 /scripts/bounded-npm-http.cjs @randomblocker
@@ -22,6 +30,8 @@
 /scripts/http-json-limits.mjs @randomblocker
 /scripts/publish-release-set.mjs @randomblocker
 /scripts/verify-release-set.mjs @randomblocker
+/scripts/verify-package-lifecycle.mjs @randomblocker
+/scripts/verify-package.mjs @randomblocker
 /scripts/check-npm-advisories.mjs @randomblocker
 /package.json @randomblocker
 /package-lock.json @randomblocker

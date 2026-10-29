@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 const modulePath = "../../scripts/check-publish-environment.mjs";
 const { publishEnvironmentProblems } = await import(modulePath);
@@ -75,9 +75,19 @@ describe("publish environment evidence validation", () => {
       reviewers: [{ type: "User", reviewer: { login: "maintainer" } },
         { type: "User", reviewer: { login: "release" } }] }];
     expect(publishEnvironmentProblems(env, policies(), "maintainer")).toEqual([]);
-    // Team membership is not in this evidence; a team may contain another approver.
+    // Team membership is not in this evidence, so a team reviewer cannot prove
+    // that anyone other than the dispatch requester can approve: the guard needs
+    // a named user, here a distinct one.
     env.protection_rules = [{ type: "required_reviewers", prevent_self_review: true,
       reviewers: [{ type: "Team", reviewer: { slug: "release" } }] }];
+    expect(publishEnvironmentProblems(env, policies(), "maintainer")).not.toEqual([]);
+    env.protection_rules = [{ type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { login: "maintainer" } },
+        { type: "Team", reviewer: { slug: "release" } }] }];
+    expect(publishEnvironmentProblems(env, policies(), "maintainer")).not.toEqual([]);
+    env.protection_rules = [{ type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { login: "maintainer" } },
+        { type: "User", reviewer: { login: "release" } }] }];
     expect(publishEnvironmentProblems(env, policies(), "maintainer")).toEqual([]);
   });
 
@@ -90,6 +100,30 @@ describe("publish environment evidence validation", () => {
         { encoding: "utf8", env: { ...process.env, GITHUB_ACTOR: "maintainer", GITHUB_TRIGGERING_ACTOR: "" } });
       expect(result.status).not.toBe(0);
       expect(result.stdout).toContain("cannot approve");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // Node runs a module by its real path, so a linked path to the guard must
+  // still execute it. Otherwise the CLI check is skipped and the guard exits 0
+  // without reading the environment: the gate fails open.
+  it.each(["absolute", "relative"])("runs the guard CLI through an %s directory alias instead of passing silently", kind => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-publish-alias-"));
+    const input = join(root, "environment.json"), policy = join(root, "policies.json");
+    try {
+      symlinkSync(resolve("scripts"), join(root, "alias"));
+      writeFileSync(policy, JSON.stringify(policies()));
+      // Unprotected: no admin-bypass prohibition, no reviewers, no tag policy.
+      writeFileSync(input, JSON.stringify({ name: "npm-prerelease-gated" }));
+      const script = kind === "absolute" ? join(root, "alias/check-publish-environment.mjs") : "alias/check-publish-environment.mjs";
+      const result = spawnSync(process.execPath, [script, input, policy],
+        { cwd: root, encoding: "utf8", env: { ...process.env, GITHUB_TRIGGERING_ACTOR: "", GITHUB_ACTOR: "" } });
+      expect(result.status, result.stdout + result.stderr).not.toBe(0);
+      expect(result.stdout).toContain("cannot gate publication");
+      // The same alias runs a protected environment to success, so the check runs.
+      writeFileSync(input, JSON.stringify(environment()));
+      const passed = spawnSync(process.execPath, [script, input, policy],
+        { cwd: root, encoding: "utf8", env: { ...process.env, GITHUB_TRIGGERING_ACTOR: "", GITHUB_ACTOR: "" } });
+      expect(passed.status, passed.stdout + passed.stderr).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
