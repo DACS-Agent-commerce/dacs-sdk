@@ -1,6 +1,6 @@
 // Expected installation bytes and links come only from a fresh, successful npm ci.
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
 import { tmpdir } from "node:os";
@@ -13,16 +13,18 @@ const isPlainObject = value => typeof value === "object" && value !== null && !A
 const digest = bytes => createHash("sha256").update(bytes).digest("base64");
 const kind = stat => stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "link" : stat.isFile() ? "file" : "unsupported";
 
-/** Snapshots a consumer's effective npm configuration, environment and selected toolchain.
+/** Snapshots a consumer's effective npm configuration, environment and selected toolchain,
+ * including whether an existing node_modules root changes npm's empty-install result.
  * The caller must use the same contract for its scripts-disabled installation and comparison. */
 export function npmInstallContract(project, toolchain = npmToolchain()) {
   const env = { ...process.env };
   const config = JSON.parse(runNpmNode(toolchain, [toolchain.cli, "config", "list", "--json"], { cwd: project, env }).toString());
-  return { toolchain, config, env };
+  return { toolchain, config, env, nodeModules: existsSync(join(project, "node_modules")) };
 }
 
 /** Inventories every node_modules path with one explicit kind, without following links.
- * Files include their digest, mode and link count; links retain their literal target. */
+ * Files include their digest, full permission bits and link count; directories retain their
+ * permission bits; links retain their literal target. */
 export function installationInventory(project) {
   const inventory = new Map();
   const visit = path => {
@@ -196,12 +198,16 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
   const scratch = mkdtempSync(join(tmpdir(), "dacs-npm-reference-"));
   try {
     if (!isPlainObject(lock?.packages) || !isPlainObject(manifest)) throw new Error("package-lock.json has no packages map or manifest");
-    if (!installer?.config || !installer.env || installer.toolchain?.platform !== process.platform || installer.toolchain.arch !== process.arch) {
+    if (!installer?.config || !installer.env || typeof installer.nodeModules !== "boolean" ||
+        installer.toolchain?.platform !== process.platform || installer.toolchain.arch !== process.arch) {
       throw new Error("reference installation needs an explicit matching npm/platform/configuration contract");
     }
     const project = join(scratch, "project");
     const cache = join(scratch, "cache");
     mkdirSync(project);
+    // npm 11 only writes the hidden lockfile for an all-omitted tree when the
+    // node_modules root already existed; reproduce that input, never its contents.
+    if (installer.nodeModules) mkdirSync(join(project, "node_modules"));
     const unavailable = sourceEntries(lock, readArchive, installer, cache, entries, roots);
     const excluded = excludedSources(unavailable, entries, installer, scratch, manifest, lock);
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));

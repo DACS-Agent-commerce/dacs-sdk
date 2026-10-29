@@ -733,6 +733,24 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
     expect(installationDifferences(fixture.project, reference)).toContain("missing: node_modules/.package-lock.json");
   });
 
+  // npm 11 keeps node_modules/.package-lock.json for an all-omitted install only
+  // when the node_modules root already existed; the explicit contract carries it.
+  it.each([true, false])("reproduces an initial node_modules root in an all-omitted install: %s", present => {
+    const fixture = simulatedInstall({ "node_modules/a": [{ dev: true }, { "package.json": manifest("a") }] });
+    writeFileSync(join(fixture.project, ".npmrc"), "omit=dev\n");
+    rmSync(join(fixture.project, "node_modules"), { recursive: true, force: true });
+    if (present) mkdirSync(join(fixture.project, "node_modules"));
+    const installer = npmInstallContract(fixture.project);
+    const toolchain = npmToolchain();
+    runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+      `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
+    const reference = referenceInstallation({ manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+      lock: fixture.lock, installer, readArchive: (_location: string, entry: { integrity: string }) =>
+        cachedArchive(join(fixture.project, ".npm"), entry.integrity) });
+    expect(reference.errors).toEqual([]);
+    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+  });
+
   it("publishes no reference after bad callback bytes or an offline replay failure", () => {
     const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
     const installer = npmInstallContract(fixture.project);
@@ -984,13 +1002,15 @@ describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }
     delete root.dependencies;
     parent.optional = true;
     input.manifest = { ...root };
-    const reference = referenceInstallation(input);
-    expect(reference.errors).toEqual([]);
-    expect(reference.entries.get("node_modules/parent").present).toBe(false);
     const toolchain = input.installer.toolchain;
     writeFileSync(join(fixture.project, "package.json"), JSON.stringify(input.manifest));
     writeFileSync(join(fixture.project, "package-lock.json"), JSON.stringify(input.lock));
     rmSync(join(fixture.project, "node_modules"), { recursive: true, force: true });
+    // The independent install starts without node_modules; replay the same input.
+    input.installer = npmInstallContract(fixture.project);
+    const reference = referenceInstallation(input);
+    expect(reference.errors).toEqual([]);
+    expect(reference.entries.get("node_modules/parent").present).toBe(false);
     runNpmNode(toolchain, [toolchain.cli, "install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
       `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
     expect(installationDifferences(fixture.project, reference)).toEqual([]);
