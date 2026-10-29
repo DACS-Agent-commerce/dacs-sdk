@@ -214,6 +214,8 @@ Admission reads one closed policy for main and listed TEMP. Persistent main acce
 
 Regressions cover initialized TEMP OFF, unqualified OFF followed by main WAL, repair/retry, absent/discarded/reopened TEMP, four native result defaults, and the real lease rollback marker. Earlier main journal/durability and result-format regressions are retained. Historical extraction records use the existing archive fields solely to audit immutable published history.
 
+Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
+
 ## D11 — Closed host transfer observation record (part 05)
 
 Settlement and non-native closed-wallet readback decide and retain a fresh frozen projection of nine own data fields. Host getters and toJSON are never called; unknown fields are ignored. Known fields require primitive types and bounded amount/address/hash formats; reason is capped at 240 characters. Malformed results stay retryable without reading the body or consuming a nonce. Confirmed body proof cannot override a raw failed source disposition. Missing includedAt remains optional. Reader attribution and native-readback availability name the actual host capability. Closed-wallet readback writes nothing.
