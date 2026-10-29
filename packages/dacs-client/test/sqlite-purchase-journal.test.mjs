@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { checkSqlitePurchaseInput } from '../src/util/sqlite-purchase-admission.mjs';
+import { inTransaction } from './helpers/sqlite-engine-floor.mjs';
 
 function database(t, file = 'state.sqlite') {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-purchase-journal-'));
@@ -25,7 +26,7 @@ for (const mode of ['OFF', 'MEMORY']) for (const warm of [false, true]) for (con
     assert.throws(() => checkSqlitePurchaseInput(db, callback),
       { name: 'OperationError', code: 'purchase_store_unsupported_journal_mode' });
     assert.equal(db.prepare('PRAGMA main.journal_mode').get().journal_mode, mode.toLowerCase());
-    assert.equal(db.isTransaction, hostTransaction);
+    assert.equal(inTransaction(db), hostTransaction);
     assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, hostTransaction ? 1 : 0);
     assert.deepEqual(tables(), before);
     if (hostTransaction) db.exec('ROLLBACK');
@@ -64,7 +65,7 @@ for (const mode of ['DELETE', 'TRUNCATE', 'PERSIST', 'WAL']) for (const synchron
       { name: 'OperationError', code: 'purchase_store_unsupported_synchronous' });
     assert.equal(db.prepare('PRAGMA main.synchronous').get().synchronous, level);
     assert.equal(db.prepare('PRAGMA main.journal_mode').get().journal_mode, mode.toLowerCase());
-    assert.equal(db.isTransaction, hostTransaction);
+    assert.equal(inTransaction(db), hostTransaction);
     assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, hostTransaction ? 1 : 0);
     assert.deepEqual(tables(), before);
     if (hostTransaction) db.exec('ROLLBACK');

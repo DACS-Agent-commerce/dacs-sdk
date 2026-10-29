@@ -128,13 +128,14 @@ test('a rollback in one exec batch is checked before the second statement', t =>
 });
 for(const functionName of ['expire_and_write','expire_and_write(','expire_and_write(0)']) for(const separate of [false,true])test(`SQL callbacks cannot use retained writers across rollback, name=${functionName}, separate=${separate}`, t => {
   const db=world(t), other=separate?world(t):db;
-  other.exec("INSERT INTO records VALUES ('TEST-existing'); BEGIN");
+  other.exec("INSERT INTO records VALUES ('TEST-existing'); BEGIN; CREATE TEMP TABLE test_live(id)");
+  const live=other.prepare("SELECT 1 FROM sqlite_temp_master WHERE name='test_live'");
   const write=other.prepare("INSERT INTO records VALUES ('TEST-escaped')");
   db.function(functionName,()=>{
     try{nativeExec.call(other,"INSERT OR ROLLBACK INTO records VALUES ('TEST-existing')");}catch{}
     nativeRun.call(write); return 1;
   });
-  const run=()=>withSqliteStatementGuard(other,()=>{if(other.isTransaction===false)throw Error('TEST-ended');},()=>{
+  const run=()=>withSqliteStatementGuard(other,()=>{if(!live.get())throw Error('TEST-ended');},()=>{
     assert.throws(()=>db.prepare('SELECT '+JSON.stringify(functionName)+'()').get(), /SQL callbacks/);
   });
   if(separate)withSqliteStatementGuard(db,()=>{},run);else run();
@@ -178,10 +179,11 @@ for (const sql of ["SELECT * FROM pragma_integrity_check('checked')", "SELECT * 
       nativeRun.call(write);
       return 1;
     });
-    db.exec("CREATE TABLE checked(x CHECK (chk(x))); INSERT INTO checked VALUES (1); INSERT INTO records VALUES ('TEST-existing'); BEGIN");
+    db.exec("CREATE TABLE checked(x CHECK (chk(x))); INSERT INTO checked VALUES (1); INSERT INTO records VALUES ('TEST-existing'); BEGIN; CREATE TEMP TABLE test_live(id)");
+    const live = db.prepare("SELECT 1 FROM sqlite_temp_master WHERE name='test_live'");
     const write = db.prepare("INSERT INTO records VALUES ('TEST-escaped')");
     armed = true;
-    withSqliteStatementGuard(db, () => { if (!db.isTransaction) throw Error('TEST-ended'); }, () => {
+    withSqliteStatementGuard(db, () => { if (!live.get()) throw Error('TEST-ended'); }, () => {
       assert.throws(() => db.prepare(sql).all(), /SQL callbacks/);
     });
     assert.equal(calls, 0);

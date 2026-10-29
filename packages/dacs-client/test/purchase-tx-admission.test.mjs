@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkSqlitePurchaseDatabase } from '../src/util/sqlite-purchase-admission.mjs';
 import { PROFILES, FILE_PROFILES, DEFAULT_PROFILE, label, purchaseDatabase, durableIds } from './helpers/purchase-tx-fixtures.mjs';
+import { inTransaction } from './helpers/sqlite-engine-floor.mjs';
 
 const pragma = (db, name) => Object.values(db.prepare(`PRAGMA ${name}`).get())[0];
 const tempObjects = db => db.prepare('SELECT name FROM temp.sqlite_master ORDER BY name').all().map(row => row.name);
@@ -29,7 +30,7 @@ for (const warm of [false, true]) for (const hostTemp of [false, true]) {
     const objects = tempObjects(db);
     assert.throws(() => store.transaction(db, callbackRan), { name: 'OperationError', code: 'purchase_store_unsupported_temp_journal_mode' });
     assert.deepEqual(tempObjects(db), objects);
-    assert.equal(db.isTransaction, false);
+    assert.equal(inTransaction(db), false);
     assert.equal(pragma(db, 'temp.journal_mode'), 'off');
     assert.equal(pragma(db, 'main.journal_mode'), 'wal');
     if (hostTemp) assert.deepEqual(durableIds(db, null, { volatile: true }, 'staging'), ['TEST-host']);
@@ -106,7 +107,7 @@ for (const profile of FILE_PROFILES.filter(({ journal }) => journal !== 'TRUNCAT
     db.prepare(attach).run(auxiliary);
     if (hostTransaction) db.exec("BEGIN; INSERT INTO records VALUES ('TEST-host')");
     assert.throws(() => store.transaction(db, callbackRan), persistent);
-    assert.equal(db.isTransaction, hostTransaction);
+    assert.equal(inTransaction(db), hostTransaction);
     if (hostTransaction) {
       assert.equal(db.prepare('SELECT id FROM records').get().id, 'TEST-host');
       db.exec('ROLLBACK');
@@ -133,7 +134,7 @@ for (const nested of [false, true]) for (const following of ['last', 'batch', 'p
     assert.throws(() => store.transaction(db, () => nested ? store.transaction(db, body) : body()), guardedAttachment);
     for (const file of [path, auxiliary]) assert.deepEqual(durableIds(db, file), []);
     if (db.isOpen) {
-      assert.equal(db.isTransaction, false);
+      assert.equal(inTransaction(db), false);
       assert.equal(db.prepare('PRAGMA database_list').all().some(row => row.name === 'attached archive'), false);
       assert.equal(store.transaction(db, () => 'TEST-retry'), 'TEST-retry');
     }
@@ -170,7 +171,7 @@ for (const [journal, synchronous, code] of [
     const settings = [pragma(db, 'main.journal_mode'), pragma(db, 'main.synchronous')];
     assert.throws(() => store.transaction(db, callbackRan), { name: 'OperationError', code });
     assert.deepEqual([pragma(db, 'main.journal_mode'), pragma(db, 'main.synchronous')], settings);
-    assert.equal(db.isTransaction, false);
+    assert.equal(inTransaction(db), false);
     assert.deepEqual(durableIds(db, path), ['TEST-host']);
   });
 }
@@ -195,7 +196,7 @@ for (const profile of FILE_PROFILES) {
       db.prepare('UPDATE records SET value=?').run('b'.repeat(10_000));
       throw cause;
     }), error => error === cause);
-    assert.equal(db.isTransaction, false);
+    assert.equal(inTransaction(db), false);
     assertUnchanged(path);
   });
   for (const stage of ['before-commit', 'after-commit']) {
