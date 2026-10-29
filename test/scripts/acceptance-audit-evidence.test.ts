@@ -89,14 +89,54 @@ describe("advisory applicability from the lock", () => {
     ["a workspace", (lock: Lock) => { lock.packages["packages/app"] = { version: "1.0.0" }; }],
     ["a linked package", (lock: Lock) => { lock.packages["node_modules/leaf"] = { resolved: "packages/leaf", link: true }; }],
     ["root workspaces", (lock: Lock) => { lock.packages[""] = { ...lock.packages[""], workspaces: ["packages/*"] }; }],
-  ])("refuses to confirm directness with %s", (_label, change) => {
+  ])("refuses to confirm directness with %s, whatever the report names", (_label, change) => {
     const { audit, lock } = captured("nested-only");
     const changed = change(lock) === null ? null : lock;
-    expect(() => registryAuditPolicy(audit, changed, baseline)).toThrow("advisory applicability unevaluated");
-    const { result, output } = auditPolicyRun(audit, changed ?? "{");
+    for (const report of [audit, auditReport({})]) {
+      expect(() => registryAuditPolicy(report, changed, baseline)).toThrow("advisory applicability unevaluated");
+      const { result, output } = auditPolicyRun(report, changed ?? "{");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("advisory applicability unevaluated");
+      expect(existsSync(output)).toBe(false);
+    }
+  });
+
+  // A direct dependency `name` declared under `field` and locked at `version`
+  // (as an npm: alias when `installed` differs from `name`).
+  const withDirect = (lock: Lock, field: string, name: string, version: string, installed = name) => {
+    const root = lock.packages[""] ?? {};
+    root[field] = { ...(root[field] as object), [name]: installed === name ? "1.0.0" : `npm:${installed}@1.0.0` };
+    lock.packages[`node_modules/${name}`] = { ...(installed === name ? {} : { name: installed }), version };
+  };
+  it.each([
+    ["a report naming other packages", "dependencies", "other", "other", true],
+    ["an aliased entry", "dependencies", "al", "zzz", false],
+    ["a dev dependency", "devDependencies", "dz", "dz", false],
+    ["a peer dependency", "peerDependencies", "dz", "dz", false],
+    ["an optional dependency", "optionalDependencies", "dz", "dz", false],
+  ] as const)("refuses an unreadable direct version the report does not name, through %s", (_label, field, name, installed, named) => {
+    const { audit, lock } = captured("nested-only");
+    withDirect(lock, field, name, "not-a-version", installed);
+    const report = named ? audit : auditReport({});
+    expect(() => registryAuditPolicy(report, lock, baseline)).toThrow(`unreadable version "not-a-version" of ${installed}`);
+    const { result, output } = auditPolicyRun(report, lock);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("advisory applicability unevaluated");
     expect(existsSync(output)).toBe(false);
+  });
+
+  it("passes an empty report only with a readable lock, and reads a loose direct version", () => {
+    const { lock } = captured("nested-only");
+    expect(registryAuditPolicy(auditReport({}), lock, baseline)).toMatchObject({ directAdvisories: [], passed: true });
+    withDirect(lock, "dependencies", "loose", "v2.1.0");
+    const loose = auditReport({ loose: { severity: "high", isDirect: true, via: [advisory("loose", "high")] } });
+    expect(registryAuditPolicy(loose, lock, baseline).directAdvisories).toEqual([firstId]);
+  });
+
+  it.each(["constructor", "toString", "hasOwnProperty"])("evaluates an advisory for a package named %s", name => {
+    const { lock } = captured("nested-only");
+    const report = auditReport({ [name]: { severity: "high", isDirect: false, via: [advisory(name, "high")] } });
+    expect(registryAuditPolicy(report, lock, baseline)).toMatchObject({ observedAdvisories: [firstId], directAdvisories: [] });
   });
 
   it("refuses to confirm directness against an unreadable advisory range", () => {
