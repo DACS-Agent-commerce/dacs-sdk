@@ -235,7 +235,7 @@ describe("bounded registry requests", () => {
     const request = join(root, "auth-request.json");
     const passwords: string[] = [];
     for (let run = 0; run < 2; run++) {
-      const result = runStages(`http_json_curl=()
+      const result = runStages(`http_json_curl=(--disable)
 curl() {
   while [ "$#" -gt 0 ]; do
     if [ "$1" = --data ]; then printf '%s' "$2" > "$request"; break; fi
@@ -258,7 +258,7 @@ printf '%s' "$auth_token"`, {
   });
 
   it("rejects a token outside the bearer-token character set", () => {
-    const result = runStages(`http_json_curl=()
+    const result = runStages(`http_json_curl=(--disable)
 curl() { printf '%s' '{"token":"bad\\nvalue123"}'; }
 authenticate_registry
 printf '%s' "$auth_token"`, { host_registry: "http://127.0.0.1:1", registry_log: "/dev/null" });
@@ -276,6 +276,45 @@ printf '%s' "$auth_token"`, { host_registry: "http://127.0.0.1:1", registry_log:
         expect(existsSync(join(root, "published"))).toBe(false);
       }
     });
+
+  it.each([["readiness", "wait_for_registry", "docker() { :; }"],
+    ["authentication", "authenticate_registry", "curl() { printf 'unexpected-request'; }"]])(
+    "refuses %s without the bounded HTTP settings", (_kind, stage, stubs) => {
+      const result = runStages(`${stubs}
+${stage}
+echo reached`, { host_registry: "http://127.0.0.1:1", registry_container: "fixture",
+        registry_log: join(scratch(), "registry.log") });
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(result.stdout).not.toContain("reached");
+      expect(result.stdout).not.toContain("unexpected-request");
+      expect(result.stderr).toContain("bounded registry HTTP settings are missing");
+    });
+
+  it.each([["empty", ""], ["malformed", "not-json"]])("refuses an %s readiness reply", (_kind, ping) => {
+    const result = runStages(`
+http_json_curl=(--disable)
+curl() { printf '%s' "$TEST_PING"; }
+sleep() { :; }
+docker() { :; }
+wait_for_registry
+echo ready`, { TEST_PING: ping, host_registry: "http://127.0.0.1:1", registry_container: "fixture",
+        registry_log: join(scratch(), "registry.log") });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).not.toContain("ready");
+  });
+
+  it("accepts a JSON object readiness reply", () => {
+    const result = runStages(`
+http_json_curl=(--disable)
+curl() { printf '{}'; }
+sleep() { :; }
+docker() { :; }
+wait_for_registry
+printf 'ready=%s' "$ready"`, { host_registry: "http://127.0.0.1:1", registry_container: "fixture",
+        registry_log: join(scratch(), "registry.log") });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("ready=1");
+  });
 });
 
 // The alias is admitted by the existing policy; arbitrary bridge HTTP remains refused.

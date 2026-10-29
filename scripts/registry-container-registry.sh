@@ -5,8 +5,10 @@
 # summary. They read the rehearsal's paths and run-local names (repo_root,
 # acceptance_root, artifact_stage, release_set, registry_config, registry_log,
 # registry_network, registry_container) and its run_bounded, pull_bounded and
-# docker helpers, and set the globals later stages use. A failed command piped
-# into tee is propagated regardless of the caller's pipefail setting.
+# docker helpers, plus the bounded ${http_json_curl[@]} settings from
+# scripts/bounded-http.sh. The rehearsal runs these stages under `set -eu` (the
+# sibling stage file sets `set -euo pipefail`); a failed command piped into tee
+# is propagated regardless of the caller's pipefail setting.
 
 # Runs a command with its output appended to $1. pipefail is enabled only for
 # this pipeline so a failed producer is never hidden behind tee.
@@ -14,6 +16,14 @@ run_logged() {
   local log=$1
   shift
   ( set -o pipefail; "$@" 2>&1 | tee -a "$log" )
+}
+
+# Refuses registry requests without the bounded curl settings from bounded-http.sh.
+require_bounded_http() {
+  if [ ! -v http_json_curl ] || [ "${#http_json_curl[@]}" -eq 0 ]; then
+    echo "bounded registry HTTP settings are missing; source scripts/bounded-http.sh" >&2
+    return 1
+  fi
 }
 
 # Writes the secret-free Verdaccio configuration to $registry_config.
@@ -146,9 +156,15 @@ start_registry() {
 # Waits up to 30 bounded pings for Verdaccio; exits 1 with its log otherwise.
 wait_for_registry() {
   stage=registry-ready
+  require_bounded_http || return 1
   ready=0
+  local ping
   for attempt in $(seq 1 30); do
-    if curl "${http_json_curl[@]}" "$host_registry/-/ping" >/dev/null; then
+    # Verdaccio answers its ping with a JSON object; a 200 carrying anything else
+    # (an empty or malformed body from an intermediary) is not readiness.
+    if ping=$(curl "${http_json_curl[@]}" "$host_registry/-/ping") &&
+      node -e 'const value = JSON.parse(process.argv[1]);
+        if (!value || typeof value !== "object" || Array.isArray(value)) process.exit(1)' "$ping"; then
       ready=1
       break
     fi
@@ -163,6 +179,7 @@ wait_for_registry() {
 # Creates the run-local publishing user; sets `auth_token` from a bounded reply.
 authenticate_registry() {
   stage=registry-auth
+  require_bounded_http || return 1
   local auth_password
   auth_password=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))') || return
   auth_response=$(curl "${http_json_curl[@]}" \
