@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -89,6 +89,80 @@ echo started`, { host_port_fixture: port, registry_network: "fixture", registry_
       registry_log: "/dev/null", registry_config: "/fixture/config" });
     expect(result.status, result.stderr).not.toBe(0);
     expect(result.stdout).not.toContain("started");
+  });
+});
+
+describe("stage failure propagation", () => {
+  const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version as string;
+  const stageRoots = () => {
+    const root = scratch();
+    const artifactStage = join(root, "artifacts");
+    const releaseSet = join(root, "release-set");
+    mkdirSync(artifactStage);
+    mkdirSync(releaseSet);
+    return { root, artifactStage, releaseSet };
+  };
+
+  it("fails the release-set stage when a bounded command fails", () => {
+    const { root, artifactStage, releaseSet } = stageRoots();
+    // A valid provenance record would let the old pipeline masking reach success.
+    writeFileSync(join(releaseSet, "release-provenance.json"),
+      JSON.stringify({ version: packageVersion, source: { clean: true } }));
+    const result = runStages(`
+run_bounded() { return 7; }
+build_release_set
+echo reached`, { acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).not.toContain("reached");
+  });
+
+  it("fails registry start when a pinned image pull fails", () => {
+    const root = scratch();
+    const log = join(root, "commands");
+    const result = runStages(`
+pull_bounded() { return 7; }
+docker() {
+  printf '%s\\n' "$*" >> "$log"
+  if [ "$1" = inspect ]; then echo 49152; fi
+}
+start_registry`, { log, registry_log: join(root, "registry.log"), registry_config: "/fixture/config.yaml",
+      registry_network: "fixture-network", registry_container: "fixture-registry" });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(readFileSync(log, "utf8")).not.toContain("network create");
+  });
+
+  it("fails registry start when the registry container cannot start", () => {
+    const root = scratch();
+    const log = join(root, "commands");
+    const result = runStages(`
+pull_bounded() { :; }
+docker() {
+  printf '%s\\n' "$*" >> "$log"
+  case "$1" in
+    inspect) echo 49152 ;;
+    run) return 9 ;;
+  esac
+}
+start_registry`, { log, registry_log: join(root, "registry.log"), registry_config: "/fixture/config.yaml",
+      registry_network: "fixture-network", registry_container: "fixture-registry" });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(readFileSync(log, "utf8")).not.toContain("inspect");
+  });
+
+  it("stops publishing at the first failed candidate", () => {
+    const { root, releaseSet } = stageRoots();
+    for (const name of ["kynesyslabs-dacs", "kynesyslabs-dacs-node", "create-dacs-agent"]) {
+      writeFileSync(join(releaseSet, `${name}-${packageVersion}.tgz`), "fixture");
+    }
+    const calls = join(root, "publish-calls");
+    const result = runStages(`
+node() { printf 'publish\\n' >> "$calls"; return 9; }
+publish_release_set
+echo reached`, { release_set: releaseSet, version: packageVersion, host_registry: "http://127.0.0.1:1",
+      auth_token: "fixture-auth-token", registry_log: join(root, "registry.log"), calls });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).not.toContain("reached");
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual(["publish"]);
   });
 });
 
