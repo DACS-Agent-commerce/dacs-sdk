@@ -145,7 +145,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       if (authentication) {
         request = authentication.readRequest(req.headers[SELLER_TRANSPORT_HEADER]);
-        authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId), ...(contextStep && context.attemptPresentation ? {onAuthenticatedBody:()=>context.attemptPresentation(request,body,authentication.store)} : {}) });
+        authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId), ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
+        if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
         if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
         // The context step reads the journal first and runs its admission only
         // for new work, recording the start in the reserve transaction.
@@ -157,13 +158,21 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (!['committed','commitment-held'].includes(answer?.status)) throw new SellerTransportError('commitment_readback_required',503);
           return await send(res,200,answer,request,{text:await pointed(200,JSON.stringify(answer),request.jobId,req.url)});
         }
+        const readbackOnly = authentication.readbackOnly?.(request) === true;
         if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && reportsDeliveryReady(reservation.text)) {
-          // A cached delivery-ready answer is only a record of it: the agent
-          // authenticates the payment evidence and reads the Deliverable again,
-          // and what it answers now is sent, never the saved success.
+          // A cached completed answer is only a record of it. Under a live
+          // delegation the agent authenticates the payment evidence and reads
+          // the Deliverable again, and what it answers now is sent, never the
+          // saved success. An expired delegation admits journaled readback
+          // only, so that refresh (which may publish new delivery evidence)
+          // never runs; the saved answer alone authenticates nothing, so the
+          // claim is held instead of replayed as delivered.
+          if (readbackOnly) {
+            const answer = { status: 'held', reason: 'peer_delegation_expired: a completed delivery answer is authenticated only under a live session delegation' };
+            return await send(res, 200, answer, request, { text: await pointed(200, JSON.stringify(answer), request.jobId, req.url) });
+          }
           const answer = await route(agent, body), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
-
         }
         if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
         if (reservation.disposition === 'uncertain') {
@@ -190,7 +199,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (!settled) settle(proof);
           if (settled) {
             const text = JSON.stringify(proof.value);
-            if (contextStep) await context.settled({ jobId: request.jobId });
+            if (contextStep) await context.settled({ jobId: request.jobId, hold: reservation.effectKey });
             return await send(res, 200, proof.value, request, { text: await pointed(200, text, request.jobId, req.url) });
           }
           // The second exception: the context route proved a shutdown cut its step
@@ -227,7 +236,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         try { authentication.store.finish(reservation, status, JSON.stringify(answer), retained ? { retry: true } : { noEffect: agentRefusal && !reservation.resumed }); } catch { /* durable intent remains uncertain */ }
         // The context step has ended either way: its unused write reservation
         // is released (its writes keep their own rows; it runs again only as a resume).
-        if (context !== null) try { await context.settled(reservation.contextHold); } catch { /* retain the uncertain hold; still answer below */ }
+        if (context !== null && req.url === SELLER_CONTEXT_PATH && status < 500) try { await context.settled(reservation.contextHold); } catch { /* retain the uncertain hold; still answer below */ }
       }
       try { return await send(res, status, answer, request, { close: status === 408 || status === 413 }); } catch {
         // A failed seller signer or journal cannot turn into a definite refusal.

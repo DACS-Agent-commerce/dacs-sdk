@@ -622,10 +622,19 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
                 if(page.length<CHALLENGE_PAGE_SIZE)return;
               }
             }
-            admitSessionChallenge(retained(),value,limits,id=>run('DELETE FROM seller_effects WHERE id=?',id));
+            admitSessionChallenge(retained(),value,limits);
           }
           putEffect(`session-challenge:${nonce}`, { kind: 'session-challenge', ...clone(value), attempt: null });
         });
+      },
+      // Read-only authenticated lookup of one challenge this seller issued, for
+      // binding a retained session to the exact nonce it was admitted with.
+      challenge(nonce) {
+        if (typeof nonce !== 'string' || !/^[0-9a-f]{64}$/.test(nonce)) return null;
+        const retained = effect(`session-challenge:${nonce}`);
+        if (retained === null) return null;
+        if (retained.kind !== 'session-challenge') fail('seller_state_corrupt');
+        return retained;
       },
       // The challenge as it was before this attempt (null when never issued);
       // the attempt is kept only when it is the first. A malformed first
@@ -646,13 +655,27 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         transaction(() => {
           const prior = effect(`session-challenge:${nonce}`);
           if (prior?.kind !== 'session-challenge' || typeof presentationHash !== 'string' || prior.attempt?.presentationHash !== presentationHash) fail('seller_state_corrupt');
+          // The job's one accepted presentation is reserved in this same
+          // transaction: a restart or a concurrent opener can only replay that
+          // exact presentation, never bind the job to another buyer or bundle.
+          const jobId = prior.jobId, bundleHash = accepted?.buyerBundleHash, id = `session-job:${jobId}`, bound = effect(id);
+          if (bundleHash !== undefined && typeof bundleHash !== 'string') fail('seller_state_binding_invalid');
+          if (bound && (bound.kind !== 'session-job' || bound.jobId !== jobId || bound.buyer !== prior.buyer || bound.presentationHash !== presentationHash || (bundleHash !== undefined && bound.buyerBundleHash !== bundleHash))) fail('seller_job_bound');
           putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true, ...accepted===undefined?{}:{accepted:clone(accepted)} } });
+          if (!bound) putEffect(id, { kind: 'session-job', jobId, buyer: prior.buyer, presentationHash, ...(bundleHash===undefined?{}:{buyerBundleHash:bundleHash}), sessionNonce: nonce, admittedAt: accepted?.admittedAt ?? null });
         });
       },
       // Retire an unsigned candidate's capacity while retaining its accepted
       // presentation for exact retry; retirement never permits nonce reuse.
       retireChallenge(nonce,presentationHash) {
         transaction(()=>{const prior=effect(`session-challenge:${nonce}`);if(prior?.attempt?.presentationHash!==presentationHash||prior.attempt.admitted!==true)fail('seller_state_corrupt');putEffect(`session-challenge:${nonce}`,{...prior,attempt:{...prior.attempt,retired:true}});});
+      },
+      // The accepted presentation reserved for a job, or null. Read-only.
+      jobBinding(jobId) {
+        const binding = effect(`session-job:${jobId}`);
+        if (!binding) return null;
+        if (binding.kind !== 'session-job' || binding.jobId !== jobId || typeof binding.buyer !== 'string' || typeof binding.presentationHash !== 'string') fail('seller_state_corrupt');
+        return clone(binding);
       },
       // A signature leaves signOnce only after its completion record, written
       // under the job fence. So a retained intent for the same bytes is a
