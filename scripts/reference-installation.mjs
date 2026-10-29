@@ -57,8 +57,11 @@ export function installationInventory(project) {
   return inventory;
 }
 
+// npm reads package.json as UTF-8 text and ignores a leading byte-order mark.
+const parsedJson = bytes => JSON.parse(bytes.toString("utf8").replace(/^﻿/, ""));
+
 function manifestOf(bytes) {
-  try { return { manifest: JSON.parse(bytes.toString("utf8")) }; }
+  try { return { manifest: parsedJson(bytes) }; }
   catch { return { manifest: null, unreadable: true }; }
 }
 
@@ -162,14 +165,17 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
  * verified archive bytes in fresh private storage. Returns source entries/carried modules plus one
  * kind-tagged inventory. npm decides which packages to omit; every failed archive extraction
  * refuses the reference. Errors publish no source metadata or inventory. Linked installs are
- * unsupported. Never reads the inspected installation. */
-export function referenceInstallation({ manifest, lock, readArchive, installer }) {
+ * unsupported. Never reads the inspected installation. `manifest` is the root package.json bytes:
+ * npm formats its generated hidden lockfile after them. */
+export function referenceInstallation({ manifest: manifestBytes, lock, readArchive, installer }) {
   const entries = new Map();
   const roots = new Map();
   const errors = [];
   const result = { entries: new Map(), carried: new Map(), errors, inventory: null };
   const scratch = mkdtempSync(join(tmpdir(), "dacs-npm-reference-"));
   try {
+    let manifest = null;
+    try { if (manifestBytes instanceof Uint8Array) manifest = parsedJson(Buffer.from(manifestBytes)); } catch { /* refused below */ }
     if (!isPlainObject(lock?.packages) || !isPlainObject(manifest)) throw new Error("package-lock.json has no packages map or manifest");
     if (!installer?.config || !installer.env || typeof installer.nodeModules !== "boolean" ||
         !Number.isInteger(installer.umask) || installer.umask < 0 || installer.umask > 0o777 ||
@@ -193,7 +199,7 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
         throw new Error("root dependency metadata differs: " + field);
       }
     }
-    writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
+    writeFileSync(join(project, "package.json"), manifestBytes);
     writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
     const { args, env, config } = referenceConfig(project, cache, installer);
     if (!["hoisted", "nested", "shallow"].includes(config["install-strategy"])) {
@@ -244,17 +250,7 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
         require.cache[validator].exports = (virtual, ideal) => {
           const checked = new Map([...ideal].filter(([location, node]) => virtual.has(location) ||
             !(node.optional && node.inert && !node.version && node.errors.some(error => error.code === 'ENOTCACHED'))));
-          const unresolved = [...virtual.values()].some(node => [...node.edgesOut.values()]
-            .some(edge => edge.type === 'optional' && !edge.to));
-          if (checked.size !== ideal.size || unresolved) {
-            const manifest = JSON.parse(fs.readFileSync('package.json'));
-            const lock = JSON.parse(fs.readFileSync('package-lock.json'));
-            for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'peerDependenciesMeta']) {
-              if (!require('node:util').isDeepStrictEqual(manifest[field] ?? {}, lock.packages['']?.[field] ?? {})) {
-                throw Error('root dependency metadata differs: ' + field);
-              }
-            }
-          }
+          // The root declarations were already compared with the lock before replay.
           return validate(virtual, checked);
         };
       }

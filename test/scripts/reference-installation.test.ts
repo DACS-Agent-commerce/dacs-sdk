@@ -14,7 +14,7 @@ const { ARCHIVE_LIMITS, cachedArchive, npmToolchain, runNpmNode } = await import
 const referenceModulePath = "../../scripts/reference-installation.mjs";
 const { referenceInstallation, installationDifferences, installationInventory, npmInstallContract } = await import(referenceModulePath);
 function installationClosure(project: string, lock: unknown, readArchive: unknown) {
-  return referenceInstallation({ manifest: JSON.parse(readFileSync(join(project, "package.json"), "utf8")),
+  return referenceInstallation({ manifest: readFileSync(join(project, "package.json")),
     lock, readArchive, installer: npmInstallContract(project) });
 }
 
@@ -151,7 +151,7 @@ describe("reference exclusive options", { timeout: 60_000 }, () => {
     writeFileSync(join(fixture.project, ".npmrc"), `bin-links=false\n${config}`);
     const installer = npmInstallContract(fixture.project);
     expect(installer.config["bin-links"]).toBe(false);
-    const reference = referenceInstallation({ manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+    const reference = referenceInstallation({ manifest: readFileSync(join(fixture.project, "package.json")),
       lock: fixture.lock, installer, readArchive: (_location: string, locked: { integrity: string }) =>
         cachedArchive(join(fixture.project, ".npm"), locked.integrity) });
     expect(reference.errors).toEqual([]);
@@ -816,7 +816,7 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
       try {
         expect(installer.umask).toBe(0o077);
         expect(installer.nodeModulesMode).toBe(0o755);
-        const reference = referenceInstallation({ manifest: root, lock, installer,
+        const reference = referenceInstallation({ manifest: readFileSync(join(project, "package.json")), lock, installer,
           readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity) });
         expect(reference.errors).toEqual([]);
         expect(installationDifferences(project, reference)).toEqual([]);
@@ -855,7 +855,7 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
     const toolchain = npmToolchain();
     runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
       `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
-    const reference = referenceInstallation({ manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+    const reference = referenceInstallation({ manifest: readFileSync(join(fixture.project, "package.json")),
       lock: fixture.lock, installer, readArchive: (_location: string, entry: { integrity: string }) =>
         cachedArchive(join(fixture.project, ".npm"), entry.integrity) });
     expect(reference.errors).toEqual([]);
@@ -865,7 +865,7 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
   it("publishes no reference after bad callback bytes or an offline replay failure", () => {
     const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
     const installer = npmInstallContract(fixture.project);
-    const input = { manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")), lock: fixture.lock, installer };
+    const input = { manifest: readFileSync(join(fixture.project, "package.json")), lock: fixture.lock, installer };
     const wrong = referenceInstallation({ ...input, readArchive: () => packTarball({ "package.json": manifest("other") }) });
     expect(wrong.inventory).toBeNull();
     expect(wrong.errors.join()).toContain("does not match its integrity");
@@ -879,7 +879,7 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
   it("requires the explicit platform and configuration contract", () => {
     const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
     const installer = npmInstallContract(fixture.project);
-    const reference = referenceInstallation({ manifest: {}, lock: fixture.lock, readArchive: () => Buffer.alloc(0),
+    const reference = referenceInstallation({ manifest: Buffer.from("{}"), lock: fixture.lock, readArchive: () => Buffer.alloc(0),
       installer: { ...installer, toolchain: { ...installer.toolchain, platform: "another-platform" } } });
     expect(reference.inventory).toBeNull();
     expect(reference.errors.join()).toContain("explicit matching npm/platform/configuration contract");
@@ -889,7 +889,7 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
     const fixture = simulatedInstall({ "node_modules/a": [{ optional: true, os: [process.platform], cpu: [process.arch] },
       { "package.json": manifest("a") }] });
     writeFileSync(join(fixture.project, ".npmrc"), config);
-    const input = { manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+    const input = { manifest: readFileSync(join(fixture.project, "package.json")),
       lock: fixture.lock, installer: npmInstallContract(fixture.project) };
     const complete = referenceInstallation({ ...input,
       readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(join(fixture.project, ".npm"), entry.integrity) });
@@ -907,7 +907,7 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
     "allows an unavailable optional source excluded by npm's environment checks: %j", constraints => {
       const fixture = simulatedInstall({ "node_modules/a": [{ optional: true, ...constraints }, null] });
       writeFileSync(join(fixture.project, ".npmrc"), "");
-      const reference = referenceInstallation({ manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+      const reference = referenceInstallation({ manifest: readFileSync(join(fixture.project, "package.json")),
         lock: fixture.lock, installer: npmInstallContract(fixture.project), readArchive: () => { throw new Error("not acquired"); } });
       expect(reference.errors).toEqual([]);
       expect(reference.entries.get("node_modules/a").present).toBe(false);
@@ -962,7 +962,7 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
       import { cachedArchive } from ${JSON.stringify(archives)};
       import { readFileSync } from 'node:fs';
       const project = process.argv[1];
-      const reference = referenceInstallation({manifest: JSON.parse(readFileSync(project + '/package.json')),
+      const reference = referenceInstallation({manifest: readFileSync(project + '/package.json'),
         lock: JSON.parse(readFileSync(project + '/package-lock.json')), installer: npmInstallContract(project),
         readArchive: (_location, entry) => cachedArchive(project + '/.npm', entry.integrity)});
       if (reference.errors.length) throw Error(reference.errors.join('\\n'));
@@ -1026,7 +1026,7 @@ it.each([
   writeFileSync(join(fixture.project, ".npmrc"), config + "npm-version=0.0.0\n");
   const installer = npmInstallContract(fixture.project);
   installer.config["npm-version"] = "0.0.0";
-  const reference = referenceInstallation({ manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")),
+  const reference = referenceInstallation({ manifest: readFileSync(join(fixture.project, "package.json")),
     lock: fixture.lock, installer, readArchive: () => { throw Error("source unavailable"); } });
   expect(reference.inventory).toBeNull();
   expect(reference.errors.join()).toContain("npm-version differs from selected npm");
@@ -1049,7 +1049,7 @@ describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }
     }
     writeFileSync(join(fixture.project, ".npmrc"), config);
     const original = readFileSync(join(fixture.project, "package-lock.json"), "utf8");
-    const input = { manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")), lock: fixture.lock,
+    const input = { manifest: readFileSync(join(fixture.project, "package.json")), lock: fixture.lock,
       installer: npmInstallContract(fixture.project), readArchive: (_location: string, entry: { integrity: string }) =>
         cachedArchive(join(fixture.project, ".npm"), entry.integrity) };
     return { fixture, original, input };
@@ -1112,9 +1112,9 @@ describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }
     root.optionalDependencies = root.dependencies;
     delete root.dependencies;
     parent.optional = true;
-    input.manifest = { ...root };
+    input.manifest = Buffer.from(JSON.stringify(root));
     const toolchain = input.installer.toolchain;
-    writeFileSync(join(fixture.project, "package.json"), JSON.stringify(input.manifest));
+    writeFileSync(join(fixture.project, "package.json"), input.manifest);
     writeFileSync(join(fixture.project, "package-lock.json"), JSON.stringify(input.lock));
     rmSync(join(fixture.project, "node_modules"), { recursive: true, force: true });
     // The independent install starts without node_modules; replay the same input.
@@ -1136,7 +1136,9 @@ describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }
 
   it("refuses stale root declarations before projecting missing optional edges", () => {
     const { input } = incomplete("", "absent");
-    input.manifest.optionalDependencies.absent = "^2.0.0";
+    const stale = JSON.parse(input.manifest.toString());
+    stale.optionalDependencies.absent = "^2.0.0";
+    input.manifest = Buffer.from(JSON.stringify(stale));
     const reference = referenceInstallation(input);
     expect(reference.inventory).toBeNull();
     expect(reference.errors.join()).toContain("root dependency metadata differs: optionalDependencies");
@@ -1159,7 +1161,7 @@ describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }
 
 describe("observed archive replay", { timeout: 60_000 }, () => {
   const inputFor = (fixture: ReturnType<typeof simulatedInstall>) => ({
-    manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")), lock: fixture.lock,
+    manifest: readFileSync(join(fixture.project, "package.json")), lock: fixture.lock,
     installer: npmInstallContract(fixture.project),
     readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(join(fixture.project, ".npm"), entry.integrity),
   });
@@ -1206,8 +1208,8 @@ describe("observed archive replay", { timeout: 60_000 }, () => {
   it("refuses stale optional flags after a dependency moves to dev", () => {
     const fixture = simulatedInstall({ "node_modules/a": [{ optional: true }, { "package.json": manifest("a") }] });
     const input = inputFor(fixture);
-    input.manifest.devDependencies = input.manifest.optionalDependencies;
-    delete input.manifest.optionalDependencies;
+    const { optionalDependencies, ...moved } = JSON.parse(input.manifest.toString());
+    input.manifest = Buffer.from(JSON.stringify({ ...moved, devDependencies: optionalDependencies }));
     refused(referenceInstallation(input), "root dependency metadata differs");
   });
 
@@ -1255,7 +1257,7 @@ describe("observed archive replay", { timeout: 60_000 }, () => {
       const installer = npmInstallContract(project);
       const installed = await npmCi(project, server.registry, cache);
       expect(installed.status, installed.output).toBe(0);
-      const input = { manifest: root, lock, installer, readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity) };
+      const input = { manifest: readFileSync(join(project, "package.json")), lock, installer, readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity) };
       const reference = referenceInstallation(input);
       expect(reference.errors).toEqual([]);
       expect(installationDifferences(project, reference)).toEqual([]);
@@ -1283,7 +1285,7 @@ describe("observed archive replay", { timeout: 60_000 }, () => {
       const installed = await npmCi(project, server.registry, cache);
       expect(installed.status, installed.output).toBe(0);
       expect(existsSync(join(project, "node_modules/a/package.json"))).toBe(true);
-      const input = { manifest: root, lock, installer: npmInstallContract(project), readArchive: () => archive };
+      const input = { manifest: readFileSync(join(project, "package.json")), lock, installer: npmInstallContract(project), readArchive: () => archive };
       const reference = referenceInstallation(input);
       expect(reference.errors).toEqual([]);
       expect(installationDifferences(project, reference)).toEqual([]);
@@ -1342,5 +1344,87 @@ describe("observed archive replay", { timeout: 60_000 }, () => {
     expect(reference.inventory.get("node_modules/a")?.mode).toBe(0o777 & ~input.installer.umask);
     expect(process.umask()).toBe(before);
     expect(readdirSync(workerScratch)).toEqual([]);
+  });
+});
+
+// npm formats node_modules/.package-lock.json after the root package.json text.
+describe("root package.json bytes", { timeout: 60_000 }, () => {
+  const bom = "﻿";
+  const twoSpace = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
+  const tab = (value: unknown) => JSON.stringify(value, null, "\t") + "\n";
+  const offlineNpm = (project: string, command: string) => {
+    const toolchain = npmToolchain();
+    runNpmNode(toolchain, [toolchain.cli, command, "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+      `--cache=${join(project, ".npm")}`], { cwd: project });
+  };
+
+  it.each([
+    ["tab", tab, null],
+    ["four-space", (value: unknown) => JSON.stringify(value, null, 4) + "\n", null],
+    ["CRLF", (value: unknown) => twoSpace(value).replace(/\n/g, "\r\n"), null],
+    ["BOM and tab", (value: unknown) => bom + tab(value), null],
+    ["two-space", twoSpace, null],
+    ["compact", (value: unknown) => JSON.stringify(value), null],
+    ["BOM and two-space", (value: unknown) => bom + twoSpace(value), null],
+    ["compact with a tab CRLF lock", (value: unknown) => JSON.stringify(value), (value: unknown) => tab(value).replace(/\n/g, "\r\n")],
+  ] as const)("matches a real npm ci for a %s manifest", (_format, format, lockFormat) => {
+    const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
+    const bytes = Buffer.from(format(fixture.lock.packages[""]));
+    writeFileSync(join(fixture.project, "package.json"), bytes);
+    if (lockFormat) writeFileSync(join(fixture.project, "package-lock.json"), lockFormat(fixture.lock));
+    rmSync(join(fixture.project, "node_modules"), { recursive: true });
+    offlineNpm(fixture.project, "ci");
+    const reference = installationClosure(fixture.project, fixture.lock,
+      (_location: string, entry: { integrity: string }) => cachedArchive(join(fixture.project, ".npm"), entry.integrity));
+    expect(reference.errors).toEqual([]);
+    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+    expect(readFileSync(join(fixture.project, "package.json"))).toEqual(bytes);
+  });
+
+  it("replays an unresolved optional edge under a BOM and tab manifest", () => {
+    const fixture = simulatedInstall({});
+    const root = fixture.lock.packages[""];
+    if (!root) throw Error("missing fixture root");
+    Object.assign(root, { optionalDependencies: { absent: "^1.0.0" } });
+    writeFileSync(join(fixture.project, "package.json"), bom + tab(root));
+    writeFileSync(join(fixture.project, "package-lock.json"), JSON.stringify(fixture.lock));
+    writeFileSync(join(fixture.project, ".npmrc"), "omit=optional\n");
+    offlineNpm(fixture.project, "install");
+    const lock = JSON.parse(readFileSync(join(fixture.project, "package-lock.json"), "utf8"));
+    const bytes = readFileSync(join(fixture.project, "package.json"));
+    expect(bytes.toString().startsWith(bom + "{\n\t")).toBe(true);
+    const reference = installationClosure(fixture.project, lock, () => { throw Error("no archives"); });
+    expect(reference.errors).toEqual([]);
+    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+  });
+
+  it.each([
+    ["a parsed object", { name: "consumer", version: "1.0.0", dependencies: {} }],
+    ["unparseable bytes", Buffer.from("{")],
+    ["an array", Buffer.from("[]")],
+  ])("refuses %s as the root manifest", (_case, root) => {
+    const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
+    const reference = referenceInstallation({ manifest: root, lock: fixture.lock, installer: npmInstallContract(fixture.project),
+      readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(join(fixture.project, ".npm"), entry.integrity) });
+    expect(reference.errors.join()).toContain("no packages map or manifest");
+    expect(reference.inventory).toBeNull();
+    expect(reference.entries.size).toBe(0);
+  });
+
+  it("reads an archive manifest that starts with a byte-order mark as npm does", () => {
+    const project = temporaryDirectory();
+    const archive = packTarball({ "package.json": bom + manifest("a") });
+    cacheArchive(join(project, ".npm"), archive);
+    const root = { name: "consumer", version: "1.0.0", dependencies: { a: "1.0.0" } };
+    const lock = { lockfileVersion: 3, packages: { "": root,
+      "node_modules/a": { version: "1.0.0", resolved: "https://registry.invalid/a.tgz", integrity: sri(archive) } } };
+    writeFileSync(join(project, "package.json"), JSON.stringify(root));
+    writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+    writeFileSync(join(project, ".npmrc"), "");
+    offlineNpm(project, "ci");
+    const reference = installationClosure(project, lock, () => archive);
+    expect(reference.errors).toEqual([]);
+    expect(installationDifferences(project, reference)).toEqual([]);
+    expect(reference.entries.get("node_modules/a").manifest).toEqual({ name: "a", version: "1.0.0" });
   });
 });
