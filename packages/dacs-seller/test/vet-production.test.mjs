@@ -18,6 +18,17 @@ for(const length of [32,33,64,255,256,300])test(`real staged bilateral engine ac
 for(const length of [31])test(`nonce length ${length} refuses before signing`,async()=>{
  const f=productionFixture();f.controls.nonce='a'.repeat(length);await assert.rejects(f.run(),e=>e.code==='seller_challenge_invalid');assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);f.base.close();
 });
+test('a buyer challenge already presented for another job is refused',async()=>{
+ const f=productionFixture(),OTHER='01J8N4YV7YVYQ4DB7M8T4C7W0B';
+ // The buyer issues the same one-use nonce for both jobs; the seller's own
+ // durable row for the first job must refuse to present it again.
+ f.controls.nonce='a'.repeat(32);
+ const first=await f.run();assert.equal(first.sellerVet.record.overallDecision,'pass');
+ await assert.rejects(f.run(f.input(OTHER)),e=>e.code==='seller_challenge_reused');
+ assert.equal(f.seen.length,1,'the reused challenge was never evaluated');
+ assert.equal(f.local.writes.length,2,'the refused job wrote no anchor');
+ f.base.close();
+});
 test('buyer result is recovered after a lost seller checkpoint without consuming its challenge again',async()=>{
  const f=productionFixture();f.controls.failCounterpartySave=true;await assert.rejects(f.run(),/counterparty checkpoint lost/);assert.equal(f.seen.length,1);
  const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(f.seen.length,1);assert.equal(f.local.writes.length,2);f.base.close();
