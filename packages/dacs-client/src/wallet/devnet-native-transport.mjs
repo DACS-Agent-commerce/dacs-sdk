@@ -935,8 +935,12 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   async function passiveRead(hash, signal) {
     const issued=await journal.get(intent(hash));
     const retained=Boolean(issued?.hash===hash && issued.signedTransaction?.hash===hash && issued.signedTransaction.content?.type==='native' && issued.networkBinding);
-    const reads=[]; let body;
-    const read=(message,data)=>{ const answer=node(message,data,{signal}); reads.push(answer); return answer; };
+    const reads=[]; let body, nestedEnvelope=false;
+    const refuseEnvelope=()=>fail('readback_unverified','the passive observation has an additional response envelope');
+    const read=(message,data)=>{ const answer=node(message,data,{signal}).then(value=>{
+      if(message!=='getTxByHash' && value && Object.hasOwn(value,'response')) { nestedEnvelope=true; refuseEnvelope(); }
+      return value;
+    }); reads.push(answer); return answer; };
     const client={ getTransactionStatus:(h)=>read('getTransactionStatus',{hash:h}), getBlockByNumber:(n)=>read('getBlockByNumber',{blockNumber:n}),
       getTxByHash:async(h)=>{ const tx=await read('getTxByHash',{hash:h}); body=clone(tx); return tx; } };
     const result=await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>{ signal.throwIfAborted(); return fenced(async()=>{
@@ -949,6 +953,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       if(!sameContext(await context(),c)) fail('connection_changed','the connection changed during passive observation');
       return observation;
     }); });
+    // The core converts read errors to observations; keep this boundary's refusal after draining reads.
+    if(nestedEnvelope) refuseEnvelope();
     if(result.status!=='included') return result;
     if(!retained || body===undefined) fail('readback_unverified','the included native transfer has no retained original signed transaction');
     // node() removed the RPC envelope; the core must interpret this same body.
