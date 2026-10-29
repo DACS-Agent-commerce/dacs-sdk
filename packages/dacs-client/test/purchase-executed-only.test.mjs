@@ -23,7 +23,7 @@ function world(t,{observation=INCLUDED,body={},native=false,classifier,settlemen
  t.after(()=>{db.close();rmSync(dir,{recursive:true,force:true});});
  const ops=createOperationStore({db,handoffSecret:'TEST-'.repeat(8)}),coordinates=createCoordinateStore({db}),reads=[];
  db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-buyer','TEST','TEST-buyer',new Date().toISOString());
- const chain={network:'testnet',pinnedIdentity:CHAIN,rpcOrigin:'https://rpc.invalid',evidenceMode:'TEST-stub',observer:'TEST-host-reader (single-node consistent view; not a validator-quorum proof)',networkIdentity:async()=>({identity:CHAIN,mode:'public-chain-read'}),
+ const chain={network:'testnet',pinnedIdentity:CHAIN,rpcOrigin:'https://rpc.invalid',evidenceMode:'TEST-stub',networkIdentity:async()=>({identity:CHAIN,mode:'public-chain-read'}),
   async observeTransfer(hash){reads.push('observe');return {...observation,txHash:hash};},
   async getTransaction(hash){reads.push('body');return {hash,status:'confirmed',blockNumber:10,content:{from:WALLET,nonce:7},...body};}};
  const terms={buyer:{wallet:WALLET},seller:{payee:PAYEE,claim:'TEST-seller'},price:{amountOs:AMOUNT,amount:'2.5'},listing:{listingId:'TEST-listing',version:1,contentHash:CHAIN},network:'testnet',rail:'demos-native:DEM',domain:{network:'testnet',rail:'demos-native:DEM',mode:'public-chain-read',chainIdentity:CHAIN},...(native?NATIVE_TERMS:{})};
@@ -47,11 +47,11 @@ function assertUnsettled(w,status) {
  assert.equal(s.coordinate.reportedTxHash,HASH,'the same hash stays retained for readback');
 }
 
-test('executed-only control: a confirmed body in the observed block settles, labelled a single-node observation',async t=>{
+test('executed-only control: a confirmed body in the observed block settles, attributed to its undeclared host reader',async t=>{
  const w=world(t),{operation,verification}=await w.verify();
  assert.equal(verification.outcome,'verified');assert.equal(operation.status,'settled_verified');
  assert.equal(verification.txStatus,'confirmed');assert.equal(verification.slotConsumed,true);
- assert.match(verification.observer,/single-node consistent view; not a validator-quorum proof/);
+ assert.equal(verification.observer,'host-supplied chain reader (observer not declared)');
  assert.ok(w.state().coordinate.verifiedAt);assert.equal(w.state().consumed,1);
 });
 
