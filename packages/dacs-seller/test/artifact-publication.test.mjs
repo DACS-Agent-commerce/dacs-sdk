@@ -4,6 +4,7 @@ import { sha256Hex, contentHash, canonicalize, finalityCommitmentAddress } from 
 import { anchorFixture } from './helpers/anchor-isolated-fixture.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
 import { seller, JOB, protocolFixture } from './helpers/protocol-fixture.mjs';
+import { fixtureListing } from './fixtures/listings.mjs';
 import { createDevnetPurchasedReportProducer } from '../src/devnet-demo/deliverable.mjs';
 
 for (const allowed of [true, false]) test(`fresh publication awaits durable authorization ${allowed}`, async () => {
@@ -204,4 +205,15 @@ for(const field of ['projection','signature'])test(`strict JSON admission includ
  const projection={hash,content,signature:{type:'ed25519',data:`0x${seller.signBytes(Buffer.from(hash)).toString('hex')}`}};
  (field==='projection'?projection:projection.signature).TESTomitted=undefined;
  assert.equal(await f.open().verifyReceipt({logicalAddress:finalityCommitmentAddress(JOB),artifact,artifactKind:'FinalityCommitmentRecord',receipt:{transactionRef:{value:hash}},signedProjection:projection,fresh:true}),'invalid');assert.equal(reads,0);
+});
+
+for (const shape of ['list', 'depth', 'supported']) test(`publication checks projection ${shape} budget before intent and wallet`, async () => {
+  const f = await anchorFixture({artifactKinds: ['Listing']});
+  let extra = shape === 'list' ? Array(4097).fill(0) : Array(4096).fill(0);
+  if (shape === 'depth') for (let i = 0; i < 30; i++) extra = {nested: extra};
+  const pipeline = fixtureListing(seller).pipeline; pipeline[2].parameters.extra = extra;
+  const artifact = fixtureListing(seller, {pipeline});
+  const publish = () => f.open().publish({logicalAddress: 'dacs1:listing:fixture-report:1', artifact, artifactKind: 'Listing'});
+  if (shape === 'supported') { await publish(); assert.equal(f.captured.length, 1); }
+  else { await assert.rejects(publish(), {code: 'invalid'}); assert.equal(f.captured.length, 0); assert.equal(f.journal.rows.size, 0); }
 });
