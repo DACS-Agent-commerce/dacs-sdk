@@ -39,7 +39,7 @@ const presentWithout = (party, presentedAt) => {
   return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 
-async function world(t, { listingChanges = () => {} } = {}) {
+async function world(t, { listingChanges = () => {}, sellerRequirement = null } = {}) {
   const sellerKey = key(), buyerKey = key(), now = 1780000000000, reached = [], steward = railSteward();
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
@@ -82,15 +82,15 @@ async function world(t, { listingChanges = () => {} } = {}) {
   // composite addresses.
   const synthetic = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
   const vetted = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
-    seller: { ...synthetic.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: listing.buyerRequirement }) } };
+    seller: { ...synthetic.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: sellerRequirement ?? listing.buyerRequirement }) } };
   // The not-performed references with each counterparty verifier named, as a context could return them.
   const signedSynthetic = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: { ...synthetic.buyer.vetRecordRef, signer: sellerKey.claim } },
     seller: { ...synthetic.seller, vetRecordRef: { ...synthetic.seller.vetRecordRef, signer: buyerKey.claim } } };
   // The delivery runner's Vet requirement invocations for a context input: one
   // per party record, evaluating that party, naming its counterparty verifier
-  // and the requirement the record hashes (the Listing's buyer requirement).
+  // and the corresponding requirement the record hashes.
   const invocationsFor = (input) => [['buyer', buyerKey.claim, sellerKey.claim], ['seller', sellerKey.claim, buyerKey.claim]].map(([role, evaluatedParty, verifier]) => ({
-    vetRecordRef: structuredClone(input[role].vetRecordRef), evaluatedParty, requirement: structuredClone(listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] }));
+    vetRecordRef: structuredClone(input[role].vetRecordRef), evaluatedParty, requirement: structuredClone(role === 'seller' ? sellerRequirement ?? listing.buyerRequirement : listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] }));
   // The seller wallet's journal over wallet primitives that refuse: the native
   // settlement chain takes the evidence anchor and its reconciliation only from
   // one createPaymentEvidenceWalletJournal (`journal()`), in the agent as in the host.
@@ -126,19 +126,19 @@ const refused = async (work) => { try { await work(); return null; } catch (erro
 const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
 const notCalled = async () => { throw new Error('TEST not called'); };
 
-test('a native agent without the Vet context and delivery chain signs, commits and takes payment for nothing', async (t) => {
+test('a native agent without the Vet context opens no session and takes no payment', async (t) => {
   const w = await world(t);
   const agent = await w.agent(w.capabilities);
   t.after(() => agent.close());
   assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.synthetic))), { code: 'vet_context_required', status: 503 });
   assert.equal(agent.stageOf(w.jobId), null, 'no session is opened for the refused proposal');
-  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), { code: 'unknown_job', status: 404 });
   assert.deepEqual(await refused(() => agent.submitPayment(w.payment)), UNAVAILABLE);
   assert.deepEqual(await refused(() => agent.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), UNAVAILABLE);
   assert.deepEqual(w.reached, []);
 });
 
-test('native payment evidence and the Vet context without native delivery sign the vetted Agreement but commit and take payment for nothing', async (t) => {
+test('native commitment reaches Agreement readback without native delivery while payment stays unavailable', async (t) => {
   const w = await world(t);
   const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext() });
   t.after(() => agent.close());
@@ -147,9 +147,9 @@ test('native payment evidence and the Vet context without native delivery sign t
   assert.notEqual(unvetted?.code, 'signed', 'the synthetic Vet references are never signed');
   const vetted = await agent.receiveProposal(await w.proposalFor(w.vetted));
   assert.equal(vetted.disposition, 'complete');
-  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), { code: 'substrate_unavailable', status: 503 });
   assert.deepEqual(await refused(() => agent.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), UNAVAILABLE);
-  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), [], 'no Agreement read, publication, transfer observation or delivery');
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), ['readAgreement'], 'commitment reads the Agreement; payment makes no external call');
 });
 
 test('the complete native profile takes payment only as native payment evidence, before any transfer is observed', async (t) => {
@@ -643,7 +643,8 @@ test('a passing, counterparty-signed Vet record over another requirement is not 
 // bundle's presentation verifier and the registry snapshot the operator pinned
 // for the job (PCR-6, CRQ-1).
 const presenceRequirement = (scheme) => ({ requirementVersion: '1', required: [{ scheme, verificationRequired: false }], preferredPresentation: 'any' });
-const presenceWorld = (t, scheme = 'did') => world(t, { listingChanges: (draft) => { draft.buyerRequirement = presenceRequirement(scheme); } });
+const presenceWorld = (t, scheme = 'did') => world(t, { listingChanges: (draft) => { draft.buyerRequirement = presenceRequirement(scheme); },
+  sellerRequirement: { requirementVersion: '1', required: [], preferredPresentation: 'any' } });
 const signPresence = async (w, admission = w.admission.sessionAdmission) => {
   const agent = await w.agent(complete(w, { durableDirectory: w.dir(), sessionAdmission: admission, demDeliveryContext: w.chain.demDeliveryContext() }));
   try { return await agent.receiveProposal(await w.proposalFor(w.vetted)); } finally { agent.close(); }
