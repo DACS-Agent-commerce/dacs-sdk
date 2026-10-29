@@ -53,26 +53,9 @@ function bundleAuthentic(bundle) {
   } catch { return false; }
 }
 
-// listing: the seller's own verified Listing. resolveBuyer: its context
-// provider. assertBuyerAccess(buyerClaim): the closed-access guard.
-// knownJob(jobId, buyerClaim): true only for a job the seller's app prepared
-// for that buyer; null for a seller with no app (vetting the buyer only after
-// a buyer-written artifact for the job is visible is the follow-up for that case).
-// admitWrites({jobId, effect, writes, hold}): null after it took a durable
-// reservation named `hold` for that many seller writes of the context effect,
-// or the reason it could not.
-// releaseWrites({jobId, hold}): ends what is unused of that reservation (all
-// of the job's when `hold` is absent) once the step has ended.
-// recover(body): the read-only reconciliation of an uncertain step (both Vet
-// records read back and verified), or null.
-// resumable(body): read only, for an uncertain step recover could not answer:
-// {writes} when a shutdown cut it before anything of it was signed or sent
-// (agreement-context.mjs resumableBuyer), the Vet writes still to make; null
-// otherwise. Without it an uncertain step is never run again.
-// writable(jobId, buyerClaim): the purchase check the provider runs again
-// right before each Vet signature and anchor intent (agreement-context.mjs,
-// as main's in-process path does); synchronous, true or why no new write may
-// start. All write-policy, purchase and recovery capabilities are mandatory.
+// Seller context policy and recovery ports are operator capabilities. Admission
+// owns its exact pending reservation until a hold is returned to HTTP; failures
+// release unused holds, clear fresh work, and retain resumed uncertainty.
 export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAccess, knownJob = null, writable, admitWrites, releaseWrites,
   recover, resumable = null, limits = SELLER_CONTEXT_LIMITS, now = () => Date.now(), log = line => process.stderr.write(line) }) {
   const support = purchaseSupport(listing);
@@ -87,6 +70,21 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
     try { await releaseWrites({jobId,hold}); }
     catch(error) { log(`context hold release failed: ${jobId} ${hold} ${String(error?.code??'error').slice(0,64)}\n`); }
   };
+  async function admitOwned(reservation,request,store,writes) {
+    const {jobId}=request,effect=reservation.effectKey,resumed=reservation.resumed===true;
+    const hold=resumed?`${effect}:${reservation.owner}`:effect;
+    let problem,failure;
+    try { problem=await admitWrites({jobId,effect,writes,hold}); }
+    catch(cause) { failure={cause};problem='operation_uncertain'; }
+    if(problem!==null) {
+      await release(jobId,hold);
+      store.finish(reservation,failure||resumed?503:409,JSON.stringify({error:failure?'operation_uncertain':'seller_budget_refused'}),{noEffect:!resumed});
+      if(failure)throw failure.cause;
+      if(resumed)return null;
+      refuse('seller_budget_refused');
+    }
+    return {...reservation,contextHold:{jobId,hold}};
+  }
   // The unpaid-start limits, read inside the reserve transaction.
   const admitStart = (request) => ({ starts }) => {
     const at = now();
@@ -149,12 +147,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
         return verifiedReplay(body,reservation);
       }
       if(reservation.disposition!=='perform')return reservation;
-      if(await admitWrites({jobId:request.jobId,effect,writes:VET_WRITES,hold:effect})!==null) {
-        store.finish(reservation,409,JSON.stringify({error:'seller_budget_refused'}),{noEffect:true});
-        await release(request.jobId,effect);
-        refuse('seller_budget_refused');
-      }
-      return {...reservation,contextHold:{jobId:request.jobId,hold:effect}};
+      return admitOwned(reservation,request,store,VET_WRITES);
     },
     perform: (body) => {
       requireJobId(body?.scope?.jobId);
@@ -190,12 +183,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       let resumed;
       try { resumed=store.resume(reservation,request); } catch { return null; }
       await release(request.jobId,resumed.effectKey);
-      const hold=`${resumed.effectKey}:${resumed.owner}`;
-      if(await admitWrites({jobId:request.jobId,effect:resumed.effectKey,writes,hold})!==null) {
-        store.finish(resumed,503,JSON.stringify({error:'seller_budget_refused'}));
-        return null;
-      }
-      return {...resumed,contextHold:{jobId:request.jobId,hold}};
+      return admitOwned(resumed,request,store,writes);
     },
   });
 }
