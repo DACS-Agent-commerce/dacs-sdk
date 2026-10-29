@@ -100,7 +100,7 @@ function referenceConfig(project, cache, contract) {
       throw new Error("npm configuration did not round-trip: " + key);
     }
   }
-  return { args, env };
+  return { args, env, config: restored };
 }
 
 function seedArchive(cache, bytes) {
@@ -206,13 +206,43 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
     const excluded = excludedSources(unavailable, entries, installer, scratch, manifest, lock);
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
-    const { args, env } = referenceConfig(project, cache, installer);
+    const { args, env, config } = referenceConfig(project, cache, installer);
+    const configFile = join(scratch, "config.json");
+    writeFileSync(configFile, JSON.stringify(config));
     try {
       // Observe npm's warning channel even if the captured log configuration is quiet.
       const command = `process.on('log', (level, title, ...text) => {
         if ((level === 'warn' || level === 'error') && title === 'tar') throw Error(text.join(' '));
-      }); require(process.argv[1]);`;
-      runNpmNode(installer.toolchain, ["-e", command, ...args], { cwd: project, env });
+      });
+      const fs = require('node:fs');
+      const configFile = process.argv.splice(1, 1)[0];
+      const requireNpm = require('node:module').createRequire(process.argv[1]);
+      const options = requireNpm('@npmcli/config/lib/definitions').flatten(JSON.parse(fs.readFileSync(configFile)));
+      if (options.omit.includes('optional')) {
+        const validator = requireNpm.resolve('../lib/utils/validate-lockfile.js');
+        const validate = require(validator);
+        // npm 11 retains failed optional lookups as inert, versionless nodes.
+        // They cannot install under omit=optional. Keep npm's original trees,
+        // metadata and reifier; exclude only those failures from lock validation.
+        require.cache[validator].exports = (virtual, ideal) => {
+          const checked = new Map([...ideal].filter(([location, node]) => virtual.has(location) ||
+            !(node.optional && node.inert && !node.version && node.errors.some(error => error.code === 'ENOTCACHED'))));
+          const unresolved = [...virtual.values()].some(node => [...node.edgesOut.values()]
+            .some(edge => edge.type === 'optional' && !edge.to));
+          if (checked.size !== ideal.size || unresolved) {
+            const manifest = JSON.parse(fs.readFileSync('package.json'));
+            const lock = JSON.parse(fs.readFileSync('package-lock.json'));
+            for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'peerDependenciesMeta']) {
+              if (!require('node:util').isDeepStrictEqual(manifest[field] ?? {}, lock.packages['']?.[field] ?? {})) {
+                throw Error('root dependency metadata differs: ' + field);
+              }
+            }
+          }
+          return validate(virtual, checked);
+        };
+      }
+      require(process.argv[1]);`;
+      runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env });
     } catch (cause) {
       const missing = [...unavailable].map(([location, error]) => `${location}: ${error.message}`).join("; ");
       throw new Error(cause.message + (missing ? `; source reads: ${missing}` : ""), { cause });
