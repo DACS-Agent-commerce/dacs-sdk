@@ -5450,6 +5450,22 @@
         }
       ],
       "sha": "70f99dc238a697b83426447fc816709dcb19f22d"
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the merged part 13 package snapshot",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/sqlite-statement-boundary.mjs",
+          "before": "336df0f1e4d8723d137c5b659c342792f51d81a7",
+          "after": "336df0f1e4d8723d137c5b659c342792f51d81a7"
+        },
+        {
+          "path": "packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs",
+          "before": "cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8",
+          "after": "cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8"
+        }
+      ]
     }
   ]
 }

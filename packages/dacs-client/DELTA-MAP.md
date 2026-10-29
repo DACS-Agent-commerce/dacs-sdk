@@ -847,6 +847,9 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` | f11b772c4912bbd399a17ebc0b7cf061de341ce6 |
 | | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8 |
 | | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` | bb118dd861e66c1f7f15d9268ae8e721103efd9d |
+| D11 | fix(client): D11 record the merged part 13 package snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 336df0f1e4d8723d137c5b659c342792f51d81a7 |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8 |
 
 ## Complete commit and file inventory
 
@@ -3080,6 +3083,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | ac28900dd47d144670f7348d06ae1c54d78947a6 | `packages/dacs-client/DELTA-MAP.md:1` |
 | ac28900dd47d144670f7348d06ae1c54d78947a6 | `packages/dacs-client/HOLD.json:1` |
 | ac28900dd47d144670f7348d06ae1c54d78947a6 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the merged part 13 package snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the merged part 13 package snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the merged part 13 package snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the merged part 13 package snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the merged part 13 package snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
