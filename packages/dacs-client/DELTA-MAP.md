@@ -2,7 +2,7 @@
 # client package deltas
 
 Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. Package exports remain empty.
-Commit subjects below are exact, unique Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. PROVENANCE.json remains the immutable original copy inventory.
+Commit subjects below are exact Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. Where two reachable commits share a subject, as when a rebuilt part keeps its earlier published history, each record also names its full commit hash, and the subject must still match. PROVENANCE.json remains the immutable original copy inventory.
 
 ## D10 — Strip unused modes
 
@@ -1860,6 +1860,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/test/purchase-tx-result-options.test.mjs:1` |
+| fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
