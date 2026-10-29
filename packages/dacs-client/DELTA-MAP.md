@@ -217,6 +217,8 @@ Regressions cover initialized TEMP OFF, unqualified OFF followed by main WAL, re
 
 Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
 
+Engine floors, tests and refusal: a new iterator whose own `next` is not a function cannot be wrapped, so the statement boundary refuses it with a TypeError instead of returning it unguarded. The `LegacyDatabase` fixture now gives its iterators their own `next` and `return`, and the readback review and crash tests also run with that iterator layout on any Node version (`readback-review-decisions.floor.test.mjs`, `domain-store-crash.floor.test.mjs`).
+
 ## D11 — Closed host transfer observation record (part 05)
 
 Settlement and non-native closed-wallet readback decide and retain a fresh frozen projection of nine own data fields. Host getters and toJSON are never called; unknown fields are ignored. Known fields require primitive types and bounded amount/address/hash formats; reason is capped at 240 characters. Malformed results stay retryable without reading the body or consuming a nonce. Confirmed body proof cannot override a raw failed source disposition. Missing includedAt remains optional. Reader attribution and native-readback availability name the actual host capability. Closed-wallet readback writes nothing.
@@ -811,6 +813,16 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/purchase-tx-nesting.test.mjs:1` | 124ddbf578822f8bfe3298e01e83626f40de071d |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 7366ab01bbe3be7bc444fc6fb57eae000093c42b |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2 |
+| D11 | fix(client): D11 rebuild part 13 on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 336df0f1e4d8723d137c5b659c342792f51d81a7 |
+| | `packages/dacs-client/test/domain-store-crash.floor.test.mjs:1` | 2c1286fb54808812bcecee9593708eb6d06a968c |
+| | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` | f19ae9336ec4b5741e036e2f40737ae42c2311c9 |
+| | `packages/dacs-client/test/helpers/sqlite-floor-iterators-preload.mjs:1` | 1e9681f16aebf6b2fe7bb2c297bb17908a8fc4b2 |
+| | `packages/dacs-client/test/helpers/sqlite-floor-iterators.mjs:1` | 1633af546a5bd3b089850161102f4f21949a3df3 |
+| | `packages/dacs-client/test/readback-review-decisions.floor.test.mjs:1` | a386503425d34dab08feb52f89c8c92ec9f188fd |
+| | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` | f11b772c4912bbd399a17ebc0b7cf061de341ce6 |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8 |
+| | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` | bb118dd861e66c1f7f15d9268ae8e721103efd9d |
 
 ## Complete commit and file inventory
 
@@ -2037,6 +2049,21 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record rebuilt part 11 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record rebuilt part 11 source integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record rebuilt part 11 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/test/domain-store-crash.floor.test.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/test/helpers/sqlite-floor-iterators-preload.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/test/helpers/sqlite-floor-iterators.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/test/readback-review-decisions.floor.test.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
+| 9ab7c2efb4c9960653e34c376352e56bd1cb35a7 | `packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs:1` |
+| fix(client): D11 record rebuilt part 13 source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record rebuilt part 13 source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record rebuilt part 13 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record rebuilt part 13 source integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record rebuilt part 13 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
