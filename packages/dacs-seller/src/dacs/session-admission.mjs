@@ -34,21 +34,17 @@
 //    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
-//    `requirementHash` and replayed aggregation are checked here. A
-//    presence-only claim is replayed over the exact bundle with its presentation
-//    verified and the registry snapshot the operator pinned:
-//  - readSessionRecipeRegistryPin({ jobId }) (optional) answers that snapshot's
-//    sha-256 hash. It is read once, and only for a requirement that names a
-//    presence-only claim; without it, or with another answer, such a
-//    requirement is refused.
-//    A requirement with verified claims must pin each claim's `recipeVersion`
-//    (there is no registry version lookup to prove an implicit version is the
-//    latest) and replays only through the optional
-//    `vetEvidence = { resolveContent, resolveRecipe, isRecipeSignerAuthorized,
-//    isVerifyResultSignerAuthorized, verifyAuthorityAttestation }`, read with the
-//    admission readers' limits (see vetRecordProblem).
-//    Verified claims without an explicit version also require the authenticated
-//    latest-session-recipe selection through resolveLatestRecipe.
+//    `requirementHash` and replayed aggregation are checked here. Verified
+//    claims without `recipeVersion` require resolveLatestRecipe to authenticate
+//    the family's latest live version in the job's registry snapshot.
+//    Presence-only claims instead replay over the exact authenticated bundle,
+//    without a synthetic VerifyResult. The optional
+//    readSessionRecipeRegistryPin({ jobId }) supplies their snapshot hash and
+//    is read once when either requirement includes a presence-only claim.
+//    Both replay modes must use one snapshot pin for the job. Evidence replay
+//    uses the bounded optional vetEvidence readers: resolveContent,
+//    resolveRecipe, resolveLatestRecipe, isRecipeSignerAuthorized,
+//    isVerifyResultSignerAuthorized and verifyAuthorityAttestation.
 //  - readVetAnchorReceipt({ jobId, role, party, ref }) answers the CORE §5.1
 //    AnchorReceipt the operator's SR-2 reader holds for that same record
 //    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
@@ -65,8 +61,9 @@
 //    before any signature. The receipt's writer is not compared with the
 //    record's signer: the Standard does not tie them (SR2-5 binds the writer
 //    the receipt names, not the record's verifier).
-import { ARTIFACT_SEPARATORS, admitRawJson, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, publicKeyFromRaw, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
+import { isCanonicalEd25519Signature, isSmallOrderPublicKey } from './demos-claims.mjs';
 
 // PROFILE.json: the exact corrective profile this package implements (the
 // Standard's JID-1 candidate tuple at standardRevision, spec/PROFILE.md).
@@ -151,8 +148,32 @@ export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash,
 // stamped by the same clock is never taken for one from the future.
 const REVOCATION_READ_LIMITS = Object.freeze({ maxBytes: 64 * 1024, maxValues: 4096, timeoutMs: 10_000 });
 const revocationUnavailable = reason => ({ code: 'session_admission_unavailable', status: 503, message: `the Listing revocation check is indeterminate: ${String(reason).slice(0, 160)}` });
+// A decoded answer must already be exactly a JSON value. The bounded
+// serialization below is also its normalization, and JSON silently drops an
+// `undefined` member, a function or a symbol (and renders NaN, array holes and
+// a toJSON result as something else), so an answer could otherwise be admitted
+// by losing a member it carried: sessionAdmissionProblem checks the original
+// keys and would refuse it.
+function assertJsonMember(value, ancestors = [], seen = { values: 0 }) {
+  if (++seen.values > REVOCATION_READ_LIMITS.maxValues) throw new RangeError('revocation reply exceeds its value limit');
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+  if (typeof value === 'number' && Number.isFinite(value)) return;
+  if (typeof value !== 'object') throw new TypeError('revocation reply contains a non-JSON member');
+  if (ancestors.includes(value)) throw new TypeError('revocation reply contains a cycle');
+  ancestors.push(value);
+  if (Array.isArray(value)) {
+    if (Object.keys(value).length !== value.length) throw new TypeError('revocation reply contains a non-JSON member');
+    for (const member of value) assertJsonMember(member, ancestors, seen);
+  } else {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError('revocation reply contains a non-JSON member');
+    for (const key of Object.keys(value)) assertJsonMember(value[key], ancestors, seen);
+  }
+  ancestors.pop();
+}
 function boundedRevocationValue(value) {
   if (value instanceof Uint8Array) return admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
+  assertJsonMember(value);
   let remaining = REVOCATION_READ_LIMITS.maxBytes, values = 0;
   const text = JSON.stringify(value, (key, child) => {
     if (++values > REVOCATION_READ_LIMITS.maxValues || key.length > remaining || (typeof child === 'string' && child.length > remaining)) throw new RangeError('revocation reply exceeds its byte or value limit');
@@ -167,6 +188,14 @@ function boundedRevocationValue(value) {
 
 const ADMISSION_MAX_LIST_ITEMS=256;
 const REGISTRY_PIN_PATTERN = /^[0-9a-f]{64}$/;
+// The value and list bounds every returned representation shares: the outer
+// reply of every read, and a VerifyResult decoded from byte content, whose
+// encoding hides its lists and value count from the outer reply's own shape.
+function boundedAdmissionValue(value, options) {
+  const pending=[value];let values=0;
+  while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
+  return value;
+}
 // Admission capabilities cap wire bytes before decoding and honor this signal.
 // Returned representations also receive independent byte/value/list bounds. An
 // optional `parentSignal` (the caller's shared deadline) aborts an active read
@@ -181,9 +210,7 @@ export async function readAdmissionCapability(admission,method,input,parentSigna
     const work=Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
       if(controller.signal.aborted)throw new DOMException('admission read aborted','AbortError');
       if(value===undefined)throw new TypeError('admission capability returned no value');
-      const result=boundedRevocationValue(value),pending=[result];let values=0;
-      while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
-      return result;
+      return boundedAdmissionValue(boundedRevocationValue(value),options);
     });
     return await Promise.race(aborted?[work,deadline,aborted]:[work,deadline]);
   }finally{clearTimeout(timer);if(rejectAborted)parentSignal.removeEventListener('abort',rejectAborted);parentSignal?.removeEventListener('abort',forwardAbort);controller.abort();}
@@ -282,30 +309,82 @@ function requirementParametersMatch({ result, expected }) {
   return true;
 }
 
-// DACS-2 §7.4.3: a ClaimRequirement without `recipeVersion` selects the latest
-// live version in the authenticated session registry snapshot. The operator
-// answers that selection (and its snapshot pin) through the optional
-// `resolveLatestRecipe`; the seller compares it with the result's own pinned
-// version. Without that reader the implicit version cannot be proven to be the
-// latest, so the record is refused rather than guessed.
-function unpinnedVerifiedResults(...lists) {
-  return lists.flatMap((results) => (Array.isArray(results) ? results : []))
-    .filter((entry) => object(entry?.requirement)
-      && entry.requirement.verificationRequired !== false && entry.requirement.recipeVersion === undefined);
+// DACS-2 §7.4.3: a ClaimRequirement without `recipeVersion` selects the
+// family's latest entry in the authenticated session registry snapshot, and is
+// refused unless that exact latest entry is live. The operator answers that
+// selection (the latest entry's version and availability, and its snapshot pin)
+// through the optional `resolveLatestRecipe`; the seller never searches
+// backward for an older live version. Without that reader the implicit version
+// cannot be proven to be the latest, so the record is refused rather than
+// guessed.
+//
+// The core can satisfy an unpinned member from a result that no invocation
+// entry names: `compatibleVerifiedExpectations` projects a committed result
+// onto a compatible member of the complete BundleRequirement, including an
+// unpinned `oneOf` alternative. Qualification therefore starts from the
+// requirement's members, not only from the invocation entries' own
+// requirements, so no contributing implicit pin escapes the snapshot check.
+function verifiedRequirementMembers(requirement) {
+  if (!object(requirement)) return [];
+  const groups = Array.isArray(requirement.oneOf) ? requirement.oneOf : [];
+  return [...(Array.isArray(requirement.required) ? requirement.required : []), ...groups.flatMap((group) => (Array.isArray(group) ? group : []))]
+    .filter((member) => object(member) && member.verificationRequired === true);
+}
+
+// Every unpinned verified claim of one replay the core could satisfy with a
+// committed result, as `{ scheme, method, recipeVersion }` selectors. A member
+// an invocation entry binds exactly is satisfied by that entry; an unbound
+// member is satisfied only by projection, which the core permits for a
+// `consensus-backed-proxy` result of the same scheme (and the requirement's
+// method, when it names one), and never onto a member that carries its own
+// `identifier` parameter nor from a result whose own requirement carries one:
+// the core's compatibility key is null on either side. Such an alternative can
+// never contribute, so a pinned alternative that does satisfy the group must
+// not be refused for it.
+const namesIdentifier = (parameters) => object(parameters) && Object.prototype.hasOwnProperty.call(parameters, 'identifier');
+function unpinnedVerifiedClaims(invocation) {
+  const entries = [...(Array.isArray(invocation.freshness) ? invocation.freshness : []), ...(Array.isArray(invocation.dealSpecific) ? invocation.dealSpecific : [])]
+    .filter((entry) => object(entry) && object(entry.ref) && object(entry.requirement));
+  const bound = new Set();
+  for (const entry of entries) { try { bound.add(canonicalize(entry.requirement)); } catch { /* the core refuses a non-canonical expectation */ } }
+  const claims = [];
+  for (const member of verifiedRequirementMembers(invocation.requirement)) {
+    if (member.recipeVersion !== undefined) continue;
+    let memberKey;
+    try { memberKey = canonicalize(member); } catch { continue; }
+    const isBound = bound.has(memberKey);
+    for (const entry of entries) {
+      let boundKey;
+      try { boundKey = canonicalize(entry.requirement); } catch { continue; }
+      if (isBound) { if (boundKey !== memberKey) continue; }
+      else if (entry.method !== 'consensus-backed-proxy' || member.scheme !== entry.scheme
+        || namesIdentifier(member.parameters) || namesIdentifier(entry.requirement.parameters)
+        || (member.parameters?.verificationMethod !== undefined && member.parameters.verificationMethod !== entry.method)) continue;
+      const { recipeVersion } = entry.ref;
+      if (!Number.isSafeInteger(recipeVersion) || recipeVersion < 1) continue; // the core refuses the reference
+      claims.push({ scheme: member.scheme, method: entry.method, recipeVersion });
+    }
+  }
+  return claims;
 }
 
 // The result version an unpinned claim must match: the family version the
-// operator's authenticated session registry snapshot selects as latest. One
-// replay must resolve every such claim against one snapshot pin.
-async function latestSessionRecipeProblem(read, entry, pins) {
-  const selection = await read('resolveLatestRecipe', { scheme: entry.scheme, method: entry.method, required: true });
-  if (selection === null) return 'the Vet session registry has no live recipe version for the unpinned claim';
-  if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion'])) return 'the Vet session registry selection is malformed';
+// operator's authenticated session registry snapshot selects as latest, which
+// must itself be live. Every unpinned claim the checked records of one job name
+// must resolve against one snapshot pin, so the seller never signs under two
+// session snapshots.
+async function latestSessionRecipeProblem(read, { scheme, method, recipeVersion }, pins) {
+  const selection = await read('resolveLatestRecipe', { scheme, method, required: true });
+  if (selection === null) return 'the Vet session registry has no recipe version for the unpinned claim';
+  if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion', 'availability'])) return 'the Vet session registry selection is malformed';
   const pin = selection.sessionRecipeRegistrySnapshotHash;
   if (typeof pin !== 'string' || !SHA256_HEX.test(pin)) return 'the Vet session registry pin is malformed';
   if (pins.length > 0 && pins[0] !== pin) return 'the Vet session registry resolved another session registry snapshot';
   if (!Number.isSafeInteger(selection.recipeVersion) || selection.recipeVersion < 1) return 'the Vet session registry recipe version is malformed';
-  if (selection.recipeVersion !== entry.ref.recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
+  // The selection names the family's latest entry, not the latest live one: a
+  // newer entry that is disabled, failed or mocked is refused, never skipped.
+  if (selection.availability !== 'live') return 'the Vet session registry latest recipe version is not live';
+  if (selection.recipeVersion !== recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
   pins.push(pin);
   return null;
 }
@@ -347,20 +426,43 @@ function vetEvidenceReads(evidence, scope) {
 
 // The content shape the core verifier takes from an operator reply: null
 // (absent), canonical JSON, or base64url bytes. A VerifyResult returned as
-// bytes is decoded to the canonical JSON object the core re-hashes; an
-// authority proof stays bytes so its byte hash is preserved.
+// bytes is decoded to the canonical JSON object the core re-hashes, under the
+// same value and list bounds a canonical-json reply receives; an authority
+// proof stays bytes so its byte hash is preserved, and its empty value is a
+// legitimate (hashing to the empty digest) raw body.
 function vetEvidenceContent(reply, resultContent = false) {
   if (reply === null) return null;
   if (exactKeys(reply, ['encoding', 'value'])) {
     if (reply.encoding === 'canonical-json' && object(reply.value)) return reply;
-    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && isCanonicalBase64Url(reply.value)) {
+    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && (reply.value === '' ? !resultContent : isCanonicalBase64Url(reply.value))) {
       const value = Uint8Array.from(Buffer.from(reply.value, 'base64url'));
       if (!resultContent) return { encoding: 'bytes', value };
-      const decoded = admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
+      let decoded;
+      try { decoded = boundedAdmissionValue(admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes }), REVOCATION_READ_LIMITS); }
+      catch (error) {
+        // Only a byte bound says the evidence source could not answer; every
+        // other admission failure is a deterministic malformed document.
+        if (error instanceof RangeError || error?.code === 'BYTE-LIMIT-EXCEEDED') throw error;
+        throw malformedEvidence(`the Vet evidence content reply is malformed: ${String(error?.message ?? error).slice(0, 120)}`);
+      }
       if (object(decoded)) return { encoding: 'canonical-json', value: decoded };
     }
   }
   throw malformedEvidence('the Vet evidence content reply is malformed');
+}
+
+// The self-certifying Ed25519 key a signer claim names, or null: the Demos
+// agent claim the session participants use, or the canonical
+// `key:<32-byte lowercase hex>` claim a recipe steward or VerifyResult signer
+// may use. A small-order point proves only trivial signatures and is refused.
+const KEY_CLAIM = /^key:([0-9a-f]{64})$/;
+function evidenceSignerKey(claim) {
+  if (typeof claim !== 'string') return null;
+  const match = KEY_CLAIM.exec(claim);
+  let raw;
+  try { raw = match ? Uint8Array.from(Buffer.from(match[1], 'hex')) : canonicalDemosAgentPublicKey(claim); }
+  catch { return null; }
+  return raw && !isSmallOrderPublicKey(raw) ? raw : null;
 }
 
 // The core verifier's resolvers over the operator's readers. Content is
@@ -392,7 +494,8 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // strict verifier. The VerifyResults, recipes and authority proofs that replay
 // needs come from the operator's `evidence` (`sessionAdmission.vetEvidence`),
 // read for this `role`'s record. A claim without `recipeVersion` is compared
-// with the operator's authenticated latest-session-recipe selection. Without
+// with the operator's authenticated session registry family head, and refused
+// unless that head is live. Without
 // it a requirement whose decision needs a result body is unresolved and
 // refused. Throws the first failure of an evidence reader (timeout, oversize,
 // a throw): that is unavailable evidence, not a record that fails its
@@ -401,7 +504,10 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // result): its record is replayed over the exact `presence.bundle`, whose
 // presentation is verified (BP-4), against the operator's `presence.registryPin`
 // (PCR-6, CRQ-1), and is refused without a valid pin.
-export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, presence }) {
+// `sessionRegistryPins` is one array shared by the record checks of one job:
+// the first authenticated session registry pin a record resolves becomes the
+// job's pin, and every later record of that job must resolve the same one.
+export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, presence, sessionRegistryPins }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
@@ -412,22 +518,30 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   const presenceOnly = hasPresenceOnlyClaim(invocation.requirement);
   const registryPin = presence?.registryPin;
   if (presenceOnly && !REGISTRY_PIN_PATTERN.test(registryPin)) return 'the Vet requirement names a presence-only claim and no pinned registry authority was supplied';
-  const unpinned = unpinnedVerifiedResults(invocation.freshness, invocation.dealSpecific);
+  const unpinned = unpinnedVerifiedClaims(invocation);
+  const pins = sessionRegistryPins ?? [];
+  if (presenceOnly) {
+    if (pins.length > 0 && pins[0] !== registryPin) return 'the Vet session registry resolved another session registry snapshot';
+    if (pins.length === 0) pins.push(registryPin);
+  }
   const reads = evidence ? vetEvidenceReads(evidence, { jobId, role, party }) : null;
-  // The verifier checks every signature itself with the signer's own key; the
-  // operator's policy decides which signers other than the verifier may sign.
-  const resolvePublicKey = (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : reads && signature.algorithm === 'ed25519' ? signature.signer : null);
-  const pins = [];
+  // Every signature is verified with the key its own signer claim names (a
+  // Demos agent or a canonical `key:` claim); the operator's policy decides
+  // which signers other than the verifier may sign.
+  const resolvePublicKey = (signature) => (signature?.algorithm !== 'ed25519'
+    || (!sameCanonicalClaimIdentity(signature.signer, verifier) && !reads) ? null : evidenceSignerKey(signature.signer));
+  const verify = ({ signedBytes: bytes, signature, publicKey }) => publicKey instanceof Uint8Array
+    && isCanonicalEd25519Signature(signature?.value) && ed25519Verify(bytes, Buffer.from(signature.value, 'base64url'), publicKeyFromRaw(publicKey));
   let strict, thrown, problem;
   try {
     if (unpinned.length > 0) {
       if (!reads || typeof evidence.resolveLatestRecipe !== 'function') problem = 'the Vet requirement does not pin a recipe version for a verified claim';
-      else for (const entry of unpinned) { problem = await latestSessionRecipeProblem(reads.read, entry, pins); if (problem) break; }
+      else for (const claim of unpinned) { problem = await latestSessionRecipeProblem(reads.read, claim, pins); if (problem) break; }
     }
     if (!problem) strict = await verifyCompositeVerificationRecord(record,
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific),
         ...(presenceOnly ? { presence: { bundle: presence.bundle, sessionRecipeRegistrySnapshotHash: registryPin } } : {}) },
-      { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }),
+      { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify,
         isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
         verifyIdentityPresentation: (presented) => identityPresentationValid(presented.bundle, presented.bundleHash) });
   } catch (error) { thrown = error; } finally { reads?.close(); }

@@ -199,13 +199,44 @@ export async function startSellerHost(options) {
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
     const handler = createSellerHttpHandler(agent, { authentication });
     const active = new Set();
+    // Connections with no dispatched request cannot be drained: a buyer that
+    // stops after a partial request line would hold server.close() forever,
+    // because close() clears Node's connections-checking interval and
+    // closeIdleConnections() skips a socket with a partial request. Track the
+    // accepted sockets and the responses they still owe so shutdown can
+    // destroy only connections with nothing left to answer, and close a
+    // connection whose last response has been handed off.
+    const sockets = new Set();
+    const owed = new Map();
     let stopping = false;
     const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, (req, res) => {
-      if (stopping) { res.writeHead(503); res.end(); return; }
+      if (stopping) { res.writeHead(503, { connection: 'close' }); res.end(); return; }
+      const socket = req.socket;
+      owed.set(socket, (owed.get(socket) ?? 0) + 1);
+      let counted = true;
+      const answered = () => {
+        if (!counted) return;
+        counted = false;
+        const remaining = (owed.get(socket) ?? 1) - 1;
+        if (remaining > 0) { owed.set(socket, remaining); return; }
+        owed.delete(socket);
+        // The response was handed to the operating system; during shutdown
+        // no further request is served on this connection.
+        if (stopping) socket.destroy();
+      };
+      res.once('finish', answered);
+      res.once('close', answered);
       const work = Promise.resolve().then(() => handler(req, res));
       active.add(work);
       work.catch(() => res.destroy()).finally(() => active.delete(work));
     });
+    server.on('connection', (socket) => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+    });
+    const destroyUndispatched = () => {
+      for (const socket of sockets) if (!(owed.get(socket) > 0)) socket.destroy();
+    };
     Object.assign(server, { headersTimeout: TIMEOUTS.headersTimeout, requestTimeout: TIMEOUTS.requestTimeout, keepAliveTimeout: TIMEOUTS.keepAliveTimeout });
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -216,17 +247,26 @@ export async function startSellerHost(options) {
     // journal and the agent state they write to and releases the state lock.
     const close = () => closing ??= (async () => {
       stopping = true;
-      // Aborting the native readback signal turns every accepted readback into
-      // its uncertain result, so a request waiting on one drains instead of
-      // holding the journal, agent and lock below open.
-      shutdown.abort();
       const socketsClosed = new Promise((resolve) => server.close(resolve));
       server.closeIdleConnections();
+      destroyUndispatched();
+      // Drain accepted requests with their real outcomes before stopping the
+      // capability work they may still depend on: a readback that completes
+      // inside its deadline is answered and journaled, not turned into a
+      // shutdown-induced uncertain effect. A readback past its deadline has
+      // already answered uncertain, so this wait stays bounded.
       await Promise.allSettled([...active]);
+      // Only now stop the underlying native work, then wait for it: a
+      // capability that honours the signal stops early; one that does not
+      // keeps ownership until it finishes.
+      shutdown.abort();
       await artifact.drain();
       // A connection that became idle while its last response was written is
-      // swept here; the first sweep could only see it still busy.
+      // swept here; the first sweep could only see it still busy. Any
+      // connection with nothing left to answer is destroyed, so it cannot
+      // hold server.close() open.
       server.closeIdleConnections();
+      destroyUndispatched();
       await socketsClosed;
       await release();
     })();

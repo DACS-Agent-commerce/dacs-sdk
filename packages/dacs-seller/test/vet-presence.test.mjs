@@ -29,8 +29,8 @@ async function fixture(requirement) {
   const record = await admission.sessionAdmission.resolveVetRecord({ ref });
   const invocation = { vetRecordRef: ref, evaluatedParty: buyerKey.claim, requirement, verifier: sellerKey.claim, freshness: [], dealSpecific: [] };
   const problem = (change = {}) => {
-    const { bundle, registryPin } = { bundle: buyerBundle, registryPin: FIXTURE_REGISTRY_PIN, ...change };
-    return vetRecordProblem(record, { ref, jobId, party: buyerKey.claim, bundleHash: core.identityBundleHash(bundle), verifier: sellerKey.claim, invocation, now: () => NOW, presence: { bundle, registryPin } });
+    const { bundle, registryPin, sessionRegistryPins } = { bundle: buyerBundle, registryPin: FIXTURE_REGISTRY_PIN, ...change };
+    return vetRecordProblem(record, { ref, jobId, party: buyerKey.claim, bundleHash: core.identityBundleHash(bundle), verifier: sellerKey.claim, invocation, now: () => NOW, presence: { bundle, registryPin }, sessionRegistryPins });
   };
   return { admission, buyerBundle, problem, record };
 }
@@ -128,4 +128,25 @@ test('session admission takes an optional registry pin reader and refuses one th
   const { readSessionRecipeRegistryPin: _pin, ...withoutPin } = admission.sessionAdmission;
   assert.equal(sessionAdmissionConfig(withoutPin), withoutPin);
   assert.throws(() => sessionAdmissionConfig({ ...withoutPin, readSessionRecipeRegistryPin: 'pin' }), /readSessionRecipeRegistryPin/);
+});
+
+test('presence-only replay keeps one registry snapshot across the job records', async () => {
+  const { problem } = await fixture(presence('did')), pins = [];
+  assert.equal(await problem({ sessionRegistryPins: pins }), null);
+  assert.match(await problem({ sessionRegistryPins: pins, registryPin: 'f'.repeat(64) }), /another session registry snapshot/);
+});
+
+test('a negotiated presence-only session replays after restart without another Agreement signature', async t => {
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
+  const agent = await f.open(), request = await f.proposal(agent);
+  const first = await agent.receiveProposal(request);
+  assert.equal(first.disposition, 'complete');
+  const agreementSigns = () => f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length;
+  assert.equal(agreementSigns(), 1);
+  agent.close();
+  const reopened = await f.open(), repeat = await reopened.receiveProposal(request);
+  assert.equal(repeat.disposition, 'complete');
+  assert.deepEqual(repeat.contribution, first.contribution);
+  assert.equal(agreementSigns(), 1);
 });
