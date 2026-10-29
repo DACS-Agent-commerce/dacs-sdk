@@ -2,8 +2,8 @@
 // Checks REST evidence for the protected environment in docs/npm-prerelease-release.md.
 // Fails closed before GitHub can create an unprotected environment on first use.
 // Usage: check-publish-environment.mjs <environment.json> <deployment-branch-policies.json>
-import { readFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { HTTP_JSON_MAX_BYTES } from "./http-json-limits.mjs";
 
 export const PUBLISH_ENVIRONMENT = "npm-prerelease-gated";
@@ -66,7 +66,10 @@ export function publishEnvironmentProblems(environment, policies, dispatchActor 
   return problems;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Node runs a module by its real path, so resolve a linked entry point before
+// deciding to run the check. Otherwise a linked invocation would skip it and
+// exit 0 without reading the environment, failing open.
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [environmentPath, policiesPath] = process.argv.slice(2);
   const read = path => {
     try {
