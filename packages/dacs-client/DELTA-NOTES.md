@@ -208,15 +208,15 @@ PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
 
-PR 03b2 supplies read-only connection and callback admission before PR 03c: native/live handles, synchronous callback kinds, supported schemas and rollback/crash-safe main journals. Persistent main databases require DELETE, TRUNCATE, PERSIST or WAL; volatile main databases may use MEMORY. OFF is refused on every main database. Admission preserves caller configuration. PR 03c consumes these checks during transaction orchestration. The branches retain the published history through new extraction and restoration commits.
+## D11 — Purchase connection admission
 
-Persistent admission also reads main.synchronous on every attempt: WAL requires FULL or EXTRA, and rollback journals require EXTRA for power-loss durability. Weaker settings are refused before transactions or callbacks, without changing the connection configuration or host work. Volatile main databases have no persistent synchronization requirement.
+Admission reads one closed policy for main and listed TEMP. Persistent main accepts DELETE/TRUNCATE/PERSIST with EXTRA and WAL with FULL/EXTRA; volatile main also accepts MEMORY. Listed TEMP accepts DELETE/TRUNCATE/PERSIST/MEMORY. Journal OFF is refused for both main and TEMP. Reading admission never opens absent TEMP, changes host configuration or invokes the callback. Private exports remain empty; transaction orchestration stays separate.
+
+Regressions cover initialized TEMP OFF, unqualified OFF followed by main WAL, repair/retry, absent/discarded/reopened TEMP, four native result defaults, and the real lease rollback marker. Earlier main journal/durability and result-format regressions are retained. Historical extraction records use the existing archive fields solely to audit immutable published history.
 
 Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
 
 Engine floors, tests and refusal: a new iterator whose own `next` is not a function cannot be wrapped, so the statement boundary refuses it with a TypeError instead of returning it unguarded. The `LegacyDatabase` fixture now gives its iterators their own `next` and `return`, and the readback review and crash tests also run with that iterator layout on any Node version (`readback-review-decisions.floor.test.mjs`, `domain-store-crash.floor.test.mjs`).
-
-Purchase admission normalizes its internal PRAGMA statements to object rows and numeric metadata. Native connections may retain array-row and BigInt defaults for all caller statements; admission and refusal preserve those defaults and host work.
 
 ## D11 — Closed host transfer observation record (part 05)
 
