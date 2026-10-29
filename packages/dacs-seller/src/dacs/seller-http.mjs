@@ -227,7 +227,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         try { authentication.store.finish(reservation, status, JSON.stringify(answer), { noEffect: outcome.noEffect, retry: outcome.retry }); } catch { /* durable intent remains uncertain */ }
         // The context step has ended either way: its unused write reservation
         // is released (its writes keep their own rows; it runs again only as a resume).
-        if (context !== null && req.url === SELLER_CONTEXT_PATH && status < 500) try { await context.settled(reservation.contextHold); } catch { /* retain the uncertain hold; still answer below */ }
+        if (context !== null && req.url === SELLER_CONTEXT_PATH) try { await context.settled(reservation.contextHold); } catch { /* retain the uncertain hold; still answer below */ }
       }
       try { return await send(res, status, answer, request, { close: status === 408 || status === 413 }); } catch {
         // A failed seller signer or journal cannot turn into a definite refusal.
