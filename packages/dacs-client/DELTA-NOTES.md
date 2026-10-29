@@ -215,3 +215,9 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
 
 Purchase admission normalizes its internal PRAGMA statements to object rows and numeric metadata. Native connections may retain array-row and BigInt defaults for all caller statements; admission and refusal preserve those defaults and host work.
+
+## D11 — Closed host transfer observation record (part 05)
+
+Settlement and non-native closed-wallet readback decide and retain a fresh frozen projection of nine own data fields. Host getters and toJSON are never called; unknown fields are ignored. Known fields require primitive types and bounded amount/address/hash formats; reason is capped at 240 characters. Malformed results stay retryable without reading the body or consuming a nonce. Confirmed body proof cannot override a raw failed source disposition. Missing includedAt remains optional. Reader attribution and native-readback availability name the actual host capability. Closed-wallet readback writes nothing.
+
+Published part-05 iteration records are archived with the existing ledger archive mechanism; prerequisite records and all historical blob checks are retained. This rebuild is recorded against its actual published parent. Unrelated crash/deadline fixtures return to the prerequisite tree. Exports remain empty and actions remain held.
