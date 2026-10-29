@@ -424,3 +424,34 @@ test('close aborts an in-flight passive read and waits for it', async t => {
   await assertUnchanged(w, before);
   await assert.rejects(() => passive(w), { code: 'transport_closed' });
 });
+
+// A single wire envelope is removed by node(); direct facts cannot hide behind another.
+for (const state of ['failed', 'pending', 'unknown', 'included']) {
+  for (const result of [undefined, 200]) test(`passive status with direct ${state} refuses nested included status, result=${result}`, async t => {
+    const w = await memoryWorld(t), before = await w.journal.entries();
+    w.statusAnswer = { state, blockNumber: 8, response: { state: 'included', blockNumber: 7, ...(result === undefined ? {} : { result }) } };
+    for (let repeat = 0; repeat < 2; repeat++) {
+      await assert.rejects(() => passive(w), { code: 'readback_unverified' });
+      await assertUnchanged(w, before);
+    }
+    assert.equal(w.calls.filter(call => call === 'getTxByHash').length, 0);
+  });
+}
+for (const [name, edit] of [
+  ['failed', b => { b.status = 'failed'; }],
+  ['wrong height', b => { b.number = 8; }],
+  ['missing transaction', b => { b.content.ordered_transactions = []; }],
+  ['matching direct facts', () => {}],
+]) {
+  for (const result of [undefined, 200]) test(`passive inclusion block with ${name} refuses nested confirmed block, result=${result}`, async t => {
+    const w = await memoryWorld(t), before = await w.journal.entries();
+    const inner = structuredClone(w.block);
+    if (result !== undefined) inner.result = result;
+    edit(w.block); w.block.response = inner;
+    for (let repeat = 0; repeat < 2; repeat++) {
+      await assert.rejects(() => passive(w), { code: 'readback_unverified' });
+      await assertUnchanged(w, before);
+    }
+    assert.equal(w.calls.filter(call => call === 'getTxByHash').length, 2);
+  });
+}
