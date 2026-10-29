@@ -1929,6 +1929,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 refuse inventory rows that misname or repeat a commit | `.gitleaksignore:1` |
+| fix(client): D11 refuse inventory rows that misname or repeat a commit | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse inventory rows that misname or repeat a commit | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse inventory rows that misname or repeat a commit | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse inventory rows that misname or repeat a commit | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse inventory rows that misname or repeat a commit | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 refuse inventory rows that misname or repeat a commit | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 | 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/DELTA-MAP.md:1` |
