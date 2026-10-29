@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {identityBundleHash,canonicalize,sha256Hex} from '@kynesyslabs/dacs';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
-import {testWallet,NOW,JOB,buyer} from './helpers/protocol-fixture.mjs';
+import {testWallet,NOW,JOB,buyer,seller} from './helpers/protocol-fixture.mjs';
 import {fixtureIdentityBundle} from './fixtures/listings.mjs';
 import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {SESSION_CHALLENGE_LIFETIME_MS} from '../src/dacs/session-admission.mjs';
 import {listingPin} from '../src/dacs/purchase-protocol.mjs';
+import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
 const staged=error=>error.code==='proposal_not_assembled';
 test('accepted presentation and exact admission are atomically retained and replay after restart',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
@@ -66,6 +67,17 @@ test('legacy admitted flags without the exact retained presentation hold without
  const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),e=>e.code==='session_admission_unavailable');assert.equal(f.admission.calls.some(([method])=>method==='admit'),false);
 });
 
+// A proposal stage session has no Vet evidence to authenticate it, so the
+// accepted presentation and its validated admission answer are the only proof
+// this seller admitted it. A bare legacy `admitted` flag is not enough.
+test('a saved proposal stage session without its accepted presentation does not restore',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)}),hash=sha256Hex(canonicalize(input.buyerIdentityBundle));
+ state.attemptChallenge(input.buyerIdentityBundle.sessionNonce,{presentationHash:hash});state.admitChallenge(input.buyerIdentityBundle.sessionNonce,hash);
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));state.close();
+ await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/accepted presentation/.test(error.message));
+});
+
 test('an admitted proposal that claims no Vet stays readable at its proposed stage',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);
  assert.equal(agent.stageOf(JOB),'proposed','a session before Vet claims no Vet checkpoint or evidence');
@@ -89,9 +101,80 @@ test('a retained proposal stage session restores with only its challenge binding
  const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
 });
 
+// CORE CF-3: advisory ClaimReference parameters do not change the buyer's
+// identity, so a challenge issued to the parameter-free claim admits a
+// presentation that carries one and the saved session must still restart.
+test('a challenge for the parameter-free buyer restores a presentation carrying an advisory parameter',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open();
+ const parameterized={...buyer,claim:`${buyer.claim}?jurisdiction=GB`};
+ const challenge=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});
+ const bundle=fixtureIdentityBundle(parameterized,NOW);bundle.sessionNonce=challenge.sessionNonce;
+ bundle.presentation.signatures[0].signature=parameterized.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');
+ const input={proposal:{},transportIdentity:{jobId:JOB,buyer:buyer.claim,seller:seller.claim},buyerIdentityBundle:bundle};
+ await assert.rejects(agent.stagedProposal(input),staged);agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:identityBundleHash(bundle),stage:'proposed'}));state.close();
+ const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
+});
+
 test('a closed agent refuses proposal admission before it consumes the challenge',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);agent.close();
  await assert.rejects(agent.stagedProposal(input),error=>error.code==='seller_closed');
  const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),staged);
  assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,1);
+});
+
+test('the native profile issues no challenge without its session admission',async t=>{
+ const f=await proposalAdmissionFixture(t);
+ const missing=await createSellerAgent({...f.config,maxJobs:1,sessionAdmission:null});t.after(()=>missing.close());
+ await assert.rejects(missing.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_admission_required'&&error.status===503);
+ missing.close();
+ // A refused issuance retains nothing: the one live issuance slot is still free.
+ const agent=await createSellerAgent({...f.config,maxJobs:1});t.after(()=>agent.close());
+ assert.ok((await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim})).sessionNonce);
+});
+
+// The admitted attempt must fingerprint the complete presentation. The core
+// contentHash drops top-level signature/signatures members, so comparing the
+// attempt with it made a valid buyer-supplied extension unreadable.
+test('an accepted presentation carrying an extra bundle member stays readable and restores',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);
+ input.buyerIdentityBundle.signature='TEST bundle extension';
+ input.buyerIdentityBundle.presentation.signatures[0].signature=buyer.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(input.buyerIdentityBundle))).toString('base64url');
+ await assert.rejects(agent.stagedProposal(input),staged);
+ assert.equal(agent.stageOf(JOB),'proposed');agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));state.close();
+ const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
+});
+
+// close() can run while an admission read is pending. The continuation must
+// refuse with the lifecycle error before any capability call or state change.
+async function gatedRevocation(f){
+ let entered,release;const started=new Promise(r=>{entered=r;}),gate=new Promise(r=>{release=r;});
+ const original=f.admission.sessionAdmission.readRevocationSurfaces;
+ f.admission.sessionAdmission.readRevocationSurfaces=async query=>{entered();await gate;return original(query);};
+ return{started,release};
+}
+test('a close during the admission revocation read refuses before admitting',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent),gate=await gatedRevocation(f);
+ const pending=agent.stagedProposal(input);await gate.started;agent.close();gate.release();
+ await assert.rejects(pending,error=>error.code==='seller_closed');
+ assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,0);
+});
+test('a close during an accepted replay revocation read refuses with the lifecycle error',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);
+ await assert.rejects(agent.stagedProposal(input),staged);
+ const gate=await gatedRevocation(f);
+ const pending=agent.stagedProposal(input);await gate.started;agent.close();gate.release();
+ await assert.rejects(pending,error=>error.code==='seller_closed');
+});
+
+// The transport identity is buyer-supplied. A proposal naming another seller
+// must not reach the admission capability or retain an accepted presentation.
+test('a proposal naming another seller is refused before admission',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);
+ input.transportIdentity.seller=testWallet(44).claim;
+ await assert.rejects(agent.stagedProposal(input),error=>error.code==='seller_mismatch'&&error.status===409);
+ assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,0);
 });

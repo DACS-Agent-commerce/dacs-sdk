@@ -42,8 +42,10 @@ test('a stalled DEM delivery context resolver aborts and releases the job fence'
  const started=new Promise(r=>enter=r);
  f.config.demDeliveryContext=createDemDeliveryContext({authority:'TEST-stalled-delivery',resolveBuyer:async()=>null,
   resolveSeller:(request,options)=>{if(calls++===0){limits=options;enter();return new Promise(()=>{});}return {disposition:'present',value:structuredClone(f.contexts.get(request.jobId))};}});
- const agent=await f.open(),request=await f.proposal(agent),pending=agent.receiveProposal(request);
- await started;const answer=await pending;
+ const agent=await f.open(),request=await f.proposal(agent);
+ t.mock.timers.enable({apis:['setTimeout']});
+ const pending=agent.receiveProposal(request);
+ await started;t.mock.timers.tick(10001);const answer=await pending;
  assert.equal(answer.disposition,'indeterminate');assert.match(answer.reason,/^DEM delivery seller context failed: /);assert.equal(limits.signal.aborted,true);
  assert.equal((await agent.receiveProposal(request)).disposition,'complete','the same job runs again after the fence is released');
 });
@@ -85,12 +87,31 @@ test('a non-canonical proposal job is a definite job-invalid refusal, not an unc
 
 test('a failed contribution save cannot leave publication ahead of durable session state',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true;const original=f.config.signer.sign;
- f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(cut&&text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));const session=payload.body?.session;if(session?.sellerContribution&&session.proposal===null){cut=false;throw new Error('TEST contribution save interrupted');}}return original(bytes);};
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(cut&&text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));const session=payload.body?.session;if(session?.sellerContribution){cut=false;throw new Error('TEST contribution save interrupted');}}return original(bytes);};
  const agent=await f.open(),request=await f.proposal(agent);
  const first=await agent.receiveProposal(request);assert.equal(first.disposition,'indeterminate');assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
  const retry=await agent.receiveProposal(request);assert.equal(retry.disposition,'complete');
  assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,retry.contribution);agent.close();
  assert.deepEqual((await f.open()).agreementState(request.transportIdentity).contribution,retry.contribution);
+});
+
+test('a provider-declared seller requirement restore cannot replay is refused before signing',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
+ // A conforming BundleRequirement that omits the optional preferredPresentation:
+ // the provider-declared seller invocation hashes it, while restore replays the
+ // seller profile's fixed requirement. Signing it would persist a session this
+ // seller can never restore.
+ const requirement={requirementVersion:'1',required:[]};
+ const sellerClaim=f.config.signer.claim,sellerRef=await f.admission.vetRecord(JOB,sellerClaim,f.listing.seller.identity,{requirement});
+ const context=f.contexts.get(JOB),input=structuredClone(context.input);
+ input.seller.vetRecordRef=structuredClone(sellerRef);
+ const vetRequirements=context.vetRequirements.map(entry=>entry.evaluatedParty===sellerClaim?{...structuredClone(entry),vetRecordRef:structuredClone(sellerRef),requirement:structuredClone(requirement)}:structuredClone(entry));
+ f.contexts.set(JOB,{input,vetRequirements});
+ const answer=await agent.receiveProposal(await proposalForInput(input));
+ assert.equal(answer.disposition,'rejected');
+ assert.match(answer.reason,/Vet requirement invocation differs/);
+ assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
+ assert.ok(!f.signed.some(text=>text.startsWith('dacs-payee-bound-agreement:v1:')),'the seller signs no Agreement it could not restore');
 });
 
 test('a clock crossing the proposal window during the responder checkpoints is refused at the signing gate',async t=>{
@@ -120,9 +141,20 @@ test('a pre-upgrade session without a retained generatedAt keeps its context-tim
 });
 
 test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{
- const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true,signatures=0;const original=f.config.signer.sign;
- f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures++;if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));if(cut&&payload.body.session.proposal?.proposalHash){cut=false;throw new Error('TEST final proposal save interrupted');}}return original(bytes);};
- const agent=await f.open(),request=await f.proposal(agent);await assert.rejects(agent.receiveProposal(request),/TEST final proposal save interrupted/);const kept=agent.durableSessionOf(JOB);assert.ok(kept.sellerContribution);assert.equal(kept.proposal,null);agent.close();assert.deepEqual((await (await f.open()).receiveProposal(request)).contribution,kept.sellerContribution);assert.equal(signatures,1);
+ const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true,signatures=0,contributionSaves=0;const original=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures++;if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));const session=payload.body?.session;if(cut&&session?.sellerContribution&&++contributionSaves===2){cut=false;throw new Error('TEST final proposal save interrupted');}}return original(bytes);};
+ const agent=await f.open(),request=await f.proposal(agent);await assert.rejects(agent.receiveProposal(request),/TEST final proposal save interrupted/);const kept=agent.durableSessionOf(JOB);assert.ok(kept.sellerContribution);assert.ok(kept.proposal,'publication retains the exact proposal');assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,kept.sellerContribution);agent.close();assert.deepEqual((await (await f.open()).receiveProposal(request)).contribution,kept.sellerContribution);assert.equal(signatures,1);
+});
+
+test('a crash between contribution publication and the final snapshot still reports the retained contribution',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});let cuts=0;const original=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));if(payload.body?.session?.sellerContribution&&++cuts===2)throw new Error('TEST final proposal save interrupted');}return original(bytes);};
+ const agent=await f.open(),request=await f.proposal(agent);
+ await assert.rejects(agent.receiveProposal(request),/TEST final proposal save interrupted/);
+ const kept=agent.durableSessionOf(JOB);assert.ok(kept.sellerContribution);
+ assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,kept.sellerContribution,'the buyer reads back the published contribution, not an absent one');
+ agent.close();
+ assert.deepEqual((await f.open()).agreementState(request.transportIdentity).contribution,kept.sellerContribution,'restart reads it back too');
 });
 
 test('retained proposal authenticates the context references actually stored by this phase',async t=>{

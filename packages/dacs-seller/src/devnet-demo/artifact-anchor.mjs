@@ -41,6 +41,10 @@ import {
 const clone=(v)=>JSON.parse(canonicalize(v));
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
 const exactHash=(v)=>sha256Hex(canonicalize(v));
+// A retained intent names one publication target. A retry that provably signed
+// nothing may re-stamp the artifact's provisional time, but the address, kind,
+// writer, verifier and delivery binding stay immutable.
+const publicationScope=(input)=>canonicalize({logicalAddress:input?.logicalAddress??null,artifactKind:input?.artifactKind??null,writer:input?.writer??null,verifier:input?.verifier??null,deliveryBinding:input?.deliveryBinding??null});
 // The durable wallet outcome is independent of readback stage. Older readers
 // could promote a rejected row to 'issued' while keeping this error marker.
 const broadcastRejected=(row)=>row?.error==='broadcast_rejected';
@@ -303,7 +307,6 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return sourceCapability.withWalletNonceLock({owner,network,chainIdentity:sourceCapability.pins.chainIdentity},()=>journal.withWalletLock(`demo/nonce/${exactHash([network,sourceCapability.pins.chainIdentity,owner])}`,()=>journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
       if(retained) {
-        if(retained.inputHash!==exactHash(input)) fail('conflict','immutable demo artifact intent differs');
         authorizeRetained(retained);
         // Nothing was signed (a shutdown ended its approval, the wallet answered
         // without signing, or the process died while it was asked, with no
@@ -312,7 +315,13 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         // Listing is also asked again, when the caller says so, on the same
         // proof: its row is unsigned and neither journal retains a signed CREATE.
         const deniedListing=reaskDenied===true&&artifactKind==='Listing'&&retained.stage==='denied'&&retained.error==='user_rejected';
-        if((await snapshot()).classify(logicalAddress,retained,{reaskDenied:deniedListing})!=='unsigned') return observe(input,retained);
+        const unsigned=(await snapshot()).classify(logicalAddress,retained,{reaskDenied:deniedListing})==='unsigned';
+        if(retained.inputHash!==exactHash(input)) {
+          // A retry after a proven unsigned attempt is a new publication, so its
+          // artifact may carry a new provisional time; nothing was signed and no
+          // immutable intent exists. Any other change stays a conflict.
+          if(!unsigned||publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
+        } else if(!unsigned) return observe(input,retained);
       }
       if(!retained&&(await snapshot()).addresses.has(logicalAddress)) return {status:'indeterminate',reason:'signed CREATE retained without an intent',noResend:true};
       authorizeJob(artifactKind,jobId);
