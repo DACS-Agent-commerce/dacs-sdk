@@ -791,6 +791,9 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | D11 | fix(client): D11 record the merged host observation sources | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:50`, `packages/dacs-client/src/purchases.mjs:73`, `packages/dacs-client/src/purchases.mjs:166`, `packages/dacs-client/src/purchases.mjs:288`, `packages/dacs-client/src/purchases.mjs:406`, `packages/dacs-client/src/purchases.mjs:423`, `packages/dacs-client/src/purchases.mjs:468`, `packages/dacs-client/src/purchases.mjs:487`, `packages/dacs-client/src/purchases.mjs:594`, `packages/dacs-client/src/purchases.mjs:699`, `packages/dacs-client/src/purchases.mjs:719`, `packages/dacs-client/src/purchases.mjs:729`, `packages/dacs-client/src/purchases.mjs:779`, `packages/dacs-client/src/purchases.mjs:814`, `packages/dacs-client/src/purchases.mjs:826`, `packages/dacs-client/src/purchases.mjs:901`, `packages/dacs-client/src/purchases.mjs:914`, `packages/dacs-client/src/purchases.mjs:922`, `packages/dacs-client/src/purchases.mjs:924`, `packages/dacs-client/src/purchases.mjs:926`, `packages/dacs-client/src/purchases.mjs:948`, `packages/dacs-client/src/purchases.mjs:977`, `packages/dacs-client/src/purchases.mjs:984`, `packages/dacs-client/src/purchases.mjs:1110`, `packages/dacs-client/src/purchases.mjs:1123`, `packages/dacs-client/src/purchases.mjs:1125`, `packages/dacs-client/src/purchases.mjs:1131`, `packages/dacs-client/src/purchases.mjs:1175`, `packages/dacs-client/src/purchases.mjs:1199`, `packages/dacs-client/src/purchases.mjs:1208`, `packages/dacs-client/src/purchases.mjs:1215`, `packages/dacs-client/src/purchases.mjs:1222` | eaa8845952730e79a7d452ae1656ce4c91dba372 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | b60967a64dc205dcd99f194591392c0806ee5aab |
+| D11 | fix(client): D11 guard iterator-owned steps on supported runtimes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 70e4369be0d0a9546ea5a0a96367cfb750fdf47b |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | 3a05a6cfc5529d0b44a6b9b3653f947d05083391 |
 
 ## Complete commit and file inventory
 
@@ -2055,6 +2058,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the merged host observation sources | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the merged host observation sources | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the merged host observation sources | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
 
 ## Original moved files
 
