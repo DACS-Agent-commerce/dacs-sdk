@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { requireDirectory } from "./acceptance-directory.mjs";
 
 /** Publishes a complete file by flushing it to storage, then renaming it over
@@ -49,7 +49,7 @@ export function prepareBoundedBuild(project) {
   replaceFile(path, dockerfile);
   return path;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (!process.argv[2]) throw new Error("usage: bounded-build.mjs <generated-project>");
   prepareBoundedBuild(process.argv[2]);
 }

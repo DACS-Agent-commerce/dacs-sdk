@@ -1,6 +1,7 @@
 #!/usr/bin/env node
+import { existsSync, realpathSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const COMMAND_TIMEOUT_SECONDS = 900;
 export const DOCKER_PULL_TIMEOUT_SECONDS = 180;
@@ -83,7 +84,7 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [seconds, attempts, command, ...args] = process.argv.slice(2);
   if (!command) throw new Error("usage: bounded-command.mjs <total-seconds> <attempts> <command> [args...]");
   process.exitCode = await runBoundedCommand(command, args, { seconds: Number(seconds), attempts: Number(attempts) });
