@@ -121,6 +121,43 @@ function referenceConfig(project, cache, contract) {
   return { args, env, config: restored };
 }
 
+const SPECIFICATION_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+
+// npm resolves every edge no locked node satisfies before it validates the lock
+// or extracts an archive, and --offline does not stop git. Refuse every
+// non-registry specification npm could resolve, with the selected npm's parser.
+function refuseNonRegistrySpecifications(manifest, lock, toolchain) {
+  const npmPackageArg = createRequire(toolchain.cli)("npm-package-arg");
+  const isRegistry = spec => {
+    try {
+      const parsed = npmPackageArg.resolve("dependency", spec);
+      return parsed.registry === true && (parsed.type !== "alias" || typeof parsed.subSpec?.name === "string");
+    } catch { return false; }
+  };
+  const refuse = (location, field) => { throw new Error(`non-registry dependency specification: ${location} ${field}`); };
+  const declarations = (location, owner, fields) => {
+    for (const field of fields) {
+      if (owner[field] === undefined) continue;
+      if (!isPlainObject(owner[field])) refuse(location, field);
+      for (const [name, spec] of Object.entries(owner[field])) if (!isRegistry(spec)) refuse(location, `${field}.${name}`);
+    }
+  };
+  declarations("package.json", manifest, SPECIFICATION_FIELDS);
+  // npm also resolves a bundled entry's edges that its bundle does not carry.
+  for (const [location, entry] of Object.entries(lock.packages)) {
+    if (location !== "" && isPlainObject(entry)) {
+      declarations(location, entry, SPECIFICATION_FIELDS.filter(field => field !== "devDependencies"));
+    }
+  }
+  // A `$name` override refers to a root declaration checked above.
+  const overrides = (field, value) => {
+    if (typeof value === "string") { if (!value.startsWith("$") && !isRegistry(value)) refuse("package.json", field); }
+    else if (isPlainObject(value)) for (const [name, child] of Object.entries(value)) overrides(`${field}.${name}`, child);
+    else refuse("package.json", field);
+  };
+  if (manifest.overrides !== undefined) overrides("overrides", manifest.overrides);
+}
+
 function seedArchive(cache, bytes) {
   const sha512 = createHash("sha512").update(bytes).digest("hex");
   const path = join(cache, "_cacache", "content-v2", "sha512", sha512.slice(0, 2), sha512.slice(2, 4), sha512.slice(4));
@@ -164,7 +201,8 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
 /** Replays an explicit npm install contract offline with scripts disabled, using independently
  * verified archive bytes in fresh private storage. Returns source entries/carried modules plus one
  * kind-tagged inventory. npm decides which packages to omit; every failed archive extraction
- * refuses the reference. Errors publish no source metadata or inventory. Linked installs are
+ * refuses the reference. Non-registry dependency specifications (root, lock entry or override) are
+ * refused before any archive read or npm run. Errors publish no source metadata or inventory. Linked installs are
  * unsupported. Never reads the inspected installation. `manifest` is the root package.json bytes:
  * npm formats its generated hidden lockfile after them. */
 export function referenceInstallation({ manifest: manifestBytes, lock, readArchive, installer }) {
@@ -183,6 +221,7 @@ export function referenceInstallation({ manifest: manifestBytes, lock, readArchi
         installer.toolchain?.platform !== process.platform || installer.toolchain.arch !== process.arch) {
       throw new Error("reference installation needs an explicit matching npm/platform/configuration contract");
     }
+    refuseNonRegistrySpecifications(manifest, lock, installer.toolchain);
     const project = join(scratch, "project");
     const cache = join(scratch, "cache");
     mkdirSync(project);
