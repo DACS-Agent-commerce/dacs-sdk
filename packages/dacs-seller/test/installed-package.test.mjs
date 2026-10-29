@@ -103,7 +103,7 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.match(out.refusedConfigurations.scriptedAgent, /^TypeError: .*only from one createPaymentEvidenceWalletJournal/, 'an agent the operator composes takes them only from the package wallet journal too');
 
   assert.equal(out.host.origin.startsWith('http://127.0.0.1:'), true);
-  assert.deepEqual(out.host.timeouts, { headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000, maxHeaderSize: 16384 });
+  assert.deepEqual(out.host.timeouts, { headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000 });
   assert.deepEqual(out.proposal, { disposition: 'complete', role: 'seller', signer: out.sellerClaim });
   assert.equal(out.agreement.hash, out.agreement.expected, 'the buyer finalizes the Agreement with the seller contribution');
   assert.deepEqual(out.agreement.listingRef, out.host.listingPin, 'the Agreement names the served Listing');

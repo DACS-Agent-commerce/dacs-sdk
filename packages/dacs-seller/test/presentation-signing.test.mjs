@@ -193,3 +193,18 @@ test('expired unknown signatures keep their reservation without requesting anoth
  f.config.now=()=>NOW+60001;delete f.config.wallet.reconcilePresentationSignature;
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);assert.equal(f.issued.size,1);
 });
+test('a challenge expiring during the pending reservation is never signed or reserved again',async t=>{
+ const f=await sessionFixture(t),store=f.config.store;let at=NOW;
+ f.config.now=()=>at;
+ f.config.store={...store,update:async(key,change)=>{
+  const row=await store.update(key,change);
+  if(row?.presentation?.signing?.state==='pending')at=NOW+60001;
+  return row;
+ }};
+ await assert.rejects(f.run(),error=>error.code==='seller_challenge_expired');
+ const kept=(await f.row()).presentation;
+ assert.equal(kept.signing.state,'pending');assert.equal(f.controls.signs,0);
+ await assert.rejects(f.run(),indeterminate);
+ assert.deepEqual((await f.row()).presentation,kept);
+ assert.equal(f.controls.signs,0);assert.equal(f.issued.size,1);
+});
