@@ -105,3 +105,27 @@ test('two setups of one directory both succeed with one prepared consumer', asyn
   assert.ok(existsSync(join(directory, 'node_modules')));
   assert.equal(readFileSync(join(directory, 'prepared.json'), 'utf8').includes('sourceFingerprint'), true);
 });
+
+for (const manifest of ['foreign', 'missing', 'malformed']) test(`a generic prepared marker cannot authorize replacement of a ${manifest} manifest`, t => {
+ const probe = fixture(t), directory = join(probe.base, 'foreign');
+ mkdirSync(directory);
+ if (manifest !== 'missing') writeFileSync(join(directory, 'package.json'), manifest === 'foreign' ? JSON.stringify({name: 'unrelated-project'}) : '{');
+ writeFileSync(join(directory, 'prepared.json'), '{}');
+ writeFileSync(join(directory, 'notes.txt'), 'TEST project data');
+ const result = probe.run(directory);
+ assert.notEqual(result.status, 0);
+ assert.match(result.stderr, /not a seller consumer setup/);
+ assert.equal(readFileSync(join(directory, 'notes.txt'), 'utf8'), 'TEST project data');
+ assert.equal(readFileSync(join(directory, 'prepared.json'), 'utf8'), '{}');
+});
+
+test('even a matching completed marker cannot make a foreign manifest reusable', t => {
+ const probe = fixture(t), directory = join(probe.base, 'foreign');
+ assert.equal(probe.run(directory).status, 0);
+ writeFileSync(join(directory, 'package.json'), JSON.stringify({name: 'unrelated-project'}));
+ writeFileSync(join(directory, 'notes.txt'), 'TEST project data');
+ const result = probe.run(directory);
+ assert.notEqual(result.status, 0);
+ assert.equal(readFileSync(join(directory, 'notes.txt'), 'utf8'), 'TEST project data');
+ assert.equal(JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')).name, 'unrelated-project');
+});
