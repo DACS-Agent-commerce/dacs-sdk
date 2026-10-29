@@ -6,7 +6,7 @@ import {exchange,JOBS} from './helpers/d5-http-fixture.mjs';
 function fixture({uncertain=false,contextMode=false}={}){
  const finishes=[],agent={claim:'TEST-seller',listingPin:{TEST:'pin'},submitPayment:async()=>({status:'rejected'})};
  const request={jobId:JOBS[0]},reservation={disposition:uncertain?'uncertain':'perform'};
- const store={classify(){},reserve:()=>reservation,finish:(_reservation,_status,_text,options)=>finishes.push(options),reconcile(){}};
+ const store={classify(){},reserve:()=>reservation,finish:(_reservation,_status,_text,options)=>finishes.push(options),reconcile(){},claim:()=>reservation};
  const authentication={seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>request,validate(){},responseHeader:async()=> 'TEST-header'};
  const context={path:SELLER_CONTEXT_PATH,challengePath:SELLER_CONTEXT_CHALLENGE_PATH,challenge(){},reserve:()=>reservation,perform:async()=>({disposition:'present'}),settled:async()=>{},reconcile:async()=>null};
  return{agent,context,finishes,handler:()=>createSellerHttpHandler(agent,{authentication,...contextMode?{context}:{}})};
@@ -14,7 +14,8 @@ function fixture({uncertain=false,contextMode=false}={}){
 for(const contextMode of [false,true])test(`${contextMode?'context':'agent'} reconciliation keeps its method receiver`,async()=>{
  const f=fixture({uncertain:true,contextMode}),owner=contextMode?f.context:f.agent;
  owner.keptAnswer={disposition:'present',value:{status:'TEST-recovered'}};
- owner[contextMode?'reconcile':'reconcileTransport']=function(){return this.keptAnswer;};
+ // The agent's recovery claims and settles through the transport it is handed.
+ owner[contextMode?'reconcile':'reconcileTransport']=function(input){if(contextMode)return this.keptAnswer;input.transport.claim();input.transport.settle({status:200,value:this.keptAnswer.value,retry:false,noEffect:false});return this.keptAnswer;};
  const res=await exchange(f.handler(),{url:contextMode?SELLER_CONTEXT_PATH:'/dacs/v1/payments'});assert.equal(res.status,200);assert.deepEqual(JSON.parse(res.text),{status:'TEST-recovered'});
 });
 test('persistent context cleanup failure still ends a bounded uncertain HTTP response',async()=>{
