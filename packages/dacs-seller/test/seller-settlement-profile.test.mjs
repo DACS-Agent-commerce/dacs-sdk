@@ -390,12 +390,13 @@ async function httpSeller(t, w, { gate = {} } = {}) {
   const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite') });
   t.after(() => { try { agent.close(); } catch { /* closed by a restart */ } store.close(); });
   const pin = seller.listingPin(w.listing);
-  const gated = (name) => (body) => {
+  const gated = (name) => (body, options) => {
     const code = gate[name];
     if (code) { delete gate[name]; throw new seller.SellerAgentError(code, `TEST ${code}`, code === 'native_evidence_required' ? 409 : 503); }
-    return agent[name](body);
+    return agent[name](body, options);
   };
   const facade = { claim: w.signer.claim, listingPin: pin, reconcileTransport: (input) => agent.reconcileTransport(input), agreementState: (identity) => agent.agreementState(identity),
+    retainsProposalWork: (jobId) => agent.retainsProposalWork(jobId), retainsPaymentClaim: (jobId, body) => agent.retainsPaymentClaim(jobId, body),
     receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
   const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
   const proposal = await w.proposalFor(w.vetted);
