@@ -38,11 +38,10 @@ const runtimeKey=()=>process.versions.modules+'-'+process.platform+'-'+process.a
 // A finished setup for these exact sources, this exact lock and this runtime.
 function preparedAt(directory,fingerprint){
  try{const marker=json(join(directory,'prepared.json'));
-  return marker.runtime===runtimeKey()&&marker.sourceFingerprint===fingerprint&&marker.lockDigest===digest(readFileSync(join(directory,'package-lock.json')))&&existsSync(join(directory,'run.mjs'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs-seller/package.json'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs/package.json'));}catch{return false;}
+  return ourSetup(directory)&&marker.runtime===runtimeKey()&&marker.sourceFingerprint===fingerprint&&marker.lockDigest===digest(readFileSync(join(directory,'package-lock.json')))&&existsSync(join(directory,'run.mjs'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs-seller/package.json'))&&existsSync(join(directory,'node_modules/@kynesyslabs/dacs/package.json'));}catch{return false;}
 }
 // A directory this script completed or was interrupted while preparing.
 function ourSetup(directory){
- if(existsSync(join(directory,'prepared.json')))return true;
  try{return json(join(directory,'package.json')).name==='dacs-seller-locked-smoke';}catch{return false;}
 }
 function install(app,fingerprint){
