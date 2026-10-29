@@ -295,7 +295,8 @@ echo reached`, { host_registry: "http://127.0.0.1:1", registry_container: "fixtu
       expect(result.stderr).toContain("bounded registry HTTP settings are missing");
     });
 
-  it.each([["empty", ""], ["malformed", "not-json"]])("refuses an %s readiness reply", (_kind, ping) => {
+  it.each([["empty", ""], ["malformed", "not-json"], ["option-like", "--version"]])(
+    "refuses an %s readiness reply", (_kind, ping) => {
     const result = runStages(`
 http_json_curl=(--disable)
 curl() { printf '%s' "$TEST_PING"; }

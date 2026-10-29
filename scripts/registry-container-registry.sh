@@ -162,10 +162,11 @@ wait_for_registry() {
   local ping
   for attempt in $(seq 1 30); do
     # Verdaccio answers its ping with a JSON object; a 200 carrying anything else
-    # (an empty or malformed body from an intermediary) is not readiness.
+    # (an empty or malformed body from an intermediary) is not readiness. `--`
+    # keeps a reply that starts with `-` an argument instead of a node option.
     if ping=$(curl "${http_json_curl[@]}" "$host_registry/-/ping") &&
       node -e 'const value = JSON.parse(process.argv[1]);
-        if (!value || typeof value !== "object" || Array.isArray(value)) process.exit(1)' "$ping"; then
+        if (!value || typeof value !== "object" || Array.isArray(value)) process.exit(1)' -- "$ping"; then
       ready=1
       break
     fi
