@@ -774,6 +774,7 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | ea9932745fde595d695cf7b38b624d3dae2d76bf |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 4c7a9c1b81b8c62b0a8c45fe65b97317f4c68b40 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 800298aebb571f64bc53d4fb12e4f2c0f6fd1abb |
+| D11 | fix(client): D11 rebuild part 06a on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -1922,6 +1923,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record rebuilt part 06d source integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record rebuilt part 06d source integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record rebuilt part 06d source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| ad08d9b139f4345687eb9c0aa6b612327b977c9f | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| ad08d9b139f4345687eb9c0aa6b612327b977c9f | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
