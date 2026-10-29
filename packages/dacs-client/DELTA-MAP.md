@@ -915,6 +915,9 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e3135e7bb2cf0c7b9443c9ae4cdc10545591dda3 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | bfdf4c4ea2c1998d18ba8d3e1237308f5f9f1fbc |
+| D11 | fix(client): D11 guard iterator-owned steps on supported runtimes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 70e4369be0d0a9546ea5a0a96367cfb750fdf47b |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | 3a05a6cfc5529d0b44a6b9b3653f947d05083391 |
 
 ## Complete commit and file inventory
 
@@ -2466,6 +2469,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep stored purchase diagnostics below passive reads | `packages/dacs-client/test/diagnostic-reader.test.mjs` (deleted) |
 | fix(client): D11 keep stored purchase diagnostics below passive reads | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 keep stored purchase diagnostics below passive reads | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
 
 ## Original moved files
 
