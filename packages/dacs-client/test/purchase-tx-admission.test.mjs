@@ -116,6 +116,7 @@ for (const profile of FILE_PROFILES.filter(({ journal }) => journal !== 'TRUNCAT
     assert.equal(db.prepare('SELECT id FROM records').get().id, 'TEST-retry');
   });
 }
+const guardedAttachment = { name: 'TypeError', message: /unsupported by the statement guard/ };
 for (const nested of [false, true]) for (const following of ['last', 'batch', 'prepared', 'caught']) {
   test(`an attachment during the callback rolls back both files, nested=${nested}, following=${following}`, t => {
     const { db, path, auxiliary, store } = attachable(t);
@@ -129,11 +130,11 @@ for (const nested of [false, true]) for (const following of ['last', 'batch', 'p
         if (following === 'caught') assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST-after')"), persistent);
       }
     };
-    assert.throws(() => store.transaction(db, () => nested ? store.transaction(db, body) : body()), persistent);
+    assert.throws(() => store.transaction(db, () => nested ? store.transaction(db, body) : body()), guardedAttachment);
     for (const file of [path, auxiliary]) assert.deepEqual(durableIds(db, file), []);
     if (db.isOpen) {
       assert.equal(db.isTransaction, false);
-      db.exec('DETACH DATABASE "attached archive"');
+      assert.equal(db.prepare('PRAGMA database_list').all().some(row => row.name === 'attached archive'), false);
       assert.equal(store.transaction(db, () => 'TEST-retry'), 'TEST-retry');
     }
   });
@@ -146,9 +147,11 @@ for (const volatileMain of [false, true]) for (const file of [':memory:', '']) f
       db.prepare('ATTACH ? AS volatile').run(file);
       assert.throws(() => store.transaction(db, callbackRan), refused);
     };
-    if (nested) assert.throws(() => store.transaction(db, body), refused);
+    if (nested) assert.throws(() => store.transaction(db, body), guardedAttachment);
     else body();
-    db.exec('DETACH volatile; CREATE TEMP TABLE session(id TEXT)');
+    if (!nested) db.exec('DETACH volatile');
+    else assert.equal(db.prepare('PRAGMA database_list').all().some(row => row.name === 'volatile'), false);
+    db.exec('CREATE TEMP TABLE session(id TEXT)');
     store.transaction(db, () => db.exec("INSERT INTO records VALUES ('TEST-main'); INSERT INTO session VALUES ('TEST-temp')"));
     for (const table of ['records', 'session']) assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get().n, 1);
   });
