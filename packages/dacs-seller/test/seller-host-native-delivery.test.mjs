@@ -973,6 +973,11 @@ test('a native payment is delivered: the Deliverable CREATE reads back bound to 
   const answer = await p.claim(tx);
   assert.equal(answer.status, 'payment-evidenced', shown(answer));
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
+  // The durable fulfilment runner captures claim, inspectPermit and consumePermit
+  // from the seller's receipt store; a wrapper missing any of them answers
+  // durable-dependencies-invalid before any delivery work. This claim reaching
+  // delivery-ready proves all three are callable.
+  assert.doesNotMatch(JSON.stringify(answer), /durable-dependencies-invalid/, shown(answer));
   assert.equal(answer.delivery.logicalAddress, deliverable);
   assert.deepEqual(w.effects.signCreate, [paymentAddress(p)]);
   assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
@@ -992,21 +997,6 @@ test('a native payment is delivered: the Deliverable CREATE reads back bound to 
   assert.equal(again.delivery?.status, 'delivery-ready', shown(again.delivery));
   assert.equal(again.delivery.contentHash, answer.delivery.contentHash);
   assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is sent once');
-  assert.equal(w.createsAt(deliverable), 1);
-});
-
-// Regression: the durable fulfilment runner captures `claim`, `inspectPermit`
-// and `consumePermit` from the seller's receipt store and refuses to run when
-// any of them is not callable. A wrapper that exposed only `claim` answered
-// every native claim with `durable-dependencies-invalid` before any delivery
-// work, so the paid order could never reach delivery-ready.
-test('a native claim runs the durable delivery with every receipt-store dependency callable', async (t) => {
-  const w = await world(t);
-  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
-  const answer = await p.claim(tx);
-  assert.equal(answer.status, 'payment-evidenced', shown(answer));
-  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
-  assert.doesNotMatch(JSON.stringify(answer), /durable-dependencies-invalid/, shown(answer));
   assert.equal(w.createsAt(deliverable), 1);
 });
 
