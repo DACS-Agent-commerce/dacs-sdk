@@ -59,7 +59,7 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
       resolveVetRecord: async ({ ref }) => { calls.push(['resolveVetRecord', ref.contentHash]); if (!records.has(ref.contentHash)) throw new Error('no Vet record at this reference'); return structuredClone(records.get(ref.contentHash)); },
       // The authentic receipt of a record is the one the fixture's chain holds for it.
       verifyVetAnchorReceipt: async ({ ref, record, receipt }) => { calls.push(['verifyVetAnchorReceipt', ref.contentHash]); if (verifyOverride) return verifyOverride({ ref, record, receipt }); return receipts.has(ref.contentHash) && core.canonicalize(receipts.get(ref.contentHash)) === core.canonicalize(receipt) && core.contentHash(record) === ref.contentHash ? 'valid' : 'invalid'; },
-      readVetAnchorReceipt: async ({ ref }) => { calls.push(['readVetAnchorReceipt', ref.contentHash]); if (!receipts.has(ref.contentHash)) throw new Error('no SR-2 receipt at this reference'); return structuredClone(receipts.get(ref.contentHash)); },
+      readVetAnchorReceipt: async ({ ref }) => { calls.push(['readVetAnchorReceipt', ref.contentHash]); if (!receipts.has(ref.contentHash)) throw Object.assign(new Error('no SR-2 receipt at this reference'), { code: 'ENOENT' }); return structuredClone(receipts.get(ref.contentHash)); },
     },
   };
 }
