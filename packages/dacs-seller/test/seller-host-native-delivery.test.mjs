@@ -1666,9 +1666,9 @@ test('read-only commitment reconciliation cannot start provably unsent work', as
 test('the host refuses caller-chosen challenges and accepts a buyer presentation of its own challenge', async (t) => {
   const w = await world(t), jobId = '01J8N4YV7YVYQ4DB7M8T'+String(++jobSequence).padStart(6,'0');
   const chosen = identityFor(w.buyerKey, NOW);
-  assert.throws(() => w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
-  assert.throws(() => w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: '01'.repeat(16) }), { code: 'challenge_invalid' });
-  const issued = w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim });
+  await assert.rejects(w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
+  await assert.rejects(w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: '01'.repeat(16) }), { code: 'challenge_invalid' });
+  const issued = await w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim });
   assert.match(issued.sessionNonce, /^[0-9a-f]{64}$/);
   assert.notEqual(issued.sessionNonce, chosen.sessionNonce);
   const purchase = await w.purchase({ commit: false });
@@ -1782,14 +1782,24 @@ test('settlement disclosure checks durable payment identities even when this age
   t.after(() => stale.close());
   assert.equal((await a.claim(tx)).delivery?.status, 'delivery-ready');
   assert.doesNotThrow(() => stale.assertSettlementCredit(a.jobId), 'one uncontested settlement remains allowed');
-  assert.equal(typeof stale.deliveryStateOf(a.jobId).fulfilmentId, 'string');
-  assert.equal(stale.stageOf(a.jobId), 'delivery-ready');
+  assert.throws(() => stale.deliveryStateOf(a.jobId), { code: 'seller_state_unverified' }, 'a synchronous getter cannot authenticate another instance\'s changed session');
+  assert.throws(() => stale.stageOf(a.jobId), { code: 'seller_state_unverified' });
+  const current = await w.agentFor({ stopHost: false });
+  try {
+    assert.equal(typeof current.deliveryStateOf(a.jobId).fulfilmentId, 'string');
+    assert.equal(current.stageOf(a.jobId), 'delivery-ready');
+  } finally { current.close(); }
   assert.deepEqual(await b.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
   assert.throws(() => stale.assertSettlementCredit(a.jobId), { code: 'settlement_collision' });
   assert.throws(() => stale.agreementState(a.transportIdentity), { code: 'settlement_collision' });
   assert.throws(() => stale.deliveryStateOf(a.jobId), { code: 'settlement_collision' });
-  assert.equal(stale.stageOf(a.jobId), 'settlement-indeterminate');
-  assert.equal(stale.durableSessionOf(a.jobId).settlementCredit, 'indeterminate');
+  assert.throws(() => stale.stageOf(a.jobId), { code: 'seller_state_unverified' });
+  assert.throws(() => stale.durableSessionOf(a.jobId), { code: 'seller_state_unverified' });
+  const reconciled = await w.agentFor({ stopHost: false });
+  try {
+    assert.equal(reconciled.stageOf(a.jobId), 'settlement-indeterminate');
+    assert.equal(reconciled.durableSessionOf(a.jobId).settlementCredit, 'indeterminate');
+  } finally { reconciled.close(); }
 });
 for(const value of [undefined,null,0,{}])test(`missing or malformed journal identity ${JSON.stringify(value)} cannot release another journal's pending CREATE`,async t=>{
  const w=await world(t,{projectionReader:false}),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p),name=core.logicalToStorageProgramName(address);w.node.faults.transactionDown=hash=>hash===w.signedCreate(address)?.hash;w.node.faults.indexEmpty=program=>program===name;w.faults.broadcast.push('lost');assert.equal((await p.claim(tx)).status,'held');await w.editRetainedSession(p.jobId,session=>{if(value===undefined)delete session.nativeEvidenceWork.walletJournal;else session.nativeEvidenceWork.walletJournal=value;});await w.host().close();w.replaceWallet('TEST-replacement.sqlite');await w.restart();w.node.faults.transactionDown=()=>false;for(let i=0;i<2;i++)assert.notEqual((await p.claim(tx)).status,'payment-evidenced');assert.equal(w.createsAt(address),1);assert.equal(w.effects.signCreate.filter(x=>x===address).length,1);
