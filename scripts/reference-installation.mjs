@@ -1,6 +1,6 @@
 // Expected installation bytes and links come only from a fresh, successful npm ci.
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
 import { tmpdir } from "node:os";
@@ -13,16 +13,18 @@ const isPlainObject = value => typeof value === "object" && value !== null && !A
 const digest = bytes => createHash("sha256").update(bytes).digest("base64");
 const kind = stat => stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "link" : stat.isFile() ? "file" : "unsupported";
 
-/** Snapshots a consumer's effective npm configuration, environment and selected toolchain.
+/** Snapshots a consumer's effective npm configuration, environment and selected toolchain,
+ * including whether an existing node_modules root changes npm's empty-install result.
  * The caller must use the same contract for its scripts-disabled installation and comparison. */
 export function npmInstallContract(project, toolchain = npmToolchain()) {
   const env = { ...process.env };
   const config = JSON.parse(runNpmNode(toolchain, [toolchain.cli, "config", "list", "--json"], { cwd: project, env }).toString());
-  return { toolchain, config, env };
+  return { toolchain, config, env, nodeModules: existsSync(join(project, "node_modules")) };
 }
 
 /** Inventories every node_modules path with one explicit kind, without following links.
- * Files include their digest, mode and link count; links retain their literal target. */
+ * Files include their digest, full permission bits and link count; directories retain their
+ * permission bits; links retain their literal target. */
 export function installationInventory(project) {
   const inventory = new Map();
   const visit = path => {
@@ -30,7 +32,8 @@ export function installationInventory(project) {
     try { stat = lstatSync(join(project, path)); }
     catch (error) { if (error.code === "ENOENT") return; throw error; }
     const entry = { kind: kind(stat) };
-    if (entry.kind === "file") Object.assign(entry, { digest: digest(readFileSync(join(project, path))), mode: stat.mode & 0o777, nlink: stat.nlink });
+    if (entry.kind === "file") Object.assign(entry, { digest: digest(readFileSync(join(project, path))), mode: stat.mode & 0o7777, nlink: stat.nlink });
+    if (entry.kind === "directory") entry.mode = stat.mode & 0o7777;
     if (entry.kind === "link") entry.target = readlinkSync(join(project, path));
     inventory.set(path, entry);
     if (inventory.size > ARCHIVE_LIMITS.entries) throw new Error("installation has too many paths");
@@ -100,7 +103,7 @@ function referenceConfig(project, cache, contract) {
       throw new Error("npm configuration did not round-trip: " + key);
     }
   }
-  return { args, env };
+  return { args, env, config: restored };
 }
 
 function seedArchive(cache, bytes) {
@@ -196,23 +199,57 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
   const scratch = mkdtempSync(join(tmpdir(), "dacs-npm-reference-"));
   try {
     if (!isPlainObject(lock?.packages) || !isPlainObject(manifest)) throw new Error("package-lock.json has no packages map or manifest");
-    if (!installer?.config || !installer.env || installer.toolchain?.platform !== process.platform || installer.toolchain.arch !== process.arch) {
+    if (!installer?.config || !installer.env || typeof installer.nodeModules !== "boolean" ||
+        installer.toolchain?.platform !== process.platform || installer.toolchain.arch !== process.arch) {
       throw new Error("reference installation needs an explicit matching npm/platform/configuration contract");
     }
     const project = join(scratch, "project");
     const cache = join(scratch, "cache");
     mkdirSync(project);
+    // npm 11 only writes the hidden lockfile for an all-omitted tree when the
+    // node_modules root already existed; reproduce that input, never its contents.
+    if (installer.nodeModules) mkdirSync(join(project, "node_modules"));
     const unavailable = sourceEntries(lock, readArchive, installer, cache, entries, roots);
     const excluded = excludedSources(unavailable, entries, installer, scratch, manifest, lock);
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
-    const { args, env } = referenceConfig(project, cache, installer);
+    const { args, env, config } = referenceConfig(project, cache, installer);
+    const configFile = join(scratch, "config.json");
+    writeFileSync(configFile, JSON.stringify(config));
     try {
       // Observe npm's warning channel even if the captured log configuration is quiet.
       const command = `process.on('log', (level, title, ...text) => {
         if ((level === 'warn' || level === 'error') && title === 'tar') throw Error(text.join(' '));
-      }); require(process.argv[1]);`;
-      runNpmNode(installer.toolchain, ["-e", command, ...args], { cwd: project, env });
+      });
+      const fs = require('node:fs');
+      const configFile = process.argv.splice(1, 1)[0];
+      const requireNpm = require('node:module').createRequire(process.argv[1]);
+      const options = requireNpm('@npmcli/config/lib/definitions').flatten(JSON.parse(fs.readFileSync(configFile)));
+      if (options.omit.includes('optional')) {
+        const validator = requireNpm.resolve('../lib/utils/validate-lockfile.js');
+        const validate = require(validator);
+        // npm 11 retains failed optional lookups as inert, versionless nodes.
+        // They cannot install under omit=optional. Keep npm's original trees,
+        // metadata and reifier; exclude only those failures from lock validation.
+        require.cache[validator].exports = (virtual, ideal) => {
+          const checked = new Map([...ideal].filter(([location, node]) => virtual.has(location) ||
+            !(node.optional && node.inert && !node.version && node.errors.some(error => error.code === 'ENOTCACHED'))));
+          const unresolved = [...virtual.values()].some(node => [...node.edgesOut.values()]
+            .some(edge => edge.type === 'optional' && !edge.to));
+          if (checked.size !== ideal.size || unresolved) {
+            const manifest = JSON.parse(fs.readFileSync('package.json'));
+            const lock = JSON.parse(fs.readFileSync('package-lock.json'));
+            for (const field of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies', 'peerDependenciesMeta']) {
+              if (!require('node:util').isDeepStrictEqual(manifest[field] ?? {}, lock.packages['']?.[field] ?? {})) {
+                throw Error('root dependency metadata differs: ' + field);
+              }
+            }
+          }
+          return validate(virtual, checked);
+        };
+      }
+      require(process.argv[1]);`;
+      runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env });
     } catch (cause) {
       const missing = [...unavailable].map(([location, error]) => `${location}: ${error.message}`).join("; ");
       throw new Error(cause.message + (missing ? `; source reads: ${missing}` : ""), { cause });
@@ -275,6 +312,8 @@ export function installationDifferences(project, reference) {
     else if (expected.kind === "file") {
       if (observed.nlink !== 1) differences.push("hard link: " + path);
       else if (observed.digest !== expected.digest || observed.mode !== expected.mode) differences.push("changed: " + path);
+    } else if (expected.kind === "directory") {
+      if (observed.mode !== expected.mode) differences.push("changed mode: " + path);
     } else if (expected.kind === "link" && observed.target !== expected.target) differences.push(`link to an unexpected target: ${path} -> ${observed.target}`);
     else if (expected.kind === "unsupported") differences.push("unsupported entry: " + path);
   }

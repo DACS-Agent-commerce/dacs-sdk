@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,10 +14,9 @@ const runStages = (body: string, env: Record<string, string>) => spawnSync("bash
   `source scripts/registry-container-registry.sh\n${body}`], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", ...env } });
 
 describe("registry network isolation", () => {
-  it.each(["Linux", "Darwin"])("keeps consumers and the image builder off the %s host network", platform => {
+  it("keeps consumers and the image builder off the host network", () => {
     const log = join(scratch(), "commands");
     const result = runStages(`
-uname() { echo "$platform"; }
 pull_bounded() { :; }
 docker() {
   printf '%s\\n' "$*" >> "$log"
@@ -25,7 +24,7 @@ docker() {
 }
 start_registry
 printf '%s\\n' "$consumer_registry" "\${consumer_network_args[*]}" "\${build_network_args[*]}"`, {
-      platform, log, registry_log: join(scratch(), "registry.log"), registry_config: "/fixture/config.yaml",
+      log, registry_log: join(scratch(), "registry.log"), registry_config: "/fixture/config.yaml",
       registry_network: "fixture-network", registry_container: "fixture-registry",
     });
     expect(result.status, result.stderr).toBe(0);
@@ -92,6 +91,80 @@ echo started`, { host_port_fixture: port, registry_network: "fixture", registry_
   });
 });
 
+describe("stage failure propagation", () => {
+  const packageVersion = JSON.parse(readFileSync("package.json", "utf8")).version as string;
+  const stageRoots = () => {
+    const root = scratch();
+    const artifactStage = join(root, "artifacts");
+    const releaseSet = join(root, "release-set");
+    mkdirSync(artifactStage);
+    mkdirSync(releaseSet);
+    return { root, artifactStage, releaseSet };
+  };
+
+  it("fails the release-set stage when a bounded command fails", () => {
+    const { root, artifactStage, releaseSet } = stageRoots();
+    // A valid provenance record would let the old pipeline masking reach success.
+    writeFileSync(join(releaseSet, "release-provenance.json"),
+      JSON.stringify({ version: packageVersion, source: { clean: true } }));
+    const result = runStages(`
+run_bounded() { return 7; }
+build_release_set
+echo reached`, { acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).not.toContain("reached");
+  });
+
+  it("fails registry start when a pinned image pull fails", () => {
+    const root = scratch();
+    const log = join(root, "commands");
+    const result = runStages(`
+pull_bounded() { return 7; }
+docker() {
+  printf '%s\\n' "$*" >> "$log"
+  if [ "$1" = inspect ]; then echo 49152; fi
+}
+start_registry`, { log, registry_log: join(root, "registry.log"), registry_config: "/fixture/config.yaml",
+      registry_network: "fixture-network", registry_container: "fixture-registry" });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(readFileSync(log, "utf8")).not.toContain("network create");
+  });
+
+  it("fails registry start when the registry container cannot start", () => {
+    const root = scratch();
+    const log = join(root, "commands");
+    const result = runStages(`
+pull_bounded() { :; }
+docker() {
+  printf '%s\\n' "$*" >> "$log"
+  case "$1" in
+    inspect) echo 49152 ;;
+    run) return 9 ;;
+  esac
+}
+start_registry`, { log, registry_log: join(root, "registry.log"), registry_config: "/fixture/config.yaml",
+      registry_network: "fixture-network", registry_container: "fixture-registry" });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(readFileSync(log, "utf8")).not.toContain("inspect");
+  });
+
+  it("stops publishing at the first failed candidate", () => {
+    const { root, releaseSet } = stageRoots();
+    for (const name of ["kynesyslabs-dacs", "kynesyslabs-dacs-node", "create-dacs-agent"]) {
+      writeFileSync(join(releaseSet, `${name}-${packageVersion}.tgz`), "fixture");
+    }
+    const calls = join(root, "publish-calls");
+    const result = runStages(`
+node() { printf 'publish\\n' >> "$calls"; return 9; }
+publish_release_set
+echo reached`, { release_set: releaseSet, version: packageVersion, host_registry: "http://127.0.0.1:1",
+      auth_token: "fixture-auth-token", registry_log: join(root, "registry.log"), calls });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).not.toContain("reached");
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual(["publish"]);
+  });
+});
+
 function verdaccioConfig() {
   const path = join(scratch(), "verdaccio.yaml");
   const result = runStages("write_registry_config", { registry_config: path });
@@ -142,6 +215,12 @@ describe("run-local Verdaccio configuration", () => {
     expect(authFile.startsWith(storage + "/")).toBe(true);
     expect(readFileSync("scripts/registry-container-registry.sh", "utf8")).toContain('$registry_config:/verdaccio/conf/config.yaml:ro');
   });
+
+  it("labels a configuration failure as its own stage", () => {
+    const result = runStages("write_registry_config\nprintf '%s' \"$stage\"", { registry_config: join(scratch(), "verdaccio.yaml") });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("registry-config");
+  });
 });
 
 const stub = `curl() {
@@ -161,7 +240,7 @@ describe("bounded registry requests", () => {
     const request = join(root, "auth-request.json");
     const passwords: string[] = [];
     for (let run = 0; run < 2; run++) {
-      const result = runStages(`http_json_curl=()
+      const result = runStages(`http_json_curl=(--disable)
 curl() {
   while [ "$#" -gt 0 ]; do
     if [ "$1" = --data ]; then printf '%s' "$2" > "$request"; break; fi
@@ -184,7 +263,7 @@ printf '%s' "$auth_token"`, {
   });
 
   it("rejects a token outside the bearer-token character set", () => {
-    const result = runStages(`http_json_curl=()
+    const result = runStages(`http_json_curl=(--disable)
 curl() { printf '%s' '{"token":"bad\\nvalue123"}'; }
 authenticate_registry
 printf '%s' "$auth_token"`, { host_registry: "http://127.0.0.1:1", registry_log: "/dev/null" });
@@ -202,6 +281,46 @@ printf '%s' "$auth_token"`, { host_registry: "http://127.0.0.1:1", registry_log:
         expect(existsSync(join(root, "published"))).toBe(false);
       }
     });
+
+  it.each([["readiness", "wait_for_registry", "docker() { :; }"],
+    ["authentication", "authenticate_registry", "curl() { printf 'unexpected-request'; }"]])(
+    "refuses %s without the bounded HTTP settings", (_kind, stage, stubs) => {
+      const result = runStages(`${stubs}
+${stage}
+echo reached`, { host_registry: "http://127.0.0.1:1", registry_container: "fixture",
+        registry_log: join(scratch(), "registry.log") });
+      expect(result.status, result.stderr).not.toBe(0);
+      expect(result.stdout).not.toContain("reached");
+      expect(result.stdout).not.toContain("unexpected-request");
+      expect(result.stderr).toContain("bounded registry HTTP settings are missing");
+    });
+
+  it.each([["empty", ""], ["malformed", "not-json"], ["option-like", "--version"]])(
+    "refuses an %s readiness reply", (_kind, ping) => {
+    const result = runStages(`
+http_json_curl=(--disable)
+curl() { printf '%s' "$TEST_PING"; }
+sleep() { :; }
+docker() { :; }
+wait_for_registry
+echo ready`, { TEST_PING: ping, host_registry: "http://127.0.0.1:1", registry_container: "fixture",
+        registry_log: join(scratch(), "registry.log") });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stdout).not.toContain("ready");
+  });
+
+  it("accepts a JSON object readiness reply", () => {
+    const result = runStages(`
+http_json_curl=(--disable)
+curl() { printf '{}'; }
+sleep() { :; }
+docker() { :; }
+wait_for_registry
+printf 'ready=%s' "$ready"`, { host_registry: "http://127.0.0.1:1", registry_container: "fixture",
+        registry_log: join(scratch(), "registry.log") });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("ready=1");
+  });
 });
 
 // The alias is admitted by the existing policy; arbitrary bridge HTTP remains refused.
