@@ -1524,6 +1524,7 @@
           "after": "ea9932745fde595d695cf7b38b624d3dae2d76bf"
         }
       ]
-    }
-  ]
+    },
+  {"delta":"D11","subject":"fix(client): D11 guard iterator-owned steps on supported runtimes","files":[{"path":"packages/dacs-client/src/util/sqlite-statement-boundary.mjs","before":"5e0077f1c0e94938358e112ba518f124323894fa","after":"70e4369be0d0a9546ea5a0a96367cfb750fdf47b"},{"path":"packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs","before":null,"after":"3a05a6cfc5529d0b44a6b9b3653f947d05083391"}]}
+]
 }

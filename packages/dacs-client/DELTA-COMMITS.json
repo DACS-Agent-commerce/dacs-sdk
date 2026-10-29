@@ -931,5 +931,6 @@
       "packages/dacs-client/scripts/check-hold.mjs",
       "packages/dacs-client/scripts/delta-frontier.test.mjs"
     ]
-  }
+  },
+  {"sha":null,"subject":"fix(client): D11 guard iterator-owned steps on supported runtimes","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/sqlite-statement-boundary.mjs","packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs"]}
 ]
