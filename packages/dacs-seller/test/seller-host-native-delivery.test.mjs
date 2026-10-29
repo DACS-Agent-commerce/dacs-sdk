@@ -1724,6 +1724,7 @@ test('native delivery recovery holds on an unauthenticated or mismatched recover
     ['a throwing readback', { read: () => { throw new Error('TEST native read unavailable'); } }],
     ['a present readback without a transaction reference', { read: () => ({ status: 'present' }) }],
     ['a readback that is not present', { read: () => ({ status: 'absent', reason: 'TEST lagging index' }) }],
+    ['a present readback whose bytes differ from the report', { read: (present) => ({ ...present, artifact: { ...present.artifact, body: [...present.artifact.body, 'TEST tampered readback'] } }) }],
     ['a changed payment authorization', { edit: (session) => { session.deliveryHold.result.consumedPaymentAuthorization = { jobId: 'TEST-another-job' }; } }],
     ['a changed adapter binding', { edit: (session) => { session.deliveryAdapter = { fulfilmentId: session.deliverySubmitted[0], deliveryBinding: { version: '9' } }; } }],
     ['an older adapter checkpoint without a delivery binding', { edit: (session) => { session.deliveryAdapter = { fulfilmentId: session.deliverySubmitted[0] }; } }],
