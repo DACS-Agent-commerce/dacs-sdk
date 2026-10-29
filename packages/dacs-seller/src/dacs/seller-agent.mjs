@@ -553,6 +553,15 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
             for (const [role, party, bundle, verifier] of parties) {
               const ref = resolved.input[role].vetRecordRef;
               const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
+              // Restore replays each record against this profile's fixed
+              // requirement and no freshness/deal-specific results. Sign only
+              // the declaration restore can reproduce, so no persisted session
+              // is refused by the next start of this seller.
+              const expectedRequirement = role === 'seller' ? SELLER_REQUIREMENT : listing.buyerRequirement;
+              if (!invocation || invocation.freshness.length !== 0 || invocation.dealSpecific.length !== 0 ||
+                  canonicalize(invocation.requirement) !== canonicalize(expectedRequirement)) {
+                return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet requirement invocation differs from the requirement this profile restores` };
+              }
               let record;
               try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }

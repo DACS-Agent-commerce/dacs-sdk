@@ -93,6 +93,25 @@ test('a failed contribution save cannot leave publication ahead of durable sessi
  assert.deepEqual((await f.open()).agreementState(request.transportIdentity).contribution,retry.contribution);
 });
 
+test('a provider-declared seller requirement restore cannot replay is refused before signing',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
+ // A conforming BundleRequirement that omits the optional preferredPresentation:
+ // the provider-declared seller invocation hashes it, while restore replays the
+ // seller profile's fixed requirement. Signing it would persist a session this
+ // seller can never restore.
+ const requirement={requirementVersion:'1',required:[]};
+ const sellerClaim=f.config.signer.claim,sellerRef=await f.admission.vetRecord(JOB,sellerClaim,f.listing.seller.identity,{requirement});
+ const context=f.contexts.get(JOB),input=structuredClone(context.input);
+ input.seller.vetRecordRef=structuredClone(sellerRef);
+ const vetRequirements=context.vetRequirements.map(entry=>entry.evaluatedParty===sellerClaim?{...structuredClone(entry),vetRecordRef:structuredClone(sellerRef),requirement:structuredClone(requirement)}:structuredClone(entry));
+ f.contexts.set(JOB,{input,vetRequirements});
+ const answer=await agent.receiveProposal(await proposalForInput(input));
+ assert.equal(answer.disposition,'rejected');
+ assert.match(answer.reason,/Vet requirement invocation differs/);
+ assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
+ assert.ok(!f.signed.some(text=>text.startsWith('dacs-payee-bound-agreement:v1:')),'the seller signs no Agreement it could not restore');
+});
+
 test('a clock crossing the proposal window during the responder checkpoints is refused at the signing gate',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});
  f.config.now=()=>new Error().stack.includes('signUnderPin')?NOW+600001:NOW;
