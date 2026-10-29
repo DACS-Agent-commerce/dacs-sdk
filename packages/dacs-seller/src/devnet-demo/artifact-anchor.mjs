@@ -343,6 +343,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       metadata.networkBinding=clone(sourceCapability.transportBinding);
       metadata.artifactBinding={version:'1',policy:DEVNET_DEMO_ARTIFACT_POLICY,authority:sourceCapability.demoArtifactPublication.authority,artifactKind,jobId,logicalAddress,writer};
       if(deliveryBinding) metadata.deliveryBinding=clone(deliveryBinding);
+      // Admit the same content and complete Ed25519 envelope that readback accepts.
+      const candidateProjection={...transaction,hash:'0'.repeat(64),signature:{type:'ed25519',data:'0x'+'0'.repeat(128)}};
+      if(projectionContentText(transaction.content)===null || !projectionWithinBudget(candidateProjection)) fail('invalid','demo CREATE exceeds signed projection limits');
       const intent={stage:'intent',inputHash:exactHash(input),input:clone(input),transaction:clone(transaction)};
       if(authorize){
         const allowed=await authorize();
@@ -369,7 +372,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         // completed failure with no signed transaction in either durable journal
         // proves an unsigned attempt. Ambiguous signed outcomes keep the floor.
         const state=await snapshot();
-        const signed=state.live([...state.sourceRows,...state.walletRows]).some(([,row])=>row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
+        const signed=state.live([...state.sourceRows,...state.walletRows]).some(([,row])=>!state.rejected(row) && row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
         const code=answer?.error?.code;
         const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
         await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});
@@ -449,8 +452,11 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(content===null || typeof content!=='object') return null;
     try { return JSON.stringify(boundedResolutionValue(content,{maxBytes:SIGNED_CREATE_MAX_BYTES,maxValues:8192,maxDepth:32,maxListEntries:4096})); } catch { return null; }
   };
+  const projectionWithinBudget=projection=>{
+    try { boundedResolutionValue(projection,{maxBytes:SIGNED_PROJECTION_MAX_BYTES,maxValues:8192,maxDepth:34,maxListEntries:4096});return true; } catch { return false; }
+  };
   const projectionAuthentic=(projection,receipt)=>{
-    try { boundedResolutionValue(projection,{maxBytes:SIGNED_PROJECTION_MAX_BYTES,maxValues:8192,maxDepth:34,maxListEntries:4096}); } catch { return false; }
+    if(!projectionWithinBudget(projection)) return false;
     const text=HASH.test(projection?.hash ?? '') ? projectionContentText(projection.content) : null;
     return text!==null && sha256Hex(text)===projection.hash
       && projection.signature?.type==='ed25519' && verifyDemosSignature({address:owner,message:projection.hash,signature:projection.signature.data})
