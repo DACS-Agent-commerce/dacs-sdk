@@ -215,7 +215,7 @@ let host = await start();
 out.host = { origin: new URL(host.url).origin, listingPin: host.listingPin, timeouts: host.timeouts };
 // The operator issues each job's challenge through the host (CORE SN-1/SN-3),
 // the nonce its buyer then presents; the replayed job gets none.
-for (const id of [jobId, unvettedJobId, fabricatedJobId]) issuedNonces.set(id, host.issueSessionChallenge({ jobId: id, buyer: buyerKey.claim }).sessionNonce);
+for (const id of [jobId, unvettedJobId, fabricatedJobId]) issuedNonces.set(id, (await host.issueSessionChallenge({ jobId: id, buyer: buyerKey.claim })).sessionNonce);
 for (const [index, id] of [jobId, unvettedJobId, fabricatedJobId, replayedJobId, bareJobId].entries()) presentFor(id, now - index);
 out.presentsIssuedChallenge = [jobId, unvettedJobId, fabricatedJobId].every((id) => /^[0-9a-f]{64}$/.test(issuedNonces.get(id)) && bundleFor(id).sessionNonce === issuedNonces.get(id));
 buyerBundle = bundleFor(jobId);
@@ -224,7 +224,7 @@ unvetted = await proposalFor(seller.agreementInput({ jobId: unvettedJobId, listi
 fabricated = await proposalFor(fabricatedInput(fabricatedJobId));
 replayed = await proposalFor(await vettedInput(replayedJobId));
 bare = await proposalFor(await vettedInput(bareJobId));
-out.issuedChallenge = (({ sessionNonce, issuedAt, expiresAt }) => ({ nonce: /^[0-9a-f]{64}$/.test(sessionNonce), lifetimeMs: expiresAt - issuedAt }))(host.issueSessionChallenge({ jobId: freshJob(), buyer: buyerKey.claim }));
+out.issuedChallenge = (({ sessionNonce, issuedAt, expiresAt }) => ({ nonce: /^[0-9a-f]{64}$/.test(sessionNonce), lifetimeMs: expiresAt - issuedAt }))(await host.issueSessionChallenge({ jobId: freshJob(), buyer: buyerKey.claim }));
 const client = clientFor(host.url);
 const first = await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
 out.proposal = { disposition: first.disposition, role: first.contribution?.role ?? null, signer: first.contribution?.party ?? null };
