@@ -1,6 +1,6 @@
 // Expected installation bytes and links come only from a fresh, successful npm ci.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
 import { tmpdir } from "node:os";
@@ -12,14 +12,29 @@ const PACKAGE_LOCATION = new RegExp(`^node_modules/${PACKAGE_NAME}(?:/node_modul
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
 const digest = bytes => createHash("sha256").update(bytes).digest("base64");
 const kind = stat => stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "link" : stat.isFile() ? "file" : "unsupported";
+// npm links a package location to its package directory inside node_modules/.store
+// under install-strategy=linked; command links normally point at a package file.
+const linkTarget = (path, entry) => entry?.kind !== "link" || posix.isAbsolute(entry.target) ? null
+  : posix.normalize(posix.join(posix.dirname(path), entry.target));
+const isStoreDirectoryLink = (path, entry, inventory) => {
+  const target = linkTarget(path, entry);
+  return target !== null && target.startsWith("node_modules/.store/") && inventory.get(target)?.kind === "directory";
+};
+// Registry credentials inherited from a user npmrc are irrelevant offline and
+// must not be written into scratch storage that a killed verifier can leave behind.
+const isCredential = key => /(?:^|\/)_(?:auth(?:token)?|password)$/i.test(key);
+const withoutCredentials = config => Object.fromEntries(Object.entries(config).filter(([key]) => !isCredential(key)));
 
-/** Snapshots a consumer's effective npm configuration, environment and selected toolchain,
+/** Snapshots a consumer's effective npm configuration, environment, toolchain and process umask,
  * including whether an existing node_modules root changes npm's empty-install result.
  * The caller must use the same contract for its scripts-disabled installation and comparison. */
 export function npmInstallContract(project, toolchain = npmToolchain()) {
   const env = { ...process.env };
   const config = JSON.parse(runNpmNode(toolchain, [toolchain.cli, "config", "list", "--json"], { cwd: project, env }).toString());
-  return { toolchain, config, env, nodeModules: existsSync(join(project, "node_modules")) };
+  const nodeModules = join(project, "node_modules");
+  let nodeModulesMode = null;
+  try { nodeModulesMode = lstatSync(nodeModules).mode & 0o7777; } catch { /* absent root */ }
+  return { toolchain, config, env, nodeModules: nodeModulesMode !== null, nodeModulesMode, umask: process.umask() };
 }
 
 /** Inventories every node_modules path with one explicit kind, without following links.
@@ -32,7 +47,10 @@ export function installationInventory(project) {
     try { stat = lstatSync(join(project, path)); }
     catch (error) { if (error.code === "ENOENT") return; throw error; }
     const entry = { kind: kind(stat) };
-    if (entry.kind === "file") Object.assign(entry, { digest: digest(readFileSync(join(project, path))), mode: stat.mode & 0o7777, nlink: stat.nlink });
+    if (entry.kind === "file") {
+      if (stat.size > ARCHIVE_LIMITS.unpackedBytes) throw new Error("installation file is larger than the inventory limit: " + path);
+      Object.assign(entry, { digest: digest(readFileSync(join(project, path))), mode: stat.mode & 0o7777, nlink: stat.nlink });
+    }
     if (entry.kind === "directory") entry.mode = stat.mode & 0o7777;
     if (entry.kind === "link") entry.target = readlinkSync(join(project, path));
     inventory.set(path, entry);
@@ -71,7 +89,7 @@ function moduleRoots(location, files) {
 }
 
 function referenceConfig(project, cache, contract) {
-  const config = { ...contract.config };
+  const config = withoutCredentials(contract.config);
   // These describe the original invocation/storage, rather than install semantics.
   for (const key of ["prefix", "cache", "userconfig", "globalconfig", "location", "npm-version", "json", "logs-dir"]) delete config[key];
   const requireNpm = createRequire(contract.toolchain.cli);
@@ -99,18 +117,31 @@ function referenceConfig(project, cache, contract) {
   const infrastructure = new Set(["prefix", "cache", "userconfig", "globalconfig", "location", "npm-version", "json", "logs-dir",
     "ignore-scripts", "offline", "audit", "fund", "update-notifier", "progress", "dry-run", "package-lock", "package-lock-only", "global", "loglevel"]);
   for (const [key, value] of Object.entries(contract.config)) {
-    if (!infrastructure.has(key) && JSON.stringify(restored[key]) !== JSON.stringify(value)) {
+    if (!infrastructure.has(key) && !isCredential(key) && JSON.stringify(restored[key]) !== JSON.stringify(value)) {
       throw new Error("npm configuration did not round-trip: " + key);
     }
   }
   return { args, env, config: restored };
 }
 
-function seedArchive(cache, bytes) {
-  const hex = createHash("sha512").update(bytes).digest("hex");
-  const path = join(cache, "_cacache", "content-v2", "sha512", hex.slice(0, 2), hex.slice(2, 4), hex.slice(4));
+function seedArchive(cache, bytes, url) {
+  const sha512 = createHash("sha512").update(bytes).digest("hex");
+  const path = join(cache, "_cacache", "content-v2", "sha512", sha512.slice(0, 2), sha512.slice(2, 4), sha512.slice(4));
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, bytes);
+  if (typeof url !== "string") return;
+  // Linked installs fetch by resolved URL instead of by integrity, so mirror the
+  // content-addressed bytes in npm's request cache index exactly as a completed
+  // online fetch would have stored them.
+  const key = "make-fetch-happen:request-cache:" + url;
+  const entry = { key, integrity: "sha512-" + Buffer.from(sha512, "hex").toString("base64"),
+    time: Date.now(), size: bytes.length,
+    metadata: { time: Date.now(), url, reqHeaders: {}, resHeaders: {}, options: { compress: true } } };
+  const json = JSON.stringify(entry);
+  const hashed = createHash("sha256").update(key).digest("hex");
+  const index = join(cache, "_cacache", "index-v5", hashed.slice(0, 2), hashed.slice(2, 4));
+  mkdirSync(index, { recursive: true });
+  writeFileSync(join(index, hashed.slice(4)), `${createHash("sha1").update(json).digest("hex")}\t${json}\n`);
 }
 
 function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
@@ -141,7 +172,7 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
     record.manifest = manifestOf(files.get("package.json")).manifest;
     record.files = new Map([...files].map(([path, content]) => [path, digest(content)]));
     for (const [root, module] of moduleRoots(location, files)) roots.set(root, module);
-    seedArchive(cache, sources.get(location));
+    seedArchive(cache, sources.get(location), record.entry.resolved);
   }
   return unavailable;
 }
@@ -158,7 +189,7 @@ function excludedSources(unavailable, entries, contract, scratch, manifest, lock
     }
   }
   const input = join(scratch, "unavailable.json");
-  writeFileSync(input, JSON.stringify({ config: contract.config,
+  writeFileSync(input, JSON.stringify({ config: withoutCredentials(contract.config),
     entries: [...unavailable.keys()].map(location => [location, entries.get(location).entry]) }));
   const command = `const requireNpm = require('node:module').createRequire(process.argv[1]);
     const { config, entries } = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
@@ -200,6 +231,8 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
   try {
     if (!isPlainObject(lock?.packages) || !isPlainObject(manifest)) throw new Error("package-lock.json has no packages map or manifest");
     if (!installer?.config || !installer.env || typeof installer.nodeModules !== "boolean" ||
+        !Number.isInteger(installer.umask) || installer.umask < 0 || installer.umask > 0o777 ||
+        (installer.nodeModules ? !Number.isInteger(installer.nodeModulesMode) : installer.nodeModulesMode !== null) ||
         installer.toolchain?.platform !== process.platform || installer.toolchain.arch !== process.arch) {
       throw new Error("reference installation needs an explicit matching npm/platform/configuration contract");
     }
@@ -208,7 +241,11 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
     mkdirSync(project);
     // npm 11 only writes the hidden lockfile for an all-omitted tree when the
     // node_modules root already existed; reproduce that input, never its contents.
-    if (installer.nodeModules) mkdirSync(join(project, "node_modules"));
+    // npm preserves an existing root's mode, so restore the inspected one exactly.
+    if (installer.nodeModules) {
+      mkdirSync(join(project, "node_modules"));
+      chmodSync(join(project, "node_modules"), installer.nodeModulesMode);
+    }
     const unavailable = sourceEntries(lock, readArchive, installer, cache, entries, roots);
     const excluded = excludedSources(unavailable, entries, installer, scratch, manifest, lock);
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
@@ -249,7 +286,11 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
         };
       }
       require(process.argv[1]);`;
-      runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env });
+      // Reproduce the installing process's umask, not the verifier's: npm applies
+      // the inherited umask to every directory and file its child creates.
+      const previousUmask = process.umask(installer.umask);
+      try { runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env }); }
+      finally { process.umask(previousUmask); }
     } catch (cause) {
       const missing = [...unavailable].map(([location, error]) => `${location}: ${error.message}`).join("; ");
       throw new Error(cause.message + (missing ? `; source reads: ${missing}` : ""), { cause });
@@ -261,7 +302,8 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
       }
     }
     for (const [location, record] of entries) {
-      record.present = inventory.get(location)?.kind === "directory";
+      const installed = inventory.get(location);
+      record.present = installed?.kind === "directory" || isStoreDirectoryLink(location, installed, inventory);
       if (record.entry.inBundle === true && !roots.has(location)) {
         // An unavailable, explicitly excluded source has no archive roots.
         // Find this bundle's source owner, including through nested bundles.
@@ -285,9 +327,10 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
     }
     for (const [path, entry] of inventory) {
       if (entry.kind !== "link") continue;
-      const target = posix.normalize(posix.join(posix.dirname(path), entry.target));
-      if (posix.isAbsolute(entry.target) || inventory.get(target)?.kind !== "file") {
-        throw new Error("executable link target is not a reference file: " + path);
+      const target = linkTarget(path, entry);
+      const targetKind = target === null ? undefined : inventory.get(target)?.kind;
+      if (!(targetKind === "file" || targetKind === "directory" && target.startsWith("node_modules/.store/"))) {
+        throw new Error("link target is not a reference file or package directory: " + path);
       }
     }
     result.carried = new Map([...roots].filter(([root]) => !entries.has(root) && inventory.has(root)));
@@ -301,7 +344,9 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
  * missing/replaced directories, files, command links and generated artifacts are differences. */
 export function installationDifferences(project, reference) {
   if (reference.errors.length || !(reference.inventory instanceof Map)) return ["reference installation did not complete"];
-  const actual = installationInventory(project);
+  let actual;
+  try { actual = installationInventory(project); }
+  catch (cause) { return ["cannot read the installation: " + cause.message]; }
   const differences = [];
   for (const path of [...new Set([...reference.inventory.keys(), ...actual.keys()])].sort()) {
     const expected = reference.inventory.get(path);
