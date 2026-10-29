@@ -13,7 +13,8 @@ const pkg = (directory: string, name = "a", version = "1.0.0") => {
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "package.json"), JSON.stringify({ name, version }));
 };
-const lock = () => ({ packages: { "": {}, "node_modules/a": { version: "1.0.0", integrity: "sha512-fixture" } } });
+const lock = () => ({ packages: { "": { dependencies: { a: "1.0.0" } },
+  "node_modules/a": { version: "1.0.0", integrity: "sha512-fixture" } } });
 describe("runtime inventory boundary regressions", () => {
   it.each([".extra.js", ".hidden"])("records loadable dot entry %s", name => {
     const directory = root(); pkg(join(directory, "node_modules/a"));
@@ -134,5 +135,130 @@ describe("inventory executable entries", () => {
         ...(location.includes("parent") ? { "node_modules/parent": { version: "1.0.0" } } : {}) } };
       expect(runtimeImageInventoryFindings(runtimeImageInventory(directory), input))
         .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+    });
+});
+
+describe("required runtime dependency reachability", () => {
+  const inventory = (locations: string[] = []) => ({ schema: "dacs-runtime-image-inventory/v1",
+    packages: locations.map(location => ({ location, name: location.split("node_modules/").at(-1), version: "1.0.0" })) });
+  const optionalPeerLock = () => ({ packages: {
+    "": { dependencies: { ws: "1.0.0", "rpc-websockets": "1.0.0" } },
+    "node_modules/ws": { version: "1.0.0", peerDependencies: { "utf-8-validate": "^5.0.0" },
+      peerDependenciesMeta: { "utf-8-validate": { optional: true } } },
+    "node_modules/rpc-websockets": { version: "1.0.0", optionalDependencies: { "utf-8-validate": "^6.0.0" } },
+    "node_modules/utf-8-validate": { version: "5.0.10" },
+    "node_modules/rpc-websockets/node_modules/utf-8-validate": { version: "6.0.0" },
+  } });
+
+  it("does not require a hoisted optional peer or a separate nested optional dependency without flags", () => {
+    expect(runtimeImageInventoryFindings(inventory(["node_modules/ws", "node_modules/rpc-websockets"]), optionalPeerLock()))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+  });
+  it.each(["root", "transitive"])("requires the same hoisted peer when a %s plain dependency reaches it", source => {
+    const input = optionalPeerLock();
+    const location = source === "root" ? "" : "node_modules/ws";
+    const packages = { ...input.packages, [location]: { ...input.packages[location],
+      dependencies: { ...(source === "root" ? input.packages[""].dependencies : {}), "utf-8-validate": "^5.0.0" } } };
+    expect(runtimeImageInventoryFindings(inventory(["node_modules/ws", "node_modules/rpc-websockets"]), { packages }))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: ["node_modules/utf-8-validate"] });
+  });
+  it("does not require the plain dependencies of an optional-only package", () => {
+    const input = { packages: { "": { optionalDependencies: { a: "1.0.0" } },
+      "node_modules/a": { version: "1.0.0", dependencies: { b: "1.0.0" } },
+      "node_modules/b": { version: "1.0.0" } } };
+    expect(runtimeImageInventoryFindings(inventory(), input))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+  });
+  it.each(["", "node_modules/parent"])("honours optionalDependencies overriding dependencies at %s", location => {
+    const input = { packages: { "": { dependencies: { parent: "1.0.0" } },
+      "node_modules/parent": { version: "1.0.0" }, "node_modules/a": { version: "1.0.0" },
+      [location]: { ...(location ? { version: "1.0.0" } : {}), dependencies: { a: "1.0.0" },
+        optionalDependencies: { a: "1.0.0" } } } };
+    expect(runtimeImageInventoryFindings(inventory(["node_modules/parent"]), input))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+  });
+  it.each(["optional", "devOptional"])("requires a plain dependency despite its %s flag", flag => {
+    expect(runtimeImageInventoryFindings(inventory(), { packages: { "": { dependencies: { a: "1.0.0" } },
+      "node_modules/a": { version: "1.0.0", [flag]: true } } }))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: ["node_modules/a"] });
+  });
+  it.each(["native", "@scope/native"])("resolves the nearest nested copy of %s before a hoisted optional copy", name => {
+    const nested = `node_modules/parent/node_modules/${name}`;
+    expect(runtimeImageInventoryFindings(inventory(["node_modules/parent"]), { packages: {
+      "": { dependencies: { parent: "1.0.0" }, optionalDependencies: { [name]: "1.0.0" } },
+      "node_modules/parent": { version: "1.0.0", dependencies: { [name]: "2.0.0" } },
+      [`node_modules/${name}`]: { version: "1.0.0" }, [nested]: { version: "2.0.0" },
+    } })).toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [nested] });
+  });
+  it.each(["node_modules/native", "node_modules/parent/node_modules/native", "node_modules/parent/node_modules/@scope/node_modules/native"])(
+    "resolves a scoped package dependency from ancestor location %s", target => {
+      const child = "node_modules/parent/node_modules/@scope/child";
+      expect(runtimeImageInventoryFindings(inventory(["node_modules/parent", child]), { packages: {
+        "": { dependencies: { parent: "1.0.0" } },
+        "node_modules/parent": { version: "1.0.0", dependencies: { "@scope/child": "1.0.0" } },
+        [child]: { version: "1.0.0", dependencies: { native: "1.0.0" } }, [target]: { version: "1.0.0" },
+      } })).toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [target] });
+    });
+  it("resolves aliases by their installed name and checks the recorded package name", () => {
+    const input = { packages: { "": { dependencies: { alias: "npm:real@1.0.0" } },
+      "node_modules/alias": { name: "real", version: "1.0.0" } } };
+    expect(runtimeImageInventoryFindings(inventory(), input).missing).toEqual(["node_modules/alias"]);
+    expect(runtimeImageInventoryFindings({ schema: "dacs-runtime-image-inventory/v1", packages: [
+      { location: "node_modules/alias", name: "real", version: "1.0.0" },
+    ] }, input)).toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+  });
+  it("terminates cycles, shares targets and leaves repeated calls independent", () => {
+    const input = { packages: { "": { dependencies: { a: "1.0.0", b: "1.0.0" } },
+      "node_modules/a": { version: "1.0.0", dependencies: { b: "1.0.0", c: "1.0.0" } },
+      "node_modules/b": { version: "1.0.0", dependencies: { a: "1.0.0", c: "1.0.0" } },
+      "node_modules/c": { version: "1.0.0" } } };
+    const before = JSON.stringify(input);
+    for (let run = 0; run < 2; run++) {
+      expect(runtimeImageInventoryFindings(inventory(["node_modules/a", "node_modules/b"]), input))
+        .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: ["node_modules/c"] });
+    }
+    expect(JSON.stringify(input)).toBe(before);
+  });
+  it.each(["devDependencies", "peerDependencies"])("does not require packages reached only through %s", field => {
+    expect(runtimeImageInventoryFindings(inventory(), { packages: { "": { [field]: { a: "1.0.0" } },
+      "node_modules/a": { version: "1.0.0" } } }))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+  });
+  it.each([{}, { "node_modules/a": { version: "1.0.0", dev: true } },
+    { "node_modules/a": { link: true, resolved: "packages/a" } }])("fails closed on an unresolved required target %j", entries => {
+    expect(runtimeImageInventoryFindings(inventory(), { packages: { "": { dependencies: { a: "1.0.0" } }, ...entries } }))
+      .toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/required dependency.*a/)] });
+  });
+  it.each([null, [], "invalid"].map(dependencies => ({ dependencies })))(
+    "fails closed on a malformed required dependency map $dependencies", ({ dependencies }) => {
+      expect(runtimeImageInventoryFindings(inventory(), { packages: { "": { dependencies } } }))
+        .toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/dependencies/)] });
+    });
+  it("fails closed on a malformed optional override map instead of silently ignoring it", () => {
+    expect(runtimeImageInventoryFindings(inventory(), { packages: { "": {
+      dependencies: { a: "1.0.0" }, optionalDependencies: [],
+    }, "node_modules/a": { version: "1.0.0" } } }))
+      .toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/dependencies/)] });
+  });
+  it("does not skip a dev-only nested target to accept a hoisted copy", () => {
+    expect(runtimeImageInventoryFindings(inventory(), { packages: {
+      "": { dependencies: { parent: "1.0.0" } },
+      "node_modules/parent": { version: "1.0.0", dependencies: { a: "1.0.0" } },
+      "node_modules/parent/node_modules/a": { version: "1.0.0", dev: true },
+      "node_modules/a": { version: "1.0.0" },
+    } })).toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/required dependency.*a/)] });
+  });
+  it("skips node_modules/node_modules when resolving ancestor directories", () => {
+    expect(runtimeImageInventoryFindings(inventory(), { packages: {
+      "": { dependencies: { parent: "1.0.0" } },
+      "node_modules/parent": { version: "1.0.0", dependencies: { a: "1.0.0" } },
+      "node_modules/node_modules/a": { version: "1.0.0" },
+    } })).toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/required dependency.*a/)] });
+  });
+  it.each([{ "../a": "1.0.0" }, { "/a": "1.0.0" }, { a: null }, { a: "" }])(
+    "fails closed on a malformed required edge %j", dependencies => {
+      expect(runtimeImageInventoryFindings(inventory(), { packages: { "": { dependencies },
+        "node_modules/a": { version: "1.0.0" } } }))
+        .toMatchObject({ scanComplete: false, errors: [expect.stringMatching(/required dependency/)] });
     });
 });
