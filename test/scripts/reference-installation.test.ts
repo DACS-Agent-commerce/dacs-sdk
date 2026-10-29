@@ -1349,7 +1349,7 @@ describe("observed archive replay", { timeout: 60_000 }, () => {
 
 // npm formats node_modules/.package-lock.json after the root package.json text.
 describe("root package.json bytes", { timeout: 60_000 }, () => {
-  const bom = "﻿";
+  const bom = "\uFEFF";
   const twoSpace = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
   const tab = (value: unknown) => JSON.stringify(value, null, "\t") + "\n";
   const offlineNpm = (project: string, command: string) => {
