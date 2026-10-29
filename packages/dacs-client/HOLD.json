@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "579d18fe599ff202d58a01ce2486da8e50a72504"
+        "blob": "fe39c96351095626ae39d4b510e44a6d8d1e6fa5"
       },
       "DELTA-LEDGER.json": {
-        "blob": "d5e24636721442f0e9805bc2299bf7c89d9bec98"
+        "blob": "692a266db5ffd1a4c06847c7e4fad70441e96d34"
       },
       "DELTA-MAP.md": {
-        "blob": "eb0413fdb1a07db4d88211c0610fe504d750300c"
+        "blob": "26b1813b1d632b0027584d1d9a7c66b17f6a6d00"
       },
       "DELTA-NOTES.md": {
         "blob": "d7ad623a4f76ee359718ccd90c823d54a503aed8"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "1f7b41398eb29eb764801e44df8b30428691b235"
+        "blob": "c03bf5569712b92d9ebe3eb4c536b5e4285ac23e"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1274,7 +1274,7 @@
         "blob": "9f166e44137d98f78178f830d44077153c1cef16"
       },
       "src/util/sqlite-statement-boundary.mjs": {
-        "blob": "70e4369be0d0a9546ea5a0a96367cfb750fdf47b"
+        "blob": "2df38c12b041aa1572302580dc7e11a5b44104df"
       },
       "src/util/sqlite-write-lease.mjs": {
         "blob": "e45c8004ff9c71bb2c212912d5f44e50be256843"
@@ -1721,7 +1721,7 @@
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
       },
       "test/sqlite-iterator-own-methods.test.mjs": {
-        "blob": "3a05a6cfc5529d0b44a6b9b3653f947d05083391"
+        "blob": "e6154a6bdf929af005b39ef394befa2800b43431"
       },
       "test/sqlite-purchase-journal.test.mjs": {
         "blob": "0cf1690daa71819106208636318cbc955dd9ed8b"
@@ -1731,6 +1731,9 @@
       },
       "test/sqlite-statement-boundary.test.mjs": {
         "blob": "169a5edac4f556d5ddec2e0278223be9a27f7f9c"
+      },
+      "test/sqlite-statement-policy.test.mjs": {
+        "blob": "8bdb94975979ee6da61abb7dae0f0b1266327da3"
       },
       "test/sqlite-write-lease.test.mjs": {
         "blob": "aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2"

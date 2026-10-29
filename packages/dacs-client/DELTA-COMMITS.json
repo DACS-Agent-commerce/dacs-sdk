@@ -941,5 +941,6 @@
     ]
   },
   {"sha":null,"subject":"fix(client): D11 guard iterator-owned steps on supported runtimes","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/sqlite-statement-boundary.mjs","packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs"]},
-  {"sha": null,"subject": "fix(client): D11 finalize 10 carry choices","files": ["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]}
+  {"sha": null,"subject": "fix(client): D11 finalize 10 carry choices","files": ["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs"]},
+  {"sha":null,"subject":"fix(client): D11 preserve statement policy on integer-reading connections","files":["packages/dacs-client/DELTA-COMMITS.json","packages/dacs-client/DELTA-LEDGER.json","packages/dacs-client/DELTA-MAP.md","packages/dacs-client/HOLD.json","packages/dacs-client/scripts/check-hold.mjs","packages/dacs-client/src/util/sqlite-statement-boundary.mjs","packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs","packages/dacs-client/test/sqlite-statement-policy.test.mjs"]}
 ]
