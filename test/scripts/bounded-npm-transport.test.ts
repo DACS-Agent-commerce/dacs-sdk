@@ -394,18 +394,44 @@ describe("bounded generated build", () => {
       expect(readFileSync(target, "utf8")).toBe("!acceptance-npm-http.cjs\n");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it("does not duplicate an existing ignore exception and refuses repeated output creation", () => {
+  it("does not duplicate an existing ignore exception when preparation repeats", () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-bounded-repeat-"));
     try {
       writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
       writeFileSync(join(root, ".dockerignore"), "**\n!acceptance-npm-http.cjs\n");
       const once = readFileSync(join(root, ".dockerignore"), "utf8");
-      prepareBoundedBuild(root);
-      expect(() => prepareBoundedBuild(root)).toThrow(/EEXIST/);
+      const first = readFileSync(prepareBoundedBuild(root), "utf8");
+      expect(readFileSync(prepareBoundedBuild(root), "utf8")).toBe(first);
       expect(readFileSync(join(root, ".dockerignore"), "utf8")).toBe(once);
       expect(once.match(/^!acceptance-npm-http\.cjs$/gm)).toHaveLength(1);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  it("finishes a preparation interrupted after the support file was published", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-restart-"));
+    try {
+      writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
+      writeFileSync(join(root, ".dockerignore"), "**\n");
+      const support = readFileSync(resolve("scripts/bounded-npm-http.cjs"));
+      writeFileSync(join(root, "acceptance-npm-http.cjs"), support);
+      expect(existsSync(join(root, "Dockerfile.acceptance"))).toBe(false);
+      expect(readFileSync(prepareBoundedBuild(root), "utf8")).toContain("COPY acceptance-npm-http.cjs /acceptance-npm-http.cjs");
+      expect(readFileSync(join(root, "acceptance-npm-http.cjs"))).toEqual(support);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each(["Dockerfile.acceptance", "acceptance-npm-http.cjs"])(
+    "refuses a different existing %s before changing the project", name => {
+      const root = mkdtempSync(join(tmpdir(), "dacs-bounded-conflict-"));
+      try {
+        writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
+        writeFileSync(join(root, ".dockerignore"), "**\n");
+        writeFileSync(join(root, name), "different contents\n");
+        expect(() => prepareBoundedBuild(root)).toThrow(/EEXIST/);
+        expect(readFileSync(join(root, ".dockerignore"), "utf8")).toBe("**\n");
+        expect(readFileSync(join(root, name), "utf8")).toBe("different contents\n");
+        const untouched = name === "Dockerfile.acceptance" ? "acceptance-npm-http.cjs" : "Dockerfile.acceptance";
+        expect(existsSync(join(root, untouched))).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
   it("refuses an empty ignore file without publishing generated files", () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-bounded-empty-"));
     try {
