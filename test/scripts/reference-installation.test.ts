@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -9,7 +9,7 @@ import { cacheArchive, npmCi, packTarball, serveArchives, sri, tarArchive } from
 
 // Keep the closure executable as plain Node ESM.
 const closureModulePath = "../../scripts/installation-closure.mjs";
-const { cachedArchive, npmToolchain, runNpmNode } = await import(closureModulePath);
+const { ARCHIVE_LIMITS, cachedArchive, npmToolchain, runNpmNode } = await import(closureModulePath);
 const referenceModulePath = "../../scripts/reference-installation.mjs";
 const { referenceInstallation, installationDifferences, installationInventory, npmInstallContract } = await import(referenceModulePath);
 function installationClosure(project: string, lock: unknown, readArchive: unknown) {
@@ -26,6 +26,17 @@ const temporaryDirectory = () => {
   scratch.push(directory);
   return directory;
 };
+// Runs the project's npm under a specific shell umask, as a hardened installer would.
+const npmUnderUmask = (args: string[], cwd: string, umask: number) => new Promise<{ status: number | null; output: string }>((resolve, reject) => {
+  const command = `umask ${umask.toString(8).padStart(3, "0")}; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(npmToolchain().cli)}`
+    + args.map(argument => " " + JSON.stringify(argument)).join("");
+  const child = spawn("sh", ["-c", command], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+  let output = "";
+  child.stdout.on("data", (data: Buffer) => { output += data; });
+  child.stderr.on("data", (data: Buffer) => { output += data; });
+  child.on("error", reject);
+  child.on("close", status => resolve({ status, output }));
+});
 const manifest = (name: string, version = "1.0.0", fields: Record<string, unknown> = {}) =>
   JSON.stringify({ name, version, ...fields });
 
@@ -703,8 +714,43 @@ describe("installation closure of real npm installations", () => {
       expect(installationDifferences(directory, closure)).toContain("changed: node_modules/crlf-bin/cli.js");
     } finally { await server.close(); }
   }, 60_000);
-});
 
+  it("replays install-strategy=linked from authenticated archive bytes", async () => {
+    const directory = temporaryDirectory();
+    const project = join(directory, "project");
+    const cache = join(directory, "cache");
+    mkdirSync(project);
+    const child = packTarball({ "package.json": manifest("linked-child", "1.0.0"), "index.js": "child" });
+    const parent = packTarball({ "package.json": manifest("linked-parent", "1.0.0", { dependencies: { "linked-child": "1.0.0" } }) });
+    const server = await serveArchives(new Map([["linked-parent", parent], ["linked-child", child]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { "linked-parent": "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: {
+        "": root,
+        "node_modules/linked-parent": { version: "1.0.0", resolved: `${server.registry}/linked-parent.tgz`,
+          integrity: sri(parent), dependencies: { "linked-child": "1.0.0" } },
+        "node_modules/linked-parent/node_modules/linked-child": { version: "1.0.0",
+          resolved: `${server.registry}/linked-child.tgz`, integrity: sri(child) },
+      } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      writeFileSync(join(project, ".npmrc"), "install-strategy=linked\n");
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      expect(lstatSync(join(project, "node_modules/linked-parent")).isSymbolicLink()).toBe(true);
+      const reference = installationClosure(project, lock, (_location: string, entry: { integrity: string }) =>
+        cachedArchive(cache, entry.integrity));
+      expect(reference.errors).toEqual([]);
+      expect(reference.entries.get("node_modules/linked-parent")?.present).toBe(true);
+      expect(installationDifferences(project, reference)).toEqual([]);
+      writeFileSync(join(project, "node_modules/linked-parent/package.json"),
+        manifest("linked-parent", "1.0.0", { dependencies: { "linked-child": "1.0.0" }, tampered: true }));
+      const differences = installationDifferences(project, reference);
+      expect(differences).toHaveLength(1);
+      expect(differences[0]).toMatch(/^changed: node_modules\/\.store\/.*\/package\.json$/);
+    } finally { await server.close(); }
+  }, 60_000);
+});
 
 describe("reference contract and complete inventory", { timeout: 60_000 }, () => {
   it.each([["file", "directory"], ["file", "link"], ["directory", "file"], ["directory", "link"],
@@ -742,6 +788,53 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
     const reference = { errors: [], inventory: installationInventory(project) };
     chmodSync(path, 0o4755);
     expect(installationDifferences(project, reference)).toContain("changed: node_modules/pkg/file.js");
+  });
+
+  it("reproduces the contract's umask and an existing node_modules root mode", async () => {
+    const directory = temporaryDirectory();
+    const project = join(directory, "project");
+    const cache = join(directory, "cache");
+    mkdirSync(project);
+    const archive = packTarball({ "package.json": manifest("a"), "index.js": "a" });
+    const server = await serveArchives(new Map([["a", archive]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { a: "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: { "": root, "node_modules/a": {
+        version: "1.0.0", resolved: `${server.registry}/a.tgz`, integrity: sri(archive) } } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      writeFileSync(join(project, ".npmrc"), "");
+      mkdirSync(join(project, "node_modules"));
+      chmodSync(join(project, "node_modules"), 0o755);
+      const installed = await npmUnderUmask(["ci", "--ignore-scripts", "--no-audit", "--no-fund",
+        "--no-update-notifier", `--cache=${cache}`], project, 0o077);
+      expect(installed.status, installed.output).toBe(0);
+      expect(lstatSync(join(project, "node_modules")).mode & 0o7777).toBe(0o755);
+      expect(lstatSync(join(project, "node_modules/a")).mode & 0o7777).toBe(0o700);
+      // The installing shell captured the contract; verification happens with a different umask.
+      const previousUmask = process.umask(0o077);
+      const installer = npmInstallContract(project);
+      process.umask(0o022);
+      try {
+        expect(installer.umask).toBe(0o077);
+        expect(installer.nodeModulesMode).toBe(0o755);
+        const reference = referenceInstallation({ manifest: root, lock, installer,
+          readArchive: (_location: string, entry: { integrity: string }) => cachedArchive(cache, entry.integrity) });
+        expect(reference.errors).toEqual([]);
+        expect(installationDifferences(project, reference)).toEqual([]);
+      } finally { process.umask(previousUmask); }
+    } finally { await server.close(); }
+  }, 60_000);
+
+  it("refuses an inventory whose file exceeds the byte limit instead of throwing", () => {
+    const project = temporaryDirectory();
+    const path = join(project, "node_modules/pkg/huge.bin");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "");
+    truncateSync(path, ARCHIVE_LIMITS.unpackedBytes + 1);
+    const reference = { errors: [], inventory: new Map() };
+    expect(installationDifferences(project, reference))
+      .toEqual([expect.stringContaining("cannot read the installation")]);
   });
 
   it("requires the generated hidden lockfile to finish an installation", () => {
