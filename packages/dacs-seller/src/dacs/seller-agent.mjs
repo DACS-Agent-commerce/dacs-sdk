@@ -1012,7 +1012,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const fixtureSettlement=nativeProfile?null:createFixtureSettlement({listing,validation,sellerBundle,claim,anchors,observer:observeDemosTransfer,receiptStore,
     sessionFor,commit,sign,signEvidence,reportFor:deliveryReport,persist,durable,bindSettlement,assertCredit:assertSettlementCredit,heldFor,now,
     error:(code,message,status=503)=>{throw new SellerAgentError(code,message,status);}});
-  const settlementOperations=Object.freeze(nativeProfile?{commit:nativeUnavailable,payment:nativeUnavailable}:{commit:()=>{},payment:fixtureSettlement.submitPayment});
+  const settlementOperations=Object.freeze(nativeProfile?{commit:()=>{},payment:nativeUnavailable}:{commit:()=>{},payment:fixtureSettlement.submitPayment});
   async function submitPayment({jobId,txHash,payerPayingKey,nativePaymentEvidence:requestedEvidence}) {
     assertSettlementChain();
     const session=sessionFor(jobId);
