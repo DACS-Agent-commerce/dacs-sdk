@@ -11,6 +11,30 @@ export class OutboundError extends Error {
   }
 }
 
+/** Cancel a response body that will not be read. Never throws; returns nothing. */
+export function cancelResponseBody(response) {
+  response?.body?.cancel().catch(() => {});
+}
+
+/** Wait for `pending`, but stop waiting when `signal` aborts, even if the
+ * operation behind `pending` ignores the signal. Returns the settled value, or
+ * rejects with the signal's reason. A value that arrives after the abort is
+ * passed to `discardLate` (to release it); a late failure is dropped.
+ */
+export function settleOnAbort(pending, signal, discardLate = () => {}) {
+  return new Promise((resolve, reject) => {
+    let abandoned = false;
+    const abandon = () => { abandoned = true; reject(signal.reason); };
+    Promise.resolve(pending).then(
+      (value) => { signal.removeEventListener('abort', abandon); if (abandoned) discardLate(value); else resolve(value); },
+      (error) => { signal.removeEventListener('abort', abandon); if (!abandoned) reject(error); },
+    );
+    // A result that is already available when an aborted signal is seen still
+    // wins, so the caller can report its own abort reason on it.
+    if (signal.aborted) queueMicrotask(abandon); else signal.addEventListener('abort', abandon, { once: true });
+  });
+}
+
 const unavailable = (message, cause) => Object.assign(new OutboundError('unavailable', message), { cause });
 
 // Every exit reports one shape: the caller's abort reason first, then this
@@ -26,7 +50,7 @@ function settled({ signal, timeout }, error) {
 async function readCapped(response, maxBytes, stop, cancellation) {
   const declared = response.headers.get('content-length');
   if (declared !== null && Number(declared) > maxBytes) {
-    void response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('invalid', 'response exceeds byte limit');
   }
   if (!response.body) return new Uint8Array();
@@ -37,7 +61,7 @@ async function readCapped(response, maxBytes, stop, cancellation) {
   const chunks = [];
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await settleOnAbort(reader.read(), cancellation);
       // A cancelled reader ends with done; that is an abort, not a full body.
       if (cancellation.aborted) throw settled(stop);
       if (done) break;
@@ -65,7 +89,7 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
   const cancellation = signal ? AbortSignal.any([stop.timeout, signal]) : stop.timeout;
   let response;
   try {
-    response = await fetchImpl(target, {
+    response = await settleOnAbort(fetchImpl(target, {
       method,
       headers: { accept: 'application/json', ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -73,29 +97,29 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
       credentials: 'omit',
       cache: 'no-store',
       signal: cancellation,
-    });
+    }), cancellation, cancelResponseBody);
   } catch (error) {
     throw settled(stop, unavailable(error?.name === 'TimeoutError' ? 'request timed out' : 'request failed', error));
   }
   if (cancellation.aborted) {
-    void response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw settled(stop);
   }
   if (response.status >= 300 && response.status < 400) {
-    void response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('invalid', 'unexpected redirect', { status: response.status });
   }
   if (response.status === 404) {
-    void response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('not-found', 'not found', { status: 404 });
   }
   if (!response.ok) {
-    void response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('unavailable', `upstream returned HTTP ${response.status}`, { status: response.status });
   }
   const type = response.headers.get('content-type') ?? '';
   if (!/^application\/(?:[\w.+-]+\+)?json\b/i.test(type)) {
-    void response.body?.cancel().catch(() => {});
+    cancelResponseBody(response);
     throw new OutboundError('invalid', 'upstream did not return JSON');
   }
   const bytes = await readCapped(response, maxBytes, stop, cancellation);
