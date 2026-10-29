@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "5b35842958570e8c6032905ce8ba06551c0d35d8"
+        "blob": "1b0bd2da16d85158eb0119a7c92163de9499f6d6"
       },
       "DELTA-LEDGER.json": {
-        "blob": "086613359b2228ed6c394963ca2d94406540bc2c"
+        "blob": "ca265fd3b8274445c5152de4b0eef0126dd3c120"
       },
       "DELTA-MAP.md": {
-        "blob": "e31c3ef7f5e08330198f74cbdd2439c6c038cb55"
+        "blob": "6c735479e25f32c43f668f8709317af2b2c7970b"
       },
       "DELTA-NOTES.md": {
         "blob": "b4031ffc680093a80e7c098c38debfef5a25be3c"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "2c24ebf2d9e0f8ddbfe755dc797161c17f932daa"
+        "blob": "b89a89ffe8daa0efeffa178e4643733eb25523ea"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1204,6 +1204,9 @@
       "src/devnet-demo/storage-write-recovery.mjs": {
         "blob": "339752ef02b10b9f2740e833f9b6a1be239ed2b8"
       },
+      "src/diagnostic-projection.mjs": {
+        "blob": "0dcfab473d1256f9de295bc65c0f04926e1ceb62"
+      },
       "src/portal-capability.mjs": {
         "blob": "d6200b11094df0e624dd644d980ac3bc7444868d"
       },
@@ -1302,6 +1305,9 @@
       },
       "test/delivery-evidence-gate.test.mjs": {
         "blob": "14d7f1261fe9abe495e3da20d975221d051adfc7"
+      },
+      "test/diagnostic-projection.test.mjs": {
+        "blob": "cd5edb7803946051073fc731837213c0544411af"
       },
       "test/diagnostic-store-regressions.test.mjs": {
         "blob": "e7bf7a95fd5f8ce536b3834a27859b79dd607f22"

@@ -758,6 +758,9 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/src/purchases.mjs:32`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:40`, `packages/dacs-client/src/purchases.mjs:46`, `packages/dacs-client/src/purchases.mjs:51`, `packages/dacs-client/src/purchases.mjs:83`, `packages/dacs-client/src/purchases.mjs:176`, `packages/dacs-client/src/purchases.mjs:185`, `packages/dacs-client/src/purchases.mjs:242`, `packages/dacs-client/src/purchases.mjs:248`, `packages/dacs-client/src/purchases.mjs:311`, `packages/dacs-client/src/purchases.mjs:383`, `packages/dacs-client/src/purchases.mjs:399`, `packages/dacs-client/src/purchases.mjs:402`, `packages/dacs-client/src/purchases.mjs:412`, `packages/dacs-client/src/purchases.mjs:432`, `packages/dacs-client/src/purchases.mjs:449`, `packages/dacs-client/src/purchases.mjs:494`, `packages/dacs-client/src/purchases.mjs:513`, `packages/dacs-client/src/purchases.mjs:620`, `packages/dacs-client/src/purchases.mjs:725`, `packages/dacs-client/src/purchases.mjs:745`, `packages/dacs-client/src/purchases.mjs:755`, `packages/dacs-client/src/purchases.mjs:805`, `packages/dacs-client/src/purchases.mjs:840`, `packages/dacs-client/src/purchases.mjs:852`, `packages/dacs-client/src/purchases.mjs:915`, `packages/dacs-client/src/purchases.mjs:928`, `packages/dacs-client/src/purchases.mjs:936`, `packages/dacs-client/src/purchases.mjs:938`, `packages/dacs-client/src/purchases.mjs:940`, `packages/dacs-client/src/purchases.mjs:962`, `packages/dacs-client/src/purchases.mjs:991`, `packages/dacs-client/src/purchases.mjs:998`, `packages/dacs-client/src/purchases.mjs:1124`, `packages/dacs-client/src/purchases.mjs:1137`, `packages/dacs-client/src/purchases.mjs:1139`, `packages/dacs-client/src/purchases.mjs:1145`, `packages/dacs-client/src/purchases.mjs:1189`, `packages/dacs-client/src/purchases.mjs:1213`, `packages/dacs-client/src/purchases.mjs:1222`, `packages/dacs-client/src/purchases.mjs:1229`, `packages/dacs-client/src/purchases.mjs:1236`, `packages/dacs-client/src/purchases.mjs:1243` | 5a5fdd164e41dd4abc7f1107620ce413458b29a6 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 0f866a907680797a18eaaa3f0b284e299ab13866 |
 | | `packages/dacs-client/test/portal-capability.test.mjs:1` | 073700c9a849a4bfc092cb5913498364fd622f0d |
+| D11 | fix(client): D11 rebuild part 06b on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 0dcfab473d1256f9de295bc65c0f04926e1ceb62 |
+| | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | cd5edb7803946051073fc731837213c0544411af |
 
 ## Complete commit and file inventory
 
@@ -1875,6 +1878,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a598cbbaa379f93c4af7ff5ac1230f9b636d9629 | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| a598cbbaa379f93c4af7ff5ac1230f9b636d9629 | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
