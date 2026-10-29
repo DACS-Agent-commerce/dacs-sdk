@@ -75,9 +75,19 @@ describe("publish environment evidence validation", () => {
       reviewers: [{ type: "User", reviewer: { login: "maintainer" } },
         { type: "User", reviewer: { login: "release" } }] }];
     expect(publishEnvironmentProblems(env, policies(), "maintainer")).toEqual([]);
-    // Team membership is not in this evidence; a team may contain another approver.
+    // Team membership is not in this evidence, so a team reviewer cannot prove
+    // that anyone other than the dispatch requester can approve: the guard needs
+    // a named user, here a distinct one.
     env.protection_rules = [{ type: "required_reviewers", prevent_self_review: true,
       reviewers: [{ type: "Team", reviewer: { slug: "release" } }] }];
+    expect(publishEnvironmentProblems(env, policies(), "maintainer")).not.toEqual([]);
+    env.protection_rules = [{ type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { login: "maintainer" } },
+        { type: "Team", reviewer: { slug: "release" } }] }];
+    expect(publishEnvironmentProblems(env, policies(), "maintainer")).not.toEqual([]);
+    env.protection_rules = [{ type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { login: "maintainer" } },
+        { type: "User", reviewer: { login: "release" } }] }];
     expect(publishEnvironmentProblems(env, policies(), "maintainer")).toEqual([]);
   });
 

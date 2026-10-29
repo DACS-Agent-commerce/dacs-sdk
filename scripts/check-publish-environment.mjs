@@ -27,13 +27,14 @@ function reviewerIdentity(entry) {
 }
 
 // Whether someone other than the run's triggering actor can approve the job.
-// A team is assumed to have another member: the API evidence names no members.
+// Team membership is not in this evidence, so a team cannot prove that an
+// eligible approver exists: only a named user counts.
 function hasEligibleApprover(rules, dispatchActor) {
   if (dispatchActor === "") return true;
   const actor = dispatchActor.toLowerCase();
   return rules.some(rule => rule.reviewers.some(entry => {
     const identity = reviewerIdentity(entry);
-    return identity.type === "Team" || identity.login.toLowerCase() !== actor;
+    return identity.type === "User" && identity.login.toLowerCase() !== actor;
   }));
 }
 
