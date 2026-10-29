@@ -268,6 +268,8 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
   return { directory, cache, packages, contents, manifest, provenance, installed, lockPackage, copyPackage, run, report };
 }
 const TREE = "installed tree is not the locked archives: ";
+// Node and the environment may write warnings to a command's stderr; a passing command must tolerate them.
+const AMBIENT_WARNING = '--import=data:text/javascript,process.emitWarning("ambient")';
 
 // Executes the script's own summary program over a stage holding the evidence
 // a complete run collects; `overrides` replaces individual evidence files.
@@ -575,8 +577,9 @@ describe("registry/container evidence", () => {
       for (const file of ["package.json", "package-lock.json"]) {
         writeFileSync(join(project, file), "\uFEFF" + readFileSync(join(project, file), "utf8"));
       }
-    });
-    expect(result.stderr).toBe("");
+    }, { nodeArgs: [AMBIENT_WARNING] });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain("ambient");
     expect(result).toMatchObject({ status: 0, report: { passed: true, violations: [] } });
   });
 
@@ -638,10 +641,13 @@ describe("registry/container evidence", () => {
 
   it.each([["standard input", ["-"]], ["an evaluated script", ["-e"]]])("can be imported from %s without running a mode", (_entry, entry) => {
     const program = `await import(${JSON.stringify(pathToFileURL(join(repoRoot, "scripts/registry-container-disposition.mjs")).href)}); console.log("ok");`;
-    const result = spawnSync(process.execPath, ["--input-type=module", ...entry, ...(entry[0] === "-e" ? [program] : [])],
+    const result = spawnSync(process.execPath, [AMBIENT_WARNING, "--input-type=module", ...entry, ...(entry[0] === "-e" ? [program] : [])],
       { cwd: repoRoot, encoding: "utf8", input: program });
-    expect(result.stderr).toBe("");
-    expect(result).toMatchObject({ status: 0, stdout: "ok\n" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("ok\n");
+    expect(result.stderr).toContain("ambient");
+    expect(result.stderr).not.toContain("registry policy mode");
+    expect(result.stderr).not.toContain("usage: --dependency-policy");
   });
 
   it.each(["dacs", "dacs-node"])("rejects an installed %s whose runtime file differs from the packed tarball", name => {
