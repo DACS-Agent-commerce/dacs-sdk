@@ -29,6 +29,7 @@
 // claim, DACS-4 evidence, delivery and DACS-5 copies (operation.state.protocol).
 // Legacy purchases (no terms.protocol) are unchanged.
 import { createHash } from 'node:crypto';
+import { createPortalCapability } from './portal-capability.mjs';
 import { contentHash, canonicalize } from './dacs/listing.mjs';
 import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
 import { OperationError, requestHashOf } from './client-errors.mjs';
@@ -181,6 +182,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   const { transaction, isUniqueViolation } = purchaseStore(store);
   const PURPOSES = walletPurposes(purposes);
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
+  if (!db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'handoff_expires_at')) {
+    throw new OperationError('schema_migration_required', 'Migrate operations to include handoff_expires_at and provision explicit portal lifetimes before constructing the purchase service.');
+  }
+  const handoffPurchase = createPortalCapability({ db, ops, now });
   const insertApproval = db.prepare(`INSERT INTO approvals (id, operation_id, challenge_id, signer_address, terms_hash, signature, approved_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
   const approvalFor = db.prepare('SELECT * FROM approvals WHERE operation_id = ?');
@@ -234,10 +239,19 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   function expireIfNeeded(operation) {
-    if ((operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now()) {
+    if (approvalElapsed(operation)) {
       return ops.transition(operation.id, operation.status, 'expired', { data: { reason: 'approval window elapsed' } });
     }
     return operation;
+  }
+
+  function approvalElapsed(operation) {
+    return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now();
+  }
+
+  // Diagnostic reads project expiry without persisting the action transition.
+  function projectExpiry(operation) {
+    return approvalElapsed(operation) ? { ...operation, status: 'expired' } : operation;
   }
 
   function selectWallet(accountId, requested) {
@@ -366,8 +380,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   function status(accountId, operationId) {
     const found = ops.get(accountId, operationId);
     if (!found || found.kind !== 'purchase') throw new OperationError('not_found', 'purchase not found for this account');
-    const elapsed = (found.status === 'awaiting_approval' || found.status === 'agreement_pending') && Date.parse(found.expiresAt) <= now();
-    const operation = elapsed ? { ...found, status: 'expired' } : found;
+    const operation = projectExpiry(found);
     const coords = coordinates.get(operation.id);
     const approval = approvalFor.get(operation.id);
     return {
@@ -383,17 +396,21 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   // ---- portal (browser) side; every call carries the handoff token ----
 
-  function portalOperation(operationId, token) {
-    const found = ops.getByHandoff(operationId, token);
-    if (!found || found.kind !== 'purchase') throw new OperationError('not_found', 'unknown or invalid approval link');
+  function authorizedPortalPurchase(operationId, token) {
+    const found = handoffPurchase(operationId, token);
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
-    return expireIfNeeded(found);
+    return found;
+  }
+
+  function portalOperation(operationId, token) {
+    return expireIfNeeded(authorizedPortalPurchase(operationId, token));
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
   // listing verification made at prepare time and any chain observation of
   // the payment. Never inferred from the configured network or RPC URL.
-  function portalEvidence(operation) {
+  function portalEvidence(operationId, token) {
+    const operation = projectExpiry(authorizedPortalPurchase(operationId, token));
     const coords = coordinates.get(operation.id);
     const listingMode = operation.state?.preparedVerification?.evidence?.chainMode ?? null;
     const directoryMode = operation.state?.preparedVerification?.evidence?.directoryMode ?? null;
@@ -1223,8 +1240,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   async function protocolRecheck({ operationId, token }) {
-    const found=ops.getByHandoff(operationId,token);
-    if(!found||found.kind!=='purchase')throw new OperationError('not_found','unknown or invalid approval link');
+    const found = handoffPurchase(operationId, token);
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet,found);}
     catch(error){
       if(error.code==='buyer_access_closed'&&!error.details?.buyerAccessMissing&&found.terms.protocol&&await protocol?.readIssued?.(found))return {operation:found,verification:{outcome:'readback_only'}};

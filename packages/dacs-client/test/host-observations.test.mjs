@@ -214,9 +214,10 @@ for (const status of ['pending', 'not-found', 'unavailable']) {
 }
 
 test('included epoch zero is retained in the public receipt', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1700000000000 });
   const w = world(t, { ...INCLUDED, includedAt: 0 }), result = await w.verify();
   assert.equal(result.verification.outcome, 'verified');
-  assert.equal(w.purchases.portalEvidence(result.operation).receipt.includedAt, '1970-01-01T00:00:00.000Z');
+  assert.equal(w.purchases.portalEvidence(result.operation.id, w.ops.handoffTokenFor(result.operation.id)).receipt.includedAt, '1970-01-01T00:00:00.000Z');
 });
 
 test('a readable, different amount remains a terms mismatch', async t => {
