@@ -8,7 +8,7 @@ import {identityBundleHash} from '@kynesyslabs/dacs';
 import {world,JOBS,exchange,presentContext} from './helpers/d5-http-fixture.mjs';
 import {createSellerTransportStore,createSellerTransportClientAuth,SELLER_CONTEXT_PATH,sellerContextScopeHash} from '../src/dacs/seller-transport-auth.mjs';
 import {createSellerContextRoute} from '../src/dacs/seller-context-route.mjs';
-import {createSellerContextAdmission,releaseSellerContextHolds,parsePolicyLedger,withContextHolds} from '../src/devnet-demo/operator-approval.mjs';
+import {createSellerContextAdmission,releaseSellerContextHolds,parsePolicyLedger,withContextHolds,heldPolicyBudget} from '../src/devnet-demo/operator-approval.mjs';
 const limits={maxStartsPerHour:100,maxStartsPerBuyerPerHour:100};
 function rows(w,table){const db=new Database(w.path,{readonly:true});try{return db.prepare(`SELECT * FROM ${table}`).all()}finally{db.close()}}
 async function signed(w,body){
@@ -107,4 +107,31 @@ for(const buyerLimit of [false,true])test(`${buyerLimit?'buyer':'global'} start-
  assert.throws(()=>w.store.reserve(p,body,{contextDecision:true,admit:()=>{throw Object.assign(new Error('TEST limit'),{code:buyerLimit?'buyer_unpaid_start_limit':'unpaid_start_limit'})}}),{code:buyerLimit?'buyer_unpaid_start_limit':'unpaid_start_limit'});
  for(const table of ['peer_nonces','peer_nonce_retention'])assert.equal(rows(w,table).length,1,table);
  assert.equal(rows(w,'peer_context_admissions').length,1);
+});
+
+for (const sync of [false, true]) test(`a ${sync ? 'synchronous' : 'asynchronous'} provider exception releases unused policy capacity but keeps its effect uncertain`, async t => {
+ let admission;
+ const fail = () => { throw new Error('TEST provider stopped before a write'); };
+ const w = await world(t, {limits, perform: sync ? fail : async () => fail(),
+  admitWrites: input => admission.reserve(input), releaseWrites: input => admission.release(input)});
+ const evidencePath = join(dirname(w.path), 'approval.jsonl');
+ admission = createSellerContextAdmission({evidencePath, sellerApproval: {mode: 'policy', maxWriteTotalOs: '4', maxWritesPerHour: 2, maxTotalOsPerHour: '8'}, now: w.now});
+ const input = await w.wire();
+ assert.equal((await exchange(w.handler, input)).status, 503);
+ assert.equal(heldPolicyBudget(withContextHolds(parsePolicyLedger(await readFile(evidencePath, 'utf8')).rows), w.now()).writes, 0);
+ assert.equal(rows(w, 'peer_effects')[0].state, 'uncertain');
+ assert.equal((await exchange(w.handler, await w.wire())).status, 503);
+ assert.equal(w.effects().writes, 1, 'uncertain retry does not invoke the provider again');
+ w.advance(2 * 3600000);
+ assert.equal(await admission.reserve({jobId: JOBS[1], effect: 'b'.repeat(64), hold: 'TEST next hold', writes: 2}), null);
+});
+
+test('an exceptional resumed provider releases its fresh unused hold', async t => {
+ const w = await world(t, {limits, resumable: async () => ({writes: 2}), perform: async () => {throw new Error('TEST stopped provider');}});
+ assert.equal((await exchange(w.handler, await w.wire())).status, 503);
+ assert.equal(w.effects().releases, 1);
+ assert.equal((await exchange(w.handler, await w.wire())).status, 503);
+ assert.equal(w.effects().writes, 2);
+ assert.equal(w.effects().releases, 3, 'old hold and both finished attempts are released');
+ assert.equal(rows(w, 'peer_effects')[0].state, 'uncertain');
 });
