@@ -42,8 +42,10 @@ test('a stalled DEM delivery context resolver aborts and releases the job fence'
  const started=new Promise(r=>enter=r);
  f.config.demDeliveryContext=createDemDeliveryContext({authority:'TEST-stalled-delivery',resolveBuyer:async()=>null,
   resolveSeller:(request,options)=>{if(calls++===0){limits=options;enter();return new Promise(()=>{});}return {disposition:'present',value:structuredClone(f.contexts.get(request.jobId))};}});
- const agent=await f.open(),request=await f.proposal(agent),pending=agent.receiveProposal(request);
- await started;const answer=await pending;
+ const agent=await f.open(),request=await f.proposal(agent);
+ t.mock.timers.enable({apis:['setTimeout']});
+ const pending=agent.receiveProposal(request);
+ await started;t.mock.timers.tick(10001);const answer=await pending;
  assert.equal(answer.disposition,'indeterminate');assert.match(answer.reason,/^DEM delivery seller context failed: /);assert.equal(limits.signal.aborted,true);
  assert.equal((await agent.receiveProposal(request)).disposition,'complete','the same job runs again after the fence is released');
 });
