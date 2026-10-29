@@ -908,10 +908,18 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   const nativeAgreementView = (native) => ({ source: native.source, evidenceMode: native.evidenceMode, nativeAddress: native.nativeAddress, txRef: native.txRef });
 
+  // DACS-3 §8.4.1: negotiation succeeds only with both signatures anchored
+  // (SR-2). The seller's own contribution is not that, so `commit` records this
+  // phase, after the buyer's Agreement readback has authenticated.
+  function retainNegotiatePhase(session, jobId, write = true) {
+    const agreementRef = { anchor: { kind: 'storage-program', locator: fixedPriceAgreementLogicalAddress(jobId) }, contentHash: session.agreementHash };
+    return recordPhase(session, 0, session.proposalAdmission.observedAt, { ok: true,
+      contextDelta: { 'negotiate-fixed-price': { agreementHash: session.agreementHash, agreementRef } } }, write);
+  }
+
   function retainCommitmentPhase(session, finalized, write = true) {
     // Ordinary commit has now authenticated the anchored Agreement and both signatures.
-    const agreementRef={anchor:{kind:'storage-program',locator:fixedPriceAgreementLogicalAddress(session.jobId)},contentHash:finalized.agreementHash};
-    recordPhase(session,0,session.proposalAdmission.observedAt,{ok:true,contextDelta:{'negotiate-fixed-price':{agreementHash:finalized.agreementHash,agreementRef}}},write);
+    retainNegotiatePhase(session, session.jobId, write);
     const commitmentRef = { anchor:{kind:'storage-program',locator:finalized.logicalAddress}, contentHash:contentHash(finalized.record), signer: claim };
     const commitmentTxRef = finalized.anchorTxRef;
     const commitmentDelta = { 'commit-payee-bound-agreement': {
