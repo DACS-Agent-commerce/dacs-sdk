@@ -133,3 +133,17 @@ test('the native profile issues no challenge without its session admission',asyn
  const agent=await createSellerAgent({...f.config,maxJobs:1});t.after(()=>agent.close());
  assert.ok(agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}).sessionNonce);
 });
+
+// The admitted attempt must fingerprint the complete presentation. The core
+// contentHash drops top-level signature/signatures members, so comparing the
+// attempt with it made a valid buyer-supplied extension unreadable.
+test('an accepted presentation carrying an extra bundle member stays readable and restores',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);
+ input.buyerIdentityBundle.signature='TEST bundle extension';
+ input.buyerIdentityBundle.presentation.signatures[0].signature=buyer.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(input.buyerIdentityBundle))).toString('base64url');
+ await assert.rejects(agent.stagedProposal(input),staged);
+ assert.equal(agent.stageOf(JOB),'proposed');agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));state.close();
+ const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
+});
