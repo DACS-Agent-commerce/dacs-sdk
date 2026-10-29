@@ -825,6 +825,9 @@ Persistent admission also reads main.synchronous on every attempt: WAL requires 
 | D11 | fix(client): D11 reject additional passive transaction envelopes | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:187`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:196`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:198`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:223`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:294`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:918`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1072`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1082` | f58c3534e3595d036d989b10d30c9a5bdfccc3fb |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 7625214c9a495c96091e4a2df02d05ed17983f85 |
+| D11 | fix(client): D11 guard iterator-owned steps on supported runtimes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 70e4369be0d0a9546ea5a0a96367cfb750fdf47b |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | 3a05a6cfc5529d0b44a6b9b3653f947d05083391 |
 
 ## Complete commit and file inventory
 
@@ -2163,6 +2166,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:187`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:196`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:198`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:223`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:294`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:918`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1072`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1082` |
 | fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| fix(client): D11 guard iterator-owned steps on supported runtimes | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
 
 ## Original moved files
 
