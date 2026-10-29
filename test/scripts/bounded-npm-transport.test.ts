@@ -228,14 +228,16 @@ describe("inert bounded npm HTTP admission", () => {
     expect(responses).toEqual([]);
     expect(body.destroyed).toBe(true);
   });
-  it("stops admission when the request fails after its response starts", async () => {
+  it.each(["error", "abort"])("stops admission when the request emits %s after its response starts", async event => {
     const { pending, body, errors, responses, expire } = closedRequest();
     body.write(gzipSync(Buffer.alloc(1024)).subarray(0, 16));
-    pending.emit("error", Object.assign(new Error("reset"), { code: "ECONNRESET" }));
+    if (event === "error") pending.emit("error", Object.assign(new Error("reset"), { code: "ECONNRESET" }));
+    else pending.emit("abort");
     expect(body.destroyed).toBe(true);
     expire();
     await settled();
-    expect(errors).toEqual(["ECONNRESET"]);
+    // The request's own failure is the only error; the wrapper adds none.
+    expect(errors).toEqual(event === "error" ? ["ECONNRESET"] : []);
     expect(responses).toEqual([]);
   });
   it.each(["before reading", "while decompressing", "after the body ends"])("rejects admission aborted %s with the abort reason", async stage => {
