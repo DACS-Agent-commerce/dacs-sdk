@@ -7,6 +7,7 @@ import {fixtureIdentityBundle} from './fixtures/listings.mjs';
 import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {SESSION_CHALLENGE_LIFETIME_MS} from '../src/dacs/session-admission.mjs';
 import {listingPin} from '../src/dacs/purchase-protocol.mjs';
+import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
 const staged=error=>error.code==='proposal_not_assembled';
 test('accepted presentation and exact admission are atomically retained and replay after restart',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
@@ -121,4 +122,14 @@ test('a closed agent refuses proposal admission before it consumes the challenge
  await assert.rejects(agent.stagedProposal(input),error=>error.code==='seller_closed');
  const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),staged);
  assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,1);
+});
+
+test('the native profile issues no challenge without its session admission',async t=>{
+ const f=await proposalAdmissionFixture(t);
+ const missing=await createSellerAgent({...f.config,maxJobs:1,sessionAdmission:null});t.after(()=>missing.close());
+ assert.throws(()=>missing.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_admission_required'&&error.status===503);
+ missing.close();
+ // A refused issuance retains nothing: the one live issuance slot is still free.
+ const agent=await createSellerAgent({...f.config,maxJobs:1});t.after(()=>agent.close());
+ assert.ok(agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}).sessionNonce);
 });
