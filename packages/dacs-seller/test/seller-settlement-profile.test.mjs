@@ -1022,38 +1022,48 @@ test('new Listing sessions use the current inclusive validity interval, before a
 // Interrupts the first proposal over HTTP after the seller contribution is saved and
 // before the final proposal checkpoint, then restarts the seller. Answers a reader of
 // the number of Agreement signatures made so far.
-async function cutBeforeFinalProposalCheckpoint(w, h) {
-  // Fail authentication of the first session snapshot that carries the final
-  // proposal binding. The contribution and core durable checkpoints precede it.
-  let cut = true, agreementSigns = 0;
+let finalProposalCutSequence = 0;
+async function cutBeforeFinalProposalCheckpoint(t, w) {
+  let agreementSigns = 0;
   const sign = w.signer.sign;
   w.signer.sign = (bytes) => {
-    const text = Buffer.from(bytes).toString();
-    if (text.startsWith('dacs-payee-bound-agreement:v1:')) agreementSigns++;
-    if (cut && text.includes('"kind":"session"') && JSON.parse(text.slice(text.indexOf('{'))).body.session.proposal?.proposalHash) {
-      cut = false; throw new Error('TEST interrupted final session persistence');
-    }
+    if (Buffer.from(bytes).toString().startsWith('dacs-payee-bound-agreement:v1:')) agreementSigns++;
     return sign(bytes);
   };
+  // Contribution publication now saves its proposal binding atomically. The
+  // final snapshot may have identical bytes, so interrupt that save directly
+  // instead of relying on a second invocation of the cached snapshot signer.
+  const { privateModule } = await import('./helpers/private-module.mjs');
+  const api = await privateModule(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], source => {
+    const checkpoint = source.indexOf('    session.sellerContribution = structuredClone(progress.result.sellerContribution);');
+    assert.ok(checkpoint >= 0);
+    const save = source.indexOf('    persist(session);', checkpoint);
+    assert.ok(save > checkpoint);
+    return `let TEST_finalSaveCut = true;\n// TEST final proposal ${++finalProposalCutSequence}\n` + source.slice(0, save)
+      + "    if (TEST_finalSaveCut) { TEST_finalSaveCut = false; throw new Error('TEST interrupted final session persistence'); }\n" + source.slice(save);
+  });
+  w.agent = options => api.createSellerAgent(options);
+  const h = await httpSeller(t, w);
   await answered(() => h.client.propose(h.proposal));
   assert.equal(h.last.status, 503);
-  assert.ok(h.agent.durableSessionOf(w.jobId).sellerContribution, 'contribution was saved');
-  assert.equal(h.agent.durableSessionOf(w.jobId).proposal, null, 'completed proposal checkpoint was not saved');
+  const retained = h.agent.durableSessionOf(w.jobId);
+  assert.ok(retained.sellerContribution, 'contribution was saved');
+  assert.equal(retained.proposal.proposalHash, h.proposal.proposal.proposalHash, 'contribution and proposal binding were saved atomically');
   await h.restart(w.steward.railAuthority());
-  return () => agreementSigns;
+  return { h, agreementSigns: () => agreementSigns };
 }
 
 test('HTTP proposal recovery completes a contribution saved before its final proposal checkpoint without signing twice', async (t) => {
-  const w = await world(t), h = await httpSeller(t, w);
-  const agreementSigns = await cutBeforeFinalProposalCheckpoint(w, h);
+  const w = await world(t);
+  const { h, agreementSigns } = await cutBeforeFinalProposalCheckpoint(t, w);
   const answer = await h.client.propose(h.proposal);
   assert.equal(answer.disposition, 'complete');
   assert.equal(agreementSigns(), 1, 'the durable signature is reused');
 });
 
 test('read-only recovery answers a contribution saved before its final proposal checkpoint without signing', async (t) => {
-  const w = await world(t), h = await httpSeller(t, w);
-  const agreementSigns = await cutBeforeFinalProposalCheckpoint(w, h);
+  const w = await world(t);
+  const { h, agreementSigns } = await cutBeforeFinalProposalCheckpoint(t, w);
   const body = h.proposal, rawBody = Buffer.from(JSON.stringify(body));
   const request = { method: 'POST', path: '/dacs/v1/agreements/proposals', jobId: w.jobId, buyer: w.buyerKey.claim, seller: w.signer.claim,
     listingPin: seller.listingPin(w.listing), agreementHash: body.proposal.plan.agreementHash, bodyHash: core.sha256Hex(rawBody) };
