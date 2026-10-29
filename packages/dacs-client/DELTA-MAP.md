@@ -1956,6 +1956,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
 | fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/scripts/delta-map.mjs:1` |
 
 ## Original moved files
 
