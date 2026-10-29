@@ -67,3 +67,14 @@ test('a wallet-only refused CREATE found included keeps the nonce floor until RP
  assert.equal(w.captured.length,1);
  w.controls.nonce=1;await w.publish(w.open(),jobs[1]);assert.equal(w.captured[1].transaction.content.nonce,2);
 });
+
+for (const sourceCopy of [false, true]) for (const code of ['stale_plan', 'upstream_unavailable']) test(`a refused CREATE does not make an unsigned ${code} successor issued (${sourceCopy})`, async () => {
+ const w = await world({sourceCopy, refused: true});
+ await w.publish(w.open(), jobs[0]);
+ w.controls.request = async () => ({success: false, error: {code}});
+ await w.publish(w.open(), jobs[1]);
+ const input = [...w.journal.rows.values()].find(r => r.input?.artifact.jobId === jobs[1]);
+ assert.equal(input.stage, 'unsigned');
+ await w.publish(w.open(), jobs[1]);
+ assert.equal(w.captured.length, 3);
+});
