@@ -213,3 +213,5 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 Persistent admission also reads main.synchronous on every attempt: WAL requires FULL or EXTRA, and rollback journals require EXTRA for power-loss durability. Weaker settings are refused before transactions or callbacks, without changing the connection configuration or host work. Volatile main databases have no persistent synchronization requirement.
 
 Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
+
+Purchase admission normalizes its internal PRAGMA statements to object rows and numeric metadata. Native connections may retain array-row and BigInt defaults for all caller statements; admission and refusal preserve those defaults and host work.
