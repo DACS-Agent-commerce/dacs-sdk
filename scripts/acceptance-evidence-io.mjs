@@ -50,11 +50,12 @@ export function* evidenceLines(text = "") {
 }
 
 /** Replaces `path` by sibling rename, so an existing entry (a link included) is never written
- * through; removes the temporary file even on failure. */
-export function atomicWriteFile(path, contents) {
+ * through; flushes the new file to storage before publishing and removes the temporary file even
+ * on failure. */
+export function atomicWriteFile(path, contents, { write = writeFileSync } = {}) {
   const temporary = `${path}.tmp-${randomUUID()}`;
   try {
-    writeFileSync(temporary, contents, { flag: "wx" });
+    write(temporary, contents, { flag: "wx", flush: true });
     renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
 }
