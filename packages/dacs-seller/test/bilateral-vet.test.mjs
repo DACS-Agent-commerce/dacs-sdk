@@ -55,7 +55,7 @@ test('relay acknowledgement cannot substitute for a verified accepted receipt',a
 test('missing buyer verifier refuses before any CVR signature or native effect',async()=>{
  const w=fixture();const {createDevnetDemoAgreementContextProvider}=await import('../src/devnet-demo/agreement-context.mjs');
  const p=createDevnetDemoAgreementContextProvider({anchor:w.anchor,wallet:{claim:w.seller.claim,signBytes:()=>assert.fail('signature')},listing:w.listing,store:w.store});
- assert.equal((await p.resolveBuyer(w.input())).code,'counterparty_vet_required');assert.equal(w.records.size,0);
+ assert.equal((await p.resolveBuyer(w.input(),{writable:()=>true})).code,'counterparty_vet_required');assert.equal(w.records.size,0);
 });
 
 test('an existing context is suspended when fresh receipt readback loses authority',async()=>{
@@ -184,7 +184,7 @@ for(const role of ['buyer','seller'])for(const method of ['resolveSeller','recov
 });
 
 for (const boundary of ['presentation', 'composite', 'buyer-anchor', 'seller-anchor', 'counterparty']) {
- test(`another provider ending during ${boundary} fences later effects and protects the active row`, async t => {
+ test(`another provider ending during ${boundary} fences later effects after the shared row is deleted`, async t => {
   const w=fixture(),p=w.provider(),input=w.input();t.after(()=>w.store.close());
   const entered=gate(),resume=gate();let once=true;
   const pause=async()=>{if(once){once=false;entered.resolve();await resume.promise;}};
@@ -208,51 +208,52 @@ for (const boundary of ['presentation', 'composite', 'buyer-anchor', 'seller-anc
   }
   const held=p.resolveBuyer(input).catch(error=>error);await entered.promise;
   const before={signs:w.controls.signs,writes:w.local.writes.length,evaluations:w.seen.length};
-  assert.equal((await w.provider().sweep(()=>true)).deleted,0,'an active shared row cannot disappear');
-  assert.ok((await w.store.entries()).some(([key])=>key.startsWith('party-vet/')));
+  assert.equal((await w.provider().sweep(()=>true)).deleted,1);
+  assert.deepEqual(await w.store.entries(),[]);
   resume.resolve();assert.ok((await held) instanceof Error);
   assert.equal(w.local.writes.length,before.writes);assert.equal(w.seen.length,before.evaluations);
   assert.equal(w.controls.signs,before.signs+(['presentation','composite'].includes(boundary)?1:0));
   await w.provider().sweep(()=>true);
-  const replay=await w.provider().resolveBuyer(input).catch(error=>error);
+  const replay=await w.provider().resolveBuyer(input,{writable:()=>false}).catch(error=>error);
   assert.notEqual(replay?.disposition,'present');
  });
 }
 
-for(const end of ['release','sweep'])test(`${end} keeps a restart replay fence when no native intent was ever created`,async t=>{
- const w=fixture(),p=w.provider(),input=w.input(),entered=gate(),resume=gate(),sign=w.config.wallet.signBytes;
+for(const end of ['release','sweep'])test(`${end} deletes a pre-intent row and the purchase state fences restart`,async t=>{
+ const w=fixture({maxJobs:1}),p=w.provider(),input=w.input(),entered=gate(),resume=gate(),sign=w.config.wallet.signBytes;
  t.after(()=>w.store.close());let once=true;
  w.config.wallet.signBytes=async bytes=>{if(once){once=false;entered.resolve();await resume.promise;}return sign(bytes);};
  const held=p.resolveBuyer(input).catch(error=>error);await entered.promise;
- if(end==='release')assert.deepEqual(await w.provider().release({jobId:JOBS[0]}),{invalidated:true,deleted:false});
- else assert.equal((await w.provider().sweep(()=>true)).deleted,0);
+ if(end==='release')assert.deepEqual(await w.provider().release({jobId:JOBS[0]}),{invalidated:true,deleted:true});
+ else assert.equal((await w.provider().sweep(()=>true)).deleted,1);
  resume.resolve();await held;await p.sweep(()=>true);
  const effects=[w.controls.signs,w.local.writes.length,w.seen.length];assert.equal(w.local.writes.length,0);
  for(const candidate of [input,{...input,scope:{...input.scope,payee:w.buyer.address}}]){
-  await assert.rejects(w.provider().resolveBuyer(candidate),{code:'context_released'});
+  await assert.rejects(w.provider().resolveBuyer(candidate,{writable:()=>false}),{code:'not-pending'});
   assert.equal(await w.provider().recoverBuyer(candidate),null);
  }
  await w.provider().release({jobId:JOBS[0]});await w.provider().sweep(()=>true);
  assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length],effects);
+ assert.equal(w.store.usage().remainingJobs,1);assert.equal((await w.provider().resolveBuyer(w.input(JOBS[1]))).disposition,'present');
 });
 
-test('ending a never-started job keeps its authoritative replay marker',async t=>{
+test('ending a never-started job writes nothing and the purchase state refuses replay',async t=>{
  const w=fixture(),input=w.input();t.after(()=>w.store.close());
  await w.provider().release({jobId:JOBS[0]});await w.provider().sweep(()=>true);
- await assert.rejects(w.provider().resolveBuyer(input),{code:'context_released'});
+ await assert.rejects(w.provider().resolveBuyer(input,{writable:()=>false}),{code:'not-pending'});
  assert.equal(await w.provider().recoverBuyer(input),null);
  assert.equal(await w.provider().resumableBuyer(input),null);
  assert.notEqual((await w.provider().resolveSeller(request(w,input))).disposition,'present');
  assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length],[0,0,0]);
 });
 
-test('cached producer revalidation retains its shared run fence at a later seller anchor',async t=>{
+test('cached producer revalidation refuses publication after another provider deletes its row',async t=>{
  const w=fixture(),p=w.provider(),input=w.input();t.after(()=>w.store.close());await p.resolveBuyer(input);
  const read=w.anchor.readRetained,publish=w.anchor.publish,entered=gate(),resume=gate();let absent=true;
  w.anchor.readRetained=async request=>request.logicalAddress===compositeVerificationAddress(JOBS[0],w.seller.claim)&&absent?{status:'absent'}:read(request);
  w.anchor.publish=async request=>{entered.resolve();await resume.promise;await request.authorize();return publish(request);};
  const held=p.resolveBuyer(input).catch(error=>error);await entered.promise;
- assert.equal((await w.provider().sweep(()=>true)).deleted,0);absent=false;resume.resolve();
+ assert.equal((await w.provider().sweep(()=>true)).deleted,1);absent=false;resume.resolve();
  assert.ok((await held) instanceof Error);assert.equal(w.local.writes.length,2);assert.equal(w.controls.signs,2);
  await w.provider().sweep(()=>true);
 });

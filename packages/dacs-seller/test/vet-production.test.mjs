@@ -335,7 +335,7 @@ test('a finished job replays its retained seller Vet without a buyer verifier',a
  f.base.close();
 });
 async function producedContext(f){
- const input=f.input(),p=await f.provider(),answer=await p.resolveBuyer(input);
+ const input=f.input(),p=await f.provider(),answer=await p.resolveBuyer(input,{writable:()=>true});
  assert.equal(answer.disposition,'present');
  return{context:()=>structuredClone(answer.value.input),resolve:async context=>{
   const capability=createDemDeliveryContext({authority:'TEST-produced-context',resolveBuyer:()=>null,
