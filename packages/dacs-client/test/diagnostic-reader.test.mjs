@@ -35,6 +35,25 @@ for (const code of ['network_identity_mismatch', 'not_found', 'refused', 'timeou
     assert.equal(result.verification.observation.reason, 'TEST refused');
   });
 }
+const responseCases = [
+  ['included', { status: 'included', txHash: HASH, payer: PAYER, payee: PAYEE, amountOs: '1000000000', blockNumber: 7 }, 'included'],
+  ...['pending', 'not-found', 'failed', 'invalid', 'unavailable'].map(status => [status, { status, reason: 'TEST-' + status }, status]),
+  ...[undefined, null, true, 1, 'included', [], { status: 'unknown' }].map(value => [JSON.stringify(value), value, 'malformed']),
+];
+for (const [reader, native] of [['observeTransfer', false], ['observePassiveTransfer', false], ['observePassiveTransfer', true]]) {
+  for (const [label, response, status] of responseCases) test(`public ${reader} validates ${label}, native=${native}`, async t => {
+    const w = diagnostic(t, { network: 'testnet', pinnedIdentity: IDENTITY,
+      networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
+      [reader]: async () => response }, { native });
+    const before = w.snapshot();
+    const result = await w.verify();
+    assert.equal(result.verification.observation.status, status, JSON.stringify(result.verification.observation));
+    if (response?.reason) assert.equal(result.verification.observation.reason, response.reason);
+    assert.equal(result.verification.outcome, 'readback_only');
+    assert.deepEqual(w.snapshot(), before);
+  });
+}
+
 for (const marked of [false,true]) test(`public factory uses the actual passive native reader across included repeats, native=${marked}`, async t => {
   const native = passiveNativeWorld(); t.after(() => native.source.close()); await native.seed();
   const w = diagnostic(t,native.source.chainReader(),{ native: marked });
