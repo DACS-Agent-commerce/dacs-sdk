@@ -1,14 +1,63 @@
 {
   "name": "@kynesyslabs/dacs-client",
-  "version": "0.0.0",
-  "private": true,
-  "description": "Client delta snapshot. Exports remain disabled pending package boundary review; purchase hold and D11 prerequisites are recorded in HOLD.json.",
-  "exports": {},
+  "version": "0.1.0-alpha.0",
+  "description": "Buyer purchase services, protocol readers and host integration seams for DACS clients.",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./wallet/durable-journal": "./src/wallet/durable-journal.mjs"
+  },
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
   },
+  "type": "module",
   "files": [
-    "src/diagnostic-projection.mjs",
-    "src/util/guarded-sqlite.mjs"
-  ]
+    "src/buyer-funding.mjs", "src/client-errors.mjs",
+    "src/dacs/action-admission.mjs", "src/dacs/agreement-context-consumer.mjs",
+    "src/dacs/artifact-reference.mjs", "src/dacs/buyer-chain-readback.mjs",
+    "src/dacs/chain.mjs", "src/dacs/commit-on-signature.mjs",
+    "src/dacs/delivery-deadline-watch.mjs", "src/dacs/delivery-evidence.mjs",
+    "src/dacs/dem-delivery-consumer.mjs", "src/dacs/dem-delivery-context-consumer.mjs",
+    "src/dacs/demos-sr2-adapter.mjs", "src/dacs/demos-sr2-wallet-bridge.mjs",
+    "src/dacs/directory.mjs", "src/dacs/listing.mjs",
+    "src/dacs/native-agreement-payment-consumer.mjs", "src/dacs/native-dem-delivery-consumer.mjs",
+    "src/dacs/native-payment-evidence-consumer.mjs", "src/dacs/network-binding.mjs",
+    "src/dacs/protocol-purchases.mjs", "src/dacs/purchase-protocol.mjs",
+    "src/dacs/seller-agent-error.mjs", "src/dacs/seller-http.mjs",
+    "src/dacs/seller-session-lifecycle.mjs", "src/dacs/seller-session-limits.mjs",
+    "src/dacs/seller-sr2-agreement-consumer.mjs", "src/dacs/seller-transport-auth.mjs",
+    "src/dacs/source-demo-seller-transport.mjs", "src/dacs/verification.mjs",
+    "src/dacs/wallet-transactions.mjs", "src/devnet-demo/commitment-consumer.mjs",
+    "src/devnet-demo/deliverable.mjs", "src/devnet-demo/issued-readback.mjs",
+    "src/devnet-demo/operator-approval.mjs", "src/devnet-demo/stop-request.mjs",
+    "src/devnet-demo/storage-write-recovery.mjs", "src/diagnostic-projection.mjs",
+    "src/index.mjs", "src/purchase-limits.mjs",
+    "src/purchase-state-schema.mjs", "src/purchases.mjs",
+    "src/seams/purchase-store-not-wired.mjs", "src/seams/seller-integration-not-wired.mjs",
+    "src/seams/wallet-actions-not-wired.mjs", "src/signatures.mjs",
+    "src/util/sqlite-purchase-admission.mjs",
+    "src/util/sqlite-statement-boundary.mjs", "src/util/sqlite-write-lease.mjs",
+    "src/util/http.mjs", "src/util/ids.mjs",
+    "src/util/immutable-readbacks.mjs", "src/util/purchase-readback-cache.mjs",
+    "src/util/text.mjs", "src/wallet/devnet-native-transport.mjs",
+    "src/wallet/durable-journal.mjs", "src/wallet/payload-helpers.mjs",
+    "README.md", "LICENSE",
+    "src/public-verification.mjs"
+  ],
+  "engines": {
+    "node": "^22.13.0 || >=23.4.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git",
+    "directory": "packages/dacs-client"
+  },
+  "homepage": "https://github.com/DACS-Agent-commerce/dacs-sdk/tree/main/packages/dacs-client#readme",
+  "bugs": {
+    "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+  },
+  "peerDependencies": {
+    "@kynesyslabs/dacs": "0.1.0-alpha.0"
+  },
+  "private": true
 }
