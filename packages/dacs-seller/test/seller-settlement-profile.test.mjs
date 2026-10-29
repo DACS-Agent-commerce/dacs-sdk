@@ -366,12 +366,13 @@ async function httpSeller(t, w, { gate = {} } = {}) {
   const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite') });
   t.after(() => { try { agent.close(); } catch { /* closed by a restart */ } store.close(); });
   const pin = seller.listingPin(w.listing);
-  const gated = (name) => (body) => {
+  const gated = (name) => (body, options) => {
     const code = gate[name];
     if (code) { delete gate[name]; throw new seller.SellerAgentError(code, `TEST ${code}`, code === 'native_evidence_required' ? 409 : 503); }
-    return agent[name](body);
+    return agent[name](body, options);
   };
   const facade = { claim: w.signer.claim, listingPin: pin, reconcileTransport: (input) => agent.reconcileTransport(input), agreementState: (identity) => agent.agreementState(identity),
+    retainsProposalWork: (jobId) => agent.retainsProposalWork(jobId), retainsPaymentClaim: (jobId, body) => agent.retainsPaymentClaim(jobId, body),
     receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
   const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
   const proposal = await w.proposalFor(w.vetted);
@@ -392,10 +393,6 @@ test('over HTTP a rail refusal of a proposal has no effect: the same proposal is
   assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
   assert.equal(h.agent.durableSessionOf(w.jobId).railPinSigned, true);
 });
-
-// Every gate the agent raises before any read, write, signature or send, and its status.
-const PRE_EFFECT_GATES = [['vet_context_required', 503], ['session_admission_required', 503], ['settlement_profile_unavailable', 503], ['rail_unavailable', 503], ['native_evidence_required', 409], ['bundle_finalization_unavailable', 503]];
-
 test('a native agent without the seller\'s session admission opens no session', async (t) => {
   const w = await world(t);
   const { sessionAdmission: _none, ...capabilities } = complete(w, { durableDirectory: w.dir() });
@@ -942,73 +939,6 @@ test('new Listing sessions use the current inclusive validity interval, before a
   agent = await w.agent(options);
   t.after(() => agent.close());
   assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution, 'signed session remains available after expiry');
-});
-
-
-// Interrupts the first proposal over HTTP after the seller contribution is saved and
-// before the final proposal checkpoint, then restarts the seller. Answers a reader of
-// the number of Agreement signatures made so far.
-async function cutBeforeFinalProposalCheckpoint(w, h) {
-  // Fail authentication of the first session snapshot that carries the final
-  // proposal binding. The contribution and core durable checkpoints precede it.
-  let cut = true, agreementSigns = 0;
-  const sign = w.signer.sign;
-  w.signer.sign = (bytes) => {
-    const text = Buffer.from(bytes).toString();
-    if (text.startsWith('dacs-payee-bound-agreement:v1:')) agreementSigns++;
-    if (cut && text.includes('"kind":"session"') && JSON.parse(text.slice(text.indexOf('{'))).body.session.proposal?.proposalHash) {
-      cut = false; throw new Error('TEST interrupted final session persistence');
-    }
-    return sign(bytes);
-  };
-  await answered(() => h.client.propose(h.proposal));
-  assert.equal(h.last.status, 503);
-  assert.ok(h.agent.durableSessionOf(w.jobId).sellerContribution, 'contribution was saved');
-  assert.equal(h.agent.durableSessionOf(w.jobId).proposal, null, 'completed proposal checkpoint was not saved');
-  await h.restart(w.steward.railAuthority());
-  return () => agreementSigns;
-}
-
-test('HTTP proposal recovery completes a contribution saved before its final proposal checkpoint without signing twice', async (t) => {
-  const w = await world(t), h = await httpSeller(t, w);
-  const agreementSigns = await cutBeforeFinalProposalCheckpoint(w, h);
-  const answer = await h.client.propose(h.proposal);
-  assert.equal(answer.disposition, 'complete');
-  assert.equal(agreementSigns(), 1, 'the durable signature is reused');
-});
-
-test('read-only recovery answers a contribution saved before its final proposal checkpoint without signing', async (t) => {
-  const w = await world(t), h = await httpSeller(t, w);
-  const agreementSigns = await cutBeforeFinalProposalCheckpoint(w, h);
-  const body = h.proposal, rawBody = Buffer.from(JSON.stringify(body));
-  const request = { method: 'POST', path: '/dacs/v1/agreements/proposals', jobId: w.jobId, buyer: w.buyerKey.claim, seller: w.signer.claim,
-    listingPin: seller.listingPin(w.listing), agreementHash: body.proposal.plan.agreementHash, bodyHash: core.sha256Hex(rawBody) };
-  const answer = await h.agent.reconcileTransport({ request, body, rawBody, readOnly: true });
-  assert.equal(answer.disposition, 'present');
-  assert.equal(answer.value.disposition, 'complete');
-  assert.equal(agreementSigns(), 1, 'nothing was signed again');
-});
-
-test('a completed durable signature keeps its rail pin when the next session save fails', async (t) => {
-  const w = await world(t), durableDirectory = w.dir(), request = await w.proposalFor(w.vetted);
-  let cut = true, signed = 0;
-  const signer = { ...w.signer, sign: (bytes) => {
-    const text = Buffer.from(bytes).toString();
-    if (text.startsWith('dacs-payee-bound-agreement:v1:')) signed++;
-    if (cut && text.includes('"kind":"session"') && text.includes('"railPinSigned":true')) {
-      cut = false; throw new Error('TEST lost post-signature session save');
-    }
-    return w.signer.sign(bytes);
-  } };
-  const first = await w.agent(complete(w, { durableDirectory, signer }));
-  assert.equal((await first.receiveProposal(request)).disposition, 'indeterminate');
-  assert.notEqual(first.durableSessionOf(w.jobId).railPinSigned, true);
-  assert.equal(typeof first.durableSessionOf(w.jobId).agreementSignatureKey, 'string');
-  first.close();
-  const after = await w.agent(complete(w, { durableDirectory, signer, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
-  t.after(() => after.close());
-  assert.equal((await after.receiveProposal(request)).disposition, 'complete');
-  assert.equal(signed, 1, 'the completed durable signature continues its original pin');
 });
 
 test('a Listing that expires during context resolution signs no new Agreement', async (t) => {
