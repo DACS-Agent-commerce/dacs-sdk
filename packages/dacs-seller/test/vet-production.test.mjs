@@ -47,7 +47,7 @@ test('a challenge that expires during the durable write is never signed',async()
  const f=productionFixture();let at=NOW;
  f.config.now=()=>at;
  const issue=f.counterparty.issueChallenge;
- f.counterparty.issueChallenge=async request=>({...await issue(request),expiresAt:at+1});
+ f.counterparty.issueChallenge=async request=>({...await issue(request),expiresAt:at+15001});
  const update=f.store.update;
  f.config.store={...f.store,update:async(key,change)=>update(key,(old,rows)=>{
   const next=change(old,rows);
@@ -335,7 +335,7 @@ test('a finished job replays its retained seller Vet without a buyer verifier',a
  f.base.close();
 });
 async function producedContext(f){
- const input=f.input(),p=await f.provider(),answer=await p.resolveBuyer(input);
+ const input=f.input(),p=await f.provider(),answer=await p.resolveBuyer(input,{writable:()=>true});
  assert.equal(answer.disposition,'present');
  return{context:()=>structuredClone(answer.value.input),resolve:async context=>{
   const capability=createDemDeliveryContext({authority:'TEST-produced-context',resolveBuyer:()=>null,
@@ -380,4 +380,75 @@ test('produced context refuses a non-canonical bundle instead of throwing',async
  const altered=context();altered.seller.identityBundle.extra=1n;
  assert.notEqual((await resolve(altered)).disposition,'present');
  f.base.close();
+});
+
+// The 10 second evaluation deadline plus 5 seconds of buyer clock skew.
+const CHALLENGE_MARGIN_MS=15000;
+for(const remaining of [CHALLENGE_MARGIN_MS-1,CHALLENGE_MARGIN_MS])test(`issuance requires the full challenge margin: ${remaining} ms`,async()=>{
+ const f=productionFixture();f.controls.challengeLifetime=remaining;
+ if(remaining<CHALLENGE_MARGIN_MS){
+  await assert.rejects(f.run(),e=>e.code==='seller_challenge_invalid');
+  assert.ok((await f.store.entries()).every(([,row])=>!row.presentation));
+  assert.equal(f.controls.signs,0);assert.equal(f.seen.length,0);
+ }else assert.equal((await f.run()).sellerVet.record.overallDecision,'pass');
+ f.base.close();
+});
+for(const phase of ['retention','markWrite'])test(`insufficient lifetime after ${phase} never prompts the signer`,async()=>{
+ const f=productionFixture();let at=NOW;f.config.now=()=>at;f.controls.challengeLifetime=CHALLENGE_MARGIN_MS+1;
+ const update=f.store.update;
+ f.store.update=(key,change)=>update(key,(old,rows)=>{
+  const next=change(old,rows);
+  if(phase==='retention'?!old?.presentation&&next?.presentation:!old?.writeStarted&&next?.writeStarted)at+=2;
+  return next;
+ });
+ await assert.rejects(f.run(),e=>e.code==='seller_challenge_expired');
+ assert.equal(f.controls.signs,0);assert.equal(f.seen.length,0);f.base.close();
+});
+for(const [name,remaining,latency,skew] of [['transit',1,2,0],['buyer skew',1000,0,2000],['below margin',14999,0,0]]){
+ for(const retry of ['same','fresh'])test(`pre-evaluate margin refuses ${name} and ${retry} provider rotates immediately`,async()=>{
+  const f=productionFixture();let at=NOW;f.config.now=()=>at;f.controls.buyerSkew=skew;
+  const read=f.counterparty.readRecord,evaluate=f.counterparty.evaluate;let first=true;
+  f.counterparty.readRecord=async request=>{const out=await read(request);if(first&&out.status==='unattempted'){first=false;at=f.expiries.get(request.identityBundle.sessionNonce)-remaining;}return out;};
+  f.counterparty.evaluate=async request=>{at+=latency;return evaluate(request);};
+  const p=await f.provider(),input=f.input();
+  await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='seller_challenge_expired');
+  assert.equal(f.seen.length,0);assert.equal(f.consumed.size,0);
+  // Rotate while the old nonce is still unexpired; no wait until true expiry.
+  const next=retry==='same'?p:await f.provider();
+  assert.equal((await next.jobVet(input.scope,input.buyerIdentityBundle,()=>true)).sellerVet.record.overallDecision,'pass');
+  assert.equal(f.issued.size,2);assert.equal(f.seen.length,1);f.base.close();
+ });
+}
+test('a challenge with exactly the margin left at evaluate is usable',async()=>{
+ const f=productionFixture();let at=NOW;f.config.now=()=>at;const read=f.counterparty.readRecord;
+ f.counterparty.readRecord=async request=>{const out=await read(request);at=f.expiries.get(request.identityBundle.sessionNonce)-CHALLENGE_MARGIN_MS;return out;};
+ assert.equal((await f.run()).sellerVet.record.overallDecision,'pass');assert.equal(f.seen.length,1);f.base.close();
+});
+test('replacement between session and row read refuses before the old nonce ledger or evaluation',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input(),readRecord=f.counterparty.readRecord;let interrupted=true;
+ f.counterparty.readRecord=async request=>{if(interrupted){interrupted=false;throw new Error('TEST ledger unavailable');}return readRecord(request);};
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true));
+ const saved=await p.state.read(input.scope.jobId),read=f.store.read;let reads=0,ledgerReads=0;
+ f.counterparty.readRecord=async request=>{ledgerReads++;return readRecord(request);};
+ f.store.read=async key=>{
+  if(++reads===2)await p.state.update(input.scope.jobId,row=>({...row,presentation:{challenge:{...row.presentation.challenge,sessionNonce:'b'.repeat(32)},bundle:{...row.presentation.bundle,sessionNonce:'b'.repeat(32)}}}));
+  return read(key);
+ };
+ await assert.rejects(p.produceSeller({jobId:saved.jobId,binding:saved.binding,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
+ assert.equal(ledgerReads,0);assert.equal(f.seen.length,0);f.base.close();
+});
+test('two providers refuse the short-lived nonce then rotate it exactly once',async()=>{
+ const f=productionFixture();let at=NOW;f.config.now=()=>at;
+ const p=await f.provider(),input=f.input(),read=f.counterparty.readRecord;let interrupt=true;
+ f.counterparty.readRecord=async request=>{if(interrupt){interrupt=false;throw new Error('TEST ledger unavailable');}return read(request);};
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true));
+ const row=await p.state.read(input.scope.jobId),q=await f.provider();let arrivals=0,ready,release;
+ const entered=new Promise(r=>ready=r),gate=new Promise(r=>release=r);
+ f.counterparty.readRecord=async request=>{const out=await read(request);if(++arrivals===2)ready();await gate;return out;};
+ const job=()=>({jobId:row.jobId,binding:row.binding,open:()=>true,writeStarted:true});
+ const results=[p.produceSeller(job()),q.produceSeller(job())].map(work=>assert.rejects(work,e=>e.code==='seller_challenge_expired'));
+ await entered;at=f.expiries.get(row.presentation.bundle.sessionNonce)-1;release();await Promise.all(results);
+ assert.equal(f.seen.length,0);f.counterparty.readRecord=read;
+ assert.equal((await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true)).sellerVet.record.overallDecision,'pass');
+ assert.equal(f.issued.size,2);assert.equal(f.seen.length,1);f.base.close();
 });
