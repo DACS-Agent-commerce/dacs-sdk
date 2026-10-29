@@ -52,12 +52,17 @@ test('a guarded iterator with its own next opens the writable fence for its step
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
 });
 
-test('spread over a guarded iterator with its own next is checked per step', t => {
+test('a read iterator with its own next checks changed liveness between rows', t => {
   const db = world(t), statement = db.prepare('SELECT 1 AS one UNION ALL SELECT 2');
-  let checks = 0;
-  withSqliteStatementGuard(db, () => { checks++; }, () => {
-    const before = checks;
-    assert.deepEqual([...statement.iterate()].map(row => row.one), [1, 2]);
-    assert.ok(checks > before);
+  let live = true;
+  const rows = [];
+  withSqliteStatementGuard(db, () => { if (!live) throw new Error('TEST-ended'); }, () => {
+    const iterator = statement.iterate();
+    try {
+      assert.throws(() => {
+        for (const row of iterator) { rows.push(row.one); live = false; }
+      }, /TEST-ended/);
+    } finally { iterator.return(); }
   });
+  assert.deepEqual(rows, [1]);
 });
