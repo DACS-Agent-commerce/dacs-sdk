@@ -779,6 +779,13 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | d038c47516fd96b5ccfb57ea2fdfe11d12bd6c19 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
+| D11 | fix(client): D11 rebuild part 07 on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` | 40f44cef846981dd2d87bd4654e8192b8e784ac6 |
+| | `packages/dacs-client/src/index.mjs:1` | e5645c81db36570840808f82a52187d27afdffcc |
+| | `packages/dacs-client/src/public-verification.mjs:1` | eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | f05e545f62faf232439c60bb69b08f6ac5684026 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | b28c6ef97e3004d9921c2b9f48a66d0e4d936423 |
+| | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | dac6e6aae63aac269c0a84197ce2b77d3211eb35 |
 
 ## Complete commit and file inventory
 
@@ -1939,6 +1946,21 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `package-lock.json:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/LICENSE:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/README.md:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/package.json:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/src/index.mjs:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/src/public-verification.mjs:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/test/public-api.test.mjs:1` |
+| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
@@ -1960,7 +1982,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs` | `http-mcp/src/dacs/demos-sr2-wallet-bridge.mjs` | aae9cc8e17848ff796c10b1c2289b7da798eefa0 | unchanged | aae9cc8e17848ff796c10b1c2289b7da798eefa0 |
 | `packages/dacs-client/src/dacs/devnet-purchase-consumer.mjs` | `http-mcp/src/dacs/devnet-purchase-consumer.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/dacs/directory.mjs` | `http-mcp/src/dacs/directory.mjs` | 7501cb68e65b07831eda5ce1723e870864656c69 | changed by D16 | c91e7f4769c14fa8b8306ef38647c65230cce881 |
-| `packages/dacs-client/src/dacs/listing.mjs` | `http-mcp/src/dacs/listing.mjs` | 7fb53138139c1e46b96f39741cacef6ed19055f8 | changed by D16 | 1241256345f2f48584566926616d89ec43e7e831 |
+| `packages/dacs-client/src/dacs/listing.mjs` | `http-mcp/src/dacs/listing.mjs` | 7fb53138139c1e46b96f39741cacef6ed19055f8 | changed by D16, D11 | 40f44cef846981dd2d87bd4654e8192b8e784ac6 |
 | `packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs` | `http-mcp/src/dacs/native-agreement-payment-consumer.mjs` | 9a0967034f9bad78b2c03836343926dce0a537f6 | unchanged | 9a0967034f9bad78b2c03836343926dce0a537f6 |
 | `packages/dacs-client/src/dacs/native-dem-delivery-consumer.mjs` | `http-mcp/src/dacs/native-dem-delivery-consumer.mjs` | c542cfbceb16d7d440698c48c9e9d93377ea744c | unchanged | c542cfbceb16d7d440698c48c9e9d93377ea744c |
 | `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs` | `http-mcp/src/dacs/native-payment-evidence-consumer.mjs` | 7083a9147813ea400ad40e17491ceb9d2f9de3c2 | unchanged | 7083a9147813ea400ad40e17491ceb9d2f9de3c2 |
