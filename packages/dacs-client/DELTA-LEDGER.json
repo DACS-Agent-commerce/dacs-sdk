@@ -5033,6 +5033,17 @@
         }
       ],
       "sha": "65440493612f9478fa923c6347916a2265a41746"
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the merged part 08 package snapshot",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "4c92bd34962e86c9ea447121393d0cd819fa437f",
+          "after": "4c92bd34962e86c9ea447121393d0cd819fa437f"
+        }
+      ]
     }
   ]
 }

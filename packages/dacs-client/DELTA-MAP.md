@@ -799,6 +799,8 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 5ef3a08a8d78d6495c52038096500c81343c36cb |
 | D11 | fix(client): D11 rebuild part 08 on the preceding capability sources | Git commit selector 65440493612f9478fa923c6347916a2265a41746 |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | e89f5fc167efeb889e0397f22ceb4db6891fe7c3 |
+| D11 | fix(client): D11 record the merged part 08 package snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 4c92bd34962e86c9ea447121393d0cd819fa437f |
 
 ## Complete commit and file inventory
 
@@ -2844,6 +2846,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 record the merged part 08 package snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the merged part 08 package snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the merged part 08 package snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the merged part 08 package snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the merged part 08 package snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

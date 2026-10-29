@@ -3554,5 +3554,16 @@
       "packages/dacs-client/scripts/delta-map.mjs",
       "packages/dacs-client/scripts/delta-provenance.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 record the merged part 08 package snapshot",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs"
+    ]
   }
 ]
