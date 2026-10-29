@@ -375,7 +375,14 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function produceSeller(job) {
     const identityBundle=await sellerSession(job),authority=job.binding.buyerIdentityBundle.presentedBy;
     const logicalAddress=compositeVerificationAddress(job.jobId,wallet.claim);
-    let record=(await state.read(job.jobId))?.counterpartyRecord;
+    const retainedRow=await state.read(job.jobId);
+    let record=retainedRow?.counterpartyRecord;
+    // The expiry belongs to the challenge this exact bundle was issued under.
+    // The authoritative ledger read below is awaited; a conforming buyer
+    // consumes and then rejects a presentation whose nonce expired, so the
+    // expiry must be checked again before that one-use nonce is spent.
+    const challengeExpiresAt=retainedRow?.presentation?.bundle?.sessionNonce===identityBundle.sessionNonce
+      ? retainedRow?.presentation?.challenge?.expiresAt:undefined;
     if(!record){
       guard(job,'counterparty Vet');
       const request={jobId:job.jobId,buyer:authority,seller:wallet.claim,identityBundle,requirement:SELLER_REQUIREMENT};
@@ -385,6 +392,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       const retained=await readRecordSettled(request);
       if(retained?.status==='present')record=retained.record;
       else if(unattempted(retained,request)){
+        if(Number.isSafeInteger(challengeExpiresAt)&&challengeExpiresAt<=now())
+          fail('seller_challenge_expired','seller challenge expired before evaluation');
         // The ledger read is awaited. A purchase cancelled meanwhile starts no
         // evaluation: its one-use challenge would otherwise be consumed and a
         // record signed after the purchase closed.

@@ -163,6 +163,33 @@ test('a record evaluated under a rotated presentation is not pinned to the new o
  assert.equal((await p.state.read(input.scope.jobId)).counterpartyRecord,undefined);
  f.base.close();
 });
+test('a challenge that expires during the ledger read is never presented',async()=>{
+ const f=productionFixture();let at=NOW;f.config.now=()=>at;
+ const expiries=new Map(),issue=f.counterparty.issueChallenge,read=f.counterparty.readRecord,evaluate=f.counterparty.evaluate;
+ f.counterparty.issueChallenge=async request=>{const challenge={...await issue(request),expiresAt:at+60000};expiries.set(challenge.sessionNonce,challenge.expiresAt);f.issued.set(challenge.sessionNonce,request.jobId);return challenge;};
+ // A conforming buyer consumes the one-use nonce of an expired presentation
+ // and rejects it; that nonce then never answers a usable record again.
+ const consumedExpired=new Set();let firstRead=true,evaluations=0,expiredEvaluations=0;
+ f.counterparty.readRecord=async request=>{
+  if(consumedExpired.has(request.identityBundle.sessionNonce))return{status:'indeterminate'};
+  const out=await read(request);
+  // The challenge expires while the seller awaits the authoritative ledger read.
+  if(firstRead&&out.status==='unattempted'){firstRead=false;at=NOW+60001;}
+  return out;
+ };
+ f.counterparty.evaluate=async request=>{
+  evaluations+=1;
+  const expiry=expiries.get(request.identityBundle.sessionNonce);
+  if(expiry===undefined||at>expiry){expiredEvaluations+=1;consumedExpired.add(request.identityBundle.sessionNonce);throw new Error('TEST expired challenge');}
+  return evaluate(request);
+ };
+ await assert.rejects(f.run(),e=>e.code==='seller_challenge_expired');
+ assert.equal(expiredEvaluations,0,'no expired challenge is presented');assert.equal(f.seen.length,0);
+ const result=await f.run();
+ assert.equal(result.sellerVet.record.overallDecision,'pass');
+ assert.equal(evaluations,1);assert.equal(expiries.size,2,'exactly one replacement challenge is issued');
+ f.base.close();
+});
 test('a finished job repeats without the buyer ledger after the challenge expires',async()=>{
  const f=productionFixture();let at=NOW;f.config.now=()=>at;
  const p=await f.provider(),input=f.input();
