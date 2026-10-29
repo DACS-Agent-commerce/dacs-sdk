@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
-import { cacheArchive, npmCi, packTarball, serveArchives, sri, tarArchive, type TarEntry } from "./npm-archive-fixtures.js";
+import { cacheArchive, npmCi, packTarball, serveArchives, sri, tarArchive } from "./npm-archive-fixtures.js";
 
 // Keep the closure executable as plain Node ESM.
 const closureModulePath = "../../scripts/installation-closure.mjs";
@@ -28,7 +28,6 @@ const temporaryDirectory = () => {
 };
 const manifest = (name: string, version = "1.0.0", fields: Record<string, unknown> = {}) =>
   JSON.stringify({ name, version, ...fields });
-const text = (files: Map<string, Buffer>) => Object.fromEntries([...files].map(([path, bytes]) => [path, bytes.toString()]));
 
 // A project whose lock names `packages` ({ location: [lock entry, files] }),
 // each archive cached and its files written where npm installs them.
