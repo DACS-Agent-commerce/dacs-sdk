@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, posix } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
 import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
@@ -207,7 +207,7 @@ function releaseCopyErrors(location, record, { name, integrity, version }, regis
 function candidateInventory(closure) {
   const modules = new Map();
   for (const [location, record] of closure.entries) {
-    if (!record.present && closure.inventory !== null) continue;
+    if (!record.present) continue;
     modules.set(location, { entry: record.entry, name: location.replace(/^.*node_modules\//, "") });
   }
   return { modules };
@@ -252,8 +252,11 @@ function candidateIntegrityErrors({ registry, candidates, closure }) {
 // otherwise it throws listing each difference.
 function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet, version }) {
   const project = realpathSync(projectPath);
-  const manifest = JSON.parse(readFileSync(join(project, "package.json"), "utf8"));
-  const lock = JSON.parse(readFileSync(join(project, "package-lock.json"), "utf8"));
+  // npm reads both files as UTF-8 text and ignores a leading byte-order mark.
+  const npmJson = bytes => JSON.parse(bytes.toString("utf8").replace(/^﻿/, ""));
+  const manifestBytes = readFileSync(join(project, "package.json"));
+  const manifest = npmJson(manifestBytes);
+  const lock = npmJson(readFileSync(join(project, "package-lock.json")));
   const missing = DUAL_RAIL_DEPENDENCIES.filter(name => typeof manifest.dependencies?.[name] !== "string");
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
   const candidates = releaseCandidates(releaseSet, version);
@@ -261,10 +264,12 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
   if (installer.config["install-strategy"] === "linked") {
     throw new Error("cannot authenticate candidate copies under install-strategy=linked: lock locations are not installed paths");
   }
-  const closure = referenceInstallation({ manifest, lock, installer,
+  const closure = referenceInstallation({ manifest: manifestBytes, lock, installer,
     readArchive: (_location, entry) => cachedArchive(installer.config.cache, entry.integrity) });
+  // A failed replay publishes no entries or inventory, so no candidate rule can be judged.
+  if (closure.errors.length) throw new Error(closure.errors.join("\n"));
   const differences = installationDifferences(project, closure).map(line => "installed tree is not the locked archives: " + line);
-  const errors = [...closure.errors, ...differences.slice(0, MAX_LISTED_DIFFERENCES),
+  const errors = [...differences.slice(0, MAX_LISTED_DIFFERENCES),
     ...(differences.length > MAX_LISTED_DIFFERENCES ? [`and ${differences.length - MAX_LISTED_DIFFERENCES} more differences`] : []),
     ...candidateIntegrityErrors({ registry, candidates, closure })];
   if (errors.length) throw new Error(errors.join("\n"));
@@ -481,8 +486,11 @@ export function runtimeImageInventoryFindings(inventory, lock) {
   return { scanComplete: errors.length === 0, errors, unexpected, missing };
 }
 
-// Node runs a module by its real path, so a linked path to it is resolved first.
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+// Node runs the main module by its real path, or by its linked path under
+// --preserve-symlinks-main, so compare real paths. An entry that is not a file
+// (stdin "-", or none) means this module was imported.
+const entryPath = (() => { try { return realpathSync(process.argv[1]); } catch { return null; } })();
+if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.url))) {
   const [mode] = process.argv.slice(2);
   if (mode === "--dependency-policy") {
     const [projectPath, registry, report, releaseSet, version] = process.argv.slice(3);
