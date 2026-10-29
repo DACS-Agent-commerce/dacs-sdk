@@ -799,6 +799,9 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | D11 | fix(client): D11 rebuild diagnostic projections on one checked JSON writer | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 0dcfab473d1256f9de295bc65c0f04926e1ceb62 |
 | | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | cd5edb7803946051073fc731837213c0544411af |
+| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
+| | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
 
 ## Complete commit and file inventory
 
@@ -2028,6 +2031,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
 | fix(client): D11 rebuild diagnostic projections on one checked JSON writer | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
 
 ## Original moved files
 
