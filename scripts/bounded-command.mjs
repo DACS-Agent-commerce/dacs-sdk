@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, writeSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -19,7 +19,8 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
   onSignal = (signal, handler) => process.on(signal, handler),
   offSignal = (signal, handler) => process.removeListener(signal, handler),
   kill = (pid, signal) => { try { process.kill(-pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; } },
-  diagnostic = message => process.stderr.write(message + "\n") } = {}) {
+  // A synchronous write: a closed stderr (EPIPE) must not raise a stream error.
+  diagnostic = message => { try { writeSync(2, message + "\n"); } catch { /* stderr is gone */ } } } = {}) {
   if (!Number.isInteger(seconds) || seconds <= 0 || !Number.isInteger(attempts) || attempts < 1 || attempts > COMMAND_MAX_ATTEMPTS) {
     throw new Error("invalid command deadline or retry budget");
   }
@@ -38,13 +39,19 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
       removeSignalHandlers();
       reject(error);
     };
+    // Diagnostics are best effort and never interrupt cleanup.
+    const report = message => { try { diagnostic(message); } catch { /* reporting failed */ } };
     const terminate = (code, message) => {
       if (expired || finished) return;
       expired = true;
-      if (message) diagnostic(message);
-      if (child?.pid) kill(child.pid, "SIGTERM");
-      // Retain the grace window so descendants that ignore SIGTERM are killed too.
-      schedule(() => { if (child?.pid) kill(child.pid, "SIGKILL"); finish(code); }, COMMAND_KILL_GRACE_MS);
+      // Arm the SIGKILL first, keeping the grace window for descendants that
+      // ignore SIGTERM: nothing after this may stop the group being reaped.
+      schedule(() => {
+        try { if (child?.pid) kill(child.pid, "SIGKILL"); } catch (error) { fail(error); return; }
+        finish(code);
+      }, COMMAND_KILL_GRACE_MS);
+      try { if (child?.pid) kill(child.pid, "SIGTERM"); } catch { /* the armed SIGKILL follows */ }
+      if (message) report(message);
     };
     const deadlineAt = now() + seconds * 1000;
     const deadline = schedule(() => terminate(124, "ETIMEDOUT command deadline: " + command), seconds * 1000);
@@ -53,13 +60,18 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
       signalHandlers.set(signal, handler);
       onSignal(signal, handler);
     }
+    // The group is detached, so it outlives a wrapper that ends before settling
+    // (an uncaught error): reap it as the process exits.
+    const reapOnExit = () => { try { if (!finished && child?.pid) kill(child.pid, "SIGKILL"); } catch { /* exiting */ } };
+    signalHandlers.set("exit", reapOnExit);
+    onSignal("exit", reapOnExit);
     const next = () => {
       attempt++;
       const current = child = start(command, args, { stdio: "inherit", detached: true });
       const cleanGroup = () => { if (current.pid) kill(current.pid, "SIGKILL"); };
       current.once("error", error => {
         if (expired || finished) return;
-        cleanGroup(); diagnostic(String(error)); finish(1);
+        cleanGroup(); report(String(error)); finish(1);
       });
       current.once("exit", code => {
         if (expired || finished) return;
