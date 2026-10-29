@@ -834,6 +834,9 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e3135e7bb2cf0c7b9443c9ae4cdc10545591dda3 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | bfdf4c4ea2c1998d18ba8d3e1237308f5f9f1fbc |
+| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
+| | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
 
 ## Complete commit and file inventory
 
@@ -2141,6 +2144,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep stored purchase diagnostics below passive reads | `packages/dacs-client/test/diagnostic-reader.test.mjs` (deleted) |
 | fix(client): D11 keep stored purchase diagnostics below passive reads | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
 | fix(client): D11 keep stored purchase diagnostics below passive reads | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
 
 ## Original moved files
 
