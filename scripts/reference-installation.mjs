@@ -58,7 +58,7 @@ export function installationInventory(project) {
 }
 
 // npm reads package.json as UTF-8 text and ignores a leading byte-order mark.
-const parsedJson = bytes => JSON.parse(bytes.toString("utf8").replace(/^﻿/, ""));
+const parsedJson = bytes => JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
 
 function manifestOf(bytes) {
   try { return { manifest: parsedJson(bytes) }; }
