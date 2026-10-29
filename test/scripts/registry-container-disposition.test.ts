@@ -325,7 +325,7 @@ describe("registry/container workflow wiring", () => {
     const paths = /\n  pull_request:\n    paths:\n((?: {6}- .+\n)+)/.exec(acceptance)?.[1]?.split("\n")
       .map((line) => line.trim().replace(/^- "(.*)"$/, "$1")).filter(Boolean) ?? [];
     const changedInputs = [".github/workflows/registry-container-acceptance.yml",
-      ".github/workflows/registry-container-audit-drift.yml", "package.json", "package-lock.json",
+      ".github/workflows/registry-container-audit-drift.yml", "LICENSE", "package.json", "package-lock.json",
       "scripts/check-npm-advisories.mjs", "scripts/installation-closure.mjs", "scripts/installation-archive-worker.mjs",
       "scripts/reference-installation.mjs", "scripts/acceptance-directory.mjs", "scripts/acceptance-seal.mjs",
       "scripts/registry-container-registry.sh", "scripts/sync-vectors.mjs", "src/index.ts", "packages/dacs-node/src/index.ts",
@@ -337,6 +337,14 @@ describe("registry/container workflow wiring", () => {
     for (const input of ["README.md", "packageXjson", "tsconfig-buildXjson"]) {
       expect(paths.some(pattern => matches(input, pattern)), input).toBe(false);
     }
+    // Review rvd-r15 D-1: a PR deleting root LICENSE skipped acceptance although
+    // the release-set verifier requires it. Every non-built required file triggers.
+    const verifier = readFileSync(join(repoRoot, "scripts/verify-release-set.mjs"), "utf8");
+    const required = [...verifier.matchAll(/requiredFiles: \[([^\]]*)\]/g)]
+      .flatMap((match) => [...(match[1] ?? "").matchAll(/"([^"]+)"/g)].map((file) => file[1] ?? ""))
+      .filter((file) => !file.startsWith("dist/"));
+    expect(required).toContain("LICENSE");
+    for (const file of required) expect(paths.some(pattern => matches(file, pattern)), file).toBe(true);
   });
 
   it("has the scheduled drift workflow call acceptance with drift enforced", () => {

@@ -11,6 +11,7 @@ on:
     paths:
       - ".github/workflows/registry-container-acceptance.yml"
       - ".github/workflows/registry-container-audit-drift.yml"
+      - "LICENSE"
       - "package.json"
       - "package-lock.json"
       - "scripts/**"
