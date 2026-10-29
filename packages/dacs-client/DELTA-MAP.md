@@ -668,6 +668,10 @@ Purchase admission normalizes its internal PRAGMA statements to object rows and 
 | | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) | deleted |
 | D11 | fix(client): D11 record 03c admission merge integration | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 7793b41c617ac2e9603c32553689b4f1fb62787f |
+| D11 | fix(client): D11 preserve TEMP admission metadata | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 6d91edffe9bb3cabf090c064fed91c1d92f34ad4 |
+| | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | dd6bd486f4e2e594df046ac053c44b9d1eed0bee |
+| | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` | 69b53df409d1cc27fc4086ee7becdf92737867bb |
 
 ## Complete commit and file inventory
 
@@ -1616,67 +1620,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
 | fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/test/sqlite-purchase-result-options.test.mjs:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/helpers/store-journal-worker.mjs` (deleted) |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-journal-atomicity.test.mjs` (deleted) |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
-| fix(client): D11 restore transactions above purchase admission | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
-| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 keep transaction boundary tests with orchestration | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/helpers/store-journal-worker.mjs` (deleted) |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/store-journal-atomicity.test.mjs` (deleted) |
-| fix(client): D11 align disk fixtures with durable synchronization | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/helpers/purchase-tx-exit-worker.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/helpers/store-journal-worker.mjs` (deleted) |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/purchase-tx-boundary.test.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/purchase-tx-nesting.test.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/purchase-tx-results.test.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-journal-atomicity.test.mjs` (deleted) |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
-| fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) |
-| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` |
+| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` |
 
 ## Original moved files
 
