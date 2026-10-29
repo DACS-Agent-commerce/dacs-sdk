@@ -454,6 +454,7 @@ function installedCandidateModules(project, closure) {
 // A closed inventory of physical module roots and EVERY package.json scope,
 // including scopes outside module roots. Only the verified final namespace
 // contributes manifests; opaque registry entries cannot pass.
+// Hoisted, nested and shallow installs use lock locations as installed paths.
 function candidateInventory(closure, installed, registry) {
   const modules = new Map();
   const errors = [];
@@ -773,6 +774,9 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
   const candidates = releaseCandidates(releaseSet, version);
   const installer = npmInstallContract(project);
+  if (installer.config["install-strategy"] === "linked") {
+    throw new Error("cannot authenticate candidate copies under install-strategy=linked: lock locations are not installed paths");
+  }
   const closure = referenceInstallation({ manifest, lock, installer,
     readArchive: (_location, entry) => cachedArchive(installer.config.cache, entry.integrity) });
   const differences = installationDifferences(project, closure).map(line => "installed tree is not the locked archives: " + line);
