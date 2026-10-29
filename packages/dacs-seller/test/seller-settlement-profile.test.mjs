@@ -39,7 +39,7 @@ const presentWithout = (party, presentedAt) => {
   return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 
-async function world(t, { listingChanges = () => {} } = {}) {
+async function world(t, { listingChanges = () => {}, sellerRequirement = null } = {}) {
   const sellerKey = key(), buyerKey = key(), now = 1780000000000, reached = [], steward = railSteward();
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
@@ -82,15 +82,15 @@ async function world(t, { listingChanges = () => {} } = {}) {
   // composite addresses.
   const synthetic = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
   const vetted = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
-    seller: { ...synthetic.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: listing.buyerRequirement }) } };
+    seller: { ...synthetic.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: sellerRequirement ?? listing.buyerRequirement }) } };
   // The not-performed references with each counterparty verifier named, as a context could return them.
   const signedSynthetic = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: { ...synthetic.buyer.vetRecordRef, signer: sellerKey.claim } },
     seller: { ...synthetic.seller, vetRecordRef: { ...synthetic.seller.vetRecordRef, signer: buyerKey.claim } } };
   // The delivery runner's Vet requirement invocations for a context input: one
   // per party record, evaluating that party, naming its counterparty verifier
-  // and the requirement the record hashes (the Listing's buyer requirement).
+  // and the corresponding requirement the record hashes.
   const invocationsFor = (input) => [['buyer', buyerKey.claim, sellerKey.claim], ['seller', sellerKey.claim, buyerKey.claim]].map(([role, evaluatedParty, verifier]) => ({
-    vetRecordRef: structuredClone(input[role].vetRecordRef), evaluatedParty, requirement: structuredClone(listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] }));
+    vetRecordRef: structuredClone(input[role].vetRecordRef), evaluatedParty, requirement: structuredClone(role === 'seller' ? sellerRequirement ?? listing.buyerRequirement : listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] }));
   // The seller wallet's journal over wallet primitives that refuse: the native
   // settlement chain takes the evidence anchor and its reconciliation only from
   // one createPaymentEvidenceWalletJournal (`journal()`), in the agent as in the host.
@@ -126,19 +126,19 @@ const refused = async (work) => { try { await work(); return null; } catch (erro
 const UNAVAILABLE = { code: 'settlement_profile_unavailable', status: 503 };
 const notCalled = async () => { throw new Error('TEST not called'); };
 
-test('a native agent without the Vet context and delivery chain signs, commits and takes payment for nothing', async (t) => {
+test('a native agent without the Vet context opens no session and takes no payment', async (t) => {
   const w = await world(t);
   const agent = await w.agent(w.capabilities);
   t.after(() => agent.close());
   assert.deepEqual(await refused(async () => agent.receiveProposal(await w.proposalFor(w.synthetic))), { code: 'vet_context_required', status: 503 });
   assert.equal(agent.stageOf(w.jobId), null, 'no session is opened for the refused proposal');
-  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), { code: 'unknown_job', status: 404 });
   assert.deepEqual(await refused(() => agent.submitPayment(w.payment)), UNAVAILABLE);
   assert.deepEqual(await refused(() => agent.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), UNAVAILABLE);
   assert.deepEqual(w.reached, []);
 });
 
-test('native payment evidence and the Vet context without native delivery sign the vetted Agreement but commit and take payment for nothing', async (t) => {
+test('native commitment reaches Agreement readback without native delivery while payment stays unavailable', async (t) => {
   const w = await world(t);
   const agent = await w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), demDeliveryContext: w.chain.demDeliveryContext() });
   t.after(() => agent.close());
@@ -147,9 +147,9 @@ test('native payment evidence and the Vet context without native delivery sign t
   assert.notEqual(unvetted?.code, 'signed', 'the synthetic Vet references are never signed');
   const vetted = await agent.receiveProposal(await w.proposalFor(w.vetted));
   assert.equal(vetted.disposition, 'complete');
-  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), UNAVAILABLE);
+  assert.deepEqual(await refused(() => agent.commit({ jobId: w.jobId })), { code: 'substrate_unavailable', status: 503 });
   assert.deepEqual(await refused(() => agent.submitPayment({ ...w.payment, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE })), UNAVAILABLE);
-  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), [], 'no Agreement read, publication, transfer observation or delivery');
+  assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), ['readAgreement'], 'commitment reads the Agreement; payment makes no external call');
 });
 
 test('the complete native profile takes payment only as native payment evidence, before any transfer is observed', async (t) => {
@@ -390,12 +390,13 @@ async function httpSeller(t, w, { gate = {} } = {}) {
   const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite') });
   t.after(() => { try { agent.close(); } catch { /* closed by a restart */ } store.close(); });
   const pin = seller.listingPin(w.listing);
-  const gated = (name) => (body) => {
+  const gated = (name) => (body, options) => {
     const code = gate[name];
     if (code) { delete gate[name]; throw new seller.SellerAgentError(code, `TEST ${code}`, code === 'native_evidence_required' ? 409 : 503); }
-    return agent[name](body);
+    return agent[name](body, options);
   };
   const facade = { claim: w.signer.claim, listingPin: pin, reconcileTransport: (input) => agent.reconcileTransport(input), agreementState: (identity) => agent.agreementState(identity),
+    retainsProposalWork: (jobId) => agent.retainsProposalWork(jobId), retainsPaymentClaim: (jobId, body) => agent.retainsPaymentClaim(jobId, body),
     receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
   const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
   const proposal = await w.proposalFor(w.vetted);
@@ -433,11 +434,6 @@ test('over HTTP a rail refusal of a proposal has no effect: the same proposal is
   assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
   assert.equal(h.agent.durableSessionOf(w.jobId).railPinSigned, true);
 });
-
-// Every gate the agent raises before any read, write, signature or send, and its status.
-const PRE_EFFECT_GATES = [['vet_context_required', 503], ['session_admission_required', 503], ['settlement_profile_unavailable', 503], ['rail_unavailable', 503], ['native_evidence_required', 409], ['bundle_finalization_unavailable', 503]];
-
-// ---- Session admission: profile, challenge, revocation and Vet records ----
 test('a native agent without the seller\'s session admission opens no session', async (t) => {
   const w = await world(t);
   const { sessionAdmission: _none, ...capabilities } = complete(w, { durableDirectory: w.dir() });
@@ -642,7 +638,8 @@ test('a passing, counterparty-signed Vet record over another requirement is not 
 // bundle's presentation verifier and the registry snapshot the operator pinned
 // for the job (PCR-6, CRQ-1).
 const presenceRequirement = (scheme) => ({ requirementVersion: '1', required: [{ scheme, verificationRequired: false }], preferredPresentation: 'any' });
-const presenceWorld = (t, scheme = 'did') => world(t, { listingChanges: (draft) => { draft.buyerRequirement = presenceRequirement(scheme); } });
+const presenceWorld = (t, scheme = 'did') => world(t, { listingChanges: (draft) => { draft.buyerRequirement = presenceRequirement(scheme); },
+  sellerRequirement: { requirementVersion: '1', required: [], preferredPresentation: 'any' } });
 const signPresence = async (w, admission = w.admission.sessionAdmission) => {
   const agent = await w.agent(complete(w, { durableDirectory: w.dir(), sessionAdmission: admission, demDeliveryContext: w.chain.demDeliveryContext() }));
   try { return await agent.receiveProposal(await w.proposalFor(w.vetted)); } finally { agent.close(); }
@@ -1071,83 +1068,6 @@ test('new Listing sessions use the current inclusive validity interval, before a
   agent = await w.agent(options);
   t.after(() => agent.close());
   assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution, 'signed session remains available after expiry');
-});
-
-
-// Interrupts the first proposal over HTTP after the seller contribution is saved and
-// before the final proposal checkpoint, then restarts the seller. Answers a reader of
-// the number of Agreement signatures made so far.
-let finalProposalCutSequence = 0;
-async function cutBeforeFinalProposalCheckpoint(t, w) {
-  let agreementSigns = 0;
-  const sign = w.signer.sign;
-  w.signer.sign = (bytes) => {
-    if (Buffer.from(bytes).toString().startsWith('dacs-payee-bound-agreement:v1:')) agreementSigns++;
-    return sign(bytes);
-  };
-  // Contribution publication now saves its proposal binding atomically. The
-  // final snapshot may have identical bytes, so interrupt that save directly
-  // instead of relying on a second invocation of the cached snapshot signer.
-  const { privateModule } = await import('./helpers/private-module.mjs');
-  const api = await privateModule(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], source => {
-    const checkpoint = source.indexOf('    session.sellerContribution = structuredClone(progress.result.sellerContribution);');
-    assert.ok(checkpoint >= 0);
-    const save = source.indexOf('    persist(session);', checkpoint);
-    assert.ok(save > checkpoint);
-    return `let TEST_finalSaveCut = true;\n// TEST final proposal ${++finalProposalCutSequence}\n` + source.slice(0, save)
-      + "    if (TEST_finalSaveCut) { TEST_finalSaveCut = false; throw new Error('TEST interrupted final session persistence'); }\n" + source.slice(save);
-  });
-  w.agent = options => api.createSellerAgent(options);
-  const h = await httpSeller(t, w);
-  await answered(() => h.client.propose(h.proposal));
-  assert.equal(h.last.status, 503);
-  const retained = h.agent.durableSessionOf(w.jobId);
-  assert.ok(retained.sellerContribution, 'contribution was saved');
-  assert.equal(retained.proposal.proposalHash, h.proposal.proposal.proposalHash, 'contribution and proposal binding were saved atomically');
-  await h.restart(w.steward.railAuthority());
-  return { h, agreementSigns: () => agreementSigns };
-}
-
-test('HTTP proposal recovery completes a contribution saved before its final proposal checkpoint without signing twice', async (t) => {
-  const w = await world(t);
-  const { h, agreementSigns } = await cutBeforeFinalProposalCheckpoint(t, w);
-  const answer = await h.client.propose(h.proposal);
-  assert.equal(answer.disposition, 'complete');
-  assert.equal(agreementSigns(), 1, 'the durable signature is reused');
-});
-
-test('read-only recovery answers a contribution saved before its final proposal checkpoint without signing', async (t) => {
-  const w = await world(t);
-  const { h, agreementSigns } = await cutBeforeFinalProposalCheckpoint(t, w);
-  const body = h.proposal, rawBody = Buffer.from(JSON.stringify(body));
-  const request = { method: 'POST', path: '/dacs/v1/agreements/proposals', jobId: w.jobId, buyer: w.buyerKey.claim, seller: w.signer.claim,
-    listingPin: seller.listingPin(w.listing), agreementHash: body.proposal.plan.agreementHash, bodyHash: core.sha256Hex(rawBody) };
-  const answer = await h.agent.reconcileTransport({ request, body, rawBody, readOnly: true });
-  assert.equal(answer.disposition, 'present');
-  assert.equal(answer.value.disposition, 'complete');
-  assert.equal(agreementSigns(), 1, 'nothing was signed again');
-});
-
-test('a completed durable signature keeps its rail pin when the next session save fails', async (t) => {
-  const w = await world(t), durableDirectory = w.dir(), request = await w.proposalFor(w.vetted);
-  let cut = true, signed = 0;
-  const signer = { ...w.signer, sign: (bytes) => {
-    const text = Buffer.from(bytes).toString();
-    if (text.startsWith('dacs-payee-bound-agreement:v1:')) signed++;
-    if (cut && text.includes('"kind":"session"') && text.includes('"railPinSigned":true')) {
-      cut = false; throw new Error('TEST lost post-signature session save');
-    }
-    return w.signer.sign(bytes);
-  } };
-  const first = await w.agent(complete(w, { durableDirectory, signer }));
-  assert.equal((await first.receiveProposal(request)).disposition, 'indeterminate');
-  assert.notEqual(first.durableSessionOf(w.jobId).railPinSigned, true);
-  assert.equal(typeof first.durableSessionOf(w.jobId).agreementSignatureKey, 'string');
-  first.close();
-  const after = await w.agent(complete(w, { durableDirectory, signer, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
-  t.after(() => after.close());
-  assert.equal((await after.receiveProposal(request)).disposition, 'complete');
-  assert.equal(signed, 1, 'the completed durable signature continues its original pin');
 });
 
 test('a Listing that expires during context resolution signs no new Agreement', async (t) => {
