@@ -252,17 +252,23 @@ test('a losing evaluate race waits through the whole permitted evaluation interv
  f.counterparty.readRecord=async request=>{
   const answer=await read(request);
   if(answer.status==='unattempted'&&++arrived<=2){if(arrived===2)releaseReads();await both;}
-  // The winning evaluation is slow: it holds its record signature beyond the
-  // short 40-read window, but inside the counterparty's own ten-second deadline.
+  // The winning evaluation is slow: it holds its record signature until the
+  // loser has made its 41st in-progress read, inside the counterparty's own
+  // ten-second deadline.
   else if(answer.status==='indeterminate'&&held&&++inProgress>=41)release();
   return answer;
  };
  buyer.signBytes=bytes=>{if(!held){held=true;return holdSign.then(()=>buyerSign(bytes));}return buyerSign(bytes);};
- const fallback=setTimeout(release,5000);
+ // Safety net only: a regression that stops the polling must fail the test
+ // rather than hang the runner. It must never be what releases the signer.
+ let fallbackFired=false;
+ const fallback=setTimeout(()=>{fallbackFired=true;release();},5000);
  try{
   const runs=await Promise.allSettled([first,second].map(provider=>provider.jobVet(input.scope,input.buyerIdentityBundle,()=>true)));
   for(const run of runs)assert.equal(run.status,'fulfilled',run.status==='rejected'?`${run.reason?.code}: ${run.reason?.message}`:'');
   for(const run of runs)assert.equal(run.value.sellerVet.record.overallDecision,'pass');
+  assert.equal(fallbackFired,false,'the deliberate read-count gate released the held signature');
+  assert.ok(inProgress>=41,'the loser polled the in-progress ledger through the boundary');
   assert.equal(f.seen.length,1,'the one-use challenge was consumed once');assert.equal(f.local.writes.length,2);
  }finally{clearTimeout(fallback);buyer.signBytes=buyerSign;f.base.close();}
 });
