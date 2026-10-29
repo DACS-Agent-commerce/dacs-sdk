@@ -1146,7 +1146,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   };
   async function reconcileCommitmentTransport({ request, body, readOnly = false } = {}) {
     if (!COMMITMENT_PATHS.has(request?.path)) return undefined;
-    const held = (reason) => ({ disposition: 'indeterminate', reason: String(reason).slice(0, 240) });
+    const held = (reason, cause) => {
+      const out = { disposition: 'indeterminate', reason: String(reason).slice(0, 240) };
+      if (cause) { out.causeCode = cause?.cause?.name === 'TimeoutError' ? 'timeout' : 'reader'; Object.defineProperty(out, 'cause', { value: cause }); }
+      return out;
+    };
     const bound = () => {
       try {
         return request.method === 'POST' && isCanonicalJobId(request.jobId) && Boolean(body) && typeof body === 'object' && !Array.isArray(body) &&
@@ -1167,9 +1171,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let answer;
     try { answer = await commit(input, options); }
     catch (error) {
-      if (readOnly || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return held(error?.message ?? error);
+      if (readOnly || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return held(error?.code ?? error?.message ?? error, error);
       try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
-      catch (retryError) { return held(retryError?.message ?? retryError); }
+      catch (retryError) { return held(retryError?.code ?? retryError?.message ?? retryError, retryError); }
     }
     return answer?.status === 'committed' || answer?.status === 'commitment-held' ? { disposition: 'present', value: answer } : held('commitment readback did not establish a retained outcome');
   }
@@ -2145,7 +2149,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       }
       return durable.withJob(input.request?.jobId, async (session) => {
       sessions.delete(input.request.jobId); await restore(session);
-      const proof = await reconcileTransport(input);
+      const proof = nativeProfile && COMMITMENT_PATHS.has(input.request?.path)
+        ? await reconcileCommitmentTransport(input) : await reconcileTransport(input);
       input.settle?.(proof);
       return proof;
     });} : undefined,
