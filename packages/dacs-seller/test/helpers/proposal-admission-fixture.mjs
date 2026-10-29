@@ -27,16 +27,16 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
   if(!assembled&&source.includes('await respondToFixedPriceAgreementProposalDurable(')){
    const file=ts.createSourceFile('agent.mjs',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);let method;
    const find=node=>{if(ts.isFunctionDeclaration(node)&&node.name?.text==='receiveProposal')method=node;ts.forEachChild(node,find);};find(file);
-   const admission=method.body.statements.find(node=>ts.isIfStatement(node)&&node.expression.getText(file)==='newSession');
-   if(!admission)throw new Error('TEST admission stage missing');
-   source=source.slice(0,admission.end)+"\nthrow new SellerAgentError('proposal_not_assembled','TEST isolated admission boundary',503);\n"+source.slice(method.body.end-1);
+   const signing=method.body.statements.find(node=>ts.isVariableStatement(node)&&node.declarationList.declarations.some(declaration=>declaration.name.getText(file)==='signUnderPin'));
+   if(!signing)throw new Error('TEST signing stage missing');
+   source=source.slice(0,signing.getStart(file))+"\nthrow new SellerAgentError('proposal_not_assembled','TEST isolated admission boundary',503);\n"+source.slice(method.body.end-1);
   }
   if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposal};');
  });
  const open=async()=>{const agent=await api.createSellerAgent(config);t.after(()=>agent.close());return agent;};
- const input=(agent,jobId=JOB,party=buyer)=>{const challenge=agent.issueSessionChallenge({jobId,buyer:party.claim}),bundle=fixtureIdentityBundle(party,time);bundle.sessionNonce=challenge.sessionNonce;bundle.presentation.signatures[0].signature=party.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');return{proposal:{},transportIdentity:{jobId,buyer:party.claim,seller:seller.claim},buyerIdentityBundle:bundle};};
+ const input=async(agent,jobId=JOB,party=buyer)=>{const challenge=await agent.issueSessionChallenge({jobId,buyer:party.claim}),bundle=fixtureIdentityBundle(party,time);bundle.sessionNonce=challenge.sessionNonce;bundle.presentation.signatures[0].signature=party.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');return{proposal:{},transportIdentity:{jobId,buyer:party.claim,seller:seller.claim},buyerIdentityBundle:bundle};};
  const proposal=async(agent,jobId=JOB,{synthetic=false,generatedAt=time}={})=>{
-  const request=input(agent,jobId),base=agreementInput({jobId,listing,buyerBundle:request.buyerIdentityBundle,generatedAt});
+  const request=await input(agent,jobId),base=agreementInput({jobId,listing,buyerBundle:request.buyerIdentityBundle,generatedAt});
   const buyerRef=await admission.vetRecord(jobId,buyer.claim,request.buyerIdentityBundle,{requirement:listing.buyerRequirement});
   const sellerRef=await admission.vetRecord(jobId,seller.claim,listing.seller.identity,{requirement:SELLER_REQUIREMENT});
   const actual={...base,buyer:{...base.buyer,vetRecordRef:buyerRef},seller:{...base.seller,vetRecordRef:sellerRef}};
