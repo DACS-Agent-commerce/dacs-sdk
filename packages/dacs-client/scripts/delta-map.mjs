@@ -51,6 +51,18 @@ export function table(data = ledger()) {
   }
   return publicationText(lines.join('\n')+'\n');
 }
+// The blob a recorded path must hold comes from the commit graph, not ledger
+// order. `records` are the path's resolved records ({sha, after}); within one
+// commit the last one counts. `independent(shas)` returns the commits that no
+// other listed commit descends from (git merge-base --independent). Returns
+// {blob} when those newest records agree, or {conflict: shas} when parallel
+// branches recorded different blobs and no later record chose one.
+export function expectedBlob(records, independent) {
+  const latest=new Map(records.map(r=>[r.sha,r.after]));
+  const newest=latest.size>1?independent([...latest.keys()]):[...latest.keys()];
+  const blobs=new Set(newest.map(sha=>latest.get(sha)));
+  return blobs.size===1?{blob:[...blobs][0]}:{conflict:newest};
+}
 export function checkDeltas(packageDir=pkg) {
   const failures=[]; const active=ledger(); const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
   const archived=readFileSync(join(pkg,'evidence/publication-history.json'));
@@ -72,7 +84,7 @@ export function checkDeltas(packageDir=pkg) {
   const sourceManifest=evidence.sourceManifest;
   if(JSON.stringify(sourceManifest)!==JSON.stringify(JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'))))) failures.push('source manifest differs from archived source/delta evidence');
   if(data.schema!=='dacs-client-deltas/v2'||data.baseline!==BASELINE) failures.push('delta ledger baseline/schema changed');
-  const subjects=new Set();
+  const subjects=new Set(), recorded=new Map();
   for(const c of data.changes) {
     if(subjects.has(c.subject)) failures.push(`duplicate delta subject ${c.subject}`);
     subjects.add(c.subject);
@@ -82,6 +94,7 @@ export function checkDeltas(packageDir=pkg) {
     if(matches.length===1) {
       const sha=matches[0].sha;
       for(const f of c.files) {
+        recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,after:f.after}]);
         for(const [rev,want] of [[`${sha}^`,f.before],[sha,f.after]]) {
           let actual=null;try{actual=git('rev-parse','--verify',`${rev}:${f.path}`);}catch{}
           if(actual!==want) failures.push(`${f.path}: delta ${c.delta} blob differs at ${rev}`);
@@ -116,13 +129,21 @@ export function checkDeltas(packageDir=pkg) {
     const a=staged.get(path),b=committed.get(path);
     if(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash)failures.push(`${path}: index differs from HEAD for moved source/test`);
   }
+  // Merges are not record subjects, so HEAD, the index and the working bytes
+  // must all hold the newest recorded blob; a merge that keeps a stale side,
+  // rolls back or deletes a recorded file fails here.
+  const independent=shas=>git('merge-base','--independent',...shas).split('\n');
   for(const path of allowed) {
-    const changes=data.changes.flatMap(c=>c.files.filter(f=>f.path===path));
-    let expected=changes.length?changes.at(-1).after:null;
-    if(!changes.length)try{expected=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
+    let expected=null;
+    if(recorded.has(path)) {
+      const result=expectedBlob(recorded.get(path),independent);
+      if(result.conflict) { failures.push(`${path}: newest records disagree (${result.conflict.join(', ')}); record the chosen blob after the merge`); continue; }
+      expected=result.blob;
+    } else try{expected=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
     const rel=path.slice(prefix.length); const local=join(packageDir,rel);
     const actual=existsSync(local)?blob(readFileSync(local)):null;
-    if(actual!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
+    const head=committed.get(path)?.hash??null, index=staged.get(path)?.hash??null;
+    if(actual!==expected||head!==expected||index!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
   }
   if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(active)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
   return {failures,allowed};
