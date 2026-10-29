@@ -207,3 +207,14 @@ test('the inventory cannot name an unreachable commit',t=>{
  rows.push({sha:'0'.repeat(40),subject:'fix(client): D11 TEST absent commit',files:[moved]});writeFileSync(file,JSON.stringify(rows));
  const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/commit inventory names an unreachable commit 0{40}/);
 });
+test('a hashed inventory row must carry its commit subject, and one commit has one row',t=>{
+ const dir=scratch(t),file=join(dir,control[0]),rows=JSON.parse(readFileSync(file,'utf8'));
+ const head=execFileSync('git',['-C',dir,'log','-1','--no-merges','--format=%H%x09%s','--','packages/dacs-client'],{encoding:'utf8'}).trim().split('\t');
+ for(const [extra,message] of [
+  [{sha:head[0],subject:'fix(client): D11 TEST wrong subject',files:['fake']},new RegExp(`commit inventory subject differs from commit ${head[0]}`)],
+  [{sha:head[0],subject:head[1],files:['fake']},new RegExp(`commit inventory selects ${head[0]} more than once`)],
+ ]){
+  writeFileSync(file,JSON.stringify([...rows,extra]));
+  const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,message);
+ }
+});
