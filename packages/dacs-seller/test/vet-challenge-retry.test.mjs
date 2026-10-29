@@ -41,7 +41,7 @@ for(const provider of ['same','fresh'])test(`an expired signed presentation rota
  f.counterparty.readRecord=async input=>{if(unavailable){unavailable=false;throw Object.assign(new Error('TEST ledger unavailable'),{code:'ECONNREFUSED'});}return read(input);};
  // A conforming buyer refuses a presentation whose issued nonce has expired.
  const evaluate=f.counterparty.evaluate;
- f.counterparty.evaluate=async input=>{const expiry=expiries.get(input.identityBundle.sessionNonce);if(expiry===undefined||at>expiry)throw new Error('TEST expired challenge');return evaluate(input);};
+ f.counterparty.evaluate=async input=>{const expiry=expiries.get(input.identityBundle.sessionNonce);if(expiry===undefined||at>expiry){f.consumed.add(input.identityBundle.sessionNonce);throw new Error('TEST expired challenge');}return evaluate(input);};
  const p=await f.provider(),input=f.input();
  await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_unavailable');
  const saved=await p.state.read(input.scope.jobId);
