@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "81048d38ba5b9dd52d9f8845f21c644ca194c9a6"
+        "blob": "f75ea810250f8bb1fdc72fafaa788a573dd3e024"
       },
       "DELTA-LEDGER.json": {
-        "blob": "df32fed268d288d07cfd120debd353acc561bd74"
+        "blob": "dea4f50032c5fdbd0a63a7c318c73e39917e112c"
       },
       "DELTA-MAP.md": {
-        "blob": "50cad3e16530a041c87d4d09db54e784b1c71852"
+        "blob": "4d7550dfcc25230a66de39de9ab8bdc9da902b40"
       },
       "DELTA-NOTES.md": {
-        "blob": "c3fe5e2ebb6cd9a3bae757facf66046d747f31bf"
+        "blob": "b34021b325b3bc1dc395dc0b8faf7de5c982bf90"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "eed07c47cca363b4dee355fd0178c597c8af3a7c"
+        "blob": "88bbc57e167e968e4bf18856d04ef055df799655"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1235,7 +1235,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "db214062de530c881757097b823df76b6be8d0df"
+        "blob": "1945c4fafc53f1dceca1ed360310281d45d43d7c"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1325,13 +1325,10 @@
         "blob": "ea9932745fde595d695cf7b38b624d3dae2d76bf"
       },
       "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "0bc483eefebd7e8bb05b127a32438855a5271b84"
+        "blob": "4c7a9c1b81b8c62b0a8c45fe65b97317f4c68b40"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
-      },
-      "test/domain-store-crash.test.mjs": {
-        "blob": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
       },
       "test/fixtures/authorization-server.pre-dcr-logout.mjs": {
         "blob": "2821bf43b14367810b3b5b651fdac6e57a0778ef"
@@ -1452,12 +1449,6 @@
       },
       "test/helpers/devnet-operator-sequential-node2.mjs": {
         "blob": "3cb86961d2aeef100160bbf222175ae6c0b552b4"
-      },
-      "test/helpers/domain-store-crash-worker.mjs": {
-        "blob": "fe025a891b76f93bc8cf0b0a02ccdf36e92e2712"
-      },
-      "test/helpers/domain-store-crash-world.mjs": {
-        "blob": "a91f8018335cd08180669ba04b8312608b046d8a"
       },
       "test/helpers/durable-wallet-journal-broker.mjs": {
         "blob": "e4c756c43fd64a7d0d654e1ad2372fd0da4ab046"
@@ -1649,7 +1640,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "835ac12ec7c287d1970a309a9ceb75f74aff29ac"
+        "blob": "6fbdef3c2e58ab732f8063c1a7faf344b810fc15"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
@@ -1664,7 +1655,7 @@
         "blob": "fd8943b54a6e03026a28eafeaa992de1d66d2fdc"
       },
       "test/native-supersession-unavailable.test.mjs": {
-        "blob": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
+        "blob": "a3c2c1f30dde168de241dd1d8845b67f18b7b3bd"
       },
       "test/package-contents.test.mjs": {
         "blob": "f05e545f62faf232439c60bb69b08f6ac5684026"
@@ -1679,7 +1670,7 @@
         "blob": "b28c6ef97e3004d9921c2b9f48a66d0e4d936423"
       },
       "test/purchase-executed-only.test.mjs": {
-        "blob": "5a2a00254d003a77105c64e5f60b05372a5dbf3f"
+        "blob": "72479ddb615e6ad1f1002f588eabbb9e0dab4d1a"
       },
       "test/purchase-integrity.test.mjs": {
         "blob": "174d67c16132706497904b28250c6135e97d1497"
