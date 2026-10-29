@@ -35,10 +35,6 @@ export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
 const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
-const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
-  (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
-// A completed delivery answer rests on fresh payment, Deliverable and any
-// published evidence readbacks; repeating it repeats those checks.
 const reportsDeliveryReady = (text) => {
   try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && ['delivery-ready','delivered'].includes(answer.delivery?.status); } catch { return false; }
 };
