@@ -147,3 +147,25 @@ test('an accepted presentation carrying an extra bundle member stays readable an
  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));state.close();
  const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
 });
+
+// close() can run while an admission read is pending. The continuation must
+// refuse with the lifecycle error before any capability call or state change.
+async function gatedRevocation(f){
+ let entered,release;const started=new Promise(r=>{entered=r;}),gate=new Promise(r=>{release=r;});
+ const original=f.admission.sessionAdmission.readRevocationSurfaces;
+ f.admission.sessionAdmission.readRevocationSurfaces=async query=>{entered();await gate;return original(query);};
+ return{started,release};
+}
+test('a close during the admission revocation read refuses before admitting',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent),gate=await gatedRevocation(f);
+ const pending=agent.stagedProposal(input);await gate.started;agent.close();gate.release();
+ await assert.rejects(pending,error=>error.code==='seller_closed');
+ assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,0);
+});
+test('a close during an accepted replay revocation read refuses with the lifecycle error',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);
+ await assert.rejects(agent.stagedProposal(input),staged);
+ const gate=await gatedRevocation(f);
+ const pending=agent.stagedProposal(input);await gate.started;agent.close();gate.release();
+ await assert.rejects(pending,error=>error.code==='seller_closed');
+});

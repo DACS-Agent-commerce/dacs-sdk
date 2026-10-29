@@ -410,6 +410,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       // DACS-1 RB-4..RB-6, LR-3: the seller decides revocation itself (core
       // checkListingRevocation) over the operator's readings; only `absent` opens.
       const revocation = await listingRevocationProblem(admission, { listing, listingPin: pin, jobId, now });
+      requireOpen();
       if (revocation) throw new SellerAgentError(revocation.code, revocation.message, revocation.status);
       const query = { jobId, buyer: buyerIdentityBundle.presentedBy, buyerBundleHash: bundleHash, sessionNonce: nonce,
         seller: claim, listingPin: structuredClone(pin), profile: structuredClone(SELLER_PROFILE) };
@@ -418,6 +419,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       let answer;
       try { answer = accepted?structuredClone(accepted.admission):await readAdmissionCapability(admission,'admit',query); }
       catch (cause) { throw new SellerAgentError('session_admission_unavailable', 'the seller session admission is unavailable', 503,{cause}); }
+      // Checked after the awaited admission read too, outside the reader error
+      // wrapper: a close while it was pending is a lifecycle refusal, not an
+      // unavailable admission, and keeps nothing.
+      requireOpen();
       const problem = sessionAdmissionProblem(answer, query);
       if (problem) throw new SellerAgentError(accepted?'session_admission_unavailable':'session_not_admitted', problem, accepted?503:409);
       if(!accepted)try{challenges.admitChallenge(nonce, presentationHash,{buyerBundle:structuredClone(buyerIdentityBundle),buyerBundleHash:bundleHash,admission:structuredClone(answer),admittedAt:now()});}
