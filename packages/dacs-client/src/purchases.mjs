@@ -994,7 +994,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
           options.signal.throwIfAborted();
           // Retain only bounded primitive contract fields. Never traverse or
           // serialize arbitrary host extension objects or collections.
-          if (!value || typeof value !== 'object' || Array.isArray(value)) return checkedTransferObservation(value, hash);
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return transferObservationRecord(value, hash);
           const projected = {};
           for (const key of transferDiagnosticFields) {
             const field = value[key];
@@ -1005,7 +1005,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
             }
             projected[key] = field;
           }
-          return checkedTransferObservation(projected, hash);
+          return transferObservationRecord(projected, hash);
         }, { timeoutMs: chainReadTimeoutMs, signal });
       } catch (error) {
         observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240),
