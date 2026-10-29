@@ -16,8 +16,9 @@ import {admitSessionChallenge} from '../src/dacs/session-challenge-limits.mjs';
 function fixture(t){
  const dir=mkdtempSync(join(tmpdir(),'TEST-agent-construction-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
  const listing=fixtureListing(seller,{now:NOW}),signer={claim:seller.claim,sign:seller.signBytes},unreachable=()=>assert.fail('unexpected external operation');let time=NOW;
- const config={signer,listing,durableDirectory:dir,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority()};
- return{config,dir,listing,signer,advance:ms=>{time+=ms;},open:changes=>createSellerAgent({...config,...changes})};
+ const admission=createSessionAdmissionFixture({seller:{claim:seller.claim,sign:seller.signBytes},buyer:{claim:buyer.claim,sign:buyer.signBytes},now:()=>time});
+ const config={signer,listing,durableDirectory:dir,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission};
+ return{config,dir,listing,signer,admission,advance:ms=>{time+=ms;},open:changes=>createSellerAgent({...config,...changes})};
 }
 // A buyer presentation that carries exactly the nonce the seller issued.
 const presentWith=(party,sessionNonce)=>{
