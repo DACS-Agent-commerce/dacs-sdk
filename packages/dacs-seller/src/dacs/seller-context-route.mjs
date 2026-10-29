@@ -153,8 +153,8 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       requireJobId(body?.scope?.jobId);
       return resolveBuyer(structuredClone(body), { writable: () => writable(body.scope.jobId, body.scope.buyer) });
     },
-    // Final answers release this effect's unused holds; uncertain replays
-    // retain them until authenticated recovery reaches a final answer.
+    // Every finished attempt releases its unused holds; an uncertain effect
+    // stays fenced and an authenticated resume reserves fresh capacity.
     settled: (contextHold)=>{
       if(!contextHold?.hold)return;
       requireJobId(contextHold.jobId);
