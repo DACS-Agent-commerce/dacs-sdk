@@ -793,6 +793,16 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:113`, `packages/dacs-client/src/dacs/seller-http.mjs:233`, `packages/dacs-client/src/dacs/seller-http.mjs:236`, `packages/dacs-client/src/dacs/seller-http.mjs:241`, `packages/dacs-client/src/dacs/seller-http.mjs:243`, `packages/dacs-client/src/dacs/seller-http.mjs:246`, `packages/dacs-client/src/dacs/seller-http.mjs:250`, `packages/dacs-client/src/dacs/seller-http.mjs:256`, `packages/dacs-client/src/dacs/seller-http.mjs:265` | 3b37b663b20165b7a8a14a8a25ee62bf662cc5e6 |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:56`, `packages/dacs-client/src/util/http.mjs:58`, `packages/dacs-client/src/util/http.mjs:61`, `packages/dacs-client/src/util/http.mjs:64`, `packages/dacs-client/src/util/http.mjs:70`, `packages/dacs-client/src/util/http.mjs:73`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77`, `packages/dacs-client/src/util/http.mjs:81`, `packages/dacs-client/src/util/http.mjs:87`, `packages/dacs-client/src/util/http.mjs:92`, `packages/dacs-client/src/util/http.mjs:99`, `packages/dacs-client/src/util/http.mjs:102`, `packages/dacs-client/src/util/http.mjs:109`, `packages/dacs-client/src/util/http.mjs:113`, `packages/dacs-client/src/util/http.mjs:117`, `packages/dacs-client/src/util/http.mjs:122`, `packages/dacs-client/src/util/http.mjs:125`, `packages/dacs-client/src/util/http.mjs:152` | 08b56d27d6e9bb66b71c855ec87ace2e0538dbe7 |
 | | `packages/dacs-client/test/fetch-abort-settle.test.mjs:1` | 3293ce72e25868798e7b7f29aecc1c155a4d11e3 |
+| D11 | fix(client): D11 rebuild part 12 on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 612da2ec57f6c54a3b761230040fff133b30dc49 |
+| | `packages/dacs-client/test/engine-floor-portability.test.mjs:1` | 8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5 |
+| | `packages/dacs-client/test/helpers/sqlite-engine-floor.mjs:1` | eac4f2e9c7337c76fb7478050fc95c617f5fb999 |
+| | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` | 32ad1ee884c385874d10b016f89f7e25d50953b6 |
+| | `packages/dacs-client/test/purchase-tx-boundary.test.mjs:1` | 53fbeca69a87846aa9d32845aab011cbf451dd84 |
+| | `packages/dacs-client/test/purchase-tx-results.test.mjs:1` | 89418b814a42dad7fb1183ddc9e69fb17a1d4df0 |
+| | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | 0cf1690daa71819106208636318cbc955dd9ed8b |
+| | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | f0acee1431e672f772d9f4a10faef5f603b7fb96 |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 8cb570e3a627217ee42631ff4ea5e105edfef014 |
 
 ## Complete commit and file inventory
 
@@ -1994,6 +2004,20 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record rebuilt part 10 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record rebuilt part 10 source integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record rebuilt part 10 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/engine-floor-portability.test.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/helpers/sqlite-engine-floor.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/purchase-tx-boundary.test.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/purchase-tx-results.test.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
+| 93d410e0816b5ec575d30911fed07bd257daaa4a | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| fix(client): D11 record rebuilt part 12 source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record rebuilt part 12 source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record rebuilt part 12 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record rebuilt part 12 source integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record rebuilt part 12 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
