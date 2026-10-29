@@ -2,7 +2,7 @@
 # client package deltas
 
 Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. Package exports remain empty.
-Commit subjects below are exact, unique Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. PROVENANCE.json remains the immutable original copy inventory.
+Commit subjects below are exact Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. Where two reachable commits share a subject, as when a rebuilt part keeps its earlier published history, each record also names its full commit hash, and the subject must still match. PROVENANCE.json remains the immutable original copy inventory.
 
 ## D10 — Strip unused modes
 
@@ -225,7 +225,7 @@ Published part-05 iteration records are archived with the existing ledger archiv
 
 | Delta | Exact commit subject | Resolved commit |
 |---|---|---|
-| D16 | delta(client): D16 admit wire bytes and hold purchases pending release authority | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D16 | delta(client): D16 admit wire bytes and hold purchases pending release authority | Git commit selector c1064bd570664fe9714220ca6d75ee4acdc4037c |
 | | `packages/dacs-client/src/dacs/action-admission.mjs:1` | 3cd8cd09595fda0c77021cc945d9eefe321b43ad |
 | | `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:28`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:149`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:191`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:204` | 9f032dbe8861d6c495f0b26cd2d708ca1430e8a2 |
 | | `packages/dacs-client/src/dacs/completion-readiness.mjs:8`, `packages/dacs-client/src/dacs/completion-readiness.mjs:72` | 56c7e6150b5db9b61730373385d9a5214e4518f1 |
@@ -242,18 +242,18 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/ingress-admission.test.mjs:1` | bc5df5a139d39697b81a2363c3e2554c0220551e |
 | | `packages/dacs-client/test/native-adapter-auth.test.mjs:1` | c235684fe53222ad6af5c1c77ce1c087738cefc2 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | 7a0ffedc3ef6ec1e9ebd4edcdc99cd5653aab30e |
-| D16 | delta(client): D16 pin reviewed controls and preserve held readback tests | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D16 | delta(client): D16 pin reviewed controls and preserve held readback tests | Git commit selector df2b90318c71967f25620a6c9aafcce55b31e461 |
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` | 479bd5b726f9e0752ca1618212e174330b800af0 |
 | | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91`, `packages/dacs-client/test/readback-review-decisions.test.mjs:94` | a3260b7e24020f9a6a3b6e8ba637d59d17ebae06 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | b8e24392ce178fa7414fb3f244f0606b7c82c9b6 |
-| D16 | delta(client): D16 preserve the configured RPC byte budget | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D16 | delta(client): D16 preserve the configured RPC byte budget | Git commit selector 2ec400580428d4643f81f33c5132a0398366c4e6 |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` | 68daec2ca954a288273d8b206a32e2711810bce1 |
 | | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` | 3bdef904346054123fcb62d863f87b1659716d27 |
-| D16 | delta(client): D16 preserve configured Directory byte budgets | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D16 | delta(client): D16 preserve configured Directory byte budgets | Git commit selector aac03055bdbeabc7c0771642d99f0c4baf7e3de9 |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` | 306f583fa3a05fe470893f8d604131681ada172f |
 | | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` | ad06ad3f730a4b61f626a3eef35317bd839047b1 |
 | | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` | d370b9a3a69a7e927e6afde4100960654d82a8bb |
-| D16 | delta(client): D16 scope launch checks and identify executable tests | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D16 | delta(client): D16 scope launch checks and identify executable tests | Git commit selector d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d |
 | | `packages/dacs-client/test/agreement-anchor-node-junk.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/agreement-context-durable-vet.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/agreement-context-integration.browser.test.mjs` (deleted) | deleted |
@@ -443,10 +443,10 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/wallet-extension-probe.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/wallet-write-batch.test.mjs` (deleted) | deleted |
-| D16 | delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D16 | delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | Git commit selector 503ca99645c13d678f5a0dcfc2364df74e3b343d |
 | | `packages/dacs-client/test/native-broadcast-once.test.mjs:1` | 11022bfb06418a3c8d2946f1173cb75e0a2dfb0f |
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | ef154b67bd608e4a163a136b9ecd1e32e3f6f7d9 |
-| D16 | delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D16 | delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | Git commit selector b7c7586f23b593ffc4f193e6fd2545a4e983a524 |
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | c0eada136abb9f298c2ab37551b731afbbb2bd3f |
 | | `packages/dacs-client/src/dacs/dem-delivery-consumer.mjs:10`, `packages/dacs-client/src/dacs/dem-delivery-consumer.mjs:55` | 597a1a6205e46cfb4e1a1a44b768ace3239f0843 |
 | | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` | 496faea3012f79a204e43a519710cf58772ea16f |
@@ -456,7 +456,7 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/delivery-access-model.test.mjs:1` | 8c00d7bc5cfcb9e1a59f0ce5c1b0a4e5e9fb5f2e |
 | | `packages/dacs-client/test/native-broadcast-once.test.mjs:1` | 8b5be5a52eb1ddbc3ddd415a88845ce331c5c77d |
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | a90c09c6855bf640d1c1ae01251d66b783c36ee1 |
-| D16 | delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D16 | delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | Git commit selector 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 |
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | ba97147f77c17de62b3a769c61f830a793f1a449 |
 | | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` | 1241256345f2f48584566926616d89ec43e7e831 |
 | | `packages/dacs-client/src/dacs/purchase-protocol.mjs:1`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:7`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:45`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:54`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:72`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:93`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:144`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:147`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:164`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:180`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:188`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:274`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:444`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:462` | 72c1516bb64d61bc224c380c1c020fdeef8f6e6b |
@@ -464,7 +464,7 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/delivery-evidence-gate.test.mjs:1` | 14d7f1261fe9abe495e3da20d975221d051adfc7 |
 | | `packages/dacs-client/test/price-bound.test.mjs:1` | 867d8e64bdc654107ea24f4416f71cb95fa42f9c |
 | | `packages/dacs-client/test/storage-read-nonobservation.test.mjs:1` | 3e3d956374b8a297f027ceba8bbb0a929b991ef7 |
-| D11 | delta(client): D11 split 02 isolate buyer runtime imports | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | delta(client): D11 split 02 isolate buyer runtime imports | Git commit selector dcf30ea7e0533877826709a0f673b735ed7b8cca |
 | | `packages/dacs-client/src/dacs/seller-agent-error.mjs:1` | a701b193b0b8e1b01237d684ca33c4ee8ea001b6 |
 | | `packages/dacs-client/src/dacs/seller-agent.mjs:1`, `packages/dacs-client/src/dacs/seller-agent.mjs:80`, `packages/dacs-client/src/dacs/seller-agent.mjs:112` | f4040282b697373ed8c41585699c049b8230f325 |
 | | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:112`, `packages/dacs-client/src/dacs/seller-http.mjs:248`, `packages/dacs-client/src/dacs/seller-http.mjs:254`, `packages/dacs-client/src/dacs/seller-http.mjs:263` | b7e0ec6e243d6e81499a97dcbbb609566a0a4134 |
@@ -472,89 +472,89 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | ecab598d2695975c776aaddd6038e71db5432f6f |
 | | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | 32c65aec6b18cde12321600f9eb1c6ba4e439cae |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 3c96ca8c5a47dcb88862af46324df331961d153e |
-| D11 | fix(client): D11 share wallet payload identity and test import isolation | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 share wallet payload identity and test import isolation | Git commit selector 94e01fe9ae8dc617ed6f60533279192b50e7c338 |
 | | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` | 59a2fd307756d036f813edd17dec2fa8be23e68f |
 | | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | e9ec2d2e168a27c87ac04b1df345cf6bd8de0242 |
 | | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | e1085f274e14f20b87335189155f76284fd3b92a |
-| D11 | fix(client): D11 restore standalone provider and strengthen import vectors | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 restore standalone provider and strengthen import vectors | Git commit selector f6c952883663b4cd677327e1a1eed1e3d60caa98 |
 | | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` | b7183e63a75b68cda34c2b30a4d532963794b13f |
 | | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | 3df4a602a8fba8bcdaba2a75919aeebd53f1a46d |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 7cbf9eb0efa87e4b197e8d320a9080363465ef61 |
-| D11 | fix(client): D11 generate pure payload helpers from provider | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 generate pure payload helpers from provider | Git commit selector 0a0e0198631fe38b94bb8161586db52795605242 |
 | | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` | f121637cb5c6f739597a3b9bf7f1253b61c1ec19 |
 | | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` | e737b5abec7b991fd5401d943998cd3ce60bc1bc |
-| D11 | fix(client): D11 add inert guarded SQLite statement execution | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 add inert guarded SQLite statement execution | Git commit selector e222a82385baaef035f4eb4281cef6e4fa7e6e9f |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b69c3e30476cb097d782da1c27d0b936ebf2641e |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 147a5481e0d8783c9d7c929b76b32417839185a8 |
-| D11 | fix(client): D11 preserve native guarded SQL argument errors | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 preserve native guarded SQL argument errors | Git commit selector b2a4702c6bbeb9474ecd06a15885a4fc051765b5 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | b481d335f5d260dafa236b520c0b4c1b21269164 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e38a86a1fabd4f8767da17a18416e73529b2ee55 |
-| D11 | fix(client): D11 fence retained native SQL execution functions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 fence retained native SQL execution functions | Git commit selector 1a6b20b1c86359b0f4ecdc7f60e50129e90b6ae8 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f377b3dd6895e2ad1f02bedddc9eb18177f9eb57 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 8173b4c5b350f1a39a3b6bad62e8343f3e688258 |
-| D11 | fix(client): D11 fence SQLite callbacks and preserve exec semantics | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 fence SQLite callbacks and preserve exec semantics | Git commit selector 7b887564bee8a53d64e55949f31e25830b28b8ba |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | f68603bd3f057c2bf42c8670dd6cb6d52cf05db4 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | e547911cd3385e9eed8337be4b655bc424c82aaf |
-| D11 | fix(client): D11 keep rollback guard vectors portable to the Node floor | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 keep rollback guard vectors portable to the Node floor | Git commit selector 9aebf7fa2650ce343d570aeb84b24728797d2d2f |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | ef1915ddcdc37b96297aed4492ed04fd6009b724 |
-| D11 | fix(client): D11 let SQLite identify empty exec remainders | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 let SQLite identify empty exec remainders | Git commit selector c20540d482f133b7cdc41bc52e40022588067024 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 4342294acfd3f71ee5c3f348f08ac542b0596392 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | cf66e34a3816d78a633002b462ff99253850a429 |
-| D11 | fix(client): D11 reject SQL callbacks with quoted function names | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 reject SQL callbacks with quoted function names | Git commit selector 85de7a183f0ac1c30935398ab6871bcd6af696fc |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
-| D11 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | delta(client): D11 split 03 add the concrete SQLite transaction adapter | Git commit selector babe3de356531e5b664b72f0365c083495bc6b41 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | d7bfcb4b0d8d62091510ad1605bd7bd4b1e295ba |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | c202d2b701edc2a536b34d860bdb7317cfed6d77 |
 | | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) | f19662c277f9bcc86145487d72230cdfbdde2d50 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | 8560f9547739573a5f2c8c32c27a085fbd59370d |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 18c6e3c74c2817a1c38f58676eb2053d76398ebb |
-| D11 | fix(client): D11 guard every SQLite callback statement after rollback | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 guard every SQLite callback statement after rollback | Git commit selector ba4b46f849be26cf5c5cecad9cd7f108f239a663 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | dea888ee7f7906fc011ccb8e69319cf00f036c85 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 00357c230e040c7a2658f717f72e172eedcc8b44 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | 7fb6c88ed1400bffc509fc23453150bf78519cbe |
-| D11 | fix(client): D11 cover retained native exec rollback on reopen | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 cover retained native exec rollback on reopen | Git commit selector fb443465c535cf685c464406be186ecd11fb8c4b |
 | | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | aca495eb87c54f557b02a7a2ce5d5b2882f1ce83 |
-| D11 | fix(client): D11 classify native constraints and rebuild renamed table guards | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 classify native constraints and rebuild renamed table guards | Git commit selector 869c0e2a856a3efdbec0e69b0c0db9968761a1d2 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | f80619dee3a06bfc04b11247821e8f1d5dd82bad |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 0cae28f8588f2e4d35350d4f009ddfa58e84abc4 |
-| D11 | fix(client): D11 track cached host statements before transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 track cached host statements before transactions | Git commit selector a8d5a624abcfc944df82c61191f3eb4bc03093a2 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 14f4c3c17024e108f9196e0f1d68223b542d2f69 |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | a9892f8cd0a72d7ce09af15c568880d6bb364a8e |
-| D11 | fix(client): D11 preserve callback fencing and private savepoints | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 preserve callback fencing and private savepoints | Git commit selector 0b03491e50a221730c206d914882ea085e22e79d |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | ea871900d025e7310e2a35b95a626da101ca9edd |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | ea1a50eb65b26e6e66b96e30f6dbde26976b8586 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | a6715925d163dc3c157bd33fc8ccd0f34a1ccfd6 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | aa9dbf4fc1e98f055efc5d7690e042dad16f9186 |
-| D11 | fix(client): D11 guard result inspection and preserve unfinished host writes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 guard result inspection and preserve unfinished host writes | Git commit selector 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 6e92f93f88eacacd26f5dd031c64a0c29388eb3f |
 | | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | 4814964834698bcd72cc3faaf6f2438b8ce35cee |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | 74c4ba0638f76b77d45dd45c1260e7e718a8e7af |
-| D11 | fix(client): D11 refuse unowned statements while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 refuse unowned statements while application functions exist | Git commit selector 0f26068390e8b988b177ced5e2e42bb2a10fd049 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 470cc33ed79ec1ccdd9d1fadb6bec63b6b2973a3 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 2d4843812322f511ac816fee299dfde349c90df7 |
-| D11 | fix(client): D11 refuse virtual-table programs while application functions exist | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 refuse virtual-table programs while application functions exist | Git commit selector 18ea32b3be52525d8122c42ce438186343021971 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | acd00b6505dca812acfa411da3cb9538a5956b55 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | eedc7797a49fc7635cb1600db68fb1dc0d9ea74f |
-| D11 | fix(client): D11 refuse code-running named bindings under a guard | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 refuse code-running named bindings under a guard | Git commit selector 6c4a516ce4918c7bf75c3474cb3eda900724325c |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 7107be0743c2c9e227bc49fc6ed65997556b482d |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | f30906a361e1d5290d3966e97c93673abdb683c3 |
-| D11 | fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | Git commit selector 2a66dfe27b701ce60a8ff51e54fc9e7716094def |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | e2f10ce5e45bdb746ed7e1b7a88d3897bcab7aad |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | ca31522e33d176b0355b8e449008fe7ae6517808 |
-| D11 | fix(client): D11 move SQL callback refusal out of the guarded SQLite core | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 move SQL callback refusal out of the guarded SQLite core | Git commit selector 58b528b5355d618fbb77ac5b7f5bc00629ff2127 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | c3f384b120c77ea8c47b10eac4e073313bd2fe1b |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 3f10b0800749078a84291396aba17316d897a5c7 |
-| D11 | fix(client): D11 refuse SQL callbacks under the statement guard | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 refuse SQL callbacks under the statement guard | Git commit selector 5f41fccc2b599b489df91fdc06c5e443381e4f7d |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | e2f10ce5e45bdb746ed7e1b7a88d3897bcab7aad |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | ca31522e33d176b0355b8e449008fe7ae6517808 |
-| D11 | fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | Git commit selector e60ca8eec87bc3e819e7c42207191bb4340ec566 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 5bb46f0a2a8ba91b1c57126966743f78aa3b0fe5 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 8c35bf83ac972af48c61757f546bb74a6171ad16 |
-| D11 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 enforce the write lease in SQLite instead of patching statements | Git commit selector f0eebf806e1d66b5d178a44021a1afa0d05092b5 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
-| D11 | fix(client): D11 separate the SQLite write lease from transaction orchestration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 separate the SQLite write lease from transaction orchestration | Git commit selector 4138057b79a503658bac256c76215d8a9a0bcfe4 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 944247d4ce8b2622389c79b71de1a21d6b83e239 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | bccc86590f36056cb352f4cff077c1671845831f |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | deleted |
@@ -562,28 +562,28 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | d8cd083fb13cd1b288825b8939fd6714478a6dc1 |
 | | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | deleted |
-| D11 | fix(client): D11 normalize the extracted lease and checkpoint probes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 normalize the extracted lease and checkpoint probes | Git commit selector d358db4457a945f30936255e394b22ca41fe52d1 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 011865d7d581630937628b776c829f0fdce48607 |
-| D11 | fix(client): D11 refresh lease guards from one schema snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 refresh lease guards from one schema snapshot | Git commit selector b76092f22fd145017230399d73d9ef1ecb7fed47 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 500190c769112f72c2de2915132c9c32074e7079 |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | d5cd592b2d02917ce3b15cb74e625420257f3c4c |
-| D11 | fix(client): D11 keep lease recovery checks portable | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 keep lease recovery checks portable | Git commit selector d0efcf97ddfb12fbd631e90ed1a01aec38db1e96 |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | fc104ed0039536bab64baa7882764154ac37e933 |
-| D11 | fix(client): D11 commit guard generations before accepting transactions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 commit guard generations before accepting transactions | Git commit selector fd5a20a82681e90b3cff127d1d0f9a147bac48d3 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | dc7166d3baff55abd0a7862a4b78e337cd5ae0d9 |
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | 40d3d1bbb2852a6424337ee5c50af9c2e59b8154 |
-| D11 | fix(client): D11 rebuild the private SQLite statement boundary | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild the private SQLite statement boundary | Git commit selector 333b5d4823c96a9245387cf2969e62606659a7e0 |
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 24eca32b5d2d40ba05d1864f14cd0d0b209755c4 |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 8bbbb0d64a1faca5dba3f8ff1a6d570e5dd64228 |
 | | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | c21a4ff46a235aba0dd0cf6a9e7f6f671dceaf3a |
 | | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` | 9c2954d2f2211121c78398687786293d31d4ba76 |
-| D11 | fix(client): D11 rebuild purchase admission with per-schema journal policy | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild purchase admission with per-schema journal policy | Git commit selector 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | c0d2924ae5da9743f3805d8dcb1e8ad044cd30ea |
 | | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` | 9e845427d6f0b94900c04e02c4eda869e5e6f7f8 |
 | | `packages/dacs-client/test/sqlite-purchase-result-options.test.mjs:1` | 92367b51064c4a9e1dabbdbdba6476ae58392906 |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
 | | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | 170cf1f9b199b19b90e31ebef59c5b0ab05a2465 |
-| D11 | fix(client): D11 restore transactions above purchase admission | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 restore transactions above purchase admission | Git commit selector 82114b3e80dee9f792597d0f1e4aa3b2457c8427 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 676aac6112fe98e5b83119f99fe3f1986f431638 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | a2abc629dbd08cdb3d2bd8d074fe47aa8bbfa374 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | b1b98c21e80cef1baf539534984ed449cd93d048 |
@@ -595,15 +595,15 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/store-journal-atomicity.test.mjs` (deleted) | 2f62f76ff92b85e7c9829bba4a94cc802519b431 |
 | | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) | 9c826914e5533aec0d9718e76aea11a4785562d1 |
 | | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) | 130fd5d3a70ab5640916c4c1ca00ba1a94135284 |
-| D11 | fix(client): D11 keep transaction boundary tests with orchestration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 keep transaction boundary tests with orchestration | Git commit selector acea3ec758cc5a25a1abff1e2634705ccdf6f9ad |
 | | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) | 35502a67588f8d135111dfcf183e3cf0dc536948 |
-| D11 | fix(client): D11 align disk fixtures with durable synchronization | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 align disk fixtures with durable synchronization | Git commit selector af84b0bb430a5b67e4726ba9ab424c5c894afd08 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e7bf7a95fd5f8ce536b3834a27859b79dd607f22 |
 | | `packages/dacs-client/test/helpers/store-journal-worker.mjs` (deleted) | 596accf25d6cc1542f5845e41c109c2448b43b8e |
 | | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) | 1c68fcc9f4e42a6bc8ac20ee822567ac8249144c |
 | | `packages/dacs-client/test/store-journal-atomicity.test.mjs` (deleted) | cc80718653e938fdd661ae5ea8fe744ee6e8729e |
 | | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) | 1bc7e1415710c3c8adf453b56c8873c5177d25b7 |
-| D11 | fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild purchase transactions on one main and TEMP rollback check | Git commit selector dc2757f724284694c89f85a151e0d2e0be7dd8ec |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 7bed5c780bff6703a1b22d76afd95da052096b30 |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 9f166e44137d98f78178f830d44077153c1cef16 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 4b7a5075ac856c34ba1f324b2a28a7445ca568c9 |
@@ -622,22 +622,22 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) | deleted |
-| D11 | fix(client): D11 record 03c admission merge integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record 03c admission merge integration | Git commit selector 471ffbd1fbbbc74ac670202f72e9c9a32777da7e |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 7793b41c617ac2e9603c32553689b4f1fb62787f |
-| D11 | fix(client): D11 preserve TEMP admission metadata | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 preserve TEMP admission metadata | Git commit selector 4ddfeb218d96a1eedec76aeb84aa35c029e714ca |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 6d91edffe9bb3cabf090c064fed91c1d92f34ad4 |
 | | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | dd6bd486f4e2e594df046ac053c44b9d1eed0bee |
 | | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` | 69b53df409d1cc27fc4086ee7becdf92737867bb |
-| D11 | fix(client): D11 split the held purchase-state schema prerequisite | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 split the held purchase-state schema prerequisite | Git commit selector 9b96780f976f8a07c2ecd4f768fe42742f73189c |
 | | `packages/dacs-client/src/purchase-state-schema.mjs:1` | 557ea59e906125decb9c56d5b2322a1d30af3321 |
 | | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | ce3bb31eb69d5828748e1d04e797bd10de4ef5f3 |
-| D11 | fix(client): D11 share buyer schema with the database fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 share buyer schema with the database fixture | Git commit selector 7ddf4dca086d104d3a0be725b5bab6bba24490bf |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | a454605da7223935b8e8417722828049bf904eaf |
 | | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` | 940e94f63ffc2a65f42ea03bf262fb42fc200525 |
-| D11 | fix(client): D11 record the 03a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 distinguish source records from metadata checkpoints | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 03a lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | delta(client): D11 split 04 inject buyer seams behind the action hold | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 03a split integration | Git commit selector d2c7f7e021beb5c2da01d9153f60a43566425fab |
+| D11 | fix(client): D11 distinguish source records from metadata checkpoints | Git commit selector 9a0ace7360ba1d4b5fbaf71e0421cad395d7fecb |
+| D11 | fix(client): D11 record the 03a lease formatting integration | Git commit selector 0994702c1a7a0f041b5e926a830c946242e39a20 |
+| D11 | delta(client): D11 split 04 inject buyer seams behind the action hold | Git commit selector 47cadba46d61bfd22078d4f8b594401985410517 |
 | | `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:1`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:21`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:35`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:68`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:71`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:74` | 9bff8dcef805bb2b8d291452aa5245b43fb28eed |
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` | d523e721e629c2f2e3164fed45065d24f87aee3f |
 | | `packages/dacs-client/src/purchase-state-schema.mjs:1` | 557ea59e906125decb9c56d5b2322a1d30af3321 |
@@ -655,38 +655,38 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/purchase-review-races.test.mjs:5`, `packages/dacs-client/test/purchase-review-races.test.mjs:7`, `packages/dacs-client/test/purchase-review-races.test.mjs:9`, `packages/dacs-client/test/purchase-review-races.test.mjs:27` | 0f6b4617a40d7d1a888b9f065abc794d9b00b5b4 |
 | | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91`, `packages/dacs-client/test/readback-review-decisions.test.mjs:94` | 85def5a0ba534a8f2a5b0c7657d42fbf28598d52 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | 3955731dbff3f936b239e42a7a4aa8f13c69091f |
-| D11 | fix(client): D11 omit unimplemented diagnostic factory options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 omit unimplemented diagnostic factory options | Git commit selector 80505104ba09986ea30aec64492f255b0222e28e |
 | | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` | 4aaed8cf6ea80a8871e2a08e32d7d1ff76932695 |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 4abceff4d2f43e41f00707479962c194ca06070f |
-| D11 | fix(client): D11 reconcile held buyer seam merge provenance | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 reconcile held buyer seam merge provenance | Git commit selector 26e7d31f5cc97a8153f472b0daf75719402f98a3 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 9fa8ce3f7c831bd65179dc99a9e70877349c1f6d |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | d697a51b58d0e71ab9992bcd0f17272c85c28f5f |
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 8b38b0a63507a18a55f0fe55f153e03866343a30 |
-| D11 | fix(client): D11 resolve duplicate schema import after stack merge | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 resolve duplicate schema import after stack merge | Git commit selector 3c96be6f61b678611a34a637bcff7fc2f58d6e72 |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | f1e6076cb72330b0bfed0ede94455e39d360272d |
-| D11 | fix(client): D11 reconcile adapter initialization merge | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 reconcile adapter initialization merge | Git commit selector a1e12767ecfbdcf96bf3130926613dcf8f2cf8ac |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | eb7c37692bdd5da4ac476e6791a35172f404212e |
-| D11 | fix(client): D11 qualify merged transaction source | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 qualify merged transaction source | Git commit selector d60175ea9daac5b27868766874ca5b8873832d6d |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 78994cc83d1c0bbe3065bec8852ea8b37f8d1988 |
-| D11 | fix(client): D11 select historical changes in provenance deletion probes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 select historical changes in provenance deletion probes | Git commit selector 72e6697047e19f587020885063797d16a4172b1d |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 052a7eaf5e1cf405c211dcd21b9ef1e3faad108a |
-| D11 | fix(client): D11 record the 04 split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 04 split integration | Git commit selector 4df8f9664a105e236aa3d997be24bf0fd804a741 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | bcbc66ea3a869596598efa05e0aa1aeff721464d |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 9ae489487e07d4a3f7fe02285cf594c8bc565f53 |
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 55210180f3e09b6b8aa1286ddffda7fd1fdb92ea |
-| D11 | fix(client): D11 record the 04 checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 04 lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record PR 04 lease snapshot integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 04 checkpoint check integration | Git commit selector c64796d5df94d19bc6b271d239a46aa4b074ebff |
+| D11 | fix(client): D11 record the 04 lease formatting integration | Git commit selector e74ffcc619df0edfe314bb2e185d6972af9c7ac6 |
+| D11 | fix(client): D11 record PR 04 lease snapshot integration | Git commit selector 710fa0a1a971e958d860c8854ee537694cad0b7e |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 78329c1067d342758057ec5eac873e7504c37290 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
-| D11 | fix(client): D11 record PR 04 adapter export removal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record PR 04 adapter export removal | Git commit selector 801984462ee3a545b2d92814a30f1aa6956aafbf |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | 2730715a63ecaf36b43fbf1af32bf832bb567b65 |
-| D11 | fix(client): D11 retain 04 merged purchase records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 retain 04 merged purchase records | Git commit selector 2ef0c7944a894d7910f24a1d9eca1756edbe374f |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | de9b38f087ad793733f16b30ddf8a28fc2213728 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 90744ca2c0250ab56abdfc8494aa100bedb7fde5 |
-| D11 | fix(client): D11 record the final held-seam test snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the final held-seam test snapshot | Git commit selector a1adbd81172fa598cc949abc471c2c1503ac3ddc |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | cf1439cf82a8ed2125c019ef2717951f14fbc632 |
-| D11 | fix(client): D11 rebuild held buyer seams on explicit action lists | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild held buyer seams on explicit action lists | Git commit selector 73426e134ddf935a4b3747b91f03ab1760d79dec |
 | | `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:1`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:21`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:35`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:68`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:71`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:74` | 78f5bdad942ded0146bb3b8f82cf24f7ce17ff43 |
 | | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` | b221d5b333b692cc7955d1f26d5742a56d2fe741 |
 | | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` | cae688b7514f53d290ac11bfb8303cfab7a3a7fd |
@@ -696,7 +696,7 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` | 4e3f8fe3e81c3706b802f289d12c48f05d3763cb |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | e7bf7a95fd5f8ce536b3834a27859b79dd607f22 |
 | | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` | c27c8df3b9da919daca704a40375be52dae7e89c |
-| D11 | fix(client): D11 rebuild retained transfer observation records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild retained transfer observation records | Git commit selector 3adb73ae7e36858d46850841c788d6fe59f2ce22 |
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | 597ce5a325fdcc3e4f49ce2e57fbc38ddfdd615e |
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` | fe7f09a4177ea24fb5161ba2983755df49b09901 |
 | | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` | f8a6d5faf5efbc613ce344a1ebd48f201661b8de |
@@ -707,93 +707,101 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 774830956c755f0d28393d11443c3036efb54187 |
 | | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` | a3c2c1f30dde168de241dd1d8845b67f18b7b3bd |
 | | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` | 72479ddb615e6ad1f1002f588eabbb9e0dab4d1a |
-| D11 | fix(client): D11 add passive native observation and reader cancellation | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 add passive native observation and reader cancellation | Git commit selector 6981392d0aa52df220608201fad089f8270118c7 |
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | 94c556aad197e8987a38ef8fa48ec514c776c60a |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` | 557fedfd8a745c4ad4d83972d9739708db6f8948 |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | 2f4304e950690763a6cf44a074d74be8c66d9b5b |
 | | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` | bcedb48f8aadebb64ebe42f910a6c9d90128e07e |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | eee757ac92a1d6b163a362c7edb9b0894f0654ad |
-| D11 | fix(client): D11 share the cancellable passive observation deadline | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 share the cancellable passive observation deadline | Git commit selector 96c7651b46488cc4f02f5558586a50db6e65e693 |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` | dad306f9b723c185815fbb41b63ab6d56f135a8b |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 03e4731889a75769c2f2b429d2a99fbb89f10baf |
-| D11 | fix(client): D11 enforce passive read deadlines and consistent transfer facts | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 enforce passive read deadlines and consistent transfer facts | Git commit selector 5e519aa8ffab46d4a965f9b8db9a4215edd6425d |
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | eec990d9a159949d76de6835c5a2553a507b1250 |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` | 1a0af8b42041b4f02f3de51cd6b854b959d91f7e |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | d3db777e0eb9eb3de32f7480512c30049ba8f907 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 1dec9cb232b14799e41ade73d4a637b0212cbb18 |
-| D11 | fix(client): D11 bound later passive binding and canonical body reads | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 bound later passive binding and canonical body reads | Git commit selector f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | 7c52736459700578f31e4223dc7c1fae4528b275 |
 | | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` | 630f67cd493c31464a65b27db6c3eb3f5fe0a8c1 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 47763286db946e57755aec2a43523eb3215a1276 |
-| D11 | fix(client): D11 record the 05a split integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 05a checkpoint check integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record the 05a lease formatting integration | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 require retained native intents for passive readback | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record the 05a split integration | Git commit selector 3130f42efe69ca9d20801769e75e29f5f53c3e67 |
+| D11 | fix(client): D11 record the 05a checkpoint check integration | Git commit selector eaa2fb658865e46d65f90ae68ac1dcd7e6c69d39 |
+| D11 | fix(client): D11 record the 05a lease formatting integration | Git commit selector 99566c0bbaccb44c4ed4e5ed0235404cb7768a8b |
+| D11 | fix(client): D11 require retained native intents for passive readback | Git commit selector e6b5de4382467e104b01144b30c08a6724dea733 |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | 9292671d5d09efee2a37d422bdd0788912191377 |
 | | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` | 52bd9a8ae7722567256902d1e56adc08d17f53e5 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | f69db84f915c305d762633b3f0f080a2dc2bfbda |
-| D11 | fix(client): D11 rebuild passive native observation as one closed read | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild passive native observation as one closed read | Git commit selector 67868c1fe55020635cd517fcef1edc92618e16fe |
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | d038c47516fd96b5ccfb57ea2fdfe11d12bd6c19 |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` | e07573bbe5b87af05f35f0d74d371116aedc0241 |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | 9018d0a80024f1fd86ef81953388c933424df23e |
 | | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` | b3613746bd86f461bab85ce8a9db8e6df5675315 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 5a4caa3a87c7a5e41f890a318b6b17486e53d1df |
-| D11 | fix(client): D11 reject additional passive transaction envelopes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 reject additional passive transaction envelopes | Git commit selector 2702ce5f2c983e6c255df5cd668fd3609c2306aa |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | f58c3534e3595d036d989b10d30c9a5bdfccc3fb |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 7625214c9a495c96091e4a2df02d05ed17983f85 |
-| D11 | fix(client): D11 refuse extra passive status and block envelopes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 refuse extra passive status and block envelopes | Git commit selector c08a16ecc704201944dd5fe46a3bebf380581fc1 |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | 1be7084f40f453e2fdee9eead810d469b6ae44b5 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | f760ea0ac2e21bd42cef0200f24c0e2dfec637b7 |
-| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 normalize lease metadata result options | Git commit selector be4897863623bfbb1d963bbd7df3d56ca624ec9b |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
 | | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
-| D11 | fix(client): D11 align purchase transaction options and merge records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 align purchase transaction options and merge records | Git commit selector 51db6cca52e6b9f1ffc58de050bc293a7ec06c5a |
 | | `packages/dacs-client/test/purchase-tx-result-options.test.mjs:1` | f25fa0926a55195567f9a78c29f857b055d5ea2b |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 67ba42ca11407a20ce0869ef36079e43f8056d9b |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 5659a095247774027f29b46cc9cb2c847994007b |
 | | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | 3710b30c4b3331243431f1e67e2f6acfa8c433e2 |
-| D11 | fix(client): D11 rebuild portal capability authentication with isolated clocks | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild portal capability authentication with isolated clocks | Git commit selector 3a414b312ce5312eb605e7cbe44c21e750445361 |
 | | `packages/dacs-client/src/portal-capability.mjs:1` | d6200b11094df0e624dd644d980ac3bc7444868d |
 | | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` | 5a5fdd164e41dd4abc7f1107620ce413458b29a6 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 0f866a907680797a18eaaa3f0b284e299ab13866 |
 | | `packages/dacs-client/test/portal-capability.test.mjs:1` | 073700c9a849a4bfc092cb5913498364fd622f0d |
-| D11 | fix(client): D11 rebuild part 06b on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild part 06b on the preceding capability sources | Git commit selector 49b5acc65f850ba6c6e8cb128798cb7df27ff58a |
 | | `packages/dacs-client/src/diagnostic-projection.mjs:1` | 0dcfab473d1256f9de295bc65c0f04926e1ceb62 |
 | | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` | cd5edb7803946051073fc731837213c0544411af |
-| D11 | fix(client): D11 rebuild part 06c on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild part 06c on the preceding capability sources | Git commit selector e4a32093e45470f61c9e7d3ba487938a25fe2ffb |
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` | f60f7130e5aea8475362b30174645deaea15a53d |
 | | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` | e884b3c7787c6f12e2d2924bdb749add7c7fbed5 |
 | | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` | 22c0b2e93657b24ad2d95310fa6a0ece6bc4a9f8 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 2a8e69d2cf332799ad2aeef3d3358172c77ba3da |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | e0d1cd9b6433d3ade1abbbd066220438fa9e1c5d |
-| D11 | fix(client): D11 rebuild part 06d on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 rebuild part 06d on the preceding capability sources | Git commit selector 57b56cf5f12cab7d53b70587063064ddf9995f74 |
 | | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` | b2ed2dec20510da6c92acd11f8f680dbedc6b6cd |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | 74e46f85125669aa258f3862e1f9417d205e44da |
 | | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` | 14c3d2e35b5834c3e7ec0d9571e490f4403209f7 |
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | ea9932745fde595d695cf7b38b624d3dae2d76bf |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 4c7a9c1b81b8c62b0a8c45fe65b97317f4c68b40 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 800298aebb571f64bc53d4fb12e4f2c0f6fd1abb |
-| D11 | fix(client): D11 rebuild part 06a on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 record rebuilt part 06a source integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 use the retained validator for passive readback | Git commit selector 9209581bdd1bf079b2fd1fb38030d049497f846d |
+| | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` | 6603f0590e47eff996a895954fc3d53fce01caba |
+| | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | 35d2876616c36610c8ee3371e8f341acd94e092d |
+| D11 | fix(client): D11 rebuild part 06a on the preceding capability sources | Git commit selector bc51e75d0c59f301f39f8afe66a976b4f3e57a0e |
+| D11 | fix(client): D11 record rebuilt part 06a source integration | Git commit selector e031967fe376d9049a2e0cdd8916b4030eb3c8d5 |
 | | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | d038c47516fd96b5ccfb57ea2fdfe11d12bd6c19 |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
-| D11 | fix(client): D11 rebuild part 07 on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 enforce graph-resolved recorded blobs in part 06e | Git commit selector ac5369316755116e30c03db10a8ed15b6f2f9aa8 |
+| | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` | 74e46f85125669aa258f3862e1f9417d205e44da |
+| | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 4c7a9c1b81b8c62b0a8c45fe65b97317f4c68b40 |
+| | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 24eca32b5d2d40ba05d1864f14cd0d0b209755c4 |
+| | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | e6154a6bdf929af005b39ef394befa2800b43431 |
+| | `packages/dacs-client/test/host-observations.test.mjs:1` | 800298aebb571f64bc53d4fb12e4f2c0f6fd1abb |
+| D11 | fix(client): D11 rebuild part 07 on the preceding capability sources | Git commit selector 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 |
 | | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` | 40f44cef846981dd2d87bd4654e8192b8e784ac6 |
 | | `packages/dacs-client/src/index.mjs:1` | e5645c81db36570840808f82a52187d27afdffcc |
 | | `packages/dacs-client/src/public-verification.mjs:1` | eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579 |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | f05e545f62faf232439c60bb69b08f6ac5684026 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | b28c6ef97e3004d9921c2b9f48a66d0e4d936423 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | dac6e6aae63aac269c0a84197ce2b77d3211eb35 |
-| D11 | fix(client): D11 rebuild part 08 on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/test/package-contents.test.mjs:1` | e89f5fc167efeb889e0397f22ceb4db6891fe7c3 |
-| D11 | fix(client): D11 rebuild part 09 on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
-| D11 | fix(client): D11 use the retained validator for passive readback | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` | 6603f0590e47eff996a895954fc3d53fce01caba |
-| | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | 35d2876616c36610c8ee3371e8f341acd94e092d |
-| D11 | fix(client): D11 include capability checks in packed buyer runtime | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 include capability checks in packed buyer runtime | Git commit selector 5fc6e8992ec0b28ff533782cb0d2c8a9f1e6bc4d |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 5ef3a08a8d78d6495c52038096500c81343c36cb |
+| D11 | fix(client): D11 rebuild part 08 on the preceding capability sources | Git commit selector 65440493612f9478fa923c6347916a2265a41746 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | e89f5fc167efeb889e0397f22ceb4db6891fe7c3 |
+| D11 | fix(client): D11 record the merged part 08 package snapshot | Git commit selector 1ce8682910771d0eee6603e8611a699f6df051da |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 4c92bd34962e86c9ea447121393d0cd819fa437f |
+| D11 | fix(client): D11 rebuild part 09 on the preceding capability sources | Git commit selector ce128193b6def6e76c7972ed55ec56ee46beb55b |
 
 ## Complete commit and file inventory
 
@@ -801,7 +809,27 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 
 | Commit / exact selector | Touched file:line |
 |---|---|
+| b0a431061f5c16f5efd32d3d3bd0ed2b2c1a2692 | `.gitleaksignore:1` |
+| 1a62ad71d4256b8ded790fcc898e81029be50647 | `.gitleaksignore:1` |
+| 1b138806907c1ac9b3dcf30beed3efde029c4056 | `src/canonical/addressing.ts:1` |
+| 1b138806907c1ac9b3dcf30beed3efde029c4056 | `test/canonical/listingVersionBoundary.test.ts:1` |
+| 8368a05e23f608ad3218ca5141ccd6efbb3311d0 | `src/canonical/index.ts:1` |
+| 8368a05e23f608ad3218ca5141ccd6efbb3311d0 | `src/canonical/jid1Addressing.ts:1` |
+| 8368a05e23f608ad3218ca5141ccd6efbb3311d0 | `src/index.ts:1` |
+| 8368a05e23f608ad3218ca5141ccd6efbb3311d0 | `test/canonical/jid1Addressing.test.ts:1` |
+| a904326e4309164d87f793effaf9e636b99bce42 | `test/canonical/listingVersionBoundary.test.ts:1` |
+| b0f73a50b6adba360e27865ec38f53065cd34d27 | `src/canonical/jid1Addressing.ts:1` |
+| b0f73a50b6adba360e27865ec38f53065cd34d27 | `test/canonical/jid1Addressing.test.ts:1` |
+| c7048159b401ce9e43b2c99a0f9e11730064f419 | `src/agent/publishListingCore.ts:1` |
+| c7048159b401ce9e43b2c99a0f9e11730064f419 | `test/agent/publishListing.test.ts:1` |
+| 493ed1bcd3e8edc798020c9aaffae9dfc1b5d06a | `src/negotiate/durableFixedPriceExchange.ts:1` |
+| 493ed1bcd3e8edc798020c9aaffae9dfc1b5d06a | `test/negotiate/fixedPriceJobIdBoundary.test.ts:1` |
+| f562ae691564e1eb571f93e6cd53772f5b267ba3 | `src/canonical/jid1Addressing.ts:1` |
+| cfd7080b679ae34ab04a57781b7f2a6881c42654 | `test/agent/publishListing.test.ts:1` |
+| cfd7080b679ae34ab04a57781b7f2a6881c42654 | `test/integration/funded-two-agent.e2e.test.ts:1` |
+| b4f8c9dd930546d112d2bac6a5777fb7909158ef | `test/negotiate/fixedPriceJobIdBoundary.test.ts:1` |
 | 54108442abb744d4fed5a32670ecf1b02cca7fe4 | `.gitleaksignore:1` |
+| fa74d3c1b8e0daa3fbc11b0aabd2a13c32bb8d8f | `.gitleaksignore:1` |
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `.github/workflows/ci.yml:1` |
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | c1064bd570664fe9714220ca6d75ee4acdc4037c | `packages/dacs-client/DELTA-LEDGER.json:1` |
@@ -871,1149 +899,1993 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | d938bf3db38a9c428569dc251b3385cf34614dae | `docs/raw-json-admission.md:1` |
 | d938bf3db38a9c428569dc251b3385cf34614dae | `src/canonical/rawJson.ts:1` |
 | d938bf3db38a9c428569dc251b3385cf34614dae | `test/canonical/rawJson.test.ts:1` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/package.json:1` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` |
-| delta(client): D16 preserve configured Directory byte budgets | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `package-lock.json:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/DELTA-NOTES.md:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/IMPORT-CUT-MAP.md:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/README.md:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/PUBLICATION.md:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/INDEX.json:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/README.md:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/scripts/stale-pointer.probe.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-anchor-node-junk.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-durable-vet.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-integration.browser.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-integration.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-interactions.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-legacy-ops-health.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-replay-resend.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-single-vet.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-context-write-effect.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-plan-route-single-vet.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-plan-single-flight.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/agreement-plan-speed-composition.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/browser/dacs-storage-anchor-wallet.browser.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-commit-on-signature.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-final-hold.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-in-flight.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-off-identity.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-proof.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-source-native.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-unit.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-unmarked-invalid.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/catalog-observed-at.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-boundaries.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-guard-unit.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-paid-recovery.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-readback.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-receipt-verify.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-resend-notice.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-retained-resend.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closed-access-rpc-auth.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closure-identity-recovery.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closure-identity-sdk.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/closure-identity-witness.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-authorization.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-journal.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-native.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-recovery.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commit-on-signature.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-consumer-proof-indeterminate.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-chain-readback.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-cos.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-reader.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/completion-readiness.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/config-equivalence.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/current-delivery-readback.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-demos-sr2-wallet.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-demos-sr2.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-network-binding.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-offline-agreement-runtime.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-offline-browser-broker-coverage.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-offline-browser-broker.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-purchase.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-seller-recovery.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-seller-transport.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/dacs-storage-anchor-wallet.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/delivery-deadline-watch.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/denied-agreement-recovery.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-agreement-transport.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-buyer-access-prefixed.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-demo-anchor-recovery.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-app.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-artifacts.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-builder.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-native-blockzero-fallback-prefixed.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-native-inclusion-wait.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-native-transport.browser.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-native-transport.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-approval-deadline.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-construction-cleanup.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-node2-fallback-prefixed.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-plan-shutdown-owned.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-prefixed-controls.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-prefixed-startup.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-seller-tls.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-operator-sequential-prefixed.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/devnet-storage-write-recovery.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/durable-wallet-journal.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-contract.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-flow.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-sdk.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-transaction.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/env-contract-defaults.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/fee-approval-recovery-offline.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/funding-help.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/github-signals-integration.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/github-signals.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/identities.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/identity-actions.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/immutable-readbacks.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/live-directory-check.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-content-integration.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-content.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics-errors.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics-settlement.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-agreement-payment.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-agreement-readback-cache.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-equivalent.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-failed-lane.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-out-of-order.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-refused.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-send.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-payment-evidence.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/native-settlement-consumer.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/node2-native-transfer-readback-prefixed.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/offline-tester.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/operator-approval-closing.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/ops-health-lost-attempt.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/ops-health.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/overnight-acceptance-core.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/overnight-core-identities-wire.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/overnight-core-seller.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-auto-advance-hooks.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-auto-assets.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-auto-create-reload.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-delivery-evidence-label.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/portal-seller-session-delegation.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/protocol-revision-races.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/public-sr2-projection.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/public-text-report-storage.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase-abuse-limits.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase-model-view.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase-readback-cache.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase-receipt.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchase.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/purchased-report.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-cli-recovery-coverage-operator-buyer.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-cli-recovery-coverage-seller-commitment.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-commit-phase-coverage-adoption.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-commit-retry-coverage-interactions.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-native-delivery-coverage.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-native-payment-coverage.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-native-readback-current-coverage.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-block-zero.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-consumers.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-layout.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-lifecycle.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/review-sr2-binding-coverage-interactions.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-durable-state-locks.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-http-failure-cause.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-identities-integration.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-identities.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-payment-recovery-repair-prefixed.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-policy-delivery-evidence.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-session-final-recheck.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-session-key-retirement.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-session-keys.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-session-open-access.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-sr2-agreement.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-uncertain-payment-recovery-prefixed.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/seller-write-batch.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/server-hosting.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/service-request-binding-doc.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/settlement-kind-bridge.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-ledger-integration.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-live-operator.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-progress.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-publication-view.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-receipt-config.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-report-commit-on-signature.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-report-main-switches.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-report-seller-identities.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-report-settlement.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-safety.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/showcase-walkthrough.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/source-demo-e2e.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/st11-finalizers.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-compose.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-create-fence.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-devnet.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-operator-auth.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-peer-write.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-production.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-retry.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-review-wallet.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-switch.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/start-intent-wallet.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/switch-registry.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/tester-quickstart.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/ui-status.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/unit.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/wallet-demo-plan-admission.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/wallet-extension-probe-routes.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/wallet-extension-probe.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/evidence/source-tests/test/wallet-write-batch.test.mjs.txt:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/package.json:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/import-cut-map.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/pin-delta.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/stale-pointer.probe.test.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/test-layout.test.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/scripts/test.mjs:1` |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-anchor-node-junk.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-durable-vet.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-integration.browser.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-integration.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-interactions.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-legacy-ops-health.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-replay-resend.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-single-vet.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-context-write-effect.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-plan-route-single-vet.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-plan-single-flight.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/agreement-plan-speed-composition.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/browser/dacs-storage-anchor-wallet.browser.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-commit-on-signature.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-final-hold.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-in-flight.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-off-identity.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-proof.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-source-native.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-unit.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback-unmarked-invalid.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/buyer-chain-readback.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/catalog-observed-at.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-boundaries.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-guard-unit.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-paid-recovery.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-readback.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-receipt-verify.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-resend-notice.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-retained-resend.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closed-access-rpc-auth.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closure-identity-recovery.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closure-identity-sdk.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/closure-identity-witness.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature-authorization.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature-journal.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature-native.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature-recovery.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commit-on-signature.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-consumer-proof-indeterminate.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-purchase-chain-readback.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-purchase-cos.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-purchase.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/commitment-node-junk-reader.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/completion-readiness.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/config-equivalence.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/current-delivery-readback.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-demos-sr2-wallet.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-demos-sr2.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-network-binding.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-offline-agreement-runtime.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-offline-browser-broker-coverage.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-offline-browser-broker.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-purchase.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-seller-recovery.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-seller-transport.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/dacs-storage-anchor-wallet.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/delivery-deadline-watch.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/denied-agreement-recovery.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-agreement-transport.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-buyer-access-prefixed.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-demo-anchor-recovery.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-live-composition-app.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-live-composition-artifacts.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-live-composition-builder.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-native-blockzero-fallback-prefixed.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-native-inclusion-wait.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-native-transport.browser.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-native-transport.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-approval-deadline.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-construction-cleanup.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-node2-fallback-prefixed.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-plan-shutdown-owned.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-prefixed-controls.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-prefixed-startup.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-seller-tls.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-operator-sequential-prefixed.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/devnet-storage-write-recovery.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/durable-wallet-journal.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/embedded-wallet-contract.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/embedded-wallet-flow.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/embedded-wallet-sdk.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/embedded-wallet-transaction.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/env-contract-defaults.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/fee-approval-recovery-offline.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/funding-help.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/github-signals-integration.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/github-signals.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/identities.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/identity-actions.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/immutable-readbacks.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/live-directory-check.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-content-integration.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-content.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-diagnostics-errors.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-diagnostics-settlement.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/mcp-seller-diagnostics.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-agreement-payment.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-agreement-readback-cache.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-equivalent.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-failed-lane.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-out-of-order.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-refused.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-cancel-send.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-payment-evidence.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/native-settlement-consumer.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/node2-native-transfer-readback-prefixed.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/offline-tester.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/operator-approval-closing.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/ops-health-lost-attempt.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/ops-health.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/overnight-acceptance-core.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/overnight-core-identities-wire.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/overnight-core-seller.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-auto-advance-hooks.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-auto-assets.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-auto-create-reload.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-delivery-evidence-label.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/portal-seller-session-delegation.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/protocol-revision-races.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/public-sr2-projection.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/public-text-report-storage.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase-abuse-limits.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase-model-view.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase-readback-cache.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase-receipt.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchase.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/purchased-report.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-cli-recovery-coverage-operator-buyer.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-cli-recovery-coverage-seller-commitment.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-commit-phase-coverage-adoption.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-commit-retry-coverage-interactions.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-native-delivery-coverage.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-native-payment-coverage.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-native-readback-current-coverage.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-node2-current-coverage-block-zero.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-node2-current-coverage-consumers.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-node2-current-coverage-layout.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-node2-current-coverage-lifecycle.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/review-sr2-binding-coverage-interactions.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-durable-state-locks.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-http-failure-cause.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-identities-integration.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-identities.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-payment-recovery-repair-prefixed.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-session-final-recheck.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-session-key-retirement.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-session-keys.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-session-open-access.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-sr2-agreement.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-uncertain-payment-recovery-prefixed.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/seller-write-batch.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/server-hosting.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/service-request-binding-doc.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/settlement-kind-bridge.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-ledger-integration.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-live-operator.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-progress.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-publication-view.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-receipt-config.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-report-commit-on-signature.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-report-main-switches.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-report-seller-identities.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-report-settlement.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-safety.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/showcase-walkthrough.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/source-demo-e2e.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/st11-finalizers.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-compose.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-create-fence.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-devnet.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-operator-auth.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-peer-write.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-production.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-retry.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-review-wallet.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-switch.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/start-intent-wallet.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/switch-registry.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/tester-quickstart.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/ui-status.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/unit.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-demo-plan-admission.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-extension-probe.test.mjs` (deleted) |
-| delta(client): D16 scope launch checks and identify executable tests | `packages/dacs-client/test/wallet-write-batch.test.mjs` (deleted) |
-| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/DELTA-MAP.md:1` |
-| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/HOLD.json:1` |
-| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| test(client): handle detached HEAD in provenance merge regression | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/DELTA-NOTES.md:1` |
-| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/test/native-broadcast-once.test.mjs:1` |
-| delta(client): D16 pin broadcast-once and executed-only paths in runnable tests | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/DELTA-NOTES.md:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/src/dacs/dem-delivery-consumer.mjs:10`, `packages/dacs-client/src/dacs/dem-delivery-consumer.mjs:55` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/src/dacs/purchase-protocol.mjs:1`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:7`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:45`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:54`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:72`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:93`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:144`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:147`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:164`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:180`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:188`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:274`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:444`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:462` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/test/delivery-access-model.test.mjs:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/test/native-broadcast-once.test.mjs:1` |
-| delta(client): D16 settle node-projected nonces and refuse non-public deliverables (DV-2) | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/DELTA-NOTES.md:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/src/dacs/purchase-protocol.mjs:1`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:7`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:45`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:54`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:72`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:93`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:144`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:147`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:164`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:180`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:188`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:274`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:444`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:462` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/test/delivery-access-model.test.mjs:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/test/delivery-evidence-gate.test.mjs:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/test/price-bound.test.mjs:1` |
-| delta(client): D16 bound prices to verifiable payments and pin the delivery-evidence gate | `packages/dacs-client/test/storage-read-nonobservation.test.mjs:1` |
-| delta(client): D11 split 01 allow D11 delta records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D11 split 01 allow D11 delta records | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D11 split 01 allow D11 delta records | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D11 split 01 allow D11 delta records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D11 split 01 allow D11 delta records | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/dacs/seller-agent-error.mjs:1` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/dacs/seller-agent.mjs:1`, `packages/dacs-client/src/dacs/seller-agent.mjs:80`, `packages/dacs-client/src/dacs/seller-agent.mjs:112` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:112`, `packages/dacs-client/src/dacs/seller-http.mjs:248`, `packages/dacs-client/src/dacs/seller-http.mjs:254`, `packages/dacs-client/src/dacs/seller-http.mjs:263` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/dacs/seller-transport-auth.mjs:8`, `packages/dacs-client/src/dacs/seller-transport-auth.mjs:79`, `packages/dacs-client/src/dacs/seller-transport-auth.mjs:182` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
-| delta(client): D11 split 02 isolate buyer runtime imports | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| fix(client): D11 cover provenance acceptance and repair records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
-| fix(client): D11 share wallet payload identity and test import isolation | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
-| fix(client): D11 restore standalone provider and strengthen import vectors | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/scripts/generate-payload-helpers.mjs:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
-| fix(client): D11 generate pure payload helpers from provider | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 add inert guarded SQLite statement execution | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/package.json:1` |
-| fix(client): D11 retain guarded SQLite in the package closure | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 preserve native guarded SQL argument errors | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 fence retained native SQL execution functions | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 fence SQLite callbacks and preserve exec semantics | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 keep rollback guard vectors portable to the Node floor | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 let SQLite identify empty exec remainders | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 reject SQL callbacks with quoted function names | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 preserve compact guarded SQLite records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 refuse unowned statements while application functions exist | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
-| delta(client): D11 split 03 add the concrete SQLite transaction adapter | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 guard every SQLite callback statement after rollback | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 cover retained native exec rollback on reopen | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 classify native constraints and rebuild renamed table guards | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 track cached host statements before transactions | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 preserve callback fencing and private savepoints | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
-| fix(client): D11 guard result inspection and preserve unfinished host writes | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
-| fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 keep the newest guarded SQLite record last | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 refuse virtual-table programs while application functions exist | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 refuse code-running named bindings under a guard | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 count bundled SQLite functions and refuse callable bindings under a guard | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 move SQL callback refusal out of the guarded SQLite core | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 move SQL callback refusal out of the guarded SQLite core | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 move SQL callback refusal out of the guarded SQLite core | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 move SQL callback refusal out of the guarded SQLite core | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 move SQL callback refusal out of the guarded SQLite core | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 move SQL callback refusal out of the guarded SQLite core | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 move SQL callback refusal out of the guarded SQLite core | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 refuse SQL callbacks under the statement guard | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 refuse SQL callbacks under the statement guard | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 refuse SQL callbacks under the statement guard | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 refuse SQL callbacks under the statement guard | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 refuse SQL callbacks under the statement guard | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refuse SQL callbacks under the statement guard | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 refuse SQL callbacks under the statement guard | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
-| fix(client): D11 enforce the write lease in SQLite instead of patching statements | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
-| fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 clarify superseded SQLite guard records | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 check callback history without a branch-only merge hash | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
-| fix(client): D11 separate the SQLite write lease from transaction orchestration | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
-| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 normalize the extracted lease and checkpoint probes | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
-| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 document SQLite lease split | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 document SQLite lease split | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 document SQLite lease split | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 document SQLite lease split | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 keep lease inventory formatting compact | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 identify PR 03 as the SQLite lease prerequisite | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 align the SQLite lease plan and acceptance scope | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
-| fix(client): D11 refresh lease guards from one schema snapshot | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
-| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 keep lease recovery checks portable | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
-| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
-| fix(client): D11 commit guard generations before accepting transactions | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
-| fix(client): D11 rebuild the private SQLite statement boundary | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` |
-| fix(client): D11 verify archived boundary records separately | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 verify archived boundary records separately | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 verify archived boundary records separately | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 verify archived boundary records separately | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 verify archived boundary records separately | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
-| fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` |
-| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
-| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` |
-| fix(client): D11 preserve TEMP admission metadata | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` |
-| fix(client): D11 preserve the merged control record order | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 preserve the merged control record order | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 preserve the merged control record order | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 preserve the merged control record order | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 preserve the merged control record order | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/src/purchase-state-schema.mjs:1` |
-| fix(client): D11 split the held purchase-state schema prerequisite | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
-| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
-| fix(client): D11 share buyer schema with the database fixture | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
-| fix(client): D11 record the 03a split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 03a split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 03a split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 03a split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 03a split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 distinguish source records from metadata checkpoints | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 03a lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/DELTA-MAP.md:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/HOLD.json:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:1`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:21`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:35`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:68`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:71`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:74` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/purchase-state-schema.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/src/seams/wallet-actions-not-wired.mjs:2` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/d11-purchase-actions.test.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:45`, `packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:84` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/helpers/readback-review-loader.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/purchase-integrity.test.mjs:1`, `packages/dacs-client/test/purchase-integrity.test.mjs:6`, `packages/dacs-client/test/purchase-integrity.test.mjs:8`, `packages/dacs-client/test/purchase-integrity.test.mjs:10`, `packages/dacs-client/test/purchase-integrity.test.mjs:24` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/purchase-review-races.test.mjs:5`, `packages/dacs-client/test/purchase-review-races.test.mjs:7`, `packages/dacs-client/test/purchase-review-races.test.mjs:9`, `packages/dacs-client/test/purchase-review-races.test.mjs:27` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91`, `packages/dacs-client/test/readback-review-decisions.test.mjs:94` |
-| delta(client): D11 split 04 inject buyer seams behind the action hold | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
-| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| fix(client): D11 omit unimplemented diagnostic factory options | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
-| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 reconcile held buyer seam merge provenance | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 resolve duplicate schema import after stack merge | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
-| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 reconcile adapter initialization merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 qualify merged transaction source | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 qualify merged transaction source | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 qualify merged transaction source | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 qualify merged transaction source | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 qualify merged transaction source | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 select historical changes in provenance deletion probes | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
-| fix(client): D11 record the 04 split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 04 split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 04 split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 04 split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 04 split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 04 split integration | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
-| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 04 checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 04 lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 04 lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 04 lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 04 lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 04 lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record PR 04 lease snapshot integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record PR 04 adapter export removal | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 retain 04 merged purchase records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the final held-seam test snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the final held-seam test snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the final held-seam test snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the final held-seam test snapshot | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the final held-seam test snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/IMPORT-CUT-MAP.md:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/README.md:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:1`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:21`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:35`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:68`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:71`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:74` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/src/seams/wallet-actions-not-wired.mjs:2` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/d11-deadline-watch.test.mjs:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/d11-purchase-actions.test.mjs:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 rebuild held buyer seams on explicit action lists | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/DELTA-NOTES.md:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/domain-store-crash.test.mjs` (deleted) |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs` (deleted) |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs` (deleted) |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/host-observations.test.mjs:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` |
-| fix(client): D11 rebuild retained transfer observation records | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
-| fix(client): D11 add passive native observation and reader cancellation | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
-| fix(client): D11 share the cancellable passive observation deadline | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| fix(client): D11 enforce passive read deadlines and consistent transfer facts | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
-| fix(client): D11 bound later passive binding and canonical body reads | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 record the 05a split integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 05a split integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 05a split integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 05a split integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 05a split integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 05a checkpoint check integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record the 05a lease formatting integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record the 05a lease formatting integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record the 05a lease formatting integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record the 05a lease formatting integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record the 05a lease formatting integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
-| fix(client): D11 require retained native intents for passive readback | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
-| fix(client): D11 rebuild passive native observation as one closed read | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| fix(client): D11 reject additional passive transaction envelopes | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/test/passive-observation.test.mjs:1` |
-| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
-| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
-| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/test/purchase-tx-result-options.test.mjs:1` |
-| 47ffdab559f17b3aba28e68e181a8c7ca6f67a9e | `packages/dacs-client/README.md:1` |
-| 47ffdab559f17b3aba28e68e181a8c7ca6f67a9e | `packages/dacs-client/src/portal-capability.mjs:1` |
-| 47ffdab559f17b3aba28e68e181a8c7ca6f67a9e | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| 47ffdab559f17b3aba28e68e181a8c7ca6f67a9e | `packages/dacs-client/test/host-observations.test.mjs:1` |
-| 47ffdab559f17b3aba28e68e181a8c7ca6f67a9e | `packages/dacs-client/test/portal-capability.test.mjs:1` |
-| fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| a598cbbaa379f93c4af7ff5ac1230f9b636d9629 | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
-| a598cbbaa379f93c4af7ff5ac1230f9b636d9629 | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
-| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt part 06b source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 112f4c145bdcc623a78316999b9f1d264c16a2b7 | `packages/dacs-client/README.md:1` |
-| 112f4c145bdcc623a78316999b9f1d264c16a2b7 | `packages/dacs-client/package.json:1` |
-| 112f4c145bdcc623a78316999b9f1d264c16a2b7 | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
-| 112f4c145bdcc623a78316999b9f1d264c16a2b7 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| 112f4c145bdcc623a78316999b9f1d264c16a2b7 | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
-| 112f4c145bdcc623a78316999b9f1d264c16a2b7 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| 112f4c145bdcc623a78316999b9f1d264c16a2b7 | `packages/dacs-client/test/host-observations.test.mjs:1` |
-| fix(client): D11 record rebuilt part 06c source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt part 06c source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt part 06c source integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt part 06c source integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt part 06c source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 7a0c11d099eebd3f672ccaf2f44dafa187bb6c20 | `packages/dacs-client/README.md:1` |
-| 7a0c11d099eebd3f672ccaf2f44dafa187bb6c20 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| 7a0c11d099eebd3f672ccaf2f44dafa187bb6c20 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
-| 7a0c11d099eebd3f672ccaf2f44dafa187bb6c20 | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
-| 7a0c11d099eebd3f672ccaf2f44dafa187bb6c20 | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
-| 7a0c11d099eebd3f672ccaf2f44dafa187bb6c20 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
-| 7a0c11d099eebd3f672ccaf2f44dafa187bb6c20 | `packages/dacs-client/test/host-observations.test.mjs:1` |
-| fix(client): D11 record rebuilt part 06d source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt part 06d source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt part 06d source integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt part 06d source integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt part 06d source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/DELTA-MAP.md:1` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/HOLD.json:1` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/package.json:1` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/test/directory-byte-budget.test.mjs:1` |
+| aac03055bdbeabc7c0771642d99f0c4baf7e3de9 | `packages/dacs-client/test/rpc-byte-budget.test.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `package-lock.json:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/DELTA-MAP.md:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/DELTA-NOTES.md:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/HOLD.json:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/IMPORT-CUT-MAP.md:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/README.md:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/PUBLICATION.md:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/INDEX.json:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/README.md:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/scripts/stale-pointer.probe.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-anchor-node-junk.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-context-durable-vet.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-context-integration.browser.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-context-integration.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-context-interactions.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-context-legacy-ops-health.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-context-replay-resend.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-context-single-vet.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-context-write-effect.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-plan-route-single-vet.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-plan-single-flight.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/agreement-plan-speed-composition.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/browser/dacs-storage-anchor-wallet.browser.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-commit-on-signature.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-final-hold.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-in-flight.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-off-identity.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-proof.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-source-native.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-unit.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback-unmarked-invalid.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/buyer-chain-readback.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/catalog-observed-at.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closed-access-boundaries.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closed-access-guard-unit.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closed-access-paid-recovery.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closed-access-readback.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closed-access-receipt-verify.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closed-access-resend-notice.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closed-access-retained-resend.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closed-access-rpc-auth.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closure-identity-recovery.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closure-identity-sdk.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/closure-identity-witness.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-authorization.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-journal.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-native.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commit-on-signature-recovery.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commit-on-signature.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commitment-consumer-proof-indeterminate.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-chain-readback.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase-cos.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-purchase.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/commitment-node-junk-reader.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/completion-readiness.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/config-equivalence.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/current-delivery-readback.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-demos-sr2-wallet.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-demos-sr2.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-network-binding.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-offline-agreement-runtime.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-offline-browser-broker-coverage.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-offline-browser-broker.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-purchase.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-seller-recovery.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-seller-transport.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/dacs-storage-anchor-wallet.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/delivery-deadline-watch.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/denied-agreement-recovery.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-agreement-transport.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-buyer-access-prefixed.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-demo-anchor-recovery.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-app.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-artifacts.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-live-composition-builder.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-native-blockzero-fallback-prefixed.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-native-inclusion-wait.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-native-transport.browser.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-native-transport.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-approval-deadline.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-construction-cleanup.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-node2-fallback-prefixed.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-plan-shutdown-owned.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-prefixed-controls.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-prefixed-startup.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-seller-tls.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-operator-sequential-prefixed.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/devnet-storage-write-recovery.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/durable-wallet-journal.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-contract.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-flow.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-sdk.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/embedded-wallet-transaction.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/env-contract-defaults.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/fee-approval-recovery-offline.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/funding-help.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/github-signals-integration.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/github-signals.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/identities.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/identity-actions.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/immutable-readbacks.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/live-directory-check.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/mcp-seller-content-integration.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/mcp-seller-content.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics-errors.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics-settlement.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/mcp-seller-diagnostics.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-agreement-payment.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-agreement-readback-cache.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-equivalent.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-failed-lane.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-out-of-order.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-refused.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-payment-cancel-send.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-payment-evidence.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/native-settlement-consumer.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/node2-native-transfer-readback-prefixed.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/offline-tester.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/operator-approval-closing.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/ops-health-lost-attempt.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/ops-health.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/overnight-acceptance-core.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/overnight-core-identities-wire.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/overnight-core-seller.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/portal-auto-advance-hooks.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/portal-auto-assets.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/portal-auto-create-reload.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/portal-delivery-evidence-label.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/portal-seller-session-delegation.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/protocol-revision-races.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/public-sr2-projection.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/public-text-report-storage.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/purchase-abuse-limits.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/purchase-model-view.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/purchase-readback-cache.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/purchase-receipt.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/purchase.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/purchased-report.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-cli-recovery-coverage-operator-buyer.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-cli-recovery-coverage-seller-commitment.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-commit-phase-coverage-adoption.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-commit-retry-coverage-interactions.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-native-delivery-coverage.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-native-payment-coverage.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-native-readback-current-coverage.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-block-zero.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-consumers.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-layout.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-node2-current-coverage-lifecycle.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/review-sr2-binding-coverage-interactions.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-durable-state-locks.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-http-failure-cause.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-identities-integration.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-identities.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-payment-recovery-repair-prefixed.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-policy-delivery-evidence.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-session-final-recheck.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-session-key-retirement.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-session-keys.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-session-open-access.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-sr2-agreement.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-uncertain-payment-recovery-prefixed.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/seller-write-batch.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/server-hosting.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/service-request-binding-doc.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/settlement-kind-bridge.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-ledger-integration.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-live-operator.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-progress.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-publication-view.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-receipt-config.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-report-commit-on-signature.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-report-main-switches.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-report-seller-identities.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-report-settlement.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-safety.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/showcase-walkthrough.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/source-demo-e2e.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/st11-finalizers.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-compose.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-create-fence.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-devnet.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-operator-auth.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-peer-write.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-production.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-retry.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-review-wallet.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-switch.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/start-intent-wallet.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/switch-registry.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/tester-quickstart.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/ui-status.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/unit.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/wallet-demo-plan-admission.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/wallet-extension-probe-routes.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/wallet-extension-probe.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/evidence/source-tests/test/wallet-write-batch.test.mjs.txt:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/package.json:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/check-hold.test.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/check-provenance.test.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/import-cut-map.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/pin-delta.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/stale-pointer.probe.test.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/test-layout.test.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/scripts/test.mjs:1` |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-anchor-node-junk.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-context-durable-vet.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-context-integration.browser.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-context-integration.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-context-interactions.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-context-legacy-ops-health.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-context-replay-resend.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-context-single-vet.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-context-write-effect.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-plan-route-single-vet.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-plan-single-flight.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/agreement-plan-speed-composition.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/browser/dacs-storage-anchor-wallet.browser.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback-commit-on-signature.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback-final-hold.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback-in-flight.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback-off-identity.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback-proof.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback-source-native.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback-unit.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback-unmarked-invalid.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/buyer-chain-readback.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/catalog-observed-at.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closed-access-boundaries.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closed-access-guard-unit.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closed-access-paid-recovery.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closed-access-readback.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closed-access-receipt-verify.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closed-access-resend-notice.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closed-access-retained-resend.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closed-access-rpc-auth.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closure-identity-recovery.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closure-identity-sdk.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/closure-identity-witness.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commit-on-signature-authorization.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commit-on-signature-journal.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commit-on-signature-native.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commit-on-signature-recovery.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commit-on-signature.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commitment-consumer-proof-indeterminate.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commitment-node-junk-purchase-chain-readback.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commitment-node-junk-purchase-cos-chain-readback.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commitment-node-junk-purchase-cos.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commitment-node-junk-purchase.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/commitment-node-junk-reader.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/completion-readiness.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/config-equivalence.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/current-delivery-readback.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-demos-sr2-wallet.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-demos-sr2.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-network-binding.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-offline-agreement-runtime.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-offline-browser-broker-coverage.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-offline-browser-broker.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-purchase.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-seller-recovery.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-seller-transport.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/dacs-storage-anchor-wallet.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/delivery-deadline-watch.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/denied-agreement-recovery.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-agreement-transport.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-buyer-access-prefixed.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-demo-anchor-recovery.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-live-composition-app.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-live-composition-artifacts.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-live-composition-builder.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-native-blockzero-fallback-prefixed.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-native-inclusion-wait.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-native-transport.browser.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-native-transport.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-approval-deadline.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-construction-cleanup.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-node2-blockone-layout-prefixed.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-node2-fallback-prefixed.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-plan-shutdown-owned.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-prefixed-controls.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-prefixed-startup.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-seller-tls.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-operator-sequential-prefixed.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/devnet-storage-write-recovery.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/durable-wallet-journal.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/embedded-wallet-contract.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/embedded-wallet-flow.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/embedded-wallet-sdk.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/embedded-wallet-transaction.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/env-contract-defaults.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/fee-approval-recovery-offline.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/funding-help.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/github-signals-integration.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/github-signals.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/identities.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/identity-actions.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/immutable-readbacks.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/live-directory-check.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/mcp-seller-content-integration.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/mcp-seller-content.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/mcp-seller-diagnostics-errors.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/mcp-seller-diagnostics-settlement.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/mcp-seller-diagnostics.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-agreement-payment.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-agreement-readback-cache.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-payment-cancel-equivalent.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-payment-cancel-failed-lane.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-payment-cancel-out-of-order.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-payment-cancel-refused.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-payment-cancel-send.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-payment-evidence.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/native-settlement-consumer.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/node2-native-transfer-readback-prefixed.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/offline-tester.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/operator-approval-closing.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/ops-health-lost-attempt.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/ops-health.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/overnight-acceptance-core.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/overnight-core-identities-wire.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/overnight-core-seller.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/portal-auto-advance-hooks.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/portal-auto-assets.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/portal-auto-create-reload.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/portal-delivery-evidence-label.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/portal-seller-session-delegation.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/protocol-revision-races.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/public-sr2-projection.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/public-text-report-storage.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/purchase-abuse-limits.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/purchase-model-view.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/purchase-readback-cache.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/purchase-receipt.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/purchase.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/purchased-report.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-cli-recovery-coverage-operator-buyer.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-cli-recovery-coverage-seller-commitment.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-commit-phase-coverage-adoption.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-commit-retry-coverage-interactions.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-native-delivery-coverage.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-native-payment-coverage.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-native-readback-current-coverage.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-node2-current-coverage-block-zero.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-node2-current-coverage-consumers.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-node2-current-coverage-layout.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-node2-current-coverage-lifecycle.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/review-sr2-binding-coverage-interactions.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-durable-state-locks.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-http-failure-cause.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-identities-integration.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-identities.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-payment-recovery-repair-prefixed.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-session-final-recheck.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-session-key-retirement.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-session-keys.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-session-open-access.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-sr2-agreement.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-uncertain-payment-recovery-prefixed.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/seller-write-batch.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/server-hosting.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/service-request-binding-doc.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/settlement-kind-bridge.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-ledger-integration.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-live-operator.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-progress.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-publication-view.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-receipt-config.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-report-commit-on-signature.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-report-main-switches.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-report-seller-identities.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-report-settlement.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-safety.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/showcase-walkthrough.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/source-demo-e2e.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/st11-finalizers.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-compose.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-create-fence.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-devnet.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-operator-auth.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-peer-write.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-production.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-retry.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-review-wallet.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-switch.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/start-intent-wallet.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/switch-registry.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/tester-quickstart.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/ui-status.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/unit.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/wallet-demo-plan-admission.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/wallet-extension-probe-routes.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/wallet-extension-probe.test.mjs` (deleted) |
+| d5d0ebd48a3ae07887ab6f60a7bbcdd9e82b3b0d | `packages/dacs-client/test/wallet-write-batch.test.mjs` (deleted) |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `src/agent/index.ts:1` |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `src/agent/runSessionCore.ts:1` |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `src/agent/settlementFailure.ts:1` |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `src/index.ts:1` |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `src/rails/demosAddress.ts:1` |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `src/rails/payDem.ts:1` |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `src/substrate/DemosAdapter.ts:1` |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `test/fixtures/demos-node2-records.json:1` |
+| d8b1d681aef7c05648ae83f68fdb48cb141f3d02 | `test/substrate/demos-adapter.test.ts:1` |
+| 298f1f660803bded617474ce9b13bcce1d8240c4 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 298f1f660803bded617474ce9b13bcce1d8240c4 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 298f1f660803bded617474ce9b13bcce1d8240c4 | `packages/dacs-client/HOLD.json:1` |
+| 298f1f660803bded617474ce9b13bcce1d8240c4 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 298f1f660803bded617474ce9b13bcce1d8240c4 | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 3608b57b4e5c1580f3b4fe8087eb6e1bcb1a697f | `.gitleaksignore:1` |
+| 503ca99645c13d678f5a0dcfc2364df74e3b343d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 503ca99645c13d678f5a0dcfc2364df74e3b343d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 503ca99645c13d678f5a0dcfc2364df74e3b343d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 503ca99645c13d678f5a0dcfc2364df74e3b343d | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 503ca99645c13d678f5a0dcfc2364df74e3b343d | `packages/dacs-client/HOLD.json:1` |
+| 503ca99645c13d678f5a0dcfc2364df74e3b343d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 503ca99645c13d678f5a0dcfc2364df74e3b343d | `packages/dacs-client/test/native-broadcast-once.test.mjs:1` |
+| 503ca99645c13d678f5a0dcfc2364df74e3b343d | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
+| 647f8d8ee57ae839947651fa80c736eb411c2eb5 | `.github/workflows/ci.yml:1` |
+| 647f8d8ee57ae839947651fa80c736eb411c2eb5 | `.github/workflows/package-artifact.yml:1` |
+| 647f8d8ee57ae839947651fa80c736eb411c2eb5 | `.github/workflows/secret-scan.yml:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/DELTA-MAP.md:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/HOLD.json:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/src/dacs/dem-delivery-consumer.mjs:10`, `packages/dacs-client/src/dacs/dem-delivery-consumer.mjs:55` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/src/dacs/purchase-protocol.mjs:1`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:7`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:45`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:54`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:72`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:93`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:144`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:147`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:164`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:180`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:188`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:274`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:444`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:462` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/test/delivery-access-model.test.mjs:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/test/native-broadcast-once.test.mjs:1` |
+| b7c7586f23b593ffc4f193e6fd2545a4e983a524 | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/HOLD.json:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/src/dacs/purchase-protocol.mjs:1`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:7`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:45`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:54`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:72`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:93`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:144`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:147`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:164`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:180`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:188`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:274`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:444`, `packages/dacs-client/src/dacs/purchase-protocol.mjs:462` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/test/delivery-access-model.test.mjs:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/test/delivery-evidence-gate.test.mjs:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/test/price-bound.test.mjs:1` |
+| 2e99c5e942fb458c8635fadf5d4e2e8fd4915067 | `packages/dacs-client/test/storage-read-nonobservation.test.mjs:1` |
+| 384db97cd493d10c15cfb75cc4f09ff3dd655152 | `src/index.ts:1` |
+| 9f73ae93f9889b7fd9d16e37b6ba34b0152082df | `src/agent/index.ts:1` |
+| 9f73ae93f9889b7fd9d16e37b6ba34b0152082df | `src/agent/runSessionCore.ts:1` |
+| 9f73ae93f9889b7fd9d16e37b6ba34b0152082df | `src/agent/settlementFailure.ts:1` |
+| 9f73ae93f9889b7fd9d16e37b6ba34b0152082df | `src/index.ts:1` |
+| 9f73ae93f9889b7fd9d16e37b6ba34b0152082df | `test/agent/settlementFailure.test.ts:1` |
+| 9f73ae93f9889b7fd9d16e37b6ba34b0152082df | `test/fixtures/demos-node2-records.json:1` |
+| 539c54e77c2e755e15a9f791e0bb83d69ecffca3 | `.github/workflows/ci.yml:1` |
+| 539c54e77c2e755e15a9f791e0bb83d69ecffca3 | `src/substrate/DemosAdapter.ts:1` |
+| 539c54e77c2e755e15a9f791e0bb83d69ecffca3 | `test/substrate/demos-adapter.test.ts:1` |
+| a2f80e2842b5a48c1b45106b4b68d6540639fe29 | `src/agent/settlementFailure.ts:1` |
+| a2f80e2842b5a48c1b45106b4b68d6540639fe29 | `test/agent/settlementFailure.test.ts:1` |
+| a2f80e2842b5a48c1b45106b4b68d6540639fe29 | `test/fixtures/demos-node2-records.json:1` |
+| 7535fbeeb7a396f773e2d82cb81323c556fa06a1 | `test/agent/runSession.test.ts:1` |
+| ca171a54626144599077abbb22fb3afbf51fd059 | `.github/workflows/ci.yml:1` |
+| ca171a54626144599077abbb22fb3afbf51fd059 | `test/substrate/demos-adapter.test.ts:1` |
+| 0d2ba5d72c653d6aba9645b741c1fc7e94b1f3d9 | `src/agent/settlementFailure.ts:1` |
+| 0d2ba5d72c653d6aba9645b741c1fc7e94b1f3d9 | `test/agent/settlementFailure.test.ts:1` |
+| 0d2ba5d72c653d6aba9645b741c1fc7e94b1f3d9 | `test/fixtures/demos-node2-records.json:1` |
+| afafc8733dc809fafa84290d2a41618305068b35 | `.github/workflows/ci.yml:1` |
+| 4b8bd58db2d2148c7dd032ea12fe13270a5d2b43 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 4b8bd58db2d2148c7dd032ea12fe13270a5d2b43 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 4b8bd58db2d2148c7dd032ea12fe13270a5d2b43 | `packages/dacs-client/HOLD.json:1` |
+| 4b8bd58db2d2148c7dd032ea12fe13270a5d2b43 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4b8bd58db2d2148c7dd032ea12fe13270a5d2b43 | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/DELTA-MAP.md:1` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/HOLD.json:1` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/src/dacs/seller-agent-error.mjs:1` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/src/dacs/seller-agent.mjs:1`, `packages/dacs-client/src/dacs/seller-agent.mjs:80`, `packages/dacs-client/src/dacs/seller-agent.mjs:112` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:112`, `packages/dacs-client/src/dacs/seller-http.mjs:248`, `packages/dacs-client/src/dacs/seller-http.mjs:254`, `packages/dacs-client/src/dacs/seller-http.mjs:263` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/src/dacs/seller-transport-auth.mjs:8`, `packages/dacs-client/src/dacs/seller-transport-auth.mjs:79`, `packages/dacs-client/src/dacs/seller-transport-auth.mjs:182` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
+| dcf30ea7e0533877826709a0f673b735ed7b8cca | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/DELTA-MAP.md:1` |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/HOLD.json:1` |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| babe3de356531e5b664b72f0365c083495bc6b41 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/HOLD.json:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:1`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:21`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:35`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:68`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:71`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:74` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/src/purchase-state-schema.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/src/seams/wallet-actions-not-wired.mjs:2` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/d11-purchase-actions.test.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:45`, `packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:84` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/helpers/readback-review-loader.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/purchase-integrity.test.mjs:1`, `packages/dacs-client/test/purchase-integrity.test.mjs:6`, `packages/dacs-client/test/purchase-integrity.test.mjs:8`, `packages/dacs-client/test/purchase-integrity.test.mjs:10`, `packages/dacs-client/test/purchase-integrity.test.mjs:24` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/purchase-review-races.test.mjs:5`, `packages/dacs-client/test/purchase-review-races.test.mjs:7`, `packages/dacs-client/test/purchase-review-races.test.mjs:9`, `packages/dacs-client/test/purchase-review-races.test.mjs:27` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:10`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:91`, `packages/dacs-client/test/readback-review-decisions.test.mjs:94` |
+| 47cadba46d61bfd22078d4f8b594401985410517 | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/DELTA-MAP.md:1` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/HOLD.json:1` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/test/domain-store-crash.test.mjs` (deleted) |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs` (deleted) |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs` (deleted) |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| a79b18e25d519b7b0f191a8c345a257426d3d15f | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/HOLD.json:1` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/README.md:1` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 0ce5fd7ddc7868874a41782993080f57ae08b01c | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `package-lock.json:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/HOLD.json:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/LICENSE:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/README.md:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/package.json:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/src/index.mjs:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/src/public-verification.mjs:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/test/public-api.test.mjs:1` |
+| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| 8554cd5add6d7209057c110568b7da4c1ba3e001 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 8554cd5add6d7209057c110568b7da4c1ba3e001 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 8554cd5add6d7209057c110568b7da4c1ba3e001 | `packages/dacs-client/HOLD.json:1` |
+| 8554cd5add6d7209057c110568b7da4c1ba3e001 | `packages/dacs-client/README.md:1` |
+| 8554cd5add6d7209057c110568b7da4c1ba3e001 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d2f6f13fb3931d10b8f6e38c723b9467ba3fd32c | `.github/workflows/ci.yml:1` |
+| 5486e7e6d0fe5b3bdc113cee49ecb75a6db37338 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5486e7e6d0fe5b3bdc113cee49ecb75a6db37338 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5486e7e6d0fe5b3bdc113cee49ecb75a6db37338 | `packages/dacs-client/HOLD.json:1` |
+| 5486e7e6d0fe5b3bdc113cee49ecb75a6db37338 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5486e7e6d0fe5b3bdc113cee49ecb75a6db37338 | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| 5486e7e6d0fe5b3bdc113cee49ecb75a6db37338 | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 94e01fe9ae8dc617ed6f60533279192b50e7c338 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 94e01fe9ae8dc617ed6f60533279192b50e7c338 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 94e01fe9ae8dc617ed6f60533279192b50e7c338 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 94e01fe9ae8dc617ed6f60533279192b50e7c338 | `packages/dacs-client/HOLD.json:1` |
+| 94e01fe9ae8dc617ed6f60533279192b50e7c338 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 94e01fe9ae8dc617ed6f60533279192b50e7c338 | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
+| 94e01fe9ae8dc617ed6f60533279192b50e7c338 | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
+| 94e01fe9ae8dc617ed6f60533279192b50e7c338 | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/DELTA-MAP.md:1` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/HOLD.json:1` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| c556fccfd0fe143827d4c851dc1ffe7653927d7b | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` |
+| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/DELTA-MAP.md:1` |
+| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/HOLD.json:1` |
+| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/src/index.mjs:1` |
+| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/test/public-api.test.mjs:1` |
+| e222a82385baaef035f4eb4281cef6e4fa7e6e9f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e222a82385baaef035f4eb4281cef6e4fa7e6e9f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e222a82385baaef035f4eb4281cef6e4fa7e6e9f | `packages/dacs-client/DELTA-MAP.md:1` |
+| e222a82385baaef035f4eb4281cef6e4fa7e6e9f | `packages/dacs-client/HOLD.json:1` |
+| e222a82385baaef035f4eb4281cef6e4fa7e6e9f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e222a82385baaef035f4eb4281cef6e4fa7e6e9f | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| e222a82385baaef035f4eb4281cef6e4fa7e6e9f | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| ba4b46f849be26cf5c5cecad9cd7f108f239a663 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| ba4b46f849be26cf5c5cecad9cd7f108f239a663 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| ba4b46f849be26cf5c5cecad9cd7f108f239a663 | `packages/dacs-client/DELTA-MAP.md:1` |
+| ba4b46f849be26cf5c5cecad9cd7f108f239a663 | `packages/dacs-client/HOLD.json:1` |
+| ba4b46f849be26cf5c5cecad9cd7f108f239a663 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| ba4b46f849be26cf5c5cecad9cd7f108f239a663 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| ba4b46f849be26cf5c5cecad9cd7f108f239a663 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| ba4b46f849be26cf5c5cecad9cd7f108f239a663 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| 6682e259c16b87e5c632cfa53f8dd8cccdb9cb24 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 6682e259c16b87e5c632cfa53f8dd8cccdb9cb24 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 6682e259c16b87e5c632cfa53f8dd8cccdb9cb24 | `packages/dacs-client/HOLD.json:1` |
+| 6682e259c16b87e5c632cfa53f8dd8cccdb9cb24 | `packages/dacs-client/package.json:1` |
+| 6682e259c16b87e5c632cfa53f8dd8cccdb9cb24 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9b96780f976f8a07c2ecd4f768fe42742f73189c | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9b96780f976f8a07c2ecd4f768fe42742f73189c | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9b96780f976f8a07c2ecd4f768fe42742f73189c | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9b96780f976f8a07c2ecd4f768fe42742f73189c | `packages/dacs-client/HOLD.json:1` |
+| 9b96780f976f8a07c2ecd4f768fe42742f73189c | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9b96780f976f8a07c2ecd4f768fe42742f73189c | `packages/dacs-client/src/purchase-state-schema.mjs:1` |
+| 9b96780f976f8a07c2ecd4f768fe42742f73189c | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
+| 80505104ba09986ea30aec64492f255b0222e28e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 80505104ba09986ea30aec64492f255b0222e28e | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 80505104ba09986ea30aec64492f255b0222e28e | `packages/dacs-client/DELTA-MAP.md:1` |
+| 80505104ba09986ea30aec64492f255b0222e28e | `packages/dacs-client/HOLD.json:1` |
+| 80505104ba09986ea30aec64492f255b0222e28e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 80505104ba09986ea30aec64492f255b0222e28e | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 80505104ba09986ea30aec64492f255b0222e28e | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/HOLD.json:1` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
+| 6981392d0aa52df220608201fad089f8270118c7 | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| 96c7651b46488cc4f02f5558586a50db6e65e693 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 96c7651b46488cc4f02f5558586a50db6e65e693 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 96c7651b46488cc4f02f5558586a50db6e65e693 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 96c7651b46488cc4f02f5558586a50db6e65e693 | `packages/dacs-client/HOLD.json:1` |
+| 96c7651b46488cc4f02f5558586a50db6e65e693 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 96c7651b46488cc4f02f5558586a50db6e65e693 | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
+| 96c7651b46488cc4f02f5558586a50db6e65e693 | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| 501c9aeb2640a6abbb07e02fbd48c79ade0cbfc0 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 501c9aeb2640a6abbb07e02fbd48c79ade0cbfc0 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 501c9aeb2640a6abbb07e02fbd48c79ade0cbfc0 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 501c9aeb2640a6abbb07e02fbd48c79ade0cbfc0 | `packages/dacs-client/HOLD.json:1` |
+| 501c9aeb2640a6abbb07e02fbd48c79ade0cbfc0 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 501c9aeb2640a6abbb07e02fbd48c79ade0cbfc0 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 501c9aeb2640a6abbb07e02fbd48c79ade0cbfc0 | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| 501c9aeb2640a6abbb07e02fbd48c79ade0cbfc0 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| c8ade41f8200772626aece9d801f7ac931736a5d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c8ade41f8200772626aece9d801f7ac931736a5d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c8ade41f8200772626aece9d801f7ac931736a5d | `packages/dacs-client/DELTA-MAP.md:1` |
+| c8ade41f8200772626aece9d801f7ac931736a5d | `packages/dacs-client/HOLD.json:1` |
+| c8ade41f8200772626aece9d801f7ac931736a5d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c8ade41f8200772626aece9d801f7ac931736a5d | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| c8ade41f8200772626aece9d801f7ac931736a5d | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| 517dfd9977a1e5650beca30016979d59533f1077 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 517dfd9977a1e5650beca30016979d59533f1077 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 517dfd9977a1e5650beca30016979d59533f1077 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 517dfd9977a1e5650beca30016979d59533f1077 | `packages/dacs-client/HOLD.json:1` |
+| 517dfd9977a1e5650beca30016979d59533f1077 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 517dfd9977a1e5650beca30016979d59533f1077 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| b2a4702c6bbeb9474ecd06a15885a4fc051765b5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| b2a4702c6bbeb9474ecd06a15885a4fc051765b5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| b2a4702c6bbeb9474ecd06a15885a4fc051765b5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| b2a4702c6bbeb9474ecd06a15885a4fc051765b5 | `packages/dacs-client/HOLD.json:1` |
+| b2a4702c6bbeb9474ecd06a15885a4fc051765b5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| b2a4702c6bbeb9474ecd06a15885a4fc051765b5 | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| b2a4702c6bbeb9474ecd06a15885a4fc051765b5 | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 1a6b20b1c86359b0f4ecdc7f60e50129e90b6ae8 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 1a6b20b1c86359b0f4ecdc7f60e50129e90b6ae8 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 1a6b20b1c86359b0f4ecdc7f60e50129e90b6ae8 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 1a6b20b1c86359b0f4ecdc7f60e50129e90b6ae8 | `packages/dacs-client/HOLD.json:1` |
+| 1a6b20b1c86359b0f4ecdc7f60e50129e90b6ae8 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 1a6b20b1c86359b0f4ecdc7f60e50129e90b6ae8 | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 1a6b20b1c86359b0f4ecdc7f60e50129e90b6ae8 | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| fb443465c535cf685c464406be186ecd11fb8c4b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fb443465c535cf685c464406be186ecd11fb8c4b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fb443465c535cf685c464406be186ecd11fb8c4b | `packages/dacs-client/DELTA-MAP.md:1` |
+| fb443465c535cf685c464406be186ecd11fb8c4b | `packages/dacs-client/HOLD.json:1` |
+| fb443465c535cf685c464406be186ecd11fb8c4b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fb443465c535cf685c464406be186ecd11fb8c4b | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| f6c952883663b4cd677327e1a1eed1e3d60caa98 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f6c952883663b4cd677327e1a1eed1e3d60caa98 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f6c952883663b4cd677327e1a1eed1e3d60caa98 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f6c952883663b4cd677327e1a1eed1e3d60caa98 | `packages/dacs-client/HOLD.json:1` |
+| f6c952883663b4cd677327e1a1eed1e3d60caa98 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f6c952883663b4cd677327e1a1eed1e3d60caa98 | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs:1` |
+| f6c952883663b4cd677327e1a1eed1e3d60caa98 | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
+| f6c952883663b4cd677327e1a1eed1e3d60caa98 | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| 7b887564bee8a53d64e55949f31e25830b28b8ba | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 7b887564bee8a53d64e55949f31e25830b28b8ba | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 7b887564bee8a53d64e55949f31e25830b28b8ba | `packages/dacs-client/DELTA-MAP.md:1` |
+| 7b887564bee8a53d64e55949f31e25830b28b8ba | `packages/dacs-client/HOLD.json:1` |
+| 7b887564bee8a53d64e55949f31e25830b28b8ba | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 7b887564bee8a53d64e55949f31e25830b28b8ba | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 7b887564bee8a53d64e55949f31e25830b28b8ba | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 869c0e2a856a3efdbec0e69b0c0db9968761a1d2 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 869c0e2a856a3efdbec0e69b0c0db9968761a1d2 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 869c0e2a856a3efdbec0e69b0c0db9968761a1d2 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 869c0e2a856a3efdbec0e69b0c0db9968761a1d2 | `packages/dacs-client/HOLD.json:1` |
+| 869c0e2a856a3efdbec0e69b0c0db9968761a1d2 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 869c0e2a856a3efdbec0e69b0c0db9968761a1d2 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 869c0e2a856a3efdbec0e69b0c0db9968761a1d2 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| 7ddf4dca086d104d3a0be725b5bab6bba24490bf | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 7ddf4dca086d104d3a0be725b5bab6bba24490bf | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 7ddf4dca086d104d3a0be725b5bab6bba24490bf | `packages/dacs-client/DELTA-MAP.md:1` |
+| 7ddf4dca086d104d3a0be725b5bab6bba24490bf | `packages/dacs-client/HOLD.json:1` |
+| 7ddf4dca086d104d3a0be725b5bab6bba24490bf | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 7ddf4dca086d104d3a0be725b5bab6bba24490bf | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| 7ddf4dca086d104d3a0be725b5bab6bba24490bf | `packages/dacs-client/test/purchase-state-schema.test.mjs:1` |
+| 26e7d31f5cc97a8153f472b0daf75719402f98a3 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 26e7d31f5cc97a8153f472b0daf75719402f98a3 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 26e7d31f5cc97a8153f472b0daf75719402f98a3 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 26e7d31f5cc97a8153f472b0daf75719402f98a3 | `packages/dacs-client/HOLD.json:1` |
+| 26e7d31f5cc97a8153f472b0daf75719402f98a3 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 3c96be6f61b678611a34a637bcff7fc2f58d6e72 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 3c96be6f61b678611a34a637bcff7fc2f58d6e72 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 3c96be6f61b678611a34a637bcff7fc2f58d6e72 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 3c96be6f61b678611a34a637bcff7fc2f58d6e72 | `packages/dacs-client/HOLD.json:1` |
+| 3c96be6f61b678611a34a637bcff7fc2f58d6e72 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 3c96be6f61b678611a34a637bcff7fc2f58d6e72 | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| a8d5a624abcfc944df82c61191f3eb4bc03093a2 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| a8d5a624abcfc944df82c61191f3eb4bc03093a2 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| a8d5a624abcfc944df82c61191f3eb4bc03093a2 | `packages/dacs-client/DELTA-MAP.md:1` |
+| a8d5a624abcfc944df82c61191f3eb4bc03093a2 | `packages/dacs-client/HOLD.json:1` |
+| a8d5a624abcfc944df82c61191f3eb4bc03093a2 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a8d5a624abcfc944df82c61191f3eb4bc03093a2 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| a8d5a624abcfc944df82c61191f3eb4bc03093a2 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| a1e12767ecfbdcf96bf3130926613dcf8f2cf8ac | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| a1e12767ecfbdcf96bf3130926613dcf8f2cf8ac | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| a1e12767ecfbdcf96bf3130926613dcf8f2cf8ac | `packages/dacs-client/DELTA-MAP.md:1` |
+| a1e12767ecfbdcf96bf3130926613dcf8f2cf8ac | `packages/dacs-client/HOLD.json:1` |
+| a1e12767ecfbdcf96bf3130926613dcf8f2cf8ac | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e58af51de898ee15a88b685ea72b3ba7d62a46e4 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e58af51de898ee15a88b685ea72b3ba7d62a46e4 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e58af51de898ee15a88b685ea72b3ba7d62a46e4 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e58af51de898ee15a88b685ea72b3ba7d62a46e4 | `packages/dacs-client/HOLD.json:1` |
+| e58af51de898ee15a88b685ea72b3ba7d62a46e4 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e58af51de898ee15a88b685ea72b3ba7d62a46e4 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| e58af51de898ee15a88b685ea72b3ba7d62a46e4 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/HOLD.json:1` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| 5e519aa8ffab46d4a965f9b8db9a4215edd6425d | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| 04836510d5a62330cfdf54ce9169ab1d8b6bb2f9 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 04836510d5a62330cfdf54ce9169ab1d8b6bb2f9 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 04836510d5a62330cfdf54ce9169ab1d8b6bb2f9 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 04836510d5a62330cfdf54ce9169ab1d8b6bb2f9 | `packages/dacs-client/HOLD.json:1` |
+| 04836510d5a62330cfdf54ce9169ab1d8b6bb2f9 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 04836510d5a62330cfdf54ce9169ab1d8b6bb2f9 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 04836510d5a62330cfdf54ce9169ab1d8b6bb2f9 | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| 04836510d5a62330cfdf54ce9169ab1d8b6bb2f9 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| b67ce84c14f343f4293cf19d1b07ff74e6677ffb | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| b67ce84c14f343f4293cf19d1b07ff74e6677ffb | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| b67ce84c14f343f4293cf19d1b07ff74e6677ffb | `packages/dacs-client/DELTA-MAP.md:1` |
+| b67ce84c14f343f4293cf19d1b07ff74e6677ffb | `packages/dacs-client/HOLD.json:1` |
+| b67ce84c14f343f4293cf19d1b07ff74e6677ffb | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| b67ce84c14f343f4293cf19d1b07ff74e6677ffb | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| b67ce84c14f343f4293cf19d1b07ff74e6677ffb | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| 9aebf7fa2650ce343d570aeb84b24728797d2d2f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9aebf7fa2650ce343d570aeb84b24728797d2d2f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9aebf7fa2650ce343d570aeb84b24728797d2d2f | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9aebf7fa2650ce343d570aeb84b24728797d2d2f | `packages/dacs-client/HOLD.json:1` |
+| 9aebf7fa2650ce343d570aeb84b24728797d2d2f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9aebf7fa2650ce343d570aeb84b24728797d2d2f | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/HOLD.json:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/README.md:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/src/index.mjs:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/test/public-api.test.mjs:1` |
+| 5fc3c5839ad28d4f400ecc8bba47e349403a8a41 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5fc3c5839ad28d4f400ecc8bba47e349403a8a41 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5fc3c5839ad28d4f400ecc8bba47e349403a8a41 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5fc3c5839ad28d4f400ecc8bba47e349403a8a41 | `packages/dacs-client/HOLD.json:1` |
+| 5fc3c5839ad28d4f400ecc8bba47e349403a8a41 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5fc3c5839ad28d4f400ecc8bba47e349403a8a41 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 5fc3c5839ad28d4f400ecc8bba47e349403a8a41 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| f280b1610137aa011d64939b17663b73c3b20ce3 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f280b1610137aa011d64939b17663b73c3b20ce3 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f280b1610137aa011d64939b17663b73c3b20ce3 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f280b1610137aa011d64939b17663b73c3b20ce3 | `packages/dacs-client/HOLD.json:1` |
+| f280b1610137aa011d64939b17663b73c3b20ce3 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 | `packages/dacs-client/HOLD.json:1` |
+| f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
+| f7444d2936b71fbe0b3105b8c6e17c8d38b70b93 | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| c20540d482f133b7cdc41bc52e40022588067024 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c20540d482f133b7cdc41bc52e40022588067024 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c20540d482f133b7cdc41bc52e40022588067024 | `packages/dacs-client/DELTA-MAP.md:1` |
+| c20540d482f133b7cdc41bc52e40022588067024 | `packages/dacs-client/HOLD.json:1` |
+| c20540d482f133b7cdc41bc52e40022588067024 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c20540d482f133b7cdc41bc52e40022588067024 | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| c20540d482f133b7cdc41bc52e40022588067024 | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 85de7a183f0ac1c30935398ab6871bcd6af696fc | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 85de7a183f0ac1c30935398ab6871bcd6af696fc | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 85de7a183f0ac1c30935398ab6871bcd6af696fc | `packages/dacs-client/DELTA-MAP.md:1` |
+| 85de7a183f0ac1c30935398ab6871bcd6af696fc | `packages/dacs-client/HOLD.json:1` |
+| 85de7a183f0ac1c30935398ab6871bcd6af696fc | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 85de7a183f0ac1c30935398ab6871bcd6af696fc | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 85de7a183f0ac1c30935398ab6871bcd6af696fc | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 0a0e0198631fe38b94bb8161586db52795605242 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0a0e0198631fe38b94bb8161586db52795605242 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0a0e0198631fe38b94bb8161586db52795605242 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0a0e0198631fe38b94bb8161586db52795605242 | `packages/dacs-client/HOLD.json:1` |
+| 0a0e0198631fe38b94bb8161586db52795605242 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 0a0e0198631fe38b94bb8161586db52795605242 | `packages/dacs-client/scripts/generate-payload-helpers.mjs:1` |
+| 0a0e0198631fe38b94bb8161586db52795605242 | `packages/dacs-client/src/wallet/payload-helpers.mjs:1` |
+| 0a0e0198631fe38b94bb8161586db52795605242 | `packages/dacs-client/test/d11-import-boundary.test.mjs:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/HOLD.json:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 0b03491e50a221730c206d914882ea085e22e79d | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| e2a7882e3b38cd49ce980869cfe51a819661402b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e2a7882e3b38cd49ce980869cfe51a819661402b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e2a7882e3b38cd49ce980869cfe51a819661402b | `packages/dacs-client/DELTA-MAP.md:1` |
+| e2a7882e3b38cd49ce980869cfe51a819661402b | `packages/dacs-client/HOLD.json:1` |
+| e2a7882e3b38cd49ce980869cfe51a819661402b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e2a7882e3b38cd49ce980869cfe51a819661402b | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| e2a7882e3b38cd49ce980869cfe51a819661402b | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/DELTA-MAP.md:1` |
+| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/HOLD.json:1` |
+| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/src/index.mjs:1` |
+| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/test/public-api.test.mjs:1` |
+| 9810b98fa7d4e0238496da687bbdd80b4f444eba | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9810b98fa7d4e0238496da687bbdd80b4f444eba | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9810b98fa7d4e0238496da687bbdd80b4f444eba | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9810b98fa7d4e0238496da687bbdd80b4f444eba | `packages/dacs-client/HOLD.json:1` |
+| 9810b98fa7d4e0238496da687bbdd80b4f444eba | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d60175ea9daac5b27868766874ca5b8873832d6d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d60175ea9daac5b27868766874ca5b8873832d6d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| d60175ea9daac5b27868766874ca5b8873832d6d | `packages/dacs-client/DELTA-MAP.md:1` |
+| d60175ea9daac5b27868766874ca5b8873832d6d | `packages/dacs-client/HOLD.json:1` |
+| d60175ea9daac5b27868766874ca5b8873832d6d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 6f8ea279a6056357d15fa7b364812f5677516096 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 6f8ea279a6056357d15fa7b364812f5677516096 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 6f8ea279a6056357d15fa7b364812f5677516096 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 6f8ea279a6056357d15fa7b364812f5677516096 | `packages/dacs-client/HOLD.json:1` |
+| 6f8ea279a6056357d15fa7b364812f5677516096 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 | `packages/dacs-client/HOLD.json:1` |
+| 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| 99d3f5fb88e10f6f5388272a28a507d58f0d4ae2 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| 72e6697047e19f587020885063797d16a4172b1d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 72e6697047e19f587020885063797d16a4172b1d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 72e6697047e19f587020885063797d16a4172b1d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 72e6697047e19f587020885063797d16a4172b1d | `packages/dacs-client/HOLD.json:1` |
+| 72e6697047e19f587020885063797d16a4172b1d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 72e6697047e19f587020885063797d16a4172b1d | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 0f26068390e8b988b177ced5e2e42bb2a10fd049 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0f26068390e8b988b177ced5e2e42bb2a10fd049 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0f26068390e8b988b177ced5e2e42bb2a10fd049 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0f26068390e8b988b177ced5e2e42bb2a10fd049 | `packages/dacs-client/HOLD.json:1` |
+| 0f26068390e8b988b177ced5e2e42bb2a10fd049 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 0f26068390e8b988b177ced5e2e42bb2a10fd049 | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 0f26068390e8b988b177ced5e2e42bb2a10fd049 | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| e6b07dff085c02499bbc7830a6d72fa390d3945f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e6b07dff085c02499bbc7830a6d72fa390d3945f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e6b07dff085c02499bbc7830a6d72fa390d3945f | `packages/dacs-client/DELTA-MAP.md:1` |
+| e6b07dff085c02499bbc7830a6d72fa390d3945f | `packages/dacs-client/HOLD.json:1` |
+| e6b07dff085c02499bbc7830a6d72fa390d3945f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 18ea32b3be52525d8122c42ce438186343021971 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 18ea32b3be52525d8122c42ce438186343021971 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 18ea32b3be52525d8122c42ce438186343021971 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 18ea32b3be52525d8122c42ce438186343021971 | `packages/dacs-client/HOLD.json:1` |
+| 18ea32b3be52525d8122c42ce438186343021971 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 18ea32b3be52525d8122c42ce438186343021971 | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 18ea32b3be52525d8122c42ce438186343021971 | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 6c4a516ce4918c7bf75c3474cb3eda900724325c | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 6c4a516ce4918c7bf75c3474cb3eda900724325c | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 6c4a516ce4918c7bf75c3474cb3eda900724325c | `packages/dacs-client/DELTA-MAP.md:1` |
+| 6c4a516ce4918c7bf75c3474cb3eda900724325c | `packages/dacs-client/HOLD.json:1` |
+| 6c4a516ce4918c7bf75c3474cb3eda900724325c | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 6c4a516ce4918c7bf75c3474cb3eda900724325c | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 6c4a516ce4918c7bf75c3474cb3eda900724325c | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 2a66dfe27b701ce60a8ff51e54fc9e7716094def | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 2a66dfe27b701ce60a8ff51e54fc9e7716094def | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 2a66dfe27b701ce60a8ff51e54fc9e7716094def | `packages/dacs-client/DELTA-MAP.md:1` |
+| 2a66dfe27b701ce60a8ff51e54fc9e7716094def | `packages/dacs-client/HOLD.json:1` |
+| 2a66dfe27b701ce60a8ff51e54fc9e7716094def | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2a66dfe27b701ce60a8ff51e54fc9e7716094def | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 2a66dfe27b701ce60a8ff51e54fc9e7716094def | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 58b528b5355d618fbb77ac5b7f5bc00629ff2127 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 58b528b5355d618fbb77ac5b7f5bc00629ff2127 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 58b528b5355d618fbb77ac5b7f5bc00629ff2127 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 58b528b5355d618fbb77ac5b7f5bc00629ff2127 | `packages/dacs-client/HOLD.json:1` |
+| 58b528b5355d618fbb77ac5b7f5bc00629ff2127 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 58b528b5355d618fbb77ac5b7f5bc00629ff2127 | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 58b528b5355d618fbb77ac5b7f5bc00629ff2127 | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 5f41fccc2b599b489df91fdc06c5e443381e4f7d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5f41fccc2b599b489df91fdc06c5e443381e4f7d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5f41fccc2b599b489df91fdc06c5e443381e4f7d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5f41fccc2b599b489df91fdc06c5e443381e4f7d | `packages/dacs-client/HOLD.json:1` |
+| 5f41fccc2b599b489df91fdc06c5e443381e4f7d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5f41fccc2b599b489df91fdc06c5e443381e4f7d | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| 5f41fccc2b599b489df91fdc06c5e443381e4f7d | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| e60ca8eec87bc3e819e7c42207191bb4340ec566 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e60ca8eec87bc3e819e7c42207191bb4340ec566 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e60ca8eec87bc3e819e7c42207191bb4340ec566 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e60ca8eec87bc3e819e7c42207191bb4340ec566 | `packages/dacs-client/HOLD.json:1` |
+| e60ca8eec87bc3e819e7c42207191bb4340ec566 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e60ca8eec87bc3e819e7c42207191bb4340ec566 | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| e60ca8eec87bc3e819e7c42207191bb4340ec566 | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/HOLD.json:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/README.md:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 9bce5f134b02a37223c6cc8af6020f07582981dc | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| afae4ec06e0e8285545383df59dd20aa51bae825 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| afae4ec06e0e8285545383df59dd20aa51bae825 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| afae4ec06e0e8285545383df59dd20aa51bae825 | `packages/dacs-client/DELTA-MAP.md:1` |
+| afae4ec06e0e8285545383df59dd20aa51bae825 | `packages/dacs-client/HOLD.json:1` |
+| afae4ec06e0e8285545383df59dd20aa51bae825 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| afae4ec06e0e8285545383df59dd20aa51bae825 | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| afae4ec06e0e8285545383df59dd20aa51bae825 | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/DELTA-MAP.md:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/HOLD.json:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/README.md:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| d2f11c77cf1a4c77c350e38d7434aeb98067e8af | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 29e2ab85c0cd525419053a1bc6c260d90f864192 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 29e2ab85c0cd525419053a1bc6c260d90f864192 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 29e2ab85c0cd525419053a1bc6c260d90f864192 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 29e2ab85c0cd525419053a1bc6c260d90f864192 | `packages/dacs-client/HOLD.json:1` |
+| 29e2ab85c0cd525419053a1bc6c260d90f864192 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 29e2ab85c0cd525419053a1bc6c260d90f864192 | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| 29e2ab85c0cd525419053a1bc6c260d90f864192 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 29e2ab85c0cd525419053a1bc6c260d90f864192 | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
+| 60d612a57e6964b3f4e1a46ce742c3950e3999c5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 60d612a57e6964b3f4e1a46ce742c3950e3999c5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 60d612a57e6964b3f4e1a46ce742c3950e3999c5 | `packages/dacs-client/HOLD.json:1` |
+| 60d612a57e6964b3f4e1a46ce742c3950e3999c5 | `packages/dacs-client/package.json:1` |
+| 60d612a57e6964b3f4e1a46ce742c3950e3999c5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e674a243f57ed50b09cd81f78ddca0fb0a4d2787 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e674a243f57ed50b09cd81f78ddca0fb0a4d2787 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e674a243f57ed50b09cd81f78ddca0fb0a4d2787 | `packages/dacs-client/HOLD.json:1` |
+| e674a243f57ed50b09cd81f78ddca0fb0a4d2787 | `packages/dacs-client/README.md:1` |
+| e674a243f57ed50b09cd81f78ddca0fb0a4d2787 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f0eebf806e1d66b5d178a44021a1afa0d05092b5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f0eebf806e1d66b5d178a44021a1afa0d05092b5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f0eebf806e1d66b5d178a44021a1afa0d05092b5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f0eebf806e1d66b5d178a44021a1afa0d05092b5 | `packages/dacs-client/HOLD.json:1` |
+| f0eebf806e1d66b5d178a44021a1afa0d05092b5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f0eebf806e1d66b5d178a44021a1afa0d05092b5 | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` |
+| f0eebf806e1d66b5d178a44021a1afa0d05092b5 | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` |
+| 6b2719e181437c57ebf6cc1dc6f94259af57939b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 6b2719e181437c57ebf6cc1dc6f94259af57939b | `packages/dacs-client/DELTA-MAP.md:1` |
+| 6b2719e181437c57ebf6cc1dc6f94259af57939b | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 6b2719e181437c57ebf6cc1dc6f94259af57939b | `packages/dacs-client/HOLD.json:1` |
+| 6b2719e181437c57ebf6cc1dc6f94259af57939b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 6b2719e181437c57ebf6cc1dc6f94259af57939b | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| d420064d2e047b171953061b98f6e1bf52ae5624 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d420064d2e047b171953061b98f6e1bf52ae5624 | `packages/dacs-client/DELTA-MAP.md:1` |
+| d420064d2e047b171953061b98f6e1bf52ae5624 | `packages/dacs-client/HOLD.json:1` |
+| d420064d2e047b171953061b98f6e1bf52ae5624 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d420064d2e047b171953061b98f6e1bf52ae5624 | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/HOLD.json:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| 4138057b79a503658bac256c76215d8a9a0bcfe4 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/DELTA-MAP.md:1` |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/HOLD.json:1` |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| a7e433198c5354c231533f472468975dd96bacbe | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/HOLD.json:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| 49b2924bba8f2d457cc3171fc5422f287f321153 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/HOLD.json:1` |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| 828245862285088774b8f8c4d2d7d6b0b37cd092 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/DELTA-MAP.md:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/HOLD.json:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| c958af213d2c381334ad17e8517008e60ae22fef | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
+| d4a919bda59995941f87adf6946f074be9fd4f00 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d4a919bda59995941f87adf6946f074be9fd4f00 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| d4a919bda59995941f87adf6946f074be9fd4f00 | `packages/dacs-client/DELTA-MAP.md:1` |
+| d4a919bda59995941f87adf6946f074be9fd4f00 | `packages/dacs-client/HOLD.json:1` |
+| d4a919bda59995941f87adf6946f074be9fd4f00 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d4a919bda59995941f87adf6946f074be9fd4f00 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| d2c7f7e021beb5c2da01d9153f60a43566425fab | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d2c7f7e021beb5c2da01d9153f60a43566425fab | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| d2c7f7e021beb5c2da01d9153f60a43566425fab | `packages/dacs-client/DELTA-MAP.md:1` |
+| d2c7f7e021beb5c2da01d9153f60a43566425fab | `packages/dacs-client/HOLD.json:1` |
+| d2c7f7e021beb5c2da01d9153f60a43566425fab | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4df8f9664a105e236aa3d997be24bf0fd804a741 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 4df8f9664a105e236aa3d997be24bf0fd804a741 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 4df8f9664a105e236aa3d997be24bf0fd804a741 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 4df8f9664a105e236aa3d997be24bf0fd804a741 | `packages/dacs-client/HOLD.json:1` |
+| 4df8f9664a105e236aa3d997be24bf0fd804a741 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4df8f9664a105e236aa3d997be24bf0fd804a741 | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
+| fffce6603d6601db6711c298a835b59f773ff92e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fffce6603d6601db6711c298a835b59f773ff92e | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fffce6603d6601db6711c298a835b59f773ff92e | `packages/dacs-client/DELTA-MAP.md:1` |
+| fffce6603d6601db6711c298a835b59f773ff92e | `packages/dacs-client/HOLD.json:1` |
+| fffce6603d6601db6711c298a835b59f773ff92e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| cac06397d4dc938a0ff97edab5ccb59ac66bde56 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| cac06397d4dc938a0ff97edab5ccb59ac66bde56 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| cac06397d4dc938a0ff97edab5ccb59ac66bde56 | `packages/dacs-client/DELTA-MAP.md:1` |
+| cac06397d4dc938a0ff97edab5ccb59ac66bde56 | `packages/dacs-client/HOLD.json:1` |
+| cac06397d4dc938a0ff97edab5ccb59ac66bde56 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| cac06397d4dc938a0ff97edab5ccb59ac66bde56 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 3130f42efe69ca9d20801769e75e29f5f53c3e67 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 3130f42efe69ca9d20801769e75e29f5f53c3e67 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 3130f42efe69ca9d20801769e75e29f5f53c3e67 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 3130f42efe69ca9d20801769e75e29f5f53c3e67 | `packages/dacs-client/HOLD.json:1` |
+| 3130f42efe69ca9d20801769e75e29f5f53c3e67 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c40ce17cb050daa9083bf1c34d5d8d9bc8399ea7 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c40ce17cb050daa9083bf1c34d5d8d9bc8399ea7 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c40ce17cb050daa9083bf1c34d5d8d9bc8399ea7 | `packages/dacs-client/DELTA-MAP.md:1` |
+| c40ce17cb050daa9083bf1c34d5d8d9bc8399ea7 | `packages/dacs-client/HOLD.json:1` |
+| c40ce17cb050daa9083bf1c34d5d8d9bc8399ea7 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 7e1716769c26244caf8f8e0fdddef4625bd05686 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 7e1716769c26244caf8f8e0fdddef4625bd05686 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 7e1716769c26244caf8f8e0fdddef4625bd05686 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 7e1716769c26244caf8f8e0fdddef4625bd05686 | `packages/dacs-client/HOLD.json:1` |
+| 7e1716769c26244caf8f8e0fdddef4625bd05686 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c77649a4f8fa8f3263e7221108ff6ccbc79b1bd5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c77649a4f8fa8f3263e7221108ff6ccbc79b1bd5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c77649a4f8fa8f3263e7221108ff6ccbc79b1bd5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| c77649a4f8fa8f3263e7221108ff6ccbc79b1bd5 | `packages/dacs-client/HOLD.json:1` |
+| c77649a4f8fa8f3263e7221108ff6ccbc79b1bd5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e059d064652c83eccf332be908bedffdd1975d0f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e059d064652c83eccf332be908bedffdd1975d0f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e059d064652c83eccf332be908bedffdd1975d0f | `packages/dacs-client/DELTA-MAP.md:1` |
+| e059d064652c83eccf332be908bedffdd1975d0f | `packages/dacs-client/HOLD.json:1` |
+| e059d064652c83eccf332be908bedffdd1975d0f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/DELTA-MAP.md:1` |
+| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/HOLD.json:1` |
+| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/package.json:1` |
+| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9c80d452b176bc83375eba82ba70ceebc2c27911 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9c80d452b176bc83375eba82ba70ceebc2c27911 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9c80d452b176bc83375eba82ba70ceebc2c27911 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9c80d452b176bc83375eba82ba70ceebc2c27911 | `packages/dacs-client/HOLD.json:1` |
+| 9c80d452b176bc83375eba82ba70ceebc2c27911 | `packages/dacs-client/README.md:1` |
+| 9c80d452b176bc83375eba82ba70ceebc2c27911 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5c4f567910b89e29e5cb1cdec6ca7065f3e13f1e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5c4f567910b89e29e5cb1cdec6ca7065f3e13f1e | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5c4f567910b89e29e5cb1cdec6ca7065f3e13f1e | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5c4f567910b89e29e5cb1cdec6ca7065f3e13f1e | `packages/dacs-client/HOLD.json:1` |
+| 5c4f567910b89e29e5cb1cdec6ca7065f3e13f1e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9a0ace7360ba1d4b5fbaf71e0421cad395d7fecb | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9a0ace7360ba1d4b5fbaf71e0421cad395d7fecb | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9a0ace7360ba1d4b5fbaf71e0421cad395d7fecb | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9a0ace7360ba1d4b5fbaf71e0421cad395d7fecb | `packages/dacs-client/HOLD.json:1` |
+| 9a0ace7360ba1d4b5fbaf71e0421cad395d7fecb | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9a0ace7360ba1d4b5fbaf71e0421cad395d7fecb | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| c64796d5df94d19bc6b271d239a46aa4b074ebff | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c64796d5df94d19bc6b271d239a46aa4b074ebff | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c64796d5df94d19bc6b271d239a46aa4b074ebff | `packages/dacs-client/DELTA-MAP.md:1` |
+| c64796d5df94d19bc6b271d239a46aa4b074ebff | `packages/dacs-client/HOLD.json:1` |
+| c64796d5df94d19bc6b271d239a46aa4b074ebff | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 501516fedd0a04067f425e9eccfc35c6ca98e981 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 501516fedd0a04067f425e9eccfc35c6ca98e981 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 501516fedd0a04067f425e9eccfc35c6ca98e981 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 501516fedd0a04067f425e9eccfc35c6ca98e981 | `packages/dacs-client/HOLD.json:1` |
+| 501516fedd0a04067f425e9eccfc35c6ca98e981 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| eaa2fb658865e46d65f90ae68ac1dcd7e6c69d39 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| eaa2fb658865e46d65f90ae68ac1dcd7e6c69d39 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| eaa2fb658865e46d65f90ae68ac1dcd7e6c69d39 | `packages/dacs-client/DELTA-MAP.md:1` |
+| eaa2fb658865e46d65f90ae68ac1dcd7e6c69d39 | `packages/dacs-client/HOLD.json:1` |
+| eaa2fb658865e46d65f90ae68ac1dcd7e6c69d39 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 125733715f330cf53c2088eee99e15cb8f1c2ae3 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 125733715f330cf53c2088eee99e15cb8f1c2ae3 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 125733715f330cf53c2088eee99e15cb8f1c2ae3 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 125733715f330cf53c2088eee99e15cb8f1c2ae3 | `packages/dacs-client/HOLD.json:1` |
+| 125733715f330cf53c2088eee99e15cb8f1c2ae3 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| dc61a1dcb21db35c450196231a04b57b6d7b5676 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| dc61a1dcb21db35c450196231a04b57b6d7b5676 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| dc61a1dcb21db35c450196231a04b57b6d7b5676 | `packages/dacs-client/DELTA-MAP.md:1` |
+| dc61a1dcb21db35c450196231a04b57b6d7b5676 | `packages/dacs-client/HOLD.json:1` |
+| dc61a1dcb21db35c450196231a04b57b6d7b5676 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c2cc10a533a1cca7dfb7ad7ece7124e1460b71f5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c2cc10a533a1cca7dfb7ad7ece7124e1460b71f5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c2cc10a533a1cca7dfb7ad7ece7124e1460b71f5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| c2cc10a533a1cca7dfb7ad7ece7124e1460b71f5 | `packages/dacs-client/HOLD.json:1` |
+| c2cc10a533a1cca7dfb7ad7ece7124e1460b71f5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 1fb6dfac506a448bd160cd2d7bb2c7f2aaebfaa7 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 1fb6dfac506a448bd160cd2d7bb2c7f2aaebfaa7 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 1fb6dfac506a448bd160cd2d7bb2c7f2aaebfaa7 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 1fb6dfac506a448bd160cd2d7bb2c7f2aaebfaa7 | `packages/dacs-client/HOLD.json:1` |
+| 1fb6dfac506a448bd160cd2d7bb2c7f2aaebfaa7 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/DELTA-MAP.md:1` |
+| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/HOLD.json:1` |
+| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2c212c54ebf54ef9952de4a0d295ace207b1ebff | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 2c212c54ebf54ef9952de4a0d295ace207b1ebff | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 2c212c54ebf54ef9952de4a0d295ace207b1ebff | `packages/dacs-client/DELTA-MAP.md:1` |
+| 2c212c54ebf54ef9952de4a0d295ace207b1ebff | `packages/dacs-client/HOLD.json:1` |
+| 2c212c54ebf54ef9952de4a0d295ace207b1ebff | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f4e36544f9d1ccafdc75890037244b98ec941db4 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f4e36544f9d1ccafdc75890037244b98ec941db4 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f4e36544f9d1ccafdc75890037244b98ec941db4 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f4e36544f9d1ccafdc75890037244b98ec941db4 | `packages/dacs-client/HOLD.json:1` |
+| f4e36544f9d1ccafdc75890037244b98ec941db4 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d358db4457a945f30936255e394b22ca41fe52d1 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d358db4457a945f30936255e394b22ca41fe52d1 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| d358db4457a945f30936255e394b22ca41fe52d1 | `packages/dacs-client/DELTA-MAP.md:1` |
+| d358db4457a945f30936255e394b22ca41fe52d1 | `packages/dacs-client/HOLD.json:1` |
+| d358db4457a945f30936255e394b22ca41fe52d1 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d358db4457a945f30936255e394b22ca41fe52d1 | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| d358db4457a945f30936255e394b22ca41fe52d1 | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| adb655d264cd849da94228e97de324901931839f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| adb655d264cd849da94228e97de324901931839f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| adb655d264cd849da94228e97de324901931839f | `packages/dacs-client/DELTA-MAP.md:1` |
+| adb655d264cd849da94228e97de324901931839f | `packages/dacs-client/HOLD.json:1` |
+| adb655d264cd849da94228e97de324901931839f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e4c4af5448ba09e52760ca512894bb4a238e4f3f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e4c4af5448ba09e52760ca512894bb4a238e4f3f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e4c4af5448ba09e52760ca512894bb4a238e4f3f | `packages/dacs-client/DELTA-MAP.md:1` |
+| e4c4af5448ba09e52760ca512894bb4a238e4f3f | `packages/dacs-client/HOLD.json:1` |
+| e4c4af5448ba09e52760ca512894bb4a238e4f3f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 0994702c1a7a0f041b5e926a830c946242e39a20 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0994702c1a7a0f041b5e926a830c946242e39a20 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0994702c1a7a0f041b5e926a830c946242e39a20 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0994702c1a7a0f041b5e926a830c946242e39a20 | `packages/dacs-client/HOLD.json:1` |
+| 0994702c1a7a0f041b5e926a830c946242e39a20 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e74ffcc619df0edfe314bb2e185d6972af9c7ac6 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e74ffcc619df0edfe314bb2e185d6972af9c7ac6 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e74ffcc619df0edfe314bb2e185d6972af9c7ac6 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e74ffcc619df0edfe314bb2e185d6972af9c7ac6 | `packages/dacs-client/HOLD.json:1` |
+| e74ffcc619df0edfe314bb2e185d6972af9c7ac6 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e5bafebfeb2da8b657bb535a8e8fb89fe176365e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e5bafebfeb2da8b657bb535a8e8fb89fe176365e | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e5bafebfeb2da8b657bb535a8e8fb89fe176365e | `packages/dacs-client/DELTA-MAP.md:1` |
+| e5bafebfeb2da8b657bb535a8e8fb89fe176365e | `packages/dacs-client/HOLD.json:1` |
+| e5bafebfeb2da8b657bb535a8e8fb89fe176365e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 99566c0bbaccb44c4ed4e5ed0235404cb7768a8b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 99566c0bbaccb44c4ed4e5ed0235404cb7768a8b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 99566c0bbaccb44c4ed4e5ed0235404cb7768a8b | `packages/dacs-client/DELTA-MAP.md:1` |
+| 99566c0bbaccb44c4ed4e5ed0235404cb7768a8b | `packages/dacs-client/HOLD.json:1` |
+| 99566c0bbaccb44c4ed4e5ed0235404cb7768a8b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5c65ac025344103b04b651b0b9669e910376be89 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5c65ac025344103b04b651b0b9669e910376be89 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5c65ac025344103b04b651b0b9669e910376be89 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5c65ac025344103b04b651b0b9669e910376be89 | `packages/dacs-client/HOLD.json:1` |
+| 5c65ac025344103b04b651b0b9669e910376be89 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| efdb0107868be3c856541d89748c32b28a1d3c55 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| efdb0107868be3c856541d89748c32b28a1d3c55 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| efdb0107868be3c856541d89748c32b28a1d3c55 | `packages/dacs-client/DELTA-MAP.md:1` |
+| efdb0107868be3c856541d89748c32b28a1d3c55 | `packages/dacs-client/HOLD.json:1` |
+| efdb0107868be3c856541d89748c32b28a1d3c55 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f3cfc7f1c53f56eef1575aa4d923d140aa760da1 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f3cfc7f1c53f56eef1575aa4d923d140aa760da1 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f3cfc7f1c53f56eef1575aa4d923d140aa760da1 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f3cfc7f1c53f56eef1575aa4d923d140aa760da1 | `packages/dacs-client/HOLD.json:1` |
+| f3cfc7f1c53f56eef1575aa4d923d140aa760da1 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 167c7be22d12bc8bb5d4d7795976f2b1a8d6ff68 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 167c7be22d12bc8bb5d4d7795976f2b1a8d6ff68 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 167c7be22d12bc8bb5d4d7795976f2b1a8d6ff68 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 167c7be22d12bc8bb5d4d7795976f2b1a8d6ff68 | `packages/dacs-client/HOLD.json:1` |
+| 167c7be22d12bc8bb5d4d7795976f2b1a8d6ff68 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/DELTA-MAP.md:1` |
+| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/HOLD.json:1` |
+| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 39ed010211acde9b5f4e51929043d14173eab4b6 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 39ed010211acde9b5f4e51929043d14173eab4b6 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 39ed010211acde9b5f4e51929043d14173eab4b6 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 39ed010211acde9b5f4e51929043d14173eab4b6 | `packages/dacs-client/HOLD.json:1` |
+| 39ed010211acde9b5f4e51929043d14173eab4b6 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 45ca352ac31e1ba31c278cf2c86d62879b72740d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 45ca352ac31e1ba31c278cf2c86d62879b72740d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 45ca352ac31e1ba31c278cf2c86d62879b72740d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 45ca352ac31e1ba31c278cf2c86d62879b72740d | `packages/dacs-client/HOLD.json:1` |
+| 45ca352ac31e1ba31c278cf2c86d62879b72740d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2dc6580f2f5464f3b32d59611d32ff3b935056b0 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 2dc6580f2f5464f3b32d59611d32ff3b935056b0 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 2dc6580f2f5464f3b32d59611d32ff3b935056b0 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 2dc6580f2f5464f3b32d59611d32ff3b935056b0 | `packages/dacs-client/HOLD.json:1` |
+| 2dc6580f2f5464f3b32d59611d32ff3b935056b0 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2dc6580f2f5464f3b32d59611d32ff3b935056b0 | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 694e77831d6c39c6ca1ff0ff160169548b96e9f7 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 694e77831d6c39c6ca1ff0ff160169548b96e9f7 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 694e77831d6c39c6ca1ff0ff160169548b96e9f7 | `packages/dacs-client/HOLD.json:1` |
+| 694e77831d6c39c6ca1ff0ff160169548b96e9f7 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f700a0f8875bd53c6744c40eb7ce6f06d10bf428 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f700a0f8875bd53c6744c40eb7ce6f06d10bf428 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f700a0f8875bd53c6744c40eb7ce6f06d10bf428 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f700a0f8875bd53c6744c40eb7ce6f06d10bf428 | `packages/dacs-client/HOLD.json:1` |
+| f700a0f8875bd53c6744c40eb7ce6f06d10bf428 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f700a0f8875bd53c6744c40eb7ce6f06d10bf428 | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| f700a0f8875bd53c6744c40eb7ce6f06d10bf428 | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
+| f700a0f8875bd53c6744c40eb7ce6f06d10bf428 | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
+| d0e0934b38a75bb27a642fd546055c0d41d619f7 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d0e0934b38a75bb27a642fd546055c0d41d619f7 | `packages/dacs-client/DELTA-MAP.md:1` |
+| d0e0934b38a75bb27a642fd546055c0d41d619f7 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| d0e0934b38a75bb27a642fd546055c0d41d619f7 | `packages/dacs-client/HOLD.json:1` |
+| d0e0934b38a75bb27a642fd546055c0d41d619f7 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d0e0934b38a75bb27a642fd546055c0d41d619f7 | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 359ffbd37cc62840875d83f414e9947be031e2ca | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 359ffbd37cc62840875d83f414e9947be031e2ca | `packages/dacs-client/DELTA-MAP.md:1` |
+| 359ffbd37cc62840875d83f414e9947be031e2ca | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 359ffbd37cc62840875d83f414e9947be031e2ca | `packages/dacs-client/HOLD.json:1` |
+| 359ffbd37cc62840875d83f414e9947be031e2ca | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 359ffbd37cc62840875d83f414e9947be031e2ca | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/HOLD.json:1` |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| a67f3d07d6639fb0780cb88be858c2a66b4e9db5 | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
+| b76092f22fd145017230399d73d9ef1ecb7fed47 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| b76092f22fd145017230399d73d9ef1ecb7fed47 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| b76092f22fd145017230399d73d9ef1ecb7fed47 | `packages/dacs-client/DELTA-MAP.md:1` |
+| b76092f22fd145017230399d73d9ef1ecb7fed47 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| b76092f22fd145017230399d73d9ef1ecb7fed47 | `packages/dacs-client/HOLD.json:1` |
+| b76092f22fd145017230399d73d9ef1ecb7fed47 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| b76092f22fd145017230399d73d9ef1ecb7fed47 | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| b76092f22fd145017230399d73d9ef1ecb7fed47 | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| 9cfc81d67f142eca31acb54b9eb85f9b5b798f4e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9cfc81d67f142eca31acb54b9eb85f9b5b798f4e | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9cfc81d67f142eca31acb54b9eb85f9b5b798f4e | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9cfc81d67f142eca31acb54b9eb85f9b5b798f4e | `packages/dacs-client/HOLD.json:1` |
+| 9cfc81d67f142eca31acb54b9eb85f9b5b798f4e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d0efcf97ddfb12fbd631e90ed1a01aec38db1e96 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d0efcf97ddfb12fbd631e90ed1a01aec38db1e96 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| d0efcf97ddfb12fbd631e90ed1a01aec38db1e96 | `packages/dacs-client/DELTA-MAP.md:1` |
+| d0efcf97ddfb12fbd631e90ed1a01aec38db1e96 | `packages/dacs-client/HOLD.json:1` |
+| d0efcf97ddfb12fbd631e90ed1a01aec38db1e96 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d0efcf97ddfb12fbd631e90ed1a01aec38db1e96 | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| 710fa0a1a971e958d860c8854ee537694cad0b7e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 710fa0a1a971e958d860c8854ee537694cad0b7e | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 710fa0a1a971e958d860c8854ee537694cad0b7e | `packages/dacs-client/DELTA-MAP.md:1` |
+| 710fa0a1a971e958d860c8854ee537694cad0b7e | `packages/dacs-client/HOLD.json:1` |
+| 710fa0a1a971e958d860c8854ee537694cad0b7e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 7dfce2485025c5a5b09c0259409a815e81d5b782 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 7dfce2485025c5a5b09c0259409a815e81d5b782 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 7dfce2485025c5a5b09c0259409a815e81d5b782 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 7dfce2485025c5a5b09c0259409a815e81d5b782 | `packages/dacs-client/HOLD.json:1` |
+| 7dfce2485025c5a5b09c0259409a815e81d5b782 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e9395796bb48e44a7494d62f6c3a1ecaf33cf596 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e9395796bb48e44a7494d62f6c3a1ecaf33cf596 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e9395796bb48e44a7494d62f6c3a1ecaf33cf596 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e9395796bb48e44a7494d62f6c3a1ecaf33cf596 | `packages/dacs-client/HOLD.json:1` |
+| e9395796bb48e44a7494d62f6c3a1ecaf33cf596 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 6e13365a64fa62e1a1a931498941858b5ed7f14f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 6e13365a64fa62e1a1a931498941858b5ed7f14f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 6e13365a64fa62e1a1a931498941858b5ed7f14f | `packages/dacs-client/DELTA-MAP.md:1` |
+| 6e13365a64fa62e1a1a931498941858b5ed7f14f | `packages/dacs-client/HOLD.json:1` |
+| 6e13365a64fa62e1a1a931498941858b5ed7f14f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 6e13365a64fa62e1a1a931498941858b5ed7f14f | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| 6e13365a64fa62e1a1a931498941858b5ed7f14f | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
+| fd5a20a82681e90b3cff127d1d0f9a147bac48d3 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fd5a20a82681e90b3cff127d1d0f9a147bac48d3 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fd5a20a82681e90b3cff127d1d0f9a147bac48d3 | `packages/dacs-client/DELTA-MAP.md:1` |
+| fd5a20a82681e90b3cff127d1d0f9a147bac48d3 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fd5a20a82681e90b3cff127d1d0f9a147bac48d3 | `packages/dacs-client/HOLD.json:1` |
+| fd5a20a82681e90b3cff127d1d0f9a147bac48d3 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fd5a20a82681e90b3cff127d1d0f9a147bac48d3 | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fd5a20a82681e90b3cff127d1d0f9a147bac48d3 | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| cc638ed215ad209553a371d0827664eaf41aeb79 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| cc638ed215ad209553a371d0827664eaf41aeb79 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| cc638ed215ad209553a371d0827664eaf41aeb79 | `packages/dacs-client/DELTA-MAP.md:1` |
+| cc638ed215ad209553a371d0827664eaf41aeb79 | `packages/dacs-client/HOLD.json:1` |
+| cc638ed215ad209553a371d0827664eaf41aeb79 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/HOLD.json:1` |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| e2caa8ab8932c67e866a550e84e0fb523ab53ad8 | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
+| 801984462ee3a545b2d92814a30f1aa6956aafbf | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 801984462ee3a545b2d92814a30f1aa6956aafbf | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 801984462ee3a545b2d92814a30f1aa6956aafbf | `packages/dacs-client/DELTA-MAP.md:1` |
+| 801984462ee3a545b2d92814a30f1aa6956aafbf | `packages/dacs-client/HOLD.json:1` |
+| 801984462ee3a545b2d92814a30f1aa6956aafbf | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 782f5b7aa7a8283a80002acbbe2a5c3a8f62eefe | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 782f5b7aa7a8283a80002acbbe2a5c3a8f62eefe | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 782f5b7aa7a8283a80002acbbe2a5c3a8f62eefe | `packages/dacs-client/DELTA-MAP.md:1` |
+| 782f5b7aa7a8283a80002acbbe2a5c3a8f62eefe | `packages/dacs-client/HOLD.json:1` |
+| 782f5b7aa7a8283a80002acbbe2a5c3a8f62eefe | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 782f5b7aa7a8283a80002acbbe2a5c3a8f62eefe | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs` (deleted) |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/DELTA-MAP.md:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/DELTA-NOTES.md:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/HOLD.json:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
+| aaa4c9e3de4cb9c2df45a96a67218e2176b2ab3e | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
+| fb7f7830977dc015bfa797680bae6f39f352db1d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fb7f7830977dc015bfa797680bae6f39f352db1d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fb7f7830977dc015bfa797680bae6f39f352db1d | `packages/dacs-client/DELTA-MAP.md:1` |
+| fb7f7830977dc015bfa797680bae6f39f352db1d | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fb7f7830977dc015bfa797680bae6f39f352db1d | `packages/dacs-client/HOLD.json:1` |
+| fb7f7830977dc015bfa797680bae6f39f352db1d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fb7f7830977dc015bfa797680bae6f39f352db1d | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| fb7f7830977dc015bfa797680bae6f39f352db1d | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/HOLD.json:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/helpers/store-journal-worker.mjs` (deleted) |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/store-journal-atomicity.test.mjs` (deleted) |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
+| 82114b3e80dee9f792597d0f1e4aa3b2457c8427 | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
+| 170dfbd3da4e3b665cf5e3e619e1b2b7f27056c3 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 170dfbd3da4e3b665cf5e3e619e1b2b7f27056c3 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 170dfbd3da4e3b665cf5e3e619e1b2b7f27056c3 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 170dfbd3da4e3b665cf5e3e619e1b2b7f27056c3 | `packages/dacs-client/HOLD.json:1` |
+| 170dfbd3da4e3b665cf5e3e619e1b2b7f27056c3 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 170dfbd3da4e3b665cf5e3e619e1b2b7f27056c3 | `packages/dacs-client/test/sqlite-purchase-admission.test.mjs` (deleted) |
+| 170dfbd3da4e3b665cf5e3e619e1b2b7f27056c3 | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| a5eba8c927cf76e744723e4b2f8e0493083206c8 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| a5eba8c927cf76e744723e4b2f8e0493083206c8 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| a5eba8c927cf76e744723e4b2f8e0493083206c8 | `packages/dacs-client/DELTA-MAP.md:1` |
+| a5eba8c927cf76e744723e4b2f8e0493083206c8 | `packages/dacs-client/HOLD.json:1` |
+| a5eba8c927cf76e744723e4b2f8e0493083206c8 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| acea3ec758cc5a25a1abff1e2634705ccdf6f9ad | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| acea3ec758cc5a25a1abff1e2634705ccdf6f9ad | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| acea3ec758cc5a25a1abff1e2634705ccdf6f9ad | `packages/dacs-client/DELTA-MAP.md:1` |
+| acea3ec758cc5a25a1abff1e2634705ccdf6f9ad | `packages/dacs-client/HOLD.json:1` |
+| acea3ec758cc5a25a1abff1e2634705ccdf6f9ad | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| acea3ec758cc5a25a1abff1e2634705ccdf6f9ad | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) |
+| 2ef0c7944a894d7910f24a1d9eca1756edbe374f | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 2ef0c7944a894d7910f24a1d9eca1756edbe374f | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 2ef0c7944a894d7910f24a1d9eca1756edbe374f | `packages/dacs-client/DELTA-MAP.md:1` |
+| 2ef0c7944a894d7910f24a1d9eca1756edbe374f | `packages/dacs-client/HOLD.json:1` |
+| 2ef0c7944a894d7910f24a1d9eca1756edbe374f | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 8b5584df7f84be27cc2d447d90cd40e2853398b3 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 8b5584df7f84be27cc2d447d90cd40e2853398b3 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 8b5584df7f84be27cc2d447d90cd40e2853398b3 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 8b5584df7f84be27cc2d447d90cd40e2853398b3 | `packages/dacs-client/HOLD.json:1` |
+| 8b5584df7f84be27cc2d447d90cd40e2853398b3 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f369392d68f15b70f027e15181448f106be4c5a1 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f369392d68f15b70f027e15181448f106be4c5a1 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f369392d68f15b70f027e15181448f106be4c5a1 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f369392d68f15b70f027e15181448f106be4c5a1 | `packages/dacs-client/HOLD.json:1` |
+| f369392d68f15b70f027e15181448f106be4c5a1 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f369392d68f15b70f027e15181448f106be4c5a1 | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| f369392d68f15b70f027e15181448f106be4c5a1 | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/DELTA-MAP.md:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/HOLD.json:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/test/sqlite-purchase-journal.test.mjs:1` |
+| 7739cc80c67ce3ff22b97c61a55cc3f34a50027c | `packages/dacs-client/test/store-host-boundary.test.mjs:1` |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/DELTA-MAP.md:1` |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/HOLD.json:1` |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/test/helpers/store-journal-worker.mjs` (deleted) |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/test/store-journal-atomicity.test.mjs` (deleted) |
+| af84b0bb430a5b67e4726ba9ab424c5c894afd08 | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) |
+| a1adbd81172fa598cc949abc471c2c1503ac3ddc | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| a1adbd81172fa598cc949abc471c2c1503ac3ddc | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| a1adbd81172fa598cc949abc471c2c1503ac3ddc | `packages/dacs-client/DELTA-MAP.md:1` |
+| a1adbd81172fa598cc949abc471c2c1503ac3ddc | `packages/dacs-client/HOLD.json:1` |
+| a1adbd81172fa598cc949abc471c2c1503ac3ddc | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 1ae0f72c455a4f8dfb540b7bf4860a462ab92ebc | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 1ae0f72c455a4f8dfb540b7bf4860a462ab92ebc | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 1ae0f72c455a4f8dfb540b7bf4860a462ab92ebc | `packages/dacs-client/DELTA-MAP.md:1` |
+| 1ae0f72c455a4f8dfb540b7bf4860a462ab92ebc | `packages/dacs-client/HOLD.json:1` |
+| 1ae0f72c455a4f8dfb540b7bf4860a462ab92ebc | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5a8b4fc70597aef19edfa9b8cdf6991401f19da3 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5a8b4fc70597aef19edfa9b8cdf6991401f19da3 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5a8b4fc70597aef19edfa9b8cdf6991401f19da3 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5a8b4fc70597aef19edfa9b8cdf6991401f19da3 | `packages/dacs-client/HOLD.json:1` |
+| 5a8b4fc70597aef19edfa9b8cdf6991401f19da3 | `packages/dacs-client/README.md:1` |
+| 5a8b4fc70597aef19edfa9b8cdf6991401f19da3 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5a8b4fc70597aef19edfa9b8cdf6991401f19da3 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 5a8b4fc70597aef19edfa9b8cdf6991401f19da3 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 776a9c25b91925b4c50ac9d86014dfd4e19c8667 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 776a9c25b91925b4c50ac9d86014dfd4e19c8667 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 776a9c25b91925b4c50ac9d86014dfd4e19c8667 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 776a9c25b91925b4c50ac9d86014dfd4e19c8667 | `packages/dacs-client/HOLD.json:1` |
+| 776a9c25b91925b4c50ac9d86014dfd4e19c8667 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/DELTA-MAP.md:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/DELTA-NOTES.md:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/HOLD.json:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/helpers/purchase-tx-exit-worker.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/helpers/store-crash-worker.mjs` (deleted) |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/helpers/store-journal-worker.mjs` (deleted) |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/purchase-tx-boundary.test.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/purchase-tx-nesting.test.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/purchase-tx-results.test.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/store-atomicity.test.mjs` (deleted) |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/store-attached-databases.test.mjs` (deleted) |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/store-journal-atomicity.test.mjs` (deleted) |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/store-refusal-errors.test.mjs` (deleted) |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/store-startup-results.test.mjs` (deleted) |
+| dc2757f724284694c89f85a151e0d2e0be7dd8ec | `packages/dacs-client/test/store-transaction-boundary.test.mjs` (deleted) |
+| 963c2d34fc6b5f24c7db2fd74be75bd825b8ae29 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 963c2d34fc6b5f24c7db2fd74be75bd825b8ae29 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 963c2d34fc6b5f24c7db2fd74be75bd825b8ae29 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 963c2d34fc6b5f24c7db2fd74be75bd825b8ae29 | `packages/dacs-client/HOLD.json:1` |
+| 963c2d34fc6b5f24c7db2fd74be75bd825b8ae29 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 963c2d34fc6b5f24c7db2fd74be75bd825b8ae29 | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| 963c2d34fc6b5f24c7db2fd74be75bd825b8ae29 | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| 119070e003fd5a7350b8356062871028592ef475 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 119070e003fd5a7350b8356062871028592ef475 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 119070e003fd5a7350b8356062871028592ef475 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 119070e003fd5a7350b8356062871028592ef475 | `packages/dacs-client/HOLD.json:1` |
+| 119070e003fd5a7350b8356062871028592ef475 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 96b09eba582f1486acf9cb19c64fe7326ffcc714 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 96b09eba582f1486acf9cb19c64fe7326ffcc714 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 96b09eba582f1486acf9cb19c64fe7326ffcc714 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 96b09eba582f1486acf9cb19c64fe7326ffcc714 | `packages/dacs-client/HOLD.json:1` |
+| 96b09eba582f1486acf9cb19c64fe7326ffcc714 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/HOLD.json:1` |
+| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/package.json:1` |
+| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 67bcc9b81fb09b83efdf3584c60380ad7341c463 | `.github/workflows/ci.yml:1` |
+| d8d6bf26014d51d9a165a0586f9d81d1ebd5a1b4 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d8d6bf26014d51d9a165a0586f9d81d1ebd5a1b4 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| d8d6bf26014d51d9a165a0586f9d81d1ebd5a1b4 | `packages/dacs-client/DELTA-MAP.md:1` |
+| d8d6bf26014d51d9a165a0586f9d81d1ebd5a1b4 | `packages/dacs-client/HOLD.json:1` |
+| d8d6bf26014d51d9a165a0586f9d81d1ebd5a1b4 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d8d6bf26014d51d9a165a0586f9d81d1ebd5a1b4 | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| d8d6bf26014d51d9a165a0586f9d81d1ebd5a1b4 | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| e6b5de4382467e104b01144b30c08a6724dea733 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e6b5de4382467e104b01144b30c08a6724dea733 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e6b5de4382467e104b01144b30c08a6724dea733 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e6b5de4382467e104b01144b30c08a6724dea733 | `packages/dacs-client/HOLD.json:1` |
+| e6b5de4382467e104b01144b30c08a6724dea733 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e6b5de4382467e104b01144b30c08a6724dea733 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| e6b5de4382467e104b01144b30c08a6724dea733 | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
+| e6b5de4382467e104b01144b30c08a6724dea733 | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/DELTA-MAP.md:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/HOLD.json:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/IMPORT-CUT-MAP.md:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/README.md:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:1`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:21`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:35`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:68`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:71`, `packages/dacs-client/src/dacs/delivery-deadline-watch.mjs:74` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/src/seams/purchase-store-not-wired.mjs:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/src/seams/wallet-actions-not-wired.mjs:2` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/test/d11-deadline-watch.test.mjs:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/test/d11-purchase-actions.test.mjs:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/test/d11-seam-parameters.test.mjs:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 73426e134ddf935a4b3747b91f03ab1760d79dec | `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:7`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:10`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:17`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:21`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:29`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:41`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:55`, `packages/dacs-client/test/helpers/purchase-integrity-database.mjs:86` |
+| 74ac9d021edc4ef53b0ae2d95a64b1829f691d18 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 74ac9d021edc4ef53b0ae2d95a64b1829f691d18 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 74ac9d021edc4ef53b0ae2d95a64b1829f691d18 | `packages/dacs-client/HOLD.json:1` |
+| 74ac9d021edc4ef53b0ae2d95a64b1829f691d18 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 74ac9d021edc4ef53b0ae2d95a64b1829f691d18 | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| 74ac9d021edc4ef53b0ae2d95a64b1829f691d18 | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| b1c5e21ddb66fa743817899ef8444426895d12cb | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| b1c5e21ddb66fa743817899ef8444426895d12cb | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| b1c5e21ddb66fa743817899ef8444426895d12cb | `packages/dacs-client/DELTA-MAP.md:1` |
+| b1c5e21ddb66fa743817899ef8444426895d12cb | `packages/dacs-client/HOLD.json:1` |
+| b1c5e21ddb66fa743817899ef8444426895d12cb | `packages/dacs-client/README.md:1` |
+| b1c5e21ddb66fa743817899ef8444426895d12cb | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| b1c5e21ddb66fa743817899ef8444426895d12cb | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| 8a4f5d5fe316f5ae950343d191cb32e1fb0d38f5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 8a4f5d5fe316f5ae950343d191cb32e1fb0d38f5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 8a4f5d5fe316f5ae950343d191cb32e1fb0d38f5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 8a4f5d5fe316f5ae950343d191cb32e1fb0d38f5 | `packages/dacs-client/HOLD.json:1` |
+| 8a4f5d5fe316f5ae950343d191cb32e1fb0d38f5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 8a4f5d5fe316f5ae950343d191cb32e1fb0d38f5 | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| 8a4f5d5fe316f5ae950343d191cb32e1fb0d38f5 | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| 5eb5a0d2486d2fb255c30fe85c4747f16c30144b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5eb5a0d2486d2fb255c30fe85c4747f16c30144b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5eb5a0d2486d2fb255c30fe85c4747f16c30144b | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5eb5a0d2486d2fb255c30fe85c4747f16c30144b | `packages/dacs-client/HOLD.json:1` |
+| 5eb5a0d2486d2fb255c30fe85c4747f16c30144b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 7bb8916dcb8c205d69ae2a4466192934cb6a7466 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 7bb8916dcb8c205d69ae2a4466192934cb6a7466 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 7bb8916dcb8c205d69ae2a4466192934cb6a7466 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 7bb8916dcb8c205d69ae2a4466192934cb6a7466 | `packages/dacs-client/HOLD.json:1` |
+| 7bb8916dcb8c205d69ae2a4466192934cb6a7466 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d0ae42e2cd026a588e0408761f7e361a60db95ef | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d0ae42e2cd026a588e0408761f7e361a60db95ef | `packages/dacs-client/DELTA-MAP.md:1` |
+| d0ae42e2cd026a588e0408761f7e361a60db95ef | `packages/dacs-client/HOLD.json:1` |
+| d0ae42e2cd026a588e0408761f7e361a60db95ef | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d0ae42e2cd026a588e0408761f7e361a60db95ef | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| d0ae42e2cd026a588e0408761f7e361a60db95ef | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| d0ae42e2cd026a588e0408761f7e361a60db95ef | `packages/dacs-client/scripts/merge-snapshots.test.mjs:1` |
+| 5b025a3157c25aa79aa00eeeac0d930a085f4b25 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5b025a3157c25aa79aa00eeeac0d930a085f4b25 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5b025a3157c25aa79aa00eeeac0d930a085f4b25 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5b025a3157c25aa79aa00eeeac0d930a085f4b25 | `packages/dacs-client/HOLD.json:1` |
+| 5b025a3157c25aa79aa00eeeac0d930a085f4b25 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| eb7b97da7dd4b8a9c8c5c38f2ff1cdefea1a8678 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| eb7b97da7dd4b8a9c8c5c38f2ff1cdefea1a8678 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| eb7b97da7dd4b8a9c8c5c38f2ff1cdefea1a8678 | `packages/dacs-client/DELTA-MAP.md:1` |
+| eb7b97da7dd4b8a9c8c5c38f2ff1cdefea1a8678 | `packages/dacs-client/HOLD.json:1` |
+| eb7b97da7dd4b8a9c8c5c38f2ff1cdefea1a8678 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/DELTA-MAP.md:1` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/HOLD.json:1` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:29`, `packages/dacs-client/src/util/http.mjs:32`, `packages/dacs-client/src/util/http.mjs:34`, `packages/dacs-client/src/util/http.mjs:37`, `packages/dacs-client/src/util/http.mjs:41`, `packages/dacs-client/src/util/http.mjs:46`, `packages/dacs-client/src/util/http.mjs:49`, `packages/dacs-client/src/util/http.mjs:51`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:57`, `packages/dacs-client/src/util/http.mjs:63`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:78`, `packages/dacs-client/src/util/http.mjs:85`, `packages/dacs-client/src/util/http.mjs:89`, `packages/dacs-client/src/util/http.mjs:93`, `packages/dacs-client/src/util/http.mjs:98`, `packages/dacs-client/src/util/http.mjs:101`, `packages/dacs-client/src/util/http.mjs:103` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/test/helpers/passive-native-world.mjs:1` |
+| 67868c1fe55020635cd517fcef1edc92618e16fe | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| ee0195354d0e4e937b0ec55b51f5526c73b3ed0b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| ee0195354d0e4e937b0ec55b51f5526c73b3ed0b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| ee0195354d0e4e937b0ec55b51f5526c73b3ed0b | `packages/dacs-client/DELTA-MAP.md:1` |
+| ee0195354d0e4e937b0ec55b51f5526c73b3ed0b | `packages/dacs-client/HOLD.json:1` |
+| ee0195354d0e4e937b0ec55b51f5526c73b3ed0b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4f5d35a52648c925c7a26d56078c2f92bebf6c43 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 4f5d35a52648c925c7a26d56078c2f92bebf6c43 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 4f5d35a52648c925c7a26d56078c2f92bebf6c43 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 4f5d35a52648c925c7a26d56078c2f92bebf6c43 | `packages/dacs-client/HOLD.json:1` |
+| 4f5d35a52648c925c7a26d56078c2f92bebf6c43 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4f5d35a52648c925c7a26d56078c2f92bebf6c43 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 4f5d35a52648c925c7a26d56078c2f92bebf6c43 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| f0f838752922a58bd9796838a854eeb6453e8825 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f0f838752922a58bd9796838a854eeb6453e8825 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f0f838752922a58bd9796838a854eeb6453e8825 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f0f838752922a58bd9796838a854eeb6453e8825 | `packages/dacs-client/HOLD.json:1` |
+| f0f838752922a58bd9796838a854eeb6453e8825 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2702ce5f2c983e6c255df5cd668fd3609c2306aa | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 2702ce5f2c983e6c255df5cd668fd3609c2306aa | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 2702ce5f2c983e6c255df5cd668fd3609c2306aa | `packages/dacs-client/DELTA-MAP.md:1` |
+| 2702ce5f2c983e6c255df5cd668fd3609c2306aa | `packages/dacs-client/HOLD.json:1` |
+| 2702ce5f2c983e6c255df5cd668fd3609c2306aa | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2702ce5f2c983e6c255df5cd668fd3609c2306aa | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| 2702ce5f2c983e6c255df5cd668fd3609c2306aa | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| 46b627ce0022edea1bff2bebc418a63b7b33a8e1 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 46b627ce0022edea1bff2bebc418a63b7b33a8e1 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 46b627ce0022edea1bff2bebc418a63b7b33a8e1 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 46b627ce0022edea1bff2bebc418a63b7b33a8e1 | `packages/dacs-client/HOLD.json:1` |
+| 46b627ce0022edea1bff2bebc418a63b7b33a8e1 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 46b627ce0022edea1bff2bebc418a63b7b33a8e1 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| 5b2fb7a1dc25e99746874c08382f773c135e3eec | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5b2fb7a1dc25e99746874c08382f773c135e3eec | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5b2fb7a1dc25e99746874c08382f773c135e3eec | `packages/dacs-client/HOLD.json:1` |
+| 5b2fb7a1dc25e99746874c08382f773c135e3eec | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5b2fb7a1dc25e99746874c08382f773c135e3eec | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| 34610f3a55605f5efce62a514fad7ce573e9d272 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 34610f3a55605f5efce62a514fad7ce573e9d272 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 34610f3a55605f5efce62a514fad7ce573e9d272 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 34610f3a55605f5efce62a514fad7ce573e9d272 | `packages/dacs-client/HOLD.json:1` |
+| 34610f3a55605f5efce62a514fad7ce573e9d272 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4a057e0faf68bd4abf0aab352fc7185bd2dee0ff | `.github/workflows/ci.yml:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/DELTA-MAP.md:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/HOLD.json:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/README.md:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| a7e1cf5353b2a65ddfc2bb592fbf622bf49ae894 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/HOLD.json:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/README.md:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 4284e38992d5244a51a00b0961b1551b2d473634 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| b00197d2265d885a7b9e33c73a3f7402967675e0 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| b00197d2265d885a7b9e33c73a3f7402967675e0 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| b00197d2265d885a7b9e33c73a3f7402967675e0 | `packages/dacs-client/DELTA-MAP.md:1` |
+| b00197d2265d885a7b9e33c73a3f7402967675e0 | `packages/dacs-client/HOLD.json:1` |
+| b00197d2265d885a7b9e33c73a3f7402967675e0 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/HOLD.json:1` |
+| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 48593c2c0315c4dd3d18a8199cfd83a6111f238d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 48593c2c0315c4dd3d18a8199cfd83a6111f238d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 48593c2c0315c4dd3d18a8199cfd83a6111f238d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 48593c2c0315c4dd3d18a8199cfd83a6111f238d | `packages/dacs-client/HOLD.json:1` |
+| 48593c2c0315c4dd3d18a8199cfd83a6111f238d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| b474c3d57629eb64b605167a4d36254d22975ea3 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| b474c3d57629eb64b605167a4d36254d22975ea3 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| b474c3d57629eb64b605167a4d36254d22975ea3 | `packages/dacs-client/DELTA-MAP.md:1` |
+| b474c3d57629eb64b605167a4d36254d22975ea3 | `packages/dacs-client/HOLD.json:1` |
+| b474c3d57629eb64b605167a4d36254d22975ea3 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| bad33a939ba7b69d8f89d18521b9ac3ca59bf338 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| bad33a939ba7b69d8f89d18521b9ac3ca59bf338 | `packages/dacs-client/DELTA-MAP.md:1` |
+| bad33a939ba7b69d8f89d18521b9ac3ca59bf338 | `packages/dacs-client/HOLD.json:1` |
+| bad33a939ba7b69d8f89d18521b9ac3ca59bf338 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| bad33a939ba7b69d8f89d18521b9ac3ca59bf338 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| 576c3d6081835c7b05870c1537ce30095db3d060 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 576c3d6081835c7b05870c1537ce30095db3d060 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 576c3d6081835c7b05870c1537ce30095db3d060 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 576c3d6081835c7b05870c1537ce30095db3d060 | `packages/dacs-client/HOLD.json:1` |
+| 576c3d6081835c7b05870c1537ce30095db3d060 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 576c3d6081835c7b05870c1537ce30095db3d060 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 576c3d6081835c7b05870c1537ce30095db3d060 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| 576c3d6081835c7b05870c1537ce30095db3d060 | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| f0817e8c93467c0fe2902874f415dd0b119a1692 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| f0817e8c93467c0fe2902874f415dd0b119a1692 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| f0817e8c93467c0fe2902874f415dd0b119a1692 | `packages/dacs-client/DELTA-MAP.md:1` |
+| f0817e8c93467c0fe2902874f415dd0b119a1692 | `packages/dacs-client/HOLD.json:1` |
+| f0817e8c93467c0fe2902874f415dd0b119a1692 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| f0817e8c93467c0fe2902874f415dd0b119a1692 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/DELTA-MAP.md:1` |
+| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/HOLD.json:1` |
+| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 2c2d2d96f169fb3c1bc39402fefea24ab89e7498 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 2c2d2d96f169fb3c1bc39402fefea24ab89e7498 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 2c2d2d96f169fb3c1bc39402fefea24ab89e7498 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 2c2d2d96f169fb3c1bc39402fefea24ab89e7498 | `packages/dacs-client/HOLD.json:1` |
+| 2c2d2d96f169fb3c1bc39402fefea24ab89e7498 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e2d7915a27eb68b7c4ef3bbc45b6800c39312742 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e2d7915a27eb68b7c4ef3bbc45b6800c39312742 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e2d7915a27eb68b7c4ef3bbc45b6800c39312742 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e2d7915a27eb68b7c4ef3bbc45b6800c39312742 | `packages/dacs-client/HOLD.json:1` |
+| e2d7915a27eb68b7c4ef3bbc45b6800c39312742 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e2d7915a27eb68b7c4ef3bbc45b6800c39312742 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| 381fb8f82e3c1f55945c31b9d2daa73dfcda8d98 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 381fb8f82e3c1f55945c31b9d2daa73dfcda8d98 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 381fb8f82e3c1f55945c31b9d2daa73dfcda8d98 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 381fb8f82e3c1f55945c31b9d2daa73dfcda8d98 | `packages/dacs-client/HOLD.json:1` |
+| 381fb8f82e3c1f55945c31b9d2daa73dfcda8d98 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 381fb8f82e3c1f55945c31b9d2daa73dfcda8d98 | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| 381fb8f82e3c1f55945c31b9d2daa73dfcda8d98 | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
+| c842509a57f0171d5b2301401efd43b144d0d098 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c842509a57f0171d5b2301401efd43b144d0d098 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c842509a57f0171d5b2301401efd43b144d0d098 | `packages/dacs-client/DELTA-MAP.md:1` |
+| c842509a57f0171d5b2301401efd43b144d0d098 | `packages/dacs-client/HOLD.json:1` |
+| c842509a57f0171d5b2301401efd43b144d0d098 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c842509a57f0171d5b2301401efd43b144d0d098 | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| c842509a57f0171d5b2301401efd43b144d0d098 | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
+| 865194fed7d4a852779cde9da0a4ab0be42848fc | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 865194fed7d4a852779cde9da0a4ab0be42848fc | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 865194fed7d4a852779cde9da0a4ab0be42848fc | `packages/dacs-client/DELTA-MAP.md:1` |
+| 865194fed7d4a852779cde9da0a4ab0be42848fc | `packages/dacs-client/HOLD.json:1` |
+| 865194fed7d4a852779cde9da0a4ab0be42848fc | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 865194fed7d4a852779cde9da0a4ab0be42848fc | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| 865194fed7d4a852779cde9da0a4ab0be42848fc | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` |
+| 865194fed7d4a852779cde9da0a4ab0be42848fc | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` |
+| 24617d33ef03b2e85179e41b46c8df0ef9486008 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 24617d33ef03b2e85179e41b46c8df0ef9486008 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 24617d33ef03b2e85179e41b46c8df0ef9486008 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 24617d33ef03b2e85179e41b46c8df0ef9486008 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 24617d33ef03b2e85179e41b46c8df0ef9486008 | `packages/dacs-client/HOLD.json:1` |
+| 24617d33ef03b2e85179e41b46c8df0ef9486008 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 24617d33ef03b2e85179e41b46c8df0ef9486008 | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| 24617d33ef03b2e85179e41b46c8df0ef9486008 | `packages/dacs-client/test/sqlite-purchase-result-options.test.mjs:1` |
+| 471ffbd1fbbbc74ac670202f72e9c9a32777da7e | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 471ffbd1fbbbc74ac670202f72e9c9a32777da7e | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 471ffbd1fbbbc74ac670202f72e9c9a32777da7e | `packages/dacs-client/DELTA-MAP.md:1` |
+| 471ffbd1fbbbc74ac670202f72e9c9a32777da7e | `packages/dacs-client/HOLD.json:1` |
+| 471ffbd1fbbbc74ac670202f72e9c9a32777da7e | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/HOLD.json:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` |
+| 333b5d4823c96a9245387cf2969e62606659a7e0 | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` |
+| 92223b323d425b7e2c82519dc34cd83481b4887d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 92223b323d425b7e2c82519dc34cd83481b4887d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 92223b323d425b7e2c82519dc34cd83481b4887d | `packages/dacs-client/HOLD.json:1` |
+| 92223b323d425b7e2c82519dc34cd83481b4887d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 92223b323d425b7e2c82519dc34cd83481b4887d | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| 4ddfeb218d96a1eedec76aeb84aa35c029e714ca | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 4ddfeb218d96a1eedec76aeb84aa35c029e714ca | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 4ddfeb218d96a1eedec76aeb84aa35c029e714ca | `packages/dacs-client/DELTA-MAP.md:1` |
+| 4ddfeb218d96a1eedec76aeb84aa35c029e714ca | `packages/dacs-client/HOLD.json:1` |
+| 4ddfeb218d96a1eedec76aeb84aa35c029e714ca | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4ddfeb218d96a1eedec76aeb84aa35c029e714ca | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| 4ddfeb218d96a1eedec76aeb84aa35c029e714ca | `packages/dacs-client/test/purchase-tx-admission.test.mjs:1` |
+| 4ddfeb218d96a1eedec76aeb84aa35c029e714ca | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` |
+| 164883321a2847cf7142ce212bcfc1f5b2fb6386 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 164883321a2847cf7142ce212bcfc1f5b2fb6386 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 164883321a2847cf7142ce212bcfc1f5b2fb6386 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 164883321a2847cf7142ce212bcfc1f5b2fb6386 | `packages/dacs-client/HOLD.json:1` |
+| 164883321a2847cf7142ce212bcfc1f5b2fb6386 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/HOLD.json:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/test/domain-store-crash.test.mjs` (deleted) |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/test/helpers/domain-store-crash-worker.mjs` (deleted) |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/test/helpers/domain-store-crash-world.mjs` (deleted) |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/test/native-supersession-unavailable.test.mjs:1` |
+| 3adb73ae7e36858d46850841c788d6fe59f2ce22 | `packages/dacs-client/test/purchase-executed-only.test.mjs:1` |
+| 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 | `packages/dacs-client/DELTA-NOTES.md:1` |
+| 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 | `packages/dacs-client/HOLD.json:1` |
+| 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
+| 5af17ec53e1d1e3cc741677f600dbf2334a95ab0 | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` |
+| c08a16ecc704201944dd5fe46a3bebf380581fc1 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| c08a16ecc704201944dd5fe46a3bebf380581fc1 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| c08a16ecc704201944dd5fe46a3bebf380581fc1 | `packages/dacs-client/DELTA-MAP.md:1` |
+| c08a16ecc704201944dd5fe46a3bebf380581fc1 | `packages/dacs-client/HOLD.json:1` |
+| c08a16ecc704201944dd5fe46a3bebf380581fc1 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| c08a16ecc704201944dd5fe46a3bebf380581fc1 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| c08a16ecc704201944dd5fe46a3bebf380581fc1 | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| be4897863623bfbb1d963bbd7df3d56ca624ec9b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| be4897863623bfbb1d963bbd7df3d56ca624ec9b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| be4897863623bfbb1d963bbd7df3d56ca624ec9b | `packages/dacs-client/DELTA-MAP.md:1` |
+| be4897863623bfbb1d963bbd7df3d56ca624ec9b | `packages/dacs-client/HOLD.json:1` |
+| be4897863623bfbb1d963bbd7df3d56ca624ec9b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| be4897863623bfbb1d963bbd7df3d56ca624ec9b | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| be4897863623bfbb1d963bbd7df3d56ca624ec9b | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
+| 51db6cca52e6b9f1ffc58de050bc293a7ec06c5a | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 51db6cca52e6b9f1ffc58de050bc293a7ec06c5a | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 51db6cca52e6b9f1ffc58de050bc293a7ec06c5a | `packages/dacs-client/DELTA-MAP.md:1` |
+| 51db6cca52e6b9f1ffc58de050bc293a7ec06c5a | `packages/dacs-client/HOLD.json:1` |
+| 51db6cca52e6b9f1ffc58de050bc293a7ec06c5a | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 51db6cca52e6b9f1ffc58de050bc293a7ec06c5a | `packages/dacs-client/test/purchase-tx-result-options.test.mjs:1` |
+| 3a414b312ce5312eb605e7cbe44c21e750445361 | `packages/dacs-client/README.md:1` |
+| 3a414b312ce5312eb605e7cbe44c21e750445361 | `packages/dacs-client/src/portal-capability.mjs:1` |
+| 3a414b312ce5312eb605e7cbe44c21e750445361 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 3a414b312ce5312eb605e7cbe44c21e750445361 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 3a414b312ce5312eb605e7cbe44c21e750445361 | `packages/dacs-client/test/portal-capability.test.mjs:1` |
+| 1dbe3e19021f80dc51439ab4588b77583687e5c6 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 1dbe3e19021f80dc51439ab4588b77583687e5c6 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 1dbe3e19021f80dc51439ab4588b77583687e5c6 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 1dbe3e19021f80dc51439ab4588b77583687e5c6 | `packages/dacs-client/HOLD.json:1` |
+| 1dbe3e19021f80dc51439ab4588b77583687e5c6 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 49b5acc65f850ba6c6e8cb128798cb7df27ff58a | `packages/dacs-client/src/diagnostic-projection.mjs:1` |
+| 49b5acc65f850ba6c6e8cb128798cb7df27ff58a | `packages/dacs-client/test/diagnostic-projection.test.mjs:1` |
+| 38759b01eb6cde4e694d1fa1dc7d02451bb71755 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 38759b01eb6cde4e694d1fa1dc7d02451bb71755 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 38759b01eb6cde4e694d1fa1dc7d02451bb71755 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 38759b01eb6cde4e694d1fa1dc7d02451bb71755 | `packages/dacs-client/HOLD.json:1` |
+| 38759b01eb6cde4e694d1fa1dc7d02451bb71755 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| e4a32093e45470f61c9e7d3ba487938a25fe2ffb | `packages/dacs-client/README.md:1` |
+| e4a32093e45470f61c9e7d3ba487938a25fe2ffb | `packages/dacs-client/package.json:1` |
+| e4a32093e45470f61c9e7d3ba487938a25fe2ffb | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:274`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:278`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:351`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:442`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:501`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:568`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:679`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:703`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:878`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1124`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1167`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1322`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1328` |
+| e4a32093e45470f61c9e7d3ba487938a25fe2ffb | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| e4a32093e45470f61c9e7d3ba487938a25fe2ffb | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
+| e4a32093e45470f61c9e7d3ba487938a25fe2ffb | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| e4a32093e45470f61c9e7d3ba487938a25fe2ffb | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 17d428b44c636ed3221368ce16225a17559fbb2a | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 17d428b44c636ed3221368ce16225a17559fbb2a | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 17d428b44c636ed3221368ce16225a17559fbb2a | `packages/dacs-client/DELTA-MAP.md:1` |
+| 17d428b44c636ed3221368ce16225a17559fbb2a | `packages/dacs-client/HOLD.json:1` |
+| 17d428b44c636ed3221368ce16225a17559fbb2a | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 57b56cf5f12cab7d53b70587063064ddf9995f74 | `packages/dacs-client/README.md:1` |
+| 57b56cf5f12cab7d53b70587063064ddf9995f74 | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 57b56cf5f12cab7d53b70587063064ddf9995f74 | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:181`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:193`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:224`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:295`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:919`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1065`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1067`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1083`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1093` |
+| 57b56cf5f12cab7d53b70587063064ddf9995f74 | `packages/dacs-client/test/diagnostic-bounds.test.mjs:1` |
+| 57b56cf5f12cab7d53b70587063064ddf9995f74 | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| 57b56cf5f12cab7d53b70587063064ddf9995f74 | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` |
+| 57b56cf5f12cab7d53b70587063064ddf9995f74 | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| 9d80cc36933d938179cbfeb3673636b583bffb8b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9d80cc36933d938179cbfeb3673636b583bffb8b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9d80cc36933d938179cbfeb3673636b583bffb8b | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9d80cc36933d938179cbfeb3673636b583bffb8b | `packages/dacs-client/HOLD.json:1` |
+| 9d80cc36933d938179cbfeb3673636b583bffb8b | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | bc51e75d0c59f301f39f8afe66a976b4f3e57a0e | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
 | bc51e75d0c59f301f39f8afe66a976b4f3e57a0e | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 use the retained validator for passive readback | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 use the retained validator for passive readback | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 use the retained validator for passive readback | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 use the retained validator for passive readback | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 use the retained validator for passive readback | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 use the retained validator for passive readback | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
-| fix(client): D11 use the retained validator for passive readback | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
-| fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
-| fix(client): D11 register earlier 06a history and hand the graph rule to part 06e | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
-| fix(client): D11 enforce graph-resolved recorded blobs in part 06e | `packages/dacs-client/scripts/delta-map.mjs:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `package-lock.json:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/LICENSE:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/README.md:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/package.json:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/src/index.mjs:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/src/public-verification.mjs:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/test/public-api.test.mjs:1` |
-| c46cbd6a094003876a783fe8a521f1752ad57b6b | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 4246eb7f86c7723bcaca5e7ec450cdbffd7ba322 | `packages/dacs-client/README.md:1` |
-| 4246eb7f86c7723bcaca5e7ec450cdbffd7ba322 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
-| 4246eb7f86c7723bcaca5e7ec450cdbffd7ba322 | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| c91ba1ad2eb7fbf4e8a4187dbcc2b95d10a9eab1 | `.github/workflows/ci.yml:1` |
-| fix(client): D11 record rebuilt part 09 source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt part 09 source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt part 09 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt part 09 source integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt part 09 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/package.json:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| e031967fe376d9049a2e0cdd8916b4030eb3c8d5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| e031967fe376d9049a2e0cdd8916b4030eb3c8d5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| e031967fe376d9049a2e0cdd8916b4030eb3c8d5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| e031967fe376d9049a2e0cdd8916b4030eb3c8d5 | `packages/dacs-client/HOLD.json:1` |
+| e031967fe376d9049a2e0cdd8916b4030eb3c8d5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `package-lock.json:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/LICENSE:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/README.md:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/package.json:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/src/index.mjs:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/src/public-verification.mjs:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/test/public-api.test.mjs:1` |
+| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
+| 91d8a5a1918c5b4928a6ca76ae028d16ef4f55a7 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 91d8a5a1918c5b4928a6ca76ae028d16ef4f55a7 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 91d8a5a1918c5b4928a6ca76ae028d16ef4f55a7 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 91d8a5a1918c5b4928a6ca76ae028d16ef4f55a7 | `packages/dacs-client/HOLD.json:1` |
+| 91d8a5a1918c5b4928a6ca76ae028d16ef4f55a7 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4c242f5ba680873649240588797ca75473caf410 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 4c242f5ba680873649240588797ca75473caf410 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 4c242f5ba680873649240588797ca75473caf410 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 4c242f5ba680873649240588797ca75473caf410 | `packages/dacs-client/HOLD.json:1` |
+| 4c242f5ba680873649240588797ca75473caf410 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 8a5c9db9d02e0b479c7a09bc0dcfc998fe07ff78 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 8a5c9db9d02e0b479c7a09bc0dcfc998fe07ff78 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 8a5c9db9d02e0b479c7a09bc0dcfc998fe07ff78 | `packages/dacs-client/HOLD.json:1` |
+| 8a5c9db9d02e0b479c7a09bc0dcfc998fe07ff78 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 65440493612f9478fa923c6347916a2265a41746 | `packages/dacs-client/README.md:1` |
+| 65440493612f9478fa923c6347916a2265a41746 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| 65440493612f9478fa923c6347916a2265a41746 | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| 0f47b9a66d8462673b82add123766ed7f9ffcf7b | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0f47b9a66d8462673b82add123766ed7f9ffcf7b | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0f47b9a66d8462673b82add123766ed7f9ffcf7b | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0f47b9a66d8462673b82add123766ed7f9ffcf7b | `packages/dacs-client/HOLD.json:1` |
+| 0f47b9a66d8462673b82add123766ed7f9ffcf7b | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| ce128193b6def6e76c7972ed55ec56ee46beb55b | `.github/workflows/ci.yml:1` |
+| 5501ca00ba9c51f18e3ab285c337b0713d4761d5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5501ca00ba9c51f18e3ab285c337b0713d4761d5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5501ca00ba9c51f18e3ab285c337b0713d4761d5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5501ca00ba9c51f18e3ab285c337b0713d4761d5 | `packages/dacs-client/HOLD.json:1` |
+| 5501ca00ba9c51f18e3ab285c337b0713d4761d5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| ae966de4b46db70be1760668624c17faa9b97a6a | `.gitleaksignore:1` |
+| 7c97bff47b5b522bea91ace516a60f6a1a18b996 | `.gitleaksignore:1` |
+| 9209581bdd1bf079b2fd1fb38030d049497f846d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 9209581bdd1bf079b2fd1fb38030d049497f846d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 9209581bdd1bf079b2fd1fb38030d049497f846d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 9209581bdd1bf079b2fd1fb38030d049497f846d | `packages/dacs-client/HOLD.json:1` |
+| 9209581bdd1bf079b2fd1fb38030d049497f846d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 9209581bdd1bf079b2fd1fb38030d049497f846d | `packages/dacs-client/src/purchases.mjs:30`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:35`, `packages/dacs-client/src/purchases.mjs:38`, `packages/dacs-client/src/purchases.mjs:41`, `packages/dacs-client/src/purchases.mjs:43`, `packages/dacs-client/src/purchases.mjs:48`, `packages/dacs-client/src/purchases.mjs:53`, `packages/dacs-client/src/purchases.mjs:109`, `packages/dacs-client/src/purchases.mjs:153`, `packages/dacs-client/src/purchases.mjs:206`, `packages/dacs-client/src/purchases.mjs:227`, `packages/dacs-client/src/purchases.mjs:284`, `packages/dacs-client/src/purchases.mjs:290`, `packages/dacs-client/src/purchases.mjs:314`, `packages/dacs-client/src/purchases.mjs:317`, `packages/dacs-client/src/purchases.mjs:335`, `packages/dacs-client/src/purchases.mjs:353`, `packages/dacs-client/src/purchases.mjs:420`, `packages/dacs-client/src/purchases.mjs:466`, `packages/dacs-client/src/purchases.mjs:471`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:481`, `packages/dacs-client/src/purchases.mjs:486`, `packages/dacs-client/src/purchases.mjs:489`, `packages/dacs-client/src/purchases.mjs:502`, `packages/dacs-client/src/purchases.mjs:510`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:523`, `packages/dacs-client/src/purchases.mjs:533`, `packages/dacs-client/src/purchases.mjs:537`, `packages/dacs-client/src/purchases.mjs:541`, `packages/dacs-client/src/purchases.mjs:586`, `packages/dacs-client/src/purchases.mjs:605`, `packages/dacs-client/src/purchases.mjs:712`, `packages/dacs-client/src/purchases.mjs:720`, `packages/dacs-client/src/purchases.mjs:818`, `packages/dacs-client/src/purchases.mjs:838`, `packages/dacs-client/src/purchases.mjs:848`, `packages/dacs-client/src/purchases.mjs:898`, `packages/dacs-client/src/purchases.mjs:933`, `packages/dacs-client/src/purchases.mjs:945`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1051`, `packages/dacs-client/src/purchases.mjs:1064`, `packages/dacs-client/src/purchases.mjs:1072`, `packages/dacs-client/src/purchases.mjs:1074`, `packages/dacs-client/src/purchases.mjs:1076`, `packages/dacs-client/src/purchases.mjs:1098`, `packages/dacs-client/src/purchases.mjs:1127`, `packages/dacs-client/src/purchases.mjs:1134`, `packages/dacs-client/src/purchases.mjs:1260`, `packages/dacs-client/src/purchases.mjs:1268`, `packages/dacs-client/src/purchases.mjs:1272`, `packages/dacs-client/src/purchases.mjs:1274`, `packages/dacs-client/src/purchases.mjs:1281`, `packages/dacs-client/src/purchases.mjs:1285`, `packages/dacs-client/src/purchases.mjs:1326`, `packages/dacs-client/src/purchases.mjs:1350`, `packages/dacs-client/src/purchases.mjs:1359`, `packages/dacs-client/src/purchases.mjs:1366`, `packages/dacs-client/src/purchases.mjs:1373`, `packages/dacs-client/src/purchases.mjs:1380`, `packages/dacs-client/src/purchases.mjs:1426` |
+| 9209581bdd1bf079b2fd1fb38030d049497f846d | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` |
+| 5fc6e8992ec0b28ff533782cb0d2c8a9f1e6bc4d | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 5fc6e8992ec0b28ff533782cb0d2c8a9f1e6bc4d | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 5fc6e8992ec0b28ff533782cb0d2c8a9f1e6bc4d | `packages/dacs-client/DELTA-MAP.md:1` |
+| 5fc6e8992ec0b28ff533782cb0d2c8a9f1e6bc4d | `packages/dacs-client/HOLD.json:1` |
+| 5fc6e8992ec0b28ff533782cb0d2c8a9f1e6bc4d | `packages/dacs-client/package.json:1` |
+| 5fc6e8992ec0b28ff533782cb0d2c8a9f1e6bc4d | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 5fc6e8992ec0b28ff533782cb0d2c8a9f1e6bc4d | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| 0be89f567cc56ea499abef08ac44d3371b244af5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 0be89f567cc56ea499abef08ac44d3371b244af5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 0be89f567cc56ea499abef08ac44d3371b244af5 | `packages/dacs-client/DELTA-MAP.md:1` |
+| 0be89f567cc56ea499abef08ac44d3371b244af5 | `packages/dacs-client/HOLD.json:1` |
+| 0be89f567cc56ea499abef08ac44d3371b244af5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 0be89f567cc56ea499abef08ac44d3371b244af5 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| 0be89f567cc56ea499abef08ac44d3371b244af5 | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| ac5369316755116e30c03db10a8ed15b6f2f9aa8 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| ac5369316755116e30c03db10a8ed15b6f2f9aa8 | `packages/dacs-client/DELTA-MAP.md:1` |
+| ac5369316755116e30c03db10a8ed15b6f2f9aa8 | `packages/dacs-client/HOLD.json:1` |
+| ac5369316755116e30c03db10a8ed15b6f2f9aa8 | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| ac5369316755116e30c03db10a8ed15b6f2f9aa8 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| ac5369316755116e30c03db10a8ed15b6f2f9aa8 | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/DELTA-MAP.md:1` |
+| d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/DELTA-NOTES.md:1` |
+| d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/HOLD.json:1` |
+| d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| d4ed68d95cd4b8b985b8fe30be48cd29b3761f2a | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 1ce8682910771d0eee6603e8611a699f6df051da | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| 1ce8682910771d0eee6603e8611a699f6df051da | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| 1ce8682910771d0eee6603e8611a699f6df051da | `packages/dacs-client/DELTA-MAP.md:1` |
+| 1ce8682910771d0eee6603e8611a699f6df051da | `packages/dacs-client/HOLD.json:1` |
+| 1ce8682910771d0eee6603e8611a699f6df051da | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
