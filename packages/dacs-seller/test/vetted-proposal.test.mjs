@@ -85,7 +85,7 @@ test('a non-canonical proposal job is a definite job-invalid refusal, not an unc
 
 test('a failed contribution save cannot leave publication ahead of durable session state',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true;const original=f.config.signer.sign;
- f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(cut&&text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));const session=payload.body?.session;if(session?.sellerContribution&&session.proposal===null){cut=false;throw new Error('TEST contribution save interrupted');}}return original(bytes);};
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(cut&&text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));const session=payload.body?.session;if(session?.sellerContribution){cut=false;throw new Error('TEST contribution save interrupted');}}return original(bytes);};
  const agent=await f.open(),request=await f.proposal(agent);
  const first=await agent.receiveProposal(request);assert.equal(first.disposition,'indeterminate');assert.equal(agent.durableSessionOf(JOB)?.sellerContribution??null,null);
  const retry=await agent.receiveProposal(request);assert.equal(retry.disposition,'complete');
@@ -120,7 +120,18 @@ test('a pre-upgrade session without a retained generatedAt keeps its context-tim
 });
 
 test('validated contribution is retained before the final proposal snapshot and reused after restart',async t=>{
- const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true,signatures=0;const original=f.config.signer.sign;
- f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures++;if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));if(cut&&payload.body.session.proposal?.proposalHash){cut=false;throw new Error('TEST final proposal save interrupted');}}return original(bytes);};
- const agent=await f.open(),request=await f.proposal(agent);await assert.rejects(agent.receiveProposal(request),/TEST final proposal save interrupted/);const kept=agent.durableSessionOf(JOB);assert.ok(kept.sellerContribution);assert.equal(kept.proposal,null);agent.close();assert.deepEqual((await (await f.open()).receiveProposal(request)).contribution,kept.sellerContribution);assert.equal(signatures,1);
+ const f=await proposalAdmissionFixture(t,{assembled:true});let cut=true,signatures=0,contributionSaves=0;const original=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures++;if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));const session=payload.body?.session;if(cut&&session?.sellerContribution&&++contributionSaves===2){cut=false;throw new Error('TEST final proposal save interrupted');}}return original(bytes);};
+ const agent=await f.open(),request=await f.proposal(agent);await assert.rejects(agent.receiveProposal(request),/TEST final proposal save interrupted/);const kept=agent.durableSessionOf(JOB);assert.ok(kept.sellerContribution);assert.ok(kept.proposal,'publication retains the exact proposal');assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,kept.sellerContribution);agent.close();assert.deepEqual((await (await f.open()).receiveProposal(request)).contribution,kept.sellerContribution);assert.equal(signatures,1);
+});
+
+test('a crash between contribution publication and the final snapshot still reports the retained contribution',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});let cuts=0;const original=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{const text=Buffer.from(bytes).toString();if(text.includes('"kind":"session"')){const payload=JSON.parse(text.slice(text.indexOf('{')));if(payload.body?.session?.sellerContribution&&++cuts===2)throw new Error('TEST final proposal save interrupted');}return original(bytes);};
+ const agent=await f.open(),request=await f.proposal(agent);
+ await assert.rejects(agent.receiveProposal(request),/TEST final proposal save interrupted/);
+ const kept=agent.durableSessionOf(JOB);assert.ok(kept.sellerContribution);
+ assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,kept.sellerContribution,'the buyer reads back the published contribution, not an absent one');
+ agent.close();
+ assert.deepEqual((await f.open()).agreementState(request.transportIdentity).contribution,kept.sellerContribution,'restart reads it back too');
 });

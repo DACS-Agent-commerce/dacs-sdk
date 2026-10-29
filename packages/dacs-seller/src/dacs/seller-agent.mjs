@@ -595,10 +595,16 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
         transport: {
           publishSellerContribution: (contribution, identity) => {
             // The durable session is the authority, not these caches. Retain
-            // and save it first: a failed save must not leave a later
-            // reconciliation believing an unpublished contribution is present.
+            // the exact proposal and transport identity with the contribution
+            // and save them together first: a crash after publication must
+            // not leave a contribution the buyer's readback cannot name, and a
+            // failed save must not leave a later reconciliation believing an
+            // unpublished contribution is present.
             session.sellerContribution = structuredClone(contribution);
             session.sellerContributionProposalHash = identity.proposalHash;
+            session.proposal = structuredClone(proposal);
+            session.transportIdentity = structuredClone(transportIdentity);
+            session.agreementHash = transportIdentity.agreementHash;
             persist(session);
             contributions.set(identity.proposalHash, structuredClone(contribution));
             signatures.set(contribution.planHash, contribution.signature.value);
