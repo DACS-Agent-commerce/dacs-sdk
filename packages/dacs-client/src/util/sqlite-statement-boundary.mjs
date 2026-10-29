@@ -106,6 +106,19 @@ function execute(fn, db, sql) {
     catch { try { db.close(); } catch { /* A failed fence retires the handle. */ } }
   }
 }
+// Node 22.13.0 and 23.4.0 give each iterator its own `next`, which shadows the
+// shared prototype method patched in install(). Wrap that own method, or the
+// step would run without the liveness check and without the writable fence.
+function guardIteratorSteps(iterator, db, sql) {
+  iterators.set(iterator, { db, sql });
+  const ownAdvance = Object.getOwnPropertyDescriptor(iterator, 'next')?.value;
+  if (typeof ownAdvance !== 'function') return;
+  Object.defineProperty(iterator, 'next', {
+    configurable: true,
+    writable: true,
+    value: (...args) => execute(() => Reflect.apply(ownAdvance, iterator, args), db, sql),
+  });
+}
 function install(db) {
   if (installed) return;
   const { DatabaseSync } = require('node:sqlite');
@@ -130,14 +143,17 @@ function install(db) {
       const owner = owners.get(this);
       if (callbacks.length > 0 && !checking) rejectCodeRunningBindings(args);
       const result = execute(() => Reflect.apply(original, this, args), owner, this.sourceSQL);
-      if (method === 'iterate') iterators.set(result, { db: owner, sql: this.sourceSQL });
+      if (method === 'iterate') guardIteratorSteps(result, owner, this.sourceSQL);
       return result;
     };
   }
-  iterator.next = function (...args) {
-    const owner = iterators.get(this);
-    return execute(() => Reflect.apply(advance, this, args), owner?.db, owner?.sql);
-  };
+  // Only newer Node versions have a shared prototype `next` to patch.
+  if (advance) {
+    iterator.next = function (...args) {
+      const owner = iterators.get(this);
+      return execute(() => Reflect.apply(advance, this, args), owner?.db, owner?.sql);
+    };
+  }
   database.prepare = function (...args) {
     check(); const result = guardedPrepare(this, ...args); owners.set(result, this); return result;
   };
@@ -185,6 +201,8 @@ function install(db) {
  * virtual tables (pragma_*() functions), because their SQL is compiled while
  * the statement runs. Statements and iterators prepared before installation
  * are refused while a guard is active because their programs cannot be inspected.
+ * Exception: Node 22.13.0 and 23.4.0 give each iterator its own native `next`,
+ * which only iterators created after installation can have wrapped.
  * An application function that shares the name and arity of a bundled FTS,
  * RTREE or GEOPOLY function looks identical to it, so calls to those bundled
  * functions are refused by name under a guard, even if registered before this
