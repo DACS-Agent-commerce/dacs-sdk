@@ -6,14 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { commits, expectedBlob, git, ledger } from './delta-map.mjs';
+import { commits, expectedBlob, git, ledger, selects } from './delta-map.mjs';
 
 // The gate reads superseded and active records together and skips selectors
 // that do not resolve once (it reports those separately).
 function recordedPaths() {
   const history = commits(), data = ledger(), records = new Map();
   for (const change of [...(data.supersededChanges ?? []), ...data.changes]) {
-    const matches = history.filter(commit => commit.subject === change.subject);
+    const matches = history.filter(commit => selects(change, commit));
     if (matches.length !== 1) continue;
     for (const file of change.files) {
       records.set(file.path, [...(records.get(file.path) ?? []), { sha: matches[0].sha, after: file.after }]);
