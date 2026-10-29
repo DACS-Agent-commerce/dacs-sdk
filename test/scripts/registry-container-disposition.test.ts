@@ -837,8 +837,9 @@ describe("runtime-image package inventory", () => {
     extra(root);
     return root;
   }
-  const treeLock = { packages: { "": { name: "app" },
-    "node_modules/a": { version: "1.0.0" }, "node_modules/@s/b": { version: "2.0.0" },
+  const treeLock = { packages: { "": { name: "app", dependencies: { a: "1.0.0", "@s/b": "2.0.0", alias: "npm:real@4.0.0" },
+    optionalDependencies: { opt: "5.0.0" } },
+    "node_modules/a": { version: "1.0.0", dependencies: { c: "3.0.0" } }, "node_modules/@s/b": { version: "2.0.0" },
     "node_modules/a/node_modules/c": { version: "3.0.0" }, "node_modules/alias": { name: "real", version: "4.0.0" },
     "node_modules/opt": { version: "5.0.0", optional: true } } };
 
