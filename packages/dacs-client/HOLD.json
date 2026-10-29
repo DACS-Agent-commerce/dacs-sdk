@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "5029c4d5cd15385ebb0cee88555fb8de52361e60"
+        "blob": "40f1e3e61b7ea68f09d942ddd1ea1b0fbe572598"
       },
       "DELTA-LEDGER.json": {
-        "blob": "2258b06528d6a942f883eaad5b7e770a44aaba86"
+        "blob": "ad38ec741d5e551b7372ae048e3088f36d193f7f"
       },
       "DELTA-MAP.md": {
-        "blob": "8334ae6c563075261d914849bca814d0fc4eaf33"
+        "blob": "d7b7a4e70a7e46df6e5a295c97e0892e2cfe9f4d"
       },
       "DELTA-NOTES.md": {
-        "blob": "a2d05d876eaa978cadf5d310c78f74e8a46dc137"
+        "blob": "28a29267ba36cf76d1b5a96a39655610868f43a9"
       },
       "HOLD.json": {
         "control": "record"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "93717af734157c7dd01ed36fff41cbb5a5c7db79"
+        "blob": "7d2d358d41b9c4139a559a53ca60080ccfbad88f"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1049,7 +1049,7 @@
         "blob": "eed33b7b83034ba0e364c4b8d09de0b5261b133e"
       },
       "scripts/delta-map.mjs": {
-        "blob": "b660a5011fe073e313405496ca91d8d6deaf6bce"
+        "blob": "3779b2c4d4faafc859d489d4da4f9db1456f0f33"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "1185e924b0ef592f81b82529b34bc480411cc215"
@@ -1253,7 +1253,7 @@
         "blob": "835ca8f3785c926a975872f7d40a0df9dde55ab6"
       },
       "src/util/sqlite-statement-boundary.mjs": {
-        "blob": "2df38c12b041aa1572302580dc7e11a5b44104df"
+        "blob": "24eca32b5d2d40ba05d1864f14cd0d0b209755c4"
       },
       "src/util/sqlite-write-lease.mjs": {
         "blob": "dc7166d3baff55abd0a7862a4b78e337cd5ae0d9"
@@ -1622,13 +1622,13 @@
         "blob": "e6154a6bdf929af005b39ef394befa2800b43431"
       },
       "test/sqlite-statement-boundary-regressions.test.mjs": {
-        "blob": "7acf0c866638baa16417d40e0f345238fe4985f1"
+        "blob": "8bbbb0d64a1faca5dba3f8ff1a6d570e5dd64228"
       },
       "test/sqlite-statement-boundary.test.mjs": {
-        "blob": "b4e9db02994949d2259e9bd69c6f54ca0d8a452a"
+        "blob": "c21a4ff46a235aba0dd0cf6a9e7f6f671dceaf3a"
       },
       "test/sqlite-statement-policy.test.mjs": {
-        "blob": "8bdb94975979ee6da61abb7dae0f0b1266327da3"
+        "blob": "9c2954d2f2211121c78398687786293d31d4ba76"
       },
       "test/sqlite-write-lease.test.mjs": {
         "blob": "40d3d1bbb2852a6424337ee5c50af9c2e59b8154"

@@ -52,7 +52,7 @@ export function table(data = ledger()) {
   return publicationText(lines.join('\n')+'\n');
 }
 export function checkDeltas(packageDir=pkg) {
-  const failures=[]; const data=ledger(); const history=commits();
+  const failures=[]; const active=ledger(); const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
   const archived=readFileSync(join(pkg,'evidence/publication-history.json'));
   if(createHash('sha256').update(archived).digest('hex')!==HISTORY_SHA256) failures.push('archived source/delta evidence digest differs');
   const evidence=JSON.parse(archived);
@@ -89,7 +89,7 @@ export function checkDeltas(packageDir=pkg) {
       }
     }
   }
-  const inventory=JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'));
+  const inventory=[...(data.supersededCommits??[]),...JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'))];
   for(const h of history) {
     const item=inventory.find(c=>c.subject===h.subject);
     const files=git('diff','--no-renames','--name-only',h.sha+'^',h.sha).split('\n').filter(Boolean).sort();
