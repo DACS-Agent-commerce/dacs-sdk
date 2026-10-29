@@ -14,11 +14,18 @@ export function retireSqliteHandle(db) {
 export const isSqliteHandleRetired = db => fenced.has(db);
 
 const identifier = name => `"${name.replaceAll('"', '""')}"`;
+function metadataStatement(db, sql) {
+  const statement = db.prepare(sql);
+  // Normalize only lease metadata, preserving saved and future caller statements.
+  statement.setReturnArrays?.(false);
+  statement.setReadBigInts(false);
+  return statement;
+}
 function schemaVersions(db) {
-  const schemas = db.prepare('PRAGMA database_list').all();
+  const schemas = metadataStatement(db, 'PRAGMA database_list').all();
   if (schemas.some(({ name }) => !['main', 'temp'].includes(name))) throw new NotWiredError('purchase-store-not-wired');
   return JSON.stringify(schemas.map(({ name, file }) =>
-    [name, file, db.prepare(`PRAGMA ${identifier(name)}.schema_version`).get().schema_version]));
+    [name, file, metadataStatement(db, `PRAGMA ${identifier(name)}.schema_version`).get().schema_version]));
 }
 
 /** Install committed main/temp ordinary-table guards outside caller transactions.
@@ -60,7 +67,7 @@ function createLease(db) {
         // Reuse a closed range of names, including after an interrupted refresh.
         for (let i = 0; i < triggerCount; i++) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(`${name}_${i}`)}`);
         let serial = 0;
-        for (const { schema, name: table, type } of db.prepare('PRAGMA table_list').all()) {
+        for (const { schema, name: table, type } of metadataStatement(db, 'PRAGMA table_list').all()) {
           if (type !== 'table' || table.startsWith('sqlite_') || (schema === 'temp' && table === name)) continue;
           for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
             const trigger = `${name}_${serial++}`;
