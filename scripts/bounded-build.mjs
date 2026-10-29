@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { constants, copyFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, existsSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { requireDirectory } from "./acceptance-directory.mjs";
 import { atomicWriteFile, readBoundedFile } from "./acceptance-evidence-io.mjs";
 
@@ -58,7 +58,7 @@ export function prepareBoundedBuild(project) {
   writeFileSync(path, dockerfile, { flag: "wx" });
   return path;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (!process.argv[2]) throw new Error("usage: bounded-build.mjs <generated-project>");
   prepareBoundedBuild(process.argv[2]);
 }

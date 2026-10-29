@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSyn
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
-import { brotliCompressSync, deflateRawSync, deflateSync, gzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
 const { installBoundedNpmHttp, readBoundedResponse, responseBudget, NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES, NPM_AUDIT_MAX_BYTES, NPM_JSON_MAX_ENTRIES } = require("../../scripts/bounded-npm-http.cjs");
@@ -28,25 +28,8 @@ describe("inert bounded npm HTTP admission", () => {
     const stream = response([], { "content-length": "9" });
     await expect(readBoundedResponse(stream, 8)).rejects.toThrow("ELIMIT");
   });
-  it.each([gzipSync, deflateSync, brotliCompressSync])("bounds decompression before downstream JSON readers: %s", async compress => {
-    const encoding = compress === gzipSync ? "gzip" : compress === deflateSync ? "deflate" : "br";
-    await expect(readBoundedResponse(response([compress(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
-  });
-  it.each(["constructor", "__proto__"])("refuses unsupported content encoding %s instead of admitting it", async encoding => {
+  it.each(["gzip", "x-gzip", "deflate", "x-deflate", "br", "constructor", "__proto__", "zstd"])("refuses nonempty HTTP encoding %s under the identity contract", async encoding => {
     await expect(readBoundedResponse(response([Buffer.from("{}")], { "content-encoding": encoding }), 1024)).rejects.toThrow("unsupported npm HTTP content encoding");
-  });
-  it("decodes the x-gzip alias npm's fetch accepts", async () => {
-    const body = gzipSync(Buffer.from("{}"));
-    expect((await readBoundedResponse(response([body], { "content-encoding": "x-gzip" }), 1024)).toString()).toBe("{}");
-  });
-  it.each(["deflate", "x-deflate"])("decodes wrapped and raw %s forms npm's reader accepts", async encoding => {
-    const body = Buffer.from("{}");
-    expect((await readBoundedResponse(response([deflateSync(body)], { "content-encoding": encoding }), 1024)).toString()).toBe("{}");
-    expect((await readBoundedResponse(response([deflateRawSync(body)], { "content-encoding": encoding }), 1024)).toString()).toBe("{}");
-  });
-  it.each(["deflate", "x-deflate"])("bounds %s expansion in wrapped and raw forms", async encoding => {
-    await expect(readBoundedResponse(response([deflateSync(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
-    await expect(readBoundedResponse(response([deflateRawSync(Buffer.alloc(8192))], { "content-encoding": encoding }), 1024)).rejects.toThrow("ELIMIT");
   });
   it.each(["gzip", "x-gzip", "deflate", "x-deflate", "br"])("forwards an empty %s body without a decompression failure", async encoding => {
     // A redirect or empty reply may keep a compression header; npm accepts it.
@@ -57,7 +40,7 @@ describe("inert bounded npm HTTP admission", () => {
     ["a 204 response", 204, "GET"],
     ["a 304 response", 304, "GET"],
   ] as const)("forwards %s without decoding its empty body or rewriting its headers", async (_label, statusCode, method) => {
-    const pending = Object.assign(new EventEmitter(), { path: "/pkg", method, destroy: () => {} });
+    const pending = Object.assign(new EventEmitter(), { setHeader: () => {}, path: "/pkg", method, destroy: () => {} });
     const transport = { request: () => pending };
     installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
     const original = Object.assign(response([], { "content-encoding": "gzip", "content-length": "123" }), { statusCode });
@@ -69,7 +52,7 @@ describe("inert bounded npm HTTP admission", () => {
     expect(original.headers).toEqual({ "content-encoding": "gzip", "content-length": "123" });
   });
   it("keeps a 205 response subject to the byte budget because Node frames its body", async () => {
-    const pending = Object.assign(new EventEmitter(), { path: "/pkg", method: "GET", destroy: () => {} });
+    const pending = Object.assign(new EventEmitter(), { setHeader: () => {}, path: "/pkg", method: "GET", destroy: () => {} });
     const transport = { request: () => pending };
     installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
     const original = Object.assign(response([], { "content-length": String(NPM_METADATA_MAX_BYTES + 1) }), { statusCode: 205 });
@@ -87,7 +70,7 @@ describe("inert bounded npm HTTP admission", () => {
   it("admits a locked native archive expanding above 64 MiB with its exact compressed bytes", async () => {
     // The source lock's uws archive expands to 117.6 MB.
     const archive = gzipSync(Buffer.alloc(128 * 1024 * 1024));
-    const pending = Object.assign(new EventEmitter(), { path: "/native/-/native.tgz", destroy: () => {} });
+    const pending = Object.assign(new EventEmitter(), { setHeader: () => {}, path: "/native/-/native.tgz", destroy: () => {} });
     const transport = { request: () => pending };
     installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
     const admitted = new Promise<Buffer>((resolve, reject) => {
@@ -109,7 +92,7 @@ describe("inert bounded npm HTTP admission", () => {
     const tar = Buffer.alloc(512 + 65 * 1024 * 1024);
     tar.write("ustar", 257, "latin1");
     const archive = gzipSync(tar);
-    const pending = Object.assign(new EventEmitter(), { path: "/download/signed-token", destroy: () => {} });
+    const pending = Object.assign(new EventEmitter(), { setHeader: () => {}, path: "/download/signed-token", destroy: () => {} });
     const transport = { request: () => pending };
     installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
     const admitted = new Promise<Buffer>((resolve, reject) => {
@@ -123,14 +106,13 @@ describe("inert bounded npm HTTP admission", () => {
     transport.request().emit("response", response([archive]));
     expect(await admitted).toEqual(archive);
   });
-  it("carries archive intent through a redirect chain to its suffixless target", async () => {
-    // The target keeps the archive budget even when the payload has no tar
-    // signature, matching the archive the registry redirected.
+  it("admits gzip consistently through a redirect chain to its suffixless target", async () => {
+    // Every target has the same gzip expansion ceiling, without redirect memory.
     const targetPath = "/download/signed-token-intent";
     const paths = ["/fixture/-/fixture-1.0.0.tgz", "/download/hop", targetPath];
     const body = gzipSync(Buffer.alloc(65 * 1024 * 1024));
     let issued = 0;
-    const transport = { request: () => Object.assign(new EventEmitter(), { path: paths[issued++], destroy: () => {} }) };
+    const transport = { request: () => Object.assign(new EventEmitter(), { setHeader: () => {}, path: paths[issued++], destroy: () => {} }) };
     installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
     const redirect = async (location: string) => {
       const pending = transport.request();
@@ -154,27 +136,15 @@ describe("inert bounded npm HTTP admission", () => {
     target.emit("response", Object.assign(response([body]), { statusCode: 200 }));
     expect(await admitted).toEqual(body);
   });
-  it("refuses an over-budget gzip body lacking the tar payload at a suffixless URL", async () => {
-    // A redirect target does not get a larger expansion budget for arbitrary
-    // gzip data; only a tar archive npm's reader can consume qualifies.
-    const pending = Object.assign(new EventEmitter(), { path: "/download/signed-token", destroy: () => {} });
-    const transport = { request: () => pending };
-    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
-    const rejected = new Promise<Error>(resolve => pending.once("error", resolve));
-    transport.request().emit("response", response([gzipSync(Buffer.alloc(65 * 1024 * 1024))]));
-    expect(await rejected).toMatchObject({ code: "ELIMIT" });
-  });
-  it("keeps the audit budget even when a gzip body would expand into a tar", async () => {
-    // The tar promotion belongs to archive-capable metadata requests; an audit
-    // reply stays at its own decoded ceiling.
-    const tar = Buffer.alloc(512 + 17 * 1024 * 1024);
-    tar.write("ustar", 257, "latin1");
-    const pending = Object.assign(new EventEmitter(), { path: "/-/npm/v1/security/audits/quick", destroy: () => {} });
-    const transport = { request: () => pending };
-    installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
-    const rejected = new Promise<Error>(resolve => pending.once("error", resolve));
-    transport.request().emit("response", response([gzipSync(tar)]));
-    expect(await rejected).toMatchObject({ code: "ELIMIT" });
+  it("gives gzip the same expansion ceiling at audit and suffixless routes", async () => {
+    const archive = gzipSync(Buffer.alloc(17 * 1024 * 1024));
+    for (const path of ["/download/signed-token", "/-/npm/v1/security/audits/quick"]) {
+      const pending = Object.assign(new EventEmitter(), { setHeader: () => {}, path, destroy: () => {} });
+      const transport = { request: () => pending };
+      installBoundedNpmHttp({ transports: [transport], schedule: () => 0, cancel: () => {} });
+      const admitted = new Promise<void>((resolve, reject) => { pending.once("error", reject); pending.once("response", () => resolve()); });
+      transport.request().emit("response", response([archive])); await admitted;
+    }
   });
   it("keeps separate finite wire and unpacked archive bounds", async () => {
     const archive = gzipSync(Buffer.alloc(2048));
@@ -209,30 +179,29 @@ describe("inert bounded npm HTTP admission", () => {
       expect(code, diagnostic).toBe(0); expect(JSON.parse(output)).toBe("11.19.0");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
   }, 20_000);
-  it.each(["declared", "chunked", "gzip"])("admits full npm metadata above 32 MiB via %s while retaining a finite ceiling", async kind => {
+  it.each(["declared", "chunked"])("admits full npm metadata above 32 MiB via %s while retaining a finite ceiling", async kind => {
     const metadata = Buffer.from(JSON.stringify({ name: "npm", versions: {
       "11.19.0": { name: "npm", version: "11.19.0", history: Array(1_245_600).fill(0) },
     }, readme: "x".repeat(33 * 1024 * 1024) }));
-    const bytes = kind === "gzip" ? gzipSync(metadata) : metadata;
-    const headers = kind === "gzip" ? { "content-encoding": "gzip" } :
-      kind === "declared" ? { "content-length": String(bytes.length) } : {};
+    const bytes = metadata;
+    const headers = kind === "declared" ? { "content-length": String(bytes.length) } : {};
     expect((await readBoundedResponse(response([bytes], headers), NPM_METADATA_MAX_BYTES)).equals(metadata)).toBe(true);
     expect(NPM_METADATA_MAX_BYTES).toBe(64 * 1024 * 1024);
     const overflow = Buffer.alloc(NPM_METADATA_MAX_BYTES + 1, 120);
-    const excessive = kind === "gzip" ? gzipSync(overflow) : overflow;
-    const overflowHeaders = kind === "gzip" ? headers : kind === "declared" ? { "content-length": String(excessive.length) } : {};
+    const excessive = overflow;
+    const overflowHeaders = kind === "declared" ? { "content-length": String(excessive.length) } : {};
     await expect(readBoundedResponse(response([excessive], overflowHeaders), NPM_METADATA_MAX_BYTES)).rejects.toThrow("ELIMIT");
   });
   it("bounds decoded JSON list sizes", async () => {
     await expect(readBoundedResponse(response([Buffer.from(JSON.stringify(Array(NPM_JSON_MAX_ENTRIES + 1).fill(0)))], { "content-type": "application/json" }), NPM_METADATA_MAX_BYTES)).rejects.toThrow("ELIMIT");
   });
   it("terminates a stalled HTTP request at its explicit total deadline", () => {
-    const pending = Object.assign(new EventEmitter(), { path: "/fixture", destroy: (error: Error) => pending.emit("error", error) });
+    const pending = Object.assign(new EventEmitter(), { setHeader: () => {}, path: "/fixture", destroy: (error: Error) => pending.emit("error", error) });
     const transport = { request: () => pending };
     let deadline: (() => void) | undefined;
     installBoundedNpmHttp({ transports: [transport], schedule: (callback: () => void) => { deadline = callback; }, cancel: () => {} });
     const errors: Error[] = [];
-    transport.request().on("error", error => errors.push(error)); deadline?.();
+    transport.request().on("error", error => errors.push(error)); pending.emit("socket", {}); deadline?.();
     expect(errors.map(error => error.message)).toEqual(["ETIMEDOUT npm HTTP deadline"]);
   });
   it("delivers an oversized declared length to npm as one ELIMIT rejection", async () => {
@@ -255,8 +224,8 @@ describe("inert bounded npm HTTP admission", () => {
   it.each([200, 503])("guards actual npm HTTP status %s before its readers", async status => {
     const root = mkdtempSync(join(tmpdir(), "dacs-npm-transport-"));
     const server = createServer((_request, reply) => {
-      reply.writeHead(status, { "content-type": "application/json", "content-encoding": "gzip" });
-      reply.end(gzipSync(Buffer.from(JSON.stringify({ padding: "x".repeat(NPM_METADATA_MAX_BYTES) }))));
+      reply.writeHead(status, { "content-type": "application/json" });
+      reply.end(JSON.stringify({ padding: "x".repeat(NPM_METADATA_MAX_BYTES) }));
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     try {
