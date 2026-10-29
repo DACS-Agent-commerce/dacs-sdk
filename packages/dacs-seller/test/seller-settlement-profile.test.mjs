@@ -1,4 +1,4 @@
-const nativeStage=true; // This part deliberately stages native settlement.
+const nativeStage=false; // This part deliberately stages native settlement.
 // Native proposal admission and authenticated Vet contexts use real fixed-key
 // Listings, exact session challenges and durable contribution recovery.
 // Commitment, payment and delivery behavior is introduced separately.
