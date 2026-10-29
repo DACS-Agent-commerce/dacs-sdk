@@ -12,14 +12,8 @@ const PACKAGE_LOCATION = new RegExp(`^node_modules/${PACKAGE_NAME}(?:/node_modul
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
 const digest = bytes => createHash("sha256").update(bytes).digest("base64");
 const kind = stat => stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "link" : stat.isFile() ? "file" : "unsupported";
-// npm links a package location to its package directory inside node_modules/.store
-// under install-strategy=linked; command links normally point at a package file.
 const linkTarget = (path, entry) => entry?.kind !== "link" || posix.isAbsolute(entry.target) ? null
   : posix.normalize(posix.join(posix.dirname(path), entry.target));
-const isStoreDirectoryLink = (path, entry, inventory) => {
-  const target = linkTarget(path, entry);
-  return target !== null && target.startsWith("node_modules/.store/") && inventory.get(target)?.kind === "directory";
-};
 // Registry credentials inherited from a user npmrc are irrelevant offline and
 // must not be written into scratch storage that a killed verifier can leave behind.
 const isCredential = key => /(?:^|\/)_(?:auth(?:token)?|password)$/i.test(key);
@@ -124,24 +118,11 @@ function referenceConfig(project, cache, contract) {
   return { args, env, config: restored };
 }
 
-function seedArchive(cache, bytes, url) {
+function seedArchive(cache, bytes) {
   const sha512 = createHash("sha512").update(bytes).digest("hex");
   const path = join(cache, "_cacache", "content-v2", "sha512", sha512.slice(0, 2), sha512.slice(2, 4), sha512.slice(4));
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, bytes);
-  if (typeof url !== "string") return;
-  // Linked installs fetch by resolved URL instead of by integrity, so mirror the
-  // content-addressed bytes in npm's request cache index exactly as a completed
-  // online fetch would have stored them.
-  const key = "make-fetch-happen:request-cache:" + url;
-  const entry = { key, integrity: "sha512-" + Buffer.from(sha512, "hex").toString("base64"),
-    time: Date.now(), size: bytes.length,
-    metadata: { time: Date.now(), url, reqHeaders: {}, resHeaders: {}, options: { compress: true } } };
-  const json = JSON.stringify(entry);
-  const hashed = createHash("sha256").update(key).digest("hex");
-  const index = join(cache, "_cacache", "index-v5", hashed.slice(0, 2), hashed.slice(2, 4));
-  mkdirSync(index, { recursive: true });
-  writeFileSync(join(index, hashed.slice(4)), `${createHash("sha1").update(json).digest("hex")}\t${json}\n`);
 }
 
 function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
@@ -172,61 +153,21 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
     record.manifest = manifestOf(files.get("package.json")).manifest;
     record.files = new Map([...files].map(([path, content]) => [path, digest(content)]));
     for (const [root, module] of moduleRoots(location, files)) roots.set(root, module);
-    seedArchive(cache, sources.get(location), record.entry.resolved);
+    seedArchive(cache, sources.get(location));
   }
   return unavailable;
 }
 
-// Evaluate exclusions with the selected npm's configuration and install checks in
-// its own process: npm's flattening may change the lifecycle environment.
-function excludedSources(unavailable, entries, contract, scratch, manifest, lock) {
-  if (!unavailable.size) return new Set();
-  // npm recalculates dependency flags when root declarations change. Such flags
-  // cannot establish that a failed source read was an intentional exclusion.
-  for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "peerDependenciesMeta"]) {
-    if (!isDeepStrictEqual(manifest[field] ?? {}, lock.packages[""]?.[field] ?? {})) {
-      throw new Error("root dependency metadata differs: " + field);
-    }
-  }
-  const input = join(scratch, "unavailable.json");
-  writeFileSync(input, JSON.stringify({ config: withoutCredentials(contract.config),
-    entries: [...unavailable.keys()].map(location => [location, entries.get(location).entry]) }));
-  const command = `const requireNpm = require('node:module').createRequire(process.argv[1]);
-    const { config, entries } = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
-    const npmVersion = requireNpm('../package.json').version;
-    if (config['npm-version'] !== npmVersion) throw Error('npm-version differs from selected npm');
-    const options = requireNpm('@npmcli/config/lib/definitions').flatten(config);
-    const { checkPlatform, checkEngine } = requireNpm('npm-install-checks');
-    const omit = new Set(options.omit);
-    const excluded = entries.filter(([, entry]) => {
-      // The same dependency-flag rules as npm's Arborist reifier.
-      if (entry.peer && omit.has('peer') || entry.dev && omit.has('dev') ||
-          entry.optional && omit.has('optional') || entry.devOptional && omit.has('dev') && omit.has('optional')) return true;
-      if (entry.optional) {
-        try {
-          checkPlatform(entry, false, options);
-          checkEngine(entry, npmVersion, process.version, false);
-        } catch (error) {
-          if (error.code === 'EBADPLATFORM' || error.code === 'EBADENGINE') return true;
-          throw error;
-        }
-      }
-      return false;
-    }).map(([location]) => location);
-    console.log(JSON.stringify(excluded));`;
-  return new Set(JSON.parse(runNpmNode(contract.toolchain, ["-e", command, contract.toolchain.cli, input],
-    { env: contract.env }).toString()));
-}
-
 /** Replays an explicit npm install contract offline with scripts disabled, using independently
  * verified archive bytes in fresh private storage. Returns source entries/carried modules plus one
- * kind-tagged inventory. Unavailable sources need an explicit npm contract exclusion; errors
- * publish no inventory. Never reads the inspected installation. */
+ * kind-tagged inventory. npm decides which packages to omit; every failed archive extraction
+ * refuses the reference. Errors publish no source metadata or inventory. Linked installs are
+ * unsupported. Never reads the inspected installation. */
 export function referenceInstallation({ manifest, lock, readArchive, installer }) {
   const entries = new Map();
   const roots = new Map();
   const errors = [];
-  const result = { entries, carried: new Map(), errors, inventory: null };
+  const result = { entries: new Map(), carried: new Map(), errors, inventory: null };
   const scratch = mkdtempSync(join(tmpdir(), "dacs-npm-reference-"));
   try {
     if (!isPlainObject(lock?.packages) || !isPlainObject(manifest)) throw new Error("package-lock.json has no packages map or manifest");
@@ -247,12 +188,28 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
       chmodSync(join(project, "node_modules"), installer.nodeModulesMode);
     }
     const unavailable = sourceEntries(lock, readArchive, installer, cache, entries, roots);
-    const excluded = excludedSources(unavailable, entries, installer, scratch, manifest, lock);
+    for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "peerDependenciesMeta"]) {
+      if (!isDeepStrictEqual(manifest[field] ?? {}, lock.packages[""]?.[field] ?? {})) {
+        throw new Error("root dependency metadata differs: " + field);
+      }
+    }
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
     const { args, env, config } = referenceConfig(project, cache, installer);
+    if (!["hoisted", "nested", "shallow"].includes(config["install-strategy"])) {
+      throw new Error("unsupported install-strategy: " + config["install-strategy"]);
+    }
+    if (installer.config["npm-version"] !== createRequire(installer.toolchain.cli)("../package.json").version) {
+      throw new Error("npm-version differs from selected npm");
+    }
+    // The snapshot has no source precedence; writing default prefer-online=false
+    // would mask cache-max's online-revalidation alias. Refuse that ambiguity.
+    if (Number.isFinite(config["cache-max"]) && config["cache-max"] <= 0) {
+      throw new Error("cannot replay cache-max online revalidation offline");
+    }
     const configFile = join(scratch, "config.json");
-    writeFileSync(configFile, JSON.stringify(config));
+    const failuresFile = join(scratch, "archive-failures.jsonl");
+    writeFileSync(configFile, JSON.stringify({ config, umask: installer.umask, failuresFile }));
     try {
       // Observe npm's warning channel even if the captured log configuration is quiet.
       const command = `process.on('log', (level, title, ...text) => {
@@ -261,7 +218,23 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
       const fs = require('node:fs');
       const configFile = process.argv.splice(1, 1)[0];
       const requireNpm = require('node:module').createRequire(process.argv[1]);
-      const options = requireNpm('@npmcli/config/lib/definitions').flatten(JSON.parse(fs.readFileSync(configFile)));
+      const { config, umask, failuresFile } = JSON.parse(fs.readFileSync(configFile));
+      process.umask(umask);
+      const reify = requireNpm.resolve('@npmcli/arborist/lib/arborist/reify.js');
+      const reifyRequire = require('node:module').createRequire(reify);
+      if (requireNpm.resolve('pacote') !== reifyRequire.resolve('pacote')) throw Error('pacote instance differs from npm reifier');
+      const pacote = requireNpm('pacote');
+      const extract = pacote.extract;
+      fs.writeFileSync(failuresFile, '');
+      pacote.extract = async (...args) => {
+        try { return await extract.apply(pacote, args); }
+        catch (error) {
+          fs.appendFileSync(failuresFile, JSON.stringify({ spec: args[0], resolved: args[2]?.resolved,
+            code: error.code, message: error.message }) + '\\n');
+          throw error;
+        }
+      };
+      const options = requireNpm('@npmcli/config/lib/definitions').flatten(config);
       if (options.omit.includes('optional')) {
         const validator = requireNpm.resolve('../lib/utils/validate-lockfile.js');
         const validate = require(validator);
@@ -286,35 +259,31 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
         };
       }
       require(process.argv[1]);`;
-      // Reproduce the installing process's umask, not the verifier's: npm applies
-      // the inherited umask to every directory and file its child creates.
-      const previousUmask = process.umask(installer.umask);
-      try { runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env }); }
-      finally { process.umask(previousUmask); }
+      runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env });
+      let failures;
+      try {
+        const log = readFileSync(failuresFile, "utf8");
+        failures = log.trim() ? log.trim().split("\n").map(line => JSON.parse(line)) : [];
+        if (!failures.every(failure => typeof failure.spec === "string" && typeof failure.message === "string")) {
+          throw new Error("invalid failure record");
+        }
+      } catch (cause) { throw new Error("cannot read npm archive failure log: " + cause.message, { cause }); }
+      if (failures.length) {
+        const details = failures.map(failure => {
+          const locations = [...entries].filter(([, record]) => record.entry.resolved === (failure.resolved ?? failure.spec))
+            .map(([location]) => location);
+          return `${locations.join(", ") || failure.spec}: ${failure.code ?? "error"}: ${failure.message}`;
+        });
+        throw new Error("archive extraction failed: " + details.join("; "));
+      }
     } catch (cause) {
       const missing = [...unavailable].map(([location, error]) => `${location}: ${error.message}`).join("; ");
       throw new Error(cause.message + (missing ? `; source reads: ${missing}` : ""), { cause });
     }
     const inventory = installationInventory(project);
-    for (const [location, cause] of unavailable) {
-      if (inventory.has(location) || !excluded.has(location)) {
-        throw new Error(`cannot read source ${location}: ${cause.message}`, { cause });
-      }
-    }
     for (const [location, record] of entries) {
       const installed = inventory.get(location);
-      record.present = installed?.kind === "directory" || isStoreDirectoryLink(location, installed, inventory);
-      if (record.entry.inBundle === true && !roots.has(location)) {
-        // An unavailable, explicitly excluded source has no archive roots.
-        // Find this bundle's source owner, including through nested bundles.
-        let owner = location;
-        while (entries.get(owner)?.entry.inBundle === true) {
-          const split = owner.lastIndexOf("/node_modules/");
-          owner = split < 0 ? "" : owner.slice(0, split);
-        }
-        if (!record.present && excluded.has(owner)) continue;
-        throw new Error("bundled lock entry is not in the archive of the package bundling it: " + location);
-      }
+      record.present = installed?.kind === "directory";
       if (!record.present) continue;
       if (record.entry.inBundle === true) {
         const module = roots.get(location);
@@ -328,14 +297,14 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
     for (const [path, entry] of inventory) {
       if (entry.kind !== "link") continue;
       const target = linkTarget(path, entry);
-      const targetKind = target === null ? undefined : inventory.get(target)?.kind;
-      if (!(targetKind === "file" || targetKind === "directory" && target.startsWith("node_modules/.store/"))) {
-        throw new Error("link target is not a reference file or package directory: " + path);
+      if (target === null || inventory.get(target)?.kind !== "file") {
+        throw new Error("link target is not a reference file: " + path);
       }
     }
+    result.entries = entries;
     result.carried = new Map([...roots].filter(([root]) => !entries.has(root) && inventory.has(root)));
     result.inventory = inventory;
-  } catch (cause) { errors.push("cannot derive reference installation: " + cause.message); }
+  } catch (cause) { errors.push("cannot derive reference installation: " + cause.message); result.cause = cause; }
   finally { rmSync(scratch, { recursive: true, force: true }); }
   return result;
 }
