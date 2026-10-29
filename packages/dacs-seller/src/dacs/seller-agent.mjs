@@ -186,7 +186,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     simulatedFixture,
   });
   if (validation.disposition !== 'verified') throw new Error(`own Listing does not verify: ${validation.reason}`);
-  durable?.retainContext({ admittedAt, validation });
+  if (!retainedAdmission) { const { revocation: _revocation, ...retained } = validation; durable?.retainContext({ admittedAt, validation: retained }); }
   const sellerBundle = listing.seller.identity;
   const store = durable?.fencedStore ?? createInMemoryFencedSessionStore();
   const sessions = new Map(); // jobId -> session
@@ -239,9 +239,19 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     const bundle = session.buyerBundle, nonce = bundle?.sessionNonce;
     const challenge = durable.challenge(nonce);
     if (!challenge) return 'the retained session names no challenge this seller issued';
-    if (challenge.jobId !== session.jobId || challenge.buyer !== bundle.presentedBy || challenge.sessionNonce !== nonce) return 'the retained session challenge was issued for another job or buyer';
+    if (challenge.jobId !== session.jobId || !sameCanonicalClaimIdentity(challenge.buyer, bundle.presentedBy) || challenge.sessionNonce !== nonce) return 'the retained session challenge was issued for another job or buyer';
     if (challenge.attempt?.admitted !== true) return 'the retained session challenge was not consumed and admitted for this attempt';
-    if (challenge.attempt.presentationHash !== contentHash(bundle)) return 'the retained session challenge was admitted for another presentation';
+    if (challenge.attempt.presentationHash !== sha256Hex(canonicalize(bundle))) return 'the retained session challenge was admitted for another presentation';
+    // A pre-Vet proposal session has no Vet evidence to authenticate it: only
+    // the exact accepted presentation and its validated admission answer,
+    // written with that admission, prove this seller admitted it. Legacy
+    // sessions past proposal keep their own Vet evidence check instead.
+    if (!claimsVet(session)) {
+      const accepted = challenge.attempt.accepted;
+      if (!accepted || accepted.buyerBundleHash !== session.buyerBundleHash || canonicalize(accepted.buyerBundle ?? null) !== canonicalize(bundle)) return 'the retained proposal session has no exact accepted presentation';
+      const admissionProblem = sessionAdmissionProblem(accepted.admission, { jobId: session.jobId, buyer: bundle.presentedBy, buyerBundleHash: session.buyerBundleHash, seller: claim, listingPin: pin });
+      if (admissionProblem) return `the retained proposal session ${admissionProblem}`;
+    }
     return null;
   }
   function retainedVetRefProblem(ref, jobId, party, verifier) {
@@ -380,11 +390,12 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   // 256 bits from the CSPRNG (SN-1/SN-2), never caller-supplied bytes.
   // It admits one presentation (SN-4) until
   // SESSION_CHALLENGE_LIFETIME_MS after issue.
-  function issueSessionChallenge(request) {
+  async function issueSessionChallenge(request) {
     requireOpen();
     if (!request || typeof request !== 'object' || Array.isArray(request)) throw new SellerAgentError('challenge_invalid', 'the challenge request must be an object', 422);
     const { jobId, buyer, sessionNonce } = request;
     if (!nativeProfile) throw new SellerAgentError('session_admission_required', 'the simulated fixture profile takes no session admission', 503);
+    assertSessionAdmission();
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     if (!canonicalDemosAgentPublicKey(buyer) || sameCanonicalClaimIdentity(buyer,claim)) throw new SellerAgentError('buyer_invalid', 'the challenge names no buyer claim other than the seller');
     if (sessionNonce !== undefined) throw new SellerAgentError('challenge_invalid', 'the seller generates its own session nonce (CORE SN-1/SN-2)');
@@ -392,6 +403,9 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (!Number.isSafeInteger(issuedAt) || issuedAt < 0) throw new SellerAgentError('seller_clock_invalid', 'the seller clock is not an integer time', 503);
     if(!Number.isSafeInteger(issuedAt+SESSION_CHALLENGE_LIFETIME_MS))throw new SellerAgentError('seller_clock_invalid','the challenge expiry exceeds the safe clock range',503);
     const issued = { jobId, buyer, sessionNonce: nonce, issuedAt, expiresAt: issuedAt + SESSION_CHALLENGE_LIFETIME_MS };
+    const revocation = await listingRevocationProblem(admission, { listing, listingPin: pin, jobId, now });
+    requireOpen();
+    if (revocation) throw new SellerAgentError(revocation.code, revocation.message, revocation.status);
     try { challenges.issueChallenge(nonce, issued,{maxOutstanding:maxJobs,maxPerJob:MAX_CHALLENGES_PER_JOB}); }
     catch (error) { if(error.code==='seller_challenge_capacity')throw new SellerAgentError(error.code,error.message,503); if (error.code === 'seller_challenge_taken') throw new SellerAgentError('challenge_taken', 'this session nonce was issued before', 409); throw error; }
     return issued;
@@ -402,6 +416,9 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     requireOpen();
     const jobId = transportIdentity?.jobId;
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+    // The transport identity is buyer-supplied: a request naming another seller
+    // is refused before any capability is asked or anything is retained.
+    if (!sameCanonicalClaimIdentity(transportIdentity?.seller, claim)) throw new SellerAgentError('seller_mismatch', 'proposal seller is not this agent', 409);
     assertVetContext();
     assertSessionAdmission();
     const existing = sessions.get(jobId);
@@ -470,6 +487,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       // DACS-1 RB-4..RB-6, LR-3: the seller decides revocation itself (core
       // checkListingRevocation) over the operator's readings; only `absent` opens.
       const revocation = await listingRevocationProblem(admission, { listing, listingPin: pin, jobId, now });
+      requireOpen();
       if (revocation) throw new SellerAgentError(revocation.code, revocation.message, revocation.status);
       const query = { jobId, buyer: buyerIdentityBundle.presentedBy, buyerBundleHash: bundleHash, sessionNonce: nonce,
         seller: claim, listingPin: structuredClone(pin), profile: structuredClone(SELLER_PROFILE) };
@@ -478,6 +496,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       let answer;
       try { answer = accepted?structuredClone(accepted.admission):await readAdmissionCapability(admission,'admit',query); }
       catch (cause) { throw new SellerAgentError('session_admission_unavailable', 'the seller session admission is unavailable', 503,{cause}); }
+      // Checked after the awaited admission read too, outside the reader error
+      // wrapper: a close while it was pending is a lifecycle refusal, not an
+      // unavailable admission, and keeps nothing.
+      requireOpen();
       const problem = sessionAdmissionProblem(answer, query);
       if (problem) throw new SellerAgentError(accepted?'session_admission_unavailable':'session_not_admitted', problem, accepted?503:409);
       if(!accepted)try{challenges.admitChallenge(nonce, presentationHash,{buyerBundle:structuredClone(buyerIdentityBundle),buyerBundleHash:bundleHash,admission:structuredClone(answer),admittedAt:now()});}
@@ -581,6 +603,15 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
             for (const [role, party, bundle, verifier] of parties) {
               const ref = resolved.input[role].vetRecordRef;
               const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
+              // Restore replays each record against this profile's fixed
+              // requirement and no freshness/deal-specific results. Sign only
+              // the declaration restore can reproduce, so no persisted session
+              // is refused by the next start of this seller.
+              const expectedRequirement = role === 'seller' ? SELLER_REQUIREMENT : listing.buyerRequirement;
+              if (!invocation || invocation.freshness.length !== 0 || invocation.dealSpecific.length !== 0 ||
+                  canonicalize(invocation.requirement) !== canonicalize(expectedRequirement)) {
+                return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet requirement invocation differs from the requirement this profile restores` };
+              }
               let record;
               try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
@@ -623,10 +654,16 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
         transport: {
           publishSellerContribution: (contribution, identity) => {
             // The durable session is the authority, not these caches. Retain
-            // and save it first: a failed save must not leave a later
-            // reconciliation believing an unpublished contribution is present.
+            // the exact proposal and transport identity with the contribution
+            // and save them together first: a crash after publication must
+            // not leave a contribution the buyer's readback cannot name, and a
+            // failed save must not leave a later reconciliation believing an
+            // unpublished contribution is present.
             session.sellerContribution = structuredClone(contribution);
             session.sellerContributionProposalHash = identity.proposalHash;
+            session.proposal = structuredClone(proposal);
+            session.transportIdentity = structuredClone(transportIdentity);
+            session.agreementHash = transportIdentity.agreementHash;
             persist(session);
             contributions.set(identity.proposalHash, structuredClone(contribution));
             signatures.set(contribution.planHash, contribution.signature.value);
