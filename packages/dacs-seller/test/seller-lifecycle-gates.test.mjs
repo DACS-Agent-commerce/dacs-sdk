@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {agentFixture} from './helpers/seller-agent-isolated-fixture.mjs';
-import {NOW} from './helpers/protocol-fixture.mjs';
+import {NOW,testWallet} from './helpers/protocol-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 
 for(const accessModel of ['buyer-only','encrypt-to-buyer','private','restricted','encrypted',{},false])test(`seller refuses non-public delivery access ${JSON.stringify(accessModel)} before publication`,async()=>{
@@ -220,4 +220,20 @@ test('authenticated fixture payments refuse before reserving transport work',asy
  const result=await exchange(handler,{url:'/dacs/v1/payments',text:JSON.stringify(payment(w))});
  assert.equal(result.status,503);assert.equal(JSON.parse(result.text).error,'settlement_profile_unavailable');assert.equal(w.anchors.writes.length,before);
  }finally{w.close();}
+});
+
+for (const alias of [false, true]) test(`an unsigned extra buyer claim cannot authorize fixture payment (${alias ? 'advisory parameters' : 'plain reference'})`, async () => {
+ const w = await agentFixture({lifecycle: true}), next = '01ARZ3NDEKTSV4RRFFQ69G5FAY';
+ const victim = testWallet(23), payer = victim.claim + (alias ? '?source=fixture' : '');
+ try {
+  await w.negotiate(next, {claims: [payer]});
+  await w.agent.commit({jobId: next});
+  const writes = w.anchors.writes.length;
+  w.controls.observation = {status: 'included', txHash: HASH, payer: victim.address, payee: w.seller.address, amountOs: '2500000000', blockNumber: 8, includedAt: NOW + 3000};
+  await assert.rejects(w.agent.submitPayment({jobId: next, txHash: HASH, payerPayingKey: payer}), {code: 'payer_not_authenticated', status: 422});
+  assert.equal(w.anchors.writes.length, writes);
+  assert.equal(w.agent.durableSessionOf(next).paymentWork, undefined);
+  w.controls.observation = null;
+  assert.equal((await w.agent.submitPayment({jobId: next, txHash: HASH, payerPayingKey: w.buyer.claim + (alias ? '?source=fixture' : '')})).status, 'delivered');
+ } finally {w.close();}
 });
