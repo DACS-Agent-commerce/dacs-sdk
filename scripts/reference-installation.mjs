@@ -32,7 +32,8 @@ export function installationInventory(project) {
     try { stat = lstatSync(join(project, path)); }
     catch (error) { if (error.code === "ENOENT") return; throw error; }
     const entry = { kind: kind(stat) };
-    if (entry.kind === "file") Object.assign(entry, { digest: digest(readFileSync(join(project, path))), mode: stat.mode & 0o777, nlink: stat.nlink });
+    if (entry.kind === "file") Object.assign(entry, { digest: digest(readFileSync(join(project, path))), mode: stat.mode & 0o7777, nlink: stat.nlink });
+    if (entry.kind === "directory") entry.mode = stat.mode & 0o7777;
     if (entry.kind === "link") entry.target = readlinkSync(join(project, path));
     inventory.set(path, entry);
     if (inventory.size > ARCHIVE_LIMITS.entries) throw new Error("installation has too many paths");
@@ -311,6 +312,8 @@ export function installationDifferences(project, reference) {
     else if (expected.kind === "file") {
       if (observed.nlink !== 1) differences.push("hard link: " + path);
       else if (observed.digest !== expected.digest || observed.mode !== expected.mode) differences.push("changed: " + path);
+    } else if (expected.kind === "directory") {
+      if (observed.mode !== expected.mode) differences.push("changed mode: " + path);
     } else if (expected.kind === "link" && observed.target !== expected.target) differences.push(`link to an unexpected target: ${path} -> ${observed.target}`);
     else if (expected.kind === "unsupported") differences.push("unsupported entry: " + path);
   }

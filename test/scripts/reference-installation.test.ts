@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -722,6 +722,26 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
     rmSync(path, { recursive: true });
     create(observed);
     expect(installationDifferences(project, reference)).toContain(`expected ${expected}, found ${observed}: node_modules/pkg/a`);
+  });
+
+  it("reports a directory whose permission mode changed", () => {
+    const project = temporaryDirectory();
+    const path = join(project, "node_modules/pkg");
+    mkdirSync(path, { recursive: true });
+    const reference = { errors: [], inventory: installationInventory(project) };
+    chmodSync(path, 0o777);
+    expect(installationDifferences(project, reference)).toContain("changed mode: node_modules/pkg");
+  });
+
+  it("compares setuid and sticky file permission bits", () => {
+    const project = temporaryDirectory();
+    const path = join(project, "node_modules/pkg/file.js");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "");
+    chmodSync(path, 0o755);
+    const reference = { errors: [], inventory: installationInventory(project) };
+    chmodSync(path, 0o4755);
+    expect(installationDifferences(project, reference)).toContain("changed: node_modules/pkg/file.js");
   });
 
   it("requires the generated hidden lockfile to finish an installation", () => {
