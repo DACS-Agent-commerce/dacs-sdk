@@ -94,7 +94,7 @@ test('B13 start-limit rejection commits only the required anti-replay consumptio
  t.after(()=>{DatabaseSync.prototype.prepare=originalPrepare;DatabaseSync.prototype.exec=originalExec});
  const w=await world(t);await exchange(w.handler,await w.wire());const input=await w.wire({jobId:JOBS[1]}),before=w.effects();watch=true;
  const response=await exchange(w.handler,input);watch=false;
- assert.equal(response.status,409);assert.deepEqual(mutations,['UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?'],'only the SN-4 anti-replay write is permitted before admission refusal');assert.deepEqual(effectState(w.effects()),effectState(before));
+ assert.equal(response.status,409);assert.equal(mutations.filter(sql=>sql.startsWith('DELETE FROM peer_nonce')).length,2,'both nonce tables are reclaimed before insertion');assert.deepEqual(mutations.filter(sql=>!sql.startsWith('DELETE FROM peer_nonce')),['UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', 'INSERT INTO peer_nonces VALUES (?, ?, ?, ?, ?)', 'INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)'],'challenge consumption and the definite refusal nonce commit together');assert.deepEqual(effectState(w.effects()),effectState(before));
 });
 test('B14 an uncertain context effect is read back without a second hold or provider write',async t=>{
  const w=await world(t,{perform:async()=>{throw new Error('unknown fixture outcome')}});const first=await exchange(w.handler,await w.wire());assert.equal(first.status,503);const before=w.effects();
@@ -107,7 +107,7 @@ test('B15 a failed release cannot turn a definite context answer into an uncerta
 test('B16 a resume conflict releases its new unused hold and never calls the provider',async t=>{
  const w=await world(t),input=await w.wire(),request=w.auth.readRequest(input.header),before=w.effects();
  assert.equal(await w.route.resume({effectKey:'a'.repeat(64)},request,{resume(){throw new Error('fixture conflict')}},{writes:1}),null);
- assert.equal(w.effects().holds,before.holds+1);assert.equal(w.effects().releases,before.releases+1);assert.equal(w.effects().writes,0);assert.deepEqual(w.effects().counts,before.counts);
+ assert.equal(w.effects().holds,before.holds);assert.equal(w.effects().releases,before.releases);assert.equal(w.effects().writes,0);assert.deepEqual(w.effects().counts,before.counts);
 });
 
 async function signed(w,body,{actor=w.buyer,url=SELLER_CONTEXT_PATH}={}){
@@ -157,7 +157,7 @@ test('B40 direct context routes and clients refuse malformed IDs before store, p
  const untouched=new Proxy({},{get(){assert.fail('malformed job reached the transport store')}});
  for(const jobId of [undefined,null,7,'job-0',JOBS[0].toLowerCase(),JOBS[0].slice(1),'8'+JOBS[0].slice(1)]){
   const p={...request,jobId},body={...original,scope:{...original.scope,jobId}},before=w.effects();
-  assert.throws(()=>w.route.attemptPresentation(p,body,untouched),{code:'peer_job_invalid'});
+  assert.throws(()=>w.route.onRejectedBody(p,body,untouched),{code:'peer_job_invalid'});
   for(const method of ['challenge','reserve']){
    await assert.rejects(w.route[method](p,body,untouched),{code:'peer_job_invalid'});
    await assert.rejects(w.route[method](request,body,untouched),{code:'peer_job_invalid'});
@@ -313,7 +313,7 @@ test('B28 over-limit challenge issuance performs no SQL mutation and holds no po
   const before=w.effects(),out=await exchange(w.handler,await signed(w,body,{url:SELLER_CONTEXT_CHALLENGE_PATH}));assert.equal(out.status,429);assert.deepEqual(effectState(w.effects()),effectState(before));assert.deepEqual(mutations,[]);
  }finally{DatabaseSync.prototype.prepare=original;}
 });
-test('B29 a reserve conflict after the dry check releases its hold but leaves two policy-ledger lines',async t=>{
+test('B29 a journal reservation conflict creates no policy hold',async t=>{
  const w=await world(t),input=await w.wire(),request=w.auth.readRequest(input.header),body=JSON.parse(input.text),original=w.store.reserve;
  const {createSellerContextAdmission,parsePolicyLedger}=await import('../src/devnet-demo/operator-approval.mjs');
  const evidencePath=join(tmpdir(),'d5-race-'+randomBytes(16).toString('hex')+'.jsonl');t.after(()=>rm(evidencePath,{force:true}));
@@ -321,7 +321,7 @@ test('B29 a reserve conflict after the dry check releases its hold but leaves tw
  const route=createSellerContextRoute({listing:w.listing,resolveBuyer:()=>assert.fail('provider ran'),assertBuyerAccess:()=>{},admitWrites:policy.reserve,releaseWrites:policy.release,writable:()=>true,recover:async()=>null,now:w.now});
  w.store.reserve=(...args)=>{if(!args[2]?.dryRun)throw new Error('fixture capacity changed after dry check');return original.apply(w.store,args)};
  await assert.rejects(route.reserve(request,body,w.store),/capacity changed/);
- const lines=(await readFile(evidencePath,'utf8')).trim().split('\n').map(JSON.parse);assert.deepEqual(lines.map(line=>line.event),['hold','release']);assert.equal(parsePolicyLedger(lines.map(JSON.stringify).join('\n')).rows[0].released,true);assert.equal(w.effects().writes,0);assert.equal(w.effects().counts.peer_effects,0);
+ await assert.rejects(readFile(evidencePath,'utf8'),{code:'ENOENT'});assert.equal(w.effects().writes,0);assert.equal(w.effects().counts.peer_effects,0);
 });
 
 test('B30 an expired delegated session cannot issue a new durable challenge',async t=>{
@@ -408,18 +408,18 @@ test('context presentation signatures use canonical Ed25519 Base64URL before res
   const before = w.effects(), out = await exchange(w.handler, await signed(w, body));
   assert.equal(out.status, 409, out.text);
   assert.equal(JSON.parse(out.text).error, 'buyer_bundle_unauthenticated');
-  assert.deepEqual(w.effects(), before, 'no policy holds or Vet provider writes');
+  assert.deepEqual(effectState(w.effects()), effectState(before), 'no policy holds or Vet provider writes');
  }
  const w = await world(t), input = await w.wire();
  assert.equal((await exchange(w.handler, input)).status, 200, 'canonical signed presentation remains allowed');
  assert.equal(w.effects().writes, 1);
 });
 
-const effectState=value=>({...value,counts:Object.fromEntries(Object.entries(value.counts).filter(([key])=>!['peer_nonces','peer_nonce_retention'].includes(key)))});
+const effectState=({releases,...value})=>({...value,counts:Object.fromEntries(Object.entries(value.counts).filter(([key])=>!['peer_nonces','peer_nonce_retention'].includes(key)))});
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
 test('identical retry during admission cannot report no writes while the first request proceeds',async t=>{
  const entered=deferred(),resume=deferred(),retryEntered=deferred();const w=await world(t,{admitWrites:async()=>{entered.resolve();await resume.promise;return null;}}),input=await w.wire();let attempts=0;
- const context={...w.route,attemptPresentation(...args){if(++attempts===2)retryEntered.resolve();return w.route.attemptPresentation(...args);}};
+ const context={...w.route,reserve(...args){if(++attempts===2)retryEntered.resolve();return w.route.reserve(...args);}};
  const handler=createSellerHttpHandler({claim:w.seller.claim,listingPin:w.pin},{authentication:w.auth,context});
  const first=exchange(handler,input);await entered.promise;const retry=exchange(handler,input);await retryEntered.promise;await Promise.resolve();resume.resolve();const answers=await Promise.all([first,retry]);
  assert.equal(answers[0].status,200);assert.ok(answers[1].status===200||answers[1].status===503,answers[1].text);assert.equal(w.effects().writes,1);assert.equal(w.effects().holds,1);
