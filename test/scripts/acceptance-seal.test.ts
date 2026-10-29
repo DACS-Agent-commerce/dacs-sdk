@@ -9,7 +9,7 @@ const { collectEvidence, sealProject } = await import(sealModule);
 const buildModule = "../../scripts/bounded-build.mjs";
 const { prepareBoundedBuild } = await import(buildModule);
 const ioModule = "../../scripts/acceptance-evidence-io.mjs";
-const { EVIDENCE_MAX_BYTES } = await import(ioModule);
+const { EVIDENCE_MAX_BYTES, atomicWriteFile } = await import(ioModule);
 
 const roots: string[] = [];
 const scratch = () => { const root = mkdtempSync(join(tmpdir(), "dacs-seal-")); roots.push(root); return root; };
@@ -83,6 +83,49 @@ describe("evidence collection without following links", () => {
     expect(() => collectEvidence(source, destination, ["doctor.json"])).toThrow("missing evidence: doctor.json");
     expect(collectEvidence(source, destination, ["doctor.json"], { optional: true })).toEqual([]);
   });
+  it("refuses a rename entry that is not exactly one source and one destination", () => {
+    const { source, destination } = evidenceDirectories();
+    writeFileSync(join(source, "doctor.json"), "{}\n");
+    expect(() => collectEvidence(source, destination, [["doctor.json", "renamed.json", "ignored.json"]]))
+      .toThrow("evidence entry must be a name or a [source, destination] pair");
+    expect(readdirSync(destination)).toEqual([]);
+  });
+  it("preserves the source file and directory permission bits under a restrictive umask", () => {
+    const root = scratch();
+    const source = join(root, "exec-out"), destination = join(root, "artifacts");
+    mkdirSync(source); mkdirSync(destination);
+    writeFileSync(join(source, "doctor.json"), "{}\n"); chmodSync(join(source, "doctor.json"), 0o644);
+    const project = join(root, "project"); mkdirSync(project); mkdirSync(join(project, "data"));
+    writeFileSync(join(project, "package.json"), "{}\n"); chmodSync(join(project, "package.json"), 0o644);
+    writeFileSync(join(project, "data", "x"), "x"); chmodSync(join(project, "data", "x"), 0o640);
+    chmodSync(join(project, "data"), 0o755);
+    mkdirSync(join(root, "sealed"));
+    const previous = process.umask(0o077);
+    try {
+      collectEvidence(source, destination, ["doctor.json"]);
+      sealProject(project, join(root, "sealed", "context"), ["package.json", "data/x"]);
+    } finally { process.umask(previous); }
+    expect(statSync(join(destination, "doctor.json")).mode & 0o777).toBe(0o644);
+    expect(statSync(join(root, "sealed/context/package.json")).mode & 0o777).toBe(0o644);
+    expect(statSync(join(root, "sealed/context/data/x")).mode & 0o777).toBe(0o640);
+    expect(statSync(join(root, "sealed/context/data")).mode & 0o777).toBe(0o755);
+  });
+});
+
+describe("durable evidence publication", () => {
+  it("flushes the replacement to storage before publishing it over the old entry", () => {
+    const root = scratch(), target = join(root, ".dockerignore");
+    writeFileSync(target, "**\n");
+    let options: unknown;
+    atomicWriteFile(target, "**\n!acceptance-npm-http.cjs\n", {
+      write: (temporary: string, contents: string, writeOptions: unknown) => {
+        writeFileSync(temporary, contents); options = writeOptions;
+      },
+    });
+    expect(options).toEqual({ flag: "wx", flush: true });
+    expect(readFileSync(target, "utf8")).toBe("**\n!acceptance-npm-http.cjs\n");
+    expect(readdirSync(root).filter(name => name.includes(".tmp-"))).toEqual([]);
+  });
 });
 
 describe("sealed generated project", () => {
@@ -133,6 +176,34 @@ describe("sealed generated project", () => {
     mkdirSync(context, { recursive: true });
     expect(() => sealProject(project, context, names)).toThrow(/EEXIST/);
   });
+  it("records a digest for a listed file named __proto__", () => {
+    const root = scratch(), project = join(root, "project"), context = join(root, "sealed", "context");
+    mkdirSync(project); mkdirSync(join(root, "sealed"));
+    writeFileSync(join(project, "__proto__"), "first");
+    const record = sealProject(project, context, ["__proto__"]);
+    expect(Object.hasOwn(record.files, "__proto__")).toBe(true);
+    expect(record.files["__proto__"]).toBe(sha256("first"));
+    expect(JSON.parse(JSON.stringify(record)).files["__proto__"]).toBe(sha256("first"));
+    expect(readFileSync(join(context, "__proto__"), "utf8")).toBe("first");
+  });
+  it("refuses a listed file inside node_modules before creating the context", () => {
+    const root = scratch(), project = join(root, "project"), context = join(root, "sealed", "context");
+    mkdirSync(join(project, "node_modules", "left-pad"), { recursive: true });
+    writeFileSync(join(project, "package.json"), "{}\n");
+    writeFileSync(join(project, "node_modules", "left-pad", "index.js"), "");
+    mkdirSync(join(root, "sealed"));
+    expect(() => sealProject(project, context, ["package.json", "node_modules/left-pad/index.js"]))
+      .toThrow("evidence name must be outside node_modules");
+    expect(existsSync(context)).toBe(false);
+  });
+  it("removes a partial context when a listed file is found missing, so a retry can seal", () => {
+    const root = scratch(); const { project, context, names } = generatedProject(root);
+    rmSync(join(project, "secrets/README.md"));
+    expect(() => sealProject(project, context, names)).toThrow("missing project file: secrets/README.md");
+    expect(existsSync(context)).toBe(false);
+    writeFileSync(join(project, "secrets/README.md"), "No keys here.\n");
+    expect(sealProject(project, context, names).schema).toBe("dacs-sealed-context/v1");
+  });
   it("seals through its command line and writes the digest record once", () => {
     const root = scratch(); const { project, context, names } = generatedProject(root);
     const record = join(root, "sealed-context.json");
@@ -142,8 +213,21 @@ describe("sealed generated project", () => {
     const evidence = join(root, "evidence"); mkdirSync(evidence);
     expect(cli("collect", "--optional", context, evidence, "package.json=generated-package.json", "absent.json").status).toBe(0);
     expect(readdirSync(evidence)).toEqual(["generated-package.json"]);
+    expect(cli("collect", context, evidence, "package.json=a=b").status).not.toBe(0);
+    expect(readdirSync(evidence)).toEqual(["generated-package.json"]);
     expect(cli("collect", context, evidence, "absent.json").status).not.toBe(0);
     expect(cli("unknown").status).not.toBe(0);
+    const existingRecord = join(root, "existing-record.json"); writeFileSync(existingRecord, "keep\n");
+    const refusedContext = join(root, "sealed", "second");
+    expect(cli("seal", project, refusedContext, existingRecord, ...names).status).not.toBe(0);
+    expect(existsSync(refusedContext)).toBe(false);
+    expect(readFileSync(existingRecord, "utf8")).toBe("keep\n");
+    const linkedRecord = join(root, "linked-record.json"), host = hostSecret(root);
+    symlinkSync(host, linkedRecord);
+    const linkedContext = join(root, "sealed", "third");
+    expect(cli("seal", project, linkedContext, linkedRecord, ...names).status).not.toBe(0);
+    expect(existsSync(linkedContext)).toBe(false);
+    expect(readFileSync(host, "utf8")).toBe("host-only value\n");
   });
 });
 
@@ -177,7 +261,8 @@ describe("bounded image build preparation", () => {
     expect(readdirSync(context).filter(name => name.includes(".tmp-"))).toEqual([]);
   });
   // The copy a check container would make (cp -R per top-level entry) keeps a
-  // planted link; preparing that copy appended to the host file it named.
+  // planted link; preparing that copy must refuse it rather than read the host
+  // file it names into the generated ignore file.
   it("refuses a context copied with its planted ignore-file link", () => {
     const root = scratch(); const { project } = generatedProject(root);
     const target = hostSecret(root); rmSync(join(project, ".dockerignore")); symlinkSync(target, join(project, ".dockerignore"));
