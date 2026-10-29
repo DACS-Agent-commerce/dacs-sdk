@@ -213,3 +213,9 @@ PR 03b2 supplies read-only connection and callback admission before PR 03c: nati
 Persistent admission also reads main.synchronous on every attempt: WAL requires FULL or EXTRA, and rollback journals require EXTRA for power-loss durability. Weaker settings are refused before transactions or callbacks, without changing the connection configuration or host work. Volatile main databases have no persistent synchronization requirement.
 
 Purchase admission normalizes its internal PRAGMA statements to object rows and numeric metadata. Native connections may retain array-row and BigInt defaults for all caller statements; admission and refusal preserve those defaults and host work.
+
+## D11 — Closed host transfer observation record (part 05)
+
+Settlement and non-native closed-wallet readback decide and retain a fresh frozen projection of nine own data fields. Host getters and toJSON are never called; unknown fields are ignored. Known fields require primitive types and bounded amount/address/hash formats; reason is capped at 240 characters. Malformed results stay retryable without reading the body or consuming a nonce. Confirmed body proof cannot override a raw failed source disposition. Missing includedAt remains optional. Reader attribution and native-readback availability name the actual host capability. Closed-wallet readback writes nothing.
+
+Published part-05 iteration records are archived with the existing ledger archive mechanism; prerequisite records and all historical blob checks are retained. This rebuild is recorded against its actual published parent. Unrelated crash/deadline fixtures return to the prerequisite tree. Exports remain empty and actions remain held.
