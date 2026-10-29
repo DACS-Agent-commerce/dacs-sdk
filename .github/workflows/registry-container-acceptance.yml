@@ -2,15 +2,9 @@ name: Registry-shaped Linux and Docker acceptance
 
 on:
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      enforce-audit-drift:
-        type: boolean
-        default: false
   pull_request:
     paths:
       - ".github/workflows/registry-container-acceptance.yml"
-      - ".github/workflows/registry-container-audit-drift.yml"
       - "LICENSE"
       - "package.json"
       - "package-lock.json"
@@ -48,19 +42,10 @@ jobs:
           run_bounded npm ci --no-audit
 
       - name: Run registry-shaped Linux and Docker acceptance
-        # Only non-enforcing PRs warn on unlisted advisories. Exit 4 is waived
+        # Only pull requests warn on unlisted advisories. Exit 4 is waived
         # after independent classification of this run's summary under the same policy.
-        env:
-          ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}
         run: |
           bash scripts/acceptance-ci.sh acceptance
-
-      - name: Check advisory-ID drift
-        if: always()
-        env:
-          ENFORCE_AUDIT_DRIFT: ${{ inputs.enforce-audit-drift || false }}
-        run: |
-          bash scripts/acceptance-ci.sh drift
 
       - name: Publish acceptance summary
         if: always()

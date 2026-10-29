@@ -171,11 +171,10 @@ WebSocket transport — an app already running a full chain stack with these dep
   blocked on severity alone; the assessment is recorded here.
 - **Registry/container consumer acceptance** audits the generated consumer's
   current production dependencies (`npm audit --omit=dev`) by advisory ID against
-  `scripts/registry-container-audit-baseline.json`. On non-enforcing pull requests,
-  unlisted IDs warn and are recorded in the step summary. Scheduled drift checks,
-  manual runs and callers enforcing drift fail on unlisted IDs. Direct high or
-  critical advisories always block, including listed or assessed IDs; transitive
-  assessments follow the reachability policy above.
+  `scripts/registry-container-audit-baseline.json`. On pull requests, unlisted
+  IDs warn and are recorded in the step summary; manual runs fail on unlisted
+  IDs. Direct high or critical advisories always block, including listed or
+  assessed IDs; transitive assessments follow the reachability policy above.
   CI waives exit 4 only when this run's summary independently classifies as 4
   under the same caller policy. Missing, interrupted or inconsistent evidence,
   failed generated tests and independent policy failures remain blocking.

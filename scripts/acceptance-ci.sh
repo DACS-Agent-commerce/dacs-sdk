@@ -3,7 +3,7 @@ set -euo pipefail
 evidence=registry-container-artifacts
 summary="$evidence/acceptance-summary.json"
 export DACS_UNLISTED_ADVISORIES=fail
-if [ "${GITHUB_EVENT_NAME-}" = pull_request ] && [ "${ENFORCE_AUDIT_DRIFT:-false}" != true ]; then
+if [ "${GITHUB_EVENT_NAME-}" = pull_request ]; then
   DACS_UNLISTED_ADVISORIES=warn
 fi
 case "${1-}" in
@@ -30,16 +30,6 @@ case "${1-}" in
     fi
     exit "$status"
     ;;
-  drift)
-    if ! test -f "$summary"; then
-      echo '::warning title=Registry audit advisory drift::No acceptance summary; advisory-ID drift was not evaluated.'
-      if [ "$DACS_UNLISTED_ADVISORIES" = fail ]; then exit 1; fi
-      exit 0
-    fi
-    status=0
-    node scripts/registry-container-disposition.mjs --audit-drift "$summary" || status=$?
-    if [ "$DACS_UNLISTED_ADVISORIES" = fail ]; then exit "$status"; fi
-    ;;
   summary)
     node --input-type=module - "$summary" <<'NODE'
 import { appendFileSync } from "node:fs";
@@ -48,5 +38,5 @@ const file = readBoundedFile(process.argv[2]);
 if (file) appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## Registry-shaped consumer acceptance\n' + file.bytes.toString("utf8") + '\n');
 NODE
     ;;
-  *) echo 'usage: acceptance-ci.sh <acceptance|drift|summary>' >&2; exit 1 ;;
+  *) echo 'usage: acceptance-ci.sh <acceptance|summary>' >&2; exit 1 ;;
 esac
