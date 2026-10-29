@@ -15,7 +15,7 @@ export function deriveStorageAddress(owner, programName, nonce, salt = '') {
 export const MAX_STORAGE_ARTIFACT_BYTES = 16_384;
 const MAX_STORAGE_JSON_DEPTH = 64;
 
-function assertStorageJsonDepth(value, depth = 1) {
+export function assertStorageJsonDepth(value, depth = 1) {
   if (depth > MAX_STORAGE_JSON_DEPTH) throw new TypeError('storage JSON nesting depth exceeds 64 levels');
   if (value !== null && typeof value === 'object') {
     for (const child of Object.values(value)) assertStorageJsonDepth(child, depth + 1);
