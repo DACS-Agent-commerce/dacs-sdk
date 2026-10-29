@@ -305,7 +305,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     return session.stage !== 'proposed' || session.vetCheckpoint !== undefined;
   }
   function retainedSessionProblem(session) {
-    return nativeProfile ? retainedChallengeProblem(session) ?? (claimsVet(session) ? retainedVetCheckpointProblem(session) : null) : null;
+    return nativeProfile || durable ? retainedChallengeProblem(session) ?? (claimsVet(session) ? retainedVetCheckpointProblem(session) : null) : null;
   }
   function sessionView (session) {
     if(!session)return null;
@@ -342,7 +342,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     if (!session) return;
     authenticateBuyerBundle(session.buyerBundle);
     if (identityBundleHash(session.buyerBundle) !== session.buyerBundleHash) throw new SellerAgentError('seller_state_corrupt', 'retained buyer binding is invalid', 503);
-    const problem = retainedSessionProblem(session) ?? (nativeProfile && claimsVet(session) ? await retainedVetEvidenceProblem(session) : null);
+    const problem = retainedSessionProblem(session) ?? (claimsVet(session) ? await retainedVetEvidenceProblem(session) : null);
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
     sessions.set(session.jobId, session);verifiedSessions.set(session.jobId, sessionFingerprint(session));
     if (session.sellerContribution) {
