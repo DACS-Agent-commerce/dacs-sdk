@@ -1213,6 +1213,71 @@ describe("observed archive replay", { timeout: 60_000 }, () => {
     refused(referenceInstallation(input), "root dependency metadata differs");
   });
 
+  // referenceInstallation blocks this thread in npm, so the endpoint counts requests from a worker.
+  const countingEndpoint = async () => {
+    const requests = new Int32Array(new SharedArrayBuffer(4));
+    const worker = new Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      const server = require('node:http').createServer((_request, response) => {
+        Atomics.add(workerData.requests, 0, 1); response.statusCode = 404; response.end();
+      });
+      server.listen(0, '127.0.0.1', () => parentPort.postMessage(server.address().port));`, { eval: true, workerData: { requests } });
+    const port = await new Promise<number>((resolve, reject) => { worker.once("message", resolve); worker.once("error", reject); });
+    return { origin: `127.0.0.1:${port}`, requests: () => Atomics.load(requests, 0), close: () => worker.terminate() };
+  };
+  // Each case returns root fields and lock entry fields merged into a one-package fixture.
+  type Declarations = { root?: Record<string, unknown>; lock?: Record<string, Record<string, unknown>> };
+  const required = { a: "1.0.0" };
+  it.each([
+    ["optional git root edge under omit=optional", "omit=optional\n", (git: string): Declarations => ({ root: { optionalDependencies: { g: git } } }), "package.json optionalDependencies.g"],
+    ["required git root edge", "", (git: string): Declarations => ({ root: { dependencies: { ...required, g: git } } }), "package.json dependencies.g"],
+    ["dev git root edge under omit=dev", "omit=dev\n", (git: string): Declarations => ({ root: { devDependencies: { g: git } } }), "package.json devDependencies.g"],
+    ["peer git root edge", "", (git: string): Declarations => ({ root: { peerDependencies: { g: git } } }), "package.json peerDependencies.g"],
+    ["git edge of a locked registry entry", "", (git: string): Declarations => ({ lock: { "node_modules/a": { dependencies: { h: git } } } }), "node_modules/a dependencies.h"],
+    ["git edge of a bundled entry its bundle lacks", "", (git: string): Declarations => ({ lock: {
+      "node_modules/a/node_modules/bundled": { version: "1.0.0", inBundle: true, dependencies: { h: git } } } }), "node_modules/a/node_modules/bundled dependencies.h"],
+    ["git root edge with an https lock entry", "", (git: string): Declarations => ({ root: { dependencies: { ...required, g: git } },
+      lock: { "node_modules/g": { version: "1.0.0", resolved: "https://registry.invalid/g.tgz", integrity: "sha512-AAAA" } } }), "package.json dependencies.g"],
+    ["git leaf of nested overrides", "", (git: string): Declarations => ({ root: { overrides: { a: { h: git } } } }), "package.json overrides.a.h"],
+    ["optional remote tarball under omit=optional", "omit=optional\n", (git: string): Declarations => ({
+      root: { optionalDependencies: { t: git.replace(/^git\+(.*)\.git$/, "$1.tgz") } } }), "package.json optionalDependencies.t"],
+    ["directory edge", "", (): Declarations => ({ root: { dependencies: { ...required, d: "file:../outside" } } }), "package.json dependencies.d"],
+    ["malformed declarations of a lock entry", "", (): Declarations => ({ lock: { "node_modules/a": { dependencies: [] } } }), "node_modules/a dependencies"],
+  ] as const)("refuses a %s before reading archives or running npm", async (_case, config, declare, field) => {
+    const endpoint = await countingEndpoint();
+    try {
+      const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
+      writeFileSync(join(fixture.project, ".npmrc"), config);
+      const input = inputFor(fixture);
+      const declared = declare(`git+http://${endpoint.origin}/g.git`);
+      const root = { ...JSON.parse(input.manifest.toString()), ...declared.root };
+      input.lock.packages[""] = { ...input.lock.packages[""], ...declared.root };
+      for (const [location, fields] of Object.entries(declared.lock ?? {})) {
+        input.lock.packages[location] = { ...input.lock.packages[location], ...fields };
+      }
+      input.manifest = Buffer.from(JSON.stringify(root));
+      let reads = 0;
+      const reference = referenceInstallation({ ...input, readArchive: (location: string, entry: { integrity: string }) => {
+        reads += 1;
+        return input.readArchive(location, entry);
+      } });
+      refused(reference, `non-registry dependency specification: ${field}`);
+      expect(reads).toBe(0);
+      expect(endpoint.requests()).toBe(0);
+    } finally { await endpoint.close(); }
+  });
+
+  it("still replays registry, tag, range and alias specifications and a $name override", () => {
+    const fixture = simulatedInstall({ "node_modules/a": [{}, { "package.json": manifest("a") }] });
+    for (const spec of ["1.0.0", "^1.0.0", "latest", "*", "npm:a@^1.0.0"]) {
+      const input = { ...inputFor(fixture), lock: structuredClone(fixture.lock) };
+      const root = { ...JSON.parse(input.manifest.toString()), peerDependencies: { a: spec } };
+      input.lock.packages[""] = { ...input.lock.packages[""], ...root };
+      input.manifest = Buffer.from(JSON.stringify({ ...root, overrides: { a: "$a" } }));
+      expect(referenceInstallation(input).errors).toEqual([]);
+    }
+  });
+
   it("refuses an unavailable eligible bundler and publishes no partial source metadata", () => {
     const fixture = simulatedInstall({
       "node_modules/parent": [{ optional: true }, { "package.json": manifest("parent"),

@@ -335,12 +335,43 @@ describe("total command deadline and retry budget", () => {
     expect(h.children).toHaveLength(1); expect(h.kills).toEqual([[100, "SIGTERM"]]);
     h.timers[1]?.(); expect(await result).toBe(code);
     expect(h.kills).toEqual([[100, "SIGTERM"], [100, "SIGKILL"]]);
-    expect(h.removed.sort()).toEqual(["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"]);
+    expect(h.removed.sort()).toEqual(["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM", "exit"]);
   });
   it("removes termination handlers after a normal exit", async () => {
     const h = signalHarness(); const result = runBoundedCommand("npm", ["install"], h.options);
     h.children[0]?.emit("exit", 0); expect(await result).toBe(0);
-    expect(h.signals.size).toBe(0); expect(h.removed.sort()).toEqual(["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM"]);
+    expect(h.signals.size).toBe(0); expect(h.removed.sort()).toEqual(["SIGHUP", "SIGINT", "SIGQUIT", "SIGTERM", "exit"]);
+  });
+  const errno = (code: string) => Object.assign(new Error(code), { code });
+  it("reaps the group at timeout when the diagnostic throws", async () => {
+    const h = harness(); const result = runBoundedCommand("npm", ["install"], { ...h.options, diagnostic: () => { throw errno("EPIPE"); } });
+    expect(() => h.timers[0]?.()).not.toThrow(); h.timers[1]?.();
+    expect(await result).toBe(124); expect(h.kills).toEqual([[100, "SIGTERM"], [100, "SIGKILL"]]);
+  });
+  it("still sends the SIGKILL when the SIGTERM cannot be sent", async () => {
+    const h = harness();
+    const kill = (...args: unknown[]) => { h.kills.push(args); if (args[1] === "SIGTERM") throw errno("EPERM"); };
+    const result = runBoundedCommand("npm", ["install"], { ...h.options, kill });
+    expect(() => h.timers[0]?.()).not.toThrow(); h.timers[1]?.();
+    expect(await result).toBe(124); expect(h.kills).toEqual([[100, "SIGTERM"], [100, "SIGKILL"]]);
+  });
+  it("rejects with the cause and releases handlers when the SIGKILL cannot be sent", async () => {
+    const h = signalHarness();
+    const kill = (...args: unknown[]) => { h.kills.push(args); if (args[1] === "SIGKILL") throw errno("EPERM"); };
+    const result = runBoundedCommand("npm", ["install"], { ...h.options, kill });
+    h.signals.get("SIGTERM")?.(); expect(() => h.timers[1]?.()).not.toThrow();
+    await expect(result).rejects.toMatchObject({ code: "EPERM" });
+    expect(h.signals.size).toBe(0);
+  });
+  it("reaps the group on a start error whose diagnostic throws", async () => {
+    const h = harness(); const result = runBoundedCommand("npm", ["install"], { ...h.options, diagnostic: () => { throw errno("EPIPE"); } });
+    expect(() => h.children[0]?.emit("error", errno("ENOENT"))).not.toThrow();
+    expect(await result).toBe(1); expect(h.kills).toEqual([[100, "SIGKILL"]]);
+  });
+  it("reaps the running group when the process exits before settling", async () => {
+    const h = signalHarness(); const result = runBoundedCommand("npm", ["install"], h.options);
+    h.signals.get("exit")?.(); expect(h.kills).toEqual([[100, "SIGKILL"]]);
+    h.children[0]?.emit("exit", 0); expect(await result).toBe(0); expect(h.removed).toContain("exit");
   });
   it("releases the deadline and signal handlers when the command cannot start", async () => {
     const h = signalHarness(); const failure = new Error("invalid command");
@@ -394,6 +425,59 @@ describe("total command deadline and retry budget", () => {
     } finally {
       if (commandPid) { try { process.kill(-commandPid, "SIGKILL"); } catch {} }
       try { wrapper.kill("SIGKILL"); } catch {}
+    }
+  }, 15_000);
+  // A command that ignores SIGTERM and SIGHUP, so only the grace SIGKILL stops it.
+  const stubborn = (pidFile: string) => ["-c", `trap "" TERM HUP; echo $$ > ${JSON.stringify(pidFile)}; exec sleep 30`];
+  const startedPid = async (pidFile: string) => {
+    const deadline = Date.now() + 5000;
+    while (!(existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\n"))) {
+      if (Date.now() > deadline) throw new Error("command did not start");
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    return Number(readFileSync(pidFile, "utf8"));
+  };
+  const reaped = async (pid: number) => {
+    const stopped = Date.now() + 2000; while (running(pid) && Date.now() < stopped) await new Promise(resolve => setTimeout(resolve, 25));
+    return !running(pid);
+  };
+  it.each([["timeout", 124], ["SIGHUP", 129], ["SIGTERM", 143]] as const)("reaps a command on %s after the wrapper's stderr closes", async (event, expectedCode) => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-command-")), pidFile = join(root, "pid");
+    const wrapper = spawn(process.execPath, ["scripts/bounded-command.mjs", event === "timeout" ? "1" : "20", "1", "sh", ...stubborn(pidFile)],
+      { cwd: process.cwd(), stdio: ["ignore", "ignore", "pipe"] });
+    const exited = new Promise<number | null>(resolve => wrapper.on("exit", code => resolve(code)));
+    let commandPid = 0;
+    try {
+      commandPid = await startedPid(pidFile);
+      wrapper.stderr.destroy();
+      if (event !== "timeout") wrapper.kill(event);
+      expect(await exited).toBe(expectedCode);
+      expect(await reaped(commandPid)).toBe(true);
+    } finally {
+      if (commandPid) { try { process.kill(-commandPid, "SIGKILL"); } catch {} }
+      try { wrapper.kill("SIGKILL"); } catch {}
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+  it("reaps a running command when its host process ends on an uncaught error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-command-")), pidFile = join(root, "pid");
+    const host = `const { runBoundedCommand } = await import(${JSON.stringify(new URL(modulePath, import.meta.url).href)});
+      const { existsSync, readFileSync } = await import("node:fs");
+      const pidFile = ${JSON.stringify(pidFile)};
+      runBoundedCommand("sh", ${JSON.stringify(stubborn(pidFile))}, { seconds: 30 });
+      const started = setInterval(() => {
+        if (existsSync(pidFile) && readFileSync(pidFile, "utf8").endsWith("\\n")) { clearInterval(started); throw new Error("host failure"); }
+      }, 25);`;
+    let commandPid = 0;
+    try {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", host], { stdio: ["ignore", "ignore", "pipe"] });
+      child.stderr.resume();
+      expect(await new Promise<number | null>(resolve => child.on("exit", resolve))).toBe(1);
+      commandPid = await startedPid(pidFile);
+      expect(await reaped(commandPid)).toBe(true);
+    } finally {
+      if (commandPid) { try { process.kill(-commandPid, "SIGKILL"); } catch {} }
+      rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
   it("kills a stalled Docker pull and its process group within the total deadline", async () => {
