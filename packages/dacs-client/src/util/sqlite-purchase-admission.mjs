@@ -11,6 +11,15 @@ const SYNCHRONOUS_EXTRA = 3;
 /** Return whether fn is an async, generator or async generator function. */
 export const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
 
+function metadataStatement(db, sql) {
+  const statement = db.prepare(sql);
+  // Normalize only our reads, preserving the caller's statement defaults.
+  // Older runtimes without array results already return object rows.
+  statement.setReturnArrays?.(false);
+  statement.setReadBigInts(false);
+  return statement;
+}
+
 /** Check the schemas and rollback/crash journals supported by a purchase transaction.
  * Only main and TEMP are admitted, each with a journal mode that can roll back.
  * Returns undefined; throws OperationError for unsupported attachments, journals or synchronization.
@@ -18,7 +27,7 @@ export const nonSynchronous = fn => ['[object AsyncFunction]', '[object Generato
  */
 export function checkSqlitePurchaseDatabase(db) {
   // Separate durable files can recover different parts of one WAL commit.
-  const databases = db.prepare('PRAGMA database_list').all();
+  const databases = metadataStatement(db, 'PRAGMA database_list').all();
   const attached = databases.filter(({ name }) => !['main', 'temp'].includes(name));
   if (attached.some(({ file }) => file)) {
     throw new OperationError('purchase_store_persistent_attachment', 'purchase transactions cannot include persistent attached databases');
@@ -27,14 +36,14 @@ export function checkSqlitePurchaseDatabase(db) {
     throw new OperationError('purchase_store_unsupported_attachment', 'purchase transactions support only main and TEMP schemas');
   }
   const main = databases.find(({ name }) => name === 'main');
-  const mode = db.prepare('PRAGMA main.journal_mode').get()?.journal_mode;
+  const mode = metadataStatement(db, 'PRAGMA main.journal_mode').get()?.journal_mode;
   // MEMORY supports rollback only while a volatile main database exists.
   // OFF cannot undo spilled writes even without a process exit.
   if (!main || !(PERSISTENT_JOURNAL_MODES.has(mode) || (!main.file && mode === 'memory'))) {
     throw new OperationError('purchase_store_unsupported_journal_mode', 'purchase transactions require a rollback and crash-safe journal mode');
   }
   if (main.file) {
-    const synchronous = db.prepare('PRAGMA main.synchronous').get()?.synchronous;
+    const synchronous = metadataStatement(db, 'PRAGMA main.synchronous').get()?.synchronous;
     // WAL needs a commit sync; rollback journals also need the EXTRA directory sync.
     if (synchronous !== SYNCHRONOUS_EXTRA && !(mode === 'wal' && synchronous === SYNCHRONOUS_FULL)) {
       throw new OperationError('purchase_store_unsupported_synchronous', 'persistent purchase transactions require synchronous FULL or EXTRA for WAL, and EXTRA for rollback journals');
