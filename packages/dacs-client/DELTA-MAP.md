@@ -775,6 +775,10 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | 4c7a9c1b81b8c62b0a8c45fe65b97317f4c68b40 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 800298aebb571f64bc53d4fb12e4f2c0f6fd1abb |
 | D11 | fix(client): D11 rebuild part 06a on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 record rebuilt part 06a source integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/chain.mjs:25`, `packages/dacs-client/src/dacs/chain.mjs:27`, `packages/dacs-client/src/dacs/chain.mjs:45`, `packages/dacs-client/src/dacs/chain.mjs:88`, `packages/dacs-client/src/dacs/chain.mjs:91`, `packages/dacs-client/src/dacs/chain.mjs:100`, `packages/dacs-client/src/dacs/chain.mjs:111`, `packages/dacs-client/src/dacs/chain.mjs:117`, `packages/dacs-client/src/dacs/chain.mjs:130`, `packages/dacs-client/src/dacs/chain.mjs:136`, `packages/dacs-client/src/dacs/chain.mjs:156`, `packages/dacs-client/src/dacs/chain.mjs:162`, `packages/dacs-client/src/dacs/chain.mjs:179`, `packages/dacs-client/src/dacs/chain.mjs:247`, `packages/dacs-client/src/dacs/chain.mjs:263`, `packages/dacs-client/src/dacs/chain.mjs:277` | d038c47516fd96b5ccfb57ea2fdfe11d12bd6c19 |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs:1` | 631654f861dddd1f1b3cbce70da004c96933d5f4 |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs:1` | 900af80069850c3942204a858d8989e8e11a3adc |
 
 ## Complete commit and file inventory
 
@@ -1930,6 +1934,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record rebuilt part 06a source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record retained prerequisite blobs for rebuilt part 06a | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
