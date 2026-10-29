@@ -521,6 +521,10 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   const unpinned = unpinnedVerifiedClaims(invocation);
   const pins = sessionRegistryPins ?? [];
   if (presenceOnly) {
+    // Retained sessions must replay after ordinary claim expiry, without
+    // changing the bundle or inventing a different evaluation time.
+    if (Array.isArray(presence?.bundle?.claims) && presence.bundle.claims.some(claim => claim?.expiresAt !== undefined))
+      return 'expiring claims cannot be retained for presence-only seller sessions';
     if (pins.length > 0 && pins[0] !== registryPin) return 'the Vet session registry resolved another session registry snapshot';
     if (pins.length === 0) pins.push(registryPin);
   }

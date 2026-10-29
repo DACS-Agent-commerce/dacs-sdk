@@ -95,19 +95,55 @@ test('ending an active producer reports durable invalidation before deferred del
  w.config.wallet.signBytes=async bytes=>{if(once){once=false;entered();await gate;}return sign(bytes);};
  const pending=p.resolveBuyer(a),held=pending.catch(error=>error);await ready;
  assert.deepEqual(await p.release({jobId:JOBS[0]}),{invalidated:true,deleted:false});resume();assert.ok((await held) instanceof Error);
- await p.sweep(()=>true);assert.equal(w.local.writes.length,0);assert.equal(w.controls.signs,1);assert.equal(w.store.usage().jobs,0,'the ended marker fences replay outside active quota');w.base.close();
+ await p.sweep(()=>true);assert.equal(w.local.writes.length,0);assert.equal(w.controls.signs,1);assert.equal(w.store.usage().jobs,0,'the ended row is deleted after this producer settles');w.base.close();
 });
 
-for(const restart of [false,true])test(`no-intent endings retain replay fences outside active-job quota, reopen=${restart}`,async()=>{
+for(const restart of [false,true])test(`ending missing jobs writes no marker, reopen=${restart}`,async()=>{
  const w=fixture({maxJobs:1});
  for(let index=0;index<8;index++){
-  const jobId=JOBS[0].slice(0,-1)+String(index);
-  const provider=w.provider();
-  assert.deepEqual(await provider.release({jobId}),{invalidated:true,deleted:false});
-  assert.equal(w.store.usage().remainingJobs,1);
+  const jobId=JOBS[0].slice(0,-1)+String(index),provider=w.provider();
+  assert.deepEqual(await provider.release({jobId}),{invalidated:true,deleted:true});
+  assert.deepEqual(await w.store.entries(),[]);assert.equal(w.store.usage().bytes,0);
   const fresh=restart?w.provider():provider;
-  await assert.rejects(fresh.resolveBuyer(w.input(jobId)),{code:'context_released'});
+  await assert.rejects(fresh.resolveBuyer(w.input(jobId),{writable:()=>false}),{code:'not-pending'});
  }
- assert.equal((await w.provider().resolveBuyer(w.input(JOBS[1]))).disposition,'present');
- assert.equal(w.store.usage().remainingJobs,0);w.base.close();
+ assert.equal((await w.provider().resolveBuyer(w.input(JOBS[1]))).disposition,'present');w.base.close();
+});
+for(const check of [undefined,null,true])test(`a purchase-state function is required: ${String(check)}`,async()=>{
+ const {createDevnetDemoAgreementContextProvider}=await import('../src/devnet-demo/agreement-context.mjs');
+ const w=fixture(),p=createDevnetDemoAgreementContextProvider(w.config);
+ await assert.rejects(p.resolveBuyer(w.input(),{writable:check}),/purchase-state check is required/);
+ assert.deepEqual(await w.store.entries(),[]);assert.equal(w.controls.signs,0);assert.equal(w.issued.size,0);w.base.close();
+});
+for(const pending of [false,true])test(`ended row cleanup frees one-job capacity with crash-left pending=${pending}`,async()=>{
+ const w=fixture({maxJobs:1}),p=w.provider(),input=w.input();await p.resolveBuyer(input);
+ const [key]= (await w.store.entries())[0];
+ if(pending)await w.store.update(key,row=>({...row,ops:{...row.ops,buyer:{...row.ops.buyer,steps:{...row.ops.buyer.steps,interrupted:{state:'pending'}}}}}));
+ assert.deepEqual(await p.release({jobId:JOBS[0]}),{invalidated:true,deleted:true});
+ assert.equal(w.store.usage().jobs,0);assert.equal((await w.provider().resolveBuyer(input)).code,'legacy_party_vet_state_missing');
+ // Quarantine also occupies a slot: remove that ended replay row before the next job.
+ await w.provider().release({jobId:JOBS[0]});
+ assert.equal((await w.provider().resolveBuyer(w.input(JOBS[1]))).disposition,'present');w.base.close();
+});
+for(const adapter of ['recoverBuyer','resolveSeller','resumableBuyer'])test(`${adapter} preserves final-read journal code and cause`,async()=>{
+ const w=fixture(),input=w.input();await w.provider().resolveBuyer(input);
+ const cause=new Error('TEST disk failure'),error=Object.assign(new Error('TEST journal read',{cause}),{code:'journal-error'}),read=w.config.store.read;let count=0;
+ w.config.store.read=async key=>{if(++count===2)throw error;return read(key);};
+ const p=w.provider();await assert.rejects(adapter==='resolveSeller'?p.resolveSeller(request(w,input)):p[adapter](input),caught=>caught===error&&caught.cause===cause);w.base.close();
+});
+for(const transition of ['end','select'])test(`buyer refuses ${transition} committed before context update returns`,async()=>{
+ const w=fixture(),p=w.provider(),input=w.input(),update=w.config.store.update;let once=true,entered,resume;
+ const ready=new Promise(r=>entered=r),gate=new Promise(r=>resume=r);
+ w.config.store.update=async(key,change)=>{let pins=false;const result=await update(key,(row,rows)=>{const value=change(row,rows);pins=Boolean(!row?.seller&&value?.seller);return value;});if(pins&&once){once=false;entered();await gate;}return result;};
+ const held=p.resolveBuyer(input).catch(error=>error);await ready;
+ if(transition==='end')await w.provider().release({jobId:JOBS[0]});
+ else{const b=next(input);await w.provider().resolveBuyer(b);await w.provider().release({jobId:JOBS[0],generatedAt:b.scope.generatedAt});}
+ resume();assert.equal((await held).code,'context_released');assert.equal(p.contexts.size,0);w.base.close();
+});
+test('lost challenge retention requests a fresh unused challenge before any signature or evaluation',async()=>{
+ const w=fixture(),update=w.config.store.update;let once=true;
+ w.config.store.update=(key,change)=>update(key,(row,rows)=>{const next=change(row,rows);if(once&&!row?.presentation&&next?.presentation){once=false;throw new Error('TEST lost challenge save');}return next;});
+ await assert.rejects(w.provider().resolveBuyer(w.input()),/lost challenge save/);
+ assert.equal(w.controls.signs,0);assert.equal(w.seen.length,0);
+ assert.equal((await w.provider().resolveBuyer(w.input())).disposition,'present');assert.equal(w.issued.size,2);assert.equal(w.seen.length,1);w.base.close();
 });

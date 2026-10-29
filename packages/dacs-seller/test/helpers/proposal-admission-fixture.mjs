@@ -36,8 +36,10 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
  });
  const open=async()=>{const agent=await api.createSellerAgent(config);t.after(()=>agent.close());return agent;};
  const input=async(agent,jobId=JOB,party=buyer)=>{const challenge=await agent.issueSessionChallenge({jobId,buyer:party.claim}),bundle=fixtureIdentityBundle(party,time);bundle.sessionNonce=challenge.sessionNonce;bundle.presentation.signatures[0].signature=party.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');return{proposal:{},transportIdentity:{jobId,buyer:party.claim,seller:seller.claim},buyerIdentityBundle:bundle};};
- const proposal=async(agent,jobId=JOB,{synthetic=false,generatedAt=time}={})=>{
-  const request=await input(agent,jobId),base=agreementInput({jobId,listing,buyerBundle:request.buyerIdentityBundle,generatedAt});
+ const proposal=async(agent,jobId=JOB,{synthetic=false,generatedAt=time,expiresAt}={})=>{
+  const request=await input(agent,jobId);
+  if(expiresAt!==undefined){const bundle=request.buyerIdentityBundle;bundle.claims[0].expiresAt=expiresAt;bundle.presentation.signatures[0].signature=buyer.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');}
+  const base=agreementInput({jobId,listing,buyerBundle:request.buyerIdentityBundle,generatedAt});
   const buyerRef=await admission.vetRecord(jobId,buyer.claim,request.buyerIdentityBundle,{requirement:listing.buyerRequirement});
   const sellerRef=await admission.vetRecord(jobId,seller.claim,listing.seller.identity,{requirement:SELLER_REQUIREMENT});
   const actual={...base,buyer:{...base.buyer,vetRecordRef:buyerRef},seller:{...base.seller,vetRecordRef:sellerRef}};
