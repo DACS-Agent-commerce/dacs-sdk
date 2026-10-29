@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "ad1677190b43f72b3505ff47aa87581893629aa0"
+        "blob": "5b35842958570e8c6032905ce8ba06551c0d35d8"
       },
       "DELTA-LEDGER.json": {
-        "blob": "18471ea61511731767aca55b8f3494e18655d04a"
+        "blob": "086613359b2228ed6c394963ca2d94406540bc2c"
       },
       "DELTA-MAP.md": {
-        "blob": "2c9bd812e0d995fdce0cebf7ae3ae74bba82e805"
+        "blob": "e31c3ef7f5e08330198f74cbdd2439c6c038cb55"
       },
       "DELTA-NOTES.md": {
         "blob": "b4031ffc680093a80e7c098c38debfef5a25be3c"
@@ -385,7 +385,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "9d1c40c8aa5e04dfbc958d379d8d7f7148d80de3"
+        "blob": "51e7f29b8ae295b1f31979211103be63cb3eaf0e"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "d46c6253c717d9e494c9103c147cf5122dc6a1fa"
+        "blob": "2c24ebf2d9e0f8ddbfe755dc797161c17f932daa"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1204,6 +1204,9 @@
       "src/devnet-demo/storage-write-recovery.mjs": {
         "blob": "339752ef02b10b9f2740e833f9b6a1be239ed2b8"
       },
+      "src/portal-capability.mjs": {
+        "blob": "d6200b11094df0e624dd644d980ac3bc7444868d"
+      },
       "src/public/portal-intent/intent.mjs": {
         "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
       },
@@ -1220,7 +1223,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "f8a6d5faf5efbc613ce344a1ebd48f201661b8de"
+        "blob": "5a5fdd164e41dd4abc7f1107620ce413458b29a6"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1616,7 +1619,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "774830956c755f0d28393d11443c3036efb54187"
+        "blob": "0f866a907680797a18eaaa3f0b284e299ab13866"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
@@ -1635,6 +1638,9 @@
       },
       "test/passive-observation.test.mjs": {
         "blob": "f760ea0ac2e21bd42cef0200f24c0e2dfec637b7"
+      },
+      "test/portal-capability.test.mjs": {
+        "blob": "073700c9a849a4bfc092cb5913498364fd622f0d"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
