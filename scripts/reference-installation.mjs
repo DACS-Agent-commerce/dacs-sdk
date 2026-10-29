@@ -36,7 +36,10 @@ export function installationInventory(project) {
     try { stat = lstatSync(join(project, path)); }
     catch (error) { if (error.code === "ENOENT") return; throw error; }
     const entry = { kind: kind(stat) };
-    if (entry.kind === "file") Object.assign(entry, { digest: digest(readFileSync(join(project, path))), mode: stat.mode & 0o7777, nlink: stat.nlink });
+    if (entry.kind === "file") {
+      if (stat.size > ARCHIVE_LIMITS.unpackedBytes) throw new Error("installation file is larger than the inventory limit: " + path);
+      Object.assign(entry, { digest: digest(readFileSync(join(project, path))), mode: stat.mode & 0o7777, nlink: stat.nlink });
+    }
     if (entry.kind === "directory") entry.mode = stat.mode & 0o7777;
     if (entry.kind === "link") entry.target = readlinkSync(join(project, path));
     inventory.set(path, entry);
@@ -305,7 +308,9 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
  * missing/replaced directories, files, command links and generated artifacts are differences. */
 export function installationDifferences(project, reference) {
   if (reference.errors.length || !(reference.inventory instanceof Map)) return ["reference installation did not complete"];
-  const actual = installationInventory(project);
+  let actual;
+  try { actual = installationInventory(project); }
+  catch (cause) { return ["cannot read the installation: " + cause.message]; }
   const differences = [];
   for (const path of [...new Set([...reference.inventory.keys(), ...actual.keys()])].sort()) {
     const expected = reference.inventory.get(path);

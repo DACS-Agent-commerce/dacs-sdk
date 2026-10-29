@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -9,7 +9,7 @@ import { cacheArchive, npmCi, packTarball, serveArchives, sri, tarArchive } from
 
 // Keep the closure executable as plain Node ESM.
 const closureModulePath = "../../scripts/installation-closure.mjs";
-const { cachedArchive, npmToolchain, runNpmNode } = await import(closureModulePath);
+const { ARCHIVE_LIMITS, cachedArchive, npmToolchain, runNpmNode } = await import(closureModulePath);
 const referenceModulePath = "../../scripts/reference-installation.mjs";
 const { referenceInstallation, installationDifferences, installationInventory, npmInstallContract } = await import(referenceModulePath);
 function installationClosure(project: string, lock: unknown, readArchive: unknown) {
@@ -742,6 +742,17 @@ describe("reference contract and complete inventory", { timeout: 60_000 }, () =>
     const reference = { errors: [], inventory: installationInventory(project) };
     chmodSync(path, 0o4755);
     expect(installationDifferences(project, reference)).toContain("changed: node_modules/pkg/file.js");
+  });
+
+  it("refuses an inventory whose file exceeds the byte limit instead of throwing", () => {
+    const project = temporaryDirectory();
+    const path = join(project, "node_modules/pkg/huge.bin");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "");
+    truncateSync(path, ARCHIVE_LIMITS.unpackedBytes + 1);
+    const reference = { errors: [], inventory: new Map() };
+    expect(installationDifferences(project, reference))
+      .toEqual([expect.stringContaining("cannot read the installation")]);
   });
 
   it("requires the generated hidden lockfile to finish an installation", () => {
