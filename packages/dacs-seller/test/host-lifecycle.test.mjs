@@ -1,6 +1,5 @@
+import {NATIVE_PAYMENT_EVIDENCE} from '../src/dacs/native-payment-evidence-consumer.mjs';
 import test from 'node:test';
-// Retained native-success controls apply after the native settlement part.
-const nativeCommitmentTest=test.skip;
 import assert from 'node:assert/strict';
 import fs, {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
@@ -79,7 +78,7 @@ test('the host still refuses a native artifact capability without its readbacks'
  const host=await f.start();await host.close();
 });
 
-nativeCommitmentTest('close waits for an accepted native artifact readback before releasing state',async t=>{
+test('close waits for an accepted native artifact readback before releasing state',async t=>{
  const entered=defer(),releaseRead=defer();let block=true,closedAt=false,afterClose=0;
  const f=await fixture(t),native=f.native;
  const artifactAnchor=Object.freeze({...native,readRetained:async input=>{
@@ -106,7 +105,7 @@ nativeCommitmentTest('close waits for an accepted native artifact readback befor
  await reopened.close();
 });
 
-nativeCommitmentTest('a readback past its deadline answers uncertain and close still releases state',async t=>{
+test('a readback past its deadline answers uncertain and close still releases state',async t=>{
  const f=await fixture(t),native=f.native;let aborted=0;
  // The deadline is a host setting; shorten it so a readback that cannot finish
  // inside it is exercised without waiting the production fifteen seconds.
@@ -156,7 +155,7 @@ test('host close destroys a connection that never finishes its request headers',
  }finally{socket.destroy();}
 });
 
-nativeCommitmentTest('wrapped native artifact readbacks keep their capability receiver',async t=>{
+test('wrapped native artifact readbacks keep their capability receiver',async t=>{
  const f=await fixture(t),native=f.native;
  const artifactAnchor={...native,reads:0,verifies:0,
   async readRetained(input){this.reads++;return native.readRetained(input);},
@@ -170,7 +169,7 @@ nativeCommitmentTest('wrapped native artifact readbacks keep their capability re
  await host.close();
 });
 
-nativeCommitmentTest('wrapped native artifact publish keeps its capability receiver',async t=>{
+test('wrapped native artifact publish keeps its capability receiver',async t=>{
  const f=await fixture(t),native=f.native;
  const artifactAnchor={...native,published:0,async publish(input){this.published++;return native.publish(input);}};
  const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
@@ -194,7 +193,7 @@ test('host forwards capability metadata getters with the capability as receiver'
  const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
  const answer=await client.propose(request);assert.equal(answer.disposition,'complete');
  await anchorAgreement(f,request,answer);
- await assertStagedCommit(host,request);
+ assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');
  await host.close();
 });
 
@@ -293,17 +292,17 @@ test('host refuses malformed options before opening any state',async t=>{
  for(const [label,options,expected] of cases)await assert.rejects(startSellerHost(options),expected,label);
 });
 
-for(const method of ['readRetained','verifyReceipt','publish'])test(`staged native commitment enters no ${method} and host closes cleanly`,async t=>{
+for(const method of ['readRetained','verifyReceipt','publish'])test(`staged native payment enters no ${method} and host closes cleanly`,async t=>{
  const f=await fixture(t),native=f.native;let calls=0;
  const artifactAnchor={...native,[method]:async input=>{calls++;return native[method](input);}};
  const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
  const answer=await client.propose(request);assert.equal(answer.disposition,'complete');await anchorAgreement(f,request,answer);
- await assertStagedCommit(host,request);
+ await assertStagedPayment(host,request);
  assert.equal(calls,0);await host.close();const reopened=await f.start();await reopened.close();
 });
 
-async function assertStagedCommit(host,request){
- const body={jobId:request.transportIdentity.jobId},text=JSON.stringify(body),path='/dacs/v1/commitments';
+async function assertStagedPayment(host,request){
+ const body={jobId:request.transportIdentity.jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim,nativePaymentEvidence:NATIVE_PAYMENT_EVIDENCE},text=JSON.stringify(body),path='/dacs/v1/payments';
  const auth=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW});
  const signed=await auth.request(path,body,text);
  const response=await fetch(host.url+path,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:text});
