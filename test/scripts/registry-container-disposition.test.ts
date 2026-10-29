@@ -1173,14 +1173,16 @@ describe("registry/container evidence", () => {
   });
 
   it.each(["dacs", "dacs-node"])("rejects a %s lock entry with different tarball bytes and reports both digests", name => {
-    const { packages, run } = dependencyPolicyHarness();
+    const { contents, packages, lockPackage, run } = dependencyPolicyHarness();
     const location = `node_modules/@kynesyslabs/${name}`;
     const expected = packages[location]?.integrity;
-    packages[location] = { ...packages[location], integrity: "sha512-wrong" };
+    // Keep the reference replayable so this reaches candidate authentication.
+    lockPackage(location, { ...contents[location], "index.js": "module.exports = 'substituted';" });
+    const observed = packages[location]?.integrity;
     const result = run();
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(`candidate package integrity does not match the packed tarball: ${location} ` +
-      `(expected ${String(expected)}, observed sha512-wrong)`);
+      `(expected ${String(expected)}, observed ${String(observed)})`);
   });
 
   it("rejects a candidate lock entry naming another package", () => {
@@ -1257,10 +1259,20 @@ describe("registry/container evidence", () => {
     .map(version => [name, nested, version] as const)))("rejects a %s copy, nested=%s, whose lock version is %s", (name, nested, version) => {
     const { fixture, location } = releaseCopy(name, nested);
     fixture.packages[location] = { ...fixture.packages[location], version };
+    if (!nested && version !== undefined) {
+      // A contradictory root edge makes npm refuse the reference before the candidate check.
+      (fixture.manifest.dependencies as Record<string, string>)[name] = version;
+    }
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(`lock version does not match the release: ${location} ` +
-      `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
+    if (!nested && version === undefined) {
+      expect(result.stderr).toContain("cannot derive reference installation:");
+      expect(result.stderr).toContain("reference installation did not complete");
+    } else {
+      expect(result.stderr).toContain(`lock version does not match the release: ${location} ` +
+        `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
+    }
+    expect(result.report).toBeNull();
   });
 
   it.each(releaseCopies.flatMap(([name, nested]) => ([[name, "0.0.0-wrong"], ["@kynesyslabs/other", CANDIDATE_VERSION]] as const)
@@ -2624,7 +2636,7 @@ describe("dependency policy over npm ci installations", () => {
     expect(loaded.status, loaded.stderr).toBe(0);
     expect(loaded.stdout).toBe("unreleased-copy\n");
     expect(policy.status, policy.stderr).not.toBe(0);
-    expect(policy.stderr).toContain("link target is not a reference file or package directory: node_modules/plugin/node_modules/.bin/node_modules");
+    expect(policy.stderr).toContain("link target is not a reference file: node_modules/plugin/node_modules/.bin/node_modules");
     expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
@@ -2673,7 +2685,8 @@ describe("dependency policy over npm ci installations", () => {
     expect(spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" }).stdout)
       .toBe("unreleased-copy\n");
     expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain("cannot authenticate an unverified registry archive: node_modules/plugin");
+    expect(policy.stderr).toContain("source reads: node_modules/plugin: integrity has no single sha512 digest: sha1-");
+    expect(policy.stderr).toContain("reference installation did not complete");
     expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
