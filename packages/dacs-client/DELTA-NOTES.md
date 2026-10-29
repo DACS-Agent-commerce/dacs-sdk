@@ -190,7 +190,7 @@ These records add no runtime behavior. SQL callbacks remain allowed inside a lea
 
 D11 transaction adapter dependency split:
 
-The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. Its statement and callback checks are retained under the separate module path; the earlier core replacement did not supply that import. The boundary is internal and does not enable purchase actions or package exports.
+The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
 
 D11 SQLite transaction split:
 
