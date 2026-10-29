@@ -1010,6 +1010,12 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
 | | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
+| D11 | fix(client): D11 align purchase transaction options and merge records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/purchase-tx-result-options.test.mjs:1` | f25fa0926a55195567f9a78c29f857b055d5ea2b |
+| | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 67ba42ca11407a20ce0869ef36079e43f8056d9b |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 5659a095247774027f29b46cc9cb2c847994007b |
+| | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | 3710b30c4b3331243431f1e67e2f6acfa8c433e2 |
 
 ## Complete commit and file inventory
 
@@ -2654,6 +2660,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
 | fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
+| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/test/purchase-tx-result-options.test.mjs:1` |
 
 ## Original moved files
 
