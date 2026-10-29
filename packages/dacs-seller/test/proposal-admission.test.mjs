@@ -169,3 +169,12 @@ test('a close during an accepted replay revocation read refuses with the lifecyc
  const pending=agent.stagedProposal(input);await gate.started;agent.close();gate.release();
  await assert.rejects(pending,error=>error.code==='seller_closed');
 });
+
+// The transport identity is buyer-supplied. A proposal naming another seller
+// must not reach the admission capability or retain an accepted presentation.
+test('a proposal naming another seller is refused before admission',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=f.input(agent);
+ input.transportIdentity.seller=testWallet(44).claim;
+ await assert.rejects(agent.stagedProposal(input),error=>error.code==='seller_mismatch'&&error.status===409);
+ assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,0);
+});

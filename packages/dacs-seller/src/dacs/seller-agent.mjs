@@ -344,6 +344,9 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     requireOpen();
     const jobId = transportIdentity?.jobId;
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+    // The transport identity is buyer-supplied: a request naming another seller
+    // is refused before any capability is asked or anything is retained.
+    if (!sameCanonicalClaimIdentity(transportIdentity?.seller, claim)) throw new SellerAgentError('seller_mismatch', 'proposal seller is not this agent', 409);
     assertVetContext();
     assertSessionAdmission();
     const existing = sessions.get(jobId);
