@@ -1,4 +1,4 @@
-import { canonicalize, contentHash, identityBundleHash, paymentEvidenceAddress, sha256Hex, verifySellerPaymentIntake, verifySettlementEvidence } from '@kynesyslabs/dacs';
+import { canonicalize, contentHash, identityBundleHash, paymentEvidenceAddress, sameCanonicalClaimIdentity, sha256Hex, verifySellerPaymentIntake, verifySettlementEvidence } from '@kynesyslabs/dacs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord } from './fixture-anchors.mjs';
 import { readAdmissionCapability } from './session-admission.mjs';
 import { agreementTerms, deliverableAddress, deliveryEvidenceAddress, DEM_RAIL_DEFINITION, ed25519Deps, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
@@ -38,6 +38,8 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
             error('payment_observation_unavailable', 'fixture payment observation is not configured');
         if (!session.commitment)
             error('not_committed', 'the Agreement is not committed; no payment is accepted before commitment', 422);
+        if (!sameCanonicalClaimIdentity(payerPayingKey, session.buyerBundle.presentedBy))
+            error('payer_not_authenticated', 'the paying key is not the authenticated buyer claim', 422);
         await commit({ jobId: session.jobId });
         txHash=session.paymentWork?.intake?.settlementIdentity?.txHash??normalized(txHash);
         const terms = agreementTerms(session.agreement);
