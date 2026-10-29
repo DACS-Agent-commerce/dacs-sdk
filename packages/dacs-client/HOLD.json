@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "2d17133e487b825b79782e9f303df20fab07ec5e"
+        "blob": "8d3fcbe6f6f63d9ad11720370a2db1f2110b7c4a"
       },
       "DELTA-LEDGER.json": {
-        "blob": "eef8e48a562ae0c8b1d36de09303b25d68911358"
+        "blob": "c061aa04e13114bc16cd97724c590bf5bb72b323"
       },
       "DELTA-MAP.md": {
-        "blob": "29a970382694307d3b17925c8c853b9a1e568c8b"
+        "blob": "b0163bae994506ccf0192984db858e18b6cce2d6"
       },
       "DELTA-NOTES.md": {
         "blob": "a035356ea0561b4bf4cde429907c705946cee479"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "7b52c9546c72df9687771f4106b9fa647712b611"
+        "blob": "f20baf37c3808bad84b12044fb44200c54f725a1"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1274,7 +1274,7 @@
         "blob": "9f166e44137d98f78178f830d44077153c1cef16"
       },
       "src/util/sqlite-statement-boundary.mjs": {
-        "blob": "97e9b4589296878d5eb84936431abe6b467c1456"
+        "blob": "23f1fc2b32ecbc1e5996180f64927e9b3a935628"
       },
       "src/util/sqlite-write-lease.mjs": {
         "blob": "e45c8004ff9c71bb2c212912d5f44e50be256843"
@@ -1736,7 +1736,7 @@
         "blob": "f11b772c4912bbd399a17ebc0b7cf061de341ce6"
       },
       "test/sqlite-iterator-own-methods.test.mjs": {
-        "blob": "e29b45bfeb0fd5a8899b5ecb882cc162e84721ba"
+        "blob": "cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8"
       },
       "test/sqlite-iterator-own-next-refusal.test.mjs": {
         "blob": "bb118dd861e66c1f7f15d9268ae8e721103efd9d"
@@ -1749,6 +1749,9 @@
       },
       "test/sqlite-statement-boundary.test.mjs": {
         "blob": "169a5edac4f556d5ddec2e0278223be9a27f7f9c"
+      },
+      "test/sqlite-statement-policy.test.mjs": {
+        "blob": "8bdb94975979ee6da61abb7dae0f0b1266327da3"
       },
       "test/sqlite-write-lease.test.mjs": {
         "blob": "aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2"

@@ -32,7 +32,7 @@ function guardedPrepare(db, ...args) {
     // SQLite changes query_only during preparation, even for EXPLAIN. Close
     // the fence before returning a statement or inspecting its program.
     if (callbacks.some(frame => frame.db === db) && !isSqliteHandleRetired(db)
-      && nativeGet.call(nativePrepare.call(db, 'PRAGMA query_only')).query_only === 0) {
+      && Number(nativeGet.call(nativePrepare.call(db, 'PRAGMA query_only')).query_only) === 0) {
       try { nativeExec.call(db, 'PRAGMA query_only=ON'); }
       catch { retireSqliteHandle(db); }
       throw new TypeError('guarded SQL cannot clear the read-only policy');
@@ -231,7 +231,7 @@ export function withSqliteStatementGuard(db, predicate, fn) {
   // captured before installation fail on it. It is not a security boundary:
   // code that holds a native exec can clear the flag itself.
   nativeExec.call(db, 'PRAGMA query_only=ON');
-  callbacks.push({ db, predicate, writable: parent ? parent.writable : saved === 0 });
+  callbacks.push({ db, predicate, writable: parent ? parent.writable : Number(saved) === 0 });
   try {
     check();
     return synchronousResult(db, fn());
