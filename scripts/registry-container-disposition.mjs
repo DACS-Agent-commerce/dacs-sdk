@@ -253,7 +253,7 @@ function candidateIntegrityErrors({ registry, candidates, closure }) {
 function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet, version }) {
   const project = realpathSync(projectPath);
   // npm reads both files as UTF-8 text and ignores a leading byte-order mark.
-  const npmJson = bytes => JSON.parse(bytes.toString("utf8").replace(/^﻿/, ""));
+  const npmJson = bytes => JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
   const manifestBytes = readFileSync(join(project, "package.json"));
   const manifest = npmJson(manifestBytes);
   const lock = npmJson(readFileSync(join(project, "package-lock.json")));

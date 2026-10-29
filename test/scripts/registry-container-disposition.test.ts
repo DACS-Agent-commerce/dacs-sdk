@@ -200,7 +200,7 @@ describe("registry/container evidence", () => {
     const fixture = dependencyPolicyHarness();
     const result = fixture.run(project => {
       for (const file of ["package.json", "package-lock.json"]) {
-        writeFileSync(join(project, file), "﻿" + readFileSync(join(project, file), "utf8"));
+        writeFileSync(join(project, file), "\uFEFF" + readFileSync(join(project, file), "utf8"));
       }
     });
     expect(result.stderr).toBe("");
