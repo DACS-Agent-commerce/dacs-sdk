@@ -20,6 +20,7 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
 const scratch: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -828,7 +829,7 @@ describe("candidate copies hidden in the installed tree", () => {
 // served and fields for its entry); `declared` adds to the consumer manifest.
 async function registryInstallation(directory: string, archives: Record<string, Buffer>,
   locked: Record<string, [archive: string, fields: Record<string, unknown>]>,
-  declared: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> } = {}) {
+  declared: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> } = {}, npmrc = "") {
   const project = join(directory, "project");
   const cache = join(directory, "npm-cache");
   mkdirSync(project, { recursive: true });
@@ -856,12 +857,13 @@ async function registryInstallation(directory: string, archives: Record<string, 
       ...Object.fromEntries(Object.entries(locked).map(([location, [archive, fields]]) => [location, entry(archive, fields)])) };
     writeFileSync(join(project, "package.json"), JSON.stringify(manifest));
     writeFileSync(join(project, "package-lock.json"), JSON.stringify({ name: manifest.name, version: manifest.version, lockfileVersion: 3, requires: true, packages }));
+    writeFileSync(join(project, ".npmrc"), npmrc);
     const install = await npmCi(project, server.registry, cache);
     expect(install.status, install.output).toBe(0);
-    const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
+    const runPolicy = () => spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-policy",
       project, server.registry, join(directory, "report.json"), directory, CANDIDATE_VERSION],
-    { cwd: repoRoot, encoding: "utf8", env: { ...process.env, npm_config_cache: cache } });
-    return { project, policy };
+    { cwd: repoRoot, encoding: "utf8", env: { ...process.env, npm_config_cache: cache, npm_config_registry: server.registry } });
+    return { project, cache, policy: runPolicy(), runPolicy };
   } finally { await server.close(); }
 }
 
@@ -871,6 +873,103 @@ describe("dependency policy over npm ci installations", () => {
     scratch.push(directory);
     return directory;
   };
+
+  const oldCandidateGraph = (name = "@kynesyslabs/dacs", intermediate = false, alias = false) => {
+    const specifier = alias ? "inner" : name;
+    const dependencies = { [specifier]: alias ? `npm:${name}@0.0.9` : "0.0.9" };
+    const owner = intermediate ? "mid" : "plugin";
+    const archives = {
+      plugin: packTarball({ "package.json": packageJson("plugin", CANDIDATE_VERSION,
+        { dependencies: intermediate ? { mid: CANDIDATE_VERSION } : dependencies }),
+      "index.js": `module.exports = require(${JSON.stringify(intermediate ? "mid" : specifier)});` }),
+      mid: packTarball({ "package.json": packageJson("mid", CANDIDATE_VERSION, { dependencies }),
+        "index.js": `module.exports = require(${JSON.stringify(specifier)});` }),
+      old: packTarball({ "package.json": packageJson(name, "0.0.9"), "index.js": "module.exports = 'unreleased-copy';" }),
+    };
+    const locked: Record<string, [string, Record<string, unknown>]> = {
+      "node_modules/plugin": ["plugin", { dependencies: intermediate ? { mid: CANDIDATE_VERSION } : dependencies }],
+      [`node_modules/${owner}/node_modules/${specifier}`]: ["old", { version: "0.0.9", ...(alias ? { name } : {}) }],
+    };
+    if (intermediate) locked["node_modules/mid"] = ["mid", { dependencies }];
+    return { archives, locked };
+  };
+  const expectLinkedRefusal = (directory: string, policy: { status: number | null; stderr: string }) => {
+    expect(policy.status, policy.stderr).not.toBe(0);
+    expect(policy.stderr).toContain("install-strategy=linked");
+    expect(existsSync(join(directory, "report.json"))).toBe(false);
+  };
+
+  it.each(CANDIDATES.flatMap(name => [false, true].map(intermediate => [name, intermediate] as const)))(
+    "refuses linked %s copies below a dependency (transitive owner: %s)", async (name, intermediate) => {
+      const directory = temporaryDirectory();
+      const { archives, locked } = oldCandidateGraph(name, intermediate);
+      const { project, policy } = await registryInstallation(directory, archives, locked,
+        { dependencies: { plugin: CANDIDATE_VERSION } }, "install-strategy=linked\n");
+      const loaded = spawnSync(process.execPath, ["-p", "require('plugin')"], { cwd: project, encoding: "utf8" });
+      expect(loaded.status, loaded.stderr).toBe(0);
+      expect(loaded.stdout).toBe("unreleased-copy\n");
+      expectLinkedRefusal(directory, policy);
+    });
+
+  it.each(["environment", "userconfig", "globalconfig"])("refuses linked installs selected through %s", async source => {
+    const directory = temporaryDirectory();
+    if (source === "environment") vi.stubEnv("npm_config_install_strategy", "linked");
+    else {
+      const config = join(directory, `${source}.npmrc`);
+      writeFileSync(config, "install-strategy=linked\n");
+      vi.stubEnv(`npm_config_${source}`, config);
+    }
+    const { archives, locked } = oldCandidateGraph();
+    const { policy } = await registryInstallation(directory, archives, locked, { dependencies: { plugin: CANDIDATE_VERSION } });
+    expectLinkedRefusal(directory, policy);
+  });
+
+  it("refuses a correct linked install with the explicit layout reason", async () => {
+    const directory = temporaryDirectory();
+    const { policy } = await registryInstallation(directory, {}, {}, {}, "install-strategy=linked\n");
+    expectLinkedRefusal(directory, policy);
+  });
+
+  it("refuses linked nested aliases before the shared candidate identity scans", async () => {
+    const directory = temporaryDirectory();
+    const { archives, locked } = oldCandidateGraph(CANDIDATES[0], false, true);
+    const { policy } = await registryInstallation(directory, archives, locked,
+      { dependencies: { plugin: CANDIDATE_VERSION } }, "install-strategy=linked\n");
+    expectLinkedRefusal(directory, policy);
+  });
+
+  it("invalidates a hoisted success report after a linked reinstall", async () => {
+    const directory = temporaryDirectory();
+    const fixture = await registryInstallation(directory, {}, {});
+    expect(fixture.policy.status, fixture.policy.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(join(directory, "report.json"), "utf8")).passed).toBe(true);
+    writeFileSync(join(fixture.project, ".npmrc"), "install-strategy=linked\n");
+    const toolchain = npmToolchain();
+    runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", `--cache=${fixture.cache}`],
+      { cwd: fixture.project });
+    expectLinkedRefusal(directory, fixture.runPolicy());
+  });
+
+  it("refuses a linked tree when the verifier's contract instead selects hoisted", async () => {
+    const directory = temporaryDirectory();
+    const fixture = await registryInstallation(directory, {}, {}, {}, "install-strategy=linked\n");
+    writeFileSync(join(fixture.project, ".npmrc"), "install-strategy=hoisted\n");
+    const policy = fixture.runPolicy();
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain(TREE);
+    expect(existsSync(join(directory, "report.json"))).toBe(false);
+  });
+
+  it.each(["hoisted", "nested", "shallow"])("keeps canonical checks for %s installs outside the linked layout", async strategy => {
+    const directory = temporaryDirectory();
+    const { archives, locked } = oldCandidateGraph();
+    const { policy } = await registryInstallation(directory, archives, locked,
+      { dependencies: { plugin: CANDIDATE_VERSION } }, `install-strategy=${strategy}\n`);
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain("candidate package integrity does not match");
+    expect(policy.stderr).toContain("candidate package lock version does not match");
+    expect(existsSync(join(directory, "report.json"))).toBe(false);
+  });
 
   it("accepts the release candidates npm installed from the isolated registry", async () => {
     const { policy } = await registryInstallation(temporaryDirectory(), {}, {});

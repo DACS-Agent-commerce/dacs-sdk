@@ -202,7 +202,7 @@ function releaseCopyErrors(location, record, { name, integrity, version }, regis
   return errors;
 }
 
-// The installed lock locations, by the package name each is installed under.
+// Hoisted, nested and shallow installs use lock locations as installed paths.
 // The tree matched npm's own install of the lock before this is trusted.
 function candidateInventory(closure) {
   const modules = new Map();
@@ -258,6 +258,9 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
   const candidates = releaseCandidates(releaseSet, version);
   const installer = npmInstallContract(project);
+  if (installer.config["install-strategy"] === "linked") {
+    throw new Error("cannot authenticate candidate copies under install-strategy=linked: lock locations are not installed paths");
+  }
   const closure = referenceInstallation({ manifest, lock, installer,
     readArchive: (_location, entry) => cachedArchive(installer.config.cache, entry.integrity) });
   const differences = installationDifferences(project, closure).map(line => "installed tree is not the locked archives: " + line);
