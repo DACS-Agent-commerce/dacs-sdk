@@ -565,6 +565,9 @@ The provenance removal test selects the last record with changed file bytes, so 
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 8bbbb0d64a1faca5dba3f8ff1a6d570e5dd64228 |
 | | `packages/dacs-client/test/sqlite-statement-boundary.test.mjs:1` | c21a4ff46a235aba0dd0cf6a9e7f6f671dceaf3a |
 | | `packages/dacs-client/test/sqlite-statement-policy.test.mjs:1` | 9c2954d2f2211121c78398687786293d31d4ba76 |
+| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
+| | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
 
 ## Complete commit and file inventory
 
@@ -1404,6 +1407,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 verify archived boundary records separately | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 verify archived boundary records separately | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 verify archived boundary records separately | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
 
 ## Original moved files
 
