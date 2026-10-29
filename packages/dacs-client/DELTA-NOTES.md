@@ -1,7 +1,7 @@
 # client package deltas
 
 Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. Package exports remain empty.
-Commit subjects below are exact, unique Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. PROVENANCE.json remains the immutable original copy inventory.
+Commit subjects below are exact Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. Where two reachable commits share a subject, as when a rebuilt part keeps its earlier published history, each record also names its full commit hash, and the subject must still match. PROVENANCE.json remains the immutable original copy inventory.
 
 ## D10 — Strip unused modes
 
