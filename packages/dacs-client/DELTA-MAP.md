@@ -744,6 +744,9 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | D11 | fix(client): D11 refuse extra passive status and block envelopes | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:187`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:196`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:198`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:223`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:294`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:918`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1078`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1088` | 1be7084f40f453e2fdee9eead810d469b6ae44b5 |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | f760ea0ac2e21bd42cef0200f24c0e2dfec637b7 |
+| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
+| | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
 
 ## Complete commit and file inventory
 
@@ -1838,6 +1841,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:187`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:196`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:198`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:223`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:294`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:918`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1078`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1088` |
 | fix(client): D11 refuse extra passive status and block envelopes | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
 
 ## Original moved files
 
