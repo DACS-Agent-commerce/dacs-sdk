@@ -131,5 +131,28 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
         persist(session);
         return answer(session);
     }
-    return Object.freeze({ submitPayment });
+    // Read-only recovery of a completed claim: the exact retained payment is
+    // authenticated afresh (commitment readback, intake over the observed
+    // transfer with the permit inspected, never claimed, and every published
+    // artifact), with nothing signed, claimed, anchored or sent.
+    async function readPayment({ jobId, txHash, payerPayingKey }) {
+        const session = sessionFor(jobId), work = session.paymentWork;
+        if (!work || !session.payment || normalized(work.txHash) !== normalized(txHash) || work.payerPayingKey !== payerPayingKey)
+            error('payment_readback_required', 'this exact payment has no durable completion checkpoint');
+        const inspectOnly = { claim: async (candidate) => {
+            const permit = await receiptStore.inspectPermit(work.intake.permitId);
+            if (permit?.status !== 'available' || candidate.jobId !== jobId || candidate.settlementId !== work.intake.settlementId || !same(permit.claim?.authorization, candidate.authorization))
+                error('payment_readback_required', 'the retained permit differs');
+            return { status: 'already-claimed', permitId: work.intake.permitId, claim: permit.claim };
+        } };
+        await commit({ jobId }, { readbackOnly: true });
+        const terms = agreementTerms(session.agreement);
+        const intake = await verifySellerPaymentIntake({ jobId, phaseIndex: terms.paymentPhaseIndex, railId: terms.rail, payerPayingKey, receipt: { kind: 'pay-dem', txHash: work.intake.settlementIdentity.txHash } }, { ...deps(session), receiptStore: inspectOnly });
+        if (intake.disposition !== 'verified' || intake.fulfilment !== 'already-claimed' || !same([intake.settlementId, intake.evidenceHash, intake.permitId], [work.intake.settlementId, work.intake.evidenceHash, work.intake.permitId]))
+            error('payment_readback_required', 'fresh payment authentication differs from the retained payment');
+        assertCredit(jobId);
+        await verifyCompleted(session, intake);
+        return answer(session);
+    }
+    return Object.freeze({ submitPayment, readPayment });
 }
