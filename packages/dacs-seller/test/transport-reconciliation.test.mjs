@@ -9,11 +9,32 @@ import {tmpdir} from 'node:os';
 import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {agentFixture} from './helpers/seller-agent-isolated-fixture.mjs';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
-import {commitmentFixture} from './helpers/commitment-fixture.mjs';
+import {railSteward} from './helpers/rail-authority-fixture.mjs';
 import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 import {createSellerTransportStore,createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {SellerAgentError,transportOutcome} from '../src/dacs/seller-agent.mjs';
+import {createOperatorBuyerAccess} from '../src/devnet-demo/buyer-access.mjs';
 function command(agent,path,body,agreementHash){const rawBody=Buffer.from(JSON.stringify(body));return{body,rawBody,request:{method:'POST',path,jobId:body.transportIdentity?.jobId??body.jobId,buyer:buyer.claim,seller:seller.claim,listingPin:agent.listingPin,agreementHash,bodyHash:core.sha256Hex(rawBody)}};}
+// Real store, server auth, HTTP handler and client. `serve` swaps the agent behind the same journal (a restart).
+async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals',storeOptions={}){
+ const store=createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now:()=>NOW,...storeOptions});t.after(()=>store.close());
+ let hash=body.proposal?.plan.agreementHash??core.contentHash(agent.transportAgreementOf(body.jobId));
+ const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:hash}),now:()=>NOW});
+ const auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now:()=>NOW});
+ const envelope=await client.request(path,body,JSON.stringify(body)),request=auth.readRequest(envelope.header);
+ let handler=createSellerHttpHandler(agent,{authentication:auth});
+ const server=createServer((req,res)=>handler(req,res));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
+ return{store,request,client,auth,peer:createSellerAgentClient({url:`http://127.0.0.1:${server.address().port}`,authentication:client}),setHash:value=>{hash=value;},serve:next=>{handler=createSellerHttpHandler(next,{authentication:auth});}};
+}
+// Holds the first call of agent[name] until released (a worker delayed before its job fence).
+function pauseFirst(t,agent,name){
+ const original=agent[name];let enter,release,first=true;const entered=new Promise(r=>{enter=r;}),blocked=new Promise(r=>{release=r;});t.after(()=>release());
+ agent[name]=async(...args)=>{if(first){first=false;enter();await blocked;}return original(...args);};
+ return{entered,release:()=>{release();agent[name]=original;}};
+}
+const outcome=promise=>promise.then(value=>({value}),error=>({error}));
+
 test('read-only commitment reconciliation neither signs nor publishes absent work and authenticates retained work',async()=>{
  const f=await agentFixture({lifecycle:true});try{const jobId=JOBS[0],request=command(f.agent,'/dacs/v1/commitments',{jobId},f.agent.durableSessionOf(jobId).agreementHash),before=f.anchors.writes.length;assert.equal((await f.agent.reconcileTransport({...request,readOnly:true})).disposition,'indeterminate');assert.equal(f.anchors.writes.length,before);await f.agent.commit({jobId});const writes=f.anchors.writes.length;assert.equal((await f.agent.reconcileTransport({...request,readOnly:true})).disposition,'present');assert.equal(f.anchors.writes.length,writes);}finally{f.close();}
 });
@@ -21,34 +42,16 @@ test('read-only proposal reconciliation cannot produce a missing contribution an
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),request=command(agent,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash),signed=f.signed.length;
  assert.equal((await agent.reconcileTransport({...request,readOnly:true})).disposition,'indeterminate');assert.equal(f.signed.length,signed);const answer=await agent.receiveProposal(body),after=f.signed.length;assert.equal(answer.disposition,'complete');assert.equal((await agent.reconcileTransport({...request,readOnly:true})).disposition,'present');assert.equal(f.signed.length,after);
 });
+// Historical rvc-r6 C-1.
 test('crash before agent, rejected proposal, then corrected receipt releases only the proven unsigned HTTP slot',async t=>{
- const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),path='/dacs/v1/agreements/proposals',store=createSellerTransportStore({path:join(f.dir,'TEST-peer.sqlite'),now:()=>NOW});t.after(()=>store.close());
- let currentHash=body.proposal.plan.agreementHash;const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:currentHash}),now:()=>NOW}),auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now:()=>NOW});
- const envelope=await client.request(path,body,JSON.stringify(body)),request=auth.readRequest(envelope.header);assert.equal(store.reserve(request,body).disposition,'perform');
- if(path==='/dacs/v1/payments'){const prime={...request,path:'/dacs/v1/agreements/proposals',nonce:'e'.repeat(64)};store.finish(store.reserve(prime,{}),200,'{}');}
- const server=createServer(createSellerHttpHandler(agent,{authentication:auth}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
- const peer=createSellerAgentClient({url:`http://127.0.0.1:${server.address().port}`,authentication:client});
- f.admission.verifyReceiptWith(()=> 'invalid');const out=await peer.propose(body);assert.equal(out.disposition,'rejected');
- f.admission.verifyReceiptWith(null);const corrected=structuredClone(body);currentHash=corrected.proposal.plan.agreementHash;assert.equal((await peer.propose(corrected)).disposition,'complete');
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
+ assert.equal(w.store.reserve(w.request,body).disposition,'perform');
+ f.admission.verifyReceiptWith(()=> 'invalid');assert.equal((await w.peer.propose(body)).disposition,'rejected');
+ f.admission.verifyReceiptWith(null);assert.equal((await w.peer.propose(structuredClone(body))).disposition,'complete');
 });
-for(const status of ['absent','indeterminate','rejected'])test(`native Agreement reconciliation preserves ${status} classification and actual cause`,async t=>{
- const f=await commitmentFixture(t),{agent}=await f.prepare(),cause=new Error('TEST authenticated reader '+status);f.controls.read=()=>({disposition:status,cause});const request=command(agent,'/dacs/v1/commitments',{jobId:JOB},agent.durableSessionOf(JOB).agreementHash),out=await agent.reconcileTransport({...request,readOnly:true});assert.equal(out.disposition,'indeterminate');assert.equal(out.reason,status==='absent'?'agreement_not_anchored':status==='rejected'?'agreement_anchor_invalid':'substrate_unavailable');if(status!=='absent')assert.equal(out.cause?.cause,cause);assert.equal(f.local.writes.length,0);
-});
-
 test('actual resume recovers a lost fixture evidence answer after reopen without another CREATE',async()=>{
  const f=await agentFixture({lifecycle:true});try{const jobId=JOBS[0],address=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);await f.agent.commit({jobId});f.anchors.controls.failAfterWrite=address;await assert.rejects(f.agent.submitPayment({jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim}));await f.reopen();assert.notEqual((await f.agent.reconcile({jobId})).status,'held');assert.equal((await f.agent.resume({jobId})).status,'delivered');assert.equal(f.anchors.writes.filter(a=>a===address).length,1);}finally{f.close();}
 });
-
-async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals'){
- const store=createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now:()=>NOW});t.after(()=>store.close());
- let hash=body.proposal?.plan.agreementHash??core.contentHash(agent.transportAgreementOf(body.jobId));
- const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:hash}),now:()=>NOW});
- const auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now:()=>NOW});
- const envelope=await client.request(path,body,JSON.stringify(body)),request=auth.readRequest(envelope.header);
- if(path==='/dacs/v1/payments'){const prime={...request,path:'/dacs/v1/agreements/proposals',nonce:'e'.repeat(64)};store.finish(store.reserve(prime,{}),200,'{}');}
- const server=createServer(createSellerHttpHandler(agent,{authentication:auth}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
- return{store,request,client,auth,peer:createSellerAgentClient({url:`http://127.0.0.1:${server.address().port}`,authentication:client}),setHash:value=>{hash=value;}};
-}
 for(const answer of ['waiting','indeterminate'])test(`pending proposal recovers ${answer} and keeps its exact retry slot`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
  const first=w.store.reserve(w.request,body);assert.equal(first.disposition,'perform');
@@ -62,31 +65,79 @@ for(const answer of ['waiting','indeterminate'])test(`pending proposal recovers 
  if(answer==='waiting')t.mock.timers.tick(60001);
  assert.equal((await w.peer.propose(body)).disposition,'complete');
 });
-test('pending unauthenticated presentation releases its slot for a corrected proposal',async t=>{
+// Parity with the original path: a thrown definite refusal keeps its own status and body.
+test('pending unauthenticated presentation is refused with its own status and releases its slot for a corrected proposal',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);body.buyerIdentityBundle.sessionNonce='f'.repeat(64);
  const w=await transport(t,agent,f.dir,body);w.store.reserve(w.request,body);
- const out=await w.peer.propose(body);assert.equal(out.disposition,'rejected');assert.equal(out.reason,'buyer_bundle_unauthenticated');assert.equal(agent.durableSessionOf(JOB),null);
+ await assert.rejects(w.peer.propose(body),{name:'SellerRefusedError',code:'buyer_bundle_unauthenticated',status:422});assert.equal(agent.durableSessionOf(JOB),null);
  const corrected=await f.proposal(agent);w.setHash(corrected.proposal.plan.agreementHash);assert.equal((await w.peer.propose(corrected)).disposition,'complete');
 });
-for(const state of ['included','pending'])test(`staged authenticated fixture payment refuses ${state} intake after a pending reservation`,async t=>{
+// cold F1 (1f4795b/5c363cc/292fb46): a temporary 5xx gate is never a signed final rejection.
+test('a recovered proposal refused by a temporary rail gate answers 503 and runs once the rail is live',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),first=await f.open(),body=await f.proposal(first);first.close();
+ f.config.railAuthority=railSteward().railAuthority({changes:{availability:'disabled'}});
+ const down=await f.open(),w=await transport(t,down,f.dir,body);
+ assert.equal(w.store.reserve(w.request,body).disposition,'perform');const signed=f.signed.length;
+ await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});assert.equal(f.signed.length,signed);assert.equal(down.durableSessionOf(JOB),null);
+ down.close();f.config.railAuthority=railSteward().railAuthority();const up=await f.open();w.serve(up);
+ assert.equal((await w.peer.propose(body)).disposition,'complete');
+});
+// cold-292fb46 F2.
+test('recovery does not run a proposal again after its context session ended and keeps its effect',async t=>{
+ let state=null;
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body,undefined,{contextSessionState:()=>state});
+ assert.equal(w.store.reserve(w.request,body).disposition,'perform');state='aborted-by-self';const signed=f.signed.length;
+ await assert.rejects(w.peer.propose(body),{code:'context_session_terminal',status:409});
+ assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
+ state=null;assert.equal((await w.peer.propose(body)).disposition,'complete','the effect was held, not released');
+});
+// cold2 F1 (292fb46/1f4795b/5c363cc), agreed-plan C-1.
+for(const state of ['pending','uncertain'])for(const end of ['released','completed'])test(`a stale ${state} recovery does no work after another recovery ${end} its effect`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
+ const first=w.store.reserve(w.request,body);if(state==='uncertain')w.store.finish(first,503,'{}');
+ if(end==='released')f.admission.verifyReceiptWith(()=> 'invalid');
+ const r1=pauseFirst(t,agent,'reconcileTransport'),stale=outcome(w.peer.propose(body));await r1.entered;
+ assert.equal((await w.peer.propose(body)).disposition,end==='released'?'rejected':'complete');
+ f.admission.verifyReceiptWith(null);
+ const signed=f.signed.length,kept=agent.durableSessionOf(JOB)?.sellerContribution??null;
+ // The corrected request reserves the released effect again and waits before its job fence.
+ const b=end==='released'?pauseFirst(t,agent,'receiveProposal'):null,corrected=b?outcome(w.peer.propose(structuredClone(body))):null;if(b)await b.entered;
+ r1.release();assert.equal((await stale).error?.code,'seller_unavailable');
+ assert.equal(f.signed.length,signed,'the stale recovery signed nothing');assert.deepEqual(agent.durableSessionOf(JOB)?.sellerContribution??null,kept);
+ if(b){b.release();assert.equal((await corrected).value?.disposition,'complete');}
+});
+test('the store hands an unfinished effect to one claimed recovery and fences every other owner',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
+ const first=w.store.reserve(w.request,body),r1=w.store.reserve(w.request,body),r2=w.store.reserve(w.request,body);
+ assert.equal(r1.owner,first.owner);const claimed=w.store.claim(r2,w.request);assert.notEqual(claimed.owner,first.owner);
+ assert.throws(()=>w.store.claim(r1,w.request),{code:'peer_reconciliation_conflict'},'an earlier reservation of the same effect');
+ assert.throws(()=>w.store.assertPending(first),{code:'peer_store_conflict'},'the original worker cannot start');
+ assert.throws(()=>w.store.finish(first,200,'{}'),{code:'peer_store_conflict'},'nor settle');
+ assert.throws(()=>w.store.reconcile(r1,w.request,200,'{}'),{code:'peer_reconciliation_conflict'});
+ assert.throws(()=>w.store.reconcile(claimed,w.request,422,'{}'),{code:'peer_reconciliation_invalid'},'a refusal status never completes');
+ const refused='{"error":"buyer_bundle_unauthenticated"}';w.store.reconcile(claimed,w.request,422,refused,{noEffect:true});
+ assert.deepEqual(w.store.reserve(w.request,body),{disposition:'cached',status:422,text:refused},'the nonce keeps its definite refusal');
+ assert.throws(()=>w.store.claim(claimed,w.request),{code:'peer_reconciliation_conflict'},'a released effect');
+ const next={...w.request,nonce:'TEST-next-nonce-0000000000'},again=w.store.reserve(next,body);assert.equal(again.disposition,'perform');
+ const retry=w.store.claim(w.store.reserve(next,body),next);w.store.reconcile(retry,next,200,'{}',{retry:true});
+ assert.throws(()=>w.store.claim({...retry},next),{code:'peer_reconciliation_conflict'},'an effect handed back to the retry');
+});
+test('staged authenticated fixture payment refuses intake after a pending reservation',async t=>{
  const f=await agentFixture({lifecycle:true});t.after(()=>f.close());const jobId=JOBS[0];await f.agent.commit({jobId});
- if(state==='pending')f.controls.observation={status:'pending'};
- const body={jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim},request=command(f.agent,'/dacs/v1/payments',body,f.agent.durableSessionOf(jobId).agreementHash);
- const dir=await mkdtemp(join(tmpdir(),'TEST-payment-restart-'));t.after(()=>rm(dir,{recursive:true,force:true}));const w=await transport(t,f.agent,dir,body,'/dacs/v1/payments'),first=w.store.reserve(w.request,body);
- const writes=f.anchors.writes.length;await assert.rejects(w.peer.submitPayment(body),{code:'seller_unavailable'});assert.equal(f.anchors.writes.length,writes);assert.equal(f.agent.durableSessionOf(jobId).paymentWork,undefined);
+ const body={jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim};
+ const dir=await mkdtemp(join(tmpdir(),'TEST-payment-restart-'));t.after(()=>rm(dir,{recursive:true,force:true}));const w=await transport(t,f.agent,dir,body,'/dacs/v1/payments');
+ const prime={...w.request,path:'/dacs/v1/agreements/proposals',nonce:'e'.repeat(64)};w.store.finish(w.store.reserve(prime,{}),200,'{}');
+ const first=w.store.reserve(w.request,body),writes=f.anchors.writes.length;
+ await assert.rejects(w.peer.submitPayment(body),{code:'seller_unavailable'});assert.equal(f.anchors.writes.length,writes);assert.equal(f.agent.durableSessionOf(jobId).paymentWork,undefined);
  assert.doesNotThrow(()=>w.store.finish(first,503,'{}'),'the staged refusal did not take over the retained reservation');
 });
-
 test('recovery fences an original proposal delayed between HTTP reservation and the seller job fence',async t=>{
- const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),original=agent.receiveProposal;
- let enter,release;const entered=new Promise(resolve=>{enter=resolve;}),blocked=new Promise(resolve=>{release=resolve;});t.after(()=>release());
- agent.receiveProposal=async(input,options)=>{enter();await blocked;return original(input,options);};
- const w=await transport(t,agent,f.dir,body);f.admission.verifyReceiptWith(()=> 'invalid');
- const first=assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});await entered;
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
+ const original=pauseFirst(t,agent,'receiveProposal');f.admission.verifyReceiptWith(()=> 'invalid');
+ const first=outcome(w.peer.propose(body));await original.entered;
  assert.equal((await w.peer.propose(body)).disposition,'rejected');
- agent.receiveProposal=original;f.admission.verifyReceiptWith(null);const corrected=structuredClone(body);w.setHash(corrected.proposal.plan.agreementHash);
- assert.equal((await w.peer.propose(corrected)).disposition,'complete');const signed=f.signed.length;
- release();await first;assert.equal(f.signed.length,signed);
+ f.admission.verifyReceiptWith(null);assert.equal((await w.peer.propose(structuredClone(body))).disposition,'complete');const signed=f.signed.length;
+ original.release();assert.equal((await first).error?.code,'seller_unavailable');assert.equal(f.signed.length,signed);
 });
 test('a live seller job fence prevents concurrent proposal recovery from releasing its pending slot',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);
@@ -96,20 +147,72 @@ test('a live seller job fence prevents concurrent proposal recovery from releasi
  await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});release();assert.equal((await first).disposition,'complete');
  assert.equal((await w.peer.propose(body)).disposition,'complete');
 });
-for(const noEffect of [false,true])test(`pending proposal ${noEffect?'release':'retry'} requires a fenced proof and rejects stale ownership`,async t=>{
- const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body),first=w.store.reserve(w.request,body);
- const retained=w.store.reserve(w.request,body),options=noEffect?{noEffect:true}:{retry:true};
- assert.throws(()=>w.store.reconcile(retained,w.request,200,'{}',options),{code:'peer_reconciliation_conflict'});
- assert.throws(()=>w.store.reconcile({...retained,owner:'TEST-stale'},w.request,200,'{}',{...options,pendingFenced:true}),{code:'peer_reconciliation_conflict'});
- w.store.reconcile(retained,w.request,200,'{}',{...options,pendingFenced:true});assert.throws(()=>w.store.assertPending(first),{code:'peer_store_conflict'});
-});
-
-for(const changed of ['checkpoint','proposal','bundle','signature'])test(`read-only contribution recovery before final checkpoint authenticates ${changed}`,async t=>{
+// cold2-5c363cc F2 / cold-d0e148d F1: only the durable final checkpoint completes read only.
+for(const changed of ['checkpoint','proposal','bundle','signature'])test(`read-only contribution recovery before final checkpoint stays indeterminate: ${changed}`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);await agent.receiveProposal(body);agent.close();
  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:agent.listingPin});
- try{await state.withJob(JOB,session=>{delete session.transportIdentity;if(changed==='proposal')session.sellerContributionProposalHash='f'.repeat(64);if(changed==='bundle')session.buyerBundleHash='e'.repeat(64);if(changed==='signature')session.sellerContribution.signature.value='TEST-invalid-signature';state.saveSession(session);});}finally{state.close();}
- // A changed buyer bundle is rejected while restoring the authenticated session.
+ try{await state.withJob(JOB,session=>{delete session.transportIdentity;session.proposal=null;delete session.agreementHash;if(changed==='proposal')session.sellerContributionProposalHash='f'.repeat(64);if(changed==='bundle')session.buyerBundleHash='e'.repeat(64);if(changed==='signature')session.sellerContribution.signature.value='TEST-invalid-signature';state.saveSession(session);});}finally{state.close();}
  if(changed==='bundle'){await assert.rejects(f.open());return;}
- const fresh=await f.open(),signed=f.signed.length,out=await fresh.reconcileTransport({...command(fresh,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash),readOnly:true});
- assert.equal(out.disposition,changed==='checkpoint'?'present':'indeterminate');assert.equal(f.signed.length,signed);
+ const fresh=await f.open(),signed=f.signed.length,request=command(fresh,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash);
+ const out=await fresh.reconcileTransport({...request,readOnly:true});
+ assert.equal(out.disposition,'indeterminate');assert.equal(f.signed.length,signed);assert.equal(fresh.durableSessionOf(JOB).agreementHash,undefined,'nothing is sealed');
+ if(changed!=='checkpoint')return;
+ const agreements=()=>f.signed.filter(text=>text.startsWith('dacs-payee-bound-agreement:v1:')).length,before=agreements();
+ const live=await fresh.reconcileTransport(request);assert.equal(live.disposition,'present');assert.equal(live.value.disposition,'complete');
+ assert.equal(fresh.durableSessionOf(JOB).agreementHash,body.proposal.plan.agreementHash,'a live retry writes the final checkpoint');assert.equal(agreements(),before,'without signing the Agreement again');
+});
+// One classification for first runs and recoveries (agreed plan step 5).
+test('one outcome classifier: refusals keep their status, releases need proof, recovery settles only what the store accepts',()=>{
+ const P='/dacs/v1/agreements/proposals',PAY='/dacs/v1/payments',C='/dacs/v1/commitments',gate=new SellerAgentError('rail_unavailable','TEST rail',503),definite=new SellerAgentError('buyer_bundle_unauthenticated','TEST bundle'),unknown=new Error('TEST unknown');
+ const pick=o=>[o.disposition,o.status,o.retry,o.noEffect,o.settle];
+ assert.deepEqual(pick(transportOutcome(P,{error:gate},{retained:false,recovering:true})),['no-effect',503,false,true,true],'a temporary gate is released with its own 503, never a signed 200');
+ assert.deepEqual(transportOutcome(P,{error:gate},{retained:false,recovering:true}).value,{error:'rail_unavailable',message:'TEST rail'});
+ assert.deepEqual(pick(transportOutcome(P,{error:definite},{retained:false,recovering:true})),['no-effect',422,false,true,true]);
+ assert.deepEqual(pick(transportOutcome(P,{error:gate},{retained:true,recovering:true})),['indeterminate',503,false,false,false],'retained proposal work keeps its slot');
+ assert.deepEqual(pick(transportOutcome(P,{answer:{disposition:'rejected'}},{retained:true,recovering:true})),['indeterminate',503,false,false,false]);
+ assert.deepEqual(pick(transportOutcome(P,{answer:{disposition:'rejected'}})),['present',200,false,false,true],'the default is retained: a first run without proof completes, never releases');
+ assert.deepEqual(pick(transportOutcome(P,{answer:{disposition:'waiting'}},{retained:true,recovering:true})),['retry',200,true,false,true]);
+ assert.deepEqual(pick(transportOutcome(P,{error:unknown},{retained:false,recovering:true})),['indeterminate',503,false,false,false],'an arbitrary exception proves nothing');
+ assert.deepEqual(pick(transportOutcome(P,{error:unknown},{retained:false})),['indeterminate',503,false,false,true],'a first run records it uncertain');
+ assert.deepEqual(pick(transportOutcome(P,{answer:{disposition:'waiting'}},{retained:true,recovering:true,readOnly:true})),['indeterminate',503,false,false,false],'read only never hands back a retry');
+ assert.deepEqual(pick(transportOutcome(P,{error:definite},{retained:false,recovering:true,readOnly:true})),['indeterminate',503,false,false,false],'read only never releases');
+ assert.deepEqual(pick(transportOutcome(C,{error:new SellerAgentError('not_agreed','TEST')},{retained:false,recovering:true})),['indeterminate',503,false,false,false],'a recovered commitment is never released');
+ assert.deepEqual(pick(transportOutcome(C,{error:new SellerAgentError('not_agreed','TEST')},{retained:false})),['no-effect',422,false,true,true],'its first run keeps the ordinary refusal');
+ assert.deepEqual(pick(transportOutcome(PAY,{error:gate},{retained:true,recovering:true})),['retry',503,true,false,true],'a refused payment claim with retained work stays a retry');
+ assert.deepEqual(pick(transportOutcome(PAY,{answer:{status:'delivered'}},{retained:true,recovering:true,readOnly:true})),['present',200,false,false,true]);
+});
+test('recovery refuses a request whose authenticated binding differs from its body or retained session',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),good=command(agent,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash),signed=f.signed.length;
+ for(const [name,change] of [['job',r=>({...r,jobId:JOBS[1]})],['buyer',r=>({...r,buyer:seller.claim})],['seller',r=>({...r,seller:buyer.claim})],['pin',r=>({...r,listingPin:{...r.listingPin,version:'TEST'}})],['agreement',r=>({...r,agreementHash:'f'.repeat(64)})],['body hash',r=>({...r,bodyHash:'e'.repeat(64)})]]){
+  const out=await agent.reconcileTransport({...good,request:change(good.request)});assert.equal(out.disposition,'indeterminate',name);
+ }
+ const parsed=await agent.reconcileTransport({...good,body:{...body,proposal:{...body.proposal,proposalHash:'d'.repeat(64)}}});
+ assert.deepEqual([parsed.disposition,parsed.reason],['indeterminate','seller_transport_context_mismatch'],'the parsed body must be the signed raw bytes');
+ assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
+});
+test('signature commitment recovery reads back only a retained attempt and never starts one',async()=>{
+ const w=await agentFixture({lifecycle:true,early:true}),next='01ARZ3NDEKTSV4RRFFQ69G5FAY';
+ try{
+  const input=await w.negotiate(next,{anchor:false}),rawBody=Buffer.from(JSON.stringify(input)),writes=w.anchors.writes.length;
+  const request={method:'POST',path:'/dacs/v1/commitments/signature',jobId:next,buyer:w.buyer.claim,seller:w.seller.claim,listingPin:w.pin,agreementHash:w.agent.durableSessionOf(next).agreementHash,bodyHash:core.sha256Hex(rawBody)};
+  const out=await w.agent.reconcileTransport({request,body:input,rawBody});
+  assert.deepEqual([out.disposition,out.reason],['indeterminate','seller_signature_attempt_absent']);
+  assert.equal(w.anchors.writes.length,writes);assert.equal(w.agent.durableSessionOf(next).signatureCommitmentAttempt,undefined);
+  assert.equal((await w.agent.commitOnSignature(input)).status,'commitment-held');
+  assert.equal((await w.agent.reconcileTransport({request,body:input,rawBody})).value.status,'commitment-held','the retained attempt is read back');
+ }finally{w.close();}
+});
+test('an unpaid outside buyer only has issued unknown writes inspected; a paid order recovers',async()=>{
+ const w=await agentFixture({lifecycle:true});
+ try{
+  const jobId=JOBS[0];await w.agent.commit({jobId});let paid=false,reads=0;
+  w.config.buyerAccess=createOperatorBuyerAccess({openBuyerAccess:false,custodyBuyer:seller.claim,buyerForJob:()=>w.buyer.address,paymentObserved:()=>paid});
+  w.config.readIssued=async(job,options)=>{assert.equal(job,jobId);assert.deepEqual(options,{unknownOnly:true});reads++;return null;};
+  await w.reopen();
+  const body={jobId},rawBody=Buffer.from(JSON.stringify(body)),request={method:'POST',path:'/dacs/v1/commitments',jobId,buyer:w.buyer.claim,seller:w.seller.claim,listingPin:w.pin,agreementHash:w.agent.durableSessionOf(jobId).agreementHash,bodyHash:core.sha256Hex(rawBody)},writes=w.anchors.writes.length;
+  const closed=await w.agent.reconcileTransport({request,body,rawBody});
+  assert.deepEqual([closed.disposition,closed.reason],['indeterminate','buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged']);
+  assert.equal(reads,1);assert.equal(w.anchors.writes.length,writes);
+  paid=true;const open=await w.agent.reconcileTransport({request,body,rawBody});assert.equal(open.disposition,'present',`the paid order keeps its job-scoped authority: ${open.reason} ${open.cause?.message}`);assert.equal(reads,1);
+ }finally{w.close();}
 });
