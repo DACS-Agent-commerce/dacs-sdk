@@ -7,6 +7,7 @@ import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdi
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
 import { auditLock, auditReport } from "./npm-audit-fixtures.js";
@@ -813,9 +814,10 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
     '      /out/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION"');
   // The files installed at a lock location instead of its archive's; `null` installs none.
   const installed: Record<string, Record<string, string> | null> = {};
-  // `environment` adds to the command's environment; `script` and `projectPath` are the paths it is given.
+  // `environment` adds to the install's and command's environment; `script` and `projectPath` are the
+  // paths the command is given, and `nodeArgs` its Node options.
   const run = (afterInstall: (project: string) => void = () => undefined, { environment = {}, script = "scripts/registry-container-disposition.mjs",
-    projectPath = project }: { environment?: Record<string, string>; script?: string; projectPath?: string } = {}) => {
+    projectPath = project, nodeArgs = [] }: { environment?: Record<string, string>; script?: string; projectPath?: string; nodeArgs?: string[] } = {}) => {
     // Supply a complete npm lock/manifest contract, including every fixture
     // package, before applying the test's interrupted or changed tree state.
     const dependencies = ["dependencies", "optionalDependencies", "devDependencies"];
@@ -860,7 +862,8 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
     if (Object.values(packages).every(entry => typeof entry.resolved === "string" && /^https?:/.test(entry.resolved))) {
       try {
         const toolchain = npmToolchain();
-        runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", `--cache=${cache}`], { cwd: project });
+        runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", `--cache=${cache}`],
+          { cwd: project, env: { ...process.env, ...environment } });
         hiddenLock = readFileSync(join(project, "node_modules/.package-lock.json"));
         for (const [location, files] of Object.entries(contents)) {
           for (const path of Object.keys(files)) {
@@ -882,7 +885,7 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
     }
     if (hiddenLock) writeFileSync(join(project, "node_modules/.package-lock.json"), hiddenLock);
     afterInstall(project);
-    const result = spawnSync(process.execPath, [script, "--dependency-policy", projectPath, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION],
+    const result = spawnSync(process.execPath, [...nodeArgs, script, "--dependency-policy", projectPath, CANDIDATE_REGISTRY, report, directory, CANDIDATE_VERSION],
       { cwd: repoRoot, encoding: "utf8", env: { ...process.env, npm_config_cache: cache, ...environment } });
     return { ...result, report: result.status === 0 ? JSON.parse(readFileSync(report, "utf8")) : null };
   };
@@ -1165,16 +1168,40 @@ describe("registry/container evidence", () => {
     expect(result.stderr).toContain(TREE + "unexpected directory: node_modules/untracked-alias");
   });
 
+  // npm omits an optional top-level entry, so the replay completes without it.
   it.each(["dacs", "dacs-node"])("requires the top-level %s even with valid nested and aliased copies", name => {
-    const { packages, contents, copyPackage, run } = dependencyPolicyHarness();
+    const { packages, manifest, installed, copyPackage, run } = dependencyPolicyHarness();
     const top = `node_modules/@kynesyslabs/${name}`;
     copyPackage(top, `node_modules/plugin/node_modules/@kynesyslabs/${name}`);
-    copyPackage(top, "node_modules/alias", { name: `@kynesyslabs/${name}` });
-    delete packages[top];
-    delete contents[top];
-    const result = run();
+    manifest.dependencies = { ...manifest.dependencies as Record<string, string>, alias: `npm:@kynesyslabs/${name}@${CANDIDATE_VERSION}` };
+    manifest.optionalDependencies = { [`@kynesyslabs/${name}`]: CANDIDATE_VERSION };
+    packages[top] = { ...packages[top], optional: true };
+    installed[top] = null;
+    const result = run(undefined, { environment: { npm_config_omit: "optional" } });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("candidate package is not installed at the top level: @kynesyslabs/" + name);
+    expect(result.stderr).not.toContain("cannot derive reference installation");
+  });
+
+  it("refuses an unreplayable candidate integrity without judging candidates", () => {
+    const fixture = dependencyPolicyHarness();
+    const location = "node_modules/@kynesyslabs/dacs";
+    fixture.packages[location] = { ...fixture.packages[location], integrity: "sha512-wrong" };
+    const result = fixture.run();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("cannot derive reference installation");
+    expect(result.stderr).not.toMatch(/not installed at the top level/);
+  });
+
+  it("accepts a package.json and lock that start with a byte-order mark, as npm does", () => {
+    const fixture = dependencyPolicyHarness();
+    const result = fixture.run(project => {
+      for (const file of ["package.json", "package-lock.json"]) {
+        writeFileSync(join(project, file), "\uFEFF" + readFileSync(join(project, file), "utf8"));
+      }
+    });
+    expect(result.stderr).toBe("");
+    expect(result).toMatchObject({ status: 0, report: { passed: true, violations: [] } });
   });
 
   it("invalidates a previous success report before a rejected repeat", () => {
@@ -1197,6 +1224,48 @@ describe("registry/container evidence", () => {
     const result = fixture.run(undefined, { script: join(linked, "registry-container-disposition.mjs") });
     expect(result.status).not.toBe(0);
     expect(existsSync(fixture.report)).toBe(false);
+  });
+
+  // Node then runs the module by its linked path rather than its real path.
+  describe("started through a linked script path with --preserve-symlinks-main", () => {
+    const linkedRun = () => {
+      const fixture = dependencyPolicyHarness();
+      // Link the whole checkout, so files the module finds beside its linked path exist.
+      const linked = join(fixture.directory, "linked-checkout");
+      symlinkSync(repoRoot, linked);
+      const options = { script: join(linked, "scripts/registry-container-disposition.mjs"), nodeArgs: ["--preserve-symlinks-main"] };
+      const direct = (...args: string[]) => spawnSync(process.execPath, [...options.nodeArgs, options.script, ...args],
+        { cwd: repoRoot, encoding: "utf8" });
+      return { fixture, options, direct };
+    };
+
+    it("runs the policy and invalidates a previous success report", () => {
+      const { fixture, options } = linkedRun();
+      expect(fixture.run(undefined, options)).toMatchObject({ status: 0, report: { passed: true } });
+      fixture.packages["node_modules/@kynesyslabs/dacs"] = { ...fixture.packages["node_modules/@kynesyslabs/dacs"], integrity: "sha512-wrong" };
+      expect(fixture.run(undefined, options).status).not.toBe(0);
+      expect(existsSync(fixture.report)).toBe(false);
+    });
+
+    it("refuses missing policy arguments and an unknown mode", () => {
+      const { fixture, direct } = linkedRun();
+      expect(fixture.run().status).toBe(0);
+      const usage = direct("--dependency-policy", fixture.directory, CANDIDATE_REGISTRY, fixture.report);
+      expect(usage.status).not.toBe(0);
+      expect(usage.stderr).toContain("usage: --dependency-policy");
+      expect(existsSync(fixture.report)).toBe(false);
+      const unknown = direct("--bogus");
+      expect(unknown.status).not.toBe(0);
+      expect(unknown.stderr).toContain("unsupported registry policy mode: --bogus");
+    });
+  });
+
+  it.each([["standard input", ["-"]], ["an evaluated script", ["-e"]]])("can be imported from %s without running a mode", (_entry, entry) => {
+    const program = `await import(${JSON.stringify(pathToFileURL(join(repoRoot, "scripts/registry-container-disposition.mjs")).href)}); console.log("ok");`;
+    const result = spawnSync(process.execPath, ["--input-type=module", ...entry, ...(entry[0] === "-e" ? [program] : [])],
+      { cwd: repoRoot, encoding: "utf8", input: program });
+    expect(result.stderr).toBe("");
+    expect(result).toMatchObject({ status: 0, stdout: "ok\n" });
   });
 
   it.each(["dacs", "dacs-node"])("rejects an installed %s whose runtime file differs from the packed tarball", name => {
@@ -1519,19 +1588,12 @@ describe("registry/container evidence", () => {
     .map(version => [name, nested, version] as const)))("rejects a %s copy, nested=%s, whose lock version is %s", (name, nested, version) => {
     const { fixture, location } = releaseCopy(name, nested);
     fixture.packages[location] = { ...fixture.packages[location], version };
-    if (!nested && version !== undefined) {
-      // A contradictory root edge makes npm refuse the reference before the candidate check.
-      (fixture.manifest.dependencies as Record<string, string>)[name] = version;
-    }
+    // npm ci keeps a top-level lock entry only while the root spec accepts it.
+    if (!nested) fixture.manifest.dependencies = { ...fixture.manifest.dependencies as Record<string, string>, [name]: version ?? "*" };
     const result = fixture.run();
     expect(result.status).not.toBe(0);
-    if (!nested && version === undefined) {
-      expect(result.stderr).toContain("cannot derive reference installation:");
-      expect(result.stderr).toContain("reference installation did not complete");
-    } else {
-      expect(result.stderr).toContain(`lock version does not match the release: ${location} ` +
-        `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
-    }
+    expect(result.stderr).toContain(`lock version does not match the release: ${location} ` +
+      `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
     expect(result.report).toBeNull();
   });
 
@@ -2995,8 +3057,9 @@ describe("dependency policy over npm ci installations", () => {
     expect(spawnSync(process.execPath, ["--eval", "console.log(require('plugin'))"], { cwd: project, encoding: "utf8" }).stdout)
       .toBe("unreleased-copy\n");
     expect(policy.status).not.toBe(0);
-    expect(policy.stderr).toContain("source reads: node_modules/plugin: integrity has no single sha512 digest: sha1-");
-    expect(policy.stderr).toContain("reference installation did not complete");
+    // The reference cannot read a SHA-1 archive, so the replay refuses before any candidate rule.
+    expect(policy.stderr).toContain("cannot derive reference installation");
+    expect(policy.stderr).toContain("node_modules/plugin: integrity has no single sha512 digest");
     expect(existsSync(join(directory, "report.json"))).toBe(false);
   }, 60_000);
 
