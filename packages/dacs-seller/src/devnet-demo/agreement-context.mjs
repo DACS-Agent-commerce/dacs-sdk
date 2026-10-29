@@ -211,9 +211,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const counterpartyReady = () => counterparty && ['issueChallenge','readRecord','evaluate'].every(key=>typeof counterparty[key]==='function');
   // Capabilities must bound wire bytes before decoding. Independently bound
   // their returned representation and deadline, including a stalled callback.
+  // A buyer evaluation may legitimately hold its one-use nonce for this whole
+  // deadline while it signs its record.
+  const COUNTERPARTY_TIMEOUT_MS=10000;
   const callCounterparty = async(method,input)=>{
     if(!counterpartyReady())fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
-    const controller=new AbortController(),maxBytes=65536,timeoutMs=10000;
+    const controller=new AbortController(),maxBytes=65536,timeoutMs=COUNTERPARTY_TIMEOUT_MS;
     let timer;
     try{
       const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('counterparty deadline expired','TimeoutError'));},timeoutMs);});
@@ -244,18 +247,26 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     && read.requirementHash===sha256Hex(canonicalize(request.requirement));
   // The buyer's ledger answers indeterminate while another provider has
   // consumed the challenge but has not retained its result yet. Retry that
-  // authoritative read over a bounded interval instead of losing the race;
-  // any record it returns is still strictly verified by the caller.
-  const READ_POLL_MS=25,READ_POLL_ATTEMPTS=40;
+  // authoritative read for the counterparty's whole permitted evaluation
+  // interval; a winning evaluation may hold its record signature until that
+  // deadline. Any record it returns is still strictly verified by the caller.
+  const READ_POLL_MS=25;
   async function readRecordSettled(request) {
-    for(let attempt=1;;attempt+=1){
+    const deadline=Date.now()+COUNTERPARTY_TIMEOUT_MS;
+    for(;;){
       const read=await callCounterparty('readRecord',request);
-      if(read?.status!=='indeterminate'||attempt>=READ_POLL_ATTEMPTS)return read;
+      if(read?.status!=='indeterminate'||Date.now()>=deadline)return read;
       await new Promise((resolve)=>setTimeout(resolve,READ_POLL_MS));
     }
   }
   async function sellerSession(job) {
     const retained=await state.read(job.jobId);
+    // A retained buyer-issued record is replayed without the buyer's ledger. An
+    // unfinished job still needs its verifier first: resuming a retained
+    // presentation must not sign it, or anchor the buyer CVR, before the
+    // missing capability is discovered.
+    if(!retained?.counterpartyRecord&&!counterpartyReady())
+      fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
     let kept=retained?.presentation;
     let expired=null;
     // A retained buyer-issued record already proves what happened; a finished
@@ -275,13 +286,21 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(!kept){
       if(!counterpartyReady()) fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
       const buyer=job.binding.buyerIdentityBundle.presentedBy;
+      // Challenge issuance must check the durable lifecycle and purchase state.
       await authorizeEffect(job);
       const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim});
       if(!sameCanonicalClaimIdentity(challenge?.issuer,buyer) || challenge?.jobId!==job.jobId || !sameCanonicalClaimIdentity(challenge?.seller,wallet.claim)
-        || typeof challenge.sessionNonce!=='string' || !/^[a-f0-9]{32,256}$/.test(challenge.sessionNonce) || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt<=now()) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
+        // SN-2 sets only a floor for an issued challenge: at least 32
+        // lowercase-hex characters, with no upper bound.
+        || typeof challenge.sessionNonce!=='string' || !/^[a-f0-9]{32,}$/.test(challenge.sessionNonce) || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt<=now()) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
       if(expired&&challenge.sessionNonce===expired.challenge.sessionNonce)fail('seller_challenge_reused','the expired seller challenge cannot be issued again');
       const {presentation:_publicationProof,...identity}=listing.seller.identity;
       const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
+      // The challenge was issued while the purchase was pending; if it closed
+      // during that await, drop it instead of retaining a presentation for a
+      // purchase that cannot proceed.
+      const openState=job.open();
+      if(openState!==true)fail('not-pending',`the purchase is no longer pending (${typeof openState==='string'?openState:'its check gave no answer'}); the seller challenge was not retained`);
       kept=(await state.update(job.jobId,(current,rows)=>{
         // Claim the nonce in the job row, under the store transaction. It is
         // retained across restarts and released with the ended purchase.
@@ -319,19 +338,28 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   }
   // Another provider instance may consume the one-use challenge first. After a
   // failed evaluate the buyer is asked again; only a retained record is taken,
-  // and it is verified like any other. Otherwise the evaluate failure stands.
+  // and it is verified like any other. A nonce still consumed with no record
+  // after the whole evaluation interval is in progress, not terminally lost.
   async function evaluateOrReadRetained(request) {
     try{return await callCounterparty('evaluate',request);}
     catch(error){
       const retained=await readRecordSettled(request).catch(()=>null);
       if(retained?.status==='present')return retained.record;
+      if(retained?.status==='indeterminate')fail('indeterminate','the counterparty evaluation has no authoritative outcome yet',error);
       throw error;
     }
   }
   async function produceSeller(job) {
     const identityBundle=await sellerSession(job),authority=job.binding.buyerIdentityBundle.presentedBy;
     const logicalAddress=compositeVerificationAddress(job.jobId,wallet.claim);
-    let record=(await state.read(job.jobId))?.counterpartyRecord;
+    const retainedRow=await state.read(job.jobId);
+    let record=retainedRow?.counterpartyRecord;
+    // The expiry belongs to the challenge this exact bundle was issued under.
+    // The authoritative ledger read below is awaited; a conforming buyer
+    // consumes and then rejects a presentation whose nonce expired, so the
+    // expiry must be checked again before that one-use nonce is spent.
+    const challengeExpiresAt=retainedRow?.presentation?.bundle?.sessionNonce===identityBundle.sessionNonce
+      ? retainedRow?.presentation?.challenge?.expiresAt:undefined;
     if(!record){
       guard(job,'counterparty Vet');
       const request={jobId:job.jobId,buyer:authority,seller:wallet.claim,identityBundle,requirement:SELLER_REQUIREMENT};
@@ -342,6 +370,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       if(retained?.status==='present')record=retained.record;
       else if(unattempted(retained,request)){
         await authorizeEffect(job);
+        if(Number.isSafeInteger(challengeExpiresAt)&&challengeExpiresAt<=now())
+          fail('seller_challenge_expired','seller challenge expired before evaluation');
+        // The ledger read is awaited. A purchase cancelled meanwhile starts no
+        // evaluation: its one-use challenge would otherwise be consumed and a
+        // record signed after the purchase closed.
         guard(job,'counterparty Vet');
         record=await evaluateOrReadRetained(request);
       }
