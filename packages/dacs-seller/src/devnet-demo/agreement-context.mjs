@@ -196,7 +196,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     access?.assertWallet(addressForClaim(buyer));
   };
   const state=partyVetState(store,wallet.claim);
-  const contexts=new Map(),invocations=[],vets=new Map(),running=new Set(),drops=new Set(),releasing=new Map();
+  const contexts=new Map(),invocations=[],vets=new Map(),running=new Map(),drops=new Set(),releasing=new Map();
   const rememberInvocation=value=>{invocations.push(value);if(invocations.length>INVOCATION_DIAGNOSTIC_LIMIT)invocations.shift();};
   const verifier={isSignerAuthorized:(_artifact,signature)=>signature.signer===wallet.claim,resolvePublicKey:(signature)=>signature.signer===wallet.claim?signature.signer:null,verify:({signedBytes,signature})=>verifyComponent({signedBytes,signature})};
   // This profile admits a parsed single-claim bundle before Vet and invokes no
@@ -441,28 +441,6 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(!row?.binding||!same(row.binding,job.binding)||row.lifecycle?.state==='ended')fail('context_released','the context job ended; no new effect is authorized');
     guard(job,'effect');return true;
   }
-  // Only proven process death releases a durable run. Legacy tokens and
-  // uncertain liveness remain fenced; elapsed time alone grants no authority.
-  const liveRuns=row=>(row.activeRuns??[]).filter(token=>{
-    const owner=typeof token==='string'&&/^([1-9]\d*):[0-9a-f-]{36}$/.exec(token);
-    if(!owner)return true;
-    const pid=Number(owner[1]);if(!Number.isSafeInteger(pid))return true;
-    try{process.kill(pid,0);return true;}catch(error){return error?.code!=='ESRCH';}
-  });
-  async function withRun(job,work) {
-    const token=`${process.pid}:${randomUUID()}`;
-    await state.update(job.jobId,row=>{
-      if(!row?.binding||!same(row.binding,job.binding)||row.lifecycle?.state==='ended')fail('context_released','the context job ended');
-      row.activeRuns=liveRuns(row);
-      if(row.activeRuns.length>=CONTEXT_TIMES)fail('context_capacity','too many active context runs');
-      row.activeRuns.push(token);return row;
-    });
-    try{return await work();}
-    finally{await state.update(job.jobId,row=>{
-      if(!row?.activeRuns?.includes(token))return undefined;
-      row.activeRuns=liveRuns(row).filter(value=>value!==token);return row;
-    });}
-  }
   // The SDK reports a writer failure only as "submission outcome is
   // indeterminate". The writer's cause is kept here as an allowlisted code
   // (its raw text goes to the server log), and the failure starts with it. A
@@ -577,7 +555,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(current?.quarantine){outcome='legacy';return undefined;}
         if(current?.binding&&same(current.binding,job.binding)){outcome='bound';job.writeStarted||=current.writeStarted===true;return undefined;}
         if(current?.binding){
-          if(current.writeStarted||liveRuns(current).length){outcome='conflict';return undefined;}
+          if(current.writeStarted){outcome='conflict';return undefined;}
           outcome='bound';
           return{binding:clone(job.binding),writeStarted:false,ops:freshOps(),seller:null};
         }
@@ -591,11 +569,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     fail('indeterminate','the job\'s party Vet state kept changing; nothing was signed or sent');
   }
   // A failed run with no write deletes its row: nothing was signed or written.
-  const unbind=(job)=>state.update(job.jobId,current=>{
-    if(!current?.binding||!same(current.binding,job.binding)||current.writeStarted||current.lifecycle?.state==='ended')return undefined;
-    const activeRuns=liveRuns(current);
-    return activeRuns.length?(activeRuns.length<current.activeRuns.length?{...current,activeRuns}:undefined):null;
-  });
+  const unbind=(job)=>state.update(job.jobId,current=>current?.binding&&same(current.binding,job.binding)&&!current.writeStarted&&current.lifecycle?.state!=='ended'?null:undefined);
   const forget=(job)=>{if(vets.get(job.jobId)===job)vets.delete(job.jobId);};
   // One Vet run per job in this provider, bound to everything that makes it valid for a
   // request: the scope except generatedAt, and the exact buyer identity bundle
@@ -614,19 +588,27 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const sellerVet=await produceSeller(job);
     return sellerVet.refused?sellerVet:{job,buyerVet:job.buyerVet,sellerVet};
   }
+  // Only in-process producers defer deletion; no owner record survives a crash.
+  function trackProducer(job,work){
+    running.set(job.jobId,(running.get(job.jobId)??0)+1);
+    return Promise.resolve().then(work).finally(()=>{
+      const count=running.get(job.jobId);if(count===1)running.delete(job.jobId);else running.set(job.jobId,count-1);
+      if(!running.has(job.jobId)&&drops.has(job.jobId))drop(job.jobId).catch(logged('deletion',job.jobId));
+    });
+  }
   function jobVet(scope,buyerIdentityBundle,open) {
     const {generatedAt:_generatedAt,...terms}=scope,binding={scope:terms,buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
     let job=vets.get(scope.jobId);
     if(job&&!same(job.binding,binding))return Promise.resolve({refused:'conflict'});
     if(!job){job={jobId:scope.jobId,binding:clone(binding),buyerVet:null,running:null,finished:false,writeStarted:false,evicted:false,open};vets.set(scope.jobId,job);}
-    if(job.finished&&job.running)return job.running.then(()=>withRun(job,()=>recheckFinished(job)));
+    if(job.finished&&job.running)return job.running.then(()=>trackProducer(job,()=>recheckFinished(job)));
     if(!job.running){
       job.open=open;
       const addresses=[compositeVerificationAddress(scope.jobId,buyerIdentityBundle.presentedBy),compositeVerificationAddress(scope.jobId,listing.seller.identity.presentedBy)];
-      const run=(async()=>{
+      const run=trackProducer(job,async()=>{
         const bound=await bind(job,addresses);
         if(bound!=='bound')return{refused:bound};
-        return withRun(job,async()=>{
+        try{
           const session=createInMemoryFencedSessionStore();await session.create({jobId:scope.jobId,phase:'settle-pending',now:now()});const leased=await session.acquireLease({jobId:scope.jobId,owner:'devnet-demo-party-vet',ttlMs:300000,now:now()});if(!leased.ok)throw new Error(`party Vet lease failed: ${leased.reason}`);
           await sellerSession(job);
           if(job.buyerVet&&!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
@@ -635,22 +617,20 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
           const sellerVet=await produceSeller(job);
           if(sellerVet.refused)return sellerVet;
           return{job,buyerVet:job.buyerVet,sellerVet};
-        }).catch(async error=>{
+        }catch(error){
           // Nothing was signed or written under this binding: drop it before
           // any waiter sees the failure.
           if(!job.writeStarted)await unbind(job).catch(()=>{});
           throw error;
-        });
-      })();
-      job.running=run;running.add(scope.jobId);
+        }
+      });
+      job.running=run;
       // Registered before any waiter, so a waiter that retries finds this
       // run settled and its entry already updated. A finished run is kept
       // for later requests of the job. An ended job's row waits for its run.
-      const settled=()=>{running.delete(scope.jobId);if(drops.has(scope.jobId))drop(scope.jobId).catch(logged('deletion',scope.jobId));};
-      run.then((out)=>{job.finished=Boolean(out.buyerVet);if(!job.finished){job.running=null;forget(job);}else if(job.evicted)forget(job);settled();},()=>{
+      run.then((out)=>{job.finished=Boolean(out.buyerVet);if(!job.finished){job.running=null;forget(job);}else if(job.evicted)forget(job);},()=>{
         job.running=null;
         if(!job.writeStarted||job.evicted)forget(job);
-        settled();
       });
     }
     return job.running;
@@ -718,15 +698,19 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function finish(jobId,ticket,candidate,write=false){
     if(releasing.has(jobId))fail('context_released','the context is being released');
     if(write)await state.update(jobId,row=>{checkCandidate(row,ticket,candidate);if(row.seller)return undefined;row.seller=clone(descriptor(candidate.input,candidate.vetRequirements));return row;});
-    else checkCandidate(await state.read(jobId),ticket,candidate);
+    checkCandidate(await state.read(jobId),ticket,candidate);
     if(releasing.has(jobId))fail('context_released','the context is being released');
     const key=canonicalize(candidate.scope);contexts.set(key,clone({scope:candidate.scope,input:candidate.input,vetRequirements:candidate.vetRequirements}));
     while(contexts.size>CONTEXT_TIMES)contexts.delete(contexts.keys().next().value);
     return candidate;
   }
   const buyerAnswer=value=>({disposition:'present',value:{scope:clone(value.scope),input:clone(value.input)}});
-  async function resolveBuyer({scope,buyerIdentityBundle},{writable=()=>true}={}){
-    validate(scope);assertAccess(buyerIdentityBundle.presentedBy);
+  // writable must re-read the caller's durable purchase state before effects.
+  async function resolveBuyer({scope,buyerIdentityBundle},{writable}={}){
+    validate(scope);
+    if(typeof writable!=='function')throw new TypeError('a durable purchase-state check is required');
+    if(writable()!==true)fail('not-pending','the purchase is no longer pending');
+    assertAccess(buyerIdentityBundle.presentedBy);
     if(!counterpartyReady())return{disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
     for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&!(await state.read(row.jobId)))await store.update(key,current=>current?.jobId===row.jobId?null:undefined);
     const admitted=await admit(scope,buyerIdentityBundle);
@@ -743,7 +727,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(!row?.binding||!row.lifecycle||!same(row.binding,bindingFor(scope,buyerIdentityBundle)))return null;
     const ticket=ticketFor(row,scope.generatedAt);if(!eligible(row,ticket))return null;
     const candidate=await project(row,scope.generatedAt);if(!candidate||candidate.refused)return candidate;
-    try{return await finish(scope.jobId,ticket,candidate);}catch{return null;}
+    try{return await finish(scope.jobId,ticket,candidate);}catch(error){if(!['context_released','binding-changed','conflict'].includes(error?.code))throw error;return null;}
   }
   async function recoverBuyer({scope,buyerIdentityBundle}){
     const candidate=await readCandidate(scope,buyerIdentityBundle);return candidate?.refused??(candidate?buyerAnswer(candidate):null);
@@ -762,7 +746,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     }
     const candidate=await project(row,generatedAt);
     if(!candidate||candidate.refused)return{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
-    try{await finish(jobId,ticket,candidate);}catch{return{disposition:'indeterminate',reason:'the context lifecycle changed'};}
+    try{await finish(jobId,ticket,candidate);}catch(error){if(!['context_released','binding-changed','conflict'].includes(error?.code))throw error;return{disposition:'indeterminate',reason:'the context lifecycle changed'};}
     return{disposition:'present',value:{input:clone(candidate.input),vetRequirements:clone(candidate.vetRequirements)}};
   }
   async function resumableBuyer({scope,buyerIdentityBundle}){
@@ -795,19 +779,17 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     requireJobId(jobId);evict(jobId,null);drops.add(jobId);
     let removed=false;
     const ended=await state.update(jobId,row=>{
-      if(!row)return{lifecycle:{incarnation:randomUUID(),epoch:1,state:'ended',times:[]}};
+      if(!row)return undefined;
       if(row.lifecycle?.state!=='ended'){row.lifecycle={...(row.lifecycle??{incarnation:randomUUID(),epoch:0,times:[]}),epoch:(row.lifecycle?.epoch??0)+1,state:'ended',times:[]};return row;}
       return undefined;
     });
-    const intent=(await Promise.all([ended?.binding?.buyerIdentityBundle?.presentedBy,wallet.claim].filter(Boolean).map(party=>anchor.hasIntent(compositeVerificationAddress(jobId,party))))).some(Boolean);
+    if(!ended){drops.delete(jobId);return true;}
     await state.update(jobId,row=>{
       if(!row){removed=true;return undefined;}
       if(row.lifecycle?.state!=='ended'||row.lifecycle.incarnation!==ended?.lifecycle?.incarnation||row.lifecycle.epoch!==ended?.lifecycle?.epoch)return undefined;
-      const previousRuns=row.activeRuns?.length??0;
-      row.activeRuns=liveRuns(row);
-      if(running.has(jobId)||row.activeRuns.length||Object.values(row.ops??{}).some(ops=>Object.values(ops.steps??{}).some(step=>step.state==='pending')))return row.activeRuns.length<previousRuns?row:undefined;
-      // Without a native intent this row is the only authoritative replay fence.
-      if(!intent){drops.delete(jobId);return{lifecycle:row.lifecycle};}
+      // Other providers are fenced by ended/missing rows at authorizeEffect.
+      // Only this provider's running producer defers physical deletion.
+      if(running.has(jobId))return undefined;
       removed=true;return null;
     });
     if(removed){for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&row.jobId===jobId)await store.update(key,current=>current?.jobId===jobId?null:undefined);drops.delete(jobId);}
