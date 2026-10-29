@@ -52,12 +52,15 @@ function jsonScanner() {
 
 /** Buffers original wire bytes, incrementally admitting JSON tokens or gzip output.
  * Throws ELIMIT on overflow; json is retained for callers using the old signature,
- * but no route or caller can turn off token admission. Encoded bodies are refused. */
-async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum) {
+ * but no route or caller can turn off token admission. Encoded bodies are refused.
+ * Aborting `signal` stops reading and decompression and rejects with its reason. */
+async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum, signal) {
+  signal?.throwIfAborted();
   if (Number(response.headers["content-length"]) > maximum) throw limitError("byte");
   const encoding = response.headers["content-encoding"]?.toLowerCase();
   const chunks = [], scan = jsonScanner();
   let length = 0, mode, gunzip, complete, expanded = 0;
+  const abort = () => { gunzip?.destroy(signal.reason); response.destroy(); };
   const inspect = async bytes => {
     if (!mode) {
       if (bytes.subarray(0, 4).equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) throw new Error("unsupported npm archive compression: zstd");
@@ -73,6 +76,7 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
     else scan(bytes);
   };
   try {
+    signal?.addEventListener("abort", abort, { once: true });
     for await (const chunk of response) {
       if (!chunk.length) continue;
       if (encoding && encoding !== "identity") throw new Error("unsupported npm HTTP content encoding: " + encoding);
@@ -85,8 +89,10 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
     }
     if (!mode && length) await inspect(Buffer.concat(chunks, length));
     if (gunzip) { gunzip.end(); await complete; }
+    signal?.throwIfAborted();
     return Buffer.concat(chunks, length);
-  } finally { gunzip?.destroy(); }
+  } catch (error) { signal?.throwIfAborted(); throw error; }
+  finally { signal?.removeEventListener("abort", abort); gunzip?.destroy(); }
 }
 
 /** Installs opt-in HTTP(S) admission, with one socket-to-admission deadline per request. */
@@ -97,23 +103,29 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
     transport.request = function (...args) {
       const pending = request.apply(this, args), emit = pending.emit;
       pending.setHeader("accept-encoding", "identity");
-      let failed = false, timer, deadline, responseStarted = false;
+      let failed = false, timer, deadline, response;
+      // Admission can outlive the request (its body may already be read), so the
+      // deadline and request failures cancel admission directly.
+      const admission = new AbortController();
       const clear = () => { if (timer !== undefined) cancel(timer); timer = undefined; };
+      const stop = error => { failed = true; clear(); admission.abort(error); };
+      // Delivers exactly one error after a response starts, whatever fails first.
+      const fail = error => {
+        if (failed) return;
+        stop(error); response.destroy(); pending.destroy();
+        emit.call(pending, "error", error);
+      };
       pending.once("socket", () => {
         if (failed) return;
         deadline = now() + NPM_HTTP_TIMEOUT_MS;
-        timer = schedule(() => pending.destroy(timeoutError()), NPM_HTTP_TIMEOUT_MS);
+        timer = schedule(() => response ? fail(timeoutError()) : pending.destroy(timeoutError()), NPM_HTTP_TIMEOUT_MS);
       });
-      pending.once("error", () => { failed = true; clear(); });
-      pending.once("abort", () => { failed = true; clear(); });
-      pending.once("close", () => { if (!responseStarted) { failed = true; clear(); } });
-      pending.emit = function (event, response, ...rest) {
-        if (event !== "response") return emit.call(this, event, response, ...rest);
-        responseStarted = true;
-        const fail = error => {
-          clear(); response.destroy(); pending.destroy();
-          if (!failed) emit.call(pending, "error", error);
-        };
+      pending.once("error", error => stop(error));
+      pending.once("abort", () => stop());
+      pending.once("close", () => { if (!response) stop(); });
+      pending.emit = function (event, incoming, ...rest) {
+        if (event !== "response") return emit.call(this, event, incoming, ...rest);
+        response = incoming;
         // npm relays request failures to req.res. That is the original response,
         // not the admitted stream, so absorb its relay while preserving one cause.
         response.on("error", () => {});
@@ -121,10 +133,10 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
         if (pending.method === "HEAD" || response.statusCode === 204 || response.statusCode === 304) {
           clear(); return emit.call(this, event, response, ...rest);
         }
-        readBoundedResponse(response, responseBudget(pending.path), true, NPM_TARBALL_MAX_UNPACKED_BYTES).then(bytes => {
+        readBoundedResponse(response, responseBudget(pending.path), true, NPM_TARBALL_MAX_UNPACKED_BYTES, admission.signal).then(bytes => {
           if (deadline !== undefined && now() >= deadline) { fail(timeoutError()); return; }
-          clear();
           if (failed) return;
+          clear();
           const admitted = new PassThrough();
           for (const field of ["statusCode", "statusMessage", "httpVersion", "headers", "rawHeaders", "trailers", "socket", "req", "url"]) admitted[field] = response[field];
           emit.call(pending, "response", admitted);
