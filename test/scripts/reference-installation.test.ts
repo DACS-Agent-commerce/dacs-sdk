@@ -887,3 +887,125 @@ it.each([
   expect(reference.inventory).toBeNull();
   expect(reference.errors.join()).toContain("npm-version differs from selected npm");
 }, 60_000);
+
+// npm install can leave failed optional lookups out of its generated lock.
+// npm 11 retains their versionless failure nodes during ci's lock validation.
+describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }, () => {
+  const incomplete = (owner: string, name: string, field = "optionalDependencies", config = "omit=optional\n", duplicate = false) => {
+    const fields = { [field]: { [name]: "^1.0.0" },
+      ...(duplicate ? { dependencies: { [name]: "^1.0.0" } } : {}),
+      ...(field === "peerDependencies" ? { peerDependenciesMeta: { [name]: { optional: true } } } : {}) };
+    const fixture = simulatedInstall(owner ? { [owner]: [fields, { "package.json": manifest("parent", "1.0.0", fields) }] } : {});
+    if (!owner) {
+      const root = fixture.lock.packages[""];
+      if (!root) throw Error("missing fixture root");
+      Object.assign(root, fields);
+      writeFileSync(join(fixture.project, "package.json"), JSON.stringify(fixture.lock.packages[""]));
+      writeFileSync(join(fixture.project, "package-lock.json"), JSON.stringify(fixture.lock));
+    }
+    writeFileSync(join(fixture.project, ".npmrc"), config);
+    const original = readFileSync(join(fixture.project, "package-lock.json"), "utf8");
+    const input = { manifest: JSON.parse(readFileSync(join(fixture.project, "package.json"), "utf8")), lock: fixture.lock,
+      installer: npmInstallContract(fixture.project), readArchive: (_location: string, entry: { integrity: string }) =>
+        cachedArchive(join(fixture.project, ".npm"), entry.integrity) };
+    return { fixture, original, input };
+  };
+
+  it.each([
+    ["", "absent", false],
+    ["node_modules/parent", "absent", false],
+    ["node_modules/outer/node_modules/@scope/parent", "@scope/absent", false],
+    ["node_modules/parent", "absent", true],
+  ] as const)("replays an omitted unresolved optional edge at %s to %s, duplicate=%s", (owner, name, duplicate) => {
+    const { fixture, input } = incomplete(owner, name, "optionalDependencies", "omit=optional\n", duplicate);
+    const toolchain = input.installer.toolchain;
+    runNpmNode(toolchain, [toolchain.cli, "install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+      `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
+    const original = readFileSync(join(fixture.project, "package-lock.json"), "utf8");
+    input.lock = JSON.parse(original);
+    const before = JSON.stringify({ manifest: input.manifest, lock: input.lock });
+    const reference = referenceInstallation(input);
+    expect(reference.errors).toEqual([]);
+    expect(reference.inventory).toBeInstanceOf(Map);
+    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+    expect([...reference.inventory.keys()].some(path => path === `node_modules/${name}` || path.endsWith(`/node_modules/${name}`))).toBe(false);
+    if (owner) expect(reference.entries.get(owner).manifest.optionalDependencies).toHaveProperty(name, "^1.0.0");
+    expect(JSON.stringify({ manifest: input.manifest, lock: input.lock })).toBe(before);
+    expect(readFileSync(join(fixture.project, "package-lock.json"), "utf8")).toBe(original);
+  });
+
+  it.each([
+    ["dependencies", "omit=optional\n"],
+    ["devDependencies", "omit=optional\n"],
+  ])("refuses missing %s with effective configuration %j", (field, config) => {
+    const { input } = incomplete("", "absent", field, config);
+    const reference = referenceInstallation(input);
+    expect(reference.inventory).toBeNull();
+    expect(reference.errors.join()).toContain("npm subprocess failed");
+  });
+
+  it("retains npm's result when include=optional overrides omit=optional", () => {
+    const { fixture, input } = incomplete("", "absent", "optionalDependencies", "omit[]=optional\ninclude[]=optional\n");
+    let completed = true;
+    try {
+      const toolchain = input.installer.toolchain;
+      runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+        `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
+    } catch { completed = false; }
+    // Older npm drops failed optional lookups; newer npm refuses their absent
+    // lock entries. Neither result authorizes pruning an included edge.
+    const reference = referenceInstallation(input);
+    expect(reference.errors.length === 0).toBe(completed);
+    if (completed) expect(installationDifferences(fixture.project, reference)).toEqual([]);
+    else expect(reference.inventory).toBeNull();
+  });
+
+  it("handles unresolved required edges within an omitted optional subtree", () => {
+    const { fixture, input } = incomplete("node_modules/parent", "absent", "dependencies");
+    const root = input.lock.packages[""];
+    const parent = input.lock.packages["node_modules/parent"];
+    if (!root || !parent) throw Error("missing fixture entries");
+    root.optionalDependencies = root.dependencies;
+    delete root.dependencies;
+    parent.optional = true;
+    input.manifest = { ...root };
+    const reference = referenceInstallation(input);
+    expect(reference.errors).toEqual([]);
+    expect(reference.entries.get("node_modules/parent").present).toBe(false);
+    const toolchain = input.installer.toolchain;
+    writeFileSync(join(fixture.project, "package.json"), JSON.stringify(input.manifest));
+    writeFileSync(join(fixture.project, "package-lock.json"), JSON.stringify(input.lock));
+    rmSync(join(fixture.project, "node_modules"), { recursive: true, force: true });
+    runNpmNode(toolchain, [toolchain.cli, "install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+      `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
+    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+  });
+
+  it("keeps an unresolved optional peer in npm's graph", () => {
+    const { input } = incomplete("node_modules/parent", "absent", "peerDependencies");
+    const reference = referenceInstallation(input);
+    expect(reference.errors).toEqual([]);
+    expect(reference.entries.get("node_modules/parent").manifest.peerDependenciesMeta.absent.optional).toBe(true);
+  });
+
+  it("refuses stale root declarations before projecting missing optional edges", () => {
+    const { input } = incomplete("", "absent");
+    input.manifest.optionalDependencies.absent = "^2.0.0";
+    const reference = referenceInstallation(input);
+    expect(reference.inventory).toBeNull();
+    expect(reference.errors.join()).toContain("root dependency metadata differs: optionalDependencies");
+  });
+
+  it("preserves an optional edge satisfied by an ancestor and detects its missing installation", () => {
+    const fixture = simulatedInstall({
+      "node_modules/parent": [{ optionalDependencies: { child: "1.0.0" } }, { "package.json": manifest("parent") }],
+      "node_modules/child": [{}, { "package.json": manifest("child") }],
+    });
+    writeFileSync(join(fixture.project, ".npmrc"), "omit=optional\n");
+    const reference = fixture.closure();
+    expect(reference.errors).toEqual([]);
+    expect(reference.entries.get("node_modules/child").present).toBe(true);
+    rmSync(join(fixture.project, "node_modules/child"), { recursive: true });
+    expect(installationDifferences(fixture.project, reference)).toContain("missing: node_modules/child");
+  });
+});
