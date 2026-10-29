@@ -756,10 +756,56 @@ export function scanLockEngines(lock, versions) {
     evaluatedPackages, errors, violations };
 }
 
+function resolveLockedDependency(packages, location, name) {
+  let directory = location;
+  for (;;) {
+    const candidate = posix.join(directory, "node_modules", name);
+    if (posix.basename(directory) !== "node_modules" && Object.hasOwn(packages, candidate)) return candidate;
+    if (!directory) return null;
+    const parent = posix.dirname(directory);
+    directory = parent === "." ? "" : parent;
+  }
+}
+
+function requiredRuntimePackages(packages) {
+  const required = new Set();
+  const errors = [];
+  const pending = [""];
+  for (let index = 0; index < pending.length; index++) {
+    const location = pending[index];
+    const entry = packages[location];
+    const dependencies = entry.dependencies === undefined ? {} : entry.dependencies;
+    const optional = entry.optionalDependencies === undefined ? {} : entry.optionalDependencies;
+    if (!isPlainObject(dependencies) || !isPlainObject(optional)) {
+      errors.push(`malformed generated lock dependencies: ${location || "<root>"}`);
+      continue;
+    }
+    for (const [name, specifier] of Object.entries(dependencies)) {
+      if (!/^(?:@[^/\\\s]+\/)?[^/@.\\\s][^/\\\s]*$/.test(name) ||
+          typeof specifier !== "string" || !specifier.trim()) {
+        errors.push(`malformed required dependency ${name} from ${location || "<root>"}`);
+        continue;
+      }
+      // npm lets optionalDependencies override a same-named dependencies entry.
+      if (Object.hasOwn(optional, name)) continue;
+      const target = resolveLockedDependency(packages, location, name);
+      if (target === null || packages[target].dev === true || packages[target].link === true) {
+        errors.push(`unresolved required dependency ${name} from ${location || "<root>"}`);
+        continue;
+      }
+      if (!required.has(target)) {
+        required.add(target);
+        pending.push(target);
+      }
+    }
+  }
+  return { required, errors };
+}
+
 // Compares the final image's package inventory with the lock's production
-// closure: every lock entry that is not dev-only, which is what `npm ci` and
-// `npm prune --omit=dev` leave. An optional entry may be absent (the image
-// omits optional dependencies, or the platform skips them). Each image package
+// entries. Only entries reachable from the root through non-dev dependencies
+// edges are required; entries reached only through optional dependencies or
+// peers may be absent, regardless of their lock flags. Each image package
 // outside the closure, or at another name or version than the lock records
 // there, is `unexpected`; each required closure entry the image lacks is
 // `missing`. An unreadable inventory or entry leaves the scan incomplete.
@@ -780,6 +826,7 @@ export function runtimeImageInventoryFindings(inventory, lock) {
   }
   const closure = new Map(Object.entries(packages)
     .filter(([location, entry]) => location.startsWith("node_modules/") && entry?.dev !== true));
+  const { required, errors } = requiredRuntimePackages(packages);
   const binTargets = new Map();
   for (const [location, entry] of closure) {
     if (!isPlainObject(entry.bin)) continue;
@@ -793,7 +840,6 @@ export function runtimeImageInventoryFindings(inventory, lock) {
       binTargets.get(binLocation).add(resolved);
     }
   }
-  const errors = [];
   const unexpected = [];
   const seen = new Set();
   for (const item of inventory.packages) {
@@ -819,7 +865,7 @@ export function runtimeImageInventoryFindings(inventory, lock) {
     }
   }
   const missing = [...closure]
-    .filter(([location, entry]) => !seen.has(location) && entry?.optional !== true && entry?.devOptional !== true)
+    .filter(([location]) => !seen.has(location) && required.has(location))
     .map(([location]) => location);
   return { scanComplete: errors.length === 0, errors, unexpected, missing };
 }
