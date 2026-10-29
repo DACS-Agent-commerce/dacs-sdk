@@ -12,6 +12,10 @@ const PACKAGE_LOCATION = new RegExp(`^node_modules/${PACKAGE_NAME}(?:/node_modul
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
 const digest = bytes => createHash("sha256").update(bytes).digest("base64");
 const kind = stat => stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "link" : stat.isFile() ? "file" : "unsupported";
+// Registry credentials inherited from a user npmrc are irrelevant offline and
+// must not be written into scratch storage that a killed verifier can leave behind.
+const isCredential = key => /(?:^|\/)_(?:auth(?:token)?|password)$/i.test(key);
+const withoutCredentials = config => Object.fromEntries(Object.entries(config).filter(([key]) => !isCredential(key)));
 
 /** Snapshots a consumer's effective npm configuration, environment and selected toolchain,
  * including whether an existing node_modules root changes npm's empty-install result.
@@ -71,7 +75,7 @@ function moduleRoots(location, files) {
 }
 
 function referenceConfig(project, cache, contract) {
-  const config = { ...contract.config };
+  const config = withoutCredentials(contract.config);
   // These describe the original invocation/storage, rather than install semantics.
   for (const key of ["prefix", "cache", "userconfig", "globalconfig", "location", "npm-version", "json", "logs-dir"]) delete config[key];
   const requireNpm = createRequire(contract.toolchain.cli);
@@ -99,7 +103,7 @@ function referenceConfig(project, cache, contract) {
   const infrastructure = new Set(["prefix", "cache", "userconfig", "globalconfig", "location", "npm-version", "json", "logs-dir",
     "ignore-scripts", "offline", "audit", "fund", "update-notifier", "progress", "dry-run", "package-lock", "package-lock-only", "global", "loglevel"]);
   for (const [key, value] of Object.entries(contract.config)) {
-    if (!infrastructure.has(key) && JSON.stringify(restored[key]) !== JSON.stringify(value)) {
+    if (!infrastructure.has(key) && !isCredential(key) && JSON.stringify(restored[key]) !== JSON.stringify(value)) {
       throw new Error("npm configuration did not round-trip: " + key);
     }
   }
@@ -158,7 +162,7 @@ function excludedSources(unavailable, entries, contract, scratch, manifest, lock
     }
   }
   const input = join(scratch, "unavailable.json");
-  writeFileSync(input, JSON.stringify({ config: contract.config,
+  writeFileSync(input, JSON.stringify({ config: withoutCredentials(contract.config),
     entries: [...unavailable.keys()].map(location => [location, entries.get(location).entry]) }));
   const command = `const requireNpm = require('node:module').createRequire(process.argv[1]);
     const { config, entries } = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
