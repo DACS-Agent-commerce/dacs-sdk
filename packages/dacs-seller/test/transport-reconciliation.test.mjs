@@ -21,7 +21,7 @@ test('read-only proposal reconciliation cannot produce a missing contribution an
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),request=command(agent,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash),signed=f.signed.length;
  assert.equal((await agent.reconcileTransport({...request,readOnly:true})).disposition,'indeterminate');assert.equal(f.signed.length,signed);const answer=await agent.receiveProposal(body),after=f.signed.length;assert.equal(answer.disposition,'complete');assert.equal((await agent.reconcileTransport({...request,readOnly:true})).disposition,'present');assert.equal(f.signed.length,after);
 });
-test('crash before agent, rejected proposal, then corrected proposal releases only the proven unsigned HTTP slot',async t=>{
+test('crash before agent, rejected proposal, then corrected receipt releases only the proven unsigned HTTP slot',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),path='/dacs/v1/agreements/proposals',store=createSellerTransportStore({path:join(f.dir,'TEST-peer.sqlite'),now:()=>NOW});t.after(()=>store.close());
  let currentHash=body.proposal.plan.agreementHash;const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:currentHash}),now:()=>NOW}),auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now:()=>NOW});
  const envelope=await client.request(path,body,JSON.stringify(body)),request=auth.readRequest(envelope.header);assert.equal(store.reserve(request,body).disposition,'perform');
@@ -29,7 +29,7 @@ test('crash before agent, rejected proposal, then corrected proposal releases on
  const server=createServer(createSellerHttpHandler(agent,{authentication:auth}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
  const peer=createSellerAgentClient({url:`http://127.0.0.1:${server.address().port}`,authentication:client});
  f.admission.verifyReceiptWith(()=> 'invalid');const out=await peer.propose(body);assert.equal(out.disposition,'rejected');
- f.admission.verifyReceiptWith(null);const corrected=await f.proposal(agent);currentHash=corrected.proposal.plan.agreementHash;assert.equal((await peer.propose(corrected)).disposition,'complete');
+ f.admission.verifyReceiptWith(null);const corrected=structuredClone(body);currentHash=corrected.proposal.plan.agreementHash;assert.equal((await peer.propose(corrected)).disposition,'complete');
 });
 for(const status of ['absent','indeterminate','rejected'])test(`native Agreement reconciliation preserves ${status} classification and actual cause`,async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare(),cause=new Error('TEST authenticated reader '+status);f.controls.read=()=>({disposition:status,cause});const request=command(agent,'/dacs/v1/commitments',{jobId:JOB},agent.durableSessionOf(JOB).agreementHash),out=await agent.reconcileTransport({...request,readOnly:true});assert.equal(out.disposition,'indeterminate');assert.equal(out.reason,status==='absent'?'agreement_not_anchored':status==='rejected'?'agreement_anchor_invalid':'substrate_unavailable');if(status!=='absent')assert.equal(out.cause?.cause,cause);assert.equal(f.local.writes.length,0);
@@ -84,7 +84,7 @@ test('recovery fences an original proposal delayed between HTTP reservation and 
  const w=await transport(t,agent,f.dir,body);f.admission.verifyReceiptWith(()=> 'invalid');
  const first=assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});await entered;
  assert.equal((await w.peer.propose(body)).disposition,'rejected');
- agent.receiveProposal=original;f.admission.verifyReceiptWith(null);const corrected=await f.proposal(agent);w.setHash(corrected.proposal.plan.agreementHash);
+ agent.receiveProposal=original;f.admission.verifyReceiptWith(null);const corrected=structuredClone(body);w.setHash(corrected.proposal.plan.agreementHash);
  assert.equal((await w.peer.propose(corrected)).disposition,'complete');const signed=f.signed.length;
  release();await first;assert.equal(f.signed.length,signed);
 });
