@@ -270,7 +270,9 @@ describe("inert bounded npm HTTP admission", () => {
           : setTimeout(() => { console.log(JSON.stringify({ events, released })); agent.destroy(); server.close(); }, 100);
         report();
       });`;
-    const result = spawnSync(process.execPath, ["-e", program], { encoding: "utf8", env: { ...process.env, UV_THREADPOOL_SIZE: "1" } });
+    // A hermetic environment, so inherited Node settings cannot print to the stderr checked here.
+    const result = spawnSync(process.execPath, ["-e", program], { encoding: "utf8", env: { UV_THREADPOOL_SIZE: "1" } });
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe("");
     const { events, released } = JSON.parse(result.stdout) as { events: [string, number?][]; released: number };
     expect(events.map(([event]) => event)).toEqual(["ETIMEDOUT"]);
