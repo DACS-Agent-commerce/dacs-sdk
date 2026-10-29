@@ -577,6 +577,9 @@ Regressions cover initialized TEMP OFF, unqualified OFF followed by main WAL, re
 | | `packages/dacs-client/test/sqlite-purchase-result-options.test.mjs:1` | 92367b51064c4a9e1dabbdbdba6476ae58392906 |
 | | `packages/dacs-client/test/store-host-boundary.test.mjs:1` | fd61c135ce343fec49823d4e9dea0225e5afafd6 |
 | | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | 170cf1f9b199b19b90e31ebef59c5b0ab05a2465 |
+| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
+| | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
 
 ## Complete commit and file inventory
 
@@ -1424,6 +1427,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
 | fix(client): D11 rebuild purchase admission with per-schema journal policy | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
 
 ## Original moved files
 
