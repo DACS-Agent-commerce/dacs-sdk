@@ -130,8 +130,10 @@ export function checkDeltas(packageDir=pkg) {
     if(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash)failures.push(`${path}: index differs from HEAD for moved source/test`);
   }
   // Merges are not record subjects, so HEAD, the index and the working bytes
-  // must all hold the newest recorded blob; a merge that keeps a stale side,
-  // rolls back or deletes a recorded file fails here.
+  // must all hold the newest recorded blob. A merge that keeps a stale side,
+  // rolls back or deletes a recorded file fails here; a later record that
+  // starts from the merged blob is accepted, since a record's starting blob
+  // is not compared with the expected blob.
   const independent=shas=>git('merge-base','--independent',...shas).split('\n');
   for(const path of allowed) {
     let expected=null;
