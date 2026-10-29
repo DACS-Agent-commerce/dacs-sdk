@@ -337,10 +337,14 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     // bundles this job retained (including the seller's signed presentation)
     // before accepting references derived from them.
     const retained=await state.read(input?.jobId).catch(()=>null);
-    if(!retained?.binding || !retained.presentation?.bundle
-      || !input?.buyer?.identityBundle || !input?.seller?.identityBundle
-      || !same(input.buyer.identityBundle,retained.binding.buyerIdentityBundle)
-      || !same(input.seller.identityBundle,retained.presentation.bundle))return false;
+    // A caller-supplied bundle may not canonicalize (a BigInt, a cycle). That
+    // is a mismatch, not a reason to throw out of an authentication check.
+    let bundlesMatch;
+    try{bundlesMatch=Boolean(retained?.binding && retained.presentation?.bundle
+      && input?.buyer?.identityBundle && input?.seller?.identityBundle
+      && same(input.buyer.identityBundle,retained.binding.buyerIdentityBundle)
+      && same(input.seller.identityBundle,retained.presentation.bundle));}catch{return false;}
+    if(!bundlesMatch)return false;
     for(const [role,authority,requirement] of [['buyer',wallet.claim,listing.buyerRequirement],['seller',input.buyer.identityBundle.presentedBy,SELLER_REQUIREMENT]]){
       const bundle=input[role].identityBundle,ref=input[role].vetRecordRef;
       const logicalAddress=compositeVerificationAddress(input.jobId,bundle.presentedBy);

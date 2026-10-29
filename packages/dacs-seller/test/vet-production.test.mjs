@@ -346,6 +346,15 @@ test('context authentication binds the supplied references to the canonical anch
  }
  f.base.close();
 });
+test('context authentication refuses a non-canonical bundle instead of throwing',async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input();
+ const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
+  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
+ const altered=context();altered.seller.identityBundle.extra=1n;
+ assert.equal(await p.contextAuthentic(altered),false);
+ f.base.close();
+});
 test('context authentication binds the exact identity bundles including presentations',async()=>{
  const f=productionFixture(),p=await f.provider(),input=f.input();
  const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
