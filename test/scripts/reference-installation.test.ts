@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -703,8 +703,43 @@ describe("installation closure of real npm installations", () => {
       expect(installationDifferences(directory, closure)).toContain("changed: node_modules/crlf-bin/cli.js");
     } finally { await server.close(); }
   }, 60_000);
-});
 
+  it("replays install-strategy=linked from authenticated archive bytes", async () => {
+    const directory = temporaryDirectory();
+    const project = join(directory, "project");
+    const cache = join(directory, "cache");
+    mkdirSync(project);
+    const child = packTarball({ "package.json": manifest("linked-child", "1.0.0"), "index.js": "child" });
+    const parent = packTarball({ "package.json": manifest("linked-parent", "1.0.0", { dependencies: { "linked-child": "1.0.0" } }) });
+    const server = await serveArchives(new Map([["linked-parent", parent], ["linked-child", child]]));
+    try {
+      const root = { name: "consumer", version: "1.0.0", dependencies: { "linked-parent": "1.0.0" } };
+      const lock = { lockfileVersion: 3, packages: {
+        "": root,
+        "node_modules/linked-parent": { version: "1.0.0", resolved: `${server.registry}/linked-parent.tgz`,
+          integrity: sri(parent), dependencies: { "linked-child": "1.0.0" } },
+        "node_modules/linked-parent/node_modules/linked-child": { version: "1.0.0",
+          resolved: `${server.registry}/linked-child.tgz`, integrity: sri(child) },
+      } };
+      writeFileSync(join(project, "package.json"), JSON.stringify(root));
+      writeFileSync(join(project, "package-lock.json"), JSON.stringify(lock));
+      writeFileSync(join(project, ".npmrc"), "install-strategy=linked\n");
+      const installed = await npmCi(project, server.registry, cache);
+      expect(installed.status, installed.output).toBe(0);
+      expect(lstatSync(join(project, "node_modules/linked-parent")).isSymbolicLink()).toBe(true);
+      const reference = installationClosure(project, lock, (_location: string, entry: { integrity: string }) =>
+        cachedArchive(cache, entry.integrity));
+      expect(reference.errors).toEqual([]);
+      expect(reference.entries.get("node_modules/linked-parent")?.present).toBe(true);
+      expect(installationDifferences(project, reference)).toEqual([]);
+      writeFileSync(join(project, "node_modules/linked-parent/package.json"),
+        manifest("linked-parent", "1.0.0", { dependencies: { "linked-child": "1.0.0" }, tampered: true }));
+      const differences = installationDifferences(project, reference);
+      expect(differences).toHaveLength(1);
+      expect(differences[0]).toMatch(/^changed: node_modules\/\.store\/.*\/package\.json$/);
+    } finally { await server.close(); }
+  }, 60_000);
+});
 
 describe("reference contract and complete inventory", { timeout: 60_000 }, () => {
   it.each([["file", "directory"], ["file", "link"], ["directory", "file"], ["directory", "link"],

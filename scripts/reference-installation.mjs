@@ -12,6 +12,14 @@ const PACKAGE_LOCATION = new RegExp(`^node_modules/${PACKAGE_NAME}(?:/node_modul
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
 const digest = bytes => createHash("sha256").update(bytes).digest("base64");
 const kind = stat => stat.isDirectory() ? "directory" : stat.isSymbolicLink() ? "link" : stat.isFile() ? "file" : "unsupported";
+// npm links a package location to its package directory inside node_modules/.store
+// under install-strategy=linked; command links normally point at a package file.
+const linkTarget = (path, entry) => entry?.kind !== "link" || posix.isAbsolute(entry.target) ? null
+  : posix.normalize(posix.join(posix.dirname(path), entry.target));
+const isStoreDirectoryLink = (path, entry, inventory) => {
+  const target = linkTarget(path, entry);
+  return target !== null && target.startsWith("node_modules/.store/") && inventory.get(target)?.kind === "directory";
+};
 // Registry credentials inherited from a user npmrc are irrelevant offline and
 // must not be written into scratch storage that a killed verifier can leave behind.
 const isCredential = key => /(?:^|\/)_(?:auth(?:token)?|password)$/i.test(key);
@@ -113,11 +121,24 @@ function referenceConfig(project, cache, contract) {
   return { args, env, config: restored };
 }
 
-function seedArchive(cache, bytes) {
-  const hex = createHash("sha512").update(bytes).digest("hex");
-  const path = join(cache, "_cacache", "content-v2", "sha512", hex.slice(0, 2), hex.slice(2, 4), hex.slice(4));
+function seedArchive(cache, bytes, url) {
+  const sha512 = createHash("sha512").update(bytes).digest("hex");
+  const path = join(cache, "_cacache", "content-v2", "sha512", sha512.slice(0, 2), sha512.slice(2, 4), sha512.slice(4));
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, bytes);
+  if (typeof url !== "string") return;
+  // Linked installs fetch by resolved URL instead of by integrity, so mirror the
+  // content-addressed bytes in npm's request cache index exactly as a completed
+  // online fetch would have stored them.
+  const key = "make-fetch-happen:request-cache:" + url;
+  const entry = { key, integrity: "sha512-" + Buffer.from(sha512, "hex").toString("base64"),
+    time: Date.now(), size: bytes.length,
+    metadata: { time: Date.now(), url, reqHeaders: {}, resHeaders: {}, options: { compress: true } } };
+  const json = JSON.stringify(entry);
+  const hashed = createHash("sha256").update(key).digest("hex");
+  const index = join(cache, "_cacache", "index-v5", hashed.slice(0, 2), hashed.slice(2, 4));
+  mkdirSync(index, { recursive: true });
+  writeFileSync(join(index, hashed.slice(4)), `${createHash("sha1").update(json).digest("hex")}\t${json}\n`);
 }
 
 function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
@@ -148,7 +169,7 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
     record.manifest = manifestOf(files.get("package.json")).manifest;
     record.files = new Map([...files].map(([path, content]) => [path, digest(content)]));
     for (const [root, module] of moduleRoots(location, files)) roots.set(root, module);
-    seedArchive(cache, sources.get(location));
+    seedArchive(cache, sources.get(location), record.entry.resolved);
   }
   return unavailable;
 }
@@ -268,7 +289,8 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
       }
     }
     for (const [location, record] of entries) {
-      record.present = inventory.get(location)?.kind === "directory";
+      const installed = inventory.get(location);
+      record.present = installed?.kind === "directory" || isStoreDirectoryLink(location, installed, inventory);
       if (record.entry.inBundle === true && !roots.has(location)) {
         // An unavailable, explicitly excluded source has no archive roots.
         // Find this bundle's source owner, including through nested bundles.
@@ -292,9 +314,10 @@ export function referenceInstallation({ manifest, lock, readArchive, installer }
     }
     for (const [path, entry] of inventory) {
       if (entry.kind !== "link") continue;
-      const target = posix.normalize(posix.join(posix.dirname(path), entry.target));
-      if (posix.isAbsolute(entry.target) || inventory.get(target)?.kind !== "file") {
-        throw new Error("executable link target is not a reference file: " + path);
+      const target = linkTarget(path, entry);
+      const targetKind = target === null ? undefined : inventory.get(target)?.kind;
+      if (!(targetKind === "file" || targetKind === "directory" && target.startsWith("node_modules/.store/"))) {
+        throw new Error("link target is not a reference file or package directory: " + path);
       }
     }
     result.carried = new Map([...roots].filter(([root]) => !entries.has(root) && inventory.has(root)));
