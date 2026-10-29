@@ -8,7 +8,7 @@
       "status": "lifted",
       "title": "Lifted: destination purchase decisions corrected (D15)",
       "delta": "D15",
-      "reason": "The destination pointer, indeterminate-read and single-node transfer regressions pass. Empty exports, the converged freeze, real-store and DEC-16 prerequisites remain binding before any live wiring.",
+      "reason": "The destination pointer, indeterminate-read and single-node transfer regressions pass. The reviewed public export boundary, package integrity freeze, real-store and DEC-16 prerequisites remain binding before any live wiring.",
       "sourceRepository": "DACS-Agent-commerce/frontend",
       "sourceCommit": "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
       "files": [
@@ -51,7 +51,7 @@
           ]
         }
       ],
-      "rule": "The private client package is frozen: no package file may be added, removed or changed without a reviewed re-pin of HOLD.json and check-hold.mjs together. package.json retains exports: {} with no main or bin. Package HEAD blobs must match the freeze pins; package index and working files must match HEAD in path, blob bytes and regular-file mode. Package symlinks, gitlinks, unresolved index entries and a missing HEAD fail closed. Other SDK files and unrelated commits are unrestricted by this gate. The check does not establish absence of external callers. D11 must supply synchronous, re-entrant, serializing transactions and rerun destination regressions against its real PurchaseStore before live wiring. D2/D4 must consume the approved immutable DEC-16 identity record before effects. Independent programme review remains pending. Purchase actions remain unconditionally held until a coordinated Standard release and trusted session/participant profile admission are implemented; no caller profile record lifts this hold.",
+      "rule": "The client package is frozen: no package file may be added, removed or changed without a reviewed re-pin of HOLD.json and check-hold.mjs together. package.json retains the exact reviewed root and durable-journal exports with no main or bin; unreviewed entry points are refused. Package HEAD blobs must match the freeze pins; package index and working files must match HEAD in path, blob bytes and regular-file mode. Package symlinks, gitlinks, unresolved index entries and a missing HEAD fail closed. Other SDK files and unrelated commits are unrestricted by this gate. The check does not establish absence of external callers. D11 must supply synchronous, re-entrant, serializing transactions and rerun destination regressions against its real PurchaseStore before live wiring. D2/D4 must consume the approved immutable DEC-16 identity record before effects. Independent programme review remains pending. Purchase actions remain unconditionally held until a coordinated Standard release and trusted session/participant profile admission are implemented; no caller profile record lifts this hold.",
       "liftRequires": {
         "sourceFix": "A reviewed D15 delta commit in this package, with the listed regressions passing on the reviewed destination head, carrying pointer-retention's fence and the source change's inspected correction as the client package plan requires. A supplied, reviewed source fix copied with provenance is also acceptable; no supplied head carries pointer-retention's fence.",
         "regressions": [
@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "b04e8a300e7393e8432887dde6a3dce4dc25ea24"
+        "blob": "541c5b956c2d7c5c813a0204d0dbcb3a8b9e63e8"
       },
       "DELTA-LEDGER.json": {
         "blob": "d072bd58349155e501b91703cccdd58561a41e62"
       },
       "DELTA-MAP.md": {
-        "blob": "bc66359fdc38a1036360f5fffa9132c5142b6515"
+        "blob": "a673dd743c70d5a5f46a20ab9293eb455b5d9607"
       },
       "DELTA-NOTES.md": {
         "blob": "b4031ffc680093a80e7c098c38debfef5a25be3c"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "df5338e2598c77138edfd67a7a3d92ba7e7cf9f5"
+        "blob": "47c9958ee3dcb1715dda83f450e6a15cb293c2b6"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
