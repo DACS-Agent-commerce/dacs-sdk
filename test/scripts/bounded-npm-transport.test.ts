@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
@@ -204,6 +204,76 @@ describe("inert bounded npm HTTP admission", () => {
     transport.request().on("error", error => errors.push(error)); pending.emit("socket", {}); deadline?.();
     expect(errors.map(error => error.message)).toEqual(["ETIMEDOUT npm HTTP deadline"]);
   });
+  // Once its body has arrived a request is destroyed, so only admission is left to stop.
+  const closedRequest = () => {
+    const pending = Object.assign(new EventEmitter(), { setHeader: () => {}, path: "/a/-/a-1.0.0.tgz", method: "GET", destroyed: true, destroy: () => {} });
+    const transport = { request: () => pending };
+    let deadline: (() => void) | undefined;
+    installBoundedNpmHttp({ transports: [transport], schedule: (callback: () => void) => { deadline = callback; }, cancel: () => {}, now: () => 0 });
+    const errors: string[] = [], responses: number[] = [];
+    transport.request().on("error", (error: NodeJS.ErrnoException) => errors.push(String(error.code)))
+      .on("response", (admitted: { statusCode: number }) => responses.push(admitted.statusCode));
+    pending.emit("socket", {});
+    const body = Object.assign(new PassThrough(), { headers: {}, statusCode: 200 });
+    pending.emit("response", body);
+    return { pending, body, errors, responses, expire: () => deadline?.() };
+  };
+  const settled = () => new Promise(resolve => setTimeout(resolve, 50));
+  it("fails admission that outlives a closed request at the deadline, exactly once", async () => {
+    const { body, errors, responses, expire } = closedRequest();
+    body.end(gzipSync(Buffer.alloc(1024)));
+    expire(); expire();
+    await settled();
+    expect(errors).toEqual(["ETIMEDOUT"]);
+    expect(responses).toEqual([]);
+    expect(body.destroyed).toBe(true);
+  });
+  it("stops admission when the request fails after its response starts", async () => {
+    const { pending, body, errors, responses, expire } = closedRequest();
+    body.write(gzipSync(Buffer.alloc(1024)).subarray(0, 16));
+    pending.emit("error", Object.assign(new Error("reset"), { code: "ECONNRESET" }));
+    expect(body.destroyed).toBe(true);
+    expire();
+    await settled();
+    expect(errors).toEqual(["ECONNRESET"]);
+    expect(responses).toEqual([]);
+  });
+  it.each(["before reading", "while decompressing", "after the body ends"])("rejects admission aborted %s with the abort reason", async stage => {
+    const controller = new AbortController();
+    const reason = Object.assign(new Error("ETIMEDOUT npm HTTP deadline"), { code: "ETIMEDOUT" });
+    const body = Object.assign(new PassThrough(), { headers: {} });
+    const archive = gzipSync(Buffer.alloc(4096));
+    if (stage === "before reading") controller.abort(reason);
+    const admitted = readBoundedResponse(body, NPM_TARBALL_MAX_BYTES, true, NPM_TARBALL_MAX_BYTES, controller.signal);
+    if (stage === "while decompressing") body.write(archive.subarray(0, 16));
+    if (stage === "after the body ends") body.end(archive);
+    controller.abort(reason);
+    await expect(admitted).rejects.toBe(reason);
+  });
+  it.each([true, false])("times out on schedule while the zlib worker is busy, keep-alive %s", keepAlive => {
+    // One libuv worker, held by pbkdf2, queues decompression after the request has closed.
+    const program = `const http = require("node:http"), { pbkdf2 } = require("node:crypto"), { gzipSync } = require("node:zlib");
+      const { installBoundedNpmHttp } = require(${JSON.stringify(require.resolve("../../scripts/bounded-npm-http.cjs"))});
+      installBoundedNpmHttp({ transports: [http], schedule: callback => setTimeout(callback, 100) });
+      const archive = gzipSync(Buffer.alloc(1024));
+      const server = http.createServer((_request, reply) => { reply.writeHead(200, { "content-length": archive.length }); reply.end(archive); });
+      server.listen(0, "127.0.0.1", () => {
+        const events = [], start = performance.now();
+        let released;
+        pbkdf2("fixture", "salt", 3_000_000, 64, "sha512", () => { released = performance.now() - start; });
+        const agent = new http.Agent({ keepAlive: ${keepAlive} });
+        http.get({ host: "127.0.0.1", port: server.address().port, path: "/a/-/a-1.0.0.tgz", agent }, () => events.push(["response"]))
+          .on("error", error => events.push([error.code, performance.now() - start]));
+        const report = () => released === undefined ? setTimeout(report, 50)
+          : setTimeout(() => { console.log(JSON.stringify({ events, released })); agent.destroy(); server.close(); }, 100);
+        report();
+      });`;
+    const result = spawnSync(process.execPath, ["-e", program], { encoding: "utf8", env: { ...process.env, UV_THREADPOOL_SIZE: "1" } });
+    expect(result.stderr).toBe("");
+    const { events, released } = JSON.parse(result.stdout) as { events: [string, number?][]; released: number };
+    expect(events.map(([event]) => event)).toEqual(["ETIMEDOUT"]);
+    expect(events[0]?.[1]).toBeLessThan(released);
+  }, 30_000);
   it("delivers an oversized declared length to npm as one ELIMIT rejection", async () => {
     const root = mkdtempSync(join(tmpdir(), "dacs-npm-declared-"));
     const server = createServer((_request, reply) => {
