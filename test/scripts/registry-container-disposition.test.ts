@@ -606,9 +606,10 @@ describe("registry/container evidence", () => {
   describe("started through a linked script path with --preserve-symlinks-main", () => {
     const linkedRun = () => {
       const fixture = dependencyPolicyHarness();
-      const linked = join(fixture.directory, "linked-scripts");
-      symlinkSync(join(repoRoot, "scripts"), linked);
-      const options = { script: join(linked, "registry-container-disposition.mjs"), nodeArgs: ["--preserve-symlinks-main"] };
+      // Link the whole checkout, so files the module finds beside its linked path exist.
+      const linked = join(fixture.directory, "linked-checkout");
+      symlinkSync(repoRoot, linked);
+      const options = { script: join(linked, "scripts/registry-container-disposition.mjs"), nodeArgs: ["--preserve-symlinks-main"] };
       const direct = (...args: string[]) => spawnSync(process.execPath, [...options.nodeArgs, options.script, ...args],
         { cwd: repoRoot, encoding: "utf8" });
       return { fixture, options, direct };
