@@ -155,9 +155,17 @@ function directVersions(lock) {
   const fields = ROOT_FIELDS_AUDITED_AS_DIRECT.filter(field => root[field] !== undefined);
   if (fields.some(field => !isPlainObject(root[field]))) throw unevaluated("a root dependency map is not an object");
   const dependencies = Object.assign({}, ...fields.map(field => root[field]));
+  let versions;
   try {
-    return collectAuditVersions({ packages: { ...lock.packages, "": { dependencies } } }, { scope: "direct" });
+    versions = collectAuditVersions({ packages: { ...lock.packages, "": { dependencies } } }, { scope: "direct" });
   } catch (error) { throw unevaluated(error.message); }
+  // Every direct version is read here, whether or not the report names its package.
+  const semver = npmModule("semver");
+  for (const [name, installed] of Object.entries(versions)) {
+    const unreadable = installed.find(version => semver.valid(version, NPM_ADVISORY_SEMVER) === null);
+    if (unreadable !== undefined) throw unevaluated(`unreadable version ${JSON.stringify(unreadable)} of ${name}`);
+  }
+  return new Map(Object.entries(versions));
 }
 
 // The high/critical advisory IDs whose range, as npm reads it, covers a
@@ -170,9 +178,7 @@ function directAdvisoryIds(advisories, lock) {
     if (semver.validRange(advisory.range, NPM_ADVISORY_SEMVER) === null) {
       throw unevaluated(`unreadable range ${JSON.stringify(advisory.range)} for ${advisory.name}`);
     }
-    const installed = versions[advisory.name] ?? [];
-    const unreadable = installed.find(version => semver.valid(version, NPM_ADVISORY_SEMVER) === null);
-    if (unreadable !== undefined) throw unevaluated(`unreadable version ${JSON.stringify(unreadable)} of ${advisory.name}`);
+    const installed = versions.get(advisory.name) ?? [];
     if (DIRECT_BLOCKING_SEVERITIES.includes(advisory.severity) &&
         installed.some(version => semver.satisfies(version, advisory.range, NPM_ADVISORY_SEMVER))) {
       direct.add(advisoryUrlId(advisory.url));
