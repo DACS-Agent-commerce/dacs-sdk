@@ -18,6 +18,30 @@ for(const outcome of ['unattempted','present','indeterminate','absent','issuer',
  f.base.close();
 });
 
+// A signed presentation that expired before its first evaluation is just as
+// stuck as an unsigned one: the buyer must refuse it under SN-4 forever. An
+// exact unused ledger outcome lets the seller reserve a fresh challenge.
+for(const provider of ['same','fresh'])test(`an expired signed presentation rotates an unused challenge with a ${provider} provider`,async()=>{
+ const f=productionFixture();let at=NOW;
+ f.config.now=()=>at;
+ const expiries=new Map(),issue=f.counterparty.issueChallenge;
+ f.counterparty.issueChallenge=async input=>{const challenge={...await issue(input),expiresAt:at+60000};expiries.set(challenge.sessionNonce,challenge.expiresAt);f.issued.set(challenge.sessionNonce,input.jobId);return challenge;};
+ const read=f.counterparty.readRecord;let unavailable=true;
+ f.counterparty.readRecord=async input=>{if(unavailable){unavailable=false;throw Object.assign(new Error('TEST ledger unavailable'),{code:'ECONNREFUSED'});}return read(input);};
+ // A conforming buyer refuses a presentation whose issued nonce has expired.
+ const evaluate=f.counterparty.evaluate;
+ f.counterparty.evaluate=async input=>{const expiry=expiries.get(input.identityBundle.sessionNonce);if(expiry===undefined||at>expiry)throw new Error('TEST expired challenge');return evaluate(input);};
+ const p=await f.provider(),input=f.input();
+ await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_unavailable');
+ const saved=await p.state.read(input.scope.jobId);
+ assert.ok(saved.presentation.bundle.presentation,'the failed attempt left the presentation signed');
+ at+=60001;
+ const use=provider==='same'?p:await f.provider();
+ const result=await use.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
+ assert.equal(result.sellerVet.record.overallDecision,'pass');
+ assert.equal(expiries.size,2,'exactly one replacement challenge is issued');assert.equal(f.seen.length,1);
+ f.base.close();
+});
 for(const change of ['signed','replaced'])test(`expired challenge rotation preserves a concurrently ${change} presentation`,async()=>{
  const f=productionFixture();let at=NOW,interrupt=true,entered,continueRead;
  f.config.now=()=>at;const sign=f.config.wallet.signBytes;
