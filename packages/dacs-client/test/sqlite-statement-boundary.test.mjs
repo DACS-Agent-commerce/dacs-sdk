@@ -60,8 +60,8 @@ test('SQLite parses guarded exec boundaries including trigger semicolons', t => 
 test('nested guards restore the outer predicate and always leave on errors', t => {
   const db = world(t), cause = new Error('TEST-cause');
   let outer = 0, inner = 0;
-  assert.throws(() => withSqliteStatementGuard(db, () => outer++, () => {
-    withSqliteStatementGuard(db, () => inner++, () => db.prepare('SELECT 1').get());
+  assert.throws(() => withSqliteStatementGuard(db, () => { outer++; }, () => {
+    withSqliteStatementGuard(db, () => { inner++; }, () => { db.prepare('SELECT 1').get(); });
     const before = inner;
     db.prepare('SELECT 2').get();
     assert.equal(inner, before);
@@ -87,12 +87,11 @@ test('captured native execution functions cannot bypass a guarded callback', t =
   nativeExec.call(db, "INSERT INTO records VALUES ('TEST-outside')");
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
 });
-test('read-only host policy is preserved within and after nested guards', t => {
+test('read-only host policy is refused before either callback runs', t => {
   const db = world(t); db.exec('PRAGMA query_only=ON');
-  withSqliteStatementGuard(db, () => {}, () => {
-    withSqliteStatementGuard(db, () => {}, () => assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST')"), /readonly/));
-    assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
-  });
+  let calls = 0;
+  assert.throws(() => withSqliteStatementGuard(db, () => { calls++; }, () => { calls++; }), /read-only policy/);
+  assert.equal(calls, 0);
   assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
 });
 
