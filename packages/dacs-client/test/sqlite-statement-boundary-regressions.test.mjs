@@ -8,6 +8,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { withSqliteStatementGuard } from '../src/util/sqlite-statement-boundary.mjs';
 import { isSqliteHandleRetired } from '../src/util/sqlite-write-lease.mjs';
 const nativeExec = DatabaseSync.prototype.exec;
+const nativePrepare = DatabaseSync.prototype.prepare;
+const policyProbe = new DatabaseSync(':memory:');
+const nativeGet = Object.getPrototypeOf(policyProbe.prepare('SELECT 1')).get;
+policyProbe.close();
+const policy = db => nativeGet.call(nativePrepare.call(db, 'PRAGMA query_only')).query_only;
 
 for (const kind of ['async', 'generator', 'async generator']) {
   test(`the statement boundary refuses a declared ${kind} body before entry`, () => {
@@ -21,7 +26,7 @@ for (const kind of ['async', 'generator', 'async generator']) {
     try {
       assert.throws(() => withSqliteStatementGuard(db, () => {}, body), /synchronous function/);
       assert.equal(entered, false);
-      assert.equal(db.prepare('PRAGMA query_only').get().query_only, 0);
+      assert.equal(policy(db), 0);
       assert.equal(isSqliteHandleRetired(db), false);
     } finally { db.close(); }
   });
@@ -91,7 +96,7 @@ test('a thenable result in a nested guard retires the shared connection', () => 
 
 function isolated(source) {
   const boundary = new URL('../src/util/sqlite-statement-boundary.mjs', import.meta.url).href;
-  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+  const result = spawnSync(process.execPath, [...process.execArgv, '--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     import { DatabaseSync } from 'node:sqlite';
     import { withSqliteStatementGuard } from ${JSON.stringify(boundary)};
@@ -170,7 +175,6 @@ for (const callback of ['body', 'predicate']) for (const kind of ['masked promis
     t.after(() => { try { db.close(); } catch {} rmSync(dir, { recursive: true, force: true }); });
     db.exec("CREATE TABLE records(id TEXT); BEGIN; INSERT INTO records VALUES ('TEST-pending')");
     const writer = db.prepare("INSERT INTO records VALUES ('TEST-late')");
-    const cause = new Error('TEST-then-inspection');
     let continuation, lateError, refusal, entered = false, reads = 0;
     const deferred = () => {
       continuation = Promise.resolve().then(() => {
@@ -191,9 +195,8 @@ for (const callback of ['body', 'predicate']) for (const kind of ['masked promis
     // A transaction caller rolls back after refusal, before queued work resumes.
     try { db.exec('ROLLBACK'); } catch { /* Retirement has already rolled back and closed. */ }
     await continuation;
-    if (kind === 'throwing thenable getter') assert.equal(refusal, cause);
-    else assert.match(refusal?.message ?? '', /synchronous result/);
-    assert.equal(reads, kind === 'throwing thenable getter' ? 1 : 0);
+    assert.match(refusal?.message ?? '', /synchronous result/);
+    assert.equal(reads, 0);
     assert.equal(entered, callback === 'body');
     assert.equal(isSqliteHandleRetired(db), true);
     assert.ok(lateError, 'a retained writer must fail before it can autocommit');
@@ -211,14 +214,14 @@ for (const sql of [
   test(`guarded exec refuses clearing the saved read-only policy before a batch writes: ${sql}`, t => {
     const db = new DatabaseSync(':memory:');
     t.after(() => db.close());
-    db.exec('CREATE TABLE records(id); PRAGMA query_only=ON');
+    db.exec('CREATE TABLE records(id)');
     withSqliteStatementGuard(db, () => {}, () => {
       assert.throws(() => db.exec(`${sql}; INSERT INTO records VALUES ('TEST-late')`), /read-only policy/);
-      assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
-      assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST-after')"), /readonly/);
+      assert.equal(policy(db), 1);
+      assert.throws(() => nativeExec.call(db, "INSERT INTO records VALUES ('TEST-after')"), /readonly/);
     });
     assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
-    assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
+    assert.equal(policy(db), 0);
   });
 }
 
@@ -227,6 +230,11 @@ test('preparing SQL cannot leave either a writable or a read-only guard fence op
     const db = new DatabaseSync(':memory:');
     t.after(() => db.close());
     db.exec(`CREATE TABLE records(id); PRAGMA query_only=${saved}`);
+    if (saved) {
+      assert.throws(() => withSqliteStatementGuard(db, () => {}, () => {}), /read-only policy/);
+      assert.equal(policy(db), 1);
+      continue;
+    }
     withSqliteStatementGuard(db, () => {}, () => {
       withSqliteStatementGuard(db, () => {}, () => {
         assert.throws(() => db.prepare('PRAGMA temp.`query_only`=0'), /read-only policy/);
@@ -236,7 +244,7 @@ test('preparing SQL cannot leave either a writable or a read-only guard fence op
       });
       assert.throws(() => nativeExec.call(db, "INSERT INTO records VALUES ('TEST-outer')"), /readonly/);
     });
-    assert.equal(db.prepare('PRAGMA query_only').get().query_only, saved);
+    assert.equal(policy(db), saved);
     db.exec('PRAGMA query_only=OFF');
     assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
   }
@@ -251,13 +259,58 @@ for (const method of ['run', 'get', 'all', 'iterate', 'next']) {
     const clear = db.prepare('PRAGMA query_only=OFF');
     const iterator = method === 'next' ? clear.iterate() : undefined;
     t.after(() => { iterator?.return(); db.close(); });
-    db.exec('PRAGMA query_only=ON');
     withSqliteStatementGuard(db, () => {}, () => {
       assert.throws(() => method === 'next' ? iterator.next() : clear[method](), /read-only policy/);
-      assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
-      assert.throws(() => db.exec("INSERT INTO records VALUES ('TEST-late')"), /readonly/);
+      assert.equal(policy(db), 1);
+      assert.throws(() => nativeExec.call(db, "INSERT INTO records VALUES ('TEST-late')"), /readonly/);
     });
     assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 0);
-    assert.equal(db.prepare('PRAGMA query_only').get().query_only, 1);
+    assert.equal(policy(db), 0);
   });
 }
+
+for (const role of ['body', 'predicate']) for (const kind of ['async', 'generator', 'async generator']) {
+  for (const bound of [false, true]) test(`${role} rejects spoofed ${kind}, bound=${bound}`, () => {
+    const db = new DatabaseSync(':memory:');
+    const callback = { async: async () => {}, generator: function* () {}, 'async generator': async function* () {} }[kind];
+    const candidate = bound ? callback.bind(null) : callback;
+    Object.defineProperty(candidate, Symbol.toStringTag, { value: 'Function' });
+    try {
+      assert.throws(() => withSqliteStatementGuard(db, role === 'predicate' ? candidate : () => {}, role === 'body' ? candidate : () => {}), /synchronous/);
+      assert.equal(isSqliteHandleRetired(db), bound);
+    } finally { try { db.close(); } catch {} }
+  });
+}
+for (const role of ['body', 'predicate']) for (const kind of ['object', 'number', 'generator', 'async generator', 'cross-realm promise']) {
+  test(`${role} retires before using a returned ${kind}`, async () => {
+    const { runInNewContext } = await import('node:vm');
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE TABLE records(id)');
+    const writer = db.prepare('INSERT INTO records VALUES (1)');
+    const result = {
+      object: () => ({}), number: () => 1,
+      generator: () => (function* () { writer.run(); })(),
+      'async generator': () => (async function* () { writer.run(); })(),
+      'cross-realm promise': () => runInNewContext('Promise.reject(new Error("TEST-rejected"))'),
+    }[kind]();
+    try {
+      assert.throws(() => withSqliteStatementGuard(db, role === 'predicate' ? () => result : () => {}, role === 'body' ? () => result : () => {}), /synchronous result/);
+      assert.equal(isSqliteHandleRetired(db), true);
+      if (kind === 'generator' || kind === 'async generator') await assert.rejects(async () => result.next(), /closed|not open|finalized/i);
+      assert.throws(() => writer.run(), /closed|not open|finalized/i);
+    } finally { try { db.close(); } catch {} }
+  });
+}
+test('failure to reclose a granted fence records permanent retirement', () => {
+  isolated(`
+    const { isSqliteHandleRetired } = await import(new URL('./sqlite-write-lease.mjs', ${JSON.stringify(new URL('../src/util/sqlite-statement-boundary.mjs', import.meta.url).href)}));
+    let granted = false;
+    DatabaseSync.prototype.exec = function(sql) {
+      if (sql === 'PRAGMA query_only=OFF') granted = true;
+      if (granted && sql === 'PRAGMA query_only=ON') throw new Error('TEST-reclose');
+      return nativeExec.call(this, sql);
+    };
+    withSqliteStatementGuard(db, () => {}, () => { db.prepare('SELECT 1').get(); });
+    assert.equal(isSqliteHandleRetired(db), true);
+  `);
+});
