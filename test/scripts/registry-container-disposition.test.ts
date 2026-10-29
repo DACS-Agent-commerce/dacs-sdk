@@ -281,7 +281,7 @@ async function runToConsumerStage(complete = false, failStart = false, hooks: Co
   const builtLock = join(directory, "built-lock"); const lateRemovals = join(directory, "late-removals");
   const phase = (name: keyof ConsumerHooks, steps: string[]) => [`  *-${name})`, ...steps, hooks[name] ?? "", `  exit ${name === "doctor" ? complete ? 5 : 1 : 0} ;;`];
   const PATH = stubBin(directory, {
-    curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
+    curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  */-/ping*) printf \'{}\' ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
     npm: ['case "$1" in', `  install) case "$*" in *npm@11.19.0*) touch '${pinned}' ;; *) exit 92 ;; esac ;;`,
       `  --version) if [ -f '${pinned}' ]; then echo 11.19.0; else echo 10.9.9; fi ;;`, `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
       `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),
