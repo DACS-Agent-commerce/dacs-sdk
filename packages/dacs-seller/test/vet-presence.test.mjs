@@ -22,8 +22,12 @@ const presentationOf = (party) => {
 };
 const presence = (scheme, extra = {}) => ({ requirementVersion: '1', required: [{ scheme, verificationRequired: false }], preferredPresentation: 'any', ...extra });
 
-async function fixture(requirement) {
+async function fixture(requirement, {expiresAt} = {}) {
   const sellerKey = wallet(41), buyerKey = wallet(42), buyerBundle = presentationOf(buyerKey), jobId = core.generateCanonicalJobId();
+  if (expiresAt !== undefined) {
+    buyerBundle.claims[0].expiresAt = expiresAt;
+    buyerBundle.presentation.signatures[0].signature = buyerKey.sign(Buffer.from('dacs-bundle-presentation:v1:' + core.identityBundleHash(buyerBundle))).toString('base64url');
+  }
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => NOW });
   const ref = await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement });
   const record = await admission.sessionAdmission.resolveVetRecord({ ref });
@@ -150,3 +154,24 @@ test('a negotiated presence-only session replays after restart without another A
   assert.deepEqual(repeat.contribution, first.contribution);
   assert.equal(agreementSigns(), 1);
 });
+
+for (const placement of ['required', 'oneOf']) {
+ const requirement = placement === 'required' ? presence('did') : presence('did', {required: [], oneOf: [[{scheme: 'did', verificationRequired: false}]]});
+ test(`strict seller Vet refuses future-expiring ${placement} presence before it can be retained`, async () => {
+  const f = await fixture(requirement, {expiresAt: NOW + 60000});
+  assert.match(await f.problem(), /expiring claims/);
+ });
+ test(`refused expiring ${placement} presence leaves no signature and allows restart and another job`, async t => {
+  const {proposalAdmissionFixture} = await import('./helpers/proposal-admission-fixture.mjs');
+  const f = await proposalAdmissionFixture(t, {assembled: true, buyerRequirement: requirement});
+  const agent = await f.open(), request = await f.proposal(agent, undefined, {expiresAt: NOW + 60000});
+  const answer = await agent.receiveProposal(request);
+  assert.equal(answer.disposition, 'rejected');
+  assert.match(answer.reason, /expiring claims/);
+  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
+  agent.close(); f.advance(60001);
+  const reopened = await f.open();
+  const control = await f.proposal(reopened, '01ARZ3NDEKTSV4RRFFQ69G5FAY');
+  assert.equal((await reopened.receiveProposal(control)).disposition, 'complete');
+ });
+}

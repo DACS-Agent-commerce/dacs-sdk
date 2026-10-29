@@ -484,6 +484,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   other readers' byte, list and time limits). Without that reader, or with an
   answer that is not a hash, a presence-only requirement is refused; a reader
   that fails or times out makes the check indeterminate.
+  The durable seller profile requires every claim in a bundle used for
+  presence-only Vet to omit `expiresAt`. It refuses an expiring bundle before
+  signing an Agreement contribution, so advancing the clock cannot invalidate
+  a retained presence session. Core presence evaluation is unchanged.
   A requirement with a required verified claim replays only through the
   operator's optional `sessionAdmission.vetEvidence`, five required readers and
   an optional sixth that each also receive `{ jobId, role, party }`:
