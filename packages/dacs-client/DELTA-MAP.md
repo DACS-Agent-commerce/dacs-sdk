@@ -988,6 +988,9 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | 99154dd18992f65e0a498a9e2be1064fffa08a14 |
 | | `packages/dacs-client/test/diagnostic-store-regressions.test.mjs:1` | ace13289bd75b0708a7819bd3203995e46a6c5fb |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 835ac12ec7c287d1970a309a9ceb75f74aff29ac |
+| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
+| | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
 
 ## Complete commit and file inventory
 
@@ -2605,6 +2608,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 retain current 11 sources after diagnostics split | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 retain current 11 sources after diagnostics split | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 retain current 11 sources after diagnostics split | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
 
 ## Original moved files
 
