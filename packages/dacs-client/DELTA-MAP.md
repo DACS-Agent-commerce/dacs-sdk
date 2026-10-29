@@ -690,6 +690,8 @@ Purchase admission normalizes its internal PRAGMA statements to object rows and 
 | D11 | fix(client): D11 normalize purchase admission metadata | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 5a40a2391abf1ebec9fce21ec4b0d22469c45be8 |
 | | `packages/dacs-client/test/sqlite-purchase-result-options.test.mjs:1` | 92367b51064c4a9e1dabbdbdba6476ae58392906 |
+| D11 | fix(client): D11 record 03c admission merge integration | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 7793b41c617ac2e9603c32553689b4f1fb62787f |
 
 ## Complete commit and file inventory
 
@@ -1741,6 +1743,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` |
 | fix(client): D11 normalize purchase admission metadata | `packages/dacs-client/test/sqlite-purchase-result-options.test.mjs:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record 03c admission merge integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
