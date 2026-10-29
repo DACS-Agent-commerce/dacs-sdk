@@ -274,25 +274,11 @@ for (const kind of ['empty', 'foreign']) test(`rejected ${kind} database remains
   assert.deepEqual(readFileSync(path), before);
 });
 
-test('compact ended Vet fences preserve byte limits and active rows still occupy capacity',async()=>{
- const store=createInMemoryPartyVetStore({maxJobs:1,maxValueBytes:1024,maxTotalBytes:2048});
+for(const durable of [false,true])test(`every retained row counts until deletion, durable=${durable}`,async t=>{
+ const store=durable?openStore({path:join(dirFor(t),'rows.sqlite'),maxJobs:1}):createInMemoryPartyVetStore({maxJobs:1});t.after(()=>store.close());
  const row={version:'dacs-devnet-demo-party-vet-state/v2',writer:'TEST-writer',jobId:'TEST-job',revision:1,lifecycle:{state:'ended'}};
- await store.update('party-vet/TEST-fence',()=>row);
- assert.equal(store.usage().jobs,0);assert.ok(store.usage().bytes>0);
- await store.update('active',()=>({work:'TEST'}));
- await assert.rejects(store.update('other',()=>({work:'TEST'})),{code:'journal-capacity'});
- await assert.rejects(store.update('party-vet/TEST-fence',()=>({...row,binding:{}})),{code:'journal-capacity'});
- assert.equal(store.usage().jobs,1);
- await assert.rejects(store.update('party-vet/TEST-fence',()=>({...row,lifecycle:{state:'ended',note:'x'.repeat(1024)}})),{code:'journal-capacity'});
- assert.deepEqual(await store.read('party-vet/TEST-fence'),row);store.close();
-});
-
-test('ended fences keep active capacity available after reopening the durable store',async t=>{
- const path=join(dirFor(t),'fences.sqlite');
- const options={path,maxJobs:1};let store=openStore(options);
- for(let index=0;index<4;index++)await store.update(`party-vet/TEST-${index}`,()=>({version:'dacs-devnet-demo-party-vet-state/v2',writer:'TEST-writer',jobId:`TEST-${index}`,revision:1,lifecycle:{state:'ended'}}));
- const bytes=store.usage().bytes;store.close();store=openStore(options);t.after(()=>store.close());
- assert.equal(store.usage().jobs,0);assert.equal(store.usage().bytes,bytes);
- await store.update('active',()=>({work:'TEST-work'}));assert.equal(store.usage().jobs,1);
- assert.equal((await store.entries()).length,5);
+ await store.update('party-vet/TEST-row',()=>row);assert.equal(store.usage().jobs,1);
+ await assert.rejects(store.update('active',()=>({work:'TEST'})),{code:'journal-capacity'});
+ await store.update('party-vet/TEST-row',()=>null);assert.equal(store.usage().bytes,0);
+ await store.update('active',()=>({work:'TEST'}));assert.equal(store.usage().jobs,1);
 });

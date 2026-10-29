@@ -6,5 +6,5 @@ export const recordFor=(input,signer,decision)=>makeRecord(input,{...signer,sign
 export function fixture(options={}){
  const f=productionFixture(options);
  return {...f,buyer:{...buyer,sign:buyer.signBytes},seller:{...seller,sign:seller.signBytes},store:f.base,records:f.local.rows,
-  provider:()=>createDevnetDemoAgreementContextProvider(f.config),input:(jobId=JOBS[0])=>f.input(jobId)};
+  provider:()=>{const p=createDevnetDemoAgreementContextProvider(f.config);return{...p,resolveBuyer:(input,options={writable:()=>true})=>p.resolveBuyer(input,options)};},input:(jobId=JOBS[0])=>f.input(jobId)};
 }
