@@ -778,6 +778,9 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 706159744871c773a297bf1c7156d6f6c057a75d |
 | D11 | fix(client): D11 record the merged purchase diagnostics sources | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/purchases.mjs:31`, `packages/dacs-client/src/purchases.mjs:33`, `packages/dacs-client/src/purchases.mjs:36`, `packages/dacs-client/src/purchases.mjs:39`, `packages/dacs-client/src/purchases.mjs:45`, `packages/dacs-client/src/purchases.mjs:50`, `packages/dacs-client/src/purchases.mjs:82`, `packages/dacs-client/src/purchases.mjs:175`, `packages/dacs-client/src/purchases.mjs:184`, `packages/dacs-client/src/purchases.mjs:190`, `packages/dacs-client/src/purchases.mjs:241`, `packages/dacs-client/src/purchases.mjs:247`, `packages/dacs-client/src/purchases.mjs:310`, `packages/dacs-client/src/purchases.mjs:382`, `packages/dacs-client/src/purchases.mjs:398`, `packages/dacs-client/src/purchases.mjs:419`, `packages/dacs-client/src/purchases.mjs:426`, `packages/dacs-client/src/purchases.mjs:437`, `packages/dacs-client/src/purchases.mjs:458`, `packages/dacs-client/src/purchases.mjs:475`, `packages/dacs-client/src/purchases.mjs:520`, `packages/dacs-client/src/purchases.mjs:539`, `packages/dacs-client/src/purchases.mjs:646`, `packages/dacs-client/src/purchases.mjs:751`, `packages/dacs-client/src/purchases.mjs:771`, `packages/dacs-client/src/purchases.mjs:781`, `packages/dacs-client/src/purchases.mjs:831`, `packages/dacs-client/src/purchases.mjs:866`, `packages/dacs-client/src/purchases.mjs:878`, `packages/dacs-client/src/purchases.mjs:941`, `packages/dacs-client/src/purchases.mjs:954`, `packages/dacs-client/src/purchases.mjs:962`, `packages/dacs-client/src/purchases.mjs:964`, `packages/dacs-client/src/purchases.mjs:966`, `packages/dacs-client/src/purchases.mjs:988`, `packages/dacs-client/src/purchases.mjs:1017`, `packages/dacs-client/src/purchases.mjs:1024`, `packages/dacs-client/src/purchases.mjs:1150`, `packages/dacs-client/src/purchases.mjs:1163`, `packages/dacs-client/src/purchases.mjs:1165`, `packages/dacs-client/src/purchases.mjs:1171`, `packages/dacs-client/src/purchases.mjs:1215`, `packages/dacs-client/src/purchases.mjs:1239`, `packages/dacs-client/src/purchases.mjs:1248`, `packages/dacs-client/src/purchases.mjs:1255`, `packages/dacs-client/src/purchases.mjs:1262`, `packages/dacs-client/src/purchases.mjs:1269` | b598e8771c0f83a5c6452e1fc26d4c2b395360a5 |
+| D11 | fix(client): D11 normalize lease metadata result options | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | b9b5aa9ae87384d74fd91fb1f98ab055d1aa258d |
+| | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` | 07606e91250e9a5ecc199fc1b7549aaf73a4aa2e |
 
 ## Complete commit and file inventory
 
@@ -1947,6 +1950,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the merged purchase diagnostics sources | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the merged purchase diagnostics sources | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the merged purchase diagnostics sources | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` |
+| fix(client): D11 normalize lease metadata result options | `packages/dacs-client/test/sqlite-lease-result-options.test.mjs:1` |
 
 ## Original moved files
 
