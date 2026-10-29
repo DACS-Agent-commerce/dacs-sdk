@@ -9,6 +9,10 @@ describe("acceptance policy scope", () => {
       expect(policy).not.toContain("npm-prerelease-gated");
       expect(policy).not.toContain("any release or publication path fail closed");
     }
+    if (!existsSync(".github/workflows/registry-container-audit-drift.yml")) {
+      expect(policy).not.toContain("Scheduled drift checks");
+      expect(policy).not.toContain("callers enforcing drift");
+    }
     expect(policy).toContain("manual runs");
   });
   it("introduces workflow parsers only with their callers", () => {
