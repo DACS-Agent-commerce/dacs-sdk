@@ -211,7 +211,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // their returned representation and deadline, including a stalled callback.
   // A buyer evaluation may legitimately hold its one-use nonce for this whole
   // deadline while it signs its record.
-  const COUNTERPARTY_TIMEOUT_MS=10000;
+  const COUNTERPARTY_TIMEOUT_MS=10000,CHALLENGE_MARGIN_MS=COUNTERPARTY_TIMEOUT_MS+5000;
+  // The buyer checks on its own clock up to one call deadline after send.
+  // Allow 5 seconds of clock skew: a consumed rejected nonce cannot rotate.
+  // Delivery beyond the call deadline is outside this seller's control.
+  const usableChallenge=challenge=>Number.isSafeInteger(challenge?.expiresAt)&&challenge.expiresAt-now()>=CHALLENGE_MARGIN_MS;
   const callCounterparty = async(method,input)=>{
     if(!counterpartyReady())fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
     const controller=new AbortController(),maxBytes=65536,timeoutMs=COUNTERPARTY_TIMEOUT_MS;
@@ -269,7 +273,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     let expired=null;
     // A retained buyer-issued record already proves what happened; a finished
     // job must not depend on the buyer's ledger staying reachable.
-    if(kept&&kept.challenge.expiresAt<=now()&&!retained?.counterpartyRecord){
+    if(kept&&!usableChallenge(kept.challenge)&&!retained?.counterpartyRecord){
       const request={jobId:job.jobId,buyer:job.binding.buyerIdentityBundle.presentedBy,seller:wallet.claim,identityBundle:kept.bundle,requirement:SELLER_REQUIREMENT};
       const read=await readRecordSettled(request);
       // An expired presentation cannot be evaluated, signed or not. A result
@@ -291,7 +295,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       if(!sameCanonicalClaimIdentity(challenge?.issuer,buyer) || challenge?.jobId!==job.jobId || !sameCanonicalClaimIdentity(challenge?.seller,wallet.claim)
         // SN-2 sets only a floor for an issued challenge: at least 32
         // lowercase-hex characters, with no upper bound.
-        || typeof challenge.sessionNonce!=='string' || !/^[a-f0-9]{32,}$/.test(challenge.sessionNonce) || !Number.isSafeInteger(challenge.expiresAt) || challenge.expiresAt<=now()) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
+        || typeof challenge.sessionNonce!=='string' || !/^[a-f0-9]{32,}$/.test(challenge.sessionNonce) || !usableChallenge(challenge)) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
       if(expired&&challenge.sessionNonce===expired.challenge.sessionNonce)fail('seller_challenge_reused','the expired seller challenge cannot be issued again');
       const {presentation:_publicationProof,...identity}=listing.seller.identity;
       const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
@@ -314,13 +318,13 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       })).presentation;
     }
     if(!kept.bundle.presentation){
-      if(kept.challenge.expiresAt<=now()) fail('seller_challenge_expired','seller challenge expired before presentation');
+      if(!usableChallenge(kept.challenge)) fail('seller_challenge_expired','seller challenge expired before presentation');
       guard(job,'seller presentation');await markWrite(job);guard(job,'seller presentation');
       // The challenge may expire during that durable write. A presentation
       // signed under it would be refused by a conforming buyer (CORE SN-4), so
       // fail here: the row stays unsigned and the next attempt rotates the
       // unused challenge.
-      if(kept.challenge.expiresAt<=now()) fail('seller_challenge_expired','seller challenge expired before presentation');
+      if(!usableChallenge(kept.challenge)) fail('seller_challenge_expired','seller challenge expired before presentation');
       const raw=await wallet.signBytes(Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(kept.bundle)}`));
       const signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
       const bundle={...kept.bundle,presentation:{kind:'per-claim',signatures:[{ref:wallet.claim,signature}]}};
@@ -381,12 +385,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const logicalAddress=compositeVerificationAddress(job.jobId,wallet.claim);
     const retainedRow=await state.read(job.jobId);
     let record=retainedRow?.counterpartyRecord;
-    // The expiry belongs to the challenge this exact bundle was issued under.
-    // The authoritative ledger read below is awaited; a conforming buyer
-    // consumes and then rejects a presentation whose nonce expired, so the
-    // expiry must be checked again before that one-use nonce is spent.
-    const challengeExpiresAt=retainedRow?.presentation?.bundle?.sessionNonce===identityBundle.sessionNonce
-      ? retainedRow?.presentation?.challenge?.expiresAt:undefined;
+    // A replaced presentation cannot borrow or skip the retained lifetime check.
+    if(!record&&!same(retainedRow?.presentation?.bundle??null,identityBundle))
+      fail('binding-changed','the seller presentation changed before evaluation');
     if(!record){
       guard(job,'counterparty Vet');
       const request={jobId:job.jobId,buyer:authority,seller:wallet.claim,identityBundle,requirement:SELLER_REQUIREMENT};
@@ -396,7 +397,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       const retained=await readRecordSettled(request);
       if(retained?.status==='present')record=retained.record;
       else if(unattempted(retained,request)){
-        if(Number.isSafeInteger(challengeExpiresAt)&&challengeExpiresAt<=now())
+        if(!usableChallenge(retainedRow.presentation.challenge))
           fail('seller_challenge_expired','seller challenge expired before evaluation');
         // The ledger read is awaited. A purchase cancelled meanwhile starts no
         // evaluation: its one-use challenge would otherwise be consumed and a
