@@ -8,6 +8,7 @@
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
   },
   "files": [
+    "src/diagnostic-projection.mjs",
     "src/util/guarded-sqlite.mjs"
   ]
 }

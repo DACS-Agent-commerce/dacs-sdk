@@ -5,6 +5,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
+import { createPublicPurchaseService as createPurchaseService } from '../src/purchases.mjs';
+import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
+import { diagnosticProtocolView as protocolView } from '../src/dacs/protocol-purchases.mjs';
+import { deliveryDeadlineView } from '../src/dacs/delivery-deadline-watch.mjs';
+import { openDatabase } from './helpers/purchase-integrity-database.mjs';
+import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 
 function database(t) {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-diagnostic-store-')), path = join(dir, 'state.sqlite');
@@ -132,4 +138,54 @@ test('detach and reattach of the same persistent file is refused on every call',
     store.transaction(db, () => db.prepare('INSERT INTO records(id) VALUES (?)').run(`TEST-${attempt}`));
   }
   assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 2);
+});
+
+function purchaseWorld(t) {
+  const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
+  t.after(() => db.close());
+  const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8) }), coordinates = createCoordinateStore({ db });
+  db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('buyer', 'TEST', 'buyer', new Date().toISOString());
+  const operation = ops.createIdempotent({ accountId: 'buyer', kind: 'purchase', idempotencyKey: 'TEST', request: {}, status: 'payment_handoff',
+    terms: { buyer: { wallet: '0x' + 'a'.repeat(64) }, seller: { claim: 'seller', payee: '0x' + 'b'.repeat(64) }, protocol: {},
+      price: { amountOs: '1000000000' }, listing: { listingId: 'TEST', version: 1, contentHash: 'f'.repeat(64) },
+      network: 'testnet', rail: 'demos-native:DEM', domain: { network: 'testnet', chainIdentity: 'f'.repeat(64), mode: 'public-chain-read' } }, termsHash: 'f'.repeat(64),
+    expiresAt: new Date(Date.now() + 3600000).toISOString(), state: { protocol: { stage: 'awaiting-countersignature',
+      planned: { agreementMessage: 'TEST-agreement-sign', anchorMessage: 'TEST-anchor-sign' }, identity: { message: 'TEST-identity-sign' },
+      sessionDelegation: { payload: { jobId: 'TEST-delegation-sign' }, signature: 'historical-signature' },
+      bundle: { bundleHash: 'b'.repeat(64), message: 'TEST-bundle-sign' },
+      agreement: { hash: 'f'.repeat(64), ref: { contentHash: 'f'.repeat(64) }, terms: { seller: 'seller', deadline: 1 },
+        artifact: { terms: { deadline: 1 }, parties: [{ role: 'seller', primaryClaim: 'seller' }] } }, commitment: { verifiedAt: 'TEST' } } } }).operation;
+  coordinates.save({ operationId: operation.id, kind: 'dem-transfer', network: 'testnet', from: operation.terms.buyer.wallet,
+    nonceFence: 6, expectedNonce: 7, target: '0x' + 'b'.repeat(64), amountOs: '1000000000',
+    payload: { type: 'native', nonce: 7, amount: 1000000000, data: ['send'] } });
+  const chain = { getAddressNonce: async () => 6 };
+  const purchases = createPurchaseService({ db, ops, coordinates, store, chain, config: {}, purposes: { APPROVE_PURCHASE: 'TEST' } });
+  return { db, ops, coordinates, store, operation, purchases };
+}
+
+test('every public diagnostic omits payment payloads and signing messages while preserving identifiers', async t => {
+  const w = purchaseWorld(t), { operation: op } = w;
+  await assert.rejects(w.purchases.prepareHandoff({ operationId: op.id, token: w.ops.handoffTokenFor(op.id) }), { code: 'profile_not_admitted' });
+  const before = w.ops.get(op.accountId, op.id), coords = w.coordinates.get(op.id);
+  const status = w.purchases.status(op.accountId, op.id, w.ops.handoffTokenFor(op.id));
+  const portal = w.purchases.portalOperation(op.id, w.ops.handoffTokenFor(op.id));
+  for (const result of [status, portal, w.purchases.portalEvidence(op.id, w.ops.handoffTokenFor(op.id)), protocolView(before)]) {
+    const json = JSON.stringify(result);
+    assert.doesNotMatch(json, /"payload"|"agreementMessage"|"anchorMessage"|TEST-.*-sign/);
+  }
+  assert.equal(status.coordinates.expectedNonce, 7);
+  assert.equal(status.coordinates.payloadHash, coords.payloadHash);
+  assert.equal(status.protocol.bundle.bundleHash, 'b'.repeat(64));
+  assert.deepEqual(w.ops.get(op.accountId, op.id), before);
+  assert.deepEqual(w.coordinates.get(op.id), coords);
+});
+
+test('historical malformed overdue and delivery timestamps remain renderable after JSON roundtrip', () => {
+  for (const timestamp of [Number.MAX_SAFE_INTEGER, -1, 'invalid', null]) {
+    const operation = JSON.parse(JSON.stringify({ terms: { protocol: {} }, state: { protocol: { stage: 'payment-evidenced',
+      deliveryDeadline: { overdue: { deadline: 1, checkedAt: timestamp }, laterDelivery: { deliveredAt: timestamp, deliveredAtSource: 'TEST' } } } } }));
+    const view = deliveryDeadlineView(operation, { enabled: true });
+    assert.match(view.message, /unavailable|invalid|unknown/i);
+    assert.doesNotThrow(() => protocolView(operation));
+  }
 });
