@@ -786,6 +786,8 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | f05e545f62faf232439c60bb69b08f6ac5684026 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | b28c6ef97e3004d9921c2b9f48a66d0e4d936423 |
 | | `packages/dacs-client/test/sweep-contracts.test.mjs:1` | dac6e6aae63aac269c0a84197ce2b77d3211eb35 |
+| D11 | fix(client): D11 rebuild part 08 on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | e89f5fc167efeb889e0397f22ceb4db6891fe7c3 |
 
 ## Complete commit and file inventory
 
@@ -1965,6 +1967,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4246eb7f86c7723bcaca5e7ec450cdbffd7ba322 | `packages/dacs-client/README.md:1` |
+| 4246eb7f86c7723bcaca5e7ec450cdbffd7ba322 | `packages/dacs-client/scripts/delta-frontier.test.mjs:1` |
+| 4246eb7f86c7723bcaca5e7ec450cdbffd7ba322 | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record rebuilt part 08 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
