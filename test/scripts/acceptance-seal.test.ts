@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const sealModule = "../../scripts/acceptance-seal.mjs";
 const { collectEvidence, sealProject } = await import(sealModule);
@@ -68,6 +68,19 @@ describe("evidence collection without following links", () => {
     symlinkSync(hostSecret(root), join(destination, "doctor.json"));
     expect(() => collectEvidence(source, destination, ["doctor.json"])).toThrow(/EEXIST/);
     expect(readFileSync(join(root, "host-secret"), "utf8")).toBe("host-only value\n");
+  });
+  it("retries a collection after copying some files and accepts an identical destination", () => {
+    const { source, destination } = evidenceDirectories();
+    writeFileSync(join(source, "doctor.json"), "{\"exitCode\":0}\n");
+    expect(() => collectEvidence(source, destination, ["doctor.json", "missing.json"]))
+      .toThrow("missing evidence: missing.json");
+    writeFileSync(join(source, "missing.json"), "{}\n");
+    expect(collectEvidence(source, destination, ["doctor.json", "missing.json"]))
+      .toEqual(["doctor.json", "missing.json"]);
+    expect(readFileSync(join(destination, "missing.json"), "utf8")).toBe("{}\n");
+    writeFileSync(join(destination, "doctor.json"), "different\n");
+    expect(() => collectEvidence(source, destination, ["doctor.json"])).toThrow(/EEXIST/);
+    expect(readFileSync(join(destination, "doctor.json"), "utf8")).toBe("different\n");
   });
   it("refuses a name below a directory and a linked source directory", () => {
     const { root, source, destination } = evidenceDirectories();
@@ -204,6 +217,27 @@ describe("sealed generated project", () => {
     writeFileSync(join(project, "secrets/README.md"), "No keys here.\n");
     expect(sealProject(project, context, names).schema).toBe("dacs-sealed-context/v1");
   });
+  it("recovers after an interrupted staging directory", () => {
+    const root = scratch(); const { project, context, names } = generatedProject(root);
+    const abandoned = `${context}.staging-abandoned`;
+    mkdirSync(abandoned); writeFileSync(join(abandoned, "package.json"), "partial\n");
+    expect(sealProject(project, context, names).schema).toBe("dacs-sealed-context/v1");
+    expect(readFileSync(join(context, "package.json"), "utf8")).toBe(PROJECT_FILES["package.json"]);
+  });
+  it("seals a listed file under a read-only source directory and keeps its mode", () => {
+    const root = scratch(), project = join(root, "project"), context = join(root, "sealed", "context");
+    mkdirSync(join(root, "sealed")); mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(join(project, "src", "service.ts"), "export {};\n");
+    chmodSync(join(project, "src"), 0o555);
+    try {
+      expect(sealProject(project, context, ["src/service.ts"]).files["src/service.ts"]).toBe(sha256("export {};\n"));
+      expect(readFileSync(join(context, "src", "service.ts"), "utf8")).toBe("export {};\n");
+      expect(statSync(join(context, "src")).mode & 0o777).toBe(0o555);
+    } finally {
+      chmodSync(join(project, "src"), 0o755);
+      if (existsSync(join(context, "src"))) chmodSync(join(context, "src"), 0o755);
+    }
+  });
   it("seals through its command line and writes the digest record once", () => {
     const root = scratch(); const { project, context, names } = generatedProject(root);
     const record = join(root, "sealed-context.json");
@@ -228,6 +262,40 @@ describe("sealed generated project", () => {
     expect(cli("seal", project, linkedContext, linkedRecord, ...names).status).not.toBe(0);
     expect(existsSync(linkedContext)).toBe(false);
     expect(readFileSync(host, "utf8")).toBe("host-only value\n");
+  });
+  it("executes through a symlinked directory and stays inert on import", () => {
+    const root = scratch(); const { project, context, names } = generatedProject(root);
+    const alias = join(root, "scripts"); symlinkSync(resolve("scripts"), alias);
+    const path = join(alias, "acceptance-seal.mjs");
+    const imported = spawnSync(process.execPath, ["--input-type=module", "-e",
+      "const path = process.argv[1]; process.argv[1] = process.execPath; await import(path)", path], { encoding: "utf8" });
+    expect(imported.status, imported.stderr).toBe(0);
+    expect(existsSync(context)).toBe(false);
+    const record = join(root, "sealed-context.json");
+    expect(spawnSync(process.execPath, [path, "seal", project, context, record, ...names], { encoding: "utf8" }).status).toBe(0);
+    expect(JSON.parse(readFileSync(record, "utf8")).files["package.json"]).toBe(sha256(PROJECT_FILES["package.json"]!));
+    expect(readFileSync(join(context, "package.json"), "utf8")).toBe(PROJECT_FILES["package.json"]);
+  });
+  it("removes the sealed context when the digest record cannot be published", () => {
+    const root = scratch(); const { project, names } = generatedProject(root);
+    const context = join(root, "sealed", "context"), record = join(root, "absent-parent", "sealed-context.json");
+    const cli = spawnSync(process.execPath, ["scripts/acceptance-seal.mjs", "seal", project, context, record, ...names], { encoding: "utf8" });
+    expect(cli.status).not.toBe(0);
+    expect(existsSync(context)).toBe(false);
+    expect(existsSync(record)).toBe(false);
+  });
+  it("refuses an ambiguous evidence name instead of copying a different file", () => {
+    const root = scratch(), source = join(root, "exec-out"), destination = join(root, "artifacts");
+    mkdirSync(source); mkdirSync(destination);
+    writeFileSync(join(source, "a=b.json"), "REAL\n"); writeFileSync(join(source, "a"), "WRONG\n");
+    const cli = (...args: string[]) => spawnSync(process.execPath, ["scripts/acceptance-seal.mjs", ...args], { encoding: "utf8" });
+    expect(cli("collect", source, destination, "a=b.json").status).not.toBe(0);
+    expect(readdirSync(destination)).toEqual([]);
+    // A literal name with no competing rename source is still collectable.
+    rmSync(join(source, "a"));
+    expect(cli("collect", source, destination, "a=b.json").status).toBe(0);
+    expect(readdirSync(destination)).toEqual(["a=b.json"]);
+    expect(readFileSync(join(destination, "a=b.json"), "utf8")).toBe("REAL\n");
   });
 });
 
