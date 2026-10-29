@@ -806,6 +806,8 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:113`, `packages/dacs-client/src/dacs/seller-http.mjs:233`, `packages/dacs-client/src/dacs/seller-http.mjs:236`, `packages/dacs-client/src/dacs/seller-http.mjs:241`, `packages/dacs-client/src/dacs/seller-http.mjs:243`, `packages/dacs-client/src/dacs/seller-http.mjs:246`, `packages/dacs-client/src/dacs/seller-http.mjs:250`, `packages/dacs-client/src/dacs/seller-http.mjs:256`, `packages/dacs-client/src/dacs/seller-http.mjs:265` | 3b37b663b20165b7a8a14a8a25ee62bf662cc5e6 |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:56`, `packages/dacs-client/src/util/http.mjs:58`, `packages/dacs-client/src/util/http.mjs:61`, `packages/dacs-client/src/util/http.mjs:64`, `packages/dacs-client/src/util/http.mjs:70`, `packages/dacs-client/src/util/http.mjs:73`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77`, `packages/dacs-client/src/util/http.mjs:81`, `packages/dacs-client/src/util/http.mjs:87`, `packages/dacs-client/src/util/http.mjs:92`, `packages/dacs-client/src/util/http.mjs:99`, `packages/dacs-client/src/util/http.mjs:102`, `packages/dacs-client/src/util/http.mjs:109`, `packages/dacs-client/src/util/http.mjs:113`, `packages/dacs-client/src/util/http.mjs:117`, `packages/dacs-client/src/util/http.mjs:122`, `packages/dacs-client/src/util/http.mjs:125`, `packages/dacs-client/src/util/http.mjs:152` | 08b56d27d6e9bb66b71c855ec87ace2e0538dbe7 |
 | | `packages/dacs-client/test/fetch-abort-settle.test.mjs:1` | 3293ce72e25868798e7b7f29aecc1c155a4d11e3 |
+| D11 | fix(client): D11 record the merged part 10 package snapshot | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:56`, `packages/dacs-client/src/util/http.mjs:58`, `packages/dacs-client/src/util/http.mjs:61`, `packages/dacs-client/src/util/http.mjs:64`, `packages/dacs-client/src/util/http.mjs:70`, `packages/dacs-client/src/util/http.mjs:73`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77`, `packages/dacs-client/src/util/http.mjs:81`, `packages/dacs-client/src/util/http.mjs:87`, `packages/dacs-client/src/util/http.mjs:92`, `packages/dacs-client/src/util/http.mjs:99`, `packages/dacs-client/src/util/http.mjs:102`, `packages/dacs-client/src/util/http.mjs:109`, `packages/dacs-client/src/util/http.mjs:113`, `packages/dacs-client/src/util/http.mjs:117`, `packages/dacs-client/src/util/http.mjs:122`, `packages/dacs-client/src/util/http.mjs:125`, `packages/dacs-client/src/util/http.mjs:152` | 08b56d27d6e9bb66b71c855ec87ace2e0538dbe7 |
 
 ## Complete commit and file inventory
 
@@ -2922,6 +2924,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | 1ce8682910771d0eee6603e8611a699f6df051da | `packages/dacs-client/DELTA-MAP.md:1` |
 | 1ce8682910771d0eee6603e8611a699f6df051da | `packages/dacs-client/HOLD.json:1` |
 | 1ce8682910771d0eee6603e8611a699f6df051da | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the merged part 10 package snapshot | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the merged part 10 package snapshot | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the merged part 10 package snapshot | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the merged part 10 package snapshot | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the merged part 10 package snapshot | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

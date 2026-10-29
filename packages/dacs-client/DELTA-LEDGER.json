@@ -5107,6 +5107,17 @@
         }
       ],
       "sha": "dbb7a48fed308f60773085267200ee6c84578050"
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the merged part 10 package snapshot",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/util/http.mjs",
+          "before": "08b56d27d6e9bb66b71c855ec87ace2e0538dbe7",
+          "after": "08b56d27d6e9bb66b71c855ec87ace2e0538dbe7"
+        }
+      ]
     }
   ]
 }
