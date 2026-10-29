@@ -190,8 +190,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (nativeProfile && !admission) throw new SellerAgentError('session_admission_required', 'the native seller profile opens a session only under the seller\'s session admission (profile, challenge, revocation and Vet records)', 503);
   };
   const nativeUnavailable=()=>{throw new SellerAgentError('settlement_profile_unavailable','native payment handling is not assembled',503);};
-  const assertSettlementChain = () => {
-    if (nativeProfile && !settlementChain) throw new SellerAgentError('settlement_profile_unavailable', 'the native seller profile commits and takes payment only with native payment evidence, the DEM delivery context and native DEM delivery', 503);
+  const assertPaymentChain = () => {
+    if (nativeProfile && !settlementChain) throw new SellerAgentError('settlement_profile_unavailable', 'the native seller profile takes payment only with native payment evidence, the DEM delivery context and native DEM delivery', 503);
   };
   // RAV-R1..R3, R5 against the session's own pin (a new session's pin before it
   // is retained). Fixture sessions carry none and use the simulated rail.
@@ -848,7 +848,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // adopt a commitment that was anchored before its session save, still with
   // no signing or submission.
   async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement, adopt = false } = {}) {
-    assertSettlementChain();
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     assertRailPin(session.railPin, 'in-flight');
@@ -1086,7 +1085,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     error:(code,message,status=503)=>{throw new SellerAgentError(code,message,status);}});
   const settlementOperations=Object.freeze(nativeProfile?{commit:()=>{},payment:nativeUnavailable}:{commit:()=>{},payment:fixtureSettlement.submitPayment});
   async function submitPayment({jobId,txHash,payerPayingKey,nativePaymentEvidence:requestedEvidence}) {
-    assertSettlementChain();
+    assertPaymentChain();
     const session=sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     assertRailPin(session.railPin,'in-flight');
