@@ -155,6 +155,27 @@ test('a negotiated presence-only session replays after restart without another A
   assert.equal(agreementSigns(), 1);
 });
 
+test('an invalid presence requirement is refused before the registry pin is read', async t => {
+  // PCR-1 makes a presence-only member that selects freshness a definite
+  // requirement error. A failing registry reader must not turn that into an
+  // indeterminate outage, so the requirement is preflighted first.
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const { JOB } = await import('./helpers/protocol-fixture.mjs');
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
+  let reads = 0;
+  f.config.sessionAdmission = { ...f.admission.sessionAdmission,
+    readSessionRecipeRegistryPin: async () => { reads += 1; throw new Error('TEST registry is down'); } };
+  const agent = await f.open(), request = await f.proposal(agent);
+  const context = f.contexts.get(JOB);
+  context.vetRequirements[1].requirement = { ...context.vetRequirements[1].requirement,
+    required: [{ scheme: 'did', verificationRequired: false, maxAge: 30 }] };
+  const answer = await agent.receiveProposal(request);
+  assert.equal(answer.disposition, 'rejected');
+  assert.match(answer.reason, /VET_RECORD_UNVERIFIED/);
+  assert.equal(reads, 0);
+  agent.close();
+});
+
 for (const placement of ['required', 'oneOf']) {
  const requirement = placement === 'required' ? presence('did') : presence('did', {required: [], oneOf: [[{scheme: 'did', verificationRequired: false}]]});
  test(`strict seller Vet refuses future-expiring ${placement} presence before it can be retained`, async () => {

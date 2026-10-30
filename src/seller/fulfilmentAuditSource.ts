@@ -19,6 +19,7 @@ import {
   isPhaseStep,
 } from "../artifacts/index.js";
 import { canonicalize, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
+import { presenceRequirementPreflight } from "../agent/compositeVerification.js";
 
 /** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
 export const SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR =
@@ -439,9 +440,11 @@ const sameJcs = (left: unknown, right: unknown): boolean => {
  * source at delivery.
  *
  * A presence-only member (`verificationRequired: false`) needs no result and
- * may have none: DACS-2 forbids a synthetic VerifyResult for it. Its presence
- * is counted by the strict replay of the Vet record over the authenticated
- * bundle, which this structural check does not repeat.
+ * may have none: DACS-2 forbids a synthetic VerifyResult for it. It is only
+ * counted as covered when the strict verifier's presence preflight (DACS-1
+ * PCR-1/PCR-2) accepts it. Its presence is counted by the strict replay of the
+ * Vet record over the authenticated bundle, which this structural check does
+ * not repeat.
  */
 export function isSellerFulfilmentVetInvocationMismatch(
   invocation: unknown,
@@ -455,6 +458,17 @@ export function isSellerFulfilmentVetInvocationMismatch(
 ): boolean {
   try {
     if (!hasExactJcsView(invocation) || !isVetRequirementInvocation(invocation)) return true;
+    const presenceOnlyMembers = [
+      ...invocation.requirement.required,
+      ...(invocation.requirement.oneOf ?? []).flat(),
+    ].filter((member) => member.verificationRequired === false);
+    // DACS-1 PCR-1/PCR-2: a presence-only member is only covered when the
+    // strict verifier would accept it — a registered scheme that selects no
+    // freshness or recipe field. Counting any other member as covered would
+    // carry a requirement the party Vet refuses into delivery.
+    if (presenceOnlyMembers.length > 0 && presenceRequirementPreflight({
+      ...invocation.requirement, required: presenceOnlyMembers, oneOf: [],
+    }) !== null) return true;
     const key = canonicalize(invocation.vetRecordRef);
     const binding = context.bindings.get(key);
     const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];

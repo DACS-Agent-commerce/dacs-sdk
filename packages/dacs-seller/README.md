@@ -440,7 +440,14 @@ per-client limiter so one client cannot exhaust the shared request budget.
   verifier, the Listing's `buyerRequirement` for the buyer's record, and
   every required claim covered by a result for this job, except a
   presence-only claim (`verificationRequired: false`), which has no result
-  (DACS-2 forbids a synthetic one). Each record must
+  (DACS-2 forbids a synthetic one). A presence-only member must name a
+  registered claim scheme and select no `maxAge` or `recipeVersion`
+  (DACS-1 PCR-1/PCR-2); one that does is refused like any other invocation
+  mismatch. A presence-only requirement whose `primaryClaimSelector` names
+  a claim without a passing verified result is also refused: the SDK's
+  exact selector replay requires one, so the refusal reports
+  `(invalid: aggregation-mismatch)`, not a presence success.
+  Each record must
   also pass the SDK's strict CompositeVerificationRecord check against its
   invocation: its `requirementHash` is the hash of that exact requirement
   and its decision replays from the invocation's results (DACS-2 §7.7.1).

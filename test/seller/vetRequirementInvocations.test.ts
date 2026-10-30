@@ -297,6 +297,24 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
       entry.dealSpecific = [expectedResult(presenceClaim)];
       expect(check([entry, valid[1]], requirement)).toMatch(/differs from its party/);
     });
+
+    // DACS-1 PCR-1/PCR-2: a presence-only member names a registered scheme and
+    // selects no freshness or recipe field. Counting coverage without that
+    // preflight would let an invalid requirement reach delivery.
+    test.each([
+      ["an unregistered scheme", { scheme: "bogus", verificationRequired: false }],
+      ["a freshness selection", { scheme: "did", verificationRequired: false, maxAge: 30 }],
+      ["a recipe selection", { scheme: "did", verificationRequired: false, recipeVersion: 1 }],
+    ])("refuses a presence-only claim with %s in required and oneOf", (_label, invalid) => {
+      for (const requirement of [
+        { ...buyerRequirement, required: [invalid] },
+        { ...buyerRequirement, required: [], oneOf: [[invalid]] },
+        { ...buyerRequirement, required: [presenceClaim], oneOf: [[invalid]] },
+      ]) {
+        expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement))
+          .toMatch(/differs from its party/);
+      }
+    });
   });
 
   test("binds the evaluated party to its authenticated claim even with a consistent locator", () => {
