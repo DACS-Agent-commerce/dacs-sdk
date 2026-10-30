@@ -643,5 +643,19 @@
       "packages/dacs-client/src/dacs/seller-agent.mjs",
       "packages/dacs-client/test/negotiate-phase-after-readback.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D16 record the negotiate phase before the commitment effect",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/DELTA-NOTES.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/seller-agent.mjs",
+      "packages/dacs-client/test/negotiate-phase-after-readback.test.mjs"
+    ]
   }
 ]
