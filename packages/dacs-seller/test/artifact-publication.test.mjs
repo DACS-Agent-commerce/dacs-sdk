@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sha256Hex, contentHash, canonicalize, finalityCommitmentAddress } from '@kynesyslabs/dacs';
-import { anchorFixture } from './helpers/anchor-isolated-fixture.mjs';
+import { anchorFixture, signSdkCreate } from './helpers/anchor-isolated-fixture.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
 import { seller, JOB, protocolFixture } from './helpers/protocol-fixture.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
@@ -92,8 +92,8 @@ test('accepted signed CREATE publishes, reopens, verifies receipts and preserves
   const f=await anchorFixture(),anchor=f.open(),logicalAddress=finalityCommitmentAddress(JOB);let backend;
   f.source.binding=async()=>({disposition:'included'});f.source.observeBinding=async()=>f.source.transportBinding;
   f.controls.request=async request=>{
-    const signed=structuredClone(request.transaction);signed.hash=sha256Hex(JSON.stringify(signed.content));signed.signature={type:'ed25519',data:`0x${seller.signBytes(Buffer.from(signed.hash)).toString('hex')}`};
-    backend=readbackFixture({signedTransaction:signed,observedAt:1800000000000});Object.assign(f.controls.reader,backend.adapter);
+    const signed=await signSdkCreate(request.transaction);
+    backend=readbackFixture({signedTransaction:signed,observedAt:1800000000000});for(const edit of backend.state.tx.content.gcr_edits)edit.txhash=signed.hash;Object.assign(f.controls.reader,backend.adapter);
     await f.sourceJournal.put('TEST accepted',{stage:'observed',hash:signed.hash,signedTransaction:signed});
     return {success:true,data:{hash:signed.hash,writeProof:{disposition:'included'}}};
   };
@@ -209,7 +209,7 @@ for(const field of ['projection','signature'])test(`strict JSON admission includ
 
 for (const shape of ['list', 'depth', 'supported']) test(`publication checks projection ${shape} budget before intent and wallet`, async () => {
   const f = await anchorFixture({artifactKinds: ['Listing']});
-  let extra = shape === 'list' ? Array(4097).fill(0) : Array(4096).fill(0);
+  let extra = shape === 'list' ? Array(4096).fill(0) : Array(2000).fill(0);
   if (shape === 'depth') for (let i = 0; i < 30; i++) extra = {nested: extra};
   const pipeline = fixtureListing(seller).pipeline; pipeline[2].parameters.extra = extra;
   const artifact = fixtureListing(seller, {pipeline});
