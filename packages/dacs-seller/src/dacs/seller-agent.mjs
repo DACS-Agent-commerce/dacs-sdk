@@ -356,7 +356,10 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     const jobId = input?.transportIdentity?.jobId ?? input?.jobId;
     sessions.delete(jobId);
     await restore(session);
-    return fn(input);
+    transport?.check();
+    const answer=await fn(input,{transport});
+    transport?.check();
+    return answer;
   }).catch((error) => {
     if (error.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
     // The store's fence rejects a non-canonical job before the operation's own
@@ -364,7 +367,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     // would have raised, not an uncertain outcome.
     if (error.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     throw error;
-  }) : (input,{transport}={})=>{transport?.check();return fn(input);};
+  }) : async(input,{transport}={})=>{transport?.check();const answer=await fn(input,{transport});transport?.check();return answer;};
 
   const sessionFor = (jobId) => {
     const session = sessions.get(jobId);
@@ -413,7 +416,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
   }
 
   // ---- DACS-3: proposal -> seller contribution ----
-  async function receiveProposal({ proposal, transportIdentity, buyerIdentityBundle }) {
+  async function receiveProposal({ proposal, transportIdentity, buyerIdentityBundle },{transport}={}) {
     requireOpen();
     const jobId = transportIdentity?.jobId;
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
@@ -511,6 +514,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     const session = sessions.get(jobId);
     verifiedSessions.set(jobId, sessionFingerprint(session));
     const signUnderPin = (bytes) => {
+      transport?.check();
       if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
       if (!inFlight) assertListingCurrent();
       // The first completed signature is made now, not when the context was
@@ -654,6 +658,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
         reconcileSellerSignature: (input) => (signatures.has(input.planHash) ? { disposition: 'present', value: signatures.get(input.planHash) } : { disposition: 'absent', reason: 'not signed yet' }),
         transport: {
           publishSellerContribution: (contribution, identity) => {
+            transport?.check();
             // The durable session is the authority, not these caches. Retain
             // the exact proposal and transport identity with the contribution
             // and save them together first: a crash after publication must
