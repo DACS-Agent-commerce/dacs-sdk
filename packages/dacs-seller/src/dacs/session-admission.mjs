@@ -61,7 +61,7 @@
 //    before any signature. The receipt's writer is not compared with the
 //    record's signer: the Standard does not tie them (SR2-5 binds the writer
 //    the receipt names, not the record's verifier).
-import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, publicKeyFromRaw, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, publicKeyFromRaw, resolveRecipe as authenticatePinnedRecipe, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 import { isCanonicalEd25519Signature, isSmallOrderPublicKey } from './demos-claims.mjs';
 
@@ -281,19 +281,33 @@ function requirementParametersMatch({ result, expected }) {
   return true;
 }
 
-// DACS-2 §7.7.1 preflights every implicit member's method families, including
-// unused alternatives. This selects family heads only, never guesses which
-// result the core can project onto a member (that needs the signed recipe).
-function implicitRecipeFamilies(invocation) {
+// Preflight every verified member's family metadata, including unused pins.
+// Result projection and aggregation remain the core verifier's decisions.
+function recipeFamilies(invocation) {
   const requirement=invocation.requirement, families=new Map();
   const members=[...(Array.isArray(requirement?.required)?requirement.required:[]),...(Array.isArray(requirement?.oneOf)?requirement.oneOf.flatMap(group=>Array.isArray(group)?group:[]):[])];
   const results=[...(Array.isArray(invocation.freshness)?invocation.freshness:[]),...(Array.isArray(invocation.dealSpecific)?invocation.dealSpecific:[])];
   for(const member of members){
-    if(member?.verificationRequired!==true||member.recipeVersion!==undefined)continue;
+    if(member?.verificationRequired!==true)continue;
     const methods=member.parameters?.verificationMethod!==undefined?[member.parameters.verificationMethod]:results.filter(result=>result?.scheme===member.scheme).map(result=>result.method);
-    for(const method of methods)families.set(canonicalize([member.scheme,method]),{scheme:member.scheme,method});
+    if(!methods.length||methods.some(method=>typeof method!=='string'||!method))throw new TypeError('the verified requirement has no resolvable recipe method family');
+    if(member.recipeVersion!==undefined&&results.some(result=>result?.requirement&&same(result.requirement,member)))continue; // Bound pins are authenticated by the core.
+    for(const method of methods)families.set(canonicalize([member.scheme,method,member.recipeVersion??null]),{scheme:member.scheme,method,...(member.recipeVersion===undefined?{}:{recipeVersion:member.recipeVersion})});
   }
   return [...families.values()];
+}
+
+// An unused explicit pin must still resolve to an authenticated live recipe.
+async function pinnedSessionRecipeProblem(read,selector) {
+  const recipe=await read('resolveRecipe',selector);
+  if(!object(recipe)||recipe.scheme!==selector.scheme||recipe.recipeVersion!==selector.recipeVersion||recipe.availability!=='live')return 'the Vet pinned recipe is unavailable, non-live or differs from its selector';
+  const signature=recipe.signature,key=evidenceSignerKey(signature?.signer);
+  if(!key||(await read('isRecipeSignerAuthorized',{recipe,signature}))!==true)return 'the Vet pinned recipe-signature is not authorized';
+  try {
+    await authenticatePinnedRecipe('Vet replay',selector,{readRegistry:async()=>({entries:[recipe]}),stewardSigner:signature.signer,stewardPublicKey:key,
+      verify:(bytes,signature,publicKey)=>ed25519Verify(bytes,signature,publicKeyFromRaw(publicKey))});
+  } catch { return 'the Vet pinned recipe shape, method or signature does not authenticate'; }
+  return null;
 }
 
 // DACS-2 §7.4.3: qualify each actual implicit result/member projection
@@ -339,7 +353,7 @@ function vetEvidenceReads(evidence, scope) {
   const read = async (method, input, decode = (reply) => reply) => {
     try {
       if (expired) throw vetEvidenceTimeout();
-      const key=method==='resolveLatestRecipe'?canonicalize([input.scheme,input.method]):null;
+      const key=['resolveLatestRecipe','resolveRecipe'].includes(method)?canonicalize([method,input.scheme,input.method,input.recipeVersion??null]):null;
       if(key!==null&&!selections.has(key))selections.set(key,readAdmissionCapability(evidence,method,{...scope,...input},controller.signal));
       const pending=key===null?readAdmissionCapability(evidence,method,{...scope,...input},controller.signal):selections.get(key);
       const reply = await Promise.race([pending, deadline]);
@@ -452,8 +466,10 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   const pins = sessionRegistryPins ?? [];
   let strict, thrown, problem;
   try {
-    for(const family of implicitRecipeFamilies(invocation)){
-      problem=!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim':await latestSessionRecipeProblem(reads.read,family,pins);
+    for(const family of recipeFamilies(invocation)){
+      problem=family.recipeVersion!==undefined
+        ?!reads?'the Vet pinned recipe evidence is unavailable':await pinnedSessionRecipeProblem(reads.read,family)
+        :!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim':await latestSessionRecipeProblem(reads.read,family,pins);
       if(problem)break;
     }
     if(!problem)strict = await verifyCompositeVerificationRecord(record,

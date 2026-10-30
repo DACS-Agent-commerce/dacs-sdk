@@ -442,3 +442,36 @@ for(const selection of [null,{sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY
  const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,implicit]]},boundRequirement:pinned});
  assert.match(await f.replay({evidence:{resolveLatestRecipe:async()=>selection}}),/no recipe version|not live|malformed/);
 });
+
+for(const pin of [undefined,2])for(const list of ['freshness','dealSpecific'])test(`unused verified family without a method refuses before aggregation, pin=${pin}, ${list}`,async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},unknown={scheme:'email',verificationRequired:true,...(pin===undefined?{}:{recipeVersion:pin})};
+ const f=await verifiedClaimFixture({list,bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,unknown]]},boundRequirement:pinned});
+ assert.notEqual(await f.replay(),null);assert.equal(f.calls.filter(([name])=>name==='resolveLatestRecipe').length,0);
+});
+for(const role of ['buyer','seller'])for(const issue of ['absent','wrong-version','wrong-scheme','disabled','failed','mocked','signature','unauthorized','method'])test(`unused explicit recipe pin is preflighted: ${role} ${issue}`,async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},unused={scheme:'domain',verificationRequired:true,recipeVersion:2};
+ const f=await verifiedClaimFixture({party:role==='buyer'?buyer:seller,verifier:role==='buyer'?seller:buyer,bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[unused,pinned]]},boundRequirement:pinned});
+ let recipe=await sign({...core.stripSignature(f.recipe),recipeVersion:2,...(issue==='wrong-scheme'?{scheme:'email'}:{}),...(['disabled','failed','mocked'].includes(issue)?{availability:issue}:{}),...(issue==='method'?{defaultMethod:{kind:'dns-txt'}}:{})},'dacs-recipe:v1:',recipeSteward);
+ if(issue==='absent')recipe=null;if(issue==='wrong-version')recipe=f.recipe;if(issue==='signature')recipe.signature.value='TEST invalid recipe signature';
+ const problem=await f.replay({evidence:{resolveRecipe:async selector=>selector.recipeVersion===2?recipe:f.recipe,isRecipeSignerAuthorized:async({recipe})=>issue!=='unauthorized'||recipe.recipeVersion!==2}});
+ assert.notEqual(problem,null);
+});
+test('valid unused exact recipe pin is resolved once and does not veto a passing alternative',async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},unused={scheme:'domain',verificationRequired:true,recipeVersion:2};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,unused,{...unused,parameters:{jurisdiction:'GB'}}]]},boundRequirement:pinned}),calls=[];
+ const recipe=await sign({...core.stripSignature(f.recipe),recipeVersion:2},'dacs-recipe:v1:',recipeSteward);
+ assert.equal(await f.replay({evidence:{resolveRecipe:async selector=>{calls.push(selector.recipeVersion);return selector.recipeVersion===2?recipe:f.recipe;}}}),null);
+ assert.equal(calls.filter(version=>version===2).length,1);
+});
+test('an unused verified family with an explicit method still permits a passing pinned alternative',async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},unused={scheme:'email',verificationRequired:true,parameters:{verificationMethod:'consensus-backed-proxy'}};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,unused]]},boundRequirement:pinned});
+ assert.equal(await f.replay(),null);assert.equal(f.calls.filter(([name])=>name==='resolveLatestRecipe').length,1);
+});
+
+for(const field of ['parserRules','governance','defaultMaxAgeSec','retryClass','backoff','extra'])test(`unused explicit pin uses the core recipe shape check: ${field}`,async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},unused={scheme:'domain',verificationRequired:true,recipeVersion:2};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,unused]]},boundRequirement:pinned});
+ const malformed=await sign({...core.stripSignature(f.recipe),recipeVersion:2,[field]:'TEST malformed field'},'dacs-recipe:v1:',recipeSteward);
+ assert.notEqual(await f.replay({evidence:{resolveRecipe:async selector=>selector.recipeVersion===2?malformed:f.recipe}}),null);
+});
