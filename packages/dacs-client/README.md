@@ -96,7 +96,21 @@ The required schema objects are supplied by `PURCHASE_STATE_SCHEMA`; the applica
 
 ### Chain reader
 
-For legacy and native purchases alike, provide `network`, `pinnedIdentity`, `networkIdentity` and `observePassiveTransfer`. Network identity resolves the configured identity and mode. The passive reader observes the saved hash without journal reconciliation. Missing or noncallable passive readers produce unavailable readback. Included observations carry the requested hash, payer, payee, integer amount text and optional block number. When present, `sourceDisposition` is exactly `included` or `failed`; other values are malformed. Repeated readback leaves operation and coordinate state unchanged and cannot establish settlement.
+For legacy and native purchases alike, provide `network`, `pinnedIdentity`, `networkIdentity` and `observePassiveTransfer`. Network identity resolves the configured identity and mode. The passive reader observes the saved hash without journal reconciliation. Missing or noncallable passive readers produce unavailable readback. It returns one object with these primitive fields:
+
+| Field | Presence | Contract |
+| --- | --- | --- |
+| `status` | always | `included`, `pending`, `not-found`, `failed`, `invalid` or `unavailable` |
+| `reason` | optional | text of at most 240 characters |
+| `txHash` | included | the requested hash: 64 hex characters, with an optional `0x` prefix |
+| `payer` | included | readable Demos address of at most 66 characters |
+| `payee` | included | readable Demos address of at most 66 characters |
+| `amountOs` | included | text matching `OS_INTEGER`: canonical decimal integer in OS units, at most 78 digits |
+| `blockNumber` | included | nonnegative safe integer; an observation without it is malformed |
+| `includedAt` | optional | for included observations, integer epoch milliseconds from 0 to 8640000000000000 |
+| `sourceDisposition` | optional | exactly `included` or `failed` |
+
+The fields marked included are required when status is included; other statuses need no transfer fields. Omitted or undefined optional fields are absent. Unknown fields are ignored. Any other shape yields `status` `malformed` with a `reason`. `termsMatch` compares payer, payee and amount; it is null unless the observation is included with no `sourceDisposition` or with `included`. Repeated readback leaves operation and coordinate state unchanged and cannot establish settlement.
 
 ### Operations
 
