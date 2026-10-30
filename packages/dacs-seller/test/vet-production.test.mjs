@@ -11,7 +11,8 @@ import { createDemDeliveryContext, resolveDemDeliverySellerContext } from '../sr
 async function isolatedSellerSession(f){
  const p=await f.provider(),input=f.input(),{generatedAt,...scope}=input.scope;
  const job={jobId:scope.jobId,binding:{scope,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT},open:()=>true,writeStarted:false};
- await p.state.update(job.jobId,()=>({binding:job.binding,writeStarted:false,ops:{},seller:null}));
+ job.incarnation='TEST isolated incarnation';
+ await p.state.update(job.jobId,()=>({binding:job.binding,lifecycle:{incarnation:job.incarnation,epoch:0,state:'open',times:[]},writeStarted:false,ops:{},seller:null}));
  return()=>p.sellerSession(job);
 }
 
@@ -191,7 +192,7 @@ test('a record evaluated under a rotated presentation is not pinned to the new o
   return record;
  };
  const row=await p.state.read(input.scope.jobId);
- await assert.rejects(p.produceSeller({jobId:row.jobId,binding:row.binding,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
+ await assert.rejects(p.produceSeller({jobId:row.jobId,binding:row.binding,incarnation:row.lifecycle.incarnation,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
  assert.equal((await p.state.read(input.scope.jobId)).counterpartyRecord,undefined);
  f.base.close();
 });
@@ -470,7 +471,7 @@ test('replacement between session and row read refuses before the old nonce ledg
   if(++reads===2)await p.state.update(input.scope.jobId,row=>({...row,presentation:{challenge:{...row.presentation.challenge,sessionNonce:'b'.repeat(32)},bundle:{...row.presentation.bundle,sessionNonce:'b'.repeat(32)}}}));
   return read(key);
  };
- await assert.rejects(p.produceSeller({jobId:saved.jobId,binding:saved.binding,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
+ await assert.rejects(p.produceSeller({jobId:saved.jobId,binding:saved.binding,incarnation:saved.lifecycle.incarnation,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
  assert.equal(ledgerReads,0);assert.equal(f.seen.length,0);f.base.close();
 });
 test('two providers refuse the short-lived nonce then rotate it exactly once',async()=>{
@@ -481,7 +482,7 @@ test('two providers refuse the short-lived nonce then rotate it exactly once',as
  const row=await p.state.read(input.scope.jobId),q=await f.provider();let arrivals=0,ready,release;
  const entered=new Promise(r=>ready=r),gate=new Promise(r=>release=r);
  f.counterparty.readRecord=async request=>{const out=await read(request);if(++arrivals===2)ready();await gate;return out;};
- const job=()=>({jobId:row.jobId,binding:row.binding,open:()=>true,writeStarted:true});
+ const job=()=>({jobId:row.jobId,binding:row.binding,incarnation:row.lifecycle.incarnation,open:()=>true,writeStarted:true});
  const results=[p.produceSeller(job()),q.produceSeller(job())].map(work=>assert.rejects(work,e=>e.code==='seller_challenge_expired'));
  await entered;at=f.expiries.get(row.presentation.bundle.sessionNonce)-1;release();await Promise.all(results);
  assert.equal(f.seen.length,0);f.counterparty.readRecord=read;
@@ -499,4 +500,12 @@ for(const kind of ['signature','missing-presentation','duplicate-claim'])test(`i
   assert.equal(f.controls.signs,0);assert.equal(f.issued.size,0);assert.equal(f.seen.length,0);assert.equal(f.local.writes.length,0);assert.equal((await f.base.entries()).length,0);
   const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(f.issued.size,1);assert.equal(f.seen.length,1);
  }finally{f.base.close();}
+});
+
+for(const lifecycle of [null,{incarnation:'TEST other',state:'open'}])test(`seller effect gates refuse a missing or changed admission: ${JSON.stringify(lifecycle)}`,async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input(),{generatedAt,...scope}=input.scope;
+ const job={jobId:scope.jobId,binding:{scope,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT},incarnation:'TEST expected',open:()=>true,writeStarted:false};
+ await p.state.update(job.jobId,()=>({binding:job.binding,lifecycle,writeStarted:false,ops:{},seller:null}));
+ await assert.rejects(p.sellerSession(job),{code:'context_released'});
+ assert.equal(f.controls.signs,0);assert.equal(f.issued.size,0);assert.equal(f.local.writes.length,0);f.base.close();
 });
