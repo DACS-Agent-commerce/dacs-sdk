@@ -18,6 +18,26 @@ function installationClosure(project: string, lock: unknown, readArchive: unknow
     lock, readArchive, installer: npmInstallContract(project) });
 }
 
+// Only a successful ci authorizes publishing an expected installation.
+function expectCiParity(project: string, input: { manifest: Buffer; lock: unknown; installer: ReturnType<typeof npmInstallContract>; readArchive: unknown }) {
+  input.installer = npmInstallContract(project, input.installer.toolchain);
+  const toolchain = input.installer.toolchain;
+  let completed = true;
+  try {
+    runNpmNode(toolchain, [toolchain.cli, "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+      `--cache=${join(project, ".npm")}`], { cwd: project });
+  } catch { completed = false; }
+  const reference = referenceInstallation(input);
+  expect(reference.errors.length === 0).toBe(completed);
+  if (completed) expect(installationDifferences(project, reference)).toEqual([]);
+  else {
+    expect(reference.inventory).toBeNull();
+    expect(reference.errors.join()).toContain("npm subprocess failed");
+    expect(installationDifferences(project, reference)).toEqual(["reference installation did not complete"]);
+  }
+  return reference;
+}
+
 const scratch: string[] = [];
 afterEach(() => {
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
@@ -1032,8 +1052,8 @@ it.each([
   expect(reference.errors.join()).toContain("npm-version differs from selected npm");
 }, 60_000);
 
-// npm install can leave failed optional lookups out of its generated lock.
-// npm 11 retains their versionless failure nodes during ci's lock validation.
+// npm install and npm ci can disagree on unresolved optional edges.
+// Match the selected npm ci without changing its validation policy.
 describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }, () => {
   const incomplete = (owner: string, name: string, field = "optionalDependencies", config = "omit=optional\n", duplicate = false) => {
     const fields = { [field]: { [name]: "^1.0.0" },
@@ -1060,20 +1080,15 @@ describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }
     ["node_modules/parent", "absent", false],
     ["node_modules/outer/node_modules/@scope/parent", "@scope/absent", false],
     ["node_modules/parent", "absent", true],
-  ] as const)("replays an omitted unresolved optional edge at %s to %s, duplicate=%s", (owner, name, duplicate) => {
+  ] as const)("matches ci for an omitted unresolved optional edge at %s to %s, duplicate=%s", (owner, name, duplicate) => {
     const { fixture, input } = incomplete(owner, name, "optionalDependencies", "omit=optional\n", duplicate);
-    const toolchain = input.installer.toolchain;
-    runNpmNode(toolchain, [toolchain.cli, "install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
-      `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
     const original = readFileSync(join(fixture.project, "package-lock.json"), "utf8");
-    input.lock = JSON.parse(original);
     const before = JSON.stringify({ manifest: input.manifest, lock: input.lock });
-    const reference = referenceInstallation(input);
-    expect(reference.errors).toEqual([]);
-    expect(reference.inventory).toBeInstanceOf(Map);
-    expect(installationDifferences(fixture.project, reference)).toEqual([]);
-    expect([...reference.inventory.keys()].some(path => path === `node_modules/${name}` || path.endsWith(`/node_modules/${name}`))).toBe(false);
-    if (owner) expect(reference.entries.get(owner).manifest.optionalDependencies).toHaveProperty(name, "^1.0.0");
+    const reference = expectCiParity(fixture.project, input);
+    if (reference.inventory) {
+      expect([...reference.inventory.keys()].some(path => path === `node_modules/${name}` || path.endsWith(`/node_modules/${name}`))).toBe(false);
+      if (owner) expect(reference.entries.get(owner).manifest.optionalDependencies).toHaveProperty(name, "^1.0.0");
+    }
     expect(JSON.stringify({ manifest: input.manifest, lock: input.lock })).toBe(before);
     expect(readFileSync(join(fixture.project, "package-lock.json"), "utf8")).toBe(original);
   });
@@ -1113,18 +1128,13 @@ describe("unresolved dependencies in an npm-generated lock", { timeout: 60_000 }
     delete root.dependencies;
     parent.optional = true;
     input.manifest = Buffer.from(JSON.stringify(root));
-    const toolchain = input.installer.toolchain;
     writeFileSync(join(fixture.project, "package.json"), input.manifest);
     writeFileSync(join(fixture.project, "package-lock.json"), JSON.stringify(input.lock));
     rmSync(join(fixture.project, "node_modules"), { recursive: true, force: true });
     // The independent install starts without node_modules; replay the same input.
     input.installer = npmInstallContract(fixture.project);
-    const reference = referenceInstallation(input);
-    expect(reference.errors).toEqual([]);
-    expect(reference.entries.get("node_modules/parent").present).toBe(false);
-    runNpmNode(toolchain, [toolchain.cli, "install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
-      `--cache=${join(fixture.project, ".npm")}`], { cwd: fixture.project });
-    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+    const reference = expectCiParity(fixture.project, input);
+    if (reference.inventory) expect(reference.entries.get("node_modules/parent").present).toBe(false);
   });
 
   it("keeps an unresolved optional peer in npm's graph", () => {
@@ -1446,7 +1456,7 @@ describe("root package.json bytes", { timeout: 60_000 }, () => {
     expect(readFileSync(join(fixture.project, "package.json"))).toEqual(bytes);
   });
 
-  it("replays an unresolved optional edge under a BOM and tab manifest", () => {
+  it("matches ci for an unresolved optional edge under a BOM and tab manifest", () => {
     const fixture = simulatedInstall({});
     const root = fixture.lock.packages[""];
     if (!root) throw Error("missing fixture root");
@@ -1454,13 +1464,10 @@ describe("root package.json bytes", { timeout: 60_000 }, () => {
     writeFileSync(join(fixture.project, "package.json"), bom + tab(root));
     writeFileSync(join(fixture.project, "package-lock.json"), JSON.stringify(fixture.lock));
     writeFileSync(join(fixture.project, ".npmrc"), "omit=optional\n");
-    offlineNpm(fixture.project, "install");
-    const lock = JSON.parse(readFileSync(join(fixture.project, "package-lock.json"), "utf8"));
     const bytes = readFileSync(join(fixture.project, "package.json"));
     expect(bytes.toString().startsWith(bom + "{\n\t")).toBe(true);
-    const reference = installationClosure(fixture.project, lock, () => { throw Error("no archives"); });
-    expect(reference.errors).toEqual([]);
-    expect(installationDifferences(fixture.project, reference)).toEqual([]);
+    expectCiParity(fixture.project, { manifest: bytes, lock: fixture.lock,
+      installer: npmInstallContract(fixture.project), readArchive: () => { throw Error("no archives"); } });
   });
 
   it.each([
