@@ -50,7 +50,7 @@ for(const change of ['signed','replaced'])test(`expired challenge rotation prese
  const issue=f.counterparty.issueChallenge;f.counterparty.issueChallenge=async input=>({...await issue(input),expiresAt:at+60000});
  const ready=new Promise(r=>entered=r),gate=new Promise(r=>continueRead=r),read=f.counterparty.readRecord;
  f.counterparty.readRecord=async input=>{const result=await read(input);entered();await gate;return result;};
- const p=await f.provider(),row=await p.state.read(f.input().scope.jobId),job={jobId:row.jobId,binding:row.binding,open:()=>true,writeStarted:true};
+ const p=await f.provider(),row=await p.state.read(f.input().scope.jobId),job={jobId:row.jobId,binding:row.binding,incarnation:row.lifecycle.incarnation,open:()=>true,writeStarted:true};
  const work=p.sellerSession(job);await ready;
  const updated=structuredClone(row.presentation);updated.bundle.presentation={kind:'per-claim',signatures:[{ref:row.binding.scope.seller,signature:'TEST retained signature'}]};
  if(change==='replaced')updated.challenge.sessionNonce='ab'.repeat(32);
