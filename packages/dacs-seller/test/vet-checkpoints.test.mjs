@@ -11,8 +11,8 @@ const api=await privateModule(new URL('../src/devnet-demo/agreement-context.mjs'
 const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 const request=(execute,changes={})=>({operationKey:'TEST-vet',operationHash:'a'.repeat(64),inputHash:'b'.repeat(64),step:'composite-anchor',execute,...changes});
 async function fixture(raw=createInMemoryPartyVetStore(),initialize=true){
- const state=api.partyVetState(raw,seller.claim),job={jobId:JOB,binding:{TEST:'exact binding'}},clock={step:null};
- if(initialize)await state.update(JOB,()=>({binding:job.binding,ops:api.freshOps()}));
+ const state=api.partyVetState(raw,seller.claim),job={jobId:JOB,incarnation:'TEST checkpoint incarnation',binding:{TEST:'exact binding'}},clock={step:null};
+ if(initialize)await state.update(JOB,()=>({binding:job.binding,lifecycle:{incarnation:job.incarnation,epoch:0,state:'open',times:[]},ops:api.freshOps()}));
  const durable=api.durableOperationStore(state,job,'seller',{now:()=>NOW,clock});
  return{raw,state,job,clock,durable,store:durable.operationStore};
 }
@@ -101,4 +101,13 @@ test('binding changed while authorization is in flight refuses a non-signing eff
  const f=await fixture();let effects=0;
  const input={...request(async()=>{effects++;return{};}),authorize:async()=>{await f.state.update(JOB,row=>({...row,binding:{TEST:'new binding'}}));return{status:'authorized'};}};
  await assert.rejects(f.store.runOnceAuthorized(input),e=>e.errors?.[0]?.code==='binding-changed');assert.equal(effects,0);f.raw.close();
+});
+
+test('a delayed operation cannot save a checkpoint into a replacement lifecycle',async()=>{
+ const f=await fixture(),entered=deferred(),resume=deferred();
+ const pending=f.store.runOnce(request(async()=>{entered.resolve();await resume.promise;return {TEST:'old result'};}));
+ const held=pending.catch(error=>error);await entered.promise;
+ await f.state.update(JOB,row=>({...row,lifecycle:{...row.lifecycle,incarnation:'TEST replacement incarnation'}}));
+ resume.resolve();assert.equal((await held).code,'binding-changed');
+ assert.equal(Object.values((await f.state.read(JOB)).ops.seller.steps)[0].state,'pending');f.raw.close();
 });
