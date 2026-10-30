@@ -160,15 +160,12 @@ test('an invalid presence requirement is refused before the registry pin is read
   // requirement error. A failing registry reader must not turn that into an
   // indeterminate outage, so the requirement is preflighted first.
   const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const { JOB } = await import('./helpers/protocol-fixture.mjs');
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
+  const requirement = { ...presence('did'), required: [{ scheme: 'did', verificationRequired: false, maxAge: 30 }] };
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: requirement });
   let reads = 0;
   f.config.sessionAdmission = { ...f.admission.sessionAdmission,
     readSessionRecipeRegistryPin: async () => { reads += 1; throw new Error('TEST registry is down'); } };
   const agent = await f.open(), request = await f.proposal(agent);
-  const context = f.contexts.get(JOB);
-  context.vetRequirements[1].requirement = { ...context.vetRequirements[1].requirement,
-    required: [{ scheme: 'did', verificationRequired: false, maxAge: 30 }] };
   const answer = await agent.receiveProposal(request);
   assert.equal(answer.disposition, 'rejected');
   assert.match(answer.reason, /VET_RECORD_UNVERIFIED/);
