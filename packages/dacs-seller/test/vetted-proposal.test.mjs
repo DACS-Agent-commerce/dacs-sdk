@@ -29,6 +29,34 @@ for(const method of ['resolveVetRecord','readVetAnchorReceipt','verifyVetAnchorR
 test('an indeterminate receipt authentication stays indeterminate',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);f.admission.verifyReceiptWith(()=> 'indeterminate');assert.equal((await agent.receiveProposal(request)).disposition,'indeterminate');
 });
+for(const role of ['buyer','seller'])for(const method of ['resolveVetRecord','readVetAnchorReceipt']){
+ test(`${role} ${method} absence stays indeterminate and an exact retry signs once`,async t=>{
+  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
+  const original=f.admission.sessionAdmission[method];
+  f.admission.sessionAdmission[method]=async(query,options)=>query.role===role?null:original(query,options);
+  const signatures=()=>f.signed.filter(bytes=>bytes.startsWith('dacs-payee-bound-agreement:v1:')).length;
+  const answer=await agent.receiveProposal(request);
+  assert.equal(signatures(),0,'missing authoritative evidence must not produce an Agreement signature');
+  assert.equal(answer.disposition,'indeterminate');
+  f.admission.sessionAdmission[method]=original;
+  assert.equal((await agent.receiveProposal(request)).disposition,'complete');
+  assert.equal(signatures(),1);
+ });
+ test(`${role} ${method} resolved malformed evidence stays rejected without signing`,async t=>{
+  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
+  const original=f.admission.sessionAdmission[method];
+  f.admission.sessionAdmission[method]=async(query,options)=>query.role===role?{}:original(query,options);
+  assert.equal((await agent.receiveProposal(request)).disposition,'rejected');
+  assert.equal(f.signed.filter(bytes=>bytes.startsWith('dacs-payee-bound-agreement:v1:')).length,0);
+ });
+}
+for(const role of ['buyer','seller'])test(`${role} established dropped Vet receipt stays rejected without signing`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
+ const original=f.admission.sessionAdmission.readVetAnchorReceipt;
+ f.admission.sessionAdmission.readVetAnchorReceipt=async(query,options)=>{const receipt=await original(query,options);return query.role===role?{...receipt,state:'dropped'}:receipt;};
+ assert.equal((await agent.receiveProposal(request)).disposition,'rejected');
+ assert.equal(f.signed.filter(bytes=>bytes.startsWith('dacs-payee-bound-agreement:v1:')).length,0);
+});
 test('oversized Vet data is held before cloning and authentication',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);f.admission.sessionAdmission.resolveVetRecord=async()=>({extra:'x'.repeat(65537)});const answer=await agent.receiveProposal(request);assert.equal(answer.disposition,'indeterminate');assert.ok(answer.cause instanceof RangeError);
 });

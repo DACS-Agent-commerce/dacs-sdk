@@ -413,8 +413,9 @@ test('a Demos Vet record is relied on only with an included or finalized SR-2 re
   // A reader that answers nothing at all.
   const noAnswer = { ...w.admission.sessionAdmission, readVetAnchorReceipt: async () => null };
   const none = await sign(w.vetted, noAnswer);
-  assert.equal(none.disposition, 'rejected');
-  assert.match(none.reason, /^VET_RECORD_UNVERIFIED: buyer: the Vet record has no SR-2 receipt$/);
+  assert.equal(none.disposition, 'indeterminate');
+  assert.equal(none.contribution, undefined);
+  assert.match(none.reason, /^VET_RECORD_UNVERIFIED: the buyer Vet record has no SR-2 receipt$/);
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
   // The receipt states from which a record is relied on pass.
   for (const state of ['included', 'finalized']) {
