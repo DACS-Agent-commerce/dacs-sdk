@@ -23,8 +23,8 @@ const sign = (unsigned, separator, wallet) => core.signComponentArtifact(unsigne
 
 // A counterparty-signed record of `buyer` (verified by `seller`) whose requirement names one verified claim,
 // with that claim's VerifyResult, recipe and authority content kept as an operator would hold them.
-async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller, boundRequirement = bundleRequirement.required[0], steward = recipeSteward, resultWallet = resultSigner } = {}) {
-  const recipe = await sign({ recipeVersion: 1, scheme: 'domain', defaultMethod: { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate: 'https://authority.example/{identifier}' } },
+async function verifiedClaimFixture({ recipeVersion = 1, scheme = 'domain', identifier = 'alice.example', urlTemplate = 'https://authority.example/{identifier}', list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller, boundRequirement = bundleRequirement.required[0], steward = recipeSteward, resultWallet = resultSigner } = {}) {
+  const recipe = await sign({ recipeVersion, scheme, defaultMethod: { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate } },
     defaultMaxAgeSec: 3600, parserRules: { format: 'json', successJsonPath: '$.active' }, retryClass: 'permanent', availability: 'live',
     governance: { proposedBy: steward.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' } }, 'dacs-recipe:v1:', steward);
   const authorityValue = { active: true };
@@ -33,17 +33,17 @@ async function verifiedClaimFixture({ list = 'dealSpecific', authority = 'canoni
     : authority === 'empty-bytes'
       ? { encoding: 'bytes', value: '', hash: core.sha256Hex(new Uint8Array(0)) }
       : { encoding: 'canonical-json', value: authorityValue, hash: core.sha256Hex(core.canonicalize(authorityValue)) };
-  const result = await sign({ resultVersion: '1', scheme: 'domain', identifier: 'alice.example', recipeVersion: 1, method: 'consensus-backed-proxy', decision: 'pass',
+  const result = await sign({ resultVersion: '1', scheme, identifier, recipeVersion, method: 'consensus-backed-proxy', decision: 'pass',
     reason: 'authority confirmed the claim', attestation: { anchor: { kind: 'https', locator: AUTHORITY_LOCATOR }, contentHash: authorityContent.hash, signer: resultWallet.claim },
     data, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultWallet);
-  const resultRef = { anchor: { kind: 'storage-program', locator: RESULT_LOCATOR }, contentHash: core.contentHash(result), recipeVersion: 1 };
+  const resultRef = { anchor: { kind: 'storage-program', locator: `dacs2:${JOB}:${scheme}:${identifier}:v${recipeVersion}` }, contentHash: core.contentHash(result), recipeVersion };
   const bundleHash = core.sha256Hex('TEST evaluated bundle');
   const record = await sign({ recordVersion: '1', jobId: JOB, evaluatedParty: party.claim, bundleHash, requirementHash: core.sha256Hex(core.canonicalize(bundleRequirement)),
     freshness: list === 'freshness' ? [resultRef] : [], supplementary: [], dealSpecific: list === 'dealSpecific' ? [resultRef] : [], overallDecision: 'pass', generatedAt: NOW }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, verifier);
   const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(JOB, party.claim) }, contentHash: core.contentHash(record), signer: verifier.claim };
-  const expected = [{ ref: resultRef, sourceJobId: JOB, scheme: 'domain', identifier: 'alice.example', method: 'consensus-backed-proxy', requirement: boundRequirement }];
+  const expected = [{ ref: resultRef, sourceJobId: JOB, scheme, identifier, method: 'consensus-backed-proxy', requirement: boundRequirement }];
   const invocation = { vetRecordRef: ref, evaluatedParty: party.claim, requirement: bundleRequirement, verifier: verifier.claim, freshness: list === 'freshness' ? expected : [], dealSpecific: list === 'dealSpecific' ? expected : [] };
-  const contents = new Map([[RESULT_LOCATOR, { encoding: 'canonical-json', value: result }],
+  const contents = new Map([[resultRef.anchor.locator, { encoding: 'canonical-json', value: result }],
     [AUTHORITY_LOCATOR, authorityContent.encoding === 'bytes' ? { encoding: 'bytes', value: authorityContent.value } : { encoding: 'canonical-json', value: authorityValue }]]);
   const calls = [];
   const evidence = {
@@ -299,19 +299,24 @@ test('an unpinned claim with no session recipe version is refused', async () => 
   assert.match(problem, /no recipe version/);
 });
 
-test('one replay resolves every unpinned claim against one session registry snapshot', async () => {
-  const fixture = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
-  const invocation = { ...fixture.invocation, dealSpecific: [fixture.invocation.dealSpecific[0], fixture.invocation.dealSpecific[0]] };
-  let calls = 0;
-  const problem = await fixture.replay({ input: { invocation },
-    evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: (calls++ === 0 ? 'ab' : 'cd').repeat(32), recipeVersion: 1, availability: 'live' }) } });
-  assert.match(problem, /another session registry snapshot/);
+async function replayTwoResults(a,b,resolveLatestRecipe){
+ const invocation={...a.invocation,dealSpecific:[...a.invocation.dealSpecific,...b.invocation.dealSpecific]},record=await sign({...core.stripSignature(a.record),dealSpecific:[...a.record.dealSpecific,...b.record.dealSpecific]},core.ARTIFACT_SEPARATORS.CompositeVerificationRecord,seller);
+ const contents=new Map([...a.contents,...b.contents]),ref={...a.ref,contentHash:core.contentHash(record)};
+ const recipes=new Map([a.recipe,b.recipe].map(recipe=>[`${recipe.scheme}/${recipe.recipeVersion}`,recipe]));
+ const evidence={...a.evidence,resolveContent:async({anchor})=>contents.get(anchor.locator)??null,resolveRecipe:async({scheme,recipeVersion})=>recipes.get(`${scheme}/${recipeVersion}`),resolveLatestRecipe};
+ return vetRecordProblem(record,{ref,jobId:JOB,role:'buyer',party:buyer.claim,bundleHash:record.bundleHash,verifier:seller.claim,invocation,now:()=>NOW,evidence});
+}
+test('one replay resolves distinct implicit families against one session snapshot',async()=>{
+ const first={scheme:'domain',verificationRequired:true},second={scheme:'email',verificationRequired:true},bundleRequirement={requirementVersion:'1',required:[first,second]};
+ const a=await verifiedClaimFixture({bundleRequirement,boundRequirement:first}),b=await verifiedClaimFixture({bundleRequirement,boundRequirement:second,scheme:'email',identifier:'alice@example.test'});
+ assert.match(await replayTwoResults(a,b,async({scheme})=>({sessionRecipeRegistrySnapshotHash:(scheme==='domain'?'ab':'cd').repeat(32),recipeVersion:1,availability:'live'})),/another session registry snapshot/);
 });
 
 test('one job resolves both party records against one session registry snapshot', async () => {
   const pins = [];
   const buyerRecord = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement });
-  const sellerRecord = await verifiedClaimFixture({ bundleRequirement: unpinnedRequirement, party: seller, verifier: buyer });
+  const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},implicit={scheme:'domain',verificationRequired:true};
+  const sellerRecord = await verifiedClaimFixture({ bundleRequirement: {requirementVersion:'1',required:[pinned,implicit]}, boundRequirement:pinned, party: seller, verifier: buyer });
   assert.equal(await buyerRecord.replay({ input: { sessionRegistryPins: pins } }), null);
   const problem = await sellerRecord.replay({ input: { sessionRegistryPins: pins },
     evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: 'cd'.repeat(32), recipeVersion: 1, availability: 'live' }) } });
@@ -348,8 +353,9 @@ test('an unbound unpinned alternative the core cannot project does not refuse a 
   const identified = { scheme: 'domain', verificationRequired: true, parameters: { identifier: 'bob' } };
   const bundleRequirement = { requirementVersion: '1', required: [], oneOf: [[pinned, identified]] };
   const fixture = await verifiedClaimFixture({ bundleRequirement, boundRequirement: pinned, data: { active: true, jurisdiction: 'DE' } });
-  assert.equal(await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2, availability: 'live' }) } }), null);
-  assert.equal(fixture.calls.some(([name]) => name === 'resolveLatestRecipe'), false);
+  let lookups=0;
+  assert.equal(await fixture.replay({ evidence: { resolveLatestRecipe: async () => (lookups++,{ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2, availability: 'live' }) } }), null);
+  assert.equal(lookups,1,'family existence is preflighted without using the stale result for that member');
 });
 
 test('an unpinned alternative cannot be projected from a result bound to an identified member', async () => {
@@ -360,8 +366,9 @@ test('an unpinned alternative cannot be projected from a result bound to an iden
   const other = { scheme: 'domain', verificationRequired: true };
   const bundleRequirement = { requirementVersion: '1', required: [], oneOf: [[identifiedPinned, other]] };
   const fixture = await verifiedClaimFixture({ bundleRequirement, boundRequirement: identifiedPinned, data: { active: true, identifier: 'bob' } });
-  assert.equal(await fixture.replay({ evidence: { resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2, availability: 'live' }) } }), null);
-  assert.equal(fixture.calls.some(([name]) => name === 'resolveLatestRecipe'), false);
+  let lookups=0;
+  assert.equal(await fixture.replay({ evidence: { resolveLatestRecipe: async () => (lookups++,{ sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: 2, availability: 'live' }) } }), null);
+  assert.equal(lookups,1,'family existence is preflighted without using the stale result for that member');
 });
 
 test('a recipe steward using a canonical key: claim passes operator evidence', async () => {
@@ -382,13 +389,56 @@ test('a key: VerifyResult signer whose signature does not verify is refused', as
   assert.match(await fixture.replay({ evidence: { isVerifyResultSignerAuthorized: async ({ signature }) => signature.signer === claimed.claim } }), /verify-result-signature/);
 });
 
-test('vetEvidence must expose every reader', () => {
-  const admission = Object.fromEntries(['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].map((name) => [name, async () => null]));
-  const complete = Object.fromEntries(['resolveContent', 'resolveRecipe', 'resolveLatestRecipe', 'isRecipeSignerAuthorized', 'isVerifyResultSignerAuthorized', 'verifyAuthorityAttestation'].map((name) => [name, async () => null]));
-  assert.equal(sessionAdmissionConfig({ ...admission, vetEvidence: complete }).vetEvidence, complete);
-  assert.equal(sessionAdmissionConfig(admission).vetEvidence, undefined);
-  const { resolveRecipe: _missing, ...partial } = complete;
-  assert.throws(() => sessionAdmissionConfig({ ...admission, vetEvidence: partial }), /vetEvidence must expose/);
-  const { resolveLatestRecipe: _optional, ...withoutLatest } = complete;
-  assert.equal(sessionAdmissionConfig({ ...admission, vetEvidence: withoutLatest }).vetEvidence, withoutLatest);
+test('agent configuration refuses the direct replay helper capability',()=>{
+ const admission=Object.fromEntries(['admit','resolveVetRecord','readVetAnchorReceipt','verifyVetAnchorReceipt','readRevocationSurfaces','readRevocationMarker'].map(name=>[name,async()=>null]));
+ assert.equal(sessionAdmissionConfig(admission),admission);
+ const complete=Object.fromEntries(['resolveContent','resolveRecipe','isRecipeSignerAuthorized','isVerifyResultSignerAuthorized','verifyAuthorityAttestation'].map(name=>[name,async()=>null]));
+ for(const vetEvidence of [complete,{},undefined])for(const config of [{...admission,vetEvidence},Object.assign(Object.create({vetEvidence}),admission)])assert.throws(()=>sessionAdmissionConfig(config),/direct Vet replay helper/);
+});
+
+for(const [name,pinnedParameters,implicitParameters,urlTemplate,latest,reads] of [
+ ['missing target binding',{jurisdiction:'DE'},undefined,'https://authority.example/{identifier}/{jurisdiction}',2,1],
+ ['different target binding',{jurisdiction:'DE'},{jurisdiction:'GB'},'https://authority.example/{identifier}/{jurisdiction}',2,1],
+ ['missing committed binding',undefined,{jurisdiction:'GB'},'https://authority.example/{identifier}/{jurisdiction}',2,1],
+ ['projectable stale member',{jurisdiction:'DE'},{jurisdiction:'DE'},undefined,2,1],
+ ['projectable missing reader',{jurisdiction:'DE'},{jurisdiction:'DE'},undefined,undefined,0],
+])test((latest===undefined?'registry proof remains required: ':'passing pinned alternative survives ')+name,async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1,...(pinnedParameters?{parameters:pinnedParameters}:{})},implicit={scheme:'domain',verificationRequired:true,...(implicitParameters?{parameters:implicitParameters}:{})};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,implicit]]},boundRequirement:pinned,data:{active:true,jurisdiction:'DE'},urlTemplate});let calls=0;
+ const evidence={resolveLatestRecipe:latest===undefined?undefined:async()=>{calls++;return{sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:latest,availability:'live'};}};
+ if(latest===undefined)assert.match(await f.replay({evidence}),/does not pin/);else assert.equal(await f.replay({evidence}),null);assert.equal(calls,reads);
+});
+for(const availability of ['disabled','failed','mocked'])test('non-live implicit family refuses replay before aggregation '+availability,async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},implicit={scheme:'domain',verificationRequired:true};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,implicit]]},boundRequirement:pinned});
+ assert.match(await f.replay({evidence:{resolveLatestRecipe:async()=>({sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:1,availability})}}),/not live/);
+});
+for(const bad of [{sessionRecipeRegistrySnapshotHash:'TEST-invalid',recipeVersion:1,availability:'live'},{sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:'1',availability:'live'}])test('malformed unused alternative registry answer still refuses the record '+JSON.stringify(bad),async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},implicit={scheme:'domain',verificationRequired:true};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,implicit]]},boundRequirement:pinned});
+ assert.match(await f.replay({evidence:{resolveLatestRecipe:async()=>bad}}),/malformed/);
+});
+test('a stale required member reached only by projection is unsatisfied',async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},implicit={scheme:'domain',verificationRequired:true};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[pinned,implicit]},boundRequirement:pinned});
+ assert.match(await f.replay({evidence:{resolveLatestRecipe:async()=>({sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:2,availability:'live'})}}),/not the latest live recipe version/);
+});
+
+test('implicit members of one family share one bounded selection read',async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},de={scheme:'domain',verificationRequired:true,parameters:{jurisdiction:'DE'}},gb={scheme:'domain',verificationRequired:true,parameters:{jurisdiction:'GB'}};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,de,gb]]},boundRequirement:pinned,data:{active:true,jurisdiction:'DE'}});let calls=0;
+ const pins=[];assert.equal(await f.replay({input:{sessionRegistryPins:pins},evidence:{resolveLatestRecipe:async()=>({sessionRecipeRegistrySnapshotHash:(calls++===0?'ab':'cd').repeat(32),recipeVersion:1,availability:'live'})}}),null);
+ assert.equal(calls,1);assert.deepEqual(pins,[SESSION_REGISTRY_PIN]);
+});
+
+test('one family selection qualifies each actual result version independently',async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},implicit={scheme:'domain',verificationRequired:true},bundleRequirement={requirementVersion:'1',required:[pinned,implicit]};
+ const a=await verifiedClaimFixture({bundleRequirement,boundRequirement:pinned}),b=await verifiedClaimFixture({bundleRequirement,boundRequirement:implicit,recipeVersion:2});let calls=0;
+ assert.equal(await replayTwoResults(a,b,async()=>{calls++;return{sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:2,availability:'live'};}),null);assert.equal(calls,1);
+});
+
+for(const selection of [null,{sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:2,availability:'disabled'},{sessionRecipeRegistrySnapshotHash:'TEST-invalid',recipeVersion:2,availability:'live'}])test('unprojectable implicit family still preflights registry errors '+JSON.stringify(selection),async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},implicit={scheme:'domain',verificationRequired:true,parameters:{identifier:'bob'}};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,implicit]]},boundRequirement:pinned});
+ assert.match(await f.replay({evidence:{resolveLatestRecipe:async()=>selection}}),/no recipe version|not live|malformed/);
 });
