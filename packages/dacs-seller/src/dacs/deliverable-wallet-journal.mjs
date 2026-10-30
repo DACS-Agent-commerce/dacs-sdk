@@ -27,12 +27,15 @@
 //  - readSignedProjection({ logicalAddress }) is the kept CREATE's public projection.
 // input is { logicalAddress, report, writer, jobId, receiptContentHash,
 // deliveryBinding }, where receiptContentHash is the SHA-256 of the canonical
-// report; anything else is refused (TypeError) before the wallet is asked.
+// report and the report, the binding and logicalAddress (the Deliverable
+// address) must all name jobId; anything else is refused (TypeError) before the
+// wallet is asked.
 // startSellerHost and createSellerAgent take the pair only from one journal
 // (deliverableJournalFor) with the capability whose submit it is.
 import { canonicalize, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { nativeDemDeliverySubmitOf } from './native-dem-delivery-consumer.mjs';
 import { createSignedCreateJournal } from './payment-evidence-wallet-journal.mjs';
+import { deliverableAddress } from './purchase-protocol.mjs';
 
 const DELIVERABLE_TABLE = 'deliverable_creates';
 const DELIVERABLE_KIND = 'Deliverable';
@@ -55,12 +58,25 @@ export function deliverableJournalFor(nativeDemDelivery, reconcile) {
   return journal;
 }
 
+// The canonical JSON serialisation of a plain JSON record, or null: a Date, a
+// class instance or a nested non-JSON value has no canonical form to keep or
+// compare, so it is refused before the wallet is asked.
+function canonicalRecord(value) {
+  if (!object(value)) return null;
+  try { return canonicalize(value); } catch { return null; }
+}
 // The input of the shared journal for this Deliverable, or a TypeError. The job
-// id is checked as CORE §B.1 names it before the wallet is asked, so no
-// protocol effect is ever derived from an alternate spelling.
+// id is checked as CORE §B.1 names it before the wallet is asked, and the
+// report, the delivery binding and the Deliverable address must all name that
+// same job, so no protocol effect is ever derived from an alternate spelling.
 function createInput({ logicalAddress, report, writer, jobId, receiptContentHash, deliveryBinding } = {}) {
-  if (!object(report) || !object(deliveryBinding) || typeof writer !== 'string' || !isCanonicalJobId(jobId) || receiptContentHash !== sha256Hex(canonicalize(report))) {
-    throw new TypeError('the Deliverable journal needs the report, its writer, a canonical job id, delivery binding and the report\'s canonical SHA-256 as receiptContentHash');
+  const canonicalReport = canonicalRecord(report), canonicalBinding = canonicalRecord(deliveryBinding);
+  if (canonicalReport === null || canonicalBinding === null || typeof writer !== 'string' || writer.length === 0 || !isCanonicalJobId(jobId)
+      || receiptContentHash !== sha256Hex(canonicalReport)) {
+    throw new TypeError('the Deliverable journal needs the report, its writer, a canonical job id, a canonical delivery binding and the report\'s canonical SHA-256 as receiptContentHash');
+  }
+  if (report.jobId !== jobId || deliveryBinding.jobId !== jobId || logicalAddress !== deliverableAddress(jobId)) {
+    throw new TypeError('the Deliverable journal is asked about another job: the report, the delivery binding and the Deliverable address must name the same canonical job id');
   }
   return { logicalAddress, artifact: report, writer, artifactKind: DELIVERABLE_KIND, jobId, receiptContentHash, deliveryBinding };
 }

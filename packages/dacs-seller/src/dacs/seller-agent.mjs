@@ -790,7 +790,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               try { registryPin = await readRegistryPin(admission, jobId); }
               catch (cause) { return unavailable(cause, 'the pinned registry authority is unavailable'); }
             }
-            // Both party records share the same presence registry snapshot.
+            // One job-wide pin: both party records' unpinned claims must resolve
+            // the same authenticated session registry snapshot before signing.
             const sessionRegistryPins = [];
             for (const [role, party, bundle, verifier] of parties) {
               const ref = resolved.input[role].vetRecordRef;
