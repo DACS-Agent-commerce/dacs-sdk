@@ -1121,7 +1121,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const proposalWork = (jobId) => { const s = durable?.loadSession(jobId) ?? sessions.get(jobId); return Boolean(s?.agreementSignatureKey || s?.sellerContribution || s?.commitment); };
   // Work of exactly this command that forbids releasing its effect.
   const retainedWork = (path, jobId, body) => path === '/dacs/v1/agreements/proposals' ? proposalWork(jobId) : path === '/dacs/v1/payments' && api.retainsPaymentClaim(jobId, body);
-  async function recoverTransport({ request, body, rawBody, readOnly }) {
+  async function recoverTransport({ request, body, rawBody, readOnly, transport }) {
     const same = (a, b) => canonicalize(a) === canonicalize(b);
     const proposal = request.path === '/dacs/v1/agreements/proposals', session = sessions.get(request.jobId) ?? null;
     const identity = proposal ? body.transportIdentity : session?.transportIdentity;
@@ -1132,7 +1132,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     try {
       switch (request.path) {
         case '/dacs/v1/agreements/proposals': {
-          if (!readOnly) return { answer: await receiveProposal(body) };
+          if (!readOnly) { const answer=await receiveProposal(body,{transport});transport?.check();return {answer}; }
           // Read only, a proposal completes from its durable final checkpoint
           // alone, never from a contribution saved without it.
           if (!session?.proposal || !session.sellerContribution || !same(body.proposal, session.proposal) || !same(body.transportIdentity, session.transportIdentity) ||
@@ -1199,7 +1199,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       // apply the proposal wallet and profile gates themselves.
       if (path !== '/dacs/v1/agreements/proposals' && access && session && buyerAccessClosed(session, jobId)) {
         result = { held: await readIssued?.(jobId, { unknownOnly: true }) ? 'buyer_access_closed; issued unknown writes inspected read-only; retained outcome unchanged' : 'buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged' };
-      } else { sessions.delete(jobId); await restore(session); result = await recoverTransport({ ...input, readOnly }); }
+      } else { sessions.delete(jobId); await restore(session); result = await recoverTransport({ ...input, readOnly, transport:typeof claimed?.check==='function'?claimed:undefined }); }
       const outcome = transportOutcome(path, result, { retained: retainedWork(path, jobId, input.body), recovering: true, readOnly });
       if (outcome.settle) transport?.settle(outcome);
       return outcome;

@@ -572,7 +572,15 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (live && request.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('context_session_terminal', 409);
         const owner = randomBytes(24).toString('hex');
         run('UPDATE peer_effects SET owner = ?, state = ? WHERE effect = ?', owner, 'uncertain', reservation.effectKey);
-        return Object.freeze({ disposition: 'uncertain', effectKey: reservation.effectKey, owner, live });
+        const effectKey=reservation.effectKey,jobId=request.jobId,proposal=request.path===PROPOSAL;
+        // The claimed owner carries the same current-policy fence to signing
+        // and publication after asynchronous recovery reads.
+        const check=()=>{
+          const row=get('SELECT owner,state FROM peer_effects WHERE effect = ?',effectKey);
+          if(!row||row.owner!==owner||row.state!=='uncertain')fail('peer_reconciliation_conflict',503);
+          if(live&&proposal&&TERMINAL_CONTEXT_STATES.has(contextSessionState({jobId})))fail('context_session_terminal',409);
+        };
+        return Object.freeze({ disposition: 'uncertain', effectKey, owner, live, check });
       });
     },
     // noEffect: a definite answer that started nothing (its rows go). retry:
