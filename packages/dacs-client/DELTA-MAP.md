@@ -868,9 +868,9 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | D11 | fix(client): D11 use portable TEMP transaction assertions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | 00a43edbe60c405972e1e41a7b9dc30081cf1193 |
 | D11 | fix(client): D11 keep floor wrappers with their dependencies | Git subject selector (must resolve exactly once after publication checkpoint) |
-| | `packages/dacs-client/DELTA-NOTES.md:1` | b4375e1e7884bf57720e1ad487226deca671e5b7 |
 | | `packages/dacs-client/test/domain-store-crash.floor.test.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` | 83cf9f2d3e6c1595cfe895440ef470b4bb336255 |
+| D11 | fix(client): D11 keep floor documentation in the control inventory | Git subject selector (must resolve exactly once after publication checkpoint) |
 
 ## Complete commit and file inventory
 
@@ -2751,6 +2751,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/test/domain-store-crash.floor.test.mjs` (deleted) |
 | fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` |
+| fix(client): D11 keep floor documentation in the control inventory | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep floor documentation in the control inventory | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep floor documentation in the control inventory | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep floor documentation in the control inventory | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep floor documentation in the control inventory | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
