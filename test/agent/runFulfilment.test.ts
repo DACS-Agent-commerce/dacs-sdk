@@ -39,6 +39,7 @@ import {
 import {
   isSellerFulfilmentAuditSource,
   sellerFulfilmentAuditSourceHash,
+  sellerFulfilmentVetRequirementsViolation,
   type SellerFulfilmentAuditSourceV1,
 } from "../../src/seller/fulfilmentAuditSource.js";
 
@@ -1347,7 +1348,7 @@ describe("runFulfilmentCore", () => {
     ["seller", "oneOf"],
     ["buyer", "mixed required"],
     ["buyer", "mixed oneOf"],
-  ] as const)("refuses unsupported presence-only %s %s before delivery on every attempt", async (party, placement) => {
+  ] as const)("requires explicit presence opt-in for %s %s before delivery on every attempt", async (party, placement) => {
     const f = fixture();
     f.deps.prepareDelivery = vi.fn(f.deps.prepareDelivery);
     f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
@@ -1367,6 +1368,18 @@ describe("runFulfilmentCore", () => {
     }
     if (party === "buyer") f.listing.buyerRequirement = structuredClone(invocation.requirement);
     expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+    const [buyerVet, sellerVet] = f.auditSource.artifacts.vetRequirements;
+    if (!buyerVet || !sellerVet) throw new Error("party invocations missing");
+    const admissionInput = {
+      jobId: f.auditSource.session.jobId,
+      buyer: { primaryClaim: buyerVet.evaluatedParty, vetRecordRef: buyerVet.vetRecordRef },
+      seller: { primaryClaim: sellerVet.evaluatedParty, vetRecordRef: sellerVet.vetRecordRef },
+      buyerRequirement: f.listing.buyerRequirement,
+    };
+    expect(sellerFulfilmentVetRequirementsViolation(f.auditSource.artifacts.vetRequirements, admissionInput)).toMatch(/presence-only/);
+    expect(sellerFulfilmentVetRequirementsViolation(f.auditSource.artifacts.vetRequirements, {
+      ...admissionInput, acceptsPresenceOnly: true,
+    })).toBeNull();
 
     for (let attempt = 0; attempt < 2; attempt++) {
       expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
@@ -1378,10 +1391,14 @@ describe("runFulfilmentCore", () => {
     }
     expect(f.deps.prepareDelivery).not.toHaveBeenCalled();
     expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    f.deps.acceptsPresenceOnlyVetRequirements = true;
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({ decision: "completed" });
+    expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
   });
 
   test("refuses delivery when a synthetic result covers a presence-only requirement", async () => {
     const f = fixture();
+    f.deps.acceptsPresenceOnlyVetRequirements = true;
     f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
     const invocation = f.auditSource.artifacts.vetRequirements[0]!;
     invocation.requirement = {
@@ -1405,6 +1422,7 @@ describe("runFulfilmentCore", () => {
   ])("refuses delivery for a presence-only member with %s", async (_label, member) => {
     for (const placement of ["required", "oneOf"] as const) {
       const f = fixture();
+      f.deps.acceptsPresenceOnlyVetRequirements = true;
       f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
       const invocation = f.auditSource.artifacts.vetRequirements[0]!;
       invocation.requirement = placement === "required"
