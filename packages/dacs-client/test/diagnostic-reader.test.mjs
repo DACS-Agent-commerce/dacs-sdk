@@ -40,7 +40,7 @@ const responseCases = [
   ...['pending', 'not-found', 'failed', 'invalid', 'unavailable'].map(status => [status, { status, reason: 'TEST-' + status }, status]),
   ...[undefined, null, true, 1, 'included', [], { status: 'unknown' }].map(value => [JSON.stringify(value), value, 'malformed']),
 ];
-for (const [reader, native] of [['observeTransfer', false], ['observePassiveTransfer', false], ['observePassiveTransfer', true]]) {
+for (const [reader, native] of [['observePassiveTransfer', false], ['observePassiveTransfer', true]]) {
   for (const [label, response, status] of responseCases) test(`public ${reader} validates ${label}, native=${native}`, async t => {
     const w = diagnostic(t, { network: 'testnet', pinnedIdentity: IDENTITY,
       networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
@@ -143,14 +143,47 @@ test('pre-aborted public diagnostic invokes no host reader', async t => {
   assert.equal(calls,0);
 });
 
-test('native diagnostics refuse an absent passive reader without falling back to recovery', async t=>{
-  const native=passiveNativeWorld();t.after(()=>native.source.close());await native.seed();
-  const chain=native.source.chainReader();delete chain.observePassiveTransfer;
-  const w=diagnostic(t,chain,{native:true}),before=await native.journal.entries();
-  const result=await w.verify();
-  assert.equal(result.verification.observation.status,'unavailable');
-  assert.deepEqual(await native.journal.entries(),before);assert.deepEqual(native.writes,[]);
-});
+for (const marked of [false, true]) {
+  for (const retained of [false, true]) {
+    for (const delayed of [false, true]) test(`diagnostics refuse active recovery, native=${marked}, retained=${retained}, delayed=${delayed}`, async t => {
+      const native = passiveNativeWorld(); t.after(() => native.source.close());
+      if (retained) await native.seed();
+      const chain = native.source.chainReader(), active = chain.observeTransfer;
+      delete chain.observePassiveTransfer;
+      let release, calls = 0;
+      const gate = new Promise(resolve => { release = resolve; });
+      chain.observeTransfer = async (...args) => {
+        calls++;
+        if (delayed) await gate;
+        return active(...args);
+      };
+      const w = diagnostic(t, chain, { native: marked, chainReadTimeoutMs: 20 });
+      const journal = await native.journal.entries(), state = w.snapshot();
+      // Drain late recovery before asserting, so post-deadline writes count too.
+      const first = await w.verify();
+      release();
+      const repeats = await Promise.all([w.verify(), w.verify()]);
+      await native.source.close();
+      assert.equal(first.verification.observation.code, 'passive_reader_unavailable');
+      for (const result of repeats) {
+        assert.equal(result.verification.observation.code, 'passive_reader_unavailable');
+        assert.equal(result.verification.termsMatch, null);
+      }
+      assert.equal(calls, 0);
+      assert.deepEqual(await native.journal.entries(), journal);
+      assert.deepEqual(native.writes, []); assert.deepEqual(w.snapshot(), state);
+    });
+  }
+  for (const passive of [null, false, 0, {}, 'TEST-reader']) test(`diagnostics refuse a noncallable passive reader ${JSON.stringify(passive)}, native=${marked}`, async t => {
+    let calls = 0;
+    const w = diagnostic(t, { network: 'testnet', pinnedIdentity: IDENTITY,
+      networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
+      observePassiveTransfer: passive, observeTransfer: async () => { calls++; } }, { native: marked });
+    const state = w.snapshot(), result = await w.verify();
+    assert.equal(result.verification.observation.code, 'passive_reader_unavailable');
+    assert.equal(calls, 0); assert.deepEqual(w.snapshot(), state);
+  });
+}
 test('status projects saved coordinate and nested observation extensions', t=>{
   const w=diagnostic(t,{});
   w.saveObservation({status:'pending',payload:{signThis:'TEST-unsigned-payment'},extra:{payload:'TEST-secret'},

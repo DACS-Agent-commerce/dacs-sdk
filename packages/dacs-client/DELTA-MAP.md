@@ -2274,7 +2274,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs` | `http-mcp/public/portal/embedded-wallet/sdk-provider.mjs` | b7183e63a75b68cda34c2b30a4d532963794b13f | changed by D11 | b7183e63a75b68cda34c2b30a4d532963794b13f |
 | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs` | `http-mcp/public/portal/seller-session-delegation.mjs` | ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42 | unchanged | ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42 |
 | `packages/dacs-client/src/public/portal/seller-session-limits.mjs` | `http-mcp/public/portal/seller-session-limits.mjs` | deleted before publication | unchanged | deleted |
-| `packages/dacs-client/src/purchases.mjs` | `http-mcp/src/purchases.mjs` | 79de3d54bc07c27f51c1758f81c61719c0d77595 | changed by D16, D11 | 6603f0590e47eff996a895954fc3d53fce01caba |
+| `packages/dacs-client/src/purchases.mjs` | `http-mcp/src/purchases.mjs` | 79de3d54bc07c27f51c1758f81c61719c0d77595 | changed by D16, D11 | c2cecbe570de30465a266e0feda4bbb60485ccf4 |
 | `packages/dacs-client/src/switch-files.mjs` | `http-mcp/src/switch-files.mjs` | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 | unchanged | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 |
 | `packages/dacs-client/src/util/http.mjs` | `http-mcp/src/util/http.mjs` | 569c5316ef89406fbf3a2d60b8b5efac9005ccf3 | changed by D16, D11 | e07573bbe5b87af05f35f0d74d371116aedc0241 |
 | `packages/dacs-client/src/util/ids.mjs` | `http-mcp/src/util/ids.mjs` | 6cb275e260df92ea17a4dd7c2417206a7ed7cc2a | unchanged | 6cb275e260df92ea17a4dd7c2417206a7ed7cc2a |
