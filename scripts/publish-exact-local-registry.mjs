@@ -26,6 +26,14 @@ const MAX_VERSION_LENGTH = 256;
 const NPM_ADDED_FIELDS = new Set(["_id", "_nodeVersion", "_npmVersion", "_npmUser"]);
 const NPM_ADDED_DIST_FIELDS = ["integrity", "shasum", "tarball"];
 
+// Compose npm tar's Windows character encoding and Unicode case folding so files,
+// explicit directories and implicit parents share one cross-platform comparison key.
+function archivePathKey(name) {
+  return name.replace(/\/$/, "")
+    .replace(/[|<>?:]/g, character => String.fromCodePoint(0xf000 + character.codePointAt(0)))
+    .normalize("NFD").toLocaleLowerCase("en").toLocaleUpperCase("en").normalize("NFD");
+}
+
 // Reads the sole regular package/package.json from a bounded gzip + ustar
 // archive. Throws for malformed framing, ambiguous paths or unsupported types.
 export function readPackedManifest(tarball) {
@@ -88,8 +96,8 @@ export function readPackedManifest(tarball) {
         name.replace(/\/$/, "").split("/").some(part => !part || /[. ]$/.test(part))) {
       throw new Error("packed tarball has an unsupported entry type or path");
     }
-    // Detect conflicts on case-insensitive filesystems without changing archive bytes.
-    const normalized = name.replace(/\/$/, "").toLowerCase();
+    // Compare extraction aliases without changing the archive bytes being certified.
+    const normalized = archivePathKey(name);
     const parents = normalized.split("/").slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join("/"));
     if (entries.has(normalized) || (type !== "5" && directories.has(normalized)) ||
         parents.some(parent => entries.has(parent) && entries.get(parent) !== "5")) {
