@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as core from '@kynesyslabs/dacs';
-import {anchorFixture} from './helpers/anchor-isolated-fixture.mjs';
+import {anchorFixture,signSdkCreate} from './helpers/anchor-isolated-fixture.mjs';
 import {isProvenUnsignedAbsence} from '../src/dacs/native-dem-delivery-consumer.mjs';
 import {seller} from './helpers/protocol-fixture.mjs';
 import {fixtureListing} from './fixtures/listings.mjs';
@@ -59,10 +59,7 @@ async function signedFailureWorld(code='broadcast_rejected'){
  w.source.binding=async()=>({disposition:code==='broadcast_rejected'?'absent':'pending'});
  w.source.recoverStorageWrite=async({signedTransaction})=>resends.push(structuredClone(signedTransaction));
  w.controls.request=async request=>{
-  const signedTransaction=structuredClone(request.transaction);
-  signedTransaction.content.gcr_edits={TEST:'signed SDK edits'};
-  const hash=core.sha256Hex(JSON.stringify(signedTransaction.content));signedTransaction.hash=hash;
-  signedTransaction.signature={type:'ed25519',data:'0x'+seller.signBytes(Buffer.from(hash)).toString('hex')};
+  const signedTransaction=await signSdkCreate(request.transaction),hash=signedTransaction.hash;
   await w.journal.put(`demo/wallet/${request.jobId}`,{stage:'broadcast-started',hash,signedTransaction});
   await w.sourceJournal.put(`source/${request.jobId}`,{stage:'signed',hash,signedTransaction});
   return {success:false,error:{code}};
@@ -145,7 +142,7 @@ test('retained readback never resends through an unqualified deployment; qualifi
  w.source.recoverStorageWrite=async({signedTransaction})=>resends.push(structuredClone(signedTransaction));
  await w.publish(w.open(),JOBS[0]);
  const [key,row]=[...w.journal.rows].find(([key])=>key.startsWith('demo/artifact/'));
- const signedTransaction={...row.transaction,hash:'c'.repeat(64),content:{...row.transaction.content,type:'storageProgram'}};
+ const signedTransaction=await signSdkCreate(row.transaction);
  await w.journal.put(key,{...row,stage:'issued',hash:signedTransaction.hash});
  await w.sourceJournal.put('original',{stage:'signed',hash:signedTransaction.hash,signedTransaction});
  w.source.pins.deployment.dirty=true;
