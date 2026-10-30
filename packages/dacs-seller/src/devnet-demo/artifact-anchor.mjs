@@ -222,20 +222,22 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     }
   }
 
-  // Keep the original projection before releasing the wallet's single lane.
-  // A refused broadcast with definitive absence frees only that lane; unknown
-  // outcomes retain it, and authenticated late inclusion still completes.
+  // The wallet overwrites its accepted row: keep every signed CREATE in its
+  // artifact intent before another request. Only started rows need readback
+  // before releasing the lane; accepted rows are never resent here.
   async function reconcilePriorWalletLane() {
     const state=await snapshot();
-    for(const [key,value] of state.walletRows.filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.stage==='broadcast-started'&&value?.signedTransaction?.content?.from===owner)){
+    for(const [key,value] of state.walletRows.filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.signedTransaction?.content?.from===owner)){
       const projection=state.projection(value.hash),address=projection?.content?.data?.[1]?.metadata?.logicalAddress;
       if(!projection||!projectionAuthentic(projection,{transactionRef:{value:value.hash}})||canonicalize(projection)!==canonicalize(value.signedTransaction)) fail('indeterminate','the retained seller wallet CREATE differs from its original public projection');
       const artifactKey=keyFor(address);
       await journal.withWalletLock(artifactKey,async()=>{
         const retained=await journal.get(artifactKey);
         if(!retained||canonicalize(retained.transaction.content.data)!==canonicalize(projection.content.data)) fail('indeterminate','the retained wallet CREATE has no matching artifact intent');
-        await journal.put(artifactKey,{...retained,hash:value.hash,signedTransaction:projection});
+        if(retained.hash&&retained.hash!==value.hash) fail('indeterminate','the retained artifact intent names another signed CREATE');
+        if(!retained.signedTransaction) await journal.put(artifactKey,{...retained,hash:value.hash,signedTransaction:projection});
       });
+      if(value.stage!=='broadcast-started') continue;
       const observed=await observeSource(value.hash,projection,undefined,{resend:!state.rejected(value)});
       if(observed.disposition!=='included'&&!(state.rejected(value)&&observed.disposition==='absent')) fail('indeterminate',`the retained seller wallet CREATE requires readback (${observed.disposition})`);
       await journal.withWalletLock(key,async()=>{
