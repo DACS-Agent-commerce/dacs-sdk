@@ -988,8 +988,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         observation = await raceWithDeadline(async options => {
           await assertBoundDomain(operation, options);
           options.signal.throwIfAborted();
-          const observe = chain.observePassiveTransfer ?? (usesNativeAgreementPayment(operation) ? null : chain.observeTransfer);
-          if (typeof observe !== 'function') throw new OperationError('passive_reader_unavailable', 'native diagnostics require a passive chain reader');
+          const observe = chain.observePassiveTransfer;
+          if (typeof observe !== 'function') throw new OperationError('passive_reader_unavailable', 'diagnostics require a passive chain reader');
           const value = await observe.call(chain, hash, { ...options, allowUnretained: !usesNativeAgreementPayment(operation) });
           options.signal.throwIfAborted();
           // Retain only bounded primitive contract fields. Never traverse or
