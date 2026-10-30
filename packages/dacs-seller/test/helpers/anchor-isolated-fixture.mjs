@@ -16,3 +16,13 @@ export async function anchorFixture({writer,signRpc=null,artifactKinds=['Finalit
  const publish=async(anchor,jobId)=>anchor.publish({logicalAddress:core.finalityCommitmentAddress(jobId),artifact:await artifact(jobId),artifactKind:'FinalityCommitmentRecord'});
  return {owner,seller,journal,sourceJournal,captured,controls,source,open,publish,artifact};
 }
+
+// Use the installed SDK's execution edits rather than signing the request unchanged.
+export async function signSdkCreate(transaction,{postFork=false}={}){
+ const {createRequire}=await import('node:module'),{dirname,join}=await import('node:path'),{pathToFileURL}=await import('node:url');
+ const {GCRGeneration}=await import(pathToFileURL(join(dirname(createRequire(import.meta.url).resolve('@kynesyslabs/demosdk')),'websdk/GCRGeneration.js')).href);
+ const signed=structuredClone(transaction);signed.hash='';signed.content.gcr_edits=await GCRGeneration.generate(signed);
+ signed.content.transaction_fee={network_fee:1,rpc_fee:0,additional_fee:0,rpc_address:null};
+ if(postFork){signed.content.amount='0';for(const field of ['network_fee','rpc_fee','additional_fee'])signed.content.transaction_fee[field]=String(BigInt(signed.content.transaction_fee[field])*1000000000n);for(const edit of signed.content.gcr_edits)if(edit.type==='balance')edit.amount=String(BigInt(edit.amount)*1000000000n);}
+ signed.hash=core.sha256Hex(JSON.stringify(signed.content));signed.signature={type:'ed25519',data:'0x'+fixtureSeller.signBytes(Buffer.from(signed.hash)).toString('hex')};return signed;
+}
