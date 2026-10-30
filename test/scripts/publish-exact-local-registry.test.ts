@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, truncateSyn
 import { Agent, request } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Duplex } from "node:stream";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -52,9 +52,11 @@ const npmEntry = realpathSync(process.env.npm_execpath ?? join(
 const npmRequire = createRequire(npmEntry);
 const npmPublish = npmRequire("libnpmpublish").publish;
 const npmTar = npmRequire("tar");
-const npmTarDirectory = dirname(npmRequire.resolve("tar"));
-const { encode: windowsPath } = npmRequire(join(npmTarDirectory, "winchars.js"));
-const { normalizeUnicode } = npmRequire(join(npmTarDirectory, "normalize-unicode.js"));
+// Fixed vectors and the public extractor work with every npm tar layout used in CI.
+const WINDOWS_PATH_CHARACTERS = new Map([
+  ["|", "\uf07c"], ["<", "\uf03c"], [">", "\uf03e"], ["?", "\uf03f"], [":", "\uf03a"],
+]);
+const windowsPath = (character: string) => WINDOWS_PATH_CHARACTERS.get(character) ?? character;
 
 function candidate(name = "@kynesyslabs/dacs", version = "0.1.0-test") {
   const directory = tempDirectory("dacs-local-publish-");
@@ -701,7 +703,6 @@ describe("exact local registry publisher", () => {
     ["straße.js", "STRASSE.js"], ["ẞ.js", "ss.js"], ["ﬁ.js", "fi.js"],
   ];
   it.each(unicodeAliases)("rejects Unicode extraction aliases %s / %s before publishing", async (declared, alias) => {
-    expect(normalizeUnicode(declared)).toBe(normalizeUnicode(alias));
     const { archivePath } = candidate();
     writeFileSync(archivePath, packTarball({
       "package/package.json": JSON.stringify({ name: "example", version: "1.0.0", main: declared }),
