@@ -839,6 +839,8 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | cc652d18792a64c8ab106e4a16eef68eebe6ed11 |
 | | `packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs:1` | e6154a6bdf929af005b39ef394befa2800b43431 |
 | | `packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs:1` | 7366ab01bbe3be7bc444fc6fb57eae000093c42b |
+| D11 | fix(client): D11 stabilize public diagnostic clock fixtures | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/host-observations.test.mjs:1` | bd6057097c2fb51e72674ab76591a628b073c896 |
 
 ## Complete commit and file inventory
 
@@ -2633,6 +2635,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record part 11's kept earlier history by commit | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record part 11's kept earlier history by commit | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record part 11's kept earlier history by commit | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/test/host-observations.test.mjs:1` |
 
 ## Original moved files
 
