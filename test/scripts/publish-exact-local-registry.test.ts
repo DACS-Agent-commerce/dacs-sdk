@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, truncateSync, writeFileSync } from "node:fs";
-import { Agent, request } from "node:http";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { Agent, request, createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Plain Node ESM script; a computed import keeps it out of the TypeScript program.
 const publisherModulePath = "../../scripts/publish-exact-local-registry.mjs";
-const { publishExactLocalRegistry, loadPinnedLibnpmpublish, readPackedManifest, PINNED_ACCEPTANCE_NPM_VERSION } =
+const { publishExactLocalRegistry, loadPinnedLibnpmpublish, readPackedArchive, readPackedManifest, PINNED_ACCEPTANCE_NPM_VERSION } =
   await import(publisherModulePath);
 
 const scratch: string[] = [];
@@ -32,12 +32,12 @@ function packTarball(entries: Record<string, string>): Buffer {
     const body = Buffer.from(text);
     const header = Buffer.alloc(512);
     header.write(name, 0, 100, "utf8");
-    header.write("0000644\0", 100); header.write("0000000\0", 108); header.write("0000000\0", 116);
-    header.write(body.length.toString(8).padStart(11, "0") + "\0", 124);
-    header.write("00000000000\0", 136);
-    header.write("        ", 148); header.write("0", 156); header.write("ustar\0" + "00", 257);
+    header.write("000644 \0", 100);
+    header.write(body.length.toString(8).padStart(10, "0") + " \0", 124);
+    header.write("0000000000 \0", 136);
+    header.write("000000 \0".repeat(2), 329); header.write("        ", 148); header.write("0", 156); header.write("ustar\0" + "00", 257);
     let sum = 0; for (const byte of header) sum += byte;
-    header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+    header.write(sum.toString(8).padStart(6, "0") + " \0", 148);
     blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
   }
   return gzipSync(Buffer.concat([...blocks, Buffer.alloc(1024)]));
@@ -46,7 +46,7 @@ function packTarball(entries: Record<string, string>): Buffer {
 const sri = (bytes: Buffer) => "sha512-" + createHash("sha512").update(bytes).digest("base64");
 const REGISTRY = "http://127.0.0.1:4873";
 // Use the running npm's actual HTTP stack, including its error-body handling.
-// Acceptance runs pin this client to PINNED_ACCEPTANCE_NPM_VERSION.
+// Future acceptance runs will pin this client to PINNED_ACCEPTANCE_NPM_VERSION.
 const npmEntry = realpathSync(process.env.npm_execpath ?? join(
   execFileSync("npm", ["root", "--global"], { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js"));
 const npmRequire = createRequire(npmEntry);
@@ -539,13 +539,13 @@ describe("exact local registry publisher", () => {
       expect(registry.calls).toHaveLength(0);
     });
 
-  it("allows an optional package/ root directory entry", () => {
+  it("refuses a package/ root directory entry", () => {
     const archive = gunzipSync(packTarball({ "package/": "", "package/package.json": '{"name":"example","version":"1.0.0"}' }));
     archive.write("5", 156);
     archive.fill(32, 148, 156);
     const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
-    archive.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
-    expect(readPackedManifest(gzipSync(archive))).toEqual({ name: "example", version: "1.0.0" });
+    archive.write(checksum.toString(8).padStart(6, "0") + " \0", 148);
+    expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
   });
 
   it.each(["duplicate", "alias", "nonregular", "size", "checksum", "truncated", "hidden trailer", "extended header", "trailing slash", "directory body"])(
@@ -556,7 +556,7 @@ describe("exact local registry publisher", () => {
       const rechecksum = () => {
         archive.fill(32, 148, 156);
         const sum = archive.subarray(0, 512).reduce((total, byte) => total + byte, 0);
-        archive.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+        archive.write(sum.toString(8).padStart(6, "0") + " \0", 148);
       };
       if (kind === "duplicate") archive = Buffer.concat([first.subarray(0, -1024), second]);
       if (kind === "alias") archive = gunzipSync(packTarball({
@@ -593,7 +593,7 @@ describe("exact local registry publisher", () => {
     archive.write("hidden", kind === "NUL-prefixed" ? 251 : 157);
     archive.fill(32, 148, 156);
     const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
-    archive.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+    archive.write(checksum.toString(8).padStart(6, "0") + " \0", 148);
     writeFileSync(archivePath, gzipSync(archive));
     const registry = fakeRegistry(onlyCandidate);
     await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
@@ -613,7 +613,7 @@ describe("exact local registry publisher", () => {
     header.fill(32, 148, 156);
     const checksum = header.reduce((sum, byte) => sum + byte, 0);
     header.write(kind === "checksum" ? checksum.toString(8).padStart(8, "0")
-      : checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+      : checksum.toString(8).padStart(6, "0") + " \0", 148);
     writeFileSync(archivePath, gzipSync(archive));
     const registry = fakeRegistry(onlyCandidate);
     await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
@@ -623,7 +623,7 @@ describe("exact local registry publisher", () => {
 
   const numericMetadataFields = [
     { field: "mode", start: 100, length: 8 }, { field: "uid", start: 108, length: 8 },
-    { field: "gid", start: 116, length: 8 }, { field: "mtime", start: 136, length: 12 },
+    { field: "gid", start: 116, length: 8 }, { field: "size", start: 124, length: 12 }, { field: "mtime", start: 136, length: 12 },
     { field: "devmajor", start: 329, length: 8 }, { field: "devminor", start: 337, length: 8 },
   ];
   it.each(numericMetadataFields.flatMap(field => [0x81, 0x80, 0xff, 0x39].map(byte => ({ ...field, byte }))))(
@@ -638,15 +638,15 @@ describe("exact local registry publisher", () => {
       header[start] = byte;
       header.fill(32, 148, 156);
       const checksum = header.reduce((sum, value) => sum + value, 0);
-      header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+      header.write(checksum.toString(8).padStart(6, "0") + " \0", 148);
       writeFileSync(archivePath, gzipSync(archive));
       const registry = fakeRegistry(onlyCandidate);
       await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
-        .rejects.toThrow(/packed tarball.*numeric/);
+        .rejects.toThrow(/packed tarball/);
       expect(registry.calls).toHaveLength(0);
     });
 
-  it.each(["all NUL", "octal", "space-padded octal"])("accepts numeric tar metadata encoded as %s", encoding => {
+  it.each(["all NUL", "octal", "space-padded octal"])("refuses noncanonical numeric tar metadata encoded as %s", encoding => {
     const manifest = { name: "example", version: "1.0.0" };
     const archive = gunzipSync(packTarball({ "package/package.json": JSON.stringify(manifest) }));
     for (const { start, length } of numericMetadataFields) {
@@ -655,8 +655,8 @@ describe("exact local registry publisher", () => {
     }
     archive.fill(32, 148, 156);
     const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
-    archive.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
-    expect(readPackedManifest(gzipSync(archive))).toEqual(manifest);
+    archive.write(checksum.toString(8).padStart(6, "0") + " \0", 148);
+    expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
   });
 
   it.each([0, 345].flatMap(start => ["\n", "\r", "\u2028", "\u2029", "hidden"].map(suffix => ({ start, suffix }))))(
@@ -666,7 +666,7 @@ describe("exact local registry publisher", () => {
       archive.write(name + "\0" + suffix, start);
       archive.fill(32, 148, 156);
       const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
-      archive.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
+      archive.write(checksum.toString(8).padStart(6, "0") + " \0", 148);
       expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
     });
 
@@ -677,7 +677,7 @@ describe("exact local registry publisher", () => {
     second.write("package/hidden", 345);
     second.fill(32, 148, 156);
     const sum = second.subarray(0, 512).reduce((total, byte) => total + byte, 0);
-    second.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+    second.write(sum.toString(8).padStart(6, "0") + " \0", 148);
     expect(() => readPackedManifest(gzipSync(Buffer.concat([first.subarray(0, -1024), second]))))
       .toThrow(/packed tarball/);
   });
@@ -700,7 +700,7 @@ describe("exact local registry publisher", () => {
 
   const unicodeAliases = [
     ["café.js", "cafe\u0301.js"], ["package.json", "package.jſon"], ["σ.js", "ς.js"],
-    ["straße.js", "STRASSE.js"], ["ẞ.js", "ss.js"], ["ﬁ.js", "fi.js"],
+    ["straße.js", "STRASSE.js"], ["ẞ.js", "ss.js"], ["ﬁ.js", "fi.js"], ["a≯.js", "a>\u0338.js"], ["a≮.js", "a<\u0338.js"],
   ];
   it.each(unicodeAliases)("rejects Unicode extraction aliases %s / %s before publishing", async (declared, alias) => {
     const { archivePath } = candidate();
@@ -711,16 +711,16 @@ describe("exact local registry publisher", () => {
     }));
     const registry = fakeRegistry(onlyCandidate);
     await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
-      .rejects.toThrow(/duplicate or conflicting paths/);
+      .rejects.toThrow(/packed tarball/);
     expect(registry.calls).toHaveLength(0);
   });
 
-  it("accepts distinct Unicode paths and a Windows-translated name without a collision", () => {
+  it("refuses distinct Unicode paths and a Windows-translated name", () => {
     const manifest = { name: "example", version: "1.0.0", main: "café?.js" };
-    expect(readPackedManifest(packTarball({
+    expect(() => readPackedManifest(packTarball({
       "package/package.json": JSON.stringify(manifest),
       "package/café?.js": "main", "package/σ.js": "other",
-    }))).toEqual(manifest);
+    }))).toThrow(/packed tarball/);
   });
 
   it.each(["|", "<", ">", "?", ":"])("rejects npm Windows extraction aliases for %s", async character => {
@@ -745,8 +745,7 @@ describe("exact local registry publisher", () => {
 
   it.each(["duplicate payload", "file then directory", "directory then file", "file then child", "child then file"]
     .flatMap(kind => [
-      ["index.js", "index.js"], ["index.js", "INDEX.JS"], ...unicodeAliases,
-      ...["|", "<", ">", "?"].map(character => ["café" + windowsPath(character), "cafe\u0301" + character]),
+      ["index.js", "index.js"], ["index.js", "INDEX.JS"],
     ].map(([fileName, conflictName]) => ({ kind, fileName, conflictName }))))(
     "rejects ambiguous archive paths: $kind ($fileName / $conflictName)", ({ kind, fileName, conflictName }) => {
       const manifest = gunzipSync(packTarball({ "package/package.json": '{"name":"example","version":"1.0.0"}' }));
@@ -755,7 +754,7 @@ describe("exact local registry publisher", () => {
         if (directory) {
           tar.write("5", 156); tar.fill(32, 148, 156);
           const sum = tar.subarray(0, 512).reduce((total, byte) => total + byte, 0);
-          tar.write(sum.toString(8).padStart(6, "0") + "\0 ", 148);
+          tar.write(sum.toString(8).padStart(6, "0") + " \0", 148);
         }
         return tar.subarray(0, -1024);
       };
@@ -788,7 +787,7 @@ describe("exact local registry publisher", () => {
 
   it("bounds decompression before scanning the tar archive", () => {
     const compressed = gzipSync(Buffer.alloc(64 * 1024 * 1024 + 1));
-    expect(() => readPackedManifest(compressed)).toThrow(/larger than|exceeded/);
+    expect(() => readPackedManifest(compressed)).toThrow(/byte limit/);
   });
 
   it("bounds the packed manifest before JSON decoding", () => {
@@ -796,6 +795,170 @@ describe("exact local registry publisher", () => {
     expect(() => readPackedManifest(bytes)).toThrow(/manifest exceeded/);
   });
 
+});
+
+
+function repairChecksum(header: Buffer) {
+  header.fill(32, 148, 156);
+  const sum = header.reduce((total, byte) => total + byte, 0);
+  header.write(sum.toString(8).padStart(6, "0") + " \0", 148);
+}
+const sizeLeads = ["c2a0", "e28083", "e280a8", "e280a9", "efbbbf", "e38080"];
+function hiddenArchive() {
+  const hidden = gunzipSync(packTarball({
+    "package/package.json": '{"name":"hidden","version":"9.9.9"}', "package/evil.js": "hidden",
+  }));
+  return gunzipSync(packTarball({
+    "package/package.json": '{"name":"example","version":"1.0.0"}',
+    "package/payload.bin": hidden.toString("utf8"),
+  }));
+}
+describe("canonical packed archive", () => {
+  it.each(sizeLeads)("refuses a hidden manifest behind size lead %s before publication", async lead => {
+    const archive = hiddenArchive();
+    const header = archive.subarray(1024, 1536);
+    const prefix = Buffer.from(lead, "hex");
+    const size = Number.parseInt(header.subarray(124, 136).toString(), 8);
+    header.fill(0, 124, 136); prefix.copy(header, 124);
+    header.write(size.toString(8).padStart(11 - prefix.length, "0"), 124 + prefix.length);
+    repairChecksum(header);
+    const { archivePath } = candidate(); writeFileSync(archivePath, gzipSync(archive));
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .rejects.toThrow(/packed tarball/);
+    expect(registry.calls).toHaveLength(0);
+  });
+  it.each([100,108,116,124,136,148,156,157,257,263,265,297,329,337,345,500])(
+    "refuses a noncanonical field at byte %s", offset => {
+      const archive = hiddenArchive(); const header = archive.subarray(1024,1536);
+      header[offset] = 0x7f;
+      if (offset !== 148) repairChecksum(header);
+      expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
+    });
+  it.each(["package/a\\b.js", "package/sub\\file.js", "package/con", "package/LPT9.js", "package/aux/x.js",
+    "package/a[1].js", "package/trailing."])("refuses unsupported path %s before publication", async path => {
+    const { archivePath } = candidate();
+    writeFileSync(archivePath, packTarball({ "package/package.json": '{"name":"example","version":"1.0.0"}', [path]: "x" }));
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry })).rejects.toThrow();
+    expect(registry.calls).toHaveLength(0);
+  });
+  it.each(["http://u:p@127.0.0.1:4873/prefix/", "http://127.0.0.1:4873/prefix?x=1", "http://127.0.0.1:4873/prefix#x"])(
+    "refuses ambiguous registry URL %s before publication", async registry => {
+      const fixture = fakeRegistry(onlyCandidate);
+      await expect(publishExactLocalRegistry({ ...candidate(), ...fixture, registry, token: "t" })).rejects.toThrow(/loopback/);
+      expect(fixture.calls).toHaveLength(0);
+    });
+  it.each(["padding", "extra trailer", "invalid utf8", "BOM", "array", "empty gzip", "non-gzip"])("refuses %s", kind => {
+    const archive = gunzipSync(packTarball({ "package/package.json": kind === "array" ? "[]" : kind === "BOM" ? '\ufeff{"name":"x"}' : '{"name":"x"}' }));
+    if (kind === "padding") archive[1023] = 1;
+    if (kind === "invalid utf8") archive[512 + 9] = 255;
+    const bytes = kind === "non-gzip" ? Buffer.from("bad") : gzipSync(kind === "extra trailer" ? Buffer.concat([archive,Buffer.alloc(512)])
+      : kind === "empty gzip" ? Buffer.alloc(0) : archive);
+    expect(() => readPackedManifest(bytes)).toThrow(/packed/);
+  });
+  it("preserves decompression and npm-loader failure causes", () => {
+    const cause = new Error("fixture npm failure");
+    try { loadPinnedLibnpmpublish({ npm: () => { throw cause; } }); throw Error("expected failure"); }
+    catch (error) { expect(error).toMatchObject({ cause }); }
+    try { readPackedManifest(Buffer.from("bad")); throw Error("expected failure"); }
+    catch (error) { expect(error).toMatchObject({ message: expect.stringContaining("packed tarball"), cause: expect.any(Error) }); }
+  });
+  it.each(["packument", "tarball URL"])("preserves invalid %s context and cause", async kind => {
+    const registry = fakeRegistry(published => {
+      const packument = onlyCandidate(published);
+      packument.versions[published.manifest.version]!.dist.tarball = "invalid URL";
+      return packument;
+    });
+    const fetch = kind === "packument" ? async () => new Response("{") : registry.fetch;
+    await expect(publishExactLocalRegistry({ ...candidate(), ...registry, registry: REGISTRY, token:"t", fetch }))
+      .rejects.toMatchObject({ message: expect.stringContaining(kind === "packument" ? "packument JSON" : "tarball URL"), cause: expect.any(Error) });
+  });
+  it("matches a real npm-pack header and accepts its complete file map", () => {
+    const directory = tempDirectory("canonical-npm-pack-");
+    const text = JSON.stringify({ name: "example", version: "1.0.0" });
+    writeFileSync(join(directory,"package.json"),text,{ mode: 0o644 });
+    chmodSync(join(directory,"package.json"),0o644);
+    execFileSync(process.execPath,[npmEntry,"pack","--ignore-scripts","--json"],{cwd:directory,stdio:"pipe",timeout:30_000});
+    const bytes = readFileSync(join(directory,"example-1.0.0.tgz"));
+    const actual = gunzipSync(bytes).subarray(0,512);
+    const expected = gunzipSync(packTarball({ "package/package.json": text })).subarray(0,512);
+    actual.copy(expected,136,136,148); repairChecksum(expected);
+    expect(expected).toEqual(actual);
+    const result = readPackedArchive(bytes);
+    expect(result.manifest).toEqual(JSON.parse(text));
+    expect(result.files).toEqual(new Map([["package/package.json",Buffer.from(text)]]));
+  },45_000);
+  it("publishes through a symlink CLI and safely imports with a missing argv file", async () => {
+    const { archivePath, bytes, name, version } = candidate();
+    const directory = tempDirectory("publisher-cli-");
+    const root = join(directory,"modules"), module = join(root,"npm","node_modules","libnpmpublish");
+    mkdirSync(module,{ recursive:true });
+    writeFileSync(join(root,"npm","package.json"),JSON.stringify({ version: PINNED_ACCEPTANCE_NPM_VERSION }));
+    writeFileSync(join(module,"package.json"),'{"main":"index.cjs"}');
+    writeFileSync(join(module,"index.cjs"),"module.exports = require(" + JSON.stringify(npmRequire.resolve("libnpmpublish")) + ");");
+    const npm = join(directory,"npm");
+    writeFileSync(npm,`#!${process.execPath}\nconsole.log(process.argv[2] === '--version' ? ${JSON.stringify(PINNED_ACCEPTANCE_NPM_VERSION)} : ${JSON.stringify(root)});`);
+    chmodSync(npm,0o755);
+    const cli = join(directory,"publisher.mjs");
+    const source = realpathSync("scripts/publish-exact-local-registry.mjs");
+    symlinkSync(source,cli);
+    let puts = 0; let packument: unknown;
+    const server = createServer((request,response) => {
+      if (request.method === "PUT") {
+        const chunks: Buffer[] = []; request.on("data",chunk => chunks.push(chunk));
+        request.on("end",() => { packument = JSON.parse(Buffer.concat(chunks).toString()); puts++; response.writeHead(201); response.end("{}"); });
+      } else if (request.url?.endsWith(".tgz")) { response.end(bytes); }
+      else { response.setHeader("content-type","application/json"); response.end(JSON.stringify(packument)); }
+    });
+    await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));
+    try {
+      const address = server.address(); if (!address || typeof address === "string") throw Error("missing port");
+      const registry = `http://127.0.0.1:${address.port}`;
+      const result = await new Promise<{code:number|null; output:string}>((resolve,reject) => {
+        const child = spawn(process.execPath,[cli,archivePath,registry],{ env: { ...process.env,
+          PATH: directory + ":" + process.env.PATH, DACS_LOCAL_REGISTRY_TOKEN:"fixture" }, timeout:20_000 });
+        let output = ""; child.stdout.on("data",chunk => { output += chunk; }); child.stderr.on("data",chunk => { output += chunk; });
+        child.on("error",reject); child.on("close",code => resolve({code,output}));
+      });
+      expect(result.output).not.toContain("Error:"); expect(result.code).toBe(0); expect(puts).toBe(1);
+      expect(packument).toMatchObject({ name, versions: { [version]: { name, version } } });
+      execFileSync(process.execPath,["--input-type=module","-e",`process.argv[1] = '/missing-argv-file'; await import(${JSON.stringify(source)});`],{stdio:"pipe",timeout:10_000});
+    } finally { await new Promise<void>((resolve,reject) => server.close(error => error ? reject(error) : resolve())); }
+  },30_000);
+  it("refuses header mutations or agrees with npm's complete warning-free extraction", () => {
+    expect(typeof readPackedArchive).toBe("function");
+    const original = hiddenArchive();
+    const values = [...new Set([0,1,2,8,9,10,11,12,13,31,32,46,47,48,55,56,57,58,64,65,90,95,97,122,126,127,128,129,194,226,239,255])].map(byte => Buffer.from([byte]));
+    values.push(...sizeLeads.map(lead => Buffer.from(lead,"hex")));
+    const directory = tempDirectory("canonical-sweep-");
+    let variants = 0;
+    for (let offset = 0; offset < 512; offset++) for (const value of values) {
+      if (offset + value.length > 512) continue;
+      const archive = Buffer.from(original); const header = archive.subarray(1024,1536);
+      value.copy(header,offset); repairChecksum(header);
+      const bytes = gzipSync(archive); variants++;
+      let parsed;
+      try { parsed = readPackedArchive(bytes); } catch { continue; }
+      const cwd = join(directory,"extract"); mkdirSync(cwd);
+      const warnings: string[] = [];
+      try {
+        npmTar.x({ cwd, sync: true, onwarn: (code: string, message: string) => warnings.push(code + message) }).end(bytes);
+        const files = new Map<string,Buffer>();
+        const visit = (relative: string) => {
+          for (const entry of readdirSync(join(cwd,relative),{withFileTypes:true})) {
+            const name = relative ? relative + "/" + entry.name : entry.name;
+            if (entry.isDirectory()) visit(name);
+            else { expect(entry.isFile()).toBe(true); chmodSync(join(cwd,name),0o600); files.set(name,readFileSync(join(cwd,name))); }
+          }
+        }; visit("");
+        expect(warnings,`offset ${offset}, ${value.toString("hex")}`).toEqual([]);
+        expect(files).toEqual(parsed.files);
+        expect(JSON.parse(files.get("package/package.json")!.toString())).toEqual(parsed.manifest);
+      } finally { rmSync(cwd,{recursive:true,force:true}); }
+    }
+    expect(variants).toBeGreaterThan(19_000);
+  },180_000);
 });
 
 describe("pinned npm loader", () => {
