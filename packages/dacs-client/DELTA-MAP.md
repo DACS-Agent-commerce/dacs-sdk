@@ -812,6 +812,8 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 4c92bd34962e86c9ea447121393d0cd819fa437f |
 | D11 | fix(client): D11 record part 10's kept earlier history by commit | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/http.mjs:1`, `packages/dacs-client/src/util/http.mjs:4`, `packages/dacs-client/src/util/http.mjs:9`, `packages/dacs-client/src/util/http.mjs:14`, `packages/dacs-client/src/util/http.mjs:53`, `packages/dacs-client/src/util/http.mjs:56`, `packages/dacs-client/src/util/http.mjs:58`, `packages/dacs-client/src/util/http.mjs:61`, `packages/dacs-client/src/util/http.mjs:64`, `packages/dacs-client/src/util/http.mjs:70`, `packages/dacs-client/src/util/http.mjs:73`, `packages/dacs-client/src/util/http.mjs:75`, `packages/dacs-client/src/util/http.mjs:77`, `packages/dacs-client/src/util/http.mjs:81`, `packages/dacs-client/src/util/http.mjs:87`, `packages/dacs-client/src/util/http.mjs:92`, `packages/dacs-client/src/util/http.mjs:99`, `packages/dacs-client/src/util/http.mjs:102`, `packages/dacs-client/src/util/http.mjs:109`, `packages/dacs-client/src/util/http.mjs:113`, `packages/dacs-client/src/util/http.mjs:117`, `packages/dacs-client/src/util/http.mjs:122`, `packages/dacs-client/src/util/http.mjs:125`, `packages/dacs-client/src/util/http.mjs:152` | 08b56d27d6e9bb66b71c855ec87ace2e0538dbe7 |
+| D11 | fix(client): D11 stabilize public diagnostic clock fixtures | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/host-observations.test.mjs:1` | bd6057097c2fb51e72674ab76591a628b073c896 |
 
 ## Complete commit and file inventory
 
@@ -2519,6 +2521,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record part 10's kept earlier history by commit | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record part 10's kept earlier history by commit | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record part 10's kept earlier history by commit | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/test/host-observations.test.mjs:1` |
 
 ## Original moved files
 
