@@ -10,9 +10,9 @@ const assessed = "GHSA-2222-2222-2222";
 const unlisted = "GHSA-3333-3333-3333";
 describe("curated advisory validation regressions", () => {
   it("preserves every curated advisory ID", () => {
-    expect(baseline.advisoryIds).toHaveLength(92);
+    expect(baseline.advisoryIds).toHaveLength(94);
     expect(createHash("sha256").update([...baseline.advisoryIds].sort().join("\n")).digest("hex"))
-      .toBe("5b293b453fef8f03867f106d0b80bd09b233da96596039f286a989bae933a963");
+      .toBe("4b074bb8a027bda7adf6542f2530747390a7ce06bcf516bf74f93685ff8f75fe");
   });
   it("classifies listed, assessed, unlisted and direct observations without mutation", () => {
     const configured = { ...baseline, assessedAdvisories: [{ id: assessed, assessment: "SECURITY.md fixture assessment" }] };
@@ -92,6 +92,6 @@ describe("baseline evidence preservation", () => {
       expect(baseline.policyFindings[group].length, group).toBeGreaterThan(0);
     }
     expect(createHash("sha256").update(JSON.stringify(baseline.policyFindings)).digest("hex"))
-      .toBe("19b11fc054f00817976d8841647b937242608f4864b206e3f9bcb25f7faf0afc");
+      .toBe("3aa20108c9fcbb5d7ee68c94ce799564fabcfdde57dba85089d011eb1a216b9e");
   });
 });
