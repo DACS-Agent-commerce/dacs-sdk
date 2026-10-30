@@ -1,10 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { createDevnetDemoAgreementContextProvider } from '../src/devnet-demo/agreement-context.mjs';
+import { createDevnetDemoAgreementContextProvider, SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
 import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
+
+// Exercise a seller-only signing boundary independently of buyer Vet ordering.
+async function isolatedSellerSession(f){
+ const p=await f.provider(),input=f.input(),{generatedAt,...scope}=input.scope;
+ const job={jobId:scope.jobId,binding:{scope,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT},open:()=>true,writeStarted:false};
+ await p.state.update(job.jobId,()=>({binding:job.binding,writeStarted:false,ops:{},seller:null}));
+ return()=>p.sellerSession(job);
+}
 
 test('staged Vet factory refuses before any signer, anchor or row operation',()=>{
  let effects=0;const effect=()=>{effects++;throw new Error('TEST effect');};
@@ -16,7 +24,7 @@ for(const length of [32,33,64,255,256,300])test(`real staged bilateral engine ac
  const f=productionFixture();f.controls.nonce='a'.repeat(length);const result=await f.run();assert.equal(result.buyerVet.record.overallDecision,'pass');assert.equal(result.sellerVet.record.signature.signer,f.seen[0].buyer);assert.equal(f.local.writes.length,2);assert.equal(f.seen.length,1);f.base.close();
 });
 for(const length of [31])test(`nonce length ${length} refuses before signing`,async()=>{
- const f=productionFixture();f.controls.nonce='a'.repeat(length);await assert.rejects(f.run(),e=>e.code==='seller_challenge_invalid');assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);f.base.close();
+ const f=productionFixture();f.controls.nonce='a'.repeat(length);await assert.rejects(f.run(),e=>e.code==='seller_challenge_invalid');assert.equal(f.controls.presentationSigns,0);assert.equal(f.local.rows.has(compositeVerificationAddress(JOB,seller.claim)),false);f.base.close();
 });
 test('a buyer challenge already presented for another job is refused',async()=>{
  const f=productionFixture(),OTHER='01J8N4YV7YVYQ4DB7M8T4C7W0B';
@@ -26,7 +34,7 @@ test('a buyer challenge already presented for another job is refused',async()=>{
  const first=await f.run();assert.equal(first.sellerVet.record.overallDecision,'pass');
  await assert.rejects(f.run(f.input(OTHER)),e=>e.code==='seller_challenge_reused');
  assert.equal(f.seen.length,1,'the reused challenge was never evaluated');
- assert.equal(f.local.writes.length,2,'the refused job wrote no anchor');
+ assert.equal(f.local.rows.has(compositeVerificationAddress(OTHER,seller.claim)),false,'the refused job wrote no seller anchor');assert.equal(f.local.writes.length,3);
  f.base.close();
 });
 test('buyer result is recovered after a lost seller checkpoint without consuming its challenge again',async()=>{
@@ -50,14 +58,15 @@ test('a challenge that expires during the durable write is never signed',async()
  const update=f.store.update;
  f.config.store={...f.store,update:async(key,change)=>update(key,(old,rows)=>{
   const next=change(old,rows);
-  // markWrite is the durable update that starts this purchase's first write.
+  // The isolated seller boundary awaits its first durable write marker.
   if(next?.writeStarted&&!old?.writeStarted)at+=2;
   return next;
  })};
- await assert.rejects(f.run(),e=>e.code==='seller_challenge_expired');
- assert.equal(f.controls.signs,0);
- const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');
- assert.equal(f.local.writes.length,2);assert.equal(f.controls.signs,2);
+ const run=await isolatedSellerSession(f);
+ await assert.rejects(run(),e=>e.code==='seller_challenge_expired');
+ assert.equal(f.controls.presentationSigns,0);
+ const result=await run();assert.ok(result.presentation);
+ assert.equal(f.local.writes.length,0);assert.equal(f.controls.signs,1);
  f.base.close();
 });
 test('a counterparty raw reply from another JavaScript realm is admitted',async()=>{
@@ -70,11 +79,11 @@ test('a counterparty raw reply from another JavaScript realm is admitted',async(
 test('an oversized raw counterparty reply is refused before signatures',async()=>{
  const f=productionFixture(),issue=f.counterparty.issueChallenge;
  f.counterparty.issueChallenge=async args=>Buffer.from(JSON.stringify({...await issue(args),extra:'x'.repeat(65537)}));
- await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause instanceof Error);assert.equal(f.controls.signs,0);f.base.close();
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause instanceof Error);assert.equal(f.controls.presentationSigns,0);f.base.close();
 });
 test('counterparty raw-byte and decoded budgets refuse oversized replies before signatures',async()=>{
  const f=productionFixture(),issue=f.counterparty.issueChallenge;f.counterparty.issueChallenge=async args=>({...await issue(args),extra:'x'.repeat(65537)});
- await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause instanceof Error);assert.equal(f.controls.signs,0);f.base.close();
+ await assert.rejects(f.run(),e=>e.code==='counterparty_vet_unavailable'&&e.cause instanceof Error);assert.equal(f.controls.presentationSigns,0);f.base.close();
 });
 test('counterparty connection failures keep the actual cause',async()=>{
  const f=productionFixture(),cause=Object.assign(new Error('TEST refused'),{code:'ECONNREFUSED'});f.counterparty.issueChallenge=async()=>{throw cause;};
@@ -83,7 +92,7 @@ test('counterparty connection failures keep the actual cause',async()=>{
 test('counterparty deadline aborts a never-settling reader',async t=>{
  const f=productionFixture(),p=await f.provider();let entered,options;const started=new Promise(resolve=>{entered=resolve;});
  f.counterparty.issueChallenge=(input,limits)=>{options=limits;entered();return new Promise(()=>{});};t.mock.timers.enable({apis:['setTimeout']});const input=f.input();
- const result=assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_unavailable'&&e.cause?.name==='TimeoutError');await started;t.mock.timers.tick(10001);await result;assert.equal(options.signal.aborted,true);assert.equal(options.maxBytes,65536);assert.equal(f.controls.signs,0);f.base.close();
+ const result=assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>true),e=>e.code==='counterparty_vet_unavailable'&&e.cause?.name==='TimeoutError');await started;t.mock.timers.tick(10001);await result;assert.equal(options.signal.aborted,true);assert.equal(options.maxBytes,65536);assert.equal(f.controls.presentationSigns,0);f.base.close();
 });
 
 for(const state of ['accepted','included'])test(`seller-only ${state} receipt cannot close a staged Vet`,async()=>{
@@ -141,8 +150,8 @@ test('a purchase closed while the challenge is issued retains no presentation',a
  f.counterparty.issueChallenge=async request=>{const challenge=await issue(request);closed=true;return challenge;};
  const p=await f.provider();
  await assert.rejects(p.jobVet(input.scope,input.buyerIdentityBundle,()=>closed?'closed':true),e=>e.code==='not-pending');
- assert.equal(retained,false);assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);
- assert.equal(await p.state.read(input.scope.jobId),null);
+ assert.equal(retained,false);assert.equal(f.controls.presentationSigns,0);assert.equal(f.local.writes.length,1);
+ assert.equal((await p.state.read(input.scope.jobId)).writeStarted,true);
  f.base.close();
 });
 test('a purchase closed during the ledger read starts no evaluation',async()=>{
@@ -311,14 +320,14 @@ test('a resumed signed presentation without a buyer verifier is refused before a
 });
 test('a resumed unsigned presentation without a buyer verifier makes no signature or write',async()=>{
  const f=productionFixture(),sign=f.config.wallet.signBytes;let interrupt=true;
- f.config.wallet.signBytes=bytes=>{if(interrupt){interrupt=false;throw new Error('TEST interrupted signer');}return sign(bytes);};
+ f.config.wallet.signBytes=bytes=>{if(interrupt&&Buffer.from(bytes).toString().startsWith('dacs-bundle-presentation:v1:')){interrupt=false;throw new Error('TEST interrupted signer');}return sign(bytes);};
  await assert.rejects(f.run(),/TEST interrupted signer/);
  // The interrupted attempt kept an unsigned presentation (and its binding)
  // before the signer. A resume must not sign it, or anchor the buyer CVR,
  // before it discovers that the buyer verifier is missing.
  f.config.counterparty=null;
  await assert.rejects(f.run(),e=>e.code==='counterparty_vet_required'&&e.cause===undefined);
- assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);
+ assert.equal(f.controls.presentationSigns,0);assert.equal(f.local.writes.length,1);
  f.base.close();
 });
 test('a finished job replays its retained seller Vet without a buyer verifier',async()=>{
@@ -391,7 +400,7 @@ for(const remaining of [CHALLENGE_MARGIN_MS-1,CHALLENGE_MARGIN_MS])test(`issuanc
  if(remaining<CHALLENGE_MARGIN_MS){
   await assert.rejects(f.run(),e=>e.code==='seller_challenge_invalid');
   assert.ok((await f.store.entries()).every(([,row])=>!row.presentation));
-  assert.equal(f.controls.signs,0);assert.equal(f.seen.length,0);
+  assert.equal(f.controls.presentationSigns,0);assert.equal(f.seen.length,0);
  }else assert.equal((await f.run()).sellerVet.record.overallDecision,'pass');
  f.base.close();
 });
@@ -403,8 +412,9 @@ for(const phase of ['retention','markWrite'])test(`insufficient lifetime after $
   if(phase==='retention'?!old?.presentation&&next?.presentation:!old?.writeStarted&&next?.writeStarted)at+=2;
   return next;
  });
- await assert.rejects(f.run(),e=>e.code==='seller_challenge_expired');
- assert.equal(f.controls.signs,0);assert.equal(f.seen.length,0);f.base.close();
+ const run=await isolatedSellerSession(f);
+ await assert.rejects(run(),e=>e.code==='seller_challenge_expired');
+ assert.equal(f.controls.presentationSigns,0);assert.equal(f.seen.length,0);f.base.close();
 });
 for(const [name,remaining,latency,skew] of [['transit',1,2,0],['buyer skew',1000,0,2000],['below margin',14999,0,0]]){
  for(const retry of ['same','fresh'])test(`pre-evaluate margin refuses ${name} and ${retry} provider rotates immediately`,async()=>{
@@ -453,4 +463,16 @@ test('two providers refuse the short-lived nonce then rotate it exactly once',as
  assert.equal(f.seen.length,0);f.counterparty.readRecord=read;
  assert.equal((await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true)).sellerVet.record.overallDecision,'pass');
  assert.equal(f.issued.size,2);assert.equal(f.seen.length,1);f.base.close();
+});
+
+for(const kind of ['signature','missing-presentation','duplicate-claim'])test(`invalid buyer ${kind} has no seller effects and corrected retry survives restart`,async()=>{
+ const f=productionFixture(),bad=f.input();
+ if(kind==='signature')bad.buyerIdentityBundle.presentation.signatures[0].signature='TEST-invalid';
+ else if(kind==='missing-presentation')delete bad.buyerIdentityBundle.presentation;
+ else bad.buyerIdentityBundle.claims.push({...bad.buyerIdentityBundle.claims[0]});
+ try{
+  await assert.rejects(f.run(bad));
+  assert.equal(f.controls.signs,0);assert.equal(f.issued.size,0);assert.equal(f.seen.length,0);assert.equal(f.local.writes.length,0);assert.equal((await f.base.entries()).length,0);
+  const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(f.issued.size,1);assert.equal(f.seen.length,1);
+ }finally{f.base.close();}
 });

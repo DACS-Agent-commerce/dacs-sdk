@@ -620,7 +620,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(bound!=='bound')return{refused:bound};
         try{
           const session=createInMemoryFencedSessionStore();await session.create({jobId:scope.jobId,phase:'settle-pending',now:now()});const leased=await session.acquireLease({jobId:scope.jobId,owner:'devnet-demo-party-vet',ttlMs:300000,now:now()});if(!leased.ok)throw new Error(`party Vet lease failed: ${leased.reason}`);
-          await sellerSession(job);
+          guard(job,'party Vet');
+          if(!counterpartyReady()&&!(await state.read(job.jobId))?.counterpartyRecord)
+            fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
           if(job.buyerVet&&!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
           job.buyerVet??=await produce({job,identityBundle:buyerIdentityBundle,session,lease:leased.lease,role:'buyer'});
           if(job.buyerVet.refused)return job.buyerVet;
