@@ -827,6 +827,9 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 783054d82aa355f84bbc6563a698cb3804406ccc |
 | D11 | fix(client): D11 record the merged passive observation fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 5582b173bd445f8aab89428aa33191696fa5a3f6 |
+| D11 | fix(client): D11 rebuild public integration contract | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 80ca77ad68b0ad82235bdcdee96c42f03dfb5c1a |
+| | `packages/dacs-client/test/readme-contract.test.mjs:1` | a3df46893e33d58f7abbb2fe4def4c45fe14ee5c |
 
 ## Complete commit and file inventory
 
@@ -2572,6 +2575,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 3eab4edd794b1c4beba2f7d7f74180147597dcba | `packages/dacs-client/README.md:1` |
+| 3eab4edd794b1c4beba2f7d7f74180147597dcba | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| 3eab4edd794b1c4beba2f7d7f74180147597dcba | `packages/dacs-client/test/readme-contract.test.mjs:1` |
+| fix(client): D11 record rebuilt integration contract | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record rebuilt integration contract | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record rebuilt integration contract | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record rebuilt integration contract | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record rebuilt integration contract | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
