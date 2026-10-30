@@ -199,6 +199,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the merged passive readback clock fixture","files":[{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"024f15367f8419ad94dcd455ae54a7fff3a8bfd2","after":"024f15367f8419ad94dcd455ae54a7fff3a8bfd2"}]},
     {"delta":"D11","subject":"fix(client): D11 reconcile the merged diagnostic fixture frontier","files":[{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"024f15367f8419ad94dcd455ae54a7fff3a8bfd2","after":"024f15367f8419ad94dcd455ae54a7fff3a8bfd2"}]},
     {"delta":"D11","subject":"fix(client): D11 require passive readers for purchase diagnostics","files":[{"path":"packages/dacs-client/src/purchases.mjs","before":"6603f0590e47eff996a895954fc3d53fce01caba","after":"c2cecbe570de30465a266e0feda4bbb60485ccf4"},{"path":"packages/dacs-client/test/diagnostic-reader.test.mjs","before":"35d2876616c36610c8ee3371e8f341acd94e092d","after":"e762c6f6b95121de114b1fee5db44005fd049269"},{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"024f15367f8419ad94dcd455ae54a7fff3a8bfd2","after":"5582b173bd445f8aab89428aa33191696fa5a3f6"}],"sha":"a6a13ed9ced93ebe546ef7006b5829b1650b9d17"},
-    {"delta":"D11","subject":"fix(client): D11 record passive reader corrections","files":[]}
+    {"delta":"D11","subject":"fix(client): D11 record passive reader corrections","files":[]},
+    {"delta":"D11","subject":"fix(client): D11 record the merged passive observation fixture","files":[{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"5582b173bd445f8aab89428aa33191696fa5a3f6","after":"5582b173bd445f8aab89428aa33191696fa5a3f6"}]}
 ]
 }
