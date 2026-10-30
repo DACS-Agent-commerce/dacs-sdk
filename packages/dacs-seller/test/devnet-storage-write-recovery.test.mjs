@@ -15,13 +15,14 @@ test('an observed source nonce fences stale RPC preparation, including a restart
  assert.equal(w.captured.length,0);assert.equal(w.journal.rows.size,0);
 });
 test('different artifacts serialize nonce reservations and retain the floor across restart',async()=>{
- const w=await anchorFixture(),anchor=w.open();
- w.controls.request=async request=>{await w.journal.put('demo/wallet/signed',{stage:'signed',hash:'a'.repeat(64),signedTransaction:request.transaction});return {success:false,error:{code:'internal_error'}};};
+ const w=await anchorFixture(),anchor=w.open();w.source.binding=async()=>({disposition:'pending'});
+ let firstSigned;w.controls.request=async request=>{const signedTransaction=await signSdkCreate(request.transaction);firstSigned??=signedTransaction;await w.journal.put('demo/wallet/signed',{stage:'broadcast-started',hash:signedTransaction.hash,signedTransaction});return {success:false,error:{code:'internal_error'}};};
  const results=await Promise.allSettled(JOBS.map(id=>w.publish(anchor,id)));
  assert.equal(results.filter(r=>r.status==='rejected').length,1);assert.equal(w.captured.length,1);assert.equal(w.captured[0].transaction.content.nonce,1);
- await assert.rejects(w.publish(w.open(),JOBS[1]),/nonce RPC has not caught up/);assert.equal(w.captured.length,1);
- w.controls.nonce=1;await w.journal.put('demo/wallet/signed',{stage:'broadcast-accepted',signedTransaction:w.captured[0].transaction});
+ await assert.rejects(w.publish(w.open(),JOBS[1]),/requires readback|nonce RPC has not caught up/);assert.equal(w.captured.length,1);
+ w.controls.nonce=1;await w.journal.put('demo/wallet/signed',{stage:'broadcast-accepted',hash:firstSigned.hash,signedTransaction:firstSigned});
  assert.equal((await w.publish(w.open(),JOBS[1])).status,'indeterminate');assert.equal(w.captured[1].transaction.content.nonce,2);
+ assert.deepEqual([...w.journal.rows.values()].find(r=>r.input?.artifact.jobId===JOBS[0]).signedTransaction,firstSigned);
 });
 test('dirty, unidentified, unverified or partially qualified deployments authorize no wallet request',async()=>{
  const w=await anchorFixture();
