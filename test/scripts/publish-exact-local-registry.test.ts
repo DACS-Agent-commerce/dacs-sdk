@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, truncateSyn
 import { Agent, request } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Duplex } from "node:stream";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -49,7 +49,12 @@ const REGISTRY = "http://127.0.0.1:4873";
 // Acceptance runs pin this client to PINNED_ACCEPTANCE_NPM_VERSION.
 const npmEntry = realpathSync(process.env.npm_execpath ?? join(
   execFileSync("npm", ["root", "--global"], { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js"));
-const npmPublish = createRequire(npmEntry)("libnpmpublish").publish;
+const npmRequire = createRequire(npmEntry);
+const npmPublish = npmRequire("libnpmpublish").publish;
+const npmTar = npmRequire("tar");
+const npmTarDirectory = dirname(npmRequire.resolve("tar"));
+const { encode: windowsPath } = npmRequire(join(npmTarDirectory, "winchars.js"));
+const { normalizeUnicode } = npmRequire(join(npmTarDirectory, "normalize-unicode.js"));
 
 function candidate(name = "@kynesyslabs/dacs", version = "0.1.0-test") {
   const directory = tempDirectory("dacs-local-publish-");
@@ -691,9 +696,58 @@ describe("exact local registry publisher", () => {
     expect(registry.calls).toHaveLength(0);
   });
 
+  const unicodeAliases = [
+    ["café.js", "cafe\u0301.js"], ["package.json", "package.jſon"], ["σ.js", "ς.js"],
+    ["straße.js", "STRASSE.js"], ["ẞ.js", "ss.js"], ["ﬁ.js", "fi.js"],
+  ];
+  it.each(unicodeAliases)("rejects Unicode extraction aliases %s / %s before publishing", async (declared, alias) => {
+    expect(normalizeUnicode(declared)).toBe(normalizeUnicode(alias));
+    const { archivePath } = candidate();
+    writeFileSync(archivePath, packTarball({
+      "package/package.json": JSON.stringify({ name: "example", version: "1.0.0", main: declared }),
+      ...(declared === "package.json" ? {} : { ["package/" + declared]: "expected" }),
+      ["package/" + alias]: "other",
+    }));
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .rejects.toThrow(/duplicate or conflicting paths/);
+    expect(registry.calls).toHaveLength(0);
+  });
+
+  it("accepts distinct Unicode paths and a Windows-translated name without a collision", () => {
+    const manifest = { name: "example", version: "1.0.0", main: "café?.js" };
+    expect(readPackedManifest(packTarball({
+      "package/package.json": JSON.stringify(manifest),
+      "package/café?.js": "main", "package/σ.js": "other",
+    }))).toEqual(manifest);
+  });
+
+  it.each(["|", "<", ">", "?", ":"])("rejects npm Windows extraction aliases for %s", async character => {
+    const declared = "index" + windowsPath(character) + ".js";
+    const alias = "index" + character + ".js";
+    const bytes = packTarball({
+      "package/package.json": JSON.stringify({ name: "example", version: "1.0.0", main: declared }),
+      ["package/" + declared]: "expected",
+      ["package/" + alias]: "other",
+    });
+    // Exercise the installed npm extractor's Windows mode on every platform.
+    const extraction = tempDirectory("dacs-win32-extraction-");
+    npmTar.x({ cwd: extraction, strip: 1, sync: true, win32: true }).end(bytes);
+    expect(readFileSync(join(extraction, declared), "utf8")).toBe("other");
+    const { archivePath } = candidate();
+    writeFileSync(archivePath, bytes);
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry }))
+      .rejects.toThrow(/packed tarball/);
+    expect(registry.calls).toHaveLength(0);
+  });
+
   it.each(["duplicate payload", "file then directory", "directory then file", "file then child", "child then file"]
-    .flatMap(kind => [false, true].map(caseAlias => ({ kind, caseAlias }))))(
-    "rejects ambiguous archive paths: $kind (case alias: $caseAlias)", ({ kind, caseAlias }) => {
+    .flatMap(kind => [
+      ["index.js", "index.js"], ["index.js", "INDEX.JS"], ...unicodeAliases,
+      ...["|", "<", ">", "?"].map(character => ["café" + windowsPath(character), "cafe\u0301" + character]),
+    ].map(([fileName, conflictName]) => ({ kind, fileName, conflictName }))))(
+    "rejects ambiguous archive paths: $kind ($fileName / $conflictName)", ({ kind, fileName, conflictName }) => {
       const manifest = gunzipSync(packTarball({ "package/package.json": '{"name":"example","version":"1.0.0"}' }));
       const entry = (name: string, body: string, directory = false) => {
         const tar = gunzipSync(packTarball({ [name]: body }));
@@ -704,8 +758,8 @@ describe("exact local registry publisher", () => {
         }
         return tar.subarray(0, -1024);
       };
-      const file = entry("package/index.js", "module.exports = 1;");
-      const conflictPath = caseAlias ? "package/INDEX.JS" : "package/index.js";
+      const file = entry("package/payload-" + fileName, "module.exports = 1;");
+      const conflictPath = "package/payload-" + conflictName;
       const paths = kind === "duplicate payload" ? [file, entry(conflictPath, "module.exports = 2;")]
         : kind === "file then directory" ? [file, entry(conflictPath + "/", "", true)]
         : kind === "directory then file" ? [entry(conflictPath + "/", "", true), file]
