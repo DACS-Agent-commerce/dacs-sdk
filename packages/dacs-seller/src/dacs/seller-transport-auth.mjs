@@ -449,7 +449,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const time = now();
         if (!uint(time)) fail('peer_clock_invalid', 503);
         const retired = [];
-        if (!retained && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+        if (!retained && !existing && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
         if (contextStep && !retained) {
           if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
           retired.push(...reclaimableContexts(time));
@@ -559,8 +559,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // effect must still be this exact command's, bound to its job, unfinished
     // and held by the owner the reservation saw. A new owner takes it, so an
     // earlier reservation of the same effect, and the original worker, can
-    // no longer start work or settle it. Running a proposal again after its
-    // context session ended is refused, as a fresh reservation would be.
+    // no longer start work or settle it. An unfinished proposal remains
+    // uncertain when its terminal context session prevents recovery.
     claim(reservation, request, { live = true } = {}) {
       requireJobId(request?.jobId);
       return transaction(() => {
@@ -569,7 +569,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
             !current || current.owner !== reservation.owner || !['pending', 'uncertain'].includes(current.state) ||
             get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey)?.job !== request.jobId ||
             get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request))) fail('peer_reconciliation_conflict', 503);
-        if (live && request.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('context_session_terminal', 409);
+        if (live && request.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('seller_unavailable', 503);
         const owner = randomBytes(24).toString('hex');
         run('UPDATE peer_effects SET owner = ?, state = ? WHERE effect = ?', owner, 'uncertain', reservation.effectKey);
         const effectKey=reservation.effectKey,jobId=request.jobId,proposal=request.path===PROPOSAL;
