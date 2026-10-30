@@ -1714,3 +1714,46 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code: "legacy-record" });
   });
 });
+
+
+describe("implicit recipe selection policy", () => {
+  async function implicitFixture(shared: boolean, required = false) {
+    const f = await fixture();
+    const pinned = f.expectedResult.requirement;
+    const implicit = { scheme: "domain", verificationRequired: true };
+    const requirement: CompositeBundleRequirement = shared
+      ? required ? { requirementVersion: "1", required: [pinned, implicit] }
+        : { requirementVersion: "1", required: [], oneOf: [[pinned, implicit]] }
+      : { requirementVersion: "1", required: [implicit] };
+    const record = await withRecord(f.record, { requirementHash: sha256Hex(canonicalize(requirement)) });
+    const expected = { ...f.expected, requirement, dealSpecific: [{ ...f.expectedResult, requirement: shared ? pinned : implicit }] };
+    return { ...f, record, expected };
+  }
+  test("qualifies only actual implicit projections with immutable authenticated inputs", async () => {
+    const f = await implicitFixture(true); let calls = 0;
+    const deps = { ...f.deps, isImplicitRecipeVersionSelected(input: Parameters<typeof f.deps.verifyAuthorityAttestation>[0]) {
+      calls++; expect(Object.isFrozen(input)).toBe(true);expect(input.expected.requirement.recipeVersion).toBeUndefined();
+      expect(Object.isFrozen(input.expected)).toBe(true); expect(Object.isFrozen(input.recipe)).toBe(true);expect(Object.isFrozen(input.result)).toBe(true);
+      if(input.content.encoding === "bytes")input.content.value.fill(0);
+      return true;
+    } };
+    expect((await verifyCompositeVerificationRecord(f.record, f.expected, deps)).status).toBe("valid");expect(calls).toBe(1);
+    expect(f.authorityBytes[0]).not.toBe(0);
+    const pinned = await fixture();expect((await verifyCompositeVerificationRecord(pinned.record,pinned.expected,deps)).status).toBe("valid");expect(calls).toBe(1);
+  });
+  test("false fails an implicit shared member while a pinned alternative still passes", async () => {
+    const f = await implicitFixture(true);
+    expect((await verifyCompositeVerificationRecord(f.record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>false})).status).toBe("valid");
+    const required = await implicitFixture(true,true);
+    expect((await verifyCompositeVerificationRecord(required.record,required.expected,{...required.deps,isImplicitRecipeVersionSelected:()=>false})).status).toBe("invalid");
+  });
+  test("false refuses a bound implicit result before the no-parameters early return", async () => {
+    const f = await implicitFixture(false);
+    expect(await verifyCompositeVerificationRecord(f.record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>false})).toMatchObject({status:"invalid",code:"verify-result-recipe"});
+  });
+  test("a thrown selection policy is unresolved and omission retains compatibility", async () => {
+    const f = await implicitFixture(false);
+    expect(await verifyCompositeVerificationRecord(f.record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>{throw Error("TEST registry unavailable");}})).toMatchObject({status:"unresolved",code:"recipe-resolution"});
+    expect((await verifyCompositeVerificationRecord(f.record,f.expected,f.deps)).status).toBe("valid");
+  });
+});

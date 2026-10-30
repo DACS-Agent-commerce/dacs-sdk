@@ -147,6 +147,11 @@ export interface VerifyCompositeVerificationDeps<TKey> {
   verifyRequirementParameters?: (
     input: VerifyAuthorityAttestationInput,
   ) => Promise<boolean> | boolean;
+  /** DACS-2 §7.4.3: an implicit version satisfies a member only when selected
+   * as latest live by the authenticated session registry. Optional for compatibility. */
+  isImplicitRecipeVersionSelected?: (
+    input: VerifyAuthorityAttestationInput,
+  ) => Promise<boolean> | boolean;
   /** Authenticate CRQ-1 even when no verification recipe is invoked. */
   isSessionRecipeRegistrySnapshotAuthenticated?: (
     snapshotHash: string,
@@ -382,6 +387,8 @@ function captureVerificationDeps<TKey>(
       deps.verifyAuthorityAttestation.bind(deps);
     const verifyRequirementParameters =
       deps.verifyRequirementParameters?.bind(deps);
+    const isImplicitRecipeVersionSelected =
+      deps.isImplicitRecipeVersionSelected?.bind(deps);
     const authenticateRegistry =
       deps.isSessionRecipeRegistrySnapshotAuthenticated?.bind(deps);
     const verifyIdentityPresentation =
@@ -406,6 +413,7 @@ function captureVerificationDeps<TKey>(
       verify,
       verifyAuthorityAttestation,
       ...(verifyRequirementParameters ? { verifyRequirementParameters } : {}),
+      ...(isImplicitRecipeVersionSelected ? { isImplicitRecipeVersionSelected } : {}),
       ...(authenticateRegistry
         ? {
             isSessionRecipeRegistrySnapshotAuthenticated: async (hash: string) =>
@@ -1499,6 +1507,33 @@ async function qualifyResolvedMember<TKey>(
   deps: VerifyCompositeVerificationDeps<TKey>,
   sharedProjection: boolean,
 ): Promise<VerificationDecision | StrictCompositeVerification> {
+  const verificationInput = (): VerifyAuthorityAttestationInput => ({
+    result: deepFreezeSnapshot(structuredClone(resolved.result)),
+    expected: deepFreezeSnapshot(structuredClone(expected)),
+    recipe: deepFreezeSnapshot(structuredClone(resolved.recipe)),
+    content: resolved.content.encoding === "bytes"
+      ? { encoding: "bytes", value: Uint8Array.from(resolved.content.value) }
+      : {
+          encoding: "canonical-json",
+          value: deepFreezeSnapshot(structuredClone(resolved.content.value)),
+        },
+  });
+  if (
+    resolved.effectiveDecision === "pass" &&
+    expected.requirement.recipeVersion === undefined &&
+    deps.isImplicitRecipeVersionSelected
+  ) {
+    try {
+      const selected = await deps.isImplicitRecipeVersionSelected(Object.freeze(verificationInput()));
+      if (selected !== true) {
+        return !sharedProjection && resolved.result.decision !== "fail"
+          ? invalid("verify-result-recipe")
+          : "fail";
+      }
+    } catch (error) {
+      return unresolved("recipe-resolution", String(error));
+    }
+  }
   if (
     resolved.effectiveDecision !== "pass" ||
     expected.requirement.parameters === undefined
@@ -1512,17 +1547,7 @@ async function qualifyResolvedMember<TKey>(
     );
   }
   try {
-    const matches = await deps.verifyRequirementParameters({
-      result: deepFreezeSnapshot(structuredClone(resolved.result)),
-      expected: deepFreezeSnapshot(structuredClone(expected)),
-      recipe: deepFreezeSnapshot(structuredClone(resolved.recipe)),
-      content: resolved.content.encoding === "bytes"
-        ? { encoding: "bytes", value: Uint8Array.from(resolved.content.value) }
-        : {
-            encoding: "canonical-json",
-            value: deepFreezeSnapshot(structuredClone(resolved.content.value)),
-          },
-    });
+    const matches = await deps.verifyRequirementParameters(verificationInput());
     if (matches === true) return "pass";
     return !sharedProjection && resolved.result.decision !== "fail"
       ? invalid("requirement-parameters")
