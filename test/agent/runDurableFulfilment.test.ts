@@ -1479,7 +1479,7 @@ function durableHarness(
 }
 
 describe("runDurableFulfilmentCore on repaired #120", () => {
-  test.each(["required", "oneOf"] as const)("refuses unsupported presence-only %s before durable delivery on retry", async (placement) => {
+  test.each(["required", "oneOf"] as const)("requires explicit presence opt-in for durable %s delivery on retry", async (placement) => {
     const h = durableHarness();
     const invocation = h.fixture.auditSource.artifacts.vetRequirements[0]!;
     const presence = { scheme: "did", verificationRequired: false };
@@ -1496,6 +1496,10 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
       expect(h.fixture.store.consumed).toBe(false);
       expect(h.counts).toEqual({ payload: 0, delivery: 0, evidence: 0, final: 0 });
     }
+    h.deps.acceptsPresenceOnlyVetRequirements = true;
+    const ready = await runDurableFulfilmentToDeliveryReady(h.fixture.request, h.deps, h.durability);
+    expect(ready.status).toBe("delivery-ready");
+    expect(h.counts.delivery).toBe(1);
   });
 
   test("returns a durable delivery-ready result and resumes without a background promise", async () => {

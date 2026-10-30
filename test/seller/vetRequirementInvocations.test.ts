@@ -37,9 +37,9 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
   });
   const valid: [SellerFulfilmentVetRequirementInvocation, SellerFulfilmentVetRequirementInvocation] =
     [invocation(buyer, sellerClaim), invocation(seller, buyerClaim)];
-  const check = (vetRequirements: unknown, requirement: unknown = buyerRequirement) =>
+  const check = (vetRequirements: unknown, requirement: unknown = buyerRequirement, acceptsPresenceOnly?: true) =>
     sellerFulfilmentVetRequirementsViolation(vetRequirements, {
-      jobId, buyer, seller, buyerRequirement: requirement,
+      jobId, buyer, seller, buyerRequirement: requirement, acceptsPresenceOnly,
     });
   const expectedResult = (
     requirement: ClaimRequirement,
@@ -257,34 +257,51 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     const presenceClaim: ClaimRequirement = { scheme: "key", verificationRequired: false };
     const otherPresenceClaim: ClaimRequirement = { scheme: "did", verificationRequired: false };
 
+    test.each(["buyer", "seller"] as const)("default check refuses every %s presence placement, including an unused alternative", (party) => {
+      for (const requirement of [
+        { ...buyerRequirement, required: [presenceClaim] },
+        { ...buyerRequirement, oneOf: [[presenceClaim]] },
+        { ...buyerRequirement, required: [presenceClaim, requiredClaim] },
+        { ...buyerRequirement, oneOf: [[presenceClaim, requiredClaim]] },
+      ]) {
+        const entry = invocation(party === "buyer" ? buyer : seller, party === "buyer" ? sellerClaim : buyerClaim, requirement);
+        if (requirement.required.some(member => member.verificationRequired) ||
+            requirement.oneOf?.flat().some(member => member.verificationRequired)) entry.freshness = [expectedResult(requiredClaim)];
+        const entries = party === "buyer" ? [entry, valid[1]] : [valid[0], entry];
+        const listingRequirement = party === "buyer" ? requirement : buyerRequirement;
+        expect(check(entries, listingRequirement)).toMatch(/presence-only/);
+        expect(check(entries, listingRequirement, true)).toBeNull();
+      }
+    });
+
     test("accepts a presence-only required claim that no result covers", () => {
       const requirement = { ...buyerRequirement, required: [presenceClaim] };
-      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement)).toBeNull();
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true)).toBeNull();
     });
 
     test("accepts a oneOf group whose alternative is presence-only", () => {
       const requirement = { ...buyerRequirement, oneOf: [[presenceClaim, otherPresenceClaim]] };
-      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement)).toBeNull();
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true)).toBeNull();
       const mixed = { ...buyerRequirement, oneOf: [[requiredClaim, presenceClaim]] };
-      expect(check([invocation(buyer, sellerClaim, mixed), valid[1]], mixed)).toBeNull();
+      expect(check([invocation(buyer, sellerClaim, mixed), valid[1]], mixed, true)).toBeNull();
     });
 
     test("accepts a presence-only claim next to a verified claim that its result covers", () => {
       const requirement = { ...buyerRequirement, required: [presenceClaim, requiredClaim] };
       const entry = invocation(buyer, sellerClaim, requirement);
       entry.freshness = [expectedResult(requiredClaim)];
-      expect(check([entry, valid[1]], requirement)).toBeNull();
+      expect(check([entry, valid[1]], requirement, true)).toBeNull();
     });
 
     test("still refuses an uncovered verified required claim next to a presence-only claim", () => {
       const requirement = { ...buyerRequirement, required: [presenceClaim, requiredClaim] };
-      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement))
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true))
         .toMatch(/differs from its party/);
     });
 
     test("still refuses a oneOf group of only uncovered verified alternatives", () => {
       const requirement = { ...buyerRequirement, required: [presenceClaim], oneOf: [[requiredClaim]] };
-      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement))
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true))
         .toMatch(/differs from its party/);
     });
 
@@ -292,10 +309,10 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
       const requirement = { ...buyerRequirement, required: [presenceClaim] };
       const entry = invocation(buyer, sellerClaim, requirement);
       entry.freshness = [expectedResult(presenceClaim)];
-      expect(check([entry, valid[1]], requirement)).toMatch(/differs from its party/);
+      expect(check([entry, valid[1]], requirement, true)).toMatch(/differs from its party/);
       entry.freshness = [];
       entry.dealSpecific = [expectedResult(presenceClaim)];
-      expect(check([entry, valid[1]], requirement)).toMatch(/differs from its party/);
+      expect(check([entry, valid[1]], requirement, true)).toMatch(/differs from its party/);
     });
 
     // DACS-1 PCR-1/PCR-2: a presence-only member names a registered scheme and
@@ -311,7 +328,7 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
         { ...buyerRequirement, required: [], oneOf: [[invalid]] },
         { ...buyerRequirement, required: [presenceClaim], oneOf: [[invalid]] },
       ]) {
-        expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement))
+        expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true))
           .toMatch(/differs from its party/);
       }
     });

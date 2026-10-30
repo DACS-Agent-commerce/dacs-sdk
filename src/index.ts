@@ -1505,6 +1505,7 @@ export {
   isValidSellerReceiptClaim,
   sellerFulfilmentAuditSourceHash,
   sellerFulfilmentVetRequirementsViolation,
+  sellerFulfilmentVetRequirementMembers,
   x402Eip3009Nonce,
   createX402SellerSpine,
   type X402ReceiptCommitment,
