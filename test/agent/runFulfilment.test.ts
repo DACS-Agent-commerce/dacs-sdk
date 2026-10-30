@@ -1389,6 +1389,30 @@ describe("runFulfilmentCore", () => {
     expect(f.deps.submitDelivery).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ["an unregistered scheme", { scheme: "bogus", verificationRequired: false }],
+    ["a freshness selection", { scheme: "did", verificationRequired: false, maxAge: 30 }],
+    ["a recipe selection", { scheme: "did", verificationRequired: false, recipeVersion: 1 }],
+  ])("refuses delivery for a presence-only member with %s", async (_label, member) => {
+    for (const placement of ["required", "oneOf"] as const) {
+      const f = fixture();
+      f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+      const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+      invocation.requirement = placement === "required"
+        ? { requirementVersion: "1", required: [structuredClone(member)] }
+        : { requirementVersion: "1", required: [], oneOf: [[structuredClone(member)]] };
+      invocation.freshness = [];
+      f.listing.buyerRequirement = structuredClone(invocation.requirement);
+      expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+      });
+      expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    }
+  });
+
   test("requires the authenticated orchestrator as the Vet verifier authority", async () => {
     const distinctVetter = fixture();
     distinctVetter.auditSource.artifacts.vetRequirements[0]!.verifier =

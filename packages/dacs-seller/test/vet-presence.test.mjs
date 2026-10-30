@@ -86,6 +86,14 @@ test('a record over a verified claim is still replayed with no presence authorit
   assert.equal(await problem({ registryPin: undefined }), null);
 });
 
+test('a presence-only requirement with a primaryClaimSelector is refused, not counted as a presence success', async () => {
+  // The SDK's exact selector replay needs a passing verified result for the
+  // selected claim; a presence-only claim has none, so the documented refusal
+  // is an aggregation mismatch rather than a presence pass.
+  const { problem } = await fixture({ ...presence('did'), primaryClaimSelector: 'did' });
+  assert.match(await problem(), /\(invalid: aggregation-mismatch\)$/);
+});
+
 test('hasPresenceOnlyClaim finds a presence-only claim in required and oneOf and ignores malformed requirements', () => {
   const verified = { scheme: 'did', verificationRequired: true }, unverified = { scheme: 'did', verificationRequired: false };
   assert.equal(hasPresenceOnlyClaim({ required: [verified] }), false);
@@ -153,6 +161,24 @@ test('a negotiated presence-only session replays after restart without another A
   assert.equal(repeat.disposition, 'complete');
   assert.deepEqual(repeat.contribution, first.contribution);
   assert.equal(agreementSigns(), 1);
+});
+
+test('an invalid presence requirement is refused before the registry pin is read', async t => {
+  // PCR-1 makes a presence-only member that selects freshness a definite
+  // requirement error. A failing registry reader must not turn that into an
+  // indeterminate outage, so the requirement is preflighted first.
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const requirement = { ...presence('did'), required: [{ scheme: 'did', verificationRequired: false, maxAge: 30 }] };
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: requirement });
+  let reads = 0;
+  f.config.sessionAdmission = { ...f.admission.sessionAdmission,
+    readSessionRecipeRegistryPin: async () => { reads += 1; throw new Error('TEST registry is down'); } };
+  const agent = await f.open(), request = await f.proposal(agent);
+  const answer = await agent.receiveProposal(request);
+  assert.equal(answer.disposition, 'rejected');
+  assert.match(answer.reason, /VET_RECORD_UNVERIFIED/);
+  assert.equal(reads, 0);
+  agent.close();
 });
 
 for (const placement of ['required', 'oneOf']) {
