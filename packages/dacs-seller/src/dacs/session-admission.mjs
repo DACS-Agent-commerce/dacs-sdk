@@ -34,12 +34,15 @@
 //    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
-//    `requirementHash` and replayed aggregation are checked here. A required
-//    claim without `recipeVersion` selects the family's latest entry in the
-//    authenticated session registry snapshot (DACS-2 §7.4.3). A missing or
-//    non-live family head refuses replay; a result outside the selected live
-//    version cannot satisfy that member. `resolveLatestRecipe` supplies the
-//    version, availability and snapshot pin. Both records share one pin.
+//    `requirementHash` and replayed aggregation are checked here. Every
+//    verified member needs every method family at its pinned version, or the
+//    selected latest version when `recipeVersion` is absent. Pins must be
+//    steward-authorized and not mocked, disabled or failed. Implicit heads in the
+//    authenticated session registry snapshot must be live (DACS-2 §7.4.3).
+//    Missing or disallowed family entries refuse replay; a result outside an
+//    implicit member's selected version cannot satisfy it, bound or projected.
+//    `resolveLatestRecipe` supplies the version, availability and snapshot pin.
+//    Both records share one pin.
 //    Direct helper replay uses optional `evidence`, independent of agent config:
 //    `evidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
 //    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
@@ -291,16 +294,15 @@ function recipeFamilies(invocation) {
     if(member?.verificationRequired!==true)continue;
     const methods=member.parameters?.verificationMethod!==undefined?[member.parameters.verificationMethod]:results.filter(result=>result?.scheme===member.scheme).map(result=>result.method);
     if(!methods.length||methods.some(method=>typeof method!=='string'||!method))throw new TypeError('the verified requirement has no resolvable recipe method family');
-    if(member.recipeVersion!==undefined&&results.some(result=>result?.requirement&&same(result.requirement,member)))continue; // Bound pins are authenticated by the core.
     for(const method of methods)families.set(canonicalize([member.scheme,method,member.recipeVersion??null]),{scheme:member.scheme,method,...(member.recipeVersion===undefined?{}:{recipeVersion:member.recipeVersion})});
   }
   return [...families.values()];
 }
 
-// An unused explicit pin must still resolve to an authenticated live recipe.
+// Every explicit pin must resolve to an authenticated recipe that CRQ permits.
 async function pinnedSessionRecipeProblem(read,selector) {
   const recipe=await read('resolveRecipe',selector);
-  if(!object(recipe)||recipe.scheme!==selector.scheme||recipe.recipeVersion!==selector.recipeVersion||recipe.availability!=='live')return 'the Vet pinned recipe is unavailable, non-live or differs from its selector';
+  if(!object(recipe)||recipe.scheme!==selector.scheme||recipe.recipeVersion!==selector.recipeVersion||!['live','operator_gated','closed_data','bilateral'].includes(recipe.availability))return 'the Vet pinned recipe is missing, mocked, disabled or failed, or differs from its selector';
   const signature=recipe.signature,key=evidenceSignerKey(signature?.signer);
   if(!key||(await read('isRecipeSignerAuthorized',{recipe,signature}))!==true)return 'the Vet pinned recipe-signature is not authorized';
   try {
@@ -322,7 +324,7 @@ async function latestSessionRecipeProblem(read, { scheme, method, recipeVersion 
     if (typeof pin !== 'string' || !SHA256_HEX.test(pin)) throw malformedEvidence('the Vet session registry pin is malformed');
     if (pins.length > 0 && pins[0] !== pin) throw malformedEvidence('the Vet session registry resolved another session registry snapshot');
     if (!Number.isSafeInteger(selection.recipeVersion) || selection.recipeVersion < 1) throw malformedEvidence('the Vet session registry recipe version is malformed');
-    if (!['live','disabled','failed','mocked'].includes(selection.availability)) throw malformedEvidence('the Vet session registry availability is malformed');
+    if (!['live','operator_gated','closed_data','bilateral','mocked','disabled','failed'].includes(selection.availability)) throw malformedEvidence('the Vet session registry availability is malformed');
     if (selection.availability !== 'live') return 'the Vet session registry latest recipe version is not live';
     if (recipeVersion !== undefined && selection.recipeVersion !== recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
     if(pins.length===0)pins.push(pin);
@@ -440,9 +442,13 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // read for this `role`'s record. A claim without `recipeVersion` is compared
 // with the operator's authenticated session registry family head. A member
 // whose result differs from its selected live version is unsatisfied; another
-// pinned alternative may pass. An unavailable/non-live family refuses replay. Without evidence, a
-// required verified member cannot be satisfied. Throws the first failure of an evidence reader (timeout, oversize,
-// a throw): that is unavailable evidence, not a record that fails its
+// pinned alternative may pass, whether the implicit result is bound or projected.
+// Every verified member, bound or unused, preflights every method family.
+// Implicit heads must be live; exact pins must be steward-authorized and not
+// mocked, disabled or failed. Missing or disallowed entries refuse replay.
+// Without evidence, a required verified member cannot be satisfied. Throws the
+// first failure of an evidence reader (timeout, oversize, a throw): that is
+// unavailable evidence, not a record that fails its
 // requirement. Malformed content or registry replies are record problems.
 // `sessionRegistryPins` is one array shared by the record checks of one job:
 // the first authenticated session registry pin a record resolves becomes the
