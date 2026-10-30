@@ -87,7 +87,7 @@ for(const boundary of ['production','retention'])test(`selection before ${bounda
  if(boundary==='retention')assert.equal((await secondHeld).disposition,'present');
  await w.provider().release({jobId:JOBS[0],generatedAt:b.scope.generatedAt});resume();
  assert.equal((await firstHeld).code,'context_released');await secondHeld;
- assert.equal(await w.provider().recoverBuyer(a),null);assert.equal((await w.provider().resolveBuyer(b)).disposition,'present');assert.equal(w.local.writes.length,2);assert.equal(w.controls.signs,2);w.base.close();
+ assert.equal(await w.provider().recoverBuyer(a),null);assert.equal((await w.provider().resolveBuyer(b)).disposition,'present');assert.equal(w.local.writes.length,2);assert.equal(w.seen.length,1);w.base.close();
 });
 test('ending an active producer reports durable invalidation before deferred deletion and starts no later effects',async()=>{
  const w=fixture(),p=w.provider(),a=w.input(),sign=w.config.wallet.signBytes;let entered,resume,once=true;
@@ -144,6 +144,38 @@ test('lost challenge retention requests a fresh unused challenge before any sign
  const w=fixture(),update=w.config.store.update;let once=true;
  w.config.store.update=(key,change)=>update(key,(row,rows)=>{const next=change(row,rows);if(once&&!row?.presentation&&next?.presentation){once=false;throw new Error('TEST lost challenge save');}return next;});
  await assert.rejects(w.provider().resolveBuyer(w.input()),/lost challenge save/);
- assert.equal(w.controls.signs,0);assert.equal(w.seen.length,0);
+ assert.equal(w.controls.presentationSigns,0);assert.equal(w.seen.length,0);
  assert.equal((await w.provider().resolveBuyer(w.input())).disposition,'present');assert.equal(w.issued.size,2);assert.equal(w.seen.length,1);w.base.close();
+});
+
+// Pause after admission and producer binding, before the buyer's first write.
+function pausePrewrite(w,{fail=false}={}){
+ const store=w.config.store;let reads=0,paused=false,entered,resume;
+ const ready=new Promise(r=>entered=r),gate=new Promise(r=>resume=r);
+ w.config.store={...store,read:async key=>{const row=await store.read(key);if(!paused&&row?.lifecycle&&!row.writeStarted&&++reads===2){paused=true;entered();await gate;if(fail)throw Error('TEST prewrite reader failed');}return row;}};
+ return{ready,resume};
+}
+for(const sameProvider of [false,true])for(const selected of [false,true])test(`prewrite binding survives changed terms selected=${selected} same-provider=${sameProvider}`,async()=>{
+ const w=fixture(),hold=pausePrewrite(w),p=w.provider(),input=w.input(),pending=p.resolveBuyer(input).catch(e=>e);
+ await hold.ready;if(selected)await w.provider().release({jobId:JOBS[0],generatedAt:T});
+ const changed=next(input);changed.scope.price={amount:'1',currency:'USD'};
+ const result=await (sameProvider?p:w.provider()).resolveBuyer(changed).catch(e=>e);
+ const row=(await w.store.entries())[0][1];hold.resume();await pending;
+ if(selected||sameProvider){assert.notEqual(result?.disposition,'present');assert.deepEqual(row.binding.scope.price,input.scope.price);assert.equal(row.lifecycle.state,selected?'selected':'open');assert.deepEqual(row.lifecycle.times,[T]);}
+ else assert.equal(result.disposition,'present');
+ w.base.close();
+});
+for(const field of ['payee','listingPin','buyerIdentityBundle'])test('selected prewrite binding preserves '+field,async()=>{
+ const w=fixture(),hold=pausePrewrite(w),p=w.provider(),input=w.input(),pending=p.resolveBuyer(input).catch(e=>e);await hold.ready;await p.release({jobId:JOBS[0],generatedAt:T});
+ const changed=structuredClone(next(input));if(field==='buyerIdentityBundle')changed.buyerIdentityBundle.presentedAt++;else changed.scope[field]=field==='payee'?'TEST-other':{...changed.scope.listingPin,version:2};
+ const result=await w.provider().resolveBuyer(changed).catch(e=>e),row=(await w.store.entries())[0][1];hold.resume();await pending;
+ assert.notEqual(result?.disposition,'present');assert.equal(row.lifecycle.state,'selected');assert.deepEqual(row.binding.buyerIdentityBundle,input.buyerIdentityBundle);assert.equal(row.binding.scope.payee,input.scope.payee);assert.deepEqual(row.binding.scope.listingPin,input.scope.listingPin);w.base.close();
+});
+for(const failure of ['reader','closed'])test('selected prewrite cleanup preserves selection after '+failure,async()=>{
+ const w=fixture(),hold=pausePrewrite(w,{fail:failure==='reader'}),p=w.provider(),input=w.input();let open=true;
+ const pending=p.resolveBuyer(input,{writable:()=>open}).catch(e=>e);await hold.ready;await p.release({jobId:JOBS[0],generatedAt:T});if(failure==='closed')open=false;hold.resume();await pending;
+ const row=(await w.store.entries())[0]?.[1];assert.equal(row?.lifecycle?.state,'selected');assert.equal(row.lifecycle.selected,T);assert.deepEqual(row.binding.buyerIdentityBundle,input.buyerIdentityBundle);
+ await assert.rejects(w.provider().resolveBuyer(next(input)),{code:'context_released'});
+ assert.equal((await w.provider().resolveBuyer(input)).disposition,'present');assert.equal(w.controls.signs,2);assert.equal(w.local.writes.length,2);
+ assert.equal((await w.provider().release({jobId:JOBS[0]})).deleted,true);assert.equal((await w.provider().sweep(()=>true)).deleted,0);w.base.close();
 });
