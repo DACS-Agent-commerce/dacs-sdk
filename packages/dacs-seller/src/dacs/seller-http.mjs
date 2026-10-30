@@ -176,7 +176,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
             // the store settled is sent; anything else stays uncertain.
             let claimed = null;
             const transport = Object.freeze({
-              claim: () => { claimed = authentication.store.claim(reservation, request, { live: !readOnly }); },
+              claim: () => (claimed = authentication.store.claim(reservation, request, { live: !readOnly })),
               settle: (outcome) => {
                 if (!claimed || settled) throw new SellerTransportError('peer_reconciliation_conflict', 503);
                 authentication.store.reconcile(claimed, request, outcome.status, JSON.stringify(outcome.value), { retry: outcome.retry, noEffect: outcome.noEffect });
