@@ -34,18 +34,24 @@
 //    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
-//    `requirementHash` and replayed aggregation are checked here. Verified
-//    claims without `recipeVersion` require resolveLatestRecipe to authenticate
-//    the family's latest live version in the job's registry snapshot.
+//    `requirementHash` and replayed aggregation are checked here. Every
+//    verified member needs every method family at its pinned version, or the
+//    selected latest version when `recipeVersion` is absent. Pins must be
+//    steward-authorized and not mocked, disabled or failed. Implicit heads in the
+//    authenticated session registry snapshot must be live (DACS-2 §7.4.3).
+//    Missing or disallowed family entries refuse replay; a result outside an
+//    implicit member's selected version cannot satisfy it, bound or projected.
+//    `resolveLatestRecipe` supplies the version, availability and snapshot pin.
+//    Both records share one pin.
 //    Presence-only claims instead replay over the exact authenticated bundle,
 //    without a synthetic VerifyResult. The optional
 //    readSessionRecipeRegistryPin({ jobId }) supplies their snapshot hash and
 //    is read once when either requirement includes a presence-only claim.
-//    Both replay modes must use one snapshot pin for the job. Direct helper
-//    replay uses optional `evidence`, independent of agent config:
-//    resolveContent, resolveRecipe, resolveLatestRecipe, isRecipeSignerAuthorized,
-//    isVerifyResultSignerAuthorized and verifyAuthorityAttestation. The helper
-//    qualifies each implicit member against its family's latest live version.
+//    Direct helper replay uses optional `evidence`, independent of agent config:
+//    `evidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
+//    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
+//    verifyAuthorityAttestation }`, read with the admission readers' limits
+//    (see vetRecordProblem).
 //  - readVetAnchorReceipt({ jobId, role, party, ref }) answers the CORE §5.1
 //    AnchorReceipt the operator's SR-2 reader holds for that same record
 //    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
@@ -315,16 +321,15 @@ function recipeFamilies(invocation) {
     if(member?.verificationRequired!==true)continue;
     const methods=member.parameters?.verificationMethod!==undefined?[member.parameters.verificationMethod]:results.filter(result=>result?.scheme===member.scheme).map(result=>result.method);
     if(!methods.length||methods.some(method=>typeof method!=='string'||!method))throw new TypeError('the verified requirement has no resolvable recipe method family');
-    if(member.recipeVersion!==undefined&&results.some(result=>result?.requirement&&same(result.requirement,member)))continue; // Bound pins are authenticated by the core.
     for(const method of methods)families.set(canonicalize([member.scheme,method,member.recipeVersion??null]),{scheme:member.scheme,method,...(member.recipeVersion===undefined?{}:{recipeVersion:member.recipeVersion})});
   }
   return [...families.values()];
 }
 
-// An unused explicit pin must still resolve to an authenticated live recipe.
+// Every explicit pin must resolve to an authenticated recipe that CRQ permits.
 async function pinnedSessionRecipeProblem(read,selector) {
   const recipe=await read('resolveRecipe',selector);
-  if(!object(recipe)||recipe.scheme!==selector.scheme||recipe.recipeVersion!==selector.recipeVersion||recipe.availability!=='live')return 'the Vet pinned recipe is unavailable, non-live or differs from its selector';
+  if(!object(recipe)||recipe.scheme!==selector.scheme||recipe.recipeVersion!==selector.recipeVersion||!['live','operator_gated','closed_data','bilateral'].includes(recipe.availability))return 'the Vet pinned recipe is missing, mocked, disabled or failed, or differs from its selector';
   const signature=recipe.signature,key=evidenceSignerKey(signature?.signer);
   if(!key||(await read('isRecipeSignerAuthorized',{recipe,signature}))!==true)return 'the Vet pinned recipe-signature is not authorized';
   try {
@@ -346,7 +351,7 @@ async function latestSessionRecipeProblem(read, { scheme, method, recipeVersion 
     if (typeof pin !== 'string' || !SHA256_HEX.test(pin)) throw malformedEvidence('the Vet session registry pin is malformed');
     if (pins.length > 0 && pins[0] !== pin) throw malformedEvidence('the Vet session registry resolved another session registry snapshot');
     if (!Number.isSafeInteger(selection.recipeVersion) || selection.recipeVersion < 1) throw malformedEvidence('the Vet session registry recipe version is malformed');
-    if (!['live','disabled','failed','mocked'].includes(selection.availability)) throw malformedEvidence('the Vet session registry availability is malformed');
+    if (!['live','operator_gated','closed_data','bilateral','mocked','disabled','failed'].includes(selection.availability)) throw malformedEvidence('the Vet session registry availability is malformed');
     if (selection.availability !== 'live') return 'the Vet session registry latest recipe version is not live';
     if (recipeVersion !== undefined && selection.recipeVersion !== recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
     if(pins.length===0)pins.push(pin);
@@ -464,10 +469,14 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // read for this `role`'s record. A claim without `recipeVersion` is compared
 // with the operator's authenticated session registry family head. A member
 // whose result differs from its selected live version is unsatisfied; another
-// pinned alternative may pass. An unavailable/non-live family refuses replay. Without evidence, a
-// required verified member cannot be satisfied. Throws the first failure of an evidence reader (timeout, oversize,
-// a throw): that is unavailable evidence, not a record that fails its
-// requirement. A malformed content reply is a record problem, not a throw.
+// pinned alternative may pass, whether the implicit result is bound or projected.
+// Every verified member, bound or unused, preflights every method family.
+// Implicit heads must be live; exact pins must be steward-authorized and not
+// mocked, disabled or failed. Missing or disallowed entries refuse replay.
+// Without evidence, a required verified member cannot be satisfied. Throws the
+// first failure of an evidence reader (timeout, oversize, a throw): that is
+// unavailable evidence, not a record that fails its
+// requirement. Malformed content or registry replies are record problems.
 // A presence-only claim needs no VerifyResult (DACS-2 forbids a synthetic
 // result): its record is replayed over the exact `presence.bundle`, whose
 // presentation is verified (BP-4), against the operator's `presence.registryPin`

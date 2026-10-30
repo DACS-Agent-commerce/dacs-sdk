@@ -478,14 +478,15 @@ per-client limiter so one client cannot exhaust the shared request budget.
   or `null`. An implicit member is satisfied only by that family's selected
   latest live version. A result outside that version leaves the member
   unsatisfied; an independently passing pinned alternative may still satisfy
-  its group. Missing, non-live or unprovable selected family heads refuse the
-  replay before aggregation, including unused alternatives (DACS-2 §7.4.3).
-  Every verified member needs a resolvable method family. Unused explicit pins
-  also require an exact live, steward-authorized signed recipe before aggregation.
-  Malformed replies and inconsistent snapshot pins also refuse the whole record.
-  Both party records share one snapshot pin, and a replay caches each family's
-  bounded registry read and each exact recipe descriptor. No older live version
-  is chosen as fallback.
+  its group.
+  Every verified member, bound or unused, needs each method family at its
+  version: an implicit family's selected head must be live; an explicit pin,
+  bound or unused, needs an exact steward-authorized signed recipe that is not
+  mocked, disabled or failed (DACS-2 CRQ-2/CRQ-3). A result at another version
+  than an implicit member's selected head leaves that member unsatisfied,
+  whether bound or projected.
+  Malformed replies and inconsistent snapshot pins also refuse the whole record. Both party records share one snapshot pin, and a replay caches each
+  family's bounded registry read and each exact recipe descriptor. No older live version is chosen as fallback.
   Reads retain their 64 KiB, value/list, 10 s individual and 30 s total limits;
   unavailable readers keep their original cause. These helper capabilities do
   not change the agent's invocation or restoration gate. A session
