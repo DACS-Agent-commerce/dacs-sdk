@@ -426,9 +426,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // An authenticated transport command hands in its reservation's checks: it
   // is checked inside the job fence before restore or work, and its outcome
   // is settled there, before the fence is released.
-  const recoveryCall = (fn) => durable ? (input, { transport } = {}) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
+  const recoveryCall = (fn, before) => durable ? (input, { transport } = {}) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
     transport?.check();
     const jobId = input?.transportIdentity?.jobId ?? input?.jobId;
+    const early=before?await before(session,jobId):undefined;if(early!==undefined)return early;
     sessions.delete(jobId);
     await restore(session);
     if (!transport) return fn(input);
@@ -1159,10 +1160,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // authenticated exact readback. Absence never authorizes resubmission.
   async function resume({ jobId }) {
     const session = sessionFor(jobId);
-    if(access&&readIssued&&buyerAccessClosed(session,jobId)){
-      const unknown=await readIssued(jobId,{unknownOnly:true});
-      if(unknown)return unknown;
-    }
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     const reconciliation = await durable.reconcileJob(jobId, anchors);
     if (reconciliation.status === 'held') throw new SellerAgentError('seller_reconciliation_required', 'an anchor outcome remains unknown', 503);
@@ -1190,8 +1187,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // before anything is restored or run, and settle, before the fence is
     // released. A trusted direct caller without them only gets the outcome.
     reconcileTransport: durable ? ({ transport, ...input } = {}) => durable.withJob(input.request?.jobId, async (session) => {
-      transport?.claim();
-      const { path, jobId } = input.request, readOnly = input.readOnly === true;
+      const claimed=transport?.claim();
+      const { path, jobId } = input.request, readOnly = input.readOnly === true || claimed?.live===false;
       let result;
       // An unpaid outside buyer only has issued unknown writes inspected:
       // nothing is restored or run. The proposal reducer keeps its wallet gate.
@@ -1251,7 +1248,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       }
       return durable.reconcileJob(jobId, anchors);
     } : undefined,
-    resume: durable ? recoveryCall(resume) : undefined,
+    resume: durable ? recoveryCall(resume,async(session,jobId)=>{
+      if(access&&session?.buyerBundle&&buyerAccessClosed(session,jobId)){
+        const unknown=await readIssued?.(jobId,{unknownOnly:true});if(unknown)return unknown;
+        throw new SellerAgentError('buyer_access_closed','this operator accepts only its configured custody buyer while openBuyerAccess is off; no unknown issued write remains to read back',409);
+      }
+    }) : undefined,
 
     close: () => {if(!closed){durable?.close();closed=true;}},
     // Test/ops visibility only: never a signing capability.
