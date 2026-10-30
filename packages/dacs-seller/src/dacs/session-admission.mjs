@@ -45,9 +45,9 @@
 //    `resolveLatestRecipe` supplies the head version and snapshot pin.
 //    Both records share one pin.
 //    Presence-only claims instead replay over the exact authenticated bundle,
-//    without a synthetic VerifyResult. The optional
-//    readSessionRecipeRegistryPin({ jobId }) supplies their snapshot hash and
-//    is read once when either requirement includes a presence-only claim.
+//    without a synthetic VerifyResult. Direct helper replay requires a runtime-
+//    authenticated job-bound registry snapshot; the seller agent has no such
+//    snapshot and refuses presence-only requirements before signing.
 //    Direct helper replay uses optional `evidence`, independent of agent config:
 //    `evidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
 //    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
@@ -69,7 +69,7 @@
 //    before any signature. The receipt's writer is not compared with the
 //    record's signer: the Standard does not tie them (SR2-5 binds the writer
 //    the receipt names, not the record's verifier).
-import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, publicKeyFromRaw, resolveRecipe as authenticatePinnedRecipe, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isDurableSessionRecipeRegistrySnapshot, isIdentityBundle, publicKeyFromRaw, resolveRecipe as authenticatePinnedRecipe, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 import { isCanonicalEd25519Signature, isSmallOrderPublicKey } from './demos-claims.mjs';
 
@@ -121,8 +121,8 @@ export function sessionAdmissionConfig(value) {
   if (!object(value) || ['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].some((name) => typeof value[name] !== 'function')) {
     throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker');
   }
-  if (value.readSessionRecipeRegistryPin !== undefined && typeof value.readSessionRecipeRegistryPin !== 'function') {
-    throw new TypeError('sessionAdmission.readSessionRecipeRegistryPin must be a function when given');
+  if ('readSessionRecipeRegistryPin' in value) {
+    throw new TypeError('sessionAdmission.readSessionRecipeRegistryPin is unsupported; presence replay requires a runtime-authenticated job registry snapshot');
   }
   if('vetEvidence' in value)throw new TypeError('vetEvidence belongs to the direct Vet replay helper; this agent restores only empty invocations');
   return value;
@@ -191,7 +191,6 @@ function boundedRevocationValue(value) {
 }
 
 const ADMISSION_MAX_LIST_ITEMS=256;
-const REGISTRY_PIN_PATTERN = /^[0-9a-f]{64}$/;
 // The value and list bounds every returned representation shares: the outer
 // reply of every read, and a VerifyResult decoded from byte content, whose
 // encoding hides its lists and value count from the outer reply's own shape.
@@ -218,13 +217,6 @@ export async function readAdmissionCapability(admission,method,input,parentSigna
     });
     return await Promise.race(aborted?[work,deadline,aborted]:[work,deadline]);
   }finally{clearTimeout(timer);if(rejectAborted)parentSignal.removeEventListener('abort',rejectAborted);parentSignal?.removeEventListener('abort',forwardAbort);controller.abort();}
-}
-
-// The recipe registry snapshot hash the operator pinned for the job (CRQ-1), or
-// null when it configured no `readSessionRecipeRegistryPin`. The read is bounded
-// like any admission capability and throws, keeping its cause, when it fails.
-export async function readRegistryPin(admission, jobId) {
-  return typeof admission.readSessionRecipeRegistryPin === 'function' ? readAdmissionCapability(admission, 'readSessionRecipeRegistryPin', { jobId }) : null;
 }
 
 // Whether a BundleRequirement names a presence-only claim, which its Vet record
@@ -491,12 +483,12 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // requirement. Malformed content or registry replies are record problems.
 // A presence-only claim needs no VerifyResult (DACS-2 forbids a synthetic
 // result): its record is replayed over the exact `presence.bundle`, whose
-// presentation is verified (BP-4), against the operator's `presence.registryPin`
-// (PCR-6, CRQ-1), and is refused without a well-formed pin. The operator
-// supplies it; this presence path neither authenticates nor retains it.
+// per-claim presentation is verified (BP-4), against a runtime-authenticated,
+// job-bound `presence.sessionSnapshot` (DurableSessionRecipeRegistrySnapshot,
+// PCR-6, CRQ-1). Bare hashes and copies without runtime provenance are refused.
 // `sessionRegistryPins` is one array shared by the record checks of one job:
-// the first pin (operator-supplied for presence, authenticated by verified
-// evidence otherwise) becomes the job's pin; later records must use it too.
+// the authenticated presence snapshot or verified evidence seeds the job's pin;
+// later records must use that same snapshot hash.
 export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, presence, sessionRegistryPins }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
@@ -506,8 +498,10 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
   const presenceOnly = hasPresenceOnlyClaim(invocation.requirement);
-  const registryPin = presence?.registryPin;
-  if (presenceOnly && !REGISTRY_PIN_PATTERN.test(registryPin)) return 'the Vet requirement names a presence-only claim and no pinned registry authority was supplied';
+  const sessionSnapshot = presence?.sessionSnapshot;
+  if (presenceOnly && (!isDurableSessionRecipeRegistrySnapshot(sessionSnapshot) || sessionSnapshot.jobId !== jobId))
+    return 'the Vet requirement names a presence-only claim and no runtime-authenticated job registry snapshot was supplied';
+  const registryPin = presenceOnly ? sessionSnapshot.snapshotHash : undefined;
   const pins = sessionRegistryPins ?? [];
   if (presenceOnly) {
     // Retained sessions must replay after ordinary claim expiry, without
@@ -537,7 +531,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific),
         ...(presenceOnly ? { presence: { bundle: presence.bundle, sessionRecipeRegistrySnapshotHash: registryPin } } : {}) },
       { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify,
-        // Format-only: this compares the operator pin with itself; it does not authenticate it.
+        // The presence pin comes only from a runtime-authenticated snapshot for this job.
         isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
         verifyIdentityPresentation: (presented) => identityPresentationValid(presented.bundle, presented.bundleHash),
         isImplicitRecipeVersionSelected:async({expected})=>{

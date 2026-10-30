@@ -542,7 +542,7 @@ export function sellerFulfilmentVetRequirementMembers(requirement: BundleRequire
  * when parties share a Vet record, and validate the orchestrator role. This checks invocation
  * coverage before signing with the runner's same presence-only capability,
  * not every delivery precondition. Presence-only members are refused by default;
- * opt in only after strict replay over the exact bundle and a well-formed pin.
+ * opt in only after strict replay over the exact bundle and an authenticated job registry snapshot.
  */
 export function sellerFulfilmentVetRequirementsViolation(
   vetRequirements: unknown,
