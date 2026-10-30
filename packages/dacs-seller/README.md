@@ -434,13 +434,17 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `presentedAt` and `sessionNonce`, as the package's Vet provider presents it
   to the buyer's challenge) whose presentation the seller signed; the seller's
   record must be of that bundle. The context's Vet requirement invocations go into the delivery
-  audit source, so the agent checks them with the SDK delivery runner's own
+  audit source, so the agent checks them with the shared SDK invocation
   check (`sellerFulfilmentVetRequirementsViolation`) before it signs: exactly
   one per record, evaluating its party, naming that counterparty as
   verifier, the Listing's `buyerRequirement` for the buyer's record, and
   every required claim covered by a result for this job, except a
   presence-only claim (`verificationRequired: false`), which has no result
-  (DACS-2 forbids a synthetic one). A presence-only member must name a
+  (DACS-2 forbids a synthetic one). Seller admission supplies the exact
+  bundle and registry pin for strict presence replay. Core delivery through
+  `runFulfilmentCore` or its durable wrapper refuses presence-only invocations
+  before delivery, because core bundle finalization lacks those companion inputs.
+  A presence-only member must name a
   registered claim scheme and select no `maxAge` or `recipeVersion`
   (DACS-1 PCR-1/PCR-2); one that does is refused like any other invocation
   mismatch. A presence-only requirement whose `primaryClaimSelector` names

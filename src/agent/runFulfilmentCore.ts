@@ -1537,6 +1537,14 @@ function auditSourceViolation(
     isSellerFulfilmentVetInvocationMismatch(invocation, invocationContext))) {
     return "audit source Vet provenance differs from the authenticated party/orchestrator bindings";
   }
+  // Core finalization retains bundle hashes, but has no exact bundle or
+  // registry authority for strict presence replay. Refuse before delivery;
+  // seller admission supplies those inputs to its own pre-signature replay.
+  if (source.artifacts.vetRequirements.some(({ requirement }) =>
+    [...requirement.required, ...(requirement.oneOf ?? []).flat()]
+      .some((member) => member.verificationRequired === false))) {
+    return "core delivery cannot finalize presence-only Vet requirements";
+  }
 
   if (commitmentEntry.result.attestationRef !== undefined &&
         !exact(
