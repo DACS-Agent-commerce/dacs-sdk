@@ -79,9 +79,9 @@ const paymentPending = (answer) => answer?.status === 'held' || (answer?.status 
 export function transportOutcome(path, { answer, error, held, cause = error } = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
   const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
   const refusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
-  if (held !== undefined || (error && !refusal) || (proposal && refusal && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
+  const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
+  if (held !== undefined || (error && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
     ...(cause === undefined ? {} : { cause, causeCode: [cause, cause?.cause].some(c => c?.name === 'TimeoutError' || c?.code === 'ETIMEDOUT') ? 'timeout' : 'reader' }) };
-  const rejected = refusal || (answer?.code !== 'party_vet_non_pass' && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
   const noEffect = rejected && !resumed && !retained;
   const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
   const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
