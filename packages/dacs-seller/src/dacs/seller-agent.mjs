@@ -434,7 +434,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     await restore(session);
     if (!transport) return fn(input);
     let result;
-    try { result = { answer: await fn(input) }; } catch (error) { result = { error }; }
+    try { transport.check();const answer=await fn(input,{transport});transport.check();result={answer}; } catch (error) { result = { error }; }
     transport.settle(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
     if (result.error) throw result.error;
     return result.answer;
@@ -445,7 +445,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // would have raised, not an uncertain outcome.
     if (error.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     throw error;
-  }) : (input,{transport}={})=>{transport?.check();return fn(input);};
+  }) : async(input,{transport}={})=>{transport?.check();const answer=await fn(input,{transport});transport?.check();return answer;};
 
   const sessionFor = (jobId) => {
     const session = sessions.get(jobId);
@@ -494,7 +494,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
 
   // ---- DACS-3: proposal -> seller contribution ----
-  async function receiveProposal({ proposal, transportIdentity, buyerIdentityBundle }) {
+  async function receiveProposal({ proposal, transportIdentity, buyerIdentityBundle },{transport}={}) {
     requireOpen();
     const jobId = transportIdentity?.jobId;
     if (!isCanonicalJobId(jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
@@ -592,6 +592,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const session = sessions.get(jobId);
     verifiedSessions.set(jobId, sessionFingerprint(session));
     const signUnderPin = (bytes) => {
+      transport?.check();
       if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
       if (!inFlight) assertListingCurrent();
       // The first completed signature is made now, not when the context was
@@ -735,6 +736,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         reconcileSellerSignature: (input) => (signatures.has(input.planHash) ? { disposition: 'present', value: signatures.get(input.planHash) } : { disposition: 'absent', reason: 'not signed yet' }),
         transport: {
           publishSellerContribution: (contribution, identity) => {
+            transport?.check();
             // The durable session is the authority, not these caches. Retain
             // the exact proposal and transport identity with the contribution
             // and save them together first: a crash after publication must
