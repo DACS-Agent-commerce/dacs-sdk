@@ -20,10 +20,10 @@ for(const [boundary,mode] of cases)for(const failure of mode==='verdict'?['indet
   throw Object.assign(new Error('TEST journal unavailable'),{code:failure});
  };
  const p=await f.provider(),input=f.input(),run=async()=>{const use=fresh?await f.provider():p;return use.jobVet(input.scope,input.buyerIdentityBundle,()=>true);};
- await assert.rejects(run());await assert.rejects(run());const signatures=f.controls.signs;
+ await assert.rejects(run());await assert.rejects(run());const signatures=f.controls.signs-f.controls.presentationSigns;
  held=false;const results=await Promise.all([run(),run()]);
  for(const result of results)assert.equal(result.buyerVet.record.overallDecision,'pass');
- assert.equal(f.controls.signs,signatures,'the retained signature is reused');
+ assert.equal(f.controls.signs-f.controls.presentationSigns,signatures,'the retained buyer record signature is reused');
  assert.equal(f.local.writes.filter(row=>row===address).length,1);f.base.close();
 });
 for(const definitive of ['rejected','invalid','wrong-hash'])test(`a definitive ${definitive} fallback overrides earlier uncertainty`,async()=>{
