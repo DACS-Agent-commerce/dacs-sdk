@@ -843,12 +843,19 @@ describe("canonical packed archive", () => {
     await expect(publishExactLocalRegistry({ archivePath, registry: REGISTRY, token: "t", ...registry })).rejects.toThrow();
     expect(registry.calls).toHaveLength(0);
   });
-  it.each(["http://u:p@127.0.0.1:4873/prefix/", "http://127.0.0.1:4873/prefix?x=1", "http://127.0.0.1:4873/prefix#x"])(
+  it.each(["http://u:p@127.0.0.1:4873/prefix/", "http://127.0.0.1:4873/prefix?x=1", "http://127.0.0.1:4873/prefix#x",
+    "http://127.0.0.1:4873/prefix?", "http://127.0.0.1:4873/prefix#"])(
     "refuses ambiguous registry URL %s before publication", async registry => {
       const fixture = fakeRegistry(onlyCandidate);
       await expect(publishExactLocalRegistry({ ...candidate(), ...fixture, registry, token: "t" })).rejects.toThrow(/loopback/);
       expect(fixture.calls).toHaveLength(0);
     });
+  it.each(["/prefix", "/prefix/", "/prefix%3F", "/prefix%23"])("preserves valid registry path prefix %s", async prefix => {
+    const registry = fakeRegistry(onlyCandidate);
+    await expect(publishExactLocalRegistry({ ...candidate("example", "1.0.0"), ...registry,
+      registry: REGISTRY + prefix, token: "t" })).resolves.toMatchObject({ name: "example", version: "1.0.0" });
+    expect(registry.urls[0]).toBe(REGISTRY + prefix.replace(/\/$/, "") + "/example");
+  });
   it.each(["padding", "extra trailer", "invalid utf8", "BOM", "array", "empty gzip", "non-gzip"])("refuses %s", kind => {
     const archive = gunzipSync(packTarball({ "package/package.json": kind === "array" ? "[]" : kind === "BOM" ? '\ufeff{"name":"x"}' : '{"name":"x"}' }));
     if (kind === "padding") archive[1023] = 1;
