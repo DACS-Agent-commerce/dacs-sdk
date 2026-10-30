@@ -30,7 +30,7 @@ const {seller:fixtureSeller}=await import('./helpers/protocol-fixture.mjs');
 const sdkFixtureListing=fixtureListing(fixtureSeller,{now:1800000000000});sdkFixtureListing.seller.identity={...bundleTemplate()};
 function bundleTemplate(){return {presentedBy:seller,bundleVersion:'1',presentedAt:1800000000000,sessionNonce:'b'.repeat(64),claims:[{ref:seller}]};}
 const {listingPin:pinFor}=await import('../src/dacs/purchase-protocol.mjs');
-const scope={jobId,listingPin:pinFor(sdkFixtureListing),generatedAt:1800000000000,payee:'0x'+'2'.repeat(64)};
+const scope={jobId,seller,price:sdkFixtureListing.pricing.price,listingPin:pinFor(sdkFixtureListing),generatedAt:1800000000000,payee:'0x'+'2'.repeat(64)};
 const bundle={presentedBy:buyer,bundleVersion:'1',presentedAt:scope.generatedAt,sessionNonce:'a'.repeat(64),claims:[{ref:buyer}],presentation:{kind:'per-claim',signatures:[{ref:buyer,signature:'fixture'}]}};
 function provider(buyerRequirement={requirementVersion:'1',required:[],preferredPresentation:'any'}){
  let store=stores.get(records);if(!store){store=createInMemoryPartyVetStore();stores.set(records,store);}
@@ -52,7 +52,7 @@ for(const party of [buyer,seller])for(const value of ['fail','indeterminate','er
  if(party===buyer){assert.equal(records.has(compositeVerificationAddress(jobId,seller)),false);assert.equal(await p.recoverBuyer({scope,buyerIdentityBundle:bundle}),null);return;}
  // Supply both authenticated records to the recovery path, retaining the non-pass decision.
  for(const evaluatedParty of [buyer,seller])records.set(compositeVerificationAddress(jobId,evaluatedParty),{recordVersion:'1',jobId,evaluatedParty,overallDecision:evaluatedParty===party?value:'pass',signature:{signer:evaluatedParty===seller?buyer:seller}});
- await retainProofs();assert.deepEqual(await p.recoverBuyer({scope,buyerIdentityBundle:bundle}),answer);assert.equal(p.contexts.size,0);
+ await retainProofs();assert.equal(await p.recoverBuyer({scope,buyerIdentityBundle:bundle}),null);assert.equal(p.contexts.size,0);
 });
 test('VPC4 pass control can produce context and recover it read-only',async()=>{
  records=new Map();decision='pass';const p=provider();assert.equal((await p.resolveBuyer({scope,buyerIdentityBundle:bundle})).disposition,'present');
