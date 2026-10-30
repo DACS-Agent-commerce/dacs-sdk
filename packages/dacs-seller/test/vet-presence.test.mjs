@@ -86,6 +86,14 @@ test('a record over a verified claim is still replayed with no presence authorit
   assert.equal(await problem({ registryPin: undefined }), null);
 });
 
+test('a presence-only requirement with a primaryClaimSelector is refused, not counted as a presence success', async () => {
+  // The SDK's exact selector replay needs a passing verified result for the
+  // selected claim; a presence-only claim has none, so the documented refusal
+  // is an aggregation mismatch rather than a presence pass.
+  const { problem } = await fixture({ ...presence('did'), primaryClaimSelector: 'did' });
+  assert.match(await problem(), /\(invalid: aggregation-mismatch\)$/);
+});
+
 test('hasPresenceOnlyClaim finds a presence-only claim in required and oneOf and ignores malformed requirements', () => {
   const verified = { scheme: 'did', verificationRequired: true }, unverified = { scheme: 'did', verificationRequired: false };
   assert.equal(hasPresenceOnlyClaim({ required: [verified] }), false);
