@@ -530,6 +530,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   signing bytes in its party Vet job row. An atomic reservation permits one
   signer invocation across providers. A failed or interrupted signer call or
   outcome save leaves that reservation pending; a retry never signs again.
+  If the reservation write commits but its acknowledgement is lost, the row is
+  pending although the signer was never called; because the process cannot tell
+  whether another provider holds it, a retry requires wallet reconciliation and
+  never signs a second time.
   Completed presentations are verified before reuse. Unsigned rows from older
   versions have no safe reservation and remain held without another signer call.
 

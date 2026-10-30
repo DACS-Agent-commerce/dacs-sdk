@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,10 +13,14 @@ const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});retur
 const reply=value=>Buffer.from(JSON.stringify(value));
 const message=bundle=>Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`);
 const indeterminate=error=>error.code==='seller_presentation_indeterminate';
+// A directly driven seller session needs the same durable lifecycle membership
+// jobVet's admission records, or authorizeEffect refuses the fixture job.
+const INCARNATION='TEST-incarnation';
+const lifecycle=()=>({incarnation:INCARNATION,epoch:0,state:'open',times:[]});
 async function sessionFixture(t,store){
  const f=productionFixture();t.after(()=>f.base.close());if(store)f.config.store=store;
- const provider=await f.provider(),job={jobId:JOB,binding:{buyerIdentityBundle:f.input().buyerIdentityBundle},open:()=>true,writeStarted:false};
- await provider.state.update(JOB,()=>({binding:job.binding,writeStarted:false}));
+ const provider=await f.provider(),job={jobId:JOB,binding:{buyerIdentityBundle:f.input().buyerIdentityBundle},incarnation:INCARNATION,open:()=>true,writeStarted:false};
+ await provider.state.update(JOB,()=>({binding:job.binding,writeStarted:false,lifecycle:lifecycle()}));
  return{...f,provider,job,run:async()=>(await f.provider()).sellerSession(job),row:()=>provider.state.read(JOB)};
 }
 function interruptSave(f,predicate,{after=false}={}){
@@ -132,6 +137,14 @@ for(const kind of ['object','oversized','malformed'])test(`wallet lookup refuses
  const f=await sessionFixture(t),outcome=retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
  f.config.wallet.reconcilePresentationSignature=async()=>kind==='object'?outcome():Buffer.from(kind==='oversized'?' '.repeat(4097):'{');
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);
+});
+test('wallet lookup accepts genuine receipt bytes from another realm',async t=>{
+ const f=await sessionFixture(t),outcome=retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
+ // A worker or vm-based wallet adapter returns a Uint8Array whose prototype
+ // belongs to a different realm, which a plain instanceof refuses.
+ const foreignBytes=vm.runInNewContext('value=>new Uint8Array(value)',{});
+ f.config.wallet.reconcilePresentationSignature=async()=>foreignBytes(Array.from(reply(outcome())));
+ const bundle=await f.run();assert.equal(bundle.presentation.signatures[0].signature,outcome().signature);assert.equal(f.controls.signs,1);
 });
 test('wallet lookup keeps its connection error as the cause',async t=>{
  const f=await sessionFixture(t);retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);

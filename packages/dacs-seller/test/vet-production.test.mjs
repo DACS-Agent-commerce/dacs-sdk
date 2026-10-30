@@ -7,6 +7,10 @@ import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { createDemDeliveryContext, resolveDemDeliverySellerContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 
+// A directly driven seller session needs the durable lifecycle membership that
+// jobVet's admission records, or authorizeEffect refuses the prelude job.
+const INCARNATION='TEST-incarnation';
+const lifecycle=()=>({incarnation:INCARNATION,epoch:0,state:'open',times:[]});
 // Exercise a seller-only signing boundary independently of buyer Vet ordering.
 async function isolatedSellerSession(f){
  const p=await f.provider(),input=f.input(),{generatedAt,...scope}=input.scope;
@@ -131,8 +135,8 @@ test('two provider instances that both see an unattempted nonce converge on the 
  const binding={scope:terms,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
  const ops=()=>({buyer:{checkpoints:{},steps:{},signing:{}},seller:{checkpoints:{},steps:{},signing:{}}});
  const setup=await f.provider();
- await setup.state.update(input.scope.jobId,()=>({binding,writeStarted:false,ops:ops()}));
- await setup.sellerSession({jobId:input.scope.jobId,binding,open:()=>true,writeStarted:false});
+ await setup.state.update(input.scope.jobId,()=>({binding,writeStarted:false,ops:ops(),lifecycle:lifecycle()}));
+ await setup.sellerSession({jobId:input.scope.jobId,binding,incarnation:INCARNATION,open:()=>true,writeStarted:false});
  assert.equal(presentationSigns,1);
  const first=await f.provider(),second=await f.provider(),read=f.counterparty.readRecord;
  let arrived=0,release;const both=new Promise(resolve=>{release=resolve;});
@@ -254,8 +258,8 @@ test('a losing evaluate race waits for the winner to retain its record',async()=
  const binding={scope:terms,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
  const ops=()=>({buyer:{checkpoints:{},steps:{},signing:{}},seller:{checkpoints:{},steps:{},signing:{}}});
  const setup=await f.provider();
- await setup.state.update(input.scope.jobId,()=>({binding,writeStarted:false,ops:ops()}));
- await setup.sellerSession({jobId:input.scope.jobId,binding,open:()=>true,writeStarted:false});
+ await setup.state.update(input.scope.jobId,()=>({binding,writeStarted:false,ops:ops(),lifecycle:lifecycle()}));
+ await setup.sellerSession({jobId:input.scope.jobId,binding,incarnation:INCARNATION,open:()=>true,writeStarted:false});
  const first=await f.provider(),second=await f.provider(),read=f.counterparty.readRecord,buyerSign=buyer.signBytes;
  let arrived=0,releaseReads;const both=new Promise(resolve=>{releaseReads=resolve;});
  let held=false,releaseSign;const holdSign=new Promise(resolve=>{releaseSign=resolve;});
@@ -279,8 +283,8 @@ test('a losing evaluate race waits through the whole permitted evaluation interv
  const binding={scope:terms,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
  const ops=()=>({buyer:{checkpoints:{},steps:{},signing:{}},seller:{checkpoints:{},steps:{},signing:{}}});
  const setup=await f.provider();
- await setup.state.update(input.scope.jobId,()=>({binding,writeStarted:false,ops:ops()}));
- await setup.sellerSession({jobId:input.scope.jobId,binding,open:()=>true,writeStarted:false});
+ await setup.state.update(input.scope.jobId,()=>({binding,writeStarted:false,ops:ops(),lifecycle:lifecycle()}));
+ await setup.sellerSession({jobId:input.scope.jobId,binding,incarnation:INCARNATION,open:()=>true,writeStarted:false});
  const first=await f.provider(),second=await f.provider(),read=f.counterparty.readRecord,buyerSign=buyer.signBytes;
  let arrived=0,releaseReads;const both=new Promise(resolve=>{releaseReads=resolve;});
  let held=false,released=false,releaseSign;const holdSign=new Promise(resolve=>{releaseSign=resolve;});

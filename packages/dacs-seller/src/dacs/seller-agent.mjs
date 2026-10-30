@@ -807,6 +807,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               let record;
               try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
+              if (record === null) return unavailable(new Error('Vet record is absent'),`the ${role} Vet record is absent`);
               let problem;
               try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now, sessionRegistryPins, presence: { bundle, registryPin } }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet evidence is unavailable`); }
@@ -816,6 +817,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               let receipt;
               try { receipt = await readAdmissionCapability(admission,'readVetAnchorReceipt',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record read or authentication is unavailable`); }
+              if (receipt === null) return unavailable(new Error('Vet receipt is absent'),`the ${role} Vet record has no SR-2 receipt`);
               const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId, party });
               if (receiptProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${receiptProblem}` };
               // CORE SR2-4: the receipt's fields alone are assertions, not proof.

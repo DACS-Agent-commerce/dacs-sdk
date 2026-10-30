@@ -264,7 +264,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       const raw=await Promise.race([Promise.resolve().then(()=>wallet.reconcilePresentationSignature(Object.freeze({...request}),{
         signal:controller.signal,maxBytes:PRESENTATION_LOOKUP_MAX_BYTES,timeoutMs:PRESENTATION_LOOKUP_TIMEOUT_MS,
       })),deadline]);
-      if(!(raw instanceof Uint8Array))throw new TypeError('wallet signature lookup must return bounded raw JSON bytes');
+      // A genuine view from another realm does not pass instanceof; the Node
+      // brand check is the same one admitRawJson uses.
+      if(!nodeTypes.isUint8Array(raw))throw new TypeError('wallet signature lookup must return bounded raw JSON bytes');
       const {status,signature,...identity}=admitRawJson(raw,{maxBytes:PRESENTATION_LOOKUP_MAX_BYTES});
       if(status!=='signed'||!same(identity,request))presentationUnknown('the wallet has no matching signed seller presentation receipt');
       return signature;
