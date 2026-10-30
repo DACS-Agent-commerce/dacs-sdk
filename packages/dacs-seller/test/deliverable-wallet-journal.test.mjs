@@ -8,6 +8,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import DatabaseSync from 'better-sqlite3';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { createDeliverableWalletJournal, createPaymentEvidenceWalletJournal } from '../src/index.mjs';
 import { deliverableJournalFor } from '../src/dacs/deliverable-wallet-journal.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
@@ -134,6 +137,37 @@ test('a job id that is not a canonical ULID is refused before the wallet is aske
     await assert.rejects(journal.reconcile(w.input({ jobId })), TypeError, String(jobId));
   }
   assert.equal(w.calls.sign, 0, 'no signature is asked for a malformed job');
+  assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
+});
+
+test('a job id that differs from the report, the delivery binding or the Deliverable address is refused before the wallet is asked', async (t) => {
+  const w = wallet(t);
+  const journal = w.open();
+  t.after(() => journal.close());
+  const other = '01J8N4YV7YVYQ4DB7M8T4C7W0B', binding = w.input().deliveryBinding;
+  const report = { ...w.input().report, jobId: other };
+  // The journal is asked about one Deliverable of one job: the id, the artifact,
+  // its binding and its address must all name that job, or the journal refuses
+  // before the wallet can sign a CREATE under a mismatched label.
+  for (const [label, extra] of [['the report', { report, receiptContentHash: sha256Hex(canonicalize(report)) }],
+    ['the delivery binding', { deliveryBinding: { ...binding, jobId: other } }], ['the Deliverable address', { logicalAddress: `dacs4:deliverable:${other}` }]]) {
+    await assert.rejects(journal.submit(w.input(extra)), TypeError, label);
+    await assert.rejects(journal.reconcile(w.input(extra)), TypeError, label);
+  }
+  assert.equal(w.calls.sign, 0, 'no signature is asked about another job');
+  assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
+});
+
+test('a writer that is not a nonempty claim, or a delivery binding that is not a plain JSON record, is refused before the wallet is asked', async (t) => {
+  const w = wallet(t), binding = w.input().deliveryBinding;
+  const journal = w.open();
+  t.after(() => journal.close());
+  for (const [label, extra] of [['an empty writer', { writer: '' }], ['a Date as the delivery binding', { deliveryBinding: new Date(0) }],
+    ['a nested Date in the delivery binding', { deliveryBinding: { ...binding, at: new Date(0) } }]]) {
+    await assert.rejects(journal.submit(w.input(extra)), TypeError, label);
+    await assert.rejects(journal.reconcile(w.input(extra)), TypeError, label);
+  }
+  assert.equal(w.calls.sign, 0, 'nothing is signed for an unusable input');
   assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
 });
 
