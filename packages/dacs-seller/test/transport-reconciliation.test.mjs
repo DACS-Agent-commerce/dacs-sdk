@@ -88,9 +88,50 @@ test('recovery does not run a proposal again after its context session ended and
  let state=null;
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body,undefined,{contextSessionState:()=>state});
  assert.equal(w.store.reserve(w.request,body).disposition,'perform');state='aborted-by-self';const signed=f.signed.length;
- await assert.rejects(w.peer.propose(body),{code:'context_session_terminal',status:409});
+ await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
  state=null;assert.equal((await w.peer.propose(body)).disposition,'complete','the effect was held, not released');
+});
+for(const retained of ['pending contribution','uncertain contribution','signature intent','retry contribution'])test(`HTTP terminal proposal keeps ${retained} uncertain until context clears`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});let state=null,cut=retained==='signature intent';
+ const sign=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{
+  if(cut&&Buffer.from(bytes).toString().startsWith('dacs-payee-bound-agreement:v1:')){cut=false;throw new Error('TEST signing interrupted after intent');}
+  return sign(bytes);
+ };
+ const statuses=[],fetchImpl=globalThis.fetch;
+ t.mock.method(globalThis,'fetch',async(...args)=>{const response=await fetchImpl(...args);statuses.push(response.status);return response;});
+ const agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body,undefined,{contextSessionState:()=>state});
+ const reservation=w.store.reserve(w.request,body);
+ assert.equal(reservation.disposition,'perform');
+ const initial=await outcome(agent.receiveProposal(body));
+ const signatures=()=>f.signed.filter(text=>text.startsWith('dacs-payee-bound-agreement:v1:'));
+ if(retained==='signature intent'){
+  assert.equal(cut,false);assert.notEqual(initial.value?.disposition,'complete');
+  assert.ok(agent.durableSessionOf(JOB).agreementSignatureKey);assert.equal(agent.durableSessionOf(JOB).sellerContribution,undefined);
+ }else assert.equal(initial.value?.disposition,'complete');
+ assert.equal(agent.retainsProposalWork(JOB),true);
+ if(retained==='uncertain contribution')w.store.finish(reservation,503,'{}');
+ if(retained==='retry contribution')w.store.finish(reservation,200,'{"disposition":"waiting"}',{retry:true});
+ const before=signatures().length;assert.equal(before,retained==='signature intent'?0:1);
+ const inspection={...w.request,nonce:'TEST-terminal-inspection-00001'};
+ state='aborted-by-self';
+ for(let attempt=0;attempt<2;attempt++){
+  await assert.rejects(w.peer.propose(body),{name:'SellerUnavailableError',code:'seller_unavailable'});
+  assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before,'terminal attempts sign nothing');
+  assert.equal(w.store.reserve(inspection,body).disposition,'uncertain');assert.equal(agent.retainsProposalWork(JOB),true);
+ }
+ state=null;const complete=await w.peer.propose(body);
+ assert.equal(statuses.at(-1),200);assert.equal(complete.disposition,'complete');assert.equal(signatures().length,1);
+ if(initial.value?.contribution)assert.deepEqual(complete.contribution,initial.value.contribution);
+ assert.equal(w.store.reserve(inspection,body).disposition,'cached');
+ assert.deepEqual((await w.peer.propose(body)).contribution,complete.contribution);assert.equal(signatures().length,1);
+});
+test('HTTP fresh proposal on a terminal context is still refused without retaining work',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);
+ const w=await transport(t,agent,f.dir,body,undefined,{contextSessionState:()=> 'aborted-by-self'}),before=f.signed.length;
+ await assert.rejects(w.peer.propose(body),{name:'SellerRefusedError',code:'context_session_terminal',status:409});
+ assert.equal(f.signed.length,before);assert.equal(agent.durableSessionOf(JOB),null);assert.equal(agent.retainsProposalWork(JOB),false);
 });
 // cold2 F1 (292fb46/1f4795b/5c363cc), agreed-plan C-1.
 for(const state of ['pending','uncertain'])for(const end of ['released','completed'])test(`a stale ${state} recovery does no work after another recovery ${end} its effect`,async t=>{
