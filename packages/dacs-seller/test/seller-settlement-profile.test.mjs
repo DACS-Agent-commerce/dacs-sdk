@@ -18,7 +18,7 @@ import { SELLER_PRE_EFFECT_REFUSALS } from '../src/dacs/seller-http.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from '../src/dacs/session-admission.mjs';
 import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
-import { createSessionAdmissionFixture, FIXTURE_REGISTRY_PIN } from './helpers/session-admission-fixture.mjs';
+import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 
 let nextWallet=90;
 function key(){const tag=nextWallet++,privateKey=core.privateKeyFromSeed(new Uint8Array(32).fill(tag)),raw=Buffer.from(core.rawPublicKey(core.publicKeyFromSeed(new Uint8Array(32).fill(tag))));return{privateKey,address:'0x'+raw.toString('hex'),claim:'did:demos:agent:'+raw.toString('hex'),sign:bytes=>Buffer.from(core.ed25519Sign(bytes,privateKey)),signWallet:message=>'0x'+Buffer.from(core.ed25519Sign(Buffer.from(message),privateKey)).toString('hex')};}
@@ -639,60 +639,26 @@ test('a passing, counterparty-signed Vet record over another requirement is not 
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
-// DACS-2 v0.6 forbids a synthetic VerifyResult for a presence-only claim. The
-// seller counts it by replaying each Vet record over the exact bundle, with the
-// bundle's presentation verifier and the registry snapshot the operator pinned
-// for the job (PCR-6, CRQ-1).
-const presenceRequirement = (scheme) => ({ requirementVersion: '1', required: [{ scheme, verificationRequired: false }], preferredPresentation: 'any' });
-const presenceWorld = (t, scheme = 'did') => world(t, { listingChanges: (draft) => { draft.buyerRequirement = presenceRequirement(scheme); },
-  sellerRequirement: { requirementVersion: '1', required: [], preferredPresentation: 'any' } });
-const signPresence = async (w, admission = w.admission.sessionAdmission) => {
-  const agent = await w.agent(complete(w, { durableDirectory: w.dir(), sessionAdmission: admission, demDeliveryContext: w.chain.demDeliveryContext() }));
-  try { return await agent.receiveProposal(await w.proposalFor(w.vetted)); } finally { agent.close(); }
-};
-const pinReads = (w) => w.admission.calls.filter(([call]) => call === 'readSessionRecipeRegistryPin');
-
-test('a Vet record over a presence-only claim is counted in the authenticated bundle and the seller signs', async (t) => {
-  const w = await presenceWorld(t);
-  assert.equal((await signPresence(w)).disposition, 'complete');
-  assert.deepEqual(pinReads(w), [['readSessionRecipeRegistryPin', w.jobId]], 'the pin is read once for both records');
-});
-
-test('a Vet record over no required claim never reads the registry pin', async (t) => {
-  const w = await world(t);
-  assert.equal((await signPresence(w)).disposition, 'complete');
-  assert.deepEqual(pinReads(w), []);
-});
-
-test('a presence-only claim the bundle does not carry is refused although the record says pass', async (t) => {
-  const w = await presenceWorld(t, 'domain');
-  const answer = await signPresence(w);
-  assert.equal(answer.disposition, 'rejected');
-  assert.equal(answer.contribution, undefined);
-  assert.match(answer.reason, /^VET_RECORD_UNVERIFIED: buyer: the Vet record does not verify against its requirement \(invalid: aggregation-mismatch\)$/);
-});
-
-test('a presence-only requirement without a pinned registry authority is refused before the seller signs', async (t) => {
-  const w = await presenceWorld(t);
-  const { readSessionRecipeRegistryPin: _pin, ...withoutPin } = w.admission.sessionAdmission;
-  const answer = await signPresence(w, withoutPin);
-  assert.equal(answer.disposition, 'rejected');
-  assert.equal(answer.contribution, undefined);
-  assert.match(answer.reason, /^VET_RECORD_UNVERIFIED: buyer: the Vet requirement names a presence-only claim and no pinned registry authority was supplied$/);
-});
-
-test('a malformed registry pin is refused and an unavailable one is indeterminate, before the seller signs', async (t) => {
-  const w = await presenceWorld(t);
-  const huge = 'a'.repeat(128 * 1024);
-  const answers = { 'a pin that is not a hash': ['rejected', () => 'not-a-hash'], 'a pin object': ['rejected', () => ({ hash: FIXTURE_REGISTRY_PIN })],
-    'a reader that throws': ['indeterminate', () => { throw new Error('TEST registry is down'); }], 'an oversized reply': ['indeterminate', () => huge] };
-  for (const [label, [disposition, answerWith]] of Object.entries(answers)) {
-    w.admission.readRegistryPinWith(answerWith);
-    const answer = await signPresence(w);
-    assert.equal(answer.disposition, disposition, label);
-    assert.equal(answer.contribution, undefined, `${label}: no seller contribution is issued`);
-    assert.match(answer.reason, /^VET_RECORD_UNVERIFIED: /, label);
-  }
+// This agent has no authenticated job registry snapshot to replay presence.
+for (const placement of ['required', 'oneOf']) test(`presence-only ${placement} is refused before record reads or Agreement signatures`, async t => {
+  const member = { scheme: 'did', verificationRequired: false };
+  const requirement = { requirementVersion: '1', required: placement === 'required' ? [member] : [],
+    ...(placement === 'oneOf' ? { oneOf: [[member]] } : {}), preferredPresentation: 'any' };
+  const w = await world(t, { listingChanges: draft => { draft.buyerRequirement = requirement; } });
+  const config = complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext() }), signed = [];
+  const agent = await w.agent({ ...config, signer: { ...config.signer, sign: bytes => { signed.push(Buffer.from(bytes).toString()); return config.signer.sign(bytes); } } });
+  try {
+    const request = await w.proposalFor(w.vetted);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const answer = await agent.receiveProposal(request);
+      assert.equal(answer.disposition, 'rejected');
+      assert.equal(answer.contribution, undefined);
+      assert.match(answer.reason, /presence-only/);
+    }
+    assert.equal(signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
+    assert.equal(w.admission.calls.filter(([call]) => call === 'resolveVetRecord').length, 0);
+    assert.deepEqual(w.reached.filter(name => name !== 'resolveSeller'), []);
+  } finally { agent.close(); }
 });
 
 // A retained Vet context may have been kept under an earlier, weaker check, so
