@@ -288,3 +288,21 @@ test('removing session admission after signing refuses startup before replay',as
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);await agent.receiveProposal(body);agent.close();const signed=f.signed.length;
  f.config.sessionAdmission=null;await assert.rejects(f.open());assert.equal(f.signed.length,signed);
 });
+
+for(const boundary of ['resolveVetRecord','readVetAnchorReceipt','verifyVetAnchorReceipt','context','signature'])test(`live proposal recovery rechecks claimed context after ${boundary}`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true});let state=null,once=true;
+ if(boundary==='context'){const {createDemDeliveryContext}=await import('../src/dacs/dem-delivery-context-consumer.mjs');f.config.demDeliveryContext=createDemDeliveryContext({authority:'TEST-recovery-terminal-context',resolveBuyer:async()=>null,resolveSeller:async({jobId})=>{state='aborted-by-other';return{disposition:'present',value:structuredClone(f.contexts.get(jobId))};}});}
+ else if(boundary==='signature'){const sign=f.config.signer.sign;f.config.signer.sign=bytes=>{const signature=sign(bytes);if(Buffer.from(bytes).toString().startsWith('dacs-payee-bound-agreement:v1:'))state='aborted-by-other';return signature;};}
+ else{const read=f.admission.sessionAdmission[boundary];f.admission.sessionAdmission[boundary]=async(...args)=>{const value=await read(...args);if(once){once=false;state='aborted-by-other';}return value;};}
+ const agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body,'/dacs/v1/agreements/proposals',{contextSessionState:()=>state});
+ w.store.reserve(w.request,body);
+ await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
+ assert.equal(f.signed.filter(value=>value.startsWith('dacs-payee-bound-agreement:v1:')).length,boundary==='signature'?1:0);
+ assert.equal(agent.durableSessionOf(JOB)?.sellerContribution,undefined);assert.equal(w.store.reserve(w.request,body).disposition,'uncertain');
+});
+test('a claimed recovery check refuses an owner replaced before its signature',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
+ w.store.reserve(w.request,body);const first=w.store.claim(w.store.reserve(w.request,body),w.request);
+ w.store.claim(w.store.reserve(w.request,body),w.request);
+ assert.throws(()=>first.check(),{code:'peer_reconciliation_conflict'});
+});
