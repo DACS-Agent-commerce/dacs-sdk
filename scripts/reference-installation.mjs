@@ -307,16 +307,17 @@ export function referenceInstallation({ manifest: manifestBytes, lock, readArchi
       const reifyRequire = require('node:module').createRequire(reify);
       if (requireNpm.resolve('pacote') !== reifyRequire.resolve('pacote')) throw Error('pacote instance differs from npm reifier');
       const pacote = requireNpm('pacote');
-      const fetchManifest = pacote.manifest;
+      const fetchManifest = pacote.manifest, extract = pacote.extract;
       pacote.manifest = (spec, ...options) => {
         if (!requireNpm('npm-package-arg')(spec).registry) throw Error('non-registry dependency resolution: ' + spec);
         return fetchManifest(spec, ...options);
       };
-      const extract = pacote.extract;
       fs.writeFileSync(failuresFile, '');
       pacote.extract = async (...args) => {
-        try { return await extract.apply(pacote, args); }
-        catch (error) {
+        try {
+          if (!['remote', 'version', 'range', 'tag', 'alias'].includes(requireNpm('npm-package-arg')(args[0]).type)) throw Error('non-registry archive extraction: ' + args[0]);
+          return await extract.apply(pacote, args);
+        } catch (error) {
           fs.appendFileSync(failuresFile, JSON.stringify({ spec: args[0], resolved: args[2]?.resolved,
             code: error.code, message: error.message }) + '\\n');
           throw error;
