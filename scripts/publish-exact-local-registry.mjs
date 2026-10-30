@@ -3,14 +3,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { Agent } from "node:http";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { gunzipSync } from "node:zlib";
 
-// The acceptance workflow installs exactly this npm client before publishing.
+// Future acceptance workflows must install exactly this npm client before publishing.
 export const PINNED_ACCEPTANCE_NPM_VERSION = "11.19.0";
 
 const MAX_ARCHIVE_BYTES = 16 * 1024 * 1024;
@@ -18,109 +18,85 @@ const MAX_TAR_BYTES = 64 * 1024 * 1024;
 const MAX_JSON_BYTES = 1024 * 1024;
 const REGISTRY_TIMEOUT_MS = 15_000;
 const TAR_BLOCK_BYTES = 512;
-// mode, uid, gid, mtime, devmajor, devminor in a ustar header.
-const TAR_METADATA_NUMBER_FIELDS = [[100, 8], [108, 8], [116, 8], [136, 12], [329, 8], [337, 8]];
+// Closed npm-pack header shapes; every byte after the name is covered.
+const NUL = /^\0+$/, OCTAL_10 = /^[0-7]{10} \0$/;
+const HEADER_FIELDS = [
+  [100, 8, /^000[0-7]{3} \0$/], [108, 16, NUL], [124, 12, OCTAL_10], [136, 12, OCTAL_10],
+  [148, 8, /^[0-7]{6} \0$/], [156, 1, /^0$/], [157, 100, NUL], [257, 8, /^ustar\x0000$/],
+  [265, 64, NUL], [329, 16, /^(?:000000 \0){2}$/], [345, 167, NUL],
+];
+const PACKAGE_PATH = /^package(?:\/[A-Za-z0-9_@+.-]*[A-Za-z0-9_@+-])+$/;
+const RESERVED_NAME = /\/(?:con|prn|aux|nul|com\d|lpt\d)(?:\.[^/]*)?(?:\/|$)/i;
 const MAX_PACKAGE_NAME_LENGTH = 214;
 const MAX_VERSION_LENGTH = 256;
 // Metadata fields npm registries may add without changing the packed manifest.
 const NPM_ADDED_FIELDS = new Set(["_id", "_nodeVersion", "_npmVersion", "_npmUser"]);
 const NPM_ADDED_DIST_FIELDS = ["integrity", "shasum", "tarball"];
 
-// Compose npm tar's Windows character encoding and Unicode case folding so files,
-// explicit directories and implicit parents share one cross-platform comparison key.
-function archivePathKey(name) {
-  return name.replace(/\/$/, "")
-    .replace(/[|<>?:]/g, character => String.fromCodePoint(0xf000 + character.codePointAt(0)))
-    .normalize("NFD").toLocaleLowerCase("en").toLocaleUpperCase("en").normalize("NFD");
+function packedHeader(header) {
+  for (const [start, length, shape] of HEADER_FIELDS) {
+    const field = header.subarray(start, start + length).toString("latin1");
+    // Compare the whole match too: JavaScript's $ permits a final newline.
+    if (shape.exec(field)?.[0].length !== length) throw new Error("packed tarball has a noncanonical header field");
+  }
+  const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
+  if (Number.parseInt(header.toString("latin1", 148, 156), 8) !== checksum) {
+    throw new Error("packed tarball has an invalid checksum");
+  }
+  const name = header.toString("latin1", 0, 100).replace(/\0+$/, "");
+  if (PACKAGE_PATH.exec(name)?.[0] !== name || RESERVED_NAME.test(name)) {
+    throw new Error("packed tarball has an unsupported path (canonical ASCII npm-pack paths required)");
+  }
+  return { name, size: Number.parseInt(header.toString("latin1", 124, 136), 8) };
 }
 
-// Reads the sole regular package/package.json from a bounded gzip + ustar
-// archive. Throws for malformed framing, ambiguous paths or unsupported types.
-export function readPackedManifest(tarball) {
-  if (tarball.length > MAX_ARCHIVE_BYTES) throw new Error("packed archive exceeded byte limit");
-  const archive = gunzipSync(tarball, { maxOutputLength: MAX_TAR_BYTES });
+function packedManifest(body) {
+  if (body.length > MAX_JSON_BYTES) throw new Error("packed manifest exceeded byte limit");
   let manifest;
-  const entries = new Map();
-  const directories = new Set();
-  let terminated = false;
-  for (let offset = 0; offset + TAR_BLOCK_BYTES <= archive.length;) {
-    const header = archive.subarray(offset, offset + TAR_BLOCK_BYTES);
-    if (header.every(byte => byte === 0)) {
-      if (archive.length - offset < TAR_BLOCK_BYTES * 2 ||
-          archive.length % TAR_BLOCK_BYTES || archive.subarray(offset).some(byte => byte !== 0)) {
-        throw new Error("packed tarball has a malformed trailer");
-      }
-      terminated = true;
-      break;
-    }
-    const field = (start, length) => header.subarray(start, start + length).toString("utf8").replace(/\0.*$/s, "");
-    const pathField = (start, length) => {
-      const bytes = header.subarray(start, start + length);
-      const terminator = bytes.indexOf(0);
-      if (terminator !== -1 && bytes.subarray(terminator).some(byte => byte !== 0)) {
-        throw new Error("packed tarball has nonzero path padding");
-      }
-      return field(start, length);
-    };
-    const octal = (start, length) => {
-      const text = field(start, length).trim();
-      if (!/^[0-7]+$/.test(text)) throw new Error("packed tarball has a malformed entry size or checksum");
-      return Number.parseInt(text, 8);
-    };
-    const checksum = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
-    // node-tar reads 12 checksum bytes: terminate before it reaches the typeflag.
-    if (!/^ *[0-7]+[\0 ]/.test(header.subarray(148, 156).toString("utf8")) ||
-        octal(148, 8) !== checksum || !header.subarray(257, 265).equals(Buffer.from("ustar\0" + "00"))) {
-      throw new Error("packed tarball has an invalid ustar header or checksum");
-    }
-    // node-tar can skip invalid base256 headers and read their bodies as entries.
-    for (const [start, length] of TAR_METADATA_NUMBER_FIELDS) {
-      const bytes = header.subarray(start, start + length);
-      const octalMetadata = /^ *[0-7]+[\0 ]*$/.exec(bytes.toString("latin1"));
-      if (!bytes.every(byte => byte === 0) && octalMetadata?.[0].length !== length) {
-        throw new Error("packed tarball has an invalid numeric metadata field");
-      }
-    }
-    const prefix = pathField(345, 155);
-    const name = (prefix ? prefix + "/" : "") + pathField(0, 100);
-    const size = octal(124, 12);
-    const type = field(156, 1);
-    const body = offset + TAR_BLOCK_BYTES;
-    const end = body + Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
-    if (!Number.isSafeInteger(size) || end > archive.length) throw new Error("packed tarball has a truncated entry");
-    // Reject links and path-override extensions instead of guessing extraction semantics.
-    if (header.subarray(157, 257).some(byte => byte !== 0) ||
-        !["0", "", "5"].includes(type) || name.includes("\\") || name.includes(":") ||
-        !(name.startsWith("package/") || (name === "package" && type === "5")) ||
-        (type === "5" ? size !== 0 : name.endsWith("/")) ||
-        name.replace(/\/$/, "").split("/").some(part => !part || /[. ]$/.test(part))) {
-      throw new Error("packed tarball has an unsupported entry type or path");
-    }
-    // Compare extraction aliases without changing the archive bytes being certified.
-    const normalized = archivePathKey(name);
-    const parents = normalized.split("/").slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join("/"));
-    if (entries.has(normalized) || (type !== "5" && directories.has(normalized)) ||
-        parents.some(parent => entries.has(parent) && entries.get(parent) !== "5")) {
-      throw new Error("packed tarball has duplicate or conflicting paths");
-    }
-    entries.set(normalized, type);
-    for (const parent of parents) directories.add(parent);
-    if (name.replace(/\/$/, "") === "package/package.json") {
-      if (manifest !== undefined || type === "5") throw new Error("packed tarball must have exactly one regular manifest");
-      if (size > MAX_JSON_BYTES) throw new Error("packed manifest exceeded byte limit");
-      try {
-        manifest = JSON.parse(archive.subarray(body, body + size).toString("utf8"));
-      } catch (cause) { throw new Error("packed tarball has an invalid manifest JSON", { cause }); }
-      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-        throw new Error("packed tarball manifest must be an object");
-      }
-    }
-    offset = end;
+  try {
+    manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body));
+  } catch (cause) { throw new Error("packed tarball has an invalid manifest JSON", { cause }); }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error("packed tarball manifest must be an object");
   }
-  if (!terminated) throw new Error("packed tarball has no complete trailer");
-  if (manifest === undefined) throw new Error("packed tarball has no package/package.json");
   return manifest;
 }
+
+// Returns the sole manifest and a map of exact file bodies. Throws unless the
+// bounded gzip archive uses the canonical npm-pack subset, with unambiguous paths.
+export function readPackedArchive(tarball) {
+  if (tarball.length > MAX_ARCHIVE_BYTES) throw new Error("packed archive exceeded byte limit");
+  let archive;
+  try { archive = gunzipSync(tarball, { maxOutputLength: MAX_TAR_BYTES }); }
+  catch (cause) { throw new Error("packed tarball cannot be decompressed within byte limit", { cause }); }
+  const limit = archive.length - 2 * TAR_BLOCK_BYTES;
+  if (limit < 0 || archive.length % TAR_BLOCK_BYTES || archive.subarray(limit).some(byte => byte !== 0)) {
+    throw new Error("packed tarball has a malformed trailer");
+  }
+  const files = new Map(), entries = new Set(), directories = new Set();
+  let manifest;
+  for (let offset = 0; offset < limit;) {
+    const { name, size } = packedHeader(archive.subarray(offset, offset + TAR_BLOCK_BYTES));
+    const body = offset + TAR_BLOCK_BYTES, end = body + Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES;
+    if (end > limit) throw new Error("packed tarball has a truncated entry");
+    if (archive.subarray(body + size, end).some(byte => byte !== 0)) throw new Error("packed tarball has nonzero body padding");
+    const key = name.toLowerCase(), parts = key.split("/");
+    const parents = parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/"));
+    if (entries.has(key) || directories.has(key) || parents.some(parent => entries.has(parent))) {
+      throw new Error("packed tarball has duplicate or conflicting paths");
+    }
+    entries.add(key); for (const parent of parents) directories.add(parent);
+    const bytes = archive.subarray(body, body + size);
+    files.set(name, bytes);
+    if (name === "package/package.json") manifest = packedManifest(bytes);
+    offset = end;
+  }
+  if (manifest === undefined) throw new Error("packed tarball has no package/package.json");
+  return { manifest, files };
+}
+
+// Reads the sole object manifest, throwing for unsupported or ambiguous archives.
+export function readPackedManifest(tarball) { return readPackedArchive(tarball).manifest; }
 
 function readArchive(archivePath) {
   const descriptor = openSync(archivePath, "r");
@@ -139,7 +115,7 @@ function readArchive(archivePath) {
 
 function loopbackRegistry(registryValue) {
   const registry = new URL(registryValue);
-  if (registry.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(registry.hostname)) {
+  if (registry.username || registry.password || registry.search || registry.hash || registry.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(registry.hostname)) {
     throw new Error("exact local publisher only accepts a loopback HTTP registry");
   }
   return registry;
@@ -154,16 +130,16 @@ export function loadPinnedLibnpmpublish({
   npm = args => execFileSync("npm", args, { encoding: "utf8" }).trim(),
   pinned = PINNED_ACCEPTANCE_NPM_VERSION,
 } = {}) {
-  const fail = detail => {
+  const fail = (detail, cause) => {
     throw new Error(`exact local publisher requires the pinned npm ${pinned} (install it with ` +
-      `\`npm install --global npm@${pinned}\`): ${detail}`);
+      `\`npm install --global npm@${pinned}\`): ${detail}`, { cause });
   };
   let version;
   let root;
   try {
     version = npm(["--version"]);
     root = npm(["root", "--global"]);
-  } catch (error) { fail(`npm is not runnable (${error instanceof Error ? error.message : String(error)})`); }
+  } catch (error) { fail(`npm is not runnable (${error instanceof Error ? error.message : String(error)})`, error); }
   if (version !== pinned) fail(`npm --version reports ${JSON.stringify(version)}`);
   const npmPackage = path.join(root, "npm", "package.json");
   if (!existsSync(npmPackage)) fail(`no npm package at ${npmPackage}`);
@@ -294,7 +270,9 @@ function verifyManifestMetadata(packument, manifest) {
 
 async function verifyCandidate(registry, manifest, tarball, fetchImpl) {
   const bytes = await registryBytes(packumentUrl(registry, manifest.name), fetchImpl, MAX_JSON_BYTES, "application/json");
-  const packument = JSON.parse(bytes.toString("utf8"));
+  let packument;
+  try { packument = JSON.parse(bytes.toString("utf8")); }
+  catch (cause) { throw new Error("local registry has invalid packument JSON", { cause }); }
   const publishedVersions = packument?.versions;
   const versions = publishedVersions && typeof publishedVersions === "object" && !Array.isArray(publishedVersions)
     ? Object.keys(publishedVersions) : [];
@@ -313,7 +291,7 @@ async function verifyCandidate(registry, manifest, tarball, fetchImpl) {
   verifyManifestMetadata(packument, manifest);
   if (packument["dist-tags"]?.acceptance !== manifest.version) throw new Error("local registry acceptance tag does not match candidate");
   let tarballUrl;
-  try { tarballUrl = new URL(dist.tarball); } catch { throw new Error("local registry has an invalid tarball URL"); }
+  try { tarballUrl = new URL(dist.tarball); } catch (cause) { throw new Error("local registry has an invalid tarball URL", { cause }); }
   if (typeof dist.tarball !== "string" || tarballUrl.origin !== registry.origin || tarballUrl.username || tarballUrl.password) {
     throw new Error("local registry tarball URL must stay on the registry origin without credentials");
   }
@@ -355,11 +333,13 @@ export async function publishExactLocalRegistry({ archivePath, registry: registr
   return verifyCandidate(registry, manifest, tarball, fetchImpl);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// A symlink is a valid CLI entry, while importing with a non-file argv is safe.
+function isCommandLine() {
+  try { return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url); }
+  catch { return false; }
+}
+if (isCommandLine()) {
   const [archivePath, registry] = process.argv.slice(2);
   const token = process.env.DACS_LOCAL_REGISTRY_TOKEN;
-  if (!archivePath || !registry || !token) {
-    throw new Error("usage: DACS_LOCAL_REGISTRY_TOKEN=<token> publish-exact-local-registry.mjs <archive> <registry>");
-  }
   await publishExactLocalRegistry({ archivePath, registry, token, publish: loadPinnedLibnpmpublish() });
 }
