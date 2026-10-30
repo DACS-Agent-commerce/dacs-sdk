@@ -57,6 +57,11 @@ const WINDOWS_PATH_CHARACTERS = new Map([
   ["|", "\uf07c"], ["<", "\uf03c"], [">", "\uf03e"], ["?", "\uf03f"], [":", "\uf03a"],
 ]);
 const windowsPath = (character: string) => WINDOWS_PATH_CHARACTERS.get(character) ?? character;
+const numericMetadataFields = [
+  { field: "mode", start: 100, length: 8 }, { field: "uid", start: 108, length: 8 },
+  { field: "gid", start: 116, length: 8 }, { field: "size", start: 124, length: 12 }, { field: "mtime", start: 136, length: 12 },
+  { field: "devmajor", start: 329, length: 8 }, { field: "devminor", start: 337, length: 8 },
+];
 
 function candidate(name = "@kynesyslabs/dacs", version = "0.1.0-test") {
   const directory = tempDirectory("dacs-local-publish-");
@@ -621,11 +626,6 @@ describe("exact local registry publisher", () => {
     expect(registry.calls).toHaveLength(0);
   });
 
-  const numericMetadataFields = [
-    { field: "mode", start: 100, length: 8 }, { field: "uid", start: 108, length: 8 },
-    { field: "gid", start: 116, length: 8 }, { field: "size", start: 124, length: 12 }, { field: "mtime", start: 136, length: 12 },
-    { field: "devmajor", start: 329, length: 8 }, { field: "devminor", start: 337, length: 8 },
-  ];
   it.each(numericMetadataFields.flatMap(field => [0x81, 0x80, 0xff, 0x39].map(byte => ({ ...field, byte }))))(
     "rejects a smuggled manifest behind an invalid numeric $field header ($byte) before publishing", async ({ start, byte }) => {
       const { archivePath } = candidate();
@@ -645,19 +645,6 @@ describe("exact local registry publisher", () => {
         .rejects.toThrow(/packed tarball/);
       expect(registry.calls).toHaveLength(0);
     });
-
-  it.each(["all NUL", "octal", "space-padded octal"])("refuses noncanonical numeric tar metadata encoded as %s", encoding => {
-    const manifest = { name: "example", version: "1.0.0" };
-    const archive = gunzipSync(packTarball({ "package/package.json": JSON.stringify(manifest) }));
-    for (const { start, length } of numericMetadataFields) {
-      archive.fill(0, start, start + length);
-      if (encoding !== "all NUL") archive.write(encoding === "octal" ? "0000644\0" : " 644\0  ", start);
-    }
-    archive.fill(32, 148, 156);
-    const checksum = archive.subarray(0, 512).reduce((sum, byte) => sum + byte, 0);
-    archive.write(checksum.toString(8).padStart(6, "0") + " \0", 148);
-    expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
-  });
 
   it.each([0, 345].flatMap(start => ["\n", "\r", "\u2028", "\u2029", "hidden"].map(suffix => ({ start, suffix }))))(
     "rejects nonzero padding after a NUL in tar path field $start ($suffix)", ({ start, suffix }) => {
@@ -814,6 +801,50 @@ function hiddenArchive() {
   }));
 }
 describe("canonical packed archive", () => {
+  const numericFields = [...numericMetadataFields, { field: "checksum", start: 148, length: 8 }];
+  it.each(numericMetadataFields.flatMap(field => ["space+NUL", "NUL", "empty"].map(encoding => ({ ...field, encoding }))))(
+    "accepts node-tar $field zero/empty encoding $encoding", ({ start, length, encoding }) => {
+      const manifest = { name: "example", version: "1.0.0" };
+      const archive = gunzipSync(packTarball({ "package/empty": "", "package/package.json": JSON.stringify(manifest) }));
+      archive.fill(0, start, start + length);
+      if (encoding !== "empty") archive.write("0".repeat(length - (encoding === "NUL" ? 1 : 2)) + (encoding === "NUL" ? "\0" : " \0"), start);
+      repairChecksum(archive.subarray(0, 512));
+      const result = readPackedArchive(gzipSync(archive));
+      expect(result.manifest).toEqual(manifest);
+      expect(result.files.get("package/empty")).toEqual(Buffer.alloc(0));
+    });
+  it("accepts the exact seven-digit mode 0000644 followed by NUL", () => {
+    const archive = gunzipSync(packTarball({ "package/package.json": '{"name":"example","version":"1.0.0"}' }));
+    archive.write("0000644\0", 100); repairChecksum(archive.subarray(0, 512));
+    expect(readPackedManifest(gzipSync(archive))).toEqual({ name: "example", version: "1.0.0" });
+  });
+  it.each(numericFields.flatMap(field => ["space+NUL", "NUL"].map(encoding => ({ ...field, encoding }))))(
+    "accepts node-tar $field nonzero encoding $encoding", ({ field, start, length, encoding }) => {
+      const manifest = { name: "example", version: "1.0.0" }, text = JSON.stringify(manifest);
+      const archive = gunzipSync(packTarball({ "package/package.json": text }));
+      const value = field === "size" ? Buffer.byteLength(text) : field === "checksum" ? Number.parseInt(archive.toString("latin1", 148, 156), 8) : 0o777777;
+      archive.write(value.toString(8).padStart(length - (encoding === "NUL" ? 1 : 2), "0") + (encoding === "NUL" ? "\0" : " \0"), start);
+      if (field !== "checksum") repairChecksum(archive.subarray(0, 512));
+      expect(readPackedManifest(gzipSync(archive))).toEqual(manifest);
+    });
+  it.each(numericFields.flatMap(field => ["non-octal", "base-256", "overlong", "leading space", "embedded NUL", "newline"].map(encoding => ({ ...field, encoding }))))(
+    "refuses malformed $field encoding $encoding", ({ field, start, length, encoding }) => {
+      const archive = hiddenArchive();
+      const header = archive.subarray(1024, 1536);
+      const value = encoding === "non-octal" ? "9" + "0".repeat(length - 2) + "\0"
+        : encoding === "base-256" ? "\x80" + "\0".repeat(length - 1)
+        : encoding === "overlong" ? "0".repeat(length)
+        : encoding === "leading space" ? " " + "0".repeat(length - 2) + "\0"
+        : encoding === "embedded NUL" ? "0\0" + "0".repeat(length - 3) + "\0"
+        : "0".repeat(length - 2) + "\n\0";
+      header.write(value, start, length, "latin1");
+      if (field !== "checksum") repairChecksum(header);
+      expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
+    });
+  it.each(["\0".repeat(8), "0000000\0", "000000 \0"])("refuses an empty or zero checksum %j", value => {
+    const archive = hiddenArchive(); archive.write(value, 1024 + 148);
+    expect(() => readPackedManifest(gzipSync(archive))).toThrow(/checksum/);
+  });
   it.each(sizeLeads)("refuses a hidden manifest behind size lead %s before publication", async lead => {
     const archive = hiddenArchive();
     const header = archive.subarray(1024, 1536);
@@ -888,14 +919,18 @@ describe("canonical packed archive", () => {
     chmodSync(join(directory,"package.json"),0o644);
     execFileSync(process.execPath,[npmEntry,"pack","--ignore-scripts","--json"],{cwd:directory,stdio:"pipe",timeout:30_000});
     const bytes = readFileSync(join(directory,"example-1.0.0.tgz"));
-    const actual = gunzipSync(bytes).subarray(0,512);
-    const expected = gunzipSync(packTarball({ "package/package.json": text })).subarray(0,512);
-    actual.copy(expected,136,136,148); repairChecksum(expected);
-    expect(expected).toEqual(actual);
     const result = readPackedArchive(bytes);
     expect(result.manifest).toEqual(JSON.parse(text));
     expect(result.files).toEqual(new Map([["package/package.json",Buffer.from(text)]]));
   },45_000);
+  it.runIf(npmRequire("../package.json").version === PINNED_ACCEPTANCE_NPM_VERSION)(
+    `reads a real package packed with pinned npm ${PINNED_ACCEPTANCE_NPM_VERSION}`, () => {
+      const directory = tempDirectory("pinned-npm-pack-");
+      const manifest = { name: "example", version: "1.0.0" };
+      writeFileSync(join(directory, "package.json"), JSON.stringify(manifest));
+      execFileSync(process.execPath, [npmEntry, "pack", "--ignore-scripts", "--json"], { cwd: directory, stdio: "pipe", timeout: 30_000 });
+      expect(readPackedManifest(readFileSync(join(directory, "example-1.0.0.tgz")))).toEqual(manifest);
+    }, 45_000);
   it("publishes through a symlink CLI and safely imports with a missing argv file", async () => {
     const { archivePath, bytes, name, version } = candidate();
     const directory = tempDirectory("publisher-cli-");
