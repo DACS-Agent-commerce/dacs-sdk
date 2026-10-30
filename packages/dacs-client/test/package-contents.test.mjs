@@ -144,8 +144,8 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       const forbidden = () => { throw new Error('host observations cannot authorize a write'); };
       const chain = { network: 'testnet', pinnedIdentity: identity,
         networkIdentity: async () => ({ identity, mode: 'public-chain-read' }),
-        observeTransfer: async () => ({ status: 'included', txHash: hash, payer: wallet, payee, amountOs: '1', blockNumber: 10 }),
-        getTransaction: async () => ({ hash, status: 'confirmed', blockNumber: 10, content: { from: wallet, nonce: 1 } }) };
+        observePassiveTransfer: async () => ({ status: 'included', txHash: hash, payer: wallet, payee, amountOs: '1', blockNumber: 10 }),
+        observeTransfer: forbidden, getTransaction: forbidden };
       // Deliberately mis-scoped host seam: the installed client must check ownership.
       let secondaryReads = 0;
       const ops = { get: (_account, id) => id === 'first' ? saved : null,
