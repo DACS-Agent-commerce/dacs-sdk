@@ -844,6 +844,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }, write);
   }
 
+  function releaseFinalizedSignatureCommitment(session, jobId) {
+    // Only this job's finalized commitment, authenticated with both Agreement signatures, frees the slot.
+    // Reservation and session save are separate writes, so no saved marker is needed.
+    if (commitOnSignature || session.signatureCommitmentAttempt) durable.releaseSignatureCommitment(session.buyerBundle.presentedBy, jobId);
+  }
+
   // ---- DACS-3: finalized commitment (orchestrator) ----
   // `readbackOnly` is internal (never an HTTP body field): a retained
   // commitment is authenticated again, but an absent one is never published.
@@ -915,9 +921,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       session.agreementSignedProjection = structuredClone(signedProjection);
       session.signatureCommitmentAttempt = true;
     }
-    // This job's authenticated readback releases its buyer slot even without a
-    // saved marker: the reservation and the session save are separate writes.
-    if (!early && (commitOnSignature || session.signatureCommitmentAttempt)) durable.releaseSignatureCommitment(session.buyerBundle.presentedBy, jobId);
     persist(session);
     let finalized;
     let nativeCommitmentProjection;
@@ -991,7 +994,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       adopted.agreement=agreement;adopted.agreementRef=agreementRef;
       if(native)adopted.agreementAnchor=nativeAgreementView(native);
       if(adopted.stage==='proposed')adopted.stage='committed';
-      retainCommitmentPhase(adopted,retained,false);persist(adopted);Object.assign(session,adopted);
+      retainCommitmentPhase(adopted,retained,false);
+      releaseFinalizedSignatureCommitment(adopted, jobId);
+      persist(adopted);Object.assign(session,adopted);
       return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
     }
     // A conflicting or out-of-order phase must not change the live session:
@@ -1006,6 +1011,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // time may be later within the same millisecond/second and cannot replace
     // that finalized fact in the SDK SessionRecord.
     retainCommitmentPhase(adopted, finalized, false);
+    releaseFinalizedSignatureCommitment(adopted, jobId);
     persist(adopted);
     Object.assign(session, adopted);
     return { status: 'committed', address: finalized.logicalAddress, resumed: finalized.resumed, ...(native ? { agreementAnchor: nativeAgreementView(native) } : {}) };
