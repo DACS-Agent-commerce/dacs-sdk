@@ -381,7 +381,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
   }
   for (const session of durable?.sessions() ?? []) await restore(session);
-  const recoveryCall = (fn) => durable ? (input) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
+  const recoveryCall = (fn) => durable ? (input, {transport}={}) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
+    transport?.check();
     const jobId = input?.transportIdentity?.jobId ?? input?.jobId;
     sessions.delete(jobId);
     await restore(session);
@@ -393,7 +394,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // would have raised, not an uncertain outcome.
     if (error.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     throw error;
-  }) : fn;
+  }) : (input,{transport}={})=>{transport?.check();return fn(input);};
 
   const sessionFor = (jobId) => {
     const session = sessions.get(jobId);
