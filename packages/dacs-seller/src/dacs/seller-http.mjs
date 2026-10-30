@@ -51,7 +51,7 @@ const paymentPending = (answer) => answer?.status === 'held' || (answer?.status 
   (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
 
 const ROUTES = {
-  '/dacs/v1/agreements/proposals': (agent, body) => agent.receiveProposal(body),
+  '/dacs/v1/agreements/proposals': (agent, body, options) => agent.receiveProposal(body, options),
   '/dacs/v1/agreements/state': (agent, body) => agent.agreementState(body.transportIdentity),
   '/dacs/v1/commitments': (agent, body) => agent.commit(body),
   '/dacs/v1/payments': (agent, body) => agent.submitPayment(body),
@@ -198,7 +198,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           reservation = resumed;
         }
       }
-      const answer = await route(agent, body);
+      const transport=authentication&&!contextStep?{check:()=>authentication.store.assertPending(reservation)}:undefined;
+      const answer = await route(agent, body, {transport});
       const text = JSON.stringify(answer);
       // A resumed context step has written before: no answer of it deletes its records.
       const payment = req.url === PAYMENT_PATH;
