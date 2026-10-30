@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -136,6 +137,14 @@ for(const kind of ['object','oversized','malformed'])test(`wallet lookup refuses
  const f=await sessionFixture(t),outcome=retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
  f.config.wallet.reconcilePresentationSignature=async()=>kind==='object'?outcome():Buffer.from(kind==='oversized'?' '.repeat(4097):'{');
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);
+});
+test('wallet lookup accepts genuine receipt bytes from another realm',async t=>{
+ const f=await sessionFixture(t),outcome=retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
+ // A worker or vm-based wallet adapter returns a Uint8Array whose prototype
+ // belongs to a different realm, which a plain instanceof refuses.
+ const foreignBytes=vm.runInNewContext('value=>new Uint8Array(value)',{});
+ f.config.wallet.reconcilePresentationSignature=async()=>foreignBytes(Array.from(reply(outcome())));
+ const bundle=await f.run();assert.equal(bundle.presentation.signatures[0].signature,outcome().signature);assert.equal(f.controls.signs,1);
 });
 test('wallet lookup keeps its connection error as the cause',async t=>{
  const f=await sessionFixture(t);retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
