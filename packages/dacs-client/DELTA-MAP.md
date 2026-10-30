@@ -2498,6 +2498,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record rebuilt integration contract | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record rebuilt integration contract | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record rebuilt integration contract | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 retain compact integration records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
