@@ -81,4 +81,3 @@ d231c7d11170fe27dfa85f701c9893b10716708e:packages/dacs-seller/test/seller-policy
 5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:830
 5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/seller-policy-delivery-evidence.test.mjs:generic-api-key:903
 5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/test/showcase-ledger-integration.test.mjs:generic-api-key:77
-3a414b312ce5312eb605e7cbe44c21e750445361:packages/dacs-client/test/portal-capability.test.mjs:generic-api-key:204
