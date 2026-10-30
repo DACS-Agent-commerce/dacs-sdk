@@ -14,7 +14,7 @@ export async function stagedProvider(config){
   const file=ts.createSourceFile('vet.mjs',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);
   const factory=file.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='createDevnetDemoAgreementContextProvider');
   if(!factory?.body)throw new Error('TEST staged factory missing');
-  const returned=factory.body.statements.filter(ts.isReturnStatement).at(-1),members='jobVet,sellerSession,produceSeller,state';
+  const returned=factory.body.statements.filter(ts.isReturnStatement).at(-1),members='jobVet:(s,b,o)=>admit(s,b).then(a=>a.refused?a:jobVet(s,b,o,a.ticket)),sellerSession,produceSeller,state';
   return returned?source.slice(0,returned.getStart(file))+`return {...(${returned.expression.getText(file)}),${members}};`+source.slice(returned.end)
    :source.slice(0,factory.body.end-1)+`return {${members}};\n`+source.slice(factory.body.end-1);
  });
