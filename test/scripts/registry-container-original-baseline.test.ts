@@ -38,6 +38,14 @@ const summaryBytes = readFileSync(join(fixtureRoot, "acceptance-summary.json"), 
 const recordedSummary = freeze(JSON.parse(summaryBytes));
 const provenance = JSON.parse(readFileSync(join(fixtureRoot, "provenance.json"), "utf8"));
 
+// The selected historical lock omits its eight root dependencies. Explicit
+// simulations give those packages leaf records rather than claim a real install.
+const simulatedRootPackages = freeze(Object.fromEntries(Object.entries(
+  JSON.parse(recordedSources["generated-package-lock.json"] ?? "").packages[""].dependencies as Record<string, string>,
+).map(([name, version]) => [`node_modules/${name}`, { version,
+  // Model a required runtime path so missing-package cases exercise closure.
+  ...(name === "@kynesyslabs/dacs" ? { dependencies: { minipass: "7.1.3" } } : {}),
+}])));
 // Explicit synthetic observation, independent of every scenario's lock. These
 // versions model the selected closure with optional packages omitted, not a run.
 type ImageEntry = { name: string; version: string; location: string };
@@ -48,7 +56,8 @@ const simulatedInventory = freeze({ schema: "dacs-runtime-image-inventory/v1", p
   ["cacache", "21.0.1"], ["make-fetch-happen", "16.0.1"], ["minipass", "7.1.3"],
   ["minipass-fetch", "6.0.0"], ["proc-log", "7.0.0"], ["semver", "7.8.5"],
   ["sigstore", "5.0.0"], ["ssri", "14.0.0"], ["tuf-js", "6.0.0"], ["typescript", "5.9.2"],
-] as const).map(([name, version]): ImageEntry => ({ name, version, location: `node_modules/${name}` })) });
+] as const).map(([name, version]): ImageEntry => ({ name, version, location: `node_modules/${name}` }))
+  .concat(Object.entries(simulatedRootPackages).map(([location, entry]) => ({ name: location.slice("node_modules/".length), version: entry.version, location }))) });
 function projection(overrides: Partial<Sources> = {}) {
   const sources: Sources = { ...recordedSources, ...overrides };
   const summary = structuredClone(recordedSummary);
@@ -57,7 +66,8 @@ function projection(overrides: Partial<Sources> = {}) {
   return summary;
 }
 function simulation(overrides: Partial<Sources> = {}) {
-  const summary = projection({ "runtime-image-inventory.json": JSON.stringify(simulatedInventory), ...overrides });
+  const summary = projection({ "generated-package-lock.json": withLock(() => {}),
+    "runtime-image-inventory.json": JSON.stringify(simulatedInventory), ...overrides });
   summary.audit.directAdvisories = []; // Explicit synthetic transitive-only assumption.
   return summary;
 }
@@ -70,6 +80,7 @@ type LockEntry = { version?: string; integrity?: string; dev?: boolean; optional
   engines?: { node?: string; npm?: string }; dependencies?: Record<string, string> };
 function withLock(edit: (packages: Record<string, LockEntry>) => void) {
   const value = JSON.parse(recordedSources["generated-package-lock.json"] ?? "");
+  Object.assign(value.packages, structuredClone(simulatedRootPackages));
   edit(value.packages);
   return JSON.stringify(value);
 }
@@ -113,6 +124,15 @@ describe("original container evidence and explicit simulations", () => {
       lockSbom: "baseline", physicalSbom: "baseline", audit: "baseline" } });
     expect(disposition(simulation()).message).toContain("production publication remains blocked");
     expect(registryContainerDisposition(simulation(), baseline, { packageVersion: "0.1.1" }).exitCode).toBe(1);
+  });
+
+  it("blocks the recorded lock's unresolved root dependencies even with an explicit image", () => {
+    const summary = projection({ "runtime-image-inventory.json": JSON.stringify(simulatedInventory) });
+    summary.audit.directAdvisories = [];
+    const names = Object.keys(JSON.parse(recordedSources["generated-package-lock.json"] ?? "").packages[""].dependencies);
+    expect(summary.securityGate.findings.productionImageInventory).toMatchObject({ scanComplete: false,
+      errors: names.map(name => `unresolved required dependency ${name} from <root>`) });
+    expect(disposition(summary)).toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
   });
 
   it("keeps original bytes and summary unchanged across independent repeated scenarios", () => {
