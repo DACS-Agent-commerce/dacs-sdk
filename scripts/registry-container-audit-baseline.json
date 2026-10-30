@@ -56,6 +56,7 @@
     "GHSA-fjxv-7rqg-78g4",
     "GHSA-fvcv-3m26-pcqx",
     "GHSA-fx83-v9x8-x52w",
+    "GHSA-gcqx-w48m-w2h4",
     "GHSA-gvwx-54wh-qm9j",
     "GHSA-hfxv-24rg-xrqf",
     "GHSA-hhf6-3xpg-pggx",
@@ -80,6 +81,7 @@
     "GHSA-q6x5-8v7m-xcrf",
     "GHSA-qffp-2rhf-9h96",
     "GHSA-qpx9-hpmf-5gmw",
+    "GHSA-qr28-fpjm-wq7f",
     "GHSA-r292-9mhp-454m",
     "GHSA-r4gj-5m52-g5wh",
     "GHSA-r6q2-hw4h-h46w",
@@ -349,6 +351,25 @@
             "finding": "GHSA-mrhx-c7xc-m3w5",
             "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
             "reason": "The transitive path is @x402/core 2.15.0 -> zod ^3.24.2 (3.25.76). Oversized constrained collections can exhaust memory. The corrected zod 4.6.6 is outside the selected parent range; a compatible x402 parent update is required. Direct high/critical results remain blocking."
+          }
+        ]
+      },
+      {
+        "commit": "442164bcc70f66c348fb6eae2bd77bcba2ccc601",
+        "job": "fresh packed consumer dependency check",
+        "evidence": "Independent fresh lock and audit with Node 20.19.1 / npm 11.19.0 using the packed SDK and Node host. The virtual lock tree is audited with CLI omit=dev, replacing the container omit=optional default; these optional-chain notices remain in that evidence.",
+        "dispositions": [
+          {
+            "check": "audit",
+            "finding": "GHSA-gcqx-w48m-w2h4",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The optional path is demosdk 4.0.16 -> rubic-sdk 5.57.4 -> @tonconnect/ui 2.4.4 -> deepmerge ^4.3.1 (4.3.1). The returned-object prototype-poisoning notice has no corrected release in this range; 4.3.1 is the latest published version. Retain it until the parent/module is corrected."
+          },
+          {
+            "check": "audit",
+            "finding": "GHSA-qr28-fpjm-wq7f",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The optional path is demosdk 4.0.16 -> rubic-sdk 5.57.4 -> web3 1.10.4 -> web3-bzz 1.10.4 -> swarm-js 0.1.42 -> xhr-request 1.1.0 -> query-string 5.1.1 -> decode-uri-component ^0.2.0 (0.2.2). The percent-encoded-run CPU correction is 0.5.1, outside the selected range; a compatible parent dependency update is required."
           }
         ]
       }
