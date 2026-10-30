@@ -92,7 +92,6 @@ function editEntry(location: string, change: Partial<LockEntry>) {
 }
 function withInventory(edit: (packages: typeof simulatedInventory.packages) => void) {
   const value = structuredClone(simulatedInventory);
-  Object.assign(value.packages, structuredClone(simulatedRootPackages));
   edit(value.packages);
   return JSON.stringify(value);
 }
