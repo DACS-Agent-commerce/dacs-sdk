@@ -74,3 +74,69 @@ for (const sourceCopy of [false, true]) for (const code of ['stale_plan', 'upstr
  await w.publish(w.open(), jobs[1]);
  assert.equal(w.captured.length, 3);
 });
+
+async function acceptedWorld(outcomes) {
+ const w=await world(), originals=new Map();
+ w.include();
+ w.controls.request=async request=>{
+  const signedTransaction=await signSdkCreate(request.transaction);
+  originals.set(request.jobId,signedTransaction);
+  const row={stage:'broadcast-started',hash:signedTransaction.hash,signedTransaction};
+  await w.journal.put('demo/wallet/lane',row);
+  await w.journal.put('demo/wallet/lane',{...row,stage:'broadcast-accepted'});
+  w.controls.nonce=request.transaction.content.nonce;
+  const outcome=outcomes.shift();
+  if(outcome==='crash')throw new Error('TEST accepted before anchor retention');
+  if(outcome==='unknown')return {success:false,error:{code:'outcome_unknown'}};
+  if(outcome==='unbound')return {success:true,data:{hash:'f'.repeat(64)}};
+  return {success:true,data:{hash:signedTransaction.hash}};
+ };
+ return {...w,originals};
+}
+const intentFor=(w,job)=>[...w.journal.rows].find(([,row])=>row.input?.artifact.jobId===job);
+for(const outcome of ['crash','unknown','unbound','hash-save-crash'])test(`accepted CREATE survives ${outcome}, restart and another wallet request`,async()=>{
+ const w=await acceptedWorld([outcome]);
+ if(outcome==='hash-save-crash'){
+  const put=w.journal.put;let interrupted=false;
+  w.journal.put=async(key,row)=>{
+   await put(key,row);
+   if(!interrupted&&row.stage==='issued'&&row.hash&&!row.signedTransaction){interrupted=true;throw new Error('TEST hash saved before projection');}
+  };
+ }
+ if(outcome.includes('crash'))await assert.rejects(w.publish(w.open(),jobs[0]),/TEST/);
+ else await w.publish(w.open(),jobs[0]);
+ await w.publish(w.open(),jobs[1]);
+ const [,retained]=intentFor(w,jobs[0]);
+ assert.equal(retained.hash,w.originals.get(jobs[0]).hash);
+ assert.deepEqual(retained.signedTransaction,w.originals.get(jobs[0]));
+ assert.equal((await w.open().readRetained(retained.input)).status,'present');
+ assert.equal((await w.publish(w.open(),jobs[0])).status,'present');
+ assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,2]);
+ assert.equal(w.resends.length,0);
+});
+test('successive accepted crashes retain each signature before overwriting the wallet lane',async()=>{
+ const third='01ARZ3NDEKTSV4RRFFQ69G5FAY',w=await acceptedWorld(['crash','crash']);
+ for(const job of jobs)await assert.rejects(w.publish(w.open(),job),/TEST/);
+ await w.publish(w.open(),third);
+ for(const job of jobs){
+  const [,retained]=intentFor(w,job);
+  assert.equal((await w.open().readRetained(retained.input)).status,'present');
+  assert.deepEqual(retained.signedTransaction,w.originals.get(job));
+ }
+ assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,2,3]);
+ assert.equal(w.resends.length,0);
+});
+test('wallet reconciliation does not rewrite a verified intent',async()=>{
+ const w=await acceptedWorld([]);await w.publish(w.open(),jobs[0]);
+ const [key,retained]=intentFor(w,jobs[0]),put=w.journal.put;let rewrites=0;
+ w.journal.put=async(k,row)=>{if(k===key)rewrites++;return put(k,row);};
+ await w.publish(w.open(),jobs[1]);
+ assert.equal(rewrites,0);assert.deepEqual(await w.journal.get(key),retained);
+ assert.equal(w.resends.length,0);
+});
+test('a conflicting retained hash refuses wallet lane reuse without another signature',async()=>{
+ const w=await acceptedWorld(['crash']);await assert.rejects(w.publish(w.open(),jobs[0]),/TEST/);
+ const [key,row]=intentFor(w,jobs[0]);await w.journal.put(key,{...row,hash:'f'.repeat(64)});
+ await assert.rejects(w.publish(w.open(),jobs[1]),{code:'indeterminate'});
+ assert.equal(w.captured.length,1);assert.equal(w.resends.length,0);
+});
