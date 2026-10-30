@@ -817,6 +817,8 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | | `packages/dacs-client/test/diagnostic-reader.test.mjs:1` | e762c6f6b95121de114b1fee5db44005fd049269 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 5582b173bd445f8aab89428aa33191696fa5a3f6 |
 | D11 | fix(client): D11 record passive reader corrections | Git subject selector (must resolve exactly once after publication checkpoint) |
+| D11 | fix(client): D11 use passive readback in packed consumer | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 783054d82aa355f84bbc6563a698cb3804406ccc |
 | D11 | fix(client): D11 record the merged passive observation fixture | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 5582b173bd445f8aab89428aa33191696fa5a3f6 |
 
@@ -2511,6 +2513,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record passive reader corrections | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record passive reader corrections | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record passive reader corrections | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/DELTA-MAP.md:1` |
