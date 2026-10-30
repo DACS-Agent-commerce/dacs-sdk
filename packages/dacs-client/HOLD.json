@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "d1466c76a54ea98ac994357b044b658db883b50e"
+        "blob": "051197a5ea5e679b6aaecdc6aeaecc9618f9a034"
       },
       "DELTA-LEDGER.json": {
-        "blob": "828bb31d86aa58b80e21364e6a14ff6ead182bc9"
+        "blob": "344754c8cb393346f65025ca66c726fc7274bf16"
       },
       "DELTA-MAP.md": {
-        "blob": "0abd5a5d465d5e6874da33cbebae2af014237121"
+        "blob": "1271b5c3316c195768bf242e976d810f424a09aa"
       },
       "DELTA-NOTES.md": {
         "blob": "fb704617e73c267d379cb9121dee8f2ec7c45d35"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "1e3b4236dbce3fd07f35f615986099c278eb78b6"
+        "blob": "d6a59c400afac629bf5465c26a2769bf1e5f5131"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "5f355d3b7eb9c6c682a8be1d9cbc5ef6f6ef3097"
+        "blob": "7845edbed548a797dd2b3971e435a15e47c2c854"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1661,7 +1661,7 @@
         "blob": "a3c2c1f30dde168de241dd1d8845b67f18b7b3bd"
       },
       "test/package-contents.test.mjs": {
-        "blob": "10de0e73c8755476bf33d41fa7783ea9926f2175"
+        "blob": "80ca77ad68b0ad82235bdcdee96c42f03dfb5c1a"
       },
       "test/passive-observation.test.mjs": {
         "blob": "f760ea0ac2e21bd42cef0200f24c0e2dfec637b7"
@@ -1704,6 +1704,9 @@
       },
       "test/readback-review-decisions.test.mjs": {
         "blob": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52"
+      },
+      "test/readme-contract.test.mjs": {
+        "blob": "a3df46893e33d58f7abbb2fe4def4c45fe14ee5c"
       },
       "test/rpc-byte-budget.test.mjs": {
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
