@@ -23,9 +23,11 @@ const TAR_BLOCK_BYTES = 512;
 // or leaves an undefined numeric field entirely NUL-filled.
 const NUL = /^\0+$/, OCTAL_8 = /^(?:[0-7]{6} \0|[0-7]{7}\0|\0{8})$/;
 const OCTAL_12 = /^(?:[0-7]{10} \0|[0-7]{11}\0|\0{12})$/;
+// Tar checksums also use six digits followed by NUL + space.
+const CHECKSUM = /^(?:[0-7]{6}(?: \0|\0 )|[0-7]{7}\0|\0{8})$/;
 const HEADER_FIELDS = [
   [100, 8, OCTAL_8], [108, 8, OCTAL_8], [116, 8, OCTAL_8], [124, 12, OCTAL_12], [136, 12, OCTAL_12],
-  [148, 8, OCTAL_8], [156, 1, /^0$/], [157, 100, NUL], [257, 8, /^ustar\x0000$/],
+  [148, 8, CHECKSUM], [156, 1, /^0$/], [157, 100, NUL], [257, 8, /^ustar\x0000$/],
   [265, 64, NUL], [329, 8, OCTAL_8], [337, 8, OCTAL_8], [345, 167, NUL],
 ];
 const PACKAGE_PATH = /^package(?:\/[A-Za-z0-9_@+.-]*[A-Za-z0-9_@+-])+$/;
