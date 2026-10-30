@@ -10,12 +10,32 @@ const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-contai
 const read = (name: string) => readFileSync(join(fixture,
   name === "engine-strict.log" ? "engine-strict.log.txt" : name), "utf8");
 const original = () => JSON.parse(read("acceptance-summary.json"));
-const evidence = (overrides: Record<string, string> = {}) => {
+const recordedProjection = (overrides: Record<string, string> = {}) => {
   const summary = original();
   summary.complete = true; // Reconstructed evidence; the original legacy JSON is unchanged.
   summary.securityGate.findings = extractPolicyFindings((name: string) => overrides[name] ?? read(name));
   return summary;
 };
+// These leaves and observations complete only the explicit simulation. The
+// recorded projection above keeps every uploaded byte and its current refusal.
+const semverModule = "semver";
+const { validRange, minVersion } = await import(semverModule);
+const simulatedLock = JSON.parse(read("generated-package-lock.json"));
+const simulatedInventory = JSON.parse(read("runtime-image-inventory.json"));
+for (const entry of Object.values(simulatedLock.packages)) {
+  if (typeof entry !== "object" || entry === null) throw new Error("Invalid simulated lock entry");
+  for (const [name, range] of Object.entries(Reflect.get(entry, "dependencies") ?? {})) {
+    const location = `node_modules/${name}`;
+    if (simulatedLock.packages[location]) continue;
+    const version = typeof range === "string" && validRange(range) ? minVersion(range).version : "0.0.0";
+    simulatedLock.packages[location] = { version };
+    simulatedInventory.packages.push({ name, version, location });
+  }
+}
+const evidence = (overrides: Record<string, string> = {}) => recordedProjection({
+  "generated-package-lock.json": JSON.stringify(simulatedLock),
+  "runtime-image-inventory.json": JSON.stringify(simulatedInventory), ...overrides,
+});
 const historicalDisposition = (summary: unknown, baseline?: unknown) =>
   registryContainerDisposition(summary, baseline, { packageVersion: "0.1.0-alpha.0" });
 const withoutFinding = (check: "productionImage" | "physicalSbom") => {
@@ -31,13 +51,22 @@ const withoutFinding = (check: "productionImage" | "physicalSbom") => {
 };
 
 describe("5c27c28 upstream findings retained under #191", () => {
-  it("retains the original failing summary and re-extracts its findings from the uploaded evidence", () => {
+  it("retains the original summary and checks its current incomplete projection", () => {
     const recorded = original();
     expect(recorded.disposition).toMatchObject({ exitCode: 3,
       checks: { productionImage: "blocked", physicalSbom: "blocked" } });
-    const extracted = evidence().securityGate.findings;
-    // Only the package count changes when unrelated lock/inventory rows are
-    // removed for this fixture. Every retained entry and finding is original.
+    const projected = recordedProjection();
+    const extracted = projected.securityGate.findings;
+    const expectedErrors = JSON.parse(readFileSync(join(repoRoot,
+      "test/scripts/fixtures/registry-container-5c27c28-current-inventory-errors.json"), "utf8"));
+    expect(extracted.productionImageInventory).toEqual({
+      ...recorded.securityGate.findings.productionImageInventory, scanComplete: false, errors: expectedErrors,
+    });
+    expect(historicalDisposition(projected)).toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
+    // Compare every legacy field after explicitly checking the newer closure rule.
+    extracted.productionImageInventory = recorded.securityGate.findings.productionImageInventory;
+    // Selected rows change the evaluated package count. After the checked
+    // inventory projection above, every remaining finding stays exact.
     extracted.engine.scan.evaluatedPackages = recorded.securityGate.findings.engine.scan.evaluatedPackages;
     expect(extracted).toEqual(recorded.securityGate.findings);
   });
@@ -63,6 +92,7 @@ describe("5c27c28 upstream findings retained under #191", () => {
     expect(historicalDisposition(original(), baseline).exitCode).toBe(1);
     for (const summary of [evidence()]) {
       expect(summary.securityGate.passed).toBe(false);
+      expect(summary.securityGate.findings.productionImageInventory).toEqual({ scanComplete: true, errors: [], missing: [] });
       expect(historicalDisposition(summary, baseline)).toMatchObject({ exitCode: 4, failureClass: "policy",
         checks: { registryDependency: "baseline", productionImage: "baseline", engineStrict: "baseline",
           lockSbom: "baseline", physicalSbom: "baseline", audit: "baseline" } });
@@ -113,7 +143,7 @@ describe("5c27c28 upstream findings retained under #191", () => {
   });
 
   it("does not waive a missing required pqcrypto package", () => {
-    const inventory = JSON.parse(read("runtime-image-inventory.json"));
+    const inventory = structuredClone(simulatedInventory);
     inventory.packages = inventory.packages.filter((item: { name: string }) => item.name !== "pqcrypto");
     const summary = evidence({ "runtime-image-inventory.json": JSON.stringify(inventory) });
     expect(summary.securityGate.findings.productionImageInventory.missing).toContain("node_modules/pqcrypto");
