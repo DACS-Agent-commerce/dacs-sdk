@@ -58,10 +58,10 @@ const host = await startSellerHost({
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
   sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt,
-                         // readRevocationSurfaces, readRevocationMarker, readSessionRecipeRegistryPin? }: the
+                         // readRevocationSurfaces, readRevocationMarker }: the
                          // seller-owned session admission, Vet record reader, receipt reader and receipt
-                         // verifier, revocation readers, optional registry pin reader for presence-only
-                         // Vet requirements (src/dacs/session-admission.mjs); admit must name both participants on the exact
+                         // verifier and revocation readers (src/dacs/session-admission.mjs);
+                         // admit must name both participants on the exact
                          // [PROFILE.json](PROFILE.json) profile: standardRevision
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
@@ -440,17 +440,16 @@ per-client limiter so one client cannot exhaust the shared request budget.
   verifier, the Listing's `buyerRequirement` for the buyer's record, and
   every required claim covered by a result for this job, except a
   presence-only claim (`verificationRequired: false`), which has no result
-  (DACS-2 forbids a synthetic one). Seller admission supplies the exact
-  bundle and registry pin for strict presence replay. Only this seller agent
-  opts in to presence-only delivery at the runner, because it replays before
-  signing and signs no completed bundle. Direct `runFulfilmentCore` and durable
-  wrapper callers refuse presence-only invocations by default, as does the
-  exported invocation check. `acceptsPresenceOnlyVetRequirements: true` is only
-  for callers that perform the same strict replay and need no completed bundle.
-  ST-11 completed-bundle finalization and `projectDurableSellerAuditPending`
-  refuse presence sessions: they lack those companion inputs. The agent's
-  `evidencePublication` value remains `deferred-to-explicit-sdk-finaliser`; that
-  wire value does not promise presence-session finalization.
+  (DACS-2 forbids a synthetic one). The seller agent refuses requirements
+  containing any presence-only member before record reads or Agreement signing:
+  it cannot yet pin and recover an authenticated job registry snapshot.
+  Direct `runFulfilmentCore` and durable wrapper callers also refuse them by
+  default, as does the exported invocation check.
+  `acceptsPresenceOnlyVetRequirements: true` is only for callers that perform
+  strict replay with authenticated job-bound authority and need no completed
+  bundle. ST-11 completed-bundle finalization and
+  `projectDurableSellerAuditPending` refuse presence sessions because they lack
+  those companion inputs.
   A presence-only member must name a
   registered claim scheme and select no `maxAge` or `recipeVersion`
   (DACS-1 PCR-1/PCR-2); one that does is refused like any other invocation
@@ -462,24 +461,20 @@ per-client limiter so one client cannot exhaust the shared request budget.
   also pass the SDK's strict CompositeVerificationRecord check against its
   invocation: its `requirementHash` is the hash of that exact requirement
   and its decision replays from the invocation's results (DACS-2 §7.7.1).
-  A presence-only claim is counted in the party's exact bundle, whose
-  presentation is verified, with a well-formed operator-supplied registry pin.
-  The seller neither authenticates nor retains this pin. The optional
-  `readSessionRecipeRegistryPin({ jobId })` returns a lowercase sha-256 hash (read once, only for such a requirement, with the
-  other readers' byte, list and time limits). Without that reader, or with an
-  answer that is not a hash, a presence-only requirement is refused; a reader
-  that fails or times out makes the check indeterminate.
-  The durable seller profile requires every claim in a bundle used for
-  presence-only Vet to omit `expiresAt`. It refuses an expiring bundle before
-  signing an Agreement contribution, so advancing the clock cannot invalidate
-  a retained presence session. Core presence evaluation is unchanged.
+  The direct `vetRecordProblem` helper counts presence in the party's exact
+  bundle with a verified per-claim presentation and a runtime-authenticated,
+  job-bound `presence.sessionSnapshot` (`DurableSessionRecipeRegistrySnapshot`).
+  Bare hashes, copied snapshots and snapshots for another job are refused.
+  `sessionAdmission.readSessionRecipeRegistryPin` is unsupported and rejected
+  at configuration: a hash reader cannot supply authenticated registry authority.
+  The direct helper requires every claim in a bundle used for presence-only
+  Vet to omit `expiresAt`, so advancing the clock cannot invalidate retained
+  presence replay. Core presence evaluation is unchanged.
   The agent restores only empty result invocations and refuses evidence-bearing
   invocations before replay. Supplying `sessionAdmission.vetEvidence` is rejected
-  explicitly; presence replay does not enable verified-claim proposals. A mixed
-  `oneOf` group with an unused verified alternative that selects a recipe
-  method is also refused, even when a presence-only alternative is satisfied.
-  An unused alternative with no derivable method retains the SDK's acceptance;
-  it requires no recipe read.
+  explicitly. Presence-only alternatives in mixed groups are refused too.
+  The direct helper still checks verified alternatives with derivable methods
+  against their recipe evidence, even when a presence alternative is satisfied.
 
   The direct `vetRecordProblem` helper separately accepts `evidence` for strict
   replay preparation: `resolveContent`, `resolveRecipe`,

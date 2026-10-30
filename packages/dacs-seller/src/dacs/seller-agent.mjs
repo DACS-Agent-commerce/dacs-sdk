@@ -32,7 +32,7 @@ import { MAX_STORAGE_ARTIFACT_BYTES, assertStorageJsonDepth } from './wallet-tra
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
-import { hasPresenceOnlyClaim, listingRevocationProblem, readRegistryPin, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
+import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, verifyFixtureReceipt, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
@@ -417,11 +417,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       ['seller', claim, checkpoint.seller, identityBundleHash(sellerBundle), session.buyerBundle.presentedBy, SELLER_REQUIREMENT],
     ];
     const sessionRegistryPins = [];
-    let registryPin = null;
-    if ([listing.buyerRequirement, SELLER_REQUIREMENT].some(hasPresenceOnlyClaim)) {
-      try { registryPin = await readRegistryPin(admission, session.jobId); }
-      catch (cause) { throw vetUnverified('the pinned registry authority cannot be read', cause); }
-    }
     for (const [role, party, ref, bundleHash, verifier, requirement] of parties) {
       let record, receipt, verdict;
       try { record = await readAdmissionCapability(admission, 'resolveVetRecord', { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(`the ${role} Vet record cannot be resolved (${error?.code ?? 'error'})`, error); }
@@ -429,7 +424,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       // against the exact requirement this profile invoked, binding its signed
       // requirementHash and result references; shape and signer alone would
       // accept a record the counterparty signed for another requirement.
-      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, role, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now, sessionRegistryPins, presence: { bundle: role === 'buyer' ? session.buyerBundle : sellerBundle, registryPin } });
+      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, role, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now, sessionRegistryPins, presence: { bundle: role === 'buyer' ? session.buyerBundle : sellerBundle } });
       if (recordProblem) return `the ${role} ${recordProblem}`;
       try { receipt = await readAdmissionCapability(admission, 'readVetAnchorReceipt', { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(error?.code === 'ENOENT' ? `the ${role} Vet record has no SR-2 receipt` : `the ${role} Vet record SR-2 receipt cannot be read (${error?.code ?? 'error'})`, error); }
       // DACS-2 VPC-3: a record is relied on only at `accepted` or later.
@@ -754,10 +749,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             if (['buyer', 'seller'].some((role) => resolved.input[role].vetRecordRef.contentHash === notPerformed[role].vetRecordRef.contentHash)) {
               return { disposition: 'rejected', reason: 'the Vet context names the not-performed Vet references' };
             }
-            // Match the delivery runner's invocation checks with the same
-            // explicit presence capability. Strict replay over the exact
-            // bundles follows before signing; restore replays these records too.
-            const invocationProblem = sellerFulfilmentVetRequirementsViolation(resolved.vetRequirements, { jobId, buyerRequirement: listing.buyerRequirement, acceptsPresenceOnly: true,
+            // This agent cannot pin and recover authenticated job registry
+            // snapshots, so refuse presence-only requirements before signing.
+            const invocationProblem = sellerFulfilmentVetRequirementsViolation(resolved.vetRequirements, { jobId, buyerRequirement: listing.buyerRequirement,
               buyer: { primaryClaim: session.buyerBundle.presentedBy, vetRecordRef: resolved.input.buyer.vetRecordRef },
               seller: { primaryClaim: claim, vetRecordRef: resolved.input.seller.vetRecordRef } });
             if (invocationProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${invocationProblem}` };
@@ -782,16 +776,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
                 return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet requirement invocation differs from the requirement this profile restores` };
               }
             }
-            // A presence-only claim is replayed over the exact bundle against the
-            // registry snapshot the operator pinned for the job; the pin is read
-            // only then, once for both records.
-            let registryPin = null;
-            if ([listing.buyerRequirement, SELLER_REQUIREMENT].some(hasPresenceOnlyClaim)) {
-              try { registryPin = await readRegistryPin(admission, jobId); }
-              catch (cause) { return unavailable(cause, 'the pinned registry authority is unavailable'); }
-            }
-            // One job-wide operator pin for strict presence replay of both
-            // records; the presence path checks its format, not its authority.
             const sessionRegistryPins = [];
             for (const [role, party, bundle, verifier] of parties) {
               const ref = resolved.input[role].vetRecordRef;
@@ -801,7 +785,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
               if (record === null) return unavailable(new Error('Vet record is absent'),`the ${role} Vet record is absent`);
               let problem;
-              try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now, sessionRegistryPins, presence: { bundle, registryPin } }); }
+              try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now, sessionRegistryPins, presence: { bundle } }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet evidence is unavailable`); }
               if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
               // DACS-2 VPC-3: a signed record is no admitted one. It is relied on
@@ -1414,7 +1398,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let verifiedSchemaPayload;
     const deps = {
       auditSourceProfile: 'v2',
-      acceptsPresenceOnlyVetRequirements: true,
       receiptStore,
       resolveAuditSource: async (jobId) => jobId === session.jobId ? { status: 'verified', value: structuredClone(auditSource) } : { status: 'rejected', reason: 'another job was requested' },
       resolveAgreement: async (ref) => ref === agreement.ref ? { status: 'verified', value: structuredClone(agreement) } : { status: 'rejected', reason: 'another Agreement was requested' },

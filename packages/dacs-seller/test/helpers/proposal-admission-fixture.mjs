@@ -32,7 +32,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
    if(!signing)throw new Error('TEST signing stage missing');
    source=source.slice(0,signing.getStart(file))+"\nthrow new SellerAgentError('proposal_not_assembled','TEST isolated admission boundary',503);\n"+source.slice(method.body.end-1);
   }
-  if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposal};');
+  if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposal,retainedVetEvidenceProblem};');
  });
  const open=async()=>{const agent=await api.createSellerAgent(config);t.after(()=>agent.close());return agent;};
  const input=async(agent,jobId=JOB,party=buyer)=>{const challenge=await agent.issueSessionChallenge({jobId,buyer:party.claim}),bundle=fixtureIdentityBundle(party,time);bundle.sessionNonce=challenge.sessionNonce;bundle.presentation.signatures[0].signature=party.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');return{proposal:{},transportIdentity:{jobId,buyer:party.claim,seller:seller.claim},buyerIdentityBundle:bundle};};

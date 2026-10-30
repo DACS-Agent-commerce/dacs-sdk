@@ -527,50 +527,23 @@ async function world(t, { buyerRequirement = null, agentTransform = null, delive
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
 const shown = (answer) => JSON.stringify(answer);
 
-// Presence delivery belongs to this agent profile: admission replays the exact
-// bundle before signing and the agent does not finalize a completed bundle.
+// A host must refuse presence before any Agreement signature or payment effect.
 for (const placement of ['required', 'oneOf']) {
   const member = { scheme: 'did', verificationRequired: false };
   const buyerRequirement = { requirementVersion: '1', required: placement === 'required' ? [member] : [],
     ...(placement === 'oneOf' ? { oneOf: [[member]] } : {}), preferredPresentation: 'any' };
-  for (const deliveryEvidenceEnabled of [false, true]) test(`presence-only ${placement} purchase delivers once with evidence ${deliveryEvidenceEnabled}, retry and restart`, async t => {
+  for (const deliveryEvidenceEnabled of [false, true]) test(`presence-only ${placement} purchase is refused before and after restart with evidence ${deliveryEvidenceEnabled}`, async t => {
     const w = await world(t, { buyerRequirement, deliveryEvidenceEnabled });
-    const p = await w.purchase(), tx = p.pay();
-    const expected = deliveryEvidenceEnabled ? 'delivered' : 'delivery-ready';
-    const assertDelivered = answer => {
-      assert.equal(answer.delivery?.status, expected, shown(answer));
-      assert.equal(w.effects.deliverySubmit.length, 1);
-      assert.equal(w.effects.componentSigns.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 1);
-    };
-    assertDelivered(await p.claim(tx));
-    assertDelivered(await p.claim(tx));
-    await w.restart();
-    assertDelivered(await p.claim(tx));
-    assertDelivered(await p.claim(tx));
-  });
-  for (const gate of ['admission', 'runner']) test(`presence-only ${placement} purchase requires the seller ${gate} opt-in`, async t => {
-    const agentTransform = source => {
-      const flag = gate === 'admission' ? 'acceptsPresenceOnly: true' : 'acceptsPresenceOnlyVetRequirements: true';
-      assert.ok(source.includes(flag), 'the production opt-in exists');
-      return source.replace(flag + ',', '');
-    };
-    const w = await world(t, { buyerRequirement, agentTransform });
-    const signs = () => w.effects.componentSigns.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length;
-    if (gate === 'admission') {
+    for (let attempt = 0; attempt < 2; attempt++) {
       const answer = await w.purchase({ expectSigned: false });
       assert.equal(answer.disposition, 'rejected');
-      assert.match(answer.reason, /presence-only/);
-      assert.equal(signs(), 0);
-    } else {
-      const p = await w.purchase(), tx = p.pay();
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const answer = await p.claim(tx);
-        assert.equal(answer.delivery?.status, 'held', shown(answer));
-        assert.match(shown(answer), /core delivery cannot finalize presence-only/);
-        assert.equal(w.effects.deliverySubmit.length, 0);
-        assert.equal(signs(), 1);
-        await w.restart();
-      }
+      assert.equal(answer.contribution, undefined);
+      assert.match(answer.reason, /core delivery cannot finalize presence-only/);
+      assert.equal(w.effects.componentSigns.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
+      assert.equal(w.effects.deliverySubmit.length, 0);
+      assert.equal(w.effects.published.length, 0);
+      assert.equal(w.effects.broadcast.length, 0);
+      await w.restart();
     }
   });
 }
