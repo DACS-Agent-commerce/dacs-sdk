@@ -15,6 +15,48 @@ import {provenUnsignedAbsence}from'../src/dacs/native-dem-delivery-consumer.mjs'
 import {exchange}from'./helpers/d5-http-fixture.mjs';
 function projection(agreement){const logicalAddress=core.fixedPriceAgreementLogicalAddress(agreement.jobId),programName=core.logicalToStorageProgramName(logicalAddress),storageAddress=deriveStorageAddress(buyer.address,programName,1,'');const tx=buildStorageProgramCreatePayload({from:buyer.address,storageAddress,programName,logicalAddress,signedListing:agreement,nonce:1,timestamp:NOW});tx.content.from_ed25519_address=buyer.address;Object.assign(tx.content.data[1].metadata,{artifactKind:'Agreement',contentHash:core.contentHash(agreement),envelopeHash:core.sha256Hex(core.canonicalize(agreement))});tx.hash=core.sha256Hex(JSON.stringify(tx.content));tx.signature={type:'ed25519',data:'0x'+buyer.signBytes(Buffer.from(tx.hash)).toString('hex')};return tx;}
 
+const JOB2='01J8N4YV7YVYQ4DB7M8T4C7W0B';
+async function secondEarlyRequest(f,agent){
+ const request=await f.proposal(agent,JOB2),response=await agent.receiveProposal(request);
+ assert.equal(response.disposition,'complete');
+ const agreement=await core.finalizeFixedPriceAgreementContributions(request.proposal.plan,[request.proposal.buyerContribution,response.contribution],contributionVerifier);
+ return{jobId:JOB2,agreement,signedProjection:projection(agreement)};
+}
+for(const entry of ['commit','readCommitment','reconcileTransport'])test(`broken Agreement signatures keep the early slot through ${entry} and restart`,async t=>{
+ const f=await commitmentFixture(t,{early:true}),{agent,agreement}=await f.prepare(),next=await secondEarlyRequest(f,agent);
+ assert.equal((await agent.commitOnSignature({jobId:JOB,agreement,signedProjection:projection(agreement)})).status,'commitment-held');
+ const broken=structuredClone(agreement),signature=broken.signatures[0].value;
+ broken.signatures[0].value=(signature[0]==='A'?'B':'A')+signature.slice(1);
+ assert.equal(core.contentHash(broken),core.contentHash(agreement));f.controls.agreement.artifact=broken;
+ if(entry==='reconcileTransport'){
+  const body={jobId:JOB},answer=await agent.reconcileTransport({request:commitmentRequest(agent,core.contentHash(agreement)),body,rawBody:Buffer.from(JSON.stringify(body))});
+  assert.equal(answer.disposition,'indeterminate');
+ }else await assert.rejects(agent[entry]({jobId:JOB}),e=>e.code==='commitment_failed'&&/signature/.test(e.message));
+ await assert.rejects(agent.commitOnSignature(next),e=>e.code==='seller_signature_buyer_unresolved');assert.equal(f.local.writes.length,1);
+ agent.close();const fresh=await f.open();await assert.rejects(fresh.commitOnSignature(next),e=>e.code==='seller_signature_buyer_unresolved');assert.equal(f.local.writes.length,1);
+});
+for(const read of ['Agreement','commitment'])test(`indeterminate ${read} read keeps the early slot`,async t=>{
+ const f=await commitmentFixture(t,{early:true}),{agent,agreement}=await f.prepare(),next=await secondEarlyRequest(f,agent);
+ await agent.commitOnSignature({jobId:JOB,agreement,signedProjection:projection(agreement)});
+ if(read==='Agreement')f.controls.read=async()=>({disposition:'indeterminate'});
+ else f.native.readRetained=async()=>({status:'indeterminate',reason:'TEST commitment read unavailable'});
+ await assert.rejects(agent.commit({jobId:JOB}));
+ await assert.rejects(agent.commitOnSignature(next),e=>e.code==='seller_signature_buyer_unresolved');assert.equal(f.local.writes.length,1);
+});
+for(const retained of [false,'commit','readCommitment'])test(`authenticated ${retained||'new'} commitment releases the early slot`,async t=>{
+ const f=await commitmentFixture(t,{early:true}),{agent,agreement}=await f.prepare(),next=await secondEarlyRequest(f,agent);
+ await agent.commitOnSignature({jobId:JOB,agreement,signedProjection:projection(agreement)});
+ assert.equal((await agent.commit({jobId:JOB})).status,'committed');
+ let current=agent;
+ if(retained){
+  agent.close();const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs'),{listingPin}=await import('../src/dacs/purchase-protocol.mjs');
+  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+  try{await state.withJob(JOB,()=>state.reserveSignatureCommitment(buyer.claim,JOB));}finally{state.close();}
+  current=await f.open();assert.equal((await current[retained]({jobId:JOB})).status,'committed');
+ }
+ assert.equal((await current.commitOnSignature(next)).status,'commitment-held');assert.equal(f.local.writes.length,2);
+});
+
 for(const early of [false,true])test(`cached ${early?'signature':'ordinary'} commitment authenticates fresh receipt on every HTTP replay`,async t=>{
  const f=await commitmentFixture(t,{early}),{agent,agreement}=await f.prepare();
  const body=early?{jobId:JOB,agreement,signedProjection:projection(agreement)}:{jobId:JOB};
