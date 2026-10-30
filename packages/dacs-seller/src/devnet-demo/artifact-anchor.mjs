@@ -249,18 +249,19 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return (await snapshot()).projection(hash);
   }
   async function observe(input,retained,writeProof,{fresh=false}={}) {
-    if(retained.error==='user_rejected') return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};
     let hash=retained.hash;
     if(!hash) {
       const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
+      if(!hashes?.size&&retained.error==='user_rejected') return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};
       if(hashes?.size!==1) return {status:'indeterminate',reason:'the original demo CREATE hash is not uniquely retained',noResend:true};
       hash=[...hashes][0];
       // Every caller holds the artifact lock from intent lookup through save,
       // so an observation cannot overwrite a newer wallet outcome.
-      await journal.put(keyFor(input.logicalAddress),{...retained,stage:'issued',hash});
+      retained={...retained,hash};
     }
     const projection=await publicProjection(hash);
     if(!projection) return {status:broadcastRejected(retained)?'rejected':'indeterminate',reason:broadcastRejected(retained)?'broadcast_rejected: no original signed CREATE retained':'the original public signed CREATE projection is unavailable',noResend:true};
+    if(!projectionAuthentic(projection,{transactionRef:{value:hash}})) return {status:'indeterminate',reason:'the original public signed CREATE does not authenticate',noResend:true};
     if(!retained.signedTransaction) {retained={...retained,hash,signedTransaction:projection};await journal.put(keyFor(input.logicalAddress),retained);}
     const cacheable=cachedKinds.has(input.artifactKind),cacheKey=cacheScope(input,projection,retained.receipt ?? null);
     const cached=cacheable&&!fresh?immutable.get(cacheKey):null;
@@ -352,9 +353,8 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       metadata.networkBinding=clone(sourceCapability.transportBinding);
       metadata.artifactBinding={version:'1',policy:DEVNET_DEMO_ARTIFACT_POLICY,authority:sourceCapability.demoArtifactPublication.authority,artifactKind,jobId,logicalAddress,writer};
       if(deliveryBinding) metadata.deliveryBinding=clone(deliveryBinding);
-      // Admit the same content and complete Ed25519 envelope that readback accepts.
-      const candidateProjection={...transaction,hash:'0'.repeat(64),signature:{type:'ed25519',data:'0x'+'0'.repeat(128)}};
-      if(projectionContentText(transaction.content)===null || !projectionWithinBudget(candidateProjection)) fail('invalid','demo CREATE exceeds signed projection limits');
+      // Include the SDK's execution edits before persisting or requesting a signature.
+      if(!projectionShapeAdmitted(sdkSignedCandidate(transaction))) fail('invalid','demo CREATE exceeds signed projection limits');
       const intent={stage:'intent',inputHash:exactHash(input),input:clone(input),transaction:clone(transaction)};
       if(authorize){
         const allowed=await authorize();
@@ -385,6 +385,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         const code=answer?.error?.code;
         const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
         await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});
+        if(signed&&code==='user_rejected') return observe(input,{...intent,stage,error:code});
         return {status:answer?.error?.code==='user_rejected'?'rejected':'indeterminate',reason:`${answer?.error?.code ?? 'wallet-response-missing'}: ${answer?.error?.message ?? 'wallet response missing'}`.slice(0,240),noResend:true};
       }
       const hash=answer?.data?.hash;
@@ -449,7 +450,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     try { authorizeJob(artifactKind,logicalAddress.split(':')[2]); } catch { return null; }
     const retained=await journal.get(keyFor(logicalAddress));
     if(retained?.stage!=='verified' || retained.input?.artifactKind!==artifactKind || retained.input?.writer!==claim || retained.input?.logicalAddress!==logicalAddress
-      || !HASH.test(retained.hash ?? '') || retained.signedProjection?.hash!==retained.hash || typeof retained.signedProjection.content!=='object' || sha256Hex(JSON.stringify(retained.signedProjection.content))!==retained.hash) return null;
+      || !projectionAuthentic(retained.signedProjection,{transactionRef:{value:retained.hash}})) return null;
     try { authorizeRetained(retained); } catch { return null; }
     return structuredClone(retained.signedProjection);
   }
@@ -464,9 +465,20 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   const projectionWithinBudget=projection=>{
     try { boundedResolutionValue(projection,{maxBytes:SIGNED_PROJECTION_MAX_BYTES,maxValues:8192,maxDepth:34,maxListEntries:4096});return true; } catch { return false; }
   };
+  // demosdk 4.0.16 sign/GCRGeneration duplicates the CREATE and its metadata.
+  // Long OS strings also cover fee byte overhead after the denomination fork.
+  const sdkSignedCandidate=transaction=>{
+    const content=clone(transaction.content),op=content.data[1],amount='9007199254740991000000000',from=content.from_ed25519_address;
+    content.amount='0';content.transaction_fee={network_fee:amount,rpc_fee:amount,additional_fee:'0',rpc_address:null};
+    content.gcr_edits=[{type:'balance',operation:'remove',isRollback:false,account:from,txhash:'',amount},
+      {type:'storageProgram',target:op.storageAddress,isRollback:false,txhash:'',context:{operation:'CREATE_STORAGE_PROGRAM',sender:from,data:{variables:op,metadata:op.metadata}}},
+      {type:'balance',account:from,operation:'remove',amount,txhash:'',isRollback:false},{type:'nonce',operation:'add',account:from,amount:1,txhash:'',isRollback:false}];
+    return {...transaction,content,hash:'0'.repeat(64),signature:{type:'ed25519',data:'0x'+'0'.repeat(128)}};
+  };
+  const projectionShapeAdmitted=p=>projectionWithinBudget(p)&&HASH.test(p?.hash ?? '')&&projectionContentText(p.content)!==null;
   const projectionAuthentic=(projection,receipt)=>{
-    if(!projectionWithinBudget(projection)) return false;
-    const text=HASH.test(projection?.hash ?? '') ? projectionContentText(projection.content) : null;
+    if(!projectionShapeAdmitted(projection)) return false;
+    const text=projectionContentText(projection.content);
     return text!==null && sha256Hex(text)===projection.hash
       && projection.signature?.type==='ed25519' && verifyDemosSignature({address:owner,message:projection.hash,signature:projection.signature.data})
       && receipt.transactionRef.value===projection.hash;
