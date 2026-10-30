@@ -1747,9 +1747,31 @@ describe("implicit recipe selection policy", () => {
     const required = await implicitFixture(true,true);
     expect((await verifyCompositeVerificationRecord(required.record,required.expected,{...required.deps,isImplicitRecipeVersionSelected:()=>false})).status).toBe("invalid");
   });
-  test("false refuses a bound implicit result before the no-parameters early return", async () => {
+  test("false fails a required bound implicit member before the no-parameters early return", async () => {
     const f = await implicitFixture(false);
-    expect(await verifyCompositeVerificationRecord(f.record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>false})).toMatchObject({status:"invalid",code:"verify-result-recipe"});
+    expect(await verifyCompositeVerificationRecord(f.record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>false})).toMatchObject({status:"invalid",code:"aggregation-mismatch"});
+  });
+  test("false leaves a bound implicit alternative unsatisfied while a pinned member passes", async () => {
+    const f = await fixture();
+    const implicit = { scheme: "email", verificationRequired: true };
+    const requirement: CompositeBundleRequirement = { requirementVersion: "1", required: [], oneOf: [[f.expectedResult.requirement, implicit]] };
+    const result = { ...await withResult(f.result, { scheme: "email", identifier: "alice@example.test" }) };
+    const ref: VerifyResultRef = { ...f.ref, anchor: { kind: "storage-program", locator: "stor:implicit-result" }, contentHash: contentHash(result) };
+    f.resolved.set(ref.anchor.locator, { encoding: "canonical-json", value: result });
+    const { signature, ...unsignedRecipe } = f.recipe;
+    const recipe = await signComponentArtifact({ ...unsignedRecipe, scheme: "email" }, "dacs-recipe:v1:", {
+      algorithm: signature.algorithm, signer: signature.signer, sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    });
+    const record = await withRecord(f.record, { requirementHash: sha256Hex(canonicalize(requirement)), dealSpecific: [f.ref, ref] });
+    const expected = { ...f.expected, requirement, dealSpecific: [f.expectedResult, { ...f.expectedResult, ref, scheme: "email", identifier: "alice@example.test", requirement: implicit }] };
+    expect((await verifyCompositeVerificationRecord(record,expected,{
+      ...f.deps, resolveRecipe: async ({ scheme }) => scheme === "email" ? recipe : f.recipe, isImplicitRecipeVersionSelected:()=>false,
+    })).status).toBe("valid");
+  });
+  test("a signed fail record agrees with a stale bound implicit pass result", async () => {
+    const f = await implicitFixture(false);
+    const record = await withRecord(f.record, { overallDecision: "fail" });
+    expect((await verifyCompositeVerificationRecord(record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>false})).status).toBe("valid");
   });
   test("a thrown selection policy is unresolved and omission retains compatibility", async () => {
     const f = await implicitFixture(false);
