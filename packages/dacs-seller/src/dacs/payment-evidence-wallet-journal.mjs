@@ -286,7 +286,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   const rows =(logicalAddress) => db.prepare(`SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM ${table} WHERE logical_address = ? ORDER BY nonce`).all(logicalAddress);
   // One evidence per address: a question about other bytes at a kept address is refused.
   const keptFor = (input) => {
-    if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
+    if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const kept = rows(input.logicalAddress);
     if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);
@@ -437,7 +437,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
 
   // Read only: the live kept CREATE's public signed projection, as signCreate gave it.
   async function readSignedProjection(input) {
-    if (!object(input) || typeof input.logicalAddress !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
+    if (!object(input) || typeof input.logicalAddress !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const live = db.prepare(`SELECT signed_transaction FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
     return live ? JSON.parse(live.signed_transaction) : null;
   }
