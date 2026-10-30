@@ -507,23 +507,26 @@ per-client limiter so one client cannot exhaust the shared request budget.
   replay preparation: `resolveContent`, `resolveRecipe`,
   `isRecipeSignerAuthorized`, `isVerifyResultSignerAuthorized` and
   `verifyAuthorityAttestation`, plus optional `resolveLatestRecipe`. Each receives
-  `{ jobId, role, party }`. Content replies are `null`, canonical JSON objects,
-  or base64url bytes; recipe and result signatures, authority evidence and
-  requirement parameters are independently checked by the core.
+  `{ jobId, role, party }`. Content replies are `null` or an `{ encoding, value }`
+  envelope: `encoding: 'canonical-json'` carries a JSON object, and
+  `encoding: 'bytes'` carries canonical base64url bytes. Recipe and result
+  signatures, authority evidence and requirement parameters are independently checked.
   `resolveLatestRecipe({ scheme, method, required })` returns the authenticated
   `{ sessionRecipeRegistrySnapshotHash, recipeVersion, availability }` selection
-  or `null`. An implicit member is satisfied only by that family's selected
-  latest live version. A result outside that version leaves the member
-  unsatisfied; an independently passing pinned alternative may still satisfy
-  its group.
-  Every verified member, bound or unused, needs each method family at its
-  version: an implicit family's selected head must be live; an explicit pin,
-  bound or unused, needs an exact steward-authorized signed recipe that is not
-  mocked, disabled or failed (DACS-2 CRQ-2/CRQ-3). A result at another version
-  than an implicit member's selected head leaves that member unsatisfied,
-  whether bound or projected.
-  Malformed replies and inconsistent snapshot pins also refuse the whole record. Both party records share one snapshot pin, and a replay caches each
-  family's bounded registry read and each exact recipe descriptor. No older live version is chosen as fallback.
+  or `null`. Every verified member, bound or unused, needs each derivable method
+  family at its version. The selection names an implicit family's head; the
+  steward-authorized signed descriptor at that version must be live, bound or
+  unused. An explicit pin needs an exact steward-authorized signed recipe that
+  is not mocked, disabled or failed (DACS-2 CRQ-2/CRQ-3). A result outside an
+  implicit member's selected version does not apply to it, whatever its decision;
+  an independently passing pinned alternative may still satisfy its group.
+  Malformed replies and inconsistent snapshot pins refuse the whole record.
+  Direct callers pass one `sessionRegistryPins` array per job across both party
+  records, seeded with the job's retained pin after a restart. They also bind
+  `sourceJobId` and the result locator with `isSellerFulfilmentVetInvocationMismatch`
+  before replay. Each replay caches each family's bounded registry read and
+  exact recipe descriptor. No older live version is chosen as fallback.
+  When the check fails, the Agreement is not signed, before any payment.
   Reads retain their 64 KiB, value/list, 10 s individual and 30 s total limits;
   unavailable readers keep their original cause. These helper capabilities do
   not change the agent's invocation or restoration gate. A session

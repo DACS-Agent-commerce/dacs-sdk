@@ -149,7 +149,7 @@ export interface VerifyCompositeVerificationDeps<TKey> {
   ) => Promise<boolean> | boolean;
   /** DACS-2 §7.4.3: an implicit version satisfies a member only when selected
    * as latest live by the authenticated session registry; a result at another
-   * version does not satisfy that member. Optional for compatibility. */
+   * version does not apply to that member, whatever its decision. */
   isImplicitRecipeVersionSelected?: (
     input: VerifyAuthorityAttestationInput,
   ) => Promise<boolean> | boolean;
@@ -1507,7 +1507,7 @@ async function qualifyResolvedMember<TKey>(
   expected: Readonly<ExpectedVerifyResult>,
   deps: VerifyCompositeVerificationDeps<TKey>,
   sharedProjection: boolean,
-): Promise<VerificationDecision | StrictCompositeVerification> {
+): Promise<VerificationDecision | StrictCompositeVerification | null> {
   const verificationInput = (): VerifyAuthorityAttestationInput => ({
     result: deepFreezeSnapshot(structuredClone(resolved.result)),
     expected: deepFreezeSnapshot(structuredClone(expected)),
@@ -1520,13 +1520,13 @@ async function qualifyResolvedMember<TKey>(
         },
   });
   if (
-    resolved.effectiveDecision === "pass" &&
     expected.requirement.recipeVersion === undefined &&
     deps.isImplicitRecipeVersionSelected
   ) {
     try {
       const selected = await deps.isImplicitRecipeVersionSelected(Object.freeze(verificationInput()));
-      if (selected !== true) return "fail";
+      // CRQ: a result outside the selected version does not apply to the member.
+      if (selected !== true) return null;
     } catch (error) {
       return unresolved("recipe-resolution", String(error));
     }
@@ -1857,6 +1857,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
         capturedDeps,
         entry.members.length > 1,
       );
+      if (decision === null) continue;
       if (typeof decision !== "string") return decision;
       mixedEntries.push({
         requirement: memberExpected.requirement,
