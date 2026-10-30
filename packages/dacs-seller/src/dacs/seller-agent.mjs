@@ -437,7 +437,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       // against the exact requirement this profile invoked, binding its signed
       // requirementHash and result references; shape and signer alone would
       // accept a record the counterparty signed for another requirement.
-      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, role, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now, evidence: admission.vetEvidence, sessionRegistryPins, presence: { bundle: role === 'buyer' ? session.buyerBundle : sellerBundle, registryPin } });
+      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, role, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now, sessionRegistryPins, presence: { bundle: role === 'buyer' ? session.buyerBundle : sellerBundle, registryPin } });
       if (recordProblem) return `the ${role} ${recordProblem}`;
       try { receipt = await readAdmissionCapability(admission, 'readVetAnchorReceipt', { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(error?.code === 'ENOENT' ? `the ${role} Vet record has no SR-2 receipt` : `the ${role} Vet record SR-2 receipt cannot be read (${error?.code ?? 'error'})`, error); }
       // DACS-2 VPC-3: a record is relied on only at `accepted` or later.

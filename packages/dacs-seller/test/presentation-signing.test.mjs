@@ -35,14 +35,16 @@ function retainSignerOutcome(f,{reject=false}={}){
  return()=>outcome;
 }
 
-// Outside-review regression: on the reviewed head retry made three signer calls
-// instead of the two calls of a clean bilateral Vet.
+// The buyer Vet record is signed and anchored before the seller presentation.
+// An unknown presentation signature must prevent every further signer call.
 test('lost presentation save never signs again on an end-to-end retry',async t=>{
  const f=productionFixture();t.after(()=>f.base.close());
  interruptSave(f,(next,old)=>!old?.presentation?.bundle?.presentation&&next?.presentation?.bundle?.presentation);
- await assert.rejects(f.run(),/interrupted save/);assert.equal(f.controls.signs,1);
+ await assert.rejects(f.run(),/interrupted save/);assert.equal(f.controls.signs,2);
+ assert.equal(f.controls.presentationSigns,1);assert.equal(f.local.writes.length,1);
  const [retry]=await Promise.allSettled([f.run()]);
- assert.equal(f.controls.signs,1,'retry must not sign either presentation or composite after an unknown presentation signature');
+ assert.equal(f.controls.signs,2,'retry must not sign either presentation or composite after an unknown presentation signature');
+ assert.equal(f.controls.presentationSigns,1);assert.equal(f.local.writes.length,1);
  assert.equal(retry.status,'rejected');assert.ok(indeterminate(retry.reason));assert.equal(f.issued.size,1);
 });
 test('exact bytes and pending reservation are durable before the signer runs',async t=>{
