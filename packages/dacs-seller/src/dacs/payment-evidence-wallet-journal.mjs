@@ -239,6 +239,11 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
           superseded_at INTEGER, PRIMARY KEY (logical_address, nonce));
         CREATE UNIQUE INDEX IF NOT EXISTS ${table}_live ON ${table} (logical_address) WHERE superseded_at IS NULL;
         CREATE TABLE IF NOT EXISTS journal_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+        // One file holds one journal kind. A concurrent first opener of the other
+        // kind can commit its table before this transaction gets the writer lock;
+        // that table is visible here, so refuse and roll this opener back.
+        const foreign = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB '*_creates' AND name <> ?").get(table);
+        if (foreign) throw new TypeError('the wallet journal file was made for another kind of journal; it is not read');
         // Another first opener may have initialized while this one waited for the writer lock.
         if (!db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get()) {
           if (db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get()) throw new TypeError('the wallet journal lost its identity while retaining signed CREATEs');
@@ -247,7 +252,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       }).immediate();
       journalId = db.prepare("SELECT value FROM journal_meta WHERE key = 'journal-id'").get().value;
     }
-    if (!db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) throw new TypeError('the wallet journal file was made for another kind of journal; it is not read');
+    const own = db.prepare("SELECT 1 AS found FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+    const foreign = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB '*_creates' AND name <> ?").get(table);
+    if (!own || foreign) throw new TypeError('the wallet journal file was made for another kind of journal; it is not read');
   } catch (error) { db.close(); throw error.code === 'SQLITE_BUSY' ? journalBusy(error) : error; }
   // SQLite's writer lock is the signing lease across handles and processes.
   // A crash releases it. Commit the signed bytes before any broadcast.
@@ -279,7 +286,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   const rows =(logicalAddress) => db.prepare(`SELECT receipt_content_hash, tx_hash, nonce, signed_transaction, superseded_at FROM ${table} WHERE logical_address = ? ORDER BY nonce`).all(logicalAddress);
   // One evidence per address: a question about other bytes at a kept address is refused.
   const keptFor = (input) => {
-    if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
+    if (!object(input) || typeof input.logicalAddress !== 'string' || typeof input.receiptContentHash !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const kept = rows(input.logicalAddress);
     if (kept.some((row) => row.receipt_content_hash !== input.receiptContentHash || signedCreateProblem({ signedTransaction: row.signed_transaction, txHash: row.tx_hash, nonce: Number(row.nonce) }, input))) throw Object.assign(new Error('the wallet journal holds another evidence at this address'), { code: 'wallet_journal_conflict' });
     const live = kept.find((row) => row.superseded_at === null);
@@ -430,7 +437,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
 
   // Read only: the live kept CREATE's public signed projection, as signCreate gave it.
   async function readSignedProjection(input) {
-    if (!object(input) || typeof input.logicalAddress !== 'string') throw new TypeError('the wallet journal is asked about no payment-evidence address');
+    if (!object(input) || typeof input.logicalAddress !== 'string') throw new TypeError('the wallet journal is asked about no journal address');
     const live = db.prepare(`SELECT signed_transaction FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(input.logicalAddress);
     return live ? JSON.parse(live.signed_transaction) : null;
   }

@@ -8,6 +8,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import DatabaseSync from 'better-sqlite3';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { createDeliverableWalletJournal, createPaymentEvidenceWalletJournal } from '../src/index.mjs';
 import { deliverableJournalFor } from '../src/dacs/deliverable-wallet-journal.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
@@ -137,6 +140,37 @@ test('a job id that is not a canonical ULID is refused before the wallet is aske
   assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
 });
 
+test('a job id that differs from the report, the delivery binding or the Deliverable address is refused before the wallet is asked', async (t) => {
+  const w = wallet(t);
+  const journal = w.open();
+  t.after(() => journal.close());
+  const other = '01J8N4YV7YVYQ4DB7M8T4C7W0B', binding = w.input().deliveryBinding;
+  const report = { ...w.input().report, jobId: other };
+  // The journal is asked about one Deliverable of one job: the id, the artifact,
+  // its binding and its address must all name that job, or the journal refuses
+  // before the wallet can sign a CREATE under a mismatched label.
+  for (const [label, extra] of [['the report', { report, receiptContentHash: sha256Hex(canonicalize(report)) }],
+    ['the delivery binding', { deliveryBinding: { ...binding, jobId: other } }], ['the Deliverable address', { logicalAddress: `dacs4:deliverable:${other}` }]]) {
+    await assert.rejects(journal.submit(w.input(extra)), TypeError, label);
+    await assert.rejects(journal.reconcile(w.input(extra)), TypeError, label);
+  }
+  assert.equal(w.calls.sign, 0, 'no signature is asked about another job');
+  assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
+});
+
+test('a writer that is not a nonempty claim, or a delivery binding that is not a plain JSON record, is refused before the wallet is asked', async (t) => {
+  const w = wallet(t), binding = w.input().deliveryBinding;
+  const journal = w.open();
+  t.after(() => journal.close());
+  for (const [label, extra] of [['an empty writer', { writer: '' }], ['a Date as the delivery binding', { deliveryBinding: new Date(0) }],
+    ['a nested Date in the delivery binding', { deliveryBinding: { ...binding, at: new Date(0) } }]]) {
+    await assert.rejects(journal.submit(w.input(extra)), TypeError, label);
+    await assert.rejects(journal.reconcile(w.input(extra)), TypeError, label);
+  }
+  assert.equal(w.calls.sign, 0, 'nothing is signed for an unusable input');
+  assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
+});
+
 test('the question belongs to the capability only when both are one journal\'s: a wrapper, two journals, an evidence journal or a scripted question is refused', async (t) => {
   const w = wallet(t);
   const journal = w.open(), other = w.open(join(w.dir, 'other.sqlite')), evidence = w.open(join(w.dir, 'evidence.sqlite'), createPaymentEvidenceWalletJournal);
@@ -158,4 +192,35 @@ test('a journal file made for the other kind is refused, so evidence and Deliver
   const deliverables = w.open(join(w.dir, 'deliverables.sqlite'));
   deliverables.close();
   assert.throws(() => w.open(join(w.dir, 'deliverables.sqlite'), createPaymentEvidenceWalletJournal), /made for another kind of journal/);
+});
+
+test('simultaneous first opens of the two journal kinds keep one kind: the other is refused, never mixed', async (t) => {
+  const w = wallet(t), barrier = new SharedArrayBuffer(4), starts = [], answers = [], exits = [];
+  for (const kind of ['deliverable', 'evidence']) {
+    const worker = new Worker(new URL('./helpers/deliverable-wallet-initialize-kind.mjs', import.meta.url), { workerData: { path: w.path, barrier, kind } });
+    t.after(() => worker.terminate());
+    starts.push(new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.on('message', (message) => { if (message.ready) resolve(); });
+    }));
+    answers.push(new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.on('message', (message) => { if (!message.ready) resolve(message); });
+    }));
+    exits.push(new Promise((resolve, reject) => { worker.once('error', reject); worker.once('exit', resolve); }));
+  }
+  await Promise.all(starts);
+  Atomics.store(new Int32Array(barrier), 0, 1); Atomics.notify(new Int32Array(barrier), 0);
+  const results = await Promise.all(answers);
+  const opened = results.filter((result) => result.error === undefined), refused = results.filter((result) => result.error !== undefined);
+  assert.equal(opened.length, 1, `exactly one journal kind opens the file: ${JSON.stringify(results)}`);
+  assert.match(opened[0].journalId, /^[0-9a-f]{32}$/);
+  assert.equal(refused.length, 1, `the other kind is refused: ${JSON.stringify(results)}`);
+  assert.match(refused[0].error, /made for another kind of journal/);
+  assert.deepEqual(await Promise.all(exits), [0, 0]);
+  const db = new DatabaseSync(w.path);
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB '*_creates'").all().map((row) => row.name);
+    assert.equal(tables.length, 1, `exactly one kind's table: ${JSON.stringify(tables)}`);
+  } finally { db.close(); }
 });
