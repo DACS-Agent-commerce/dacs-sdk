@@ -25,7 +25,7 @@ for(const outcome of ['unattempted','present','indeterminate','absent','issuer',
  assert.equal(f.controls.signs,0);assert.equal(signatures,0);
  if(outcome==='unattempted'){
   const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(issued,2);assert.equal(signatures,1);
- }else{await assert.rejects(f.run(),e=>e.code==='seller_vet_reconciliation_required');assert.equal(issued,1);assert.equal(f.controls.signs,0);assert.equal(f.local.writes.length,0);}
+ }else{await assert.rejects(f.run(),e=>e.code==='seller_vet_reconciliation_required');assert.equal(issued,1);assert.equal(f.controls.presentationSigns,0);assert.equal(f.local.writes.length,1);}
  f.base.close();
 });
 
@@ -68,5 +68,5 @@ for(const change of ['signed','replaced'])test(`expired challenge rotation prese
  updated.signing={...updated.signing,state:'complete',signature};
  if(change==='replaced')updated.challenge.sessionNonce='ab'.repeat(32);
  await p.state.update(job.jobId,current=>({...current,presentation:updated}));
- continueRead();assert.deepEqual(await work,updated.bundle);assert.deepEqual((await p.state.read(job.jobId)).presentation,updated);assert.equal(f.controls.signs,0);f.base.close();
+ continueRead();assert.deepEqual(await work,updated.bundle);assert.deepEqual((await p.state.read(job.jobId)).presentation,updated);assert.equal(f.controls.presentationSigns,0);f.base.close();
 });
