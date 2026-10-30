@@ -180,7 +180,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // address lock with nothing awaited before the CREATE intent), or just before
   // a wallet or delivery call. A holder that lost its job's row sends nothing.
   const heldFor = (jobId) => (durable ? () => durable.assertHeld(jobId) : undefined);
-  function recordPhase(session, index, invokedAt, result) {
+  // `write = false` records onto a detached adoption copy: the caller saves
+  // both phases once, so a crash cannot keep a commitment without its phases.
+  function recordPhase(session, index, invokedAt, result, write = true) {
     const contextDelta = structuredClone(result.contextDelta ?? {});
     const entry = { index, step: structuredClone(listing.pipeline[index]), invokedAt, result: { ...structuredClone(result), contextDelta }, contextDelta };
     session.phaseResults ??= [];
@@ -193,7 +195,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     session.startedAt ??= invokedAt;
     session.phaseResults.push(entry);
     session.lastUpdatedAt = Math.max(session.lastUpdatedAt ?? session.startedAt, invokedAt);
-    persist(session);
+    if (write) persist(session);
     return entry;
   }
   function restore(session) {
@@ -325,14 +327,15 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   // DACS-3 §8.4.1: negotiation succeeds only with both signatures anchored
   // (SR-2). The seller's own contribution is not that, so `commit` records this
-  // phase, after the buyer's Agreement readback has authenticated.
-  function retainNegotiatePhase(session, jobId) {
+  // phase once the buyer's Agreement readback has authenticated, before any
+  // commitment effect.
+  function retainNegotiatePhase(session, jobId, write = true) {
     const agreementRef = { anchor: { kind: 'storage-program', locator: fixedPriceAgreementLogicalAddress(jobId) }, contentHash: session.agreementHash };
     return recordPhase(session, 0, session.proposalAdmission.observedAt, { ok: true,
-      contextDelta: { 'negotiate-fixed-price': { agreementHash: session.agreementHash, agreementRef } } });
+      contextDelta: { 'negotiate-fixed-price': { agreementHash: session.agreementHash, agreementRef } } }, write);
   }
 
-  function retainCommitmentPhase(session, finalized) {
+  function retainCommitmentPhase(session, finalized, write = true) {
     const commitmentRef = { anchor:{kind:'storage-program',locator:finalized.logicalAddress}, contentHash:contentHash(finalized.record), signer: claim };
     const commitmentTxRef = finalized.anchorTxRef;
     const commitmentDelta = { 'commit-payee-bound-agreement': {
@@ -347,7 +350,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       attestationRef: commitmentRef,
       anchorReceipt: structuredClone(finalized.anchorReceipt),
       contextDelta: commitmentDelta,
-    });
+    }, write);
   }
 
   // ---- DACS-3: finalized commitment (orchestrator) ----
@@ -389,6 +392,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // Retain public proof only after ordinary native authentication, before any
     // commitment effect. Restart can reauthenticate it without buyer authority.
     if (native && projection !== undefined) session.agreementSignedProjection = structuredClone(projection);
+    // The anchored, co-signed Agreement has now authenticated, so the negotiate
+    // phase is a completed fact. Record it before the commitment is published:
+    // a refused or indeterminate commitment CREATE, or a crash after the CREATE
+    // is anchored, must not erase a negotiation that already succeeded. The
+    // early commitment is held before the buyer anchors, so it records nothing.
+    if (!early) retainNegotiatePhase(session, jobId);
     if (early && !session.signatureCommitmentAttempt && signatureCommitmentReady) {
       try { await signatureCommitmentReady(); }
       catch { throw new SellerAgentError('signature_connection_unavailable', 'early commitment connection reservation is unavailable', 503); }
@@ -469,9 +478,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       session.stage='committed';persist(session);
       return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
     }
-    // Recorded before the commitment is retained, so a saved commitment never
+    // Recorded above, before the commitment effect, so a saved commitment never
     // lacks the phase before it.
-    retainNegotiatePhase(session, jobId);
     session.agreement = agreement;
     session.agreementRef = agreementRef;
     if (native) session.agreementAnchor = nativeAgreementView(native);
@@ -1288,7 +1296,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         if (native && (body.signedProjection ?? adopted.agreementSignedProjection) !== undefined) adopted.agreementSignedProjection = json(body.signedProjection ?? adopted.agreementSignedProjection);
         adopted.commitment = json(finalized);
         adopted.stage = 'committed';
-        retainCommitmentPhase(adopted, adopted.commitment);
+        // The adoption finalizes the same authenticated Agreement read back
+        // above, so the negotiate phase precedes the commitment phase here too.
+        // Both are recorded without saving; the single persist below writes
+        // them together, because a commitment retained without its phases can
+        // never be adopted by a retry.
+        retainNegotiatePhase(adopted, request.jobId, false);
+        retainCommitmentPhase(adopted, adopted.commitment, false);
         persist(adopted);
         Object.assign(session, adopted);
       } else if (contentHash(session.commitment.record) !== contentHash(finalized.record) ||
