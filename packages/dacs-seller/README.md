@@ -58,10 +58,10 @@ const host = await startSellerHost({
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
   sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt,
-                         // readRevocationSurfaces, readRevocationMarker, readSessionRecipeRegistryPin?, vetEvidence? }: the
+                         // readRevocationSurfaces, readRevocationMarker, readSessionRecipeRegistryPin? }: the
                          // seller-owned session admission, Vet record reader, receipt reader and receipt
                          // verifier, revocation readers, optional registry pin reader for presence-only
-                         // Vet requirements, and optional Vet evidence readers (src/dacs/session-admission.mjs); admit must name both participants on the exact
+                         // Vet requirements (src/dacs/session-admission.mjs); admit must name both participants on the exact
                          // [PROFILE.json](PROFILE.json) profile: standardRevision
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
@@ -455,42 +455,29 @@ per-client limiter so one client cannot exhaust the shared request budget.
   presence-only Vet to omit `expiresAt`. It refuses an expiring bundle before
   signing an Agreement contribution, so advancing the clock cannot invalidate
   a retained presence session. Core presence evaluation is unchanged.
-  A requirement with a required verified claim replays only through the
-  operator's optional `sessionAdmission.vetEvidence`, five required readers and
-  an optional sixth that each also receive `{ jobId, role, party }`:
-  `resolveContent({ anchor, contentHash })`
-  answers `null`, `{ encoding: 'canonical-json', value }` or
-  `{ encoding: 'bytes', value }` (base64url) for a VerifyResult or its
-  authority content; `resolveRecipe({ scheme, method, recipeVersion })` the
-  steward-signed recipe or `null` (the registry read; the core `resolveRecipe`
-  over the operator's pinned registry fits); `isRecipeSignerAuthorized({ recipe,
-  signature })` and `isVerifyResultSignerAuthorized({ result, signature,
-  expected })` answer `true` only for a signer the operator trusts; and
-  `verifyAuthorityAttestation({ result, expected, recipe, content })` answers
-  `'valid'`, `'invalid'` or `'unresolved'`. A claim that omits `recipeVersion`
-  selects the family's latest entry under DACS-2 §7.4.3 and is refused unless
-  that exact entry is live, so it also
-  needs `resolveLatestRecipe({ scheme, method, required })`, which answers the
-  operator's authenticated session registry selection
-  `{ sessionRecipeRegistrySnapshotHash, recipeVersion, availability }` (or
-  `null`), naming the family's latest entry and that entry's availability; the
-  result's pinned version must equal it and `availability` must be `live`.
-  An older live version is never selected as a fallback when the latest entry
-  is not live, and every such claim across both
-  party records of one job must resolve against one snapshot pin. Without that
-  reader an unpinned
-  claim is refused rather than guessed. The SDK still hashes each content
-  against its reference, verifies both signatures, re-derives a
-  `ClaimRequirement.parameters` predicate and recomputes the aggregation. Each
-  read has the 64 KiB, value, list and 10 s limits of the
-  other admission readers, and one replay has a 30 s total deadline that also
-  aborts the read in flight; a reader
-  that throws, stalls, rejects with `undefined` or answers too much makes the
-  proposal `indeterminate` with that cause, while a malformed content reply
-  rejects the Vet record with its cause. Without `vetEvidence`, a
-  requirement with a required verified claim
-  is refused. Otherwise the Agreement is not signed, before any
-  payment. A session
+  The agent currently restores only empty result invocations and refuses
+  evidence-bearing invocations before replay. Supplying `sessionAdmission.vetEvidence`
+  is rejected explicitly; it does not enable verified-claim proposals.
+
+  The direct `vetRecordProblem` helper separately accepts `evidence` for strict
+  replay preparation: `resolveContent`, `resolveRecipe`,
+  `isRecipeSignerAuthorized`, `isVerifyResultSignerAuthorized` and
+  `verifyAuthorityAttestation`, plus optional `resolveLatestRecipe`. Each receives
+  `{ jobId, role, party }`. Content replies are `null`, canonical JSON objects,
+  or base64url bytes; recipe and result signatures, authority evidence and
+  requirement parameters are independently checked by the core.
+  `resolveLatestRecipe({ scheme, method, required })` returns the authenticated
+  `{ sessionRecipeRegistrySnapshotHash, recipeVersion, availability }` selection
+  or `null`. An implicit member is satisfied only by that family's selected
+  latest live version. A result outside that version leaves the member
+  unsatisfied; an independently passing pinned alternative may still satisfy
+  its group. Missing, non-live or unprovable selected family heads refuse the
+  replay before aggregation, including unused alternatives (DACS-2 §7.4.3).
+  Malformed replies and inconsistent snapshot pins also refuse the whole record. Both party records share one snapshot pin, and a replay caches each
+  family's bounded registry read. No older live version is chosen as fallback.
+  Reads retain their 64 KiB, value/list, 10 s individual and 30 s total limits;
+  unavailable readers keep their original cause. These helper capabilities do
+  not change the agent's invocation or restoration gate. A session
   in flight, signed under its pin, continues without a new admission or
   revocation check. The agent's startup check reads only the Listing's own
   bytes, signature and rail; revocation is checked per new session (above).
