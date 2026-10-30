@@ -432,19 +432,20 @@ const sameJcs = (left: unknown, right: unknown): boolean => {
 };
 
 /**
- * True when one Vet requirement invocation is not the one the fulfilment core
- * accepts for its party's record: the evaluated party, the counterparty
+ * True when one Vet requirement invocation differs from its party's
+ * authenticated provenance: the evaluated party, the counterparty
  * verifier, the composite address, the Listing-owned buyer requirement, the
  * coverage of every required/oneOf member, this job's deal-specific results
- * and each result's address. The fulfilment core runs it over the audit
- * source at delivery.
+ * and each result's address. The seller package and fulfilment core share
+ * this predicate; the core applies additional profile restrictions at delivery.
  *
  * A presence-only member (`verificationRequired: false`) needs no result and
  * may have none: DACS-2 forbids a synthetic VerifyResult for it. It is only
  * counted as covered when the strict verifier's presence preflight (DACS-1
- * PCR-1/PCR-2) accepts it. Its presence is counted by the strict replay of the
- * Vet record over the authenticated bundle, which this structural check does
- * not repeat.
+ * PCR-1/PCR-2) accepts it. The seller package counts presence by strict replay
+ * of the Vet record over the authenticated bundle, which this structural
+ * check does not repeat. Core delivery refuses presence-only invocations
+ * because its finalizer cannot supply the companion bundle and registry pin.
  */
 export function isSellerFulfilmentVetInvocationMismatch(
   invocation: unknown,

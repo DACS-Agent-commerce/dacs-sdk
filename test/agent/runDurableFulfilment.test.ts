@@ -1479,6 +1479,25 @@ function durableHarness(
 }
 
 describe("runDurableFulfilmentCore on repaired #120", () => {
+  test.each(["required", "oneOf"] as const)("refuses unsupported presence-only %s before durable delivery on retry", async (placement) => {
+    const h = durableHarness();
+    const invocation = h.fixture.auditSource.artifacts.vetRequirements[0]!;
+    const presence = { scheme: "did", verificationRequired: false };
+    invocation.requirement = placement === "required"
+      ? { requirementVersion: "1", required: [presence] }
+      : { requirementVersion: "1", required: [], oneOf: [[presence]] };
+    invocation.freshness = [];
+    h.fixture.listing.buyerRequirement = structuredClone(invocation.requirement);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await runDurableFulfilmentCore(
+        h.fixture.request, h.deps, h.durability,
+      )).toMatchObject({ decision: "rejected", code: "audit-source-mismatch" });
+      expect(h.fixture.store.consumed).toBe(false);
+      expect(h.counts).toEqual({ payload: 0, delivery: 0, evidence: 0, final: 0 });
+    }
+  });
+
   test("returns a durable delivery-ready result and resumes without a background promise", async () => {
     const h = durableHarness();
 

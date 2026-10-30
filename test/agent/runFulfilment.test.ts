@@ -1340,35 +1340,44 @@ describe("runFulfilmentCore", () => {
     expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
   });
 
-  test("completes delivery when the buyer requirement is presence-only and no result covers it", async () => {
+  test.each([
+    ["buyer", "required"],
+    ["seller", "required"],
+    ["buyer", "oneOf"],
+    ["seller", "oneOf"],
+    ["buyer", "mixed required"],
+    ["buyer", "mixed oneOf"],
+  ] as const)("refuses unsupported presence-only %s %s before delivery on every attempt", async (party, placement) => {
     const f = fixture();
+    f.deps.prepareDelivery = vi.fn(f.deps.prepareDelivery);
     f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
-    const invocation = f.auditSource.artifacts.vetRequirements[0]!;
-    invocation.requirement = {
-      requirementVersion: "1",
-      required: [{ scheme: "did", verificationRequired: false }],
-    };
-    invocation.freshness = [];
-    f.listing.buyerRequirement = structuredClone(invocation.requirement);
+    const invocation = f.auditSource.artifacts.vetRequirements[party === "buyer" ? 0 : 1]!;
+    const presence = { scheme: "did", verificationRequired: false };
+    if (placement === "mixed required") {
+      invocation.requirement.required.push(presence);
+    } else if (placement === "mixed oneOf") {
+      // The verified alternative is covered; the finalizer still needs
+      // presence authority for the other alternative, which core cannot supply.
+      invocation.requirement.oneOf = [[...structuredClone(invocation.requirement.required), presence]];
+    } else {
+      invocation.requirement = placement === "required"
+        ? { requirementVersion: "1", required: [presence] }
+        : { requirementVersion: "1", required: [], oneOf: [[presence]] };
+      invocation.freshness = [];
+    }
+    if (party === "buyer") f.listing.buyerRequirement = structuredClone(invocation.requirement);
     expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
 
-    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
-      decision: "completed",
-    });
-    expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
-  });
-
-  test("completes delivery when a oneOf alternative is presence-only and no result covers it", async () => {
-    const f = fixture();
-    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
-    const invocation = f.auditSource.artifacts.vetRequirements[0]!;
-    invocation.requirement.oneOf = [[{ scheme: "domain", verificationRequired: false }]];
-    f.listing.buyerRequirement = structuredClone(invocation.requirement);
-
-    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
-      decision: "completed",
-    });
-    expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+        reasons: [expect.stringContaining("presence-only")],
+      });
+      expect(f.store.consumed).toBe(false);
+    }
+    expect(f.deps.prepareDelivery).not.toHaveBeenCalled();
+    expect(f.deps.submitDelivery).not.toHaveBeenCalled();
   });
 
   test("refuses delivery when a synthetic result covers a presence-only requirement", async () => {
