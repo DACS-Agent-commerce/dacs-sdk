@@ -7,6 +7,7 @@ import { localAnchor } from './local-anchor-fixture.mjs';
 import { signAnchorWrite, verifyFixtureReceipt } from '../../src/dacs/fixture-anchors.mjs';
 import { createInMemoryPartyVetStore } from '../../src/devnet-demo/party-vet-store.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
+import { purchaseSupport } from '../../src/dacs/listing.mjs';
 const url=new URL('../../src/devnet-demo/agreement-context.mjs',import.meta.url);
 export async function stagedProvider(config){
  const module=await privateModule(url,[],source=>{
@@ -39,6 +40,6 @@ export function productionFixture(options={}){
   evaluate:async input=>{const nonce=input.identityBundle.sessionNonce;if(consumed.has(nonce))throw new Error('TEST buyer challenge already consumed');consumed.add(nonce);seen.push(structuredClone(input));if(config.now()+(controls.buyerSkew??0)>expiries.get(nonce))throw new Error('TEST expired challenge');const signer=controls.wrongSigner?seller:buyer;const record=await recordFor(input,signer,controls.decision,controls.qualifiedSigner?signer.claim+'?region=GB':signer.claim);evaluations.set(evaluationKey(input),record);return record;},
  };
  const config={anchor,wallet:{claim:seller.claim,signBytes:bytes=>{controls.signs++;if(Buffer.from(bytes).toString().startsWith('dacs-bundle-presentation:v1:'))controls.presentationSigns++;return seller.signBytes(bytes);}},listing,store,counterparty,now:()=>NOW,log:()=>{}};
- const input=(jobId=JOB)=>({scope:{jobId,buyer:buyer.claim,seller:seller.claim,generatedAt:NOW,payee:seller.address,listingPin:pin,price:listing.pricing.price},buyerIdentityBundle:fixtureIdentityBundle(buyer,NOW)});
+ const input=(jobId=JOB)=>({scope:{jobId,buyer:buyer.claim,seller:seller.claim,generatedAt:NOW,payee:seller.address,listingPin:pin,price:purchaseSupport(listing).price},buyerIdentityBundle:fixtureIdentityBundle(buyer,NOW)});
  return{base,store,local,anchor,counterparty,controls,listing,pin,seen,evaluations,issued,consumed,expiries,input,config,provider:()=>stagedProvider(config),run:async(value=input())=>(await stagedProvider(config)).jobVet(value.scope,value.buyerIdentityBundle,()=>true)};
 }
