@@ -171,7 +171,7 @@ test('one outcome classifier: refusals keep their status, releases need proof, r
  assert.deepEqual(pick(transportOutcome(P,{error:definite},{retained:false,recovering:true})),['no-effect',422,false,true,true]);
  assert.deepEqual(pick(transportOutcome(P,{error:gate},{retained:true,recovering:true})),['indeterminate',503,false,false,false],'retained proposal work keeps its slot');
  assert.deepEqual(pick(transportOutcome(P,{answer:{disposition:'rejected'}},{retained:true,recovering:true})),['indeterminate',503,false,false,false]);
- assert.deepEqual(pick(transportOutcome(P,{answer:{disposition:'rejected'}})),['present',200,false,false,true],'the default is retained: a first run without proof completes, never releases');
+ assert.deepEqual(pick(transportOutcome(P,{answer:{disposition:'rejected'}})),['indeterminate',503,false,false,true],'the default is retained: a first run without proof stays uncertain');
  assert.deepEqual(pick(transportOutcome(P,{answer:{disposition:'waiting'}},{retained:true,recovering:true})),['retry',200,true,false,true]);
  assert.deepEqual(pick(transportOutcome(P,{error:unknown},{retained:false,recovering:true})),['indeterminate',503,false,false,false],'an arbitrary exception proves nothing');
  assert.deepEqual(pick(transportOutcome(P,{error:unknown},{retained:false})),['indeterminate',503,false,false,true],'a first run records it uncertain');
@@ -274,6 +274,51 @@ test('retained proposal gate refusals are uncertain on first run and recovery',(
   assert.deepEqual(pick(transportOutcome(path,{error},{retained:true,recovering:true})),['indeterminate',503,false,false,false]);
   assert.deepEqual(pick(transportOutcome(path,{error},{retained:false})),['no-effect',status,false,true,true]);
  }
+});
+for(const [mode,options] of [['first run',{}],['resumed run',{resumed:true}],['recovery',{recovering:true}],['read-only recovery',{recovering:true,readOnly:true}]]){
+ for(const answer of [{disposition:'rejected'},{status:'rejected'},{disposition:'rejected',code:'party_vet_non_pass'},{status:'rejected',code:'party_vet_non_pass'}]){
+  test(`retained returned proposal rejection stays uncertain on ${mode}: ${JSON.stringify(answer)}`,()=>{
+   const out=transportOutcome('/dacs/v1/agreements/proposals',{answer},{...options,retained:true});
+   assert.deepEqual([out.disposition,out.status,out.retry,out.noEffect,out.settle],['indeterminate',503,false,false,!options.recovering]);
+  });
+ }
+}
+test('returned proposal rejection releases only with proof that no work remains',()=>{
+ const path='/dacs/v1/agreements/proposals';
+ for(const answer of [{disposition:'rejected'},{status:'rejected'},{disposition:'rejected',code:'party_vet_non_pass'}]){
+  for(const recovering of [false,true]){
+   const out=transportOutcome(path,{answer},{retained:false,recovering});
+   assert.deepEqual([out.disposition,out.status,out.retry,out.noEffect,out.settle],['no-effect',200,false,true,true]);
+  }
+ }
+});
+for(const recovering of [false,true])test(`HTTP retained publication signature survives a returned rejection and healthy retry, recovery=${recovering}`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),signatures=[];let cut=true;
+ const original=f.config.signer.sign;
+ f.config.signer.sign=bytes=>{
+  const text=Buffer.from(bytes).toString();
+  if(cut&&text.includes('"kind":"session"')&&JSON.parse(text.slice(text.indexOf('{'))).body?.session?.sellerContribution){cut=false;throw new Error('TEST contribution publication interrupted');}
+  const signature=original(bytes);
+  if(text.startsWith('dacs-payee-bound-agreement:v1:'))signatures.push(Buffer.from(signature).toString('base64url'));
+  return signature;
+ };
+ const statuses=[],fetchImpl=globalThis.fetch;
+ t.mock.method(globalThis,'fetch',async(...args)=>{const response=await fetchImpl(...args);statuses.push(response.status);return response;});
+ const agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
+ assert.equal((await w.peer.propose(body)).disposition,'indeterminate');
+ assert.equal(cut,false,'publication failed after signing');assert.equal(signatures.length,1);assert.equal(agent.retainsProposalWork(JOB),true);
+ if(recovering)assert.equal(w.store.reserve(w.request,body).disposition,'perform','leave the retried slot pending for recovery');
+ let verifications=0;
+ f.admission.verifyReceiptWith(()=>++verifications===3?'invalid':'valid');
+ const refused=await outcome(w.peer.propose(body));
+ assert.equal(statuses.at(-1),503,'a returned rejection with retained work must remain HTTP uncertain');
+ assert.equal(refused.error?.code,'seller_unavailable');assert.equal(verifications,3,'restore passes before the proposal receipt recheck refuses');
+ assert.equal(w.store.reserve(w.request,body).disposition,'uncertain');assert.equal(signatures.length,1);
+ f.admission.verifyReceiptWith(null);
+ const complete=await w.peer.propose(body);
+ assert.equal(statuses.at(-1),200);assert.equal(complete.disposition,'complete');
+ assert.equal(signatures.length,1);assert.equal(complete.contribution.signature.value,signatures[0]);
+ assert.equal(w.store.reserve(w.request,body).disposition,'cached');
 });
 for(const reopened of [false,true])test(`HTTP retained proposal refusal keeps an uncertain slot and can recover, reopened=${reopened}`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);await agent.receiveProposal(body);agent.close();const signed=f.signed.length;
