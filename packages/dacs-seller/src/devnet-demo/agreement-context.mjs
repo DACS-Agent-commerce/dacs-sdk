@@ -1,6 +1,6 @@
 import { isProvenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mjs';
 import { listingPin, protocolSupport } from '../dacs/purchase-protocol.mjs';
-import { DEM_RAIL, verifyComponent } from '../dacs/listing.mjs';
+import { DEM_RAIL, purchaseSupport, verifyComponent } from '../dacs/listing.mjs';
 import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore, identityBundleHash, partyVetCore, verifyCompositeVerificationRecord, vetPhaseFailureClass } from '@kynesyslabs/dacs';
 import { addressForClaim } from '../dacs/demos-claims.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
@@ -197,7 +197,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     access?.assertWallet(addressForClaim(buyer));
   };
   const state=partyVetState(store,wallet.claim);
-  const ownTerms=t=>Boolean(t?.listingPin&&t.price&&same(t.listingPin,listingPin(listing))&&t.seller===wallet.claim&&t.payee===addressForClaim(wallet.claim)&&same(t.price,listing.pricing.price));
+  const ownTerms=t=>Boolean(t?.listingPin&&t.price&&same(t.listingPin,listingPin(listing))&&t.seller===wallet.claim&&t.payee===addressForClaim(wallet.claim)&&same(t.price,purchaseSupport(listing).price));
   const contexts=new Map(),invocations=[],vets=new Map(),running=new Map(),drops=new Set(),releasing=new Map();
   const rememberInvocation=value=>{invocations.push(value);if(invocations.length>INVOCATION_DIAGNOSTIC_LIMIT)invocations.shift();};
   const verifier={isSignerAuthorized:(_artifact,signature)=>signature.signer===wallet.claim,resolvePublicKey:(signature)=>signature.signer===wallet.claim?signature.signer:null,verify:({signedBytes,signature})=>verifyComponent({signedBytes,signature})};
