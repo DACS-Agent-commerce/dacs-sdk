@@ -193,3 +193,34 @@ test('a journal file made for the other kind is refused, so evidence and Deliver
   deliverables.close();
   assert.throws(() => w.open(join(w.dir, 'deliverables.sqlite'), createPaymentEvidenceWalletJournal), /made for another kind of journal/);
 });
+
+test('simultaneous first opens of the two journal kinds keep one kind: the other is refused, never mixed', async (t) => {
+  const w = wallet(t), barrier = new SharedArrayBuffer(4), starts = [], answers = [], exits = [];
+  for (const kind of ['deliverable', 'evidence']) {
+    const worker = new Worker(new URL('./helpers/deliverable-wallet-initialize-kind.mjs', import.meta.url), { workerData: { path: w.path, barrier, kind } });
+    t.after(() => worker.terminate());
+    starts.push(new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.on('message', (message) => { if (message.ready) resolve(); });
+    }));
+    answers.push(new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.on('message', (message) => { if (!message.ready) resolve(message); });
+    }));
+    exits.push(new Promise((resolve, reject) => { worker.once('error', reject); worker.once('exit', resolve); }));
+  }
+  await Promise.all(starts);
+  Atomics.store(new Int32Array(barrier), 0, 1); Atomics.notify(new Int32Array(barrier), 0);
+  const results = await Promise.all(answers);
+  const opened = results.filter((result) => result.error === undefined), refused = results.filter((result) => result.error !== undefined);
+  assert.equal(opened.length, 1, `exactly one journal kind opens the file: ${JSON.stringify(results)}`);
+  assert.match(opened[0].journalId, /^[0-9a-f]{32}$/);
+  assert.equal(refused.length, 1, `the other kind is refused: ${JSON.stringify(results)}`);
+  assert.match(refused[0].error, /made for another kind of journal/);
+  assert.deepEqual(await Promise.all(exits), [0, 0]);
+  const db = new DatabaseSync(w.path);
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB '*_creates'").all().map((row) => row.name);
+    assert.equal(tables.length, 1, `exactly one kind's table: ${JSON.stringify(tables)}`);
+  } finally { db.close(); }
+});
