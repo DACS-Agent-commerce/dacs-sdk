@@ -81,7 +81,7 @@ test('a presence-only record is refused for another bundle of the same party', a
   assert.match(await problem({ bundle: other }), /evaluates another job, party or bundle/);
 });
 
-test('a record over a verified claim is still replayed with no presence authority and no registry pin', async () => {
+test('a record over no required claim is replayed with no presence authority and no registry pin', async () => {
   const { problem } = await fixture({ requirementVersion: '1', required: [], preferredPresentation: 'any' });
   assert.equal(await problem({ registryPin: undefined }), null);
 });
@@ -148,6 +148,102 @@ test('presence-only replay keeps one registry snapshot across the job records', 
   assert.match(await problem({ sessionRegistryPins: pins, registryPin: 'f'.repeat(64) }), /another session registry snapshot/);
 });
 
+test('any well-formed operator pin is accepted without authenticating it', async () => {
+  const { problem } = await fixture(presence('did'));
+  for (const registryPin of ['f'.repeat(64), '0'.repeat(64)]) assert.equal(await problem({ registryPin }), null);
+});
+
+test('a non-expiring presence session reopens ten years later without another Agreement signature', async t => {
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
+  const agent = await f.open(), request = await f.proposal(agent), first = await agent.receiveProposal(request);
+  assert.equal(first.disposition, 'complete');
+  agent.close();
+  f.advance(10 * 365 * 24 * 60 * 60 * 1000);
+  const reopened = await f.open(), repeat = await reopened.receiveProposal(request);
+  assert.equal(repeat.disposition, 'complete');
+  assert.deepEqual(repeat.contribution, first.contribution);
+  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 1);
+});
+
+for (const mode of ['absent', 'failing']) test(`presence restart refuses a ${mode} pin reader and keeps the cause`, async t => {
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
+  const agent = await f.open(), request = await f.proposal(agent);
+  assert.equal((await agent.receiveProposal(request)).disposition, 'complete');
+  agent.close();
+  const cause = new Error('TEST restart pin read failed');
+  const { readSessionRecipeRegistryPin: _pin, ...withoutPin } = f.admission.sessionAdmission;
+  f.config.sessionAdmission = mode === 'absent' ? withoutPin : { ...withoutPin, readSessionRecipeRegistryPin: async () => { throw cause; } };
+  await assert.rejects(f.open(), error => {
+    assert.equal(error.code, 'seller_state_unverified');
+    assert.match(error.message, mode === 'absent' ? /no pinned registry authority/ : /pinned registry authority cannot be read/);
+    if (mode === 'failing') assert.equal(error.cause, cause);
+    return true;
+  });
+  f.config.sessionAdmission = f.admission.sessionAdmission;
+  const reopened = await f.open();
+  assert.equal((await reopened.receiveProposal(request)).disposition, 'complete');
+  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 1);
+});
+
+test('a wrong profile invocation is rejected before a failing pin reader is called', async t => {
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
+  let reads = 0;
+  f.config.sessionAdmission = { ...f.admission.sessionAdmission, readSessionRecipeRegistryPin: async () => { reads++; throw new Error('TEST registry is down'); } };
+  const agent = await f.open(), request = await f.proposal(agent);
+  const context = f.contexts.get(request.transportIdentity.jobId);
+  context.vetRequirements[1].requirement = presence('did');
+  const answer = await agent.receiveProposal(request);
+  assert.equal(answer.disposition, 'rejected');
+  assert.match(answer.reason, /requirement this profile restores/);
+  assert.equal(reads, 0);
+  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
+});
+
+for (const equivalent of [true, false]) test(`canonical ${equivalent ? 'equivalent' : 'distinct'} buyer identity is checked in presence replay and counterparty admission`, async t => {
+  const replay = await fixture(presence('did')), presented = structuredClone(replay.buyerBundle);
+  presented.presentation.signatures[0].ref = equivalent ? `${presented.presentedBy}?label=buyer` : wallet(41).claim;
+  if (equivalent) assert.equal(await replay.problem({ bundle: presented }), null);
+  else assert.match(await replay.problem({ bundle: presented }), /identity-presentation/);
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
+  let buyerClaim;
+  f.config.sessionAdmission = { ...f.admission.sessionAdmission, resolveVetRecord: async query => {
+    const record = await f.admission.sessionAdmission.resolveVetRecord(query);
+    if (!equivalent && record.evaluatedParty === f.config.signer.claim) record.signature.signer = f.config.signer.claim;
+    return record;
+  } };
+  const agent = await f.open(), request = await f.proposal(agent);
+  buyerClaim = request.buyerIdentityBundle.presentedBy;
+  const proof = structuredClone(request.buyerIdentityBundle);
+  proof.presentation.signatures[0].ref = equivalent ? `${buyerClaim}?label=buyer` : f.config.signer.claim;
+  assert.equal(identityPresentationValid(proof, core.identityBundleHash(proof)), equivalent);
+  // Admission uses the producer's exact presentation bytes. The presentation
+  // reader above separately compares advisory reference parameters canonically.
+  const first = await agent.receiveProposal(request);
+  assert.equal(first.disposition, equivalent ? 'complete' : 'rejected', JSON.stringify(first));
+  if (!equivalent) assert.match(first.reason, /not signed by its counterparty verifier/);
+  agent.close();
+  const reopened = await f.open(), repeat = await reopened.receiveProposal(request);
+  assert.equal(repeat.disposition, first.disposition);
+  assert.deepEqual(repeat.contribution, first.contribution);
+  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, equivalent ? 1 : 0);
+});
+
+for (const form of ['presence-first', 'verified-first', 'required-and-oneOf']) test(`mixed ${form} presence group selecting a verified method is refused before signing`, async t => {
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const member = { scheme: 'did', verificationRequired: false }, verified = { scheme: 'did', verificationRequired: true, parameters: { verificationMethod: 'signature' } };
+  const alternatives = form === 'verified-first' ? [verified, member] : [member, verified];
+  const requirement = { requirementVersion: '1', required: form === 'required-and-oneOf' ? [member] : [], oneOf: [alternatives], preferredPresentation: 'any' };
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: requirement });
+  const agent = await f.open(), answer = await agent.receiveProposal(await f.proposal(agent));
+  assert.equal(answer.disposition, 'rejected');
+  assert.match(answer.reason, /does not pin a recipe version for a verified claim/);
+  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
+});
+
 test('a negotiated presence-only session replays after restart without another Agreement signature', async t => {
   const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
   const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
@@ -201,3 +297,17 @@ for (const placement of ['required', 'oneOf']) {
   assert.equal((await reopened.receiveProposal(control)).disposition, 'complete');
  });
 }
+
+for (const form of ['presence-first', 'verified-first', 'required-and-oneOf']) test(`mixed ${form} presence group with no derivable verified method retains the lower part acceptance`, async t => {
+  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+  const member = { scheme: 'did', verificationRequired: false }, verified = { scheme: 'did', verificationRequired: true };
+  const alternatives = form === 'verified-first' ? [verified, member] : [member, verified];
+  const requirement = { requirementVersion: '1', required: form === 'required-and-oneOf' ? [member] : [], oneOf: [alternatives], preferredPresentation: 'any' };
+  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: requirement });
+  const agent = await f.open(), request = await f.proposal(agent), first = await agent.receiveProposal(request);
+  assert.equal(first.disposition, 'complete');
+  agent.close();
+  const reopened = await f.open();
+  assert.deepEqual((await reopened.receiveProposal(request)).contribution, first.contribution);
+  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 1);
+});

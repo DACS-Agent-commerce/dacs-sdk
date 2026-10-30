@@ -134,6 +134,7 @@ export {
   isSellerFulfilmentVetInvocationMismatch,
   sellerFulfilmentAuditSourceHash,
   sellerFulfilmentVetRequirementsViolation,
+  sellerFulfilmentVetRequirementMembers,
   type SellerFulfilmentAuditArtifactsV1,
   type SellerFulfilmentVetBinding,
   type SellerFulfilmentAuditSourceV1,

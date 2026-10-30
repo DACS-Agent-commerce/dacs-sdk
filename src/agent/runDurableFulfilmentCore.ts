@@ -1082,6 +1082,7 @@ function captureStore(source: FencedSessionStoreV2): FencedSessionStoreV2 {
 function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilmentDeps {
   const receiptStoreSource = source.receiptStore;
   const auditSourceProfile = source.auditSourceProfile;
+  const acceptsPresenceOnlyVetRequirements = source.acceptsPresenceOnlyVetRequirements === true ? true : undefined;
   const resolveAuditSourceSource = source.resolveAuditSource;
   const resolveAgreementSource = source.resolveAgreement;
   const resolveListingSource = source.resolveListing;
@@ -1158,6 +1159,7 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
   }
   const captured: DurableSellerFulfilmentDeps = Object.freeze({
     auditSourceProfile,
+    acceptsPresenceOnlyVetRequirements,
     receiptStore: Object.freeze({
       claim: bindCaptured(claimSource, receiptStoreSource),
       inspectPermit: bindCaptured(inspectPermitSource, receiptStoreSource),
