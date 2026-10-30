@@ -7,12 +7,10 @@ import { join } from 'node:path';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 import { createPublicPurchaseService as createPurchaseService } from '../src/purchases.mjs';
 import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
-import { createDeliveryDeadlineWatch } from '../src/dacs/delivery-deadline-watch.mjs';
 import { diagnosticProtocolView as protocolView } from '../src/dacs/protocol-purchases.mjs';
 import { deliveryDeadlineView } from '../src/dacs/delivery-deadline-watch.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
-import { openWorld, ABSENT } from './helpers/domain-store-crash-world.mjs';
 import { inTransaction, hasSqliteModule } from './helpers/sqlite-engine-floor.mjs';
 
 function database(t) {
@@ -185,22 +183,6 @@ test('every public diagnostic omits payment payloads and signing messages while 
   assert.equal(status.protocol.bundle.bundleHash, 'b'.repeat(64));
   assert.deepEqual(w.ops.get(op.accountId, op.id), before);
   assert.deepEqual(w.coordinates.get(op.id), coords);
-});
-
-test('public watch refuses a host promise before its continuation can persist an overdue event', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'dacs-watch-store-')), path = join(dir, 'state.sqlite');
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const world = openWorld(path);
-  world.seed('delivery');
-  const before = world.snapshot('delivery'), op = world.operation('delivery');
-  const transition = world.ops.transition.bind(world.ops);
-  world.ops.transition = (...args) => Promise.resolve().then(() => transition(...args));
-  const watch = createDeliveryDeadlineWatch({ ...world, store: createSqlitePurchaseStore(), enabled: true, now: () => ABSENT.checkedAt });
-  assert.throws(() => watch.observe(op, ABSENT), { code: 'purchase_store_async_result' });
-  await new Promise(resolve => setImmediate(resolve));
-  const reopened = openWorld(path);
-  try { assert.deepEqual(reopened.snapshot('delivery'), before); }
-  finally { reopened.db.close(); }
 });
 
 test('historical malformed overdue and delivery timestamps remain renderable after JSON roundtrip', () => {

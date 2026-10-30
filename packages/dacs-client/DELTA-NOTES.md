@@ -1,7 +1,7 @@
 # client package deltas
 
 Scope: PLAN §8 and §0.3, D10, D9, D1 and D15 only. Package exports remain empty.
-Commit subjects below are exact, unique Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. PROVENANCE.json remains the immutable original copy inventory.
+Commit subjects below are exact Git commit selectors; this avoids embedding a commit's own hash in its tree. The report resolves selectors to full commit IDs; the checker requires each selector to resolve exactly once. Where two reachable commits share a subject, as when a rebuilt part keeps its earlier published history, each record also names its full commit hash, and the subject must still match. PROVENANCE.json remains the immutable original copy inventory.
 
 ## D10 — Strip unused modes
 
@@ -190,7 +190,7 @@ These records add no runtime behavior. SQL callbacks remain allowed inside a lea
 
 D11 transaction adapter dependency split:
 
-The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. Its statement and callback checks are retained under the separate module path; the earlier core replacement did not supply that import. The boundary is internal and does not enable purchase actions or package exports.
+The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
 
 D11 SQLite transaction split:
 
@@ -208,10 +208,22 @@ PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction
 
 The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
 
-PR 03b2 supplies read-only connection and callback admission before PR 03c: native/live handles, synchronous callback kinds, supported schemas and rollback/crash-safe main journals. Persistent main databases require DELETE, TRUNCATE, PERSIST or WAL; volatile main databases may use MEMORY. OFF is refused on every main database. Admission preserves caller configuration. PR 03c consumes these checks during transaction orchestration. The branches retain the published history through new extraction and restoration commits.
+## D11 — Purchase connection admission
 
-Persistent admission also reads main.synchronous on every attempt: WAL requires FULL or EXTRA, and rollback journals require EXTRA for power-loss durability. Weaker settings are refused before transactions or callbacks, without changing the connection configuration or host work. Volatile main databases have no persistent synchronization requirement.
+Admission reads one closed policy for main and listed TEMP. Persistent main accepts DELETE/TRUNCATE/PERSIST with EXTRA and WAL with FULL/EXTRA; volatile main also accepts MEMORY. Listed TEMP accepts DELETE/TRUNCATE/PERSIST/MEMORY. Journal OFF is refused for both main and TEMP. Reading admission never opens absent TEMP, changes host configuration or invokes the callback. Private exports remain empty; transaction orchestration stays separate.
+
+Regressions cover initialized TEMP OFF, unqualified OFF followed by main WAL, repair/retry, absent/discarded/reopened TEMP, four native result defaults, and the real lease rollback marker. Earlier main journal/durability and result-format regressions are retained. Historical extraction records use the existing archive fields solely to audit immutable published history.
 
 Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
 
-Engine floors, tests and refusal: a new iterator whose own `next` is not a function cannot be wrapped, so the statement boundary refuses it with a TypeError instead of returning it unguarded. The `LegacyDatabase` fixture now gives its iterators their own `next` and `return`, and the readback review and crash tests also run with that iterator layout on any Node version (`readback-review-decisions.floor.test.mjs`, `domain-store-crash.floor.test.mjs`).
+Engine floors, tests and refusal: a new iterator whose own `next` is not a function cannot be wrapped, so the statement boundary refuses it with a TypeError instead of returning it unguarded. The `LegacyDatabase` fixture now gives its iterators their own `next` and `return`, and the readback review tests also run with that iterator layout on any Node version (`readback-review-decisions.floor.test.mjs`). The domain-store crash wrapper is deferred until its crash suite and worker fixtures exist at the same stack layer.
+
+## D11 — Closed host transfer observation record (part 05)
+
+Settlement and non-native closed-wallet readback decide and retain a fresh frozen projection of nine own data fields. Host getters and toJSON are never called; unknown fields are ignored. Known fields require primitive types and bounded amount/address/hash formats; reason is capped at 240 characters. Malformed results stay retryable without reading the body or consuming a nonce. Confirmed body proof cannot override a raw failed source disposition. Missing includedAt remains optional. Reader attribution and native-readback availability name the actual host capability. Closed-wallet readback writes nothing.
+
+Published part-05 iteration records are archived with the existing ledger archive mechanism; prerequisite records and all historical blob checks are retained. This rebuild is recorded against its actual published parent. Unrelated crash/deadline fixtures return to the prerequisite tree. Exports remain empty and actions remain held.
+
+## D11 — Part 06 rebuild keeps its earlier published history
+
+Part 06 was rebuilt and joined onto its earlier published history by a merge that changes no content, so the earlier commits stay reachable. Their source and test changes are archived as superseded records, and their inventory rows name each full commit hash. The earlier history also reaches a second commit with the subject `fix(client): D11 guard iterator-owned steps on supported runtimes`; both records for that subject name their commit hash. The rebuilt portal capability commit is recorded under its published hash. The later records still decide every current blob.

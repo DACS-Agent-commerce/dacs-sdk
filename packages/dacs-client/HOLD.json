@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "03abc01f16530b20581cb6e0e55f8eeb7e54c2e1"
+        "blob": "987b188a4e71254cd915afc6d9b0c74306d7db63"
       },
       "DELTA-LEDGER.json": {
-        "blob": "df23174c8a8700a2ac22b98870544a51570be85f"
+        "blob": "cf6af9e1ae3a4d6c20d1700fc9ddd5d65c2ed349"
       },
       "DELTA-MAP.md": {
-        "blob": "82996cdec7d7c33b82ed428d831db450b3872ac1"
+        "blob": "54e4edbda462bd39aaec78309c00fc9f15d7e007"
       },
       "DELTA-NOTES.md": {
-        "blob": "a035356ea0561b4bf4cde429907c705946cee479"
+        "blob": "b4375e1e7884bf57720e1ad487226deca671e5b7"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "3f3dccd71fa4df1393e84f63d04489f9ad21f224"
+        "blob": "5dca2fe396dcdd238af3a807704f249910cd9535"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1030,11 +1030,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "488ecc5a2ab73362516855aae3d6a65f22dd25aa"
+        "blob": "9105f7786919cd0cdff1ce4e38467487f0a772e0"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "28cd27e8fbd68ddcb5bb02941d1225a449fe62cf"
+        "blob": "3266c4c917f6a7baac9cf2e0cbafd1c83bb6a14e"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1055,13 +1055,13 @@
         "blob": "83e0a32676f598384382eb61ae5ef6c35aaf1700"
       },
       "scripts/delta-frontier.test.mjs": {
-        "blob": "ee901196ffca7f503c33fe73759e08f36790cbad"
+        "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "126e76cc25977920f4e17a1036f36c516e08b344"
+        "blob": "49f24bcbc0ac36166ddb58611fce10175e892449"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "dde19d40fc125bb428749a4f5dfae19dfb0352d7"
+        "blob": "e21292ebc0028c6ece9b383d2311b05a085c8d31"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1219,6 +1219,9 @@
       "src/index.mjs": {
         "blob": "e5645c81db36570840808f82a52187d27afdffcc"
       },
+      "src/portal-capability.mjs": {
+        "blob": "d6200b11094df0e624dd644d980ac3bc7444868d"
+      },
       "src/public-verification.mjs": {
         "blob": "eb1dc4f2edc60993f96e8ae9df5bd9a9f4695579"
       },
@@ -1238,7 +1241,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "2bd25ec1e0bbd11c0c55a2fee0ae25c256d34484"
+        "blob": "c2cecbe570de30465a266e0feda4bbb60485ccf4"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1274,19 +1277,19 @@
         "blob": "835ca8f3785c926a975872f7d40a0df9dde55ab6"
       },
       "src/util/sqlite-purchase-admission.mjs": {
-        "blob": "9f166e44137d98f78178f830d44077153c1cef16"
+        "blob": "5659a095247774027f29b46cc9cb2c847994007b"
       },
       "src/util/sqlite-statement-boundary.mjs": {
-        "blob": "97e9b4589296878d5eb84936431abe6b467c1456"
+        "blob": "336df0f1e4d8723d137c5b659c342792f51d81a7"
       },
       "src/util/sqlite-write-lease.mjs": {
-        "blob": "e45c8004ff9c71bb2c212912d5f44e50be256843"
+        "blob": "cc652d18792a64c8ab106e4a16eef68eebe6ed11"
       },
       "src/util/text.mjs": {
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "b6179e3b5fb7afbdf0324c48e3c5711ff4b42922"
+        "blob": "74e46f85125669aa258f3862e1f9417d205e44da"
       },
       "src/wallet/durable-journal.mjs": {
         "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
@@ -1325,19 +1328,13 @@
         "blob": "cd5edb7803946051073fc731837213c0544411af"
       },
       "test/diagnostic-reader.test.mjs": {
-        "blob": "99154dd18992f65e0a498a9e2be1064fffa08a14"
+        "blob": "e762c6f6b95121de114b1fee5db44005fd049269"
       },
       "test/diagnostic-store-regressions.test.mjs": {
-        "blob": "ace13289bd75b0708a7819bd3203995e46a6c5fb"
+        "blob": "612da2ec57f6c54a3b761230040fff133b30dc49"
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
-      },
-      "test/domain-store-crash.floor.test.mjs": {
-        "blob": "2c1286fb54808812bcecee9593708eb6d06a968c"
-      },
-      "test/domain-store-crash.test.mjs": {
-        "blob": "59e6de9bdc283964fe73cf6f3a94343ff5a7a7af"
       },
       "test/engine-floor-portability.test.mjs": {
         "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
@@ -1467,12 +1464,6 @@
       },
       "test/helpers/devnet-operator-sequential-node2.mjs": {
         "blob": "3cb86961d2aeef100160bbf222175ae6c0b552b4"
-      },
-      "test/helpers/domain-store-crash-worker.mjs": {
-        "blob": "fe025a891b76f93bc8cf0b0a02ccdf36e92e2712"
-      },
-      "test/helpers/domain-store-crash-world.mjs": {
-        "blob": "a91f8018335cd08180669ba04b8312608b046d8a"
       },
       "test/helpers/durable-wallet-journal-broker.mjs": {
         "blob": "e4c756c43fd64a7d0d654e1ad2372fd0da4ab046"
@@ -1673,7 +1664,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "835ac12ec7c287d1970a309a9ceb75f74aff29ac"
+        "blob": "5582b173bd445f8aab89428aa33191696fa5a3f6"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
@@ -1688,13 +1679,16 @@
         "blob": "fd8943b54a6e03026a28eafeaa992de1d66d2fdc"
       },
       "test/native-supersession-unavailable.test.mjs": {
-        "blob": "3c232204e0ba939a6f33c6eb3e3c777fc8ebeadc"
+        "blob": "a3c2c1f30dde168de241dd1d8845b67f18b7b3bd"
       },
       "test/package-contents.test.mjs": {
-        "blob": "e89f5fc167efeb889e0397f22ceb4db6891fe7c3"
+        "blob": "80ca77ad68b0ad82235bdcdee96c42f03dfb5c1a"
       },
       "test/passive-observation.test.mjs": {
-        "blob": "7625214c9a495c96091e4a2df02d05ed17983f85"
+        "blob": "f760ea0ac2e21bd42cef0200f24c0e2dfec637b7"
+      },
+      "test/portal-capability.test.mjs": {
+        "blob": "073700c9a849a4bfc092cb5913498364fd622f0d"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
@@ -1703,7 +1697,7 @@
         "blob": "b28c6ef97e3004d9921c2b9f48a66d0e4d936423"
       },
       "test/purchase-executed-only.test.mjs": {
-        "blob": "5a2a00254d003a77105c64e5f60b05372a5dbf3f"
+        "blob": "72479ddb615e6ad1f1002f588eabbb9e0dab4d1a"
       },
       "test/purchase-integrity.test.mjs": {
         "blob": "174d67c16132706497904b28250c6135e97d1497"
@@ -1715,13 +1709,16 @@
         "blob": "940e94f63ffc2a65f42ea03bf262fb42fc200525"
       },
       "test/purchase-tx-admission.test.mjs": {
-        "blob": "f3a58dda92a3c36b8fd238941cab931999e55fdd"
+        "blob": "32ad1ee884c385874d10b016f89f7e25d50953b6"
       },
       "test/purchase-tx-boundary.test.mjs": {
         "blob": "53fbeca69a87846aa9d32845aab011cbf451dd84"
       },
       "test/purchase-tx-nesting.test.mjs": {
         "blob": "124ddbf578822f8bfe3298e01e83626f40de071d"
+      },
+      "test/purchase-tx-result-options.test.mjs": {
+        "blob": "f25fa0926a55195567f9a78c29f857b055d5ea2b"
       },
       "test/purchase-tx-results.test.mjs": {
         "blob": "89418b814a42dad7fb1183ddc9e69fb17a1d4df0"
@@ -1732,26 +1729,41 @@
       "test/readback-review-decisions.test.mjs": {
         "blob": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52"
       },
+      "test/readme-contract.test.mjs": {
+        "blob": "23e40928c89b52d481bd73bd53bd67b8ddbdcc7f"
+      },
       "test/rpc-byte-budget.test.mjs": {
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"
       },
       "test/sqlite-floor-iterators.test.mjs": {
-        "blob": "f11b772c4912bbd399a17ebc0b7cf061de341ce6"
+        "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"
       },
       "test/sqlite-iterator-own-methods.test.mjs": {
-        "blob": "5fa4b7cbc5b7c5b758afbb9f257ab6500da7a5c8"
+        "blob": "cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8"
       },
       "test/sqlite-iterator-own-next-refusal.test.mjs": {
         "blob": "bb118dd861e66c1f7f15d9268ae8e721103efd9d"
       },
+      "test/sqlite-lease-result-options.test.mjs": {
+        "blob": "07606e91250e9a5ecc199fc1b7549aaf73a4aa2e"
+      },
       "test/sqlite-purchase-journal.test.mjs": {
         "blob": "0cf1690daa71819106208636318cbc955dd9ed8b"
       },
+      "test/sqlite-purchase-result-options.test.mjs": {
+        "blob": "92367b51064c4a9e1dabbdbdba6476ae58392906"
+      },
+      "test/sqlite-purchase-temp-admission.test.mjs": {
+        "blob": "00a43edbe60c405972e1e41a7b9dc30081cf1193"
+      },
       "test/sqlite-statement-boundary-regressions.test.mjs": {
-        "blob": "3cd9965ac3a3fcf7191550d7bffae2b67b8841a2"
+        "blob": "7366ab01bbe3be7bc444fc6fb57eae000093c42b"
       },
       "test/sqlite-statement-boundary.test.mjs": {
-        "blob": "169a5edac4f556d5ddec2e0278223be9a27f7f9c"
+        "blob": "f0acee1431e672f772d9f4a10faef5f603b7fb96"
+      },
+      "test/sqlite-statement-policy.test.mjs": {
+        "blob": "9c2954d2f2211121c78398687786293d31d4ba76"
       },
       "test/sqlite-write-lease.test.mjs": {
         "blob": "aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2"

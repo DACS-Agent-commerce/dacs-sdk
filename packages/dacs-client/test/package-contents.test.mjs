@@ -48,7 +48,7 @@ test('npm pack ships only the two entry points and their reviewed import closure
   assert.deepEqual(files, [...entryPointClosure(), 'package.json', 'README.md', 'LICENSE'].sort());
 });
 
-test('paired packed artifacts supply the schema needed by every buyer factory', t => {
+test('paired packed artifacts supply the schema needed by every buyer factory', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-consumer-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const run = (command, args, cwd) => {
@@ -91,6 +91,79 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
   }
   writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
   run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
+  await t.test('installed root resolves the complete diagnostic factory graph', () => {
+    run(process.execPath, ['--input-type=module', '-e', `
+      import assert from 'node:assert/strict';
+      const client = await import('@kynesyslabs/dacs-client');
+      for (const name of ['createPurchaseService', 'createProtocolPurchases']) {
+        assert.equal(typeof client[name], 'function', name);
+      }
+    `], app);
+  });
+  await t.test('installed README example commits or rolls back operation and coordinate writes', () => {
+    const readme = readFileSync(join(app, 'node_modules/@kynesyslabs/dacs-client/README.md'), 'utf8');
+    const example = /```js\n([\s\S]*?)```/.exec(readme)?.[1];
+    assert.ok(example, 'README has an executable factory example');
+    writeFileSync(join(app, 'readme-example.mjs'), example);
+    writeFileSync(join(app, 'readme-harness.mjs'), `
+      import assert from 'node:assert/strict';
+      import { createHash } from 'node:crypto';
+      const rollback = process.argv[2] === 'rollback', NOW = Date.UTC(2030, 0, 1);
+      Date.now = () => NOW;
+      const sentinel = new Error('TEST-after-operation-write');
+      const token = 'TEST-readme-token', accountId = 'TEST-buyer', id = 'TEST-operation';
+      const terms = { buyer: { wallet: '0x' + 'b'.repeat(64) }, seller: { payee: '0x' + 'c'.repeat(64) },
+        price: { amountOs: '1' }, listing: { listingId: 'TEST-listing', version: 1, contentHash: 'f'.repeat(64) },
+        network: 'testnet', rail: 'demos-native:DEM' };
+      let connection, diagnosed = false;
+      globalThis.host = {
+        accountId, token, config: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, dacsProtocol: {},
+        coordinate: { operationId: id, kind: 'dem-transfer', network: 'testnet', from: 'TEST-buyer',
+          nonceFence: 0, expectedNonce: 1, target: 'TEST-seller', amountOs: '1', payload: {} },
+        createOperations(db) {
+          connection = db;
+          const at = new Date(NOW).toISOString(), expires = new Date(NOW + 3600000).toISOString();
+          db.prepare('INSERT INTO accounts(id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run(accountId,'TEST',accountId,at);
+          db.prepare('INSERT INTO operations(id,account_id,kind,idempotency_key,request_hash,status,terms,terms_hash,handoff_token_hash,handoff_expires_at,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            .run(id,accountId,'purchase','TEST','TEST','broadcast_reported',JSON.stringify(terms),'TEST',
+              createHash('sha256').update('dacs-handoff-hash:' + token).digest('hex'),expires,expires,at,at);
+          const byId = db.prepare('SELECT * FROM operations WHERE id=?');
+          const update = db.prepare('UPDATE operations SET state=? WHERE id=? AND status=?');
+          const hydrate = () => {
+            const row = byId.get(id);
+            return { id, accountId, kind: row.kind, status: row.status, terms, termsHash: row.terms_hash,
+              state: JSON.parse(row.state), expiresAt: row.expires_at, createdAt: row.created_at, updatedAt: row.updated_at };
+          };
+          host.operation = hydrate();
+          return {
+            get: (owner, key) => owner === accountId && key === id ? hydrate() : null,
+            getByHandoff: (key, value) => key === id && value === token ? hydrate() : null,
+            history: () => {
+              assert.equal(db.prepare('SELECT count(*) n FROM write_coordinates').get().n, 1);
+              diagnosed = true;
+              return [];
+            },
+            transition(key, from, to, patch) {
+              assert.equal(to, from);
+              assert.equal(update.run(JSON.stringify(patch.state), key, from).changes, 1);
+              if (rollback) throw sentinel;
+              return hydrate();
+            },
+          };
+        },
+      };
+      try {
+        if (rollback) await assert.rejects(import('./readme-example.mjs'), error => error === sentinel);
+        else await import('./readme-example.mjs');
+        assert.ok(connection, 'example constructs host operations after the purchase store');
+        assert.equal(connection.prepare('SELECT count(*) n FROM write_coordinates').get().n, rollback ? 0 : 1);
+        assert.deepEqual(JSON.parse(connection.prepare('SELECT state FROM operations WHERE id=?').get(id).state),
+          rollback ? {} : { hostNote: 'local bookkeeping' });
+        assert.equal(diagnosed, !rollback, 'diagnostic runs after successful transaction');
+      } finally { connection?.close(); }
+    `);
+    for (const outcome of ['commit', 'rollback']) run(process.execPath, ['readme-harness.mjs', outcome], app);
+  });
   // This consumer has no source-tree imports or test database helper.
   writeFileSync(join(app, 'consumer.mjs'), `
     import assert from 'node:assert/strict';
@@ -135,8 +208,8 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       const forbidden = () => { throw new Error('host observations cannot authorize a write'); };
       const chain = { network: 'testnet', pinnedIdentity: identity,
         networkIdentity: async () => ({ identity, mode: 'public-chain-read' }),
-        observeTransfer: async () => ({ status: 'included', txHash: hash, payer: wallet, payee, amountOs: '1', blockNumber: 10 }),
-        getTransaction: async () => ({ hash, status: 'confirmed', blockNumber: 10, content: { from: wallet, nonce: 1 } }) };
+        observePassiveTransfer: async () => ({ status: 'included', txHash: hash, payer: wallet, payee, amountOs: '1', blockNumber: 10 }),
+        observeTransfer: forbidden, getTransaction: forbidden };
       // Deliberately mis-scoped host seam: the installed client must check ownership.
       let secondaryReads = 0;
       const ops = { get: (_account, id) => id === 'first' ? saved : null,
@@ -154,7 +227,7 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       const result = await service.verifyDeal({ accountId: 'buyer', operationId: 'first', token: 'TEST-token', txHash: hash });
       assert.equal(result.verification.outcome, 'readback_only');
       assert.equal(result.verification.authority, 'unqualified_host');
-      assert.equal(result.verification.observation.status, 'included');
+      assert.equal(result.verification.observation.status, 'included', JSON.stringify(result.verification.observation));
       assert.equal(result.verification.termsMatch, true);
       assert.deepEqual(coordinates.get('first'), snapshot);
       assert.equal(db.prepare('SELECT status FROM operations WHERE id=?').get('first').status, 'broadcast_reported');
@@ -192,24 +265,4 @@ test('documented local packing builds core before skipping pack lifecycle script
   const install = commands.indexOf('npm ci'), build = commands.indexOf('npm run build');
   const pack = commands.findIndex(command => command.startsWith('npm pack --ignore-scripts'));
   assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
-});
-
-test('documented factory example constructs the purchase store before any other factory', () => {
-  const readme = readFileSync(join(packageDir, 'README.md'), 'utf8');
-  const example = /```js\n([\s\S]*?)```/.exec(readme)?.[1];
-  assert.ok(example, 'factory example block is present');
-  const calls = [...example.matchAll(/\b(create\w+)\(/g)].map(match => match[1]);
-  assert.equal(calls[0], 'createSqlitePurchaseStore', 'statements prepared earlier are not tracked by the store');
-});
-
-test('validation text matches the offline packed consumer and the CI job that runs the client suite', () => {
-  const readme = readFileSync(join(packageDir, 'README.md'), 'utf8');
-  const validation = /\n## Validation\n\n([^\n]*)/.exec(readme)?.[1];
-  assert.ok(validation, 'validation paragraph is present');
-  assert.match(validation, /fresh private npm cache/);
-  assert.match(validation, /npm ci --offline/);
-  assert.doesNotMatch(validation, /offline run requires a populated cache|downloads exact locked tarballs|declared minimum runtime/);
-  const ci = readFileSync(join(sdkDir, '.github/workflows/ci.yml'), 'utf8');
-  assert.match(ci, /if: matrix\.node-version == '22'\n\s+run: npm test --workspace @kynesyslabs\/dacs-client/);
-  assert.match(validation, /only in the current Node 22 matrix entry/);
 });

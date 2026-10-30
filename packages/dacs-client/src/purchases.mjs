@@ -29,7 +29,8 @@
 // claim, DACS-4 evidence, delivery and DACS-5 copies (operation.state.protocol).
 // All approval and payment handoffs, including legacy purchases without
 // terms.protocol, remain held by the package's purchase-action admission.
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { createPortalCapability } from './portal-capability.mjs';
 import { contentHash, canonicalize } from './dacs/listing.mjs';
 import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
 import { OperationError, requestHashOf } from './client-errors.mjs';
@@ -37,7 +38,7 @@ import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
 import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
 import { newId } from './util/ids.mjs';
 import { OutboundError } from './util/http.mjs';
-import { nodeProjectedNonce, OS_INTEGER } from './dacs/chain.mjs';
+import { nodeProjectedNonce, OS_INTEGER, OS_DIGITS_MAX } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
 import { projectDiagnostic, projectDiagnosticOperation, DIAGNOSTIC_LIMITS } from './diagnostic-projection.mjs';
 import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView, diagnosticProtocolView } from './dacs/protocol-purchases.mjs';
@@ -49,7 +50,16 @@ import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
 export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1';
 export const PURCHASE_RAIL = 'demos-native:DEM';
 export const PURCHASE_APPROVAL_TTL_MS = 30 * 60 * 1000;
-const MAX_TRANSFER_OBSERVATION_BYTES = 64 * 1024;
+const MAX_OBSERVATION_REASON_LENGTH = 240;
+const MAX_TRANSFER_IDENTIFIER_LENGTH = 66; // 32-byte hex, optionally prefixed with 0x.
+function errorText(error) {
+  let text = 'chain reader failed';
+  try {
+    const message = typeof error === 'string' ? error : Object.getOwnPropertyDescriptor(error, 'message')?.value;
+    if (typeof message === 'string') text = message;
+  } catch { /* An unreadable message retains the fixed fallback. */ }
+  return text.slice(0, MAX_OBSERVATION_REASON_LENGTH);
+}
 // Diagnostic reads run host-supplied readers that may never settle, so the
 // deadline is raced: it aborts the reader's signal and rejects without waiting
 // for the reader. (The transport's own passive read honours its signal and
@@ -217,10 +227,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   if (!db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'handoff_expires_at')) {
     throw new OperationError('schema_migration_required', 'Migrate operations to include handoff_expires_at and provision explicit portal lifetimes before constructing the purchase service.');
   }
+  const handoffPurchase = createPortalCapability({ db, ops, now });
   const insertApproval = db.prepare(`INSERT INTO approvals (id, operation_id, challenge_id, signer_address, terms_hash, signature, approved_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
   const approvalFor = db.prepare('SELECT * FROM approvals WHERE operation_id = ?');
-  const portalCapability = db.prepare('SELECT account_id, kind, handoff_token_hash, handoff_expires_at FROM operations WHERE id = ?');
   const limits = config.purchaseLimits ?? PURCHASE_LIMITS;
   // Only pre-payment open states (ACTIONABLE) hold an unpaid slot; any other
   // status, including one added later, frees it. payment_mismatch frees the
@@ -281,7 +291,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return (operation.status === 'awaiting_approval' || operation.status === 'agreement_pending') && Date.parse(operation.expiresAt) <= now();
   }
 
-  // Diagnostic reads report an elapsed approval window without saving it.
+  // Diagnostic reads project expiry without persisting the action transition.
   function projectExpiry(operation) {
     return approvalElapsed(operation) ? { ...operation, status: 'expired' } : operation;
   }
@@ -473,31 +483,6 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   // ---- portal (browser) side; every call carries the handoff token ----
 
-  function handoffPurchase(operationId, token) {
-    if (typeof operationId !== 'string' || !operationId || operationId.length > 256 || typeof token !== 'string' || !token || token.length > 1024) {
-      throw new OperationError('not_found', 'unknown or invalid approval link');
-    }
-    // Portal access is an application capability, independent of DACS action
-    // admission and of the operation's approval window. Authenticate stored
-    // bytes on every read; a permissive host lookup cannot grant access.
-    const capability = portalCapability.get(operationId);
-    const expiry = typeof capability?.handoff_expires_at === 'string' ? Date.parse(capability.handoff_expires_at) : NaN;
-    const clock = now();
-    // A host business clock may shorten a capability, but cannot extend its
-    // wall-clock lifetime. Unknown or out-of-range epoch milliseconds deny access.
-    const suppliedHash = createHash('sha256').update(`dacs-handoff-hash:${token}`).digest();
-    if (!capability || capability.kind !== 'purchase' || !validIncludedAt(clock)
-      || !validIncludedAt(expiry) || new Date(expiry).toISOString() !== capability.handoff_expires_at
-      || !(expiry > Math.max(clock, Date.now()))
-      || !/^[0-9a-f]{64}$/.test(capability.handoff_token_hash ?? '')
-      || !timingSafeEqual(suppliedHash, Buffer.from(capability.handoff_token_hash, 'hex'))) {
-      throw new OperationError('not_found', 'unknown or invalid approval link');
-    }
-    const found = ops.getByHandoff(operationId, token);
-    if (!found || found.kind !== 'purchase' || found.id !== operationId || found.accountId !== capability.account_id) throw new OperationError('not_found', 'unknown or invalid approval link');
-    return found;
-  }
-
   function authorizedPortalPurchase(operationId, token) {
     const found = handoffPurchase(operationId, token);
     protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);
@@ -514,7 +499,6 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // Evidence the portal may show, taken only from what was recorded: the
   // listing verification made at prepare time and any chain observation of
   // the payment. Never inferred from the configured network or RPC URL.
-  // Read-only: an elapsed approval window is reported, not saved.
   function portalEvidence(operationId, token) {
     const operation = projectExpiry(authorizedPortalPurchase(operationId, token));
     const coords = coordinates.get(operation.id);
@@ -958,52 +942,40 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     }
   }
 
-  // The host reader's result is an observation, not a terms contradiction
-  // until its fields have the documented types. Discard malformed data before
-  // persisting it (in particular, bigint cannot be serialized as JSON).
-  function checkedTransferObservation(value, hash) {
-    const invalid = reason => ({ status: 'malformed', reason });
-    const exceeded = new RangeError('chain observation exceeds its byte limit');
-    try {
-      let used = 0;
-      const hasSourceDisposition = value != null && Object.hasOwn(value, 'sourceDisposition');
-      const containers = new WeakMap();
-      const charge = amount => { used += amount; if (used > MAX_TRANSFER_OBSERVATION_BYTES) throw exceeded; };
-      const stringBytes = text => {
-        if (text.length > MAX_TRANSFER_OBSERVATION_BYTES - used) throw exceeded;
-        return Buffer.byteLength(JSON.stringify(text));
-      };
-      const bytes = JSON.stringify(value, function (key, field) {
-        const parent = containers.get(this), array = Array.isArray(field);
-        const omitted = field === undefined || ['function', 'symbol'].includes(typeof field);
-        if (omitted && !parent?.array) return field;
-        if (parent) { charge(parent.count++ ? 1 : 0); if (!parent.array) charge(stringBytes(key) + 1); }
-        if (field && typeof field === 'object') {
-          // Bound native JSON's key/index enumeration before it allocates it.
-          if (array && field.length > MAX_TRANSFER_OBSERVATION_BYTES) throw exceeded;
-          let count = 0;
-          for (const name in field) if (Object.hasOwn(field, name) && (++count > MAX_TRANSFER_OBSERVATION_BYTES || name.length > MAX_TRANSFER_OBSERVATION_BYTES)) throw exceeded;
-          charge(2); containers.set(field, { array, count: 0 });
-        } else charge(typeof field === 'string' ? stringBytes(field) : (JSON.stringify(omitted ? null : field)?.length ?? 0));
-        return field;
-      });
-      if (typeof bytes !== 'string' || Buffer.byteLength(bytes) > MAX_TRANSFER_OBSERVATION_BYTES) return invalid('chain observation exceeds its byte limit');
-      value = JSON.parse(bytes);
-      if (hasSourceDisposition && !Object.hasOwn(value, 'sourceDisposition')) return invalid('chain observation omitted its source disposition');
-    } catch (error) { return invalid(error === exceeded ? exceeded.message : 'chain observation must be JSON serializable'); }
+  // Project only own data fields: never enumerate host data or invoke its hooks.
+  // The same bounded, frozen record supplies both the decision and retention.
+  function transferObservationRecord(value, hash) {
+    const invalid = reason => Object.freeze({ status: 'malformed', reason });
     if (!value || typeof value !== 'object' || Array.isArray(value)) return invalid('chain observation must be an object');
-    if (!['included', 'pending', 'not-found', 'failed', 'invalid', 'unavailable'].includes(value.status)) return invalid('chain observation status is unsupported');
-    if (value.reason !== undefined && typeof value.reason !== 'string') return invalid('chain observation reason must be text');
-    if (value.status === 'included') {
-      if (typeof value.amountOs !== 'string' || !OS_INTEGER.test(value.amountOs)) return invalid('included amountOs must be canonical decimal OS text');
-      if (!readableAddress(value.payer) || !readableAddress(value.payee)) return invalid('included payer and payee must be readable Demos addresses');
-      if (!Number.isSafeInteger(value.blockNumber) || value.blockNumber < 0) return invalid('included blockNumber must be a nonnegative safe integer');
-      if (value.includedAt !== undefined && !validIncludedAt(value.includedAt)) return invalid('included includedAt must be valid nonnegative integer epoch milliseconds');
+    const fields = {};
+    try {
+      for (const name of ['status', 'reason', 'txHash', 'payer', 'payee', 'amountOs', 'blockNumber', 'includedAt', 'sourceDisposition']) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, name);
+        if (!descriptor) continue;
+        if (!Object.hasOwn(descriptor, 'value')) return invalid(`chain observation ${name} must be a data field`);
+        const field = descriptor.value;
+        if (field !== undefined && !['string', 'number'].includes(typeof field)) return invalid(`chain observation ${name} must be primitive text or a number`);
+        fields[name] = field;
+      }
+    } catch { return invalid('chain observation fields are unreadable'); }
+    const { status, reason, txHash, payer, payee, amountOs, blockNumber, includedAt, sourceDisposition } = fields;
+    if (!['included', 'pending', 'not-found', 'failed', 'invalid', 'unavailable'].includes(status)) return invalid('chain observation status is unsupported');
+    if (Object.hasOwn(fields, 'reason') && typeof reason !== 'string') return invalid('chain observation reason must be text');
+    if (Object.hasOwn(fields, 'sourceDisposition') && !['included', 'failed'].includes(sourceDisposition)) return invalid('chain observation sourceDisposition must be included or failed');
+    const record = { status, ...(reason === undefined ? {} : { reason: reason.slice(0, MAX_OBSERVATION_REASON_LENGTH) }) };
+    if (status === 'included') {
+      if (typeof amountOs !== 'string' || amountOs.length > OS_DIGITS_MAX || !OS_INTEGER.test(amountOs)) return invalid('included amountOs must be canonical decimal OS text');
+      if ([payer, payee].some(address => typeof address !== 'string' || address.length > MAX_TRANSFER_IDENTIFIER_LENGTH || !readableAddress(address))) return invalid('included payer and payee must be readable Demos addresses');
+      if (!Number.isSafeInteger(blockNumber) || blockNumber < 0) return invalid('included blockNumber must be a nonnegative safe integer');
+      if (Object.hasOwn(fields, 'includedAt') && !validIncludedAt(includedAt)) return invalid('included includedAt must be valid nonnegative integer epoch milliseconds');
       try {
-        if (typeof value.txHash !== 'string' || canonicalHash(value.txHash) !== hash) return invalid('included txHash differs from the requested hash');
+        if (typeof txHash !== 'string' || txHash.length > MAX_TRANSFER_IDENTIFIER_LENGTH || canonicalHash(txHash) !== hash) return invalid('included txHash differs from the requested hash');
       } catch { return invalid('included txHash must be a transaction hash'); }
+      Object.assign(record, { txHash, payer, payee, amountOs, blockNumber },
+        Object.hasOwn(fields, 'includedAt') ? { includedAt } : {},
+        Object.hasOwn(fields, 'sourceDisposition') ? { sourceDisposition } : {});
     }
-    return value;
+    return Object.freeze(record);
   }
 
   async function diagnosticReadback(operation, rawHash, signal) {
@@ -1016,13 +988,13 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         observation = await raceWithDeadline(async options => {
           await assertBoundDomain(operation, options);
           options.signal.throwIfAborted();
-          const observe = chain.observePassiveTransfer ?? (usesNativeAgreementPayment(operation) ? null : chain.observeTransfer);
-          if (typeof observe !== 'function') throw new OperationError('passive_reader_unavailable', 'native diagnostics require a passive chain reader');
-          const value = await observe.call(chain, hash, options);
+          const observe = chain.observePassiveTransfer;
+          if (typeof observe !== 'function') throw new OperationError('passive_reader_unavailable', 'diagnostics require a passive chain reader');
+          const value = await observe.call(chain, hash, { ...options, allowUnretained: !usesNativeAgreementPayment(operation) });
           options.signal.throwIfAborted();
           // Retain only bounded primitive contract fields. Never traverse or
           // serialize arbitrary host extension objects or collections.
-          if (!value || typeof value !== 'object' || Array.isArray(value)) return checkedTransferObservation(value, hash);
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return transferObservationRecord(value, hash);
           const projected = {};
           for (const key of transferDiagnosticFields) {
             const field = value[key];
@@ -1033,7 +1005,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
             }
             projected[key] = field;
           }
-          return checkedTransferObservation(projected, hash);
+          return transferObservationRecord(projected, hash);
         }, { timeoutMs: chainReadTimeoutMs, signal });
       } catch (error) {
         observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240),
@@ -1089,7 +1061,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       await assertBoundDomain(operation);
     } catch (error) {
       const refused = { txHash: hash, observedAt: new Date(now()).toISOString(), chainMode: chain.evidenceMode, ...scope };
-      if (!(error instanceof OperationError)) return { operation, verification: { outcome: 'chain_unavailable', reason: String(error?.message ?? error).slice(0, 240), ...refused } };
+      if (!(error instanceof OperationError)) return { operation, verification: { outcome: 'chain_unavailable', reason: errorText(error), ...refused } };
       ops.record(operation.id, 'readback_refused', { txHash: hash, reason: error.code });
       return { operation, verification: { outcome: 'network_identity_mismatch', reason: error.code, mismatches: [error.message], ...refused } };
     }
@@ -1097,9 +1069,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     try {
       observation = await (usesNativeAgreementPayment(operation) && chain.observePurchaseTransfer ? chain.observePurchaseTransfer(hash) : chain.observeTransfer(hash));
     } catch (error) {
-      observation = { status: 'unavailable', reason: String(error?.message ?? error).slice(0, 240) };
+      observation = { status: 'unavailable', reason: errorText(error) };
     }
-    observation = checkedTransferObservation(observation, hash);
+    observation = transferObservationRecord(observation, hash);
     let body = null, bodyError = null;
     if (!['malformed', 'unavailable', 'pending', 'not-found'].includes(observation.status)) {
       try { body = await chain.getTransaction(hash); } catch (error) { bodyError = error; }
@@ -1306,8 +1278,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       if(usesNativeAgreementPayment(found))throw error;
       let observation;
       try{await assertBoundDomain(found);observation=await protocol?.observeReportedPayment?.(coords.reportedTxHash)??await chain.observeTransfer(coords.reportedTxHash);}
-      catch(readError){observation={status:'unavailable',reason:String(readError?.message??readError).slice(0,240)};}
-      observation=checkedTransferObservation(observation,coords.reportedTxHash);
+      catch(readError){observation={status:'unavailable',reason:errorText(readError)};}
+      observation=transferObservationRecord(observation,coords.reportedTxHash);
       return {operation:found,verification:{outcome:'readback_only',observation,...OBSERVATION_LIMITS}};
     }
     if (diagnosticOnly) return diagnosticReadback(found, txHash, signal);
