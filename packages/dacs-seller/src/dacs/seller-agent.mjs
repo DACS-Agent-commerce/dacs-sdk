@@ -79,7 +79,7 @@ const paymentPending = (answer) => answer?.status === 'held' || (answer?.status 
 export function transportOutcome(path, { answer, error, held, cause = error } = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
   const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
   const refusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
-  if (held !== undefined || (error && !refusal)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
+  if (held !== undefined || (error && !refusal) || (proposal && refusal && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
     ...(cause === undefined ? {} : { cause, causeCode: [cause, cause?.cause].some(c => c?.name === 'TimeoutError' || c?.code === 'ETIMEDOUT') ? 'timeout' : 'reader' }) };
   const rejected = refusal || (answer?.code !== 'party_vet_non_pass' && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
   const noEffect = rejected && !resumed && !retained;
@@ -1865,6 +1865,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!session?.proposal || !session.sellerContribution || !same(body.proposal, session.proposal) || !same(body.transportIdentity, session.transportIdentity) ||
               session.agreementHash !== request.agreementHash || session.sellerContributionProposalHash !== body.proposal.proposalHash ||
               session.buyerBundleHash !== identityBundleHash(body.buyerIdentityBundle)) return { held: 'seller_proposal_state_incomplete' };
+          assertVetContext(); assertSessionAdmission(); assertRailPin(session.railPin, 'in-flight');
+          assertBuyer(request.buyer, request.jobId, { proposal: true });
           const agreement = await finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], contributionVerifier);
           return contentHash(agreement) === request.agreementHash ? { answer: { disposition: 'complete', contribution: structuredClone(session.sellerContribution) } } : { held: 'seller_proposal_state_incomplete' };
         }
@@ -1935,7 +1937,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const { path, jobId } = input.request, readOnly = input.readOnly === true || claimed?.live===false;
       let result;
       // An unpaid outside buyer only has issued unknown writes inspected:
-      // nothing is restored or run. The proposal reducer keeps its wallet gate.
+      // nothing is restored or run. Live and read-only proposal replay each
+      // apply the proposal wallet and profile gates themselves.
       if (path !== '/dacs/v1/agreements/proposals' && access && session && buyerAccessClosed(session, jobId)) {
         result = { held: await readIssued?.(jobId, { unknownOnly: true }) ? 'buyer_access_closed; issued unknown writes inspected read-only; retained outcome unchanged' : 'buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged' };
       } else { sessions.delete(jobId); await restore(session); result = await recoverTransport({ ...input, readOnly }); }
