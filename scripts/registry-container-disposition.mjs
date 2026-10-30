@@ -408,6 +408,7 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
     throw new Error("cannot authenticate candidate copies under install-strategy=linked: lock locations are not installed paths");
   }
   const closure = referenceInstallation({ manifest: manifestBytes, lock, installer,
+    metadataCache: installer.config.cache,
     readArchive: (_location, entry) => cachedArchive(installer.config.cache, entry.integrity) });
   // A failed replay publishes no entries or inventory, so no candidate rule can be judged.
   if (closure.errors.length) throw new Error(closure.errors.join("\n"));
