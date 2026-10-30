@@ -19,11 +19,14 @@ const MAX_JSON_BYTES = 1024 * 1024;
 const REGISTRY_TIMEOUT_MS = 15_000;
 const TAR_BLOCK_BYTES = 512;
 // Closed npm-pack header shapes; every byte after the name is covered.
-const NUL = /^\0+$/, OCTAL_10 = /^[0-7]{10} \0$/;
+// node-tar writes width-2 octal digits + space + NUL, width-1 digits + NUL,
+// or leaves an undefined numeric field entirely NUL-filled.
+const NUL = /^\0+$/, OCTAL_8 = /^(?:[0-7]{6} \0|[0-7]{7}\0|\0{8})$/;
+const OCTAL_12 = /^(?:[0-7]{10} \0|[0-7]{11}\0|\0{12})$/;
 const HEADER_FIELDS = [
-  [100, 8, /^000[0-7]{3} \0$/], [108, 16, NUL], [124, 12, OCTAL_10], [136, 12, OCTAL_10],
-  [148, 8, /^[0-7]{6} \0$/], [156, 1, /^0$/], [157, 100, NUL], [257, 8, /^ustar\x0000$/],
-  [265, 64, NUL], [329, 16, /^(?:000000 \0){2}$/], [345, 167, NUL],
+  [100, 8, OCTAL_8], [108, 8, OCTAL_8], [116, 8, OCTAL_8], [124, 12, OCTAL_12], [136, 12, OCTAL_12],
+  [148, 8, OCTAL_8], [156, 1, /^0$/], [157, 100, NUL], [257, 8, /^ustar\x0000$/],
+  [265, 64, NUL], [329, 8, OCTAL_8], [337, 8, OCTAL_8], [345, 167, NUL],
 ];
 const PACKAGE_PATH = /^package(?:\/[A-Za-z0-9_@+.-]*[A-Za-z0-9_@+-])+$/;
 const RESERVED_NAME = /\/(?:con|prn|aux|nul|com\d|lpt\d)(?:\.[^/]*)?(?:\/|$)/i;
@@ -47,7 +50,7 @@ function packedHeader(header) {
   if (PACKAGE_PATH.exec(name)?.[0] !== name || RESERVED_NAME.test(name)) {
     throw new Error("packed tarball has an unsupported path (canonical ASCII npm-pack paths required)");
   }
-  return { name, size: Number.parseInt(header.toString("latin1", 124, 136), 8) };
+  return { name, size: Number.parseInt(header.toString("latin1", 124, 136), 8) || 0 };
 }
 
 function packedManifest(body) {
