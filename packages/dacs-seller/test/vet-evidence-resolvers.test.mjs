@@ -1,6 +1,8 @@
 // Strict Vet replay with a requirement that names a verified claim: the record
 // passes only through the operator's authenticated VerifyResult, recipe and
 // authority evidence, every read is bounded, and a failing reader keeps its cause.
+import { sessionRegistrySnapshot } from './helpers/session-registry-fixture.mjs';
+import { fixtureIdentityBundle } from './fixtures/listings.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as core from '@kynesyslabs/dacs';
@@ -23,7 +25,7 @@ const sign = (unsigned, separator, wallet) => core.signComponentArtifact(unsigne
 
 // A counterparty-signed record of `buyer` (verified by `seller`) whose requirement names one verified claim,
 // with that claim's VerifyResult, recipe and authority content kept as an operator would hold them.
-async function verifiedClaimFixture({ decision = 'pass', recipeVersion = 1, scheme = 'domain', identifier = 'alice.example', urlTemplate = 'https://authority.example/{identifier}', availability = 'live', defaultMethod = { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate } }, list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller, boundRequirement = bundleRequirement.required[0], steward = recipeSteward, resultWallet = resultSigner } = {}) {
+async function verifiedClaimFixture({ decision = 'pass', recipeVersion = 1, scheme = 'domain', identifier = 'alice.example', urlTemplate = 'https://authority.example/{identifier}', availability = 'live', defaultMethod = { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate } }, list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller, boundRequirement = bundleRequirement.required[0], bundleHash = core.sha256Hex('TEST evaluated bundle'), steward = recipeSteward, resultWallet = resultSigner } = {}) {
   const recipe = await sign({ recipeVersion, scheme, defaultMethod,
     defaultMaxAgeSec: 3600, parserRules: { format: 'json', successJsonPath: '$.active' }, retryClass: 'permanent', availability,
     governance: { proposedBy: steward.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' } }, 'dacs-recipe:v1:', steward);
@@ -37,7 +39,6 @@ async function verifiedClaimFixture({ decision = 'pass', recipeVersion = 1, sche
     reason: 'authority confirmed the claim', attestation: { anchor: { kind: 'https', locator: AUTHORITY_LOCATOR }, contentHash: authorityContent.hash, signer: resultWallet.claim },
     data, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultWallet);
   const resultRef = { anchor: { kind: 'storage-program', locator: `dacs2:${JOB}:${scheme}:${identifier}:v${recipeVersion}` }, contentHash: core.contentHash(result), recipeVersion };
-  const bundleHash = core.sha256Hex('TEST evaluated bundle');
   const record = await sign({ recordVersion: '1', jobId: JOB, evaluatedParty: party.claim, bundleHash, requirementHash: core.sha256Hex(core.canonicalize(bundleRequirement)),
     freshness: list === 'freshness' ? [resultRef] : [], supplementary: [], dealSpecific: list === 'dealSpecific' ? [resultRef] : [], overallDecision: 'pass', generatedAt: NOW }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, verifier);
   const ref = { anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(JOB, party.claim) }, contentHash: core.contentHash(record), signer: verifier.claim };
@@ -610,4 +611,17 @@ test('strict seller replay agrees with the qualification evaluator across member
   }
  }
  assert.ok(comparisons>1000);
+});
+
+for (const list of ['freshness', 'dealSpecific']) for (const matches of [true, false]) test(`mixed presence and verified ${list} requires the authenticated snapshot hash: ${matches}`, async () => {
+  const bundle = fixtureIdentityBundle(buyer, NOW);
+  const member = { scheme: 'did', verificationRequired: false };
+  const bundleRequirement = { ...unpinnedRequirement, required: [unpinnedRequirement.required[0], member] };
+  const f = await verifiedClaimFixture({ list, bundleRequirement, bundleHash: core.identityBundleHash(bundle) });
+  const sessionSnapshot = await sessionRegistrySnapshot(JOB);
+  const problem = await f.replay({ input: { presence: { bundle, sessionSnapshot } }, evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: matches ? sessionSnapshot.snapshotHash : SESSION_REGISTRY_PIN, recipeVersion: f.recipe.recipeVersion, availability: 'live' }),
+  } });
+  if (matches) assert.equal(problem, null);
+  else assert.match(problem, /another session registry snapshot/);
 });

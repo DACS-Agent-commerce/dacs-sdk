@@ -13,17 +13,11 @@
 // (DACS-2 VPC-3), finalized by default; `receipt` in the record options is
 // null (the reader has none) or the members that replace the default's.
 // `overrides` replaces parts of an admitted answer to build refusal vectors.
-// `readSessionRecipeRegistryPin` answers the registry snapshot hash the operator
-// pinned for the job (`registryPin`); a Vet record over a presence-only claim is
-// replayed against it. `readRegistryPinWith` scripts other answers.
 import * as core from '@kynesyslabs/dacs';
 import { SELLER_PROFILE } from '../../src/dacs/session-admission.mjs';
 
-export const FIXTURE_REGISTRY_PIN = core.sha256Hex('TEST session recipe registry snapshot');
-
 export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.now() }) {
   const records = new Map(), receipts = new Map(), calls = [];
-  let registryPinAnswer = null;
   let made = 0;
   // The reference names the party's verifier (by default its counterparty) at
   // the job's canonical address; the options build records that do not back it.
@@ -57,11 +51,8 @@ export function createSessionAdmissionFixture({ seller, buyer, now = () => Date.
     readRevocationWith: (fn) => { surfaces = fn; },
     // The verdict for the next receipt verifications: ({ ref, record, receipt }) => 'valid' | 'invalid' | 'indeterminate' (or a throw), or null.
     verifyReceiptWith: (fn) => { verifyOverride = fn; },
-    // The answer for the next registry pin readings: ({ jobId }) => answer (or a throw), or null.
-    readRegistryPinWith: (fn) => { registryPinAnswer = fn; },
     markers,
     sessionAdmission: {
-      readSessionRecipeRegistryPin: async (query) => { calls.push(['readSessionRecipeRegistryPin', query.jobId]); return registryPinAnswer ? registryPinAnswer(query) : FIXTURE_REGISTRY_PIN; },
       readRevocationSurfaces: async (query) => { calls.push(['readRevocationSurfaces', query.jobId]); return surfaces ? surfaces(activeSurfaces(), query) : activeSurfaces(); },
       readRevocationMarker: async (anchor) => { calls.push(['readRevocationMarker', anchor.locator]); return markers.has(anchor.locator) ? structuredClone(markers.get(anchor.locator)) : null; },
       admit: async (query) => { calls.push(['admit', query.jobId]); const answer = admitted(query); return overrides ? overrides(answer, query) : answer; },

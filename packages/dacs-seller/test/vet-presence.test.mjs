@@ -1,14 +1,15 @@
 // DACS-2 v0.6 forbids a synthetic VerifyResult for a presence-only claim. The
 // seller counts it by replaying the Vet record over the exact bundle, with the
-// bundle's presentation verifier and the registry snapshot the operator pinned
-// for the job (PCR-6, CRQ-1). These vectors use real signed records and need no
+// bundle's presentation verifier and an authenticated job registry snapshot
+// (PCR-6, CRQ-1). These vectors use real signed records and need no
 // durable state.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as core from '@kynesyslabs/dacs';
 import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
-import { createSessionAdmissionFixture, FIXTURE_REGISTRY_PIN } from './helpers/session-admission-fixture.mjs';
-import { hasPresenceOnlyClaim, identityPresentationValid, readRegistryPin, sessionAdmissionConfig, vetRecordProblem } from '../src/dacs/session-admission.mjs';
+import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
+import { hasPresenceOnlyClaim, identityPresentationValid, sessionAdmissionConfig, vetRecordProblem } from '../src/dacs/session-admission.mjs';
+import { sessionRegistrySnapshot } from './helpers/session-registry-fixture.mjs';
 
 const NOW = 1780000000000;
 function wallet(tag) {
@@ -32,14 +33,15 @@ async function fixture(requirement, {expiresAt} = {}) {
   const ref = await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement });
   const record = await admission.sessionAdmission.resolveVetRecord({ ref });
   const invocation = { vetRecordRef: ref, evaluatedParty: buyerKey.claim, requirement, verifier: sellerKey.claim, freshness: [], dealSpecific: [] };
+  const sessionSnapshot = await sessionRegistrySnapshot(jobId);
   const problem = (change = {}) => {
-    const { bundle, registryPin, sessionRegistryPins } = { bundle: buyerBundle, registryPin: FIXTURE_REGISTRY_PIN, ...change };
-    return vetRecordProblem(record, { ref, jobId, party: buyerKey.claim, bundleHash: core.identityBundleHash(bundle), verifier: sellerKey.claim, invocation, now: () => NOW, presence: { bundle, registryPin }, sessionRegistryPins });
+    const { bundle, sessionRegistryPins, ...authority } = { bundle: buyerBundle, sessionSnapshot, ...change };
+    return vetRecordProblem(record, { ref, jobId, party: buyerKey.claim, bundleHash: core.identityBundleHash(bundle), verifier: sellerKey.claim, invocation, now: () => NOW, presence: { bundle, ...authority }, sessionRegistryPins });
   };
-  return { admission, buyerBundle, problem, record };
+  return { admission, buyerBundle, problem, record, jobId, sessionSnapshot };
 }
 
-test('a record over a presence-only claim the bundle carries passes with the exact bundle, its presentation and the pinned registry', async () => {
+test('a record over a presence-only claim the bundle carries passes with the exact bundle, its presentation and an authenticated job registry snapshot', async () => {
   assert.equal(await (await fixture(presence('did'))).problem(), null);
 });
 
@@ -50,13 +52,6 @@ test('a oneOf group with a presence-only alternative the bundle carries passes',
 
 test('a record that says pass for a presence-only claim the bundle does not carry is refused', async () => {
   assert.match(await (await fixture(presence('domain'))).problem(), /\(invalid: aggregation-mismatch\)$/);
-});
-
-test('a presence-only record is refused without a valid pinned registry authority', async () => {
-  const { problem } = await fixture(presence('did'));
-  for (const registryPin of [undefined, null, '', 'not-a-hash', FIXTURE_REGISTRY_PIN.toUpperCase(), { hash: FIXTURE_REGISTRY_PIN }]) {
-    assert.equal(await problem({ registryPin }), 'the Vet requirement names a presence-only claim and no pinned registry authority was supplied', String(registryPin));
-  }
 });
 
 test('a presence-only record is refused for a bundle whose presentation does not verify', async () => {
@@ -83,7 +78,7 @@ test('a presence-only record is refused for another bundle of the same party', a
 
 test('a record over no required claim is replayed with no presence authority and no registry pin', async () => {
   const { problem } = await fixture({ requirementVersion: '1', required: [], preferredPresentation: 'any' });
-  assert.equal(await problem({ registryPin: undefined }), null);
+  assert.equal(await problem({ sessionSnapshot: undefined }), null);
 });
 
 test('a presence-only requirement with a primaryClaimSelector is refused, not counted as a presence success', async () => {
@@ -109,205 +104,55 @@ test('identityPresentationValid accepts only the presenter\'s signature over the
   for (const bundle of [undefined, null, {}, { ...buyerBundle, presentation: { kind: 'siwd' } }]) assert.equal(identityPresentationValid(bundle, core.identityBundleHash(buyerBundle)), false);
 });
 
-test('the registry pin is read with the job, bounded, and is null when the operator configured no reader', async () => {
-  const { admission } = await fixture(presence('did'));
-  assert.equal(await readRegistryPin(admission.sessionAdmission, 'job-1'), FIXTURE_REGISTRY_PIN);
-  assert.deepEqual(admission.calls.filter(([call]) => call === 'readSessionRecipeRegistryPin'), [['readSessionRecipeRegistryPin', 'job-1']]);
-  const { readSessionRecipeRegistryPin: _pin, ...withoutPin } = admission.sessionAdmission;
-  assert.equal(await readRegistryPin(withoutPin, 'job-1'), null);
-  const failing = { ...admission.sessionAdmission, readSessionRecipeRegistryPin: async () => { throw new Error('TEST registry is down'); } };
-  await assert.rejects(readRegistryPin(failing, 'job-1'), /TEST registry is down/);
-  const oversized = { ...admission.sessionAdmission, readSessionRecipeRegistryPin: async () => 'a'.repeat(128 * 1024) };
-  await assert.rejects(readRegistryPin(oversized, 'job-1'), RangeError);
-});
-
-test('the registry pin read honors its deadline and cancels a reader that never settles', { timeout: 30_000 }, async (t) => {
-  const { admission } = await fixture(presence('did'));
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  let signal;
-  const stalled = { ...admission.sessionAdmission, readSessionRecipeRegistryPin: (_query, options) => { signal = options.signal; return new Promise(() => {}); } };
-  const read = readRegistryPin(stalled, 'job-1');
-  const outcome = assert.rejects(read, { name: 'TimeoutError' });
-  await Promise.resolve();
-  t.mock.timers.tick(10_000);
-  await outcome;
-  assert.equal(signal.aborted, true);
-});
-
-test('session admission takes an optional registry pin reader and refuses one that is not a function', async () => {
-  const { admission } = await fixture(presence('did'));
-  assert.equal(sessionAdmissionConfig(admission.sessionAdmission), admission.sessionAdmission);
-  const { readSessionRecipeRegistryPin: _pin, ...withoutPin } = admission.sessionAdmission;
-  assert.equal(sessionAdmissionConfig(withoutPin), withoutPin);
-  assert.throws(() => sessionAdmissionConfig({ ...withoutPin, readSessionRecipeRegistryPin: 'pin' }), /readSessionRecipeRegistryPin/);
-});
-
-test('presence-only replay keeps one registry snapshot across the job records', async () => {
-  const { problem } = await fixture(presence('did')), pins = [];
-  assert.equal(await problem({ sessionRegistryPins: pins }), null);
-  assert.match(await problem({ sessionRegistryPins: pins, registryPin: 'f'.repeat(64) }), /another session registry snapshot/);
-});
-
-test('any well-formed operator pin is accepted without authenticating it', async () => {
-  const { problem } = await fixture(presence('did'));
-  for (const registryPin of ['f'.repeat(64), '0'.repeat(64)]) assert.equal(await problem({ registryPin }), null);
-});
-
-test('a non-expiring presence session reopens ten years later without another Agreement signature', async t => {
-  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
-  const agent = await f.open(), request = await f.proposal(agent), first = await agent.receiveProposal(request);
-  assert.equal(first.disposition, 'complete');
-  agent.close();
-  f.advance(10 * 365 * 24 * 60 * 60 * 1000);
-  const reopened = await f.open(), repeat = await reopened.receiveProposal(request);
-  assert.equal(repeat.disposition, 'complete');
-  assert.deepEqual(repeat.contribution, first.contribution);
-  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 1);
-});
-
-for (const mode of ['absent', 'failing']) test(`presence restart refuses a ${mode} pin reader and keeps the cause`, async t => {
-  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
-  const agent = await f.open(), request = await f.proposal(agent);
-  assert.equal((await agent.receiveProposal(request)).disposition, 'complete');
-  agent.close();
-  const cause = new Error('TEST restart pin read failed');
-  const { readSessionRecipeRegistryPin: _pin, ...withoutPin } = f.admission.sessionAdmission;
-  f.config.sessionAdmission = mode === 'absent' ? withoutPin : { ...withoutPin, readSessionRecipeRegistryPin: async () => { throw cause; } };
-  await assert.rejects(f.open(), error => {
-    assert.equal(error.code, 'seller_state_unverified');
-    assert.match(error.message, mode === 'absent' ? /no pinned registry authority/ : /pinned registry authority cannot be read/);
-    if (mode === 'failing') assert.equal(error.cause, cause);
-    return true;
-  });
-  f.config.sessionAdmission = f.admission.sessionAdmission;
-  const reopened = await f.open();
-  assert.equal((await reopened.receiveProposal(request)).disposition, 'complete');
-  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 1);
-});
-
-test('a wrong profile invocation is rejected before a failing pin reader is called', async t => {
-  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
-  let reads = 0;
-  f.config.sessionAdmission = { ...f.admission.sessionAdmission, readSessionRecipeRegistryPin: async () => { reads++; throw new Error('TEST registry is down'); } };
-  const agent = await f.open(), request = await f.proposal(agent);
-  const context = f.contexts.get(request.transportIdentity.jobId);
-  context.vetRequirements[1].requirement = presence('did');
-  const answer = await agent.receiveProposal(request);
-  assert.equal(answer.disposition, 'rejected');
-  assert.match(answer.reason, /requirement this profile restores/);
-  assert.equal(reads, 0);
-  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
-});
-
-for (const equivalent of [true, false]) test(`canonical ${equivalent ? 'equivalent' : 'distinct'} buyer identity is checked in presence replay and counterparty admission`, async t => {
-  const replay = await fixture(presence('did')), presented = structuredClone(replay.buyerBundle);
-  presented.presentation.signatures[0].ref = equivalent ? `${presented.presentedBy}?label=buyer` : wallet(41).claim;
-  if (equivalent) assert.equal(await replay.problem({ bundle: presented }), null);
-  else assert.match(await replay.problem({ bundle: presented }), /identity-presentation/);
-  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
-  let buyerClaim;
-  f.config.sessionAdmission = { ...f.admission.sessionAdmission, resolveVetRecord: async query => {
-    const record = await f.admission.sessionAdmission.resolveVetRecord(query);
-    if (!equivalent && record.evaluatedParty === f.config.signer.claim) record.signature.signer = f.config.signer.claim;
-    return record;
-  } };
-  const agent = await f.open(), request = await f.proposal(agent);
-  buyerClaim = request.buyerIdentityBundle.presentedBy;
-  const proof = structuredClone(request.buyerIdentityBundle);
-  proof.presentation.signatures[0].ref = equivalent ? `${buyerClaim}?label=buyer` : f.config.signer.claim;
-  assert.equal(identityPresentationValid(proof, core.identityBundleHash(proof)), equivalent);
-  // Admission uses the producer's exact presentation bytes. The presentation
-  // reader above separately compares advisory reference parameters canonically.
-  const first = await agent.receiveProposal(request);
-  assert.equal(first.disposition, equivalent ? 'complete' : 'rejected', JSON.stringify(first));
-  if (!equivalent) assert.match(first.reason, /not signed by its counterparty verifier/);
-  agent.close();
-  const reopened = await f.open(), repeat = await reopened.receiveProposal(request);
-  assert.equal(repeat.disposition, first.disposition);
-  assert.deepEqual(repeat.contribution, first.contribution);
-  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, equivalent ? 1 : 0);
-});
-
-for (const form of ['presence-first', 'verified-first', 'required-and-oneOf']) test(`mixed ${form} presence group selecting a verified method is refused before signing`, async t => {
-  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const member = { scheme: 'did', verificationRequired: false }, verified = { scheme: 'did', verificationRequired: true, parameters: { verificationMethod: 'signature' } };
-  const alternatives = form === 'verified-first' ? [verified, member] : [member, verified];
-  const requirement = { requirementVersion: '1', required: form === 'required-and-oneOf' ? [member] : [], oneOf: [alternatives], preferredPresentation: 'any' };
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: requirement });
-  const agent = await f.open(), answer = await agent.receiveProposal(await f.proposal(agent));
-  assert.equal(answer.disposition, 'rejected');
-  assert.match(answer.reason, /does not pin a recipe version for a verified claim/);
-  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
-});
-
-test('a negotiated presence-only session replays after restart without another Agreement signature', async t => {
-  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: presence('did') });
-  const agent = await f.open(), request = await f.proposal(agent);
-  const first = await agent.receiveProposal(request);
-  assert.equal(first.disposition, 'complete');
-  const agreementSigns = () => f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length;
-  assert.equal(agreementSigns(), 1);
-  agent.close();
-  const reopened = await f.open(), repeat = await reopened.receiveProposal(request);
-  assert.equal(repeat.disposition, 'complete');
-  assert.deepEqual(repeat.contribution, first.contribution);
-  assert.equal(agreementSigns(), 1);
-});
-
-test('an invalid presence requirement is refused before the registry pin is read', async t => {
-  // PCR-1 makes a presence-only member that selects freshness a definite
-  // requirement error. A failing registry reader must not turn that into an
-  // indeterminate outage, so the requirement is preflighted first.
-  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const requirement = { ...presence('did'), required: [{ scheme: 'did', verificationRequired: false, maxAge: 30 }] };
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: requirement });
-  let reads = 0;
-  f.config.sessionAdmission = { ...f.admission.sessionAdmission,
-    readSessionRecipeRegistryPin: async () => { reads += 1; throw new Error('TEST registry is down'); } };
-  const agent = await f.open(), request = await f.proposal(agent);
-  const answer = await agent.receiveProposal(request);
-  assert.equal(answer.disposition, 'rejected');
-  assert.match(answer.reason, /VET_RECORD_UNVERIFIED/);
-  assert.equal(reads, 0);
-  agent.close();
-});
+const missingSnapshot = 'the Vet requirement names a presence-only claim and no runtime-authenticated job registry snapshot was supplied';
 
 for (const placement of ['required', 'oneOf']) {
- const requirement = placement === 'required' ? presence('did') : presence('did', {required: [], oneOf: [[{scheme: 'did', verificationRequired: false}]]});
- test(`strict seller Vet refuses future-expiring ${placement} presence before it can be retained`, async () => {
-  const f = await fixture(requirement, {expiresAt: NOW + 60000});
-  assert.match(await f.problem(), /expiring claims/);
- });
- test(`refused expiring ${placement} presence leaves no signature and allows restart and another job`, async t => {
-  const {proposalAdmissionFixture} = await import('./helpers/proposal-admission-fixture.mjs');
-  const f = await proposalAdmissionFixture(t, {assembled: true, buyerRequirement: requirement});
-  const agent = await f.open(), request = await f.proposal(agent, undefined, {expiresAt: NOW + 60000});
-  const answer = await agent.receiveProposal(request);
-  assert.equal(answer.disposition, 'rejected');
-  assert.match(answer.reason, /expiring claims/);
-  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
-  agent.close(); f.advance(60001);
-  const reopened = await f.open();
-  const control = await f.proposal(reopened, '01ARZ3NDEKTSV4RRFFQ69G5FAY');
-  assert.equal((await reopened.receiveProposal(control)).disposition, 'complete');
- });
+  const requirement = placement === 'required' ? presence('did') : presence('did', { required: [], oneOf: [[{ scheme: 'did', verificationRequired: false }]] });
+  for (const registryPin of ['0'.repeat(64), 'f'.repeat(64), undefined]) test(`${placement} presence refuses a bare pin ${registryPin?.[0] ?? 'absent'}`, async () => {
+    const f = await fixture(requirement);
+    assert.equal(await f.problem({ sessionSnapshot: undefined, registryPin }), missingSnapshot);
+  });
+  for (const kind of ['wrong-job', 'clone', 'spread', 'lookalike']) test(`${placement} presence refuses a ${kind} snapshot`, async () => {
+    const f = await fixture(requirement);
+    const snapshot = kind === 'wrong-job' ? await sessionRegistrySnapshot(core.generateCanonicalJobId())
+      : kind === 'clone' ? structuredClone(f.sessionSnapshot) : kind === 'spread' ? { ...f.sessionSnapshot }
+      : { jobId: f.jobId, snapshotHash: f.sessionSnapshot.snapshotHash };
+    assert.equal(await f.problem({ sessionSnapshot: snapshot }), missingSnapshot);
+  });
+  test(`strict seller Vet refuses future-expiring ${placement} presence with authenticated authority`, async () => {
+    const f = await fixture(requirement, { expiresAt: NOW + 60000 });
+    assert.match(await f.problem(), /expiring claims/);
+  });
+  test(`retained ${placement} presence refuses restore without authenticated job authority`, async t => {
+    const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
+    const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: requirement });
+    const agent = await f.open(), request = await f.proposal(agent);
+    const context = f.contexts.get(request.transportIdentity.jobId);
+    const session = { jobId: context.input.jobId, buyerBundle: context.input.buyer.identityBundle, demDeliveryContext: { input: context.input } };
+    assert.match(await agent.retainedVetEvidenceProblem(session), /no runtime-authenticated job registry snapshot/);
+    assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
+  });
 }
 
-for (const form of ['presence-first', 'verified-first', 'required-and-oneOf']) test(`mixed ${form} presence group with no derivable verified method retains the lower part acceptance`, async t => {
-  const { proposalAdmissionFixture } = await import('./helpers/proposal-admission-fixture.mjs');
-  const member = { scheme: 'did', verificationRequired: false }, verified = { scheme: 'did', verificationRequired: true };
-  const alternatives = form === 'verified-first' ? [verified, member] : [member, verified];
-  const requirement = { requirementVersion: '1', required: form === 'required-and-oneOf' ? [member] : [], oneOf: [alternatives], preferredPresentation: 'any' };
-  const f = await proposalAdmissionFixture(t, { assembled: true, buyerRequirement: requirement });
-  const agent = await f.open(), request = await f.proposal(agent), first = await agent.receiveProposal(request);
-  assert.equal(first.disposition, 'complete');
-  agent.close();
-  const reopened = await f.open();
-  assert.deepEqual((await reopened.receiveProposal(request)).contribution, first.contribution);
-  assert.equal(f.signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 1);
+test('presence-only replay keeps one authenticated registry snapshot across job records', async () => {
+  const f = await fixture(presence('did')), pins = [];
+  assert.equal(await f.problem({ sessionRegistryPins: pins }), null);
+  assert.deepEqual(pins, [f.sessionSnapshot.snapshotHash]);
+  const other = await sessionRegistrySnapshot(f.jobId, 'another-snapshot');
+  assert.notEqual(other.snapshotHash, f.sessionSnapshot.snapshotHash);
+  assert.match(await f.problem({ sessionRegistryPins: pins, sessionSnapshot: other }), /another session registry snapshot/);
+});
+
+for (const value of [async () => '0'.repeat(64), 'pin', undefined]) test(`session admission rejects a supplied obsolete pin capability of type ${typeof value}`, async () => {
+  const { admission } = await fixture(presence('did'));
+  assert.equal(sessionAdmissionConfig(admission.sessionAdmission), admission.sessionAdmission);
+  assert.throws(() => sessionAdmissionConfig({ ...admission.sessionAdmission, readSessionRecipeRegistryPin: value }), { name: 'TypeError', message: /readSessionRecipeRegistryPin/ });
+});
+
+for (const equivalent of [true, false]) test(`presence presentation checks canonical ${equivalent ? 'equivalent' : 'distinct'} signer identity`, async () => {
+  const f = await fixture(presence('did')), bundle = structuredClone(f.buyerBundle);
+  bundle.presentation.signatures[0].ref = equivalent ? `${bundle.presentedBy}?label=buyer` : wallet(41).claim;
+  const problem = await f.problem({ bundle });
+  if (equivalent) assert.equal(problem, null);
+  else assert.match(problem, /identity-presentation/);
 });
