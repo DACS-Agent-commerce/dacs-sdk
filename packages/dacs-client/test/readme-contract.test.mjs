@@ -33,7 +33,7 @@ function database(t, file = false) {
   db.exec(client.PURCHASE_STATE_SCHEMA);
   return { db, dir };
 }
-function world(t, { native = false, expired = false, reader = 'present', disposition } = {}) {
+function world(t, { native = false, expired = false, reader = 'present', disposition, observation } = {}) {
   t.mock.timers.enable({ apis: ['Date'], now: NOW });
   const { db } = database(t), store = client.createSqlitePurchaseStore();
   const savedOps = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => NOW });
@@ -63,7 +63,7 @@ function world(t, { native = false, expired = false, reader = 'present', disposi
   const chain = new Proxy({ network: 'testnet', pinnedIdentity: IDENTITY,
     networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
     observeTransfer: () => { activeCalls++; throw new Error('TEST-active-reader-called'); },
-    ...(reader === 'absent' ? {} : { observePassiveTransfer: reader === 'noncallable' ? true : async () => ({
+    ...(reader === 'absent' ? {} : { observePassiveTransfer: reader === 'noncallable' ? true : async () => observation ? observation() : ({
       status: 'included', txHash: HASH, payer: PAYER, payee: PAYEE, amountOs: '1000000000', blockNumber: 7,
       ...(disposition === undefined ? {} : { sourceDisposition: disposition }),
     }) }),
@@ -77,6 +77,109 @@ function world(t, { native = false, expired = false, reader = 'present', disposi
     snapshot: () => ({ operation: savedOps.get(op.accountId, op.id), events: savedOps.history(op.id), coordinates: coordinates.get(op.id) }),
     token };
 }
+
+function observationRows() {
+  return [...section('Chain reader').matchAll(/^\| `([^`]+)` \| ([^|]+) \| ([^|]+) \|$/gm)]
+    .map(([, field, presence, rule]) => ({ field, presence: presence.trim(), rule: rule.trim() }));
+}
+const includedObservation = () => ({ status: 'included', txHash: HASH, payer: PAYER, payee: PAYEE,
+  amountOs: '1000000000', blockNumber: 7, reason: 'TEST-observed', includedAt: NOW, sourceDisposition: 'included' });
+async function readObservation(w, value) {
+  w.observation.value = value;
+  const before = w.snapshot();
+  const result = (await w.verify()).verification;
+  assert.equal(result.outcome, 'readback_only');
+  assert.deepEqual(w.snapshot(), before);
+  return result;
+}
+function observationWorld(t, native = false) {
+  const observation = { value: includedObservation() };
+  return { ...world(t, { native, observation: () => observation.value }), observation };
+}
+const observationPresence = { status: 'always', reason: 'optional', txHash: 'included', payer: 'included',
+  payee: 'included', amountOs: 'included', blockNumber: 'included', includedAt: 'optional', sourceDisposition: 'optional' };
+probe('README observation table states every field and its presence', Object.keys(observationPresence), () => {
+  assert.deepEqual(observationRows().map(({ field, presence }) => [field, presence]), Object.entries(observationPresence));
+  assert.doesNotMatch(section('Chain reader'), /optional block number/);
+});
+for (const [field, presence] of Object.entries(observationPresence)) {
+  probe(`README observation omission: ${field} is ${presence}`, [field], async t => {
+    assert.equal(observationRows().find(row => row.field === field)?.presence, presence);
+    const w = observationWorld(t);
+    for (const explicitUndefined of [false, true]) {
+      const value = includedObservation();
+      if (explicitUndefined) value[field] = undefined;
+      else delete value[field];
+      const { observation } = await readObservation(w, value);
+      assert.equal(observation.status, presence === 'optional' ? 'included' : 'malformed');
+      if (field === 'blockNumber') assert.equal(observation.reason, 'included blockNumber must be a nonnegative safe integer');
+    }
+  });
+}
+for (const [field, rule, accepted, rejected] of [
+  ['blockNumber', /nonnegative safe integer/, [0, Number.MAX_SAFE_INTEGER], [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '7', null]],
+  ['amountOs', /`OS_INTEGER`.*78 digits/, ['0', '9'.repeat(78)], ['9'.repeat(79), '01', '1.0', '-1', '', 1000000000]],
+  ['includedAt', /integer epoch milliseconds.*8640000000000000/, [0, 8640000000000000], [8640000000000001, -1, 1.5, 'x', null]],
+  ['txHash', /requested hash.*64 hex characters.*optional `0x`/, [HASH, '0x' + HASH.toUpperCase()], ['d'.repeat(64), 'x', 1, null]],
+  ...['payer', 'payee'].map(field => [field, /readable Demos address.*66 characters/, [PAYER, PAYEE], ['TEST-buyer', 'b'.repeat(67), 1, null]]),
+  ['reason', /text.*240 characters/, ['', 'x'.repeat(240)], ['x'.repeat(241), 1, null]],
+]) probe(`README observation bounds: ${field}`, [field, ...(field === 'txHash' ? ['0x'] : [])], async t => {
+  assert.match(observationRows().find(row => row.field === field)?.rule ?? '', rule);
+  const w = observationWorld(t);
+  for (const value of accepted) {
+    const { observation } = await readObservation(w, { ...includedObservation(), [field]: value });
+    assert.equal(observation.status, 'included', String(value));
+    assert.equal(observation[field], value);
+  }
+  for (const value of rejected) {
+    assert.equal((await readObservation(w, { ...includedObservation(), [field]: value })).observation.status, 'malformed', String(value));
+  }
+});
+for (const [field, alias] of [['txHash', 'hash'], ['amountOs', 'amount'], ['blockNumber', 'block']]) {
+  probe(`README observation requires ${field} rather than ${alias}`, [field], async t => {
+    assert.ok(observationRows().some(row => row.field === field));
+    const value = includedObservation(), w = observationWorld(t);
+    value[alias] = value[field]; delete value[field];
+    assert.equal((await readObservation(w, value)).observation.status, 'malformed');
+  });
+}
+probe('README observation status table drives included and non-included readback',
+  ['pending', 'not-found', 'invalid', 'unavailable', 'malformed', 'termsMatch'], async t => {
+    const rule = observationRows().find(row => row.field === 'status')?.rule ?? '';
+    const statuses = [...rule.matchAll(/`([^`]+)`/g)].map(m => m[1]);
+    assert.deepEqual(statuses, ['included', 'pending', 'not-found', 'failed', 'invalid', 'unavailable']);
+    assert.match(section('Chain reader'), /Any other shape yields `status` `malformed` with a `reason`/);
+    const w = observationWorld(t);
+    for (const status of statuses) {
+      const value = status === 'included' ? includedObservation() : { status, reason: 'TEST-observed' };
+      const result = await readObservation(w, value);
+      assert.equal(result.observation.status, status);
+      assert.equal(result.termsMatch, status === 'included' ? true : null);
+    }
+    for (const value of [null, [], 'included', 1, { status: 'confirmed' }, { status: 'pending', reason: 1 },
+      { status: 'pending', sourceDisposition: 'confirmed' }, { status: 'pending', reason: 'x'.repeat(241) }]) {
+      const result = await readObservation(w, value);
+      assert.equal(result.observation.status, 'malformed');
+      assert.equal(result.termsMatch, null);
+    }
+    // Unknown extensions are omitted, rather than traversed or returned.
+    const result = await readObservation(w, { ...includedObservation(), extension: { nested: [] } });
+    assert.equal(result.observation.status, 'included');
+    assert.equal(Object.hasOwn(result.observation, 'extension'), false);
+  });
+for (const native of [false, true]) probe(`README termsMatch result branches, native=${native}`, ['termsMatch'], async t => {
+  assert.match(section('Chain reader'), /`termsMatch` compares payer, payee and amount; it is null unless/);
+  const w = observationWorld(t, native);
+  for (const sourceDisposition of [undefined, 'included', 'failed']) {
+    const result = await readObservation(w, { ...includedObservation(), sourceDisposition });
+    assert.equal(result.termsMatch, sourceDisposition === 'failed' ? null : true);
+  }
+  for (const patch of [{ payer: PAYEE }, { payee: PAYER }, { amountOs: '1' }]) {
+    const result = await readObservation(w, { ...includedObservation(), ...patch });
+    assert.equal(result.observation.status, 'included');
+    assert.equal(result.termsMatch, false);
+  }
+});
 
 for (const native of [false, true]) for (const reader of ['present', 'absent', 'noncallable']) {
   probe(`README passive reader contract, native=${native}, reader=${reader}`, readers, async t => {
