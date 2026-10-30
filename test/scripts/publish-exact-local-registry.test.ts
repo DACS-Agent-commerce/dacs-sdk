@@ -841,7 +841,18 @@ describe("canonical packed archive", () => {
       if (field !== "checksum") repairChecksum(header);
       expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
     });
-  it.each(["\0".repeat(8), "0000000\0", "000000 \0"])("refuses an empty or zero checksum %j", value => {
+  it("accepts a six-digit checksum followed by NUL and space", () => {
+    const manifest = { name: "example", version: "1.0.0" };
+    const archive = gunzipSync(packTarball({ "package/package.json": JSON.stringify(manifest) }));
+    archive.write(archive.toString("latin1", 148, 154) + "\0 ", 148);
+    expect(readPackedManifest(gzipSync(archive))).toEqual(manifest);
+  });
+  it.each(numericMetadataFields)("refuses a NUL+space terminator for $field", ({ start, length }) => {
+    const archive = hiddenArchive(), header = archive.subarray(1024, 1536);
+    header.write("0".repeat(length - 2) + "\0 ", start); repairChecksum(header);
+    expect(() => readPackedManifest(gzipSync(archive))).toThrow(/packed tarball/);
+  });
+  it.each(["\0".repeat(8), "0000000\0", "000000 \0", "000000\0 "])("refuses an empty or zero checksum %j", value => {
     const archive = hiddenArchive(); archive.write(value, 1024 + 148);
     expect(() => readPackedManifest(gzipSync(archive))).toThrow(/checksum/);
   });
