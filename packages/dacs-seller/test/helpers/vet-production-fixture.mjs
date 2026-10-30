@@ -25,7 +25,7 @@ export async function recordFor(input,signer=buyer,decision='pass',claim=signer.
 }
 export function productionFixture(options={}){
  const base=createInMemoryPartyVetStore(options),local=localAnchor({now:()=>NOW}),seen=[],issued=new Map(),evaluations=new Map();let nonceSequence=0;
- const controls={nonce:null,wrongSigner:false,qualifiedSigner:false,decision:'pass',receiptState:'finalized',receiptVerdict:null,failCounterpartySave:false,relayOnly:false,signs:0};
+ const controls={nonce:null,wrongSigner:false,qualifiedSigner:false,decision:'pass',receiptState:'finalized',receiptVerdict:null,failCounterpartySave:false,relayOnly:false,signs:0,presentationSigns:0};
  const store={...base,update:(key,change)=>base.update(key,(old,rows)=>{const next=change(old,rows);if(controls.failCounterpartySave&&!old?.counterpartyRecord&&next?.counterpartyRecord){controls.failCounterpartySave=false;throw new Error('TEST counterparty checkpoint lost');}return next;})};
  const listing=fixtureListing(seller,{now:NOW}),pin=listingPin(listing);
  const anchor={writer:seller.claim,hasIntent:async address=>local.rows.has(address),readRetained:async({logicalAddress})=>{const row=await local.read(logicalAddress);return row.status==='present'?{...row,receipt:{...row.receipt,state:controls.receiptStateFor?.(logicalAddress)??controls.receiptState}}:row;},read:input=>anchor.readRetained(input),
@@ -38,7 +38,7 @@ export function productionFixture(options={}){
   readRecord:async input=>{const record=evaluations.get(evaluationKey(input));if(record)return{status:'present',record:structuredClone(record)};return issued.has(`${input.jobId}/${input.identityBundle.sessionNonce}`)&&!consumed.has(input.identityBundle.sessionNonce)?{status:'unattempted',issuer:buyer.claim,jobId:input.jobId,bundleHash:identityBundleHash(input.identityBundle),requirementHash:sha256Hex(canonicalize(input.requirement))}:{status:'indeterminate'};},
   evaluate:async input=>{const nonce=input.identityBundle.sessionNonce;if(consumed.has(nonce))throw new Error('TEST buyer challenge already consumed');consumed.add(nonce);seen.push(structuredClone(input));if(config.now()+(controls.buyerSkew??0)>expiries.get(nonce))throw new Error('TEST expired challenge');const signer=controls.wrongSigner?seller:buyer;const record=await recordFor(input,signer,controls.decision,controls.qualifiedSigner?signer.claim+'?region=GB':signer.claim);evaluations.set(evaluationKey(input),record);return record;},
  };
- const config={anchor,wallet:{claim:seller.claim,signBytes:bytes=>{controls.signs++;return seller.signBytes(bytes);}},listing,store,counterparty,now:()=>NOW,log:()=>{}};
+ const config={anchor,wallet:{claim:seller.claim,signBytes:bytes=>{controls.signs++;if(Buffer.from(bytes).toString().startsWith('dacs-bundle-presentation:v1:'))controls.presentationSigns++;return seller.signBytes(bytes);}},listing,store,counterparty,now:()=>NOW,log:()=>{}};
  const input=(jobId=JOB)=>({scope:{jobId,buyer:buyer.claim,seller:seller.claim,generatedAt:NOW,payee:seller.address,listingPin:pin,price:listing.pricing.price},buyerIdentityBundle:fixtureIdentityBundle(buyer,NOW)});
  return{base,store,local,anchor,counterparty,controls,listing,pin,seen,evaluations,issued,consumed,expiries,input,config,provider:()=>stagedProvider(config),run:async(value=input())=>(await stagedProvider(config)).jobVet(value.scope,value.buyerIdentityBundle,()=>true)};
 }
