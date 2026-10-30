@@ -26,7 +26,7 @@ async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals',s
  const envelope=await client.request(path,body,JSON.stringify(body)),request=auth.readRequest(envelope.header);
  let handler=createSellerHttpHandler(agent,{authentication:auth});
  const server=createServer((req,res)=>handler(req,res));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
- return{store,request,client,auth,peer:createSellerAgentClient({url:`http://127.0.0.1:${server.address().port}`,authentication:client}),setHash:value=>{hash=value;},serve:next=>{handler=createSellerHttpHandler(next,{authentication:auth});}};
+ return{store,request,client,auth,peer:createSellerAgentClient({url:`http://127.0.0.1:${server.address().port}`,authentication:client}),setHash:value=>{hash=value;},serve:(next,{readOnly=false}={})=>{handler=createSellerHttpHandler(next,{authentication:readOnly?{...auth,readbackOnly:()=>true}:auth});}};
 }
 // Holds the first call of agent[name] until released (a worker delayed before its job fence).
 function pauseFirst(t,agent,name){
@@ -244,4 +244,47 @@ for(const mode of ['unknown','none','no-reader'])test('closed resume gates befor
  if(mode==='unknown')assert.deepEqual(await agent.resume({jobId:JOB}),unknown);else await assert.rejects(agent.resume({jobId:JOB}),{code:'buyer_access_closed',status:409});
  assert.equal(reads,mode==='no-reader'?0:1);assert.equal(vetReads,0);assert.equal(f.signed.length,signs);
  paid=true;await assert.rejects(agent.resume({jobId:JOB}),{code:'seller_state_unverified'});assert.ok(vetReads>0);
+});
+
+for(const paid of [false,true])test(`read-only proposal replay applies closed outside-buyer policy, paid=${paid}`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);await agent.receiveProposal(body);agent.close();
+ const signed=f.signed.length;f.config.buyerAccess=createOperatorBuyerAccess({custodyBuyer:seller.claim,openBuyerAccess:false,buyerForJob:()=>buyer.address,paymentObserved:()=>paid});
+ const closed=await f.open(),request=command(closed,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash);
+ const out=await closed.reconcileTransport({...request,readOnly:true});assert.equal(out.disposition,'indeterminate');assert.equal(out.reason,'buyer_access_closed');assert.equal(out.value.contribution,undefined);assert.equal(f.signed.length,signed);closed.close();
+ f.config.buyerAccess=createOperatorBuyerAccess({custodyBuyer:seller.claim,openBuyerAccess:true});
+ assert.equal((await (await f.open()).reconcileTransport({...request,readOnly:true})).disposition,'present');assert.equal(f.signed.length,signed);
+});
+for(const policy of ['custody','open'])test(`read-only proposal replay retains ${policy} access without another signature`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);const complete=await agent.receiveProposal(body);agent.close();
+ const signed=f.signed.length;f.config.buyerAccess=createOperatorBuyerAccess({custodyBuyer:policy==='custody'?buyer.claim:seller.claim,openBuyerAccess:policy==='open'});
+ const fresh=await f.open(),out=await fresh.reconcileTransport({...command(fresh,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash),readOnly:true});
+ assert.equal(out.disposition,'present');assert.deepEqual(out.value.contribution,complete.contribution);assert.equal(f.signed.length,signed);
+});
+for(const gate of ['rail','vet-context'])test(`read-only proposal replay applies current ${gate} gate`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);await agent.receiveProposal(body);agent.close();const signed=f.signed.length;
+ if(gate==='rail')f.config.railAuthority=railSteward().railAuthority({changes:{availability:'disabled'}});else f.config.demDeliveryContext=null;
+ const fresh=await f.open(),out=await fresh.reconcileTransport({...command(fresh,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash),readOnly:true});
+ assert.equal(out.disposition,'indeterminate');assert.equal(out.reason,gate==='rail'?'rail_unavailable':'vet_context_required');assert.equal(f.signed.length,signed);
+});
+test('retained proposal gate refusals are uncertain on first run and recovery',()=>{
+ const path='/dacs/v1/agreements/proposals',pick=o=>[o.disposition,o.status,o.retry,o.noEffect,o.settle];
+ for(const [code,status] of [['buyer_access_closed',409],['rail_unavailable',503]]){
+  const error=new SellerAgentError(code,'TEST policy gate',status);
+  assert.deepEqual(pick(transportOutcome(path,{error},{retained:true})),['indeterminate',503,false,false,true]);
+  assert.deepEqual(pick(transportOutcome(path,{error},{retained:true,recovering:true})),['indeterminate',503,false,false,false]);
+  assert.deepEqual(pick(transportOutcome(path,{error},{retained:false})),['no-effect',status,false,true,true]);
+ }
+});
+for(const reopened of [false,true])test(`HTTP retained proposal refusal keeps an uncertain slot and can recover, reopened=${reopened}`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);await agent.receiveProposal(body);agent.close();const signed=f.signed.length;
+ f.config.buyerAccess=createOperatorBuyerAccess({custodyBuyer:seller.claim,openBuyerAccess:false});let fresh=await f.open();const w=await transport(t,fresh,f.dir,body);
+ await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});assert.equal(w.store.reserve(w.request,body).disposition,'uncertain');
+ if(reopened){fresh.close();f.config.buyerAccess=createOperatorBuyerAccess({custodyBuyer:seller.claim,openBuyerAccess:true});fresh=await f.open();w.serve(fresh,{readOnly:true});assert.equal((await w.peer.propose(body)).disposition,'complete');}
+ else{let settles=0;const reconcile=w.store.reconcile;w.store.reconcile=(...args)=>{settles++;return reconcile(...args);};w.serve(fresh,{readOnly:true});await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});assert.equal(w.store.reserve(w.request,body).disposition,'uncertain');assert.equal(settles,0);}
+ assert.equal(f.signed.length,signed);
+});
+
+test('removing session admission after signing refuses startup before replay',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);await agent.receiveProposal(body);agent.close();const signed=f.signed.length;
+ f.config.sessionAdmission=null;await assert.rejects(f.open());assert.equal(f.signed.length,signed);
 });
