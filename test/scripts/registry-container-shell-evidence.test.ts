@@ -105,9 +105,21 @@ describe("shell evidence validation", () => {
     expect(result.status).not.toBe(0); expect(readFileSync(join(output, "acceptance-summary.json"), "utf8")).toBe("old");
     expect(existsSync(join(output, "stage"))).toBe(false);
   });
-  it("keeps a sole baselined pqcrypto image mismatch baseline-only", () => {
+  it("keeps a sole baselined pqcrypto image mismatch baseline-only", async () => {
     const fixture = join(root, "test/scripts/fixtures/registry-container-5c27c28");
     const read = (name: string) => readFileSync(join(fixture, name === "engine-strict.log" ? name + ".txt" : name), "utf8");
+    const recorded = extractPolicyFindings(read);
+    expect(recorded.productionImageInventory.scanComplete).toBe(false);
+    const originalLock = JSON.parse(read("generated-package-lock.json"));
+    const unresolved = Object.keys(originalLock.packages[""].dependencies)
+      .filter(name => !originalLock.packages[`node_modules/${name}`]);
+    expect(recorded.productionImageInventory.errors).toEqual(expect.arrayContaining(
+      unresolved.map(name => `unresolved required dependency ${name} from <root>`)));
+    const rejected = compose({ "policy-findings.json": JSON.stringify(recorded),
+      "runtime-image-policy.json": read("runtime-image-policy.json"), "dependency-policy.json": read("dependency-policy.json"),
+      "engine-strict.exit-code": "1\n", "consumer-lock-sbom.exit-code": "1\n", "consumer-physical-sbom.exit-code": "1\n" });
+    expect(registryContainerDisposition({ ...rejected.summary, complete: true }, undefined, { packageVersion: "0.1.0-test" }))
+      .toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
     const lock = JSON.parse(read("generated-package-lock.json")); delete lock.packages["node_modules/typescript"];
     for (const entry of Object.values(lock.packages)) {
       if (typeof entry === "object" && entry !== null) for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
@@ -115,14 +127,32 @@ describe("shell evidence validation", () => {
       }
     }
     const inventory = JSON.parse(read("runtime-image-inventory.json")); inventory.packages = inventory.packages.filter((item: { name: string }) => item.name !== "typescript");
+    // Fill every missing dependency with a synthetic leaf and matching observation.
+    // These stand-ins model closure only; they do not claim a historical install.
+    const semverModule = "semver";
+    const { validRange, minVersion } = await import(semverModule);
+    for (const entry of Object.values(lock.packages)) {
+      if (typeof entry !== "object" || entry === null) throw new Error("Invalid simulated lock entry");
+      const dependencies = Reflect.get(entry, "dependencies") ?? {};
+      for (const [name, range] of Object.entries(dependencies)) {
+        const location = `node_modules/${name}`;
+        if (lock.packages[location]) continue;
+        const version = typeof range === "string" && validRange(range) ? minVersion(range).version : "0.0.0";
+        lock.packages[location] = { version };
+        inventory.packages.push({ name, version, location });
+      }
+    }
     const image = { ...JSON.parse(read("runtime-image-policy.json")), typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true };
     const overrides: Record<string, string> = { "generated-package-lock.json": JSON.stringify(lock), "runtime-image-inventory.json": JSON.stringify(inventory), "runtime-image-policy.json": JSON.stringify(image) };
     const findings = extractPolicyFindings((name: string) => overrides[name] ?? read(name));
+    expect(findings.productionImageInventory).toMatchObject({ scanComplete: true, errors: [], missing: [] });
+    // Both recorded mentions identify the same first engine failure.
+    expect(findings.engine).toMatchObject({ scanComplete: true, reportedPackage: "@npmcli/agent@5.0.2" });
     expect(findings.productionImageDependencies.map((item: { name: string }) => item.name)).toEqual(["pqcrypto"]);
     const result = compose({ "policy-findings.json": JSON.stringify(findings), "runtime-image-policy.json": JSON.stringify(image),
       "dependency-policy.json": read("dependency-policy.json"), "engine-strict.exit-code": "1\n", "consumer-lock-sbom.exit-code": "1\n", "consumer-physical-sbom.exit-code": "1\n" });
     expect(result.status, result.stderr).toBe(0);
-    expect(registryContainerDisposition({ ...result.summary, complete: true }, undefined, { packageVersion: "0.1.0-test" })).toMatchObject({ exitCode: 4, checks: { productionImage: "baseline" } });
+    expect(registryContainerDisposition({ ...result.summary, complete: true }, undefined, { packageVersion: "0.1.0-test" })).toMatchObject({ exitCode: 4, checks: { productionImage: "baseline", engineStrict: "baseline" } });
   });
 });
 
