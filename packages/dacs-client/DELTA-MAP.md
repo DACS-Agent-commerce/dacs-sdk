@@ -217,7 +217,7 @@ Regressions cover initialized TEMP OFF, unqualified OFF followed by main WAL, re
 
 Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions.
 
-Engine floors, tests and refusal: a new iterator whose own `next` is not a function cannot be wrapped, so the statement boundary refuses it with a TypeError instead of returning it unguarded. The `LegacyDatabase` fixture now gives its iterators their own `next` and `return`, and the readback review and crash tests also run with that iterator layout on any Node version (`readback-review-decisions.floor.test.mjs`, `domain-store-crash.floor.test.mjs`).
+Engine floors, tests and refusal: a new iterator whose own `next` is not a function cannot be wrapped, so the statement boundary refuses it with a TypeError instead of returning it unguarded. The `LegacyDatabase` fixture now gives its iterators their own `next` and `return`, and the readback review tests also run with that iterator layout on any Node version (`readback-review-decisions.floor.test.mjs`). The domain-store crash wrapper is deferred until its crash suite and worker fixtures exist at the same stack layer.
 
 ## D11 — Closed host transfer observation record (part 05)
 
@@ -819,7 +819,7 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | | `packages/dacs-client/test/sqlite-write-lease.test.mjs:1` | aa64ca426f9aa23b1fd6bd4a6c6e4082ef4c99f2 |
 | D11 | fix(client): D11 rebuild part 13 on the preceding capability sources | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | 336df0f1e4d8723d137c5b659c342792f51d81a7 |
-| | `packages/dacs-client/test/domain-store-crash.floor.test.mjs:1` | 2c1286fb54808812bcecee9593708eb6d06a968c |
+| | `packages/dacs-client/test/domain-store-crash.floor.test.mjs` (deleted) | 2c1286fb54808812bcecee9593708eb6d06a968c |
 | | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` | f19ae9336ec4b5741e036e2f40737ae42c2311c9 |
 | | `packages/dacs-client/test/helpers/sqlite-floor-iterators-preload.mjs:1` | 1e9681f16aebf6b2fe7bb2c297bb17908a8fc4b2 |
 | | `packages/dacs-client/test/helpers/sqlite-floor-iterators.mjs:1` | 1633af546a5bd3b089850161102f4f21949a3df3 |
@@ -867,6 +867,10 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | D11 | fix(client): D11 record passive reader corrections | Git subject selector (must resolve exactly once after publication checkpoint) |
 | D11 | fix(client): D11 use portable TEMP transaction assertions | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | 00a43edbe60c405972e1e41a7b9dc30081cf1193 |
+| D11 | fix(client): D11 keep floor wrappers with their dependencies | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/DELTA-NOTES.md:1` | b4375e1e7884bf57720e1ad487226deca671e5b7 |
+| | `packages/dacs-client/test/domain-store-crash.floor.test.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` | 83cf9f2d3e6c1595cfe895440ef470b4bb336255 |
 
 ## Complete commit and file inventory
 
@@ -2400,7 +2404,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record rebuilt part 11 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | 70f99dc238a697b83426447fc816709dcb19f22d | `packages/dacs-client/DELTA-NOTES.md:1` |
 | 70f99dc238a697b83426447fc816709dcb19f22d | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
-| 70f99dc238a697b83426447fc816709dcb19f22d | `packages/dacs-client/test/domain-store-crash.floor.test.mjs:1` |
+| 70f99dc238a697b83426447fc816709dcb19f22d | `packages/dacs-client/test/domain-store-crash.floor.test.mjs` (deleted) |
 | 70f99dc238a697b83426447fc816709dcb19f22d | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` |
 | 70f99dc238a697b83426447fc816709dcb19f22d | `packages/dacs-client/test/helpers/sqlite-floor-iterators-preload.mjs:1` |
 | 70f99dc238a697b83426447fc816709dcb19f22d | `packages/dacs-client/test/helpers/sqlite-floor-iterators.mjs:1` |
@@ -2683,7 +2687,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | 3ea9a771ec050c2dc4443d072fc29d7dd19ec3a9 | `packages/dacs-client/HOLD.json:1` |
 | 3ea9a771ec050c2dc4443d072fc29d7dd19ec3a9 | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | 3ea9a771ec050c2dc4443d072fc29d7dd19ec3a9 | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
-| 3ea9a771ec050c2dc4443d072fc29d7dd19ec3a9 | `packages/dacs-client/test/domain-store-crash.floor.test.mjs:1` |
+| 3ea9a771ec050c2dc4443d072fc29d7dd19ec3a9 | `packages/dacs-client/test/domain-store-crash.floor.test.mjs` (deleted) |
 | 3ea9a771ec050c2dc4443d072fc29d7dd19ec3a9 | `packages/dacs-client/test/helpers/purchase-tx-fixtures.mjs:1` |
 | 3ea9a771ec050c2dc4443d072fc29d7dd19ec3a9 | `packages/dacs-client/test/helpers/sqlite-floor-iterators-preload.mjs:1` |
 | 3ea9a771ec050c2dc4443d072fc29d7dd19ec3a9 | `packages/dacs-client/test/helpers/sqlite-floor-iterators.mjs:1` |
@@ -2739,6 +2743,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 use portable TEMP transaction assertions | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 use portable TEMP transaction assertions | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 use portable TEMP transaction assertions | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` |
+| fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/test/domain-store-crash.floor.test.mjs` (deleted) |
+| fix(client): D11 keep floor wrappers with their dependencies | `packages/dacs-client/test/sqlite-floor-iterators.test.mjs:1` |
 
 ## Original moved files
 
