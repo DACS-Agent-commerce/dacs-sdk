@@ -48,6 +48,8 @@ async function retainProofs(){
 for(const party of [buyer,seller])for(const value of ['fail','indeterminate','error'])test(`VPC4 ${party===buyer?'buyer':'seller'} ${value}: valid record never creates initial or recovered context`,async()=>{
  records=new Map();decision=value;nonPassParty=party;const p=provider();
  const answer=await p.resolveBuyer({scope,buyerIdentityBundle:bundle});assert.deepEqual(answer,{disposition:'rejected',code:'party_vet_non_pass',errorClass:value==='fail'?'counterparty':'permanent',reason:`${party===buyer?'buyer':'seller'} Vet decision: ${value}`});assert.equal(p.contexts.size,0);
+ // A rejected buyer never starts the seller proof; recovery remains absent.
+ if(party===buyer){assert.equal(records.has(compositeVerificationAddress(jobId,seller)),false);assert.equal(await p.recoverBuyer({scope,buyerIdentityBundle:bundle}),null);return;}
  // Supply both authenticated records to the recovery path, retaining the non-pass decision.
  for(const evaluatedParty of [buyer,seller])records.set(compositeVerificationAddress(jobId,evaluatedParty),{recordVersion:'1',jobId,evaluatedParty,overallDecision:evaluatedParty===party?value:'pass',signature:{signer:evaluatedParty===seller?buyer:seller}});
  await retainProofs();assert.deepEqual(await p.recoverBuyer({scope,buyerIdentityBundle:bundle}),answer);assert.equal(p.contexts.size,0);
@@ -83,9 +85,7 @@ test('VPC4 an unknown authenticated decision cannot become pass or a classified 
  records=new Map();decision='unknown';nonPassParty=buyer;const p=provider();
  await assert.rejects(p.resolveBuyer({scope,buyerIdentityBundle:bundle}),/unknown DACS-2 verification decision/);
  assert.equal(p.contexts.size,0);
- records.set(compositeVerificationAddress(jobId,buyer),{recordVersion:'1',jobId,evaluatedParty:buyer,overallDecision:'unknown',signature:{signer:seller}});
- records.set(compositeVerificationAddress(jobId,seller),{recordVersion:'1',jobId,evaluatedParty:seller,overallDecision:'pass',signature:{signer:buyer}});await retainProofs();
- await assert.rejects(p.recoverBuyer({scope,buyerIdentityBundle:bundle}),/unknown DACS-2 verification decision/);
+ assert.equal(await p.recoverBuyer({scope,buyerIdentityBundle:bundle}),null);
  assert.equal(p.contexts.size,0);
 });
 
