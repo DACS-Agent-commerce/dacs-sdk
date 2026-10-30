@@ -1,11 +1,11 @@
 // Expected installation bytes and links come only from a fresh, successful npm ci.
 import { createHash } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { ARCHIVE_LIMITS, npmToolchain, packedFileSets, runNpmNode, verifyArchive } from "./installation-closure.mjs";
+import { ARCHIVE_LIMITS, cachedArchive, npmToolchain, packedFileSets, runNpmNode, verifyArchive } from "./installation-closure.mjs";
 
 const PACKAGE_NAME = "(?:@[^/.][^/]*\\/[^/.][^/]*|(?!node_modules(?:/|$))[^/.@][^/]*)";
 const PACKAGE_LOCATION = new RegExp(`^node_modules/${PACKAGE_NAME}(?:/node_modules/${PACKAGE_NAME})*$`);
@@ -122,24 +122,44 @@ function referenceConfig(project, cache, contract) {
 }
 
 const SPECIFICATION_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+const omitted = (entry, config) => entry?.devOptional !== true && ["dev", "optional"].some(flag =>
+  entry?.[flag] === true && config.omit?.includes(flag) && !config.include?.includes(flag));
 
 // npm resolves every edge no locked node satisfies before it validates the lock
 // or extracts an archive, and --offline does not stop git. Refuse every
-// non-registry specification npm could resolve, with the selected npm's parser.
-function refuseNonRegistrySpecifications(manifest, lock, toolchain) {
-  const npmPackageArg = createRequire(toolchain.cli)("npm-package-arg");
+// non-registry specification npm could resolve. An omitted hosted git edge is
+// safe only when its nearest locked target is also omitted and the same project.
+function refuseNonRegistrySpecifications(manifest, lock, contract) {
+  const npmPackageArg = createRequire(contract.toolchain.cli)("npm-package-arg");
   const isRegistry = spec => {
     try {
       const parsed = npmPackageArg.resolve("dependency", spec);
       return parsed.registry === true && (parsed.type !== "alias" || typeof parsed.subSpec?.name === "string");
     } catch { return false; }
   };
+  const omittedGit = (location, owner, name, spec) => {
+    if (location === "package.json" || !omitted(owner, contract.config)) return false;
+    for (let parent = location;; parent = parent.slice(0, Math.max(0, parent.lastIndexOf("/node_modules/")))) {
+      const target = lock.packages[`${parent ? parent + "/" : ""}node_modules/${name}`];
+      if (target) {
+        try {
+          const a = npmPackageArg.resolve(name, spec).hosted;
+          const b = npmPackageArg.resolve(name, target.resolved).hosted;
+          return omitted(target, contract.config) && !!a && !!b &&
+            ["type", "user", "project"].every(key => a[key] === b[key]);
+        } catch { return false; }
+      }
+      if (!parent) return false;
+    }
+  };
   const refuse = (location, field) => { throw new Error(`non-registry dependency specification: ${location} ${field}`); };
   const declarations = (location, owner, fields) => {
     for (const field of fields) {
       if (owner[field] === undefined) continue;
       if (!isPlainObject(owner[field])) refuse(location, field);
-      for (const [name, spec] of Object.entries(owner[field])) if (!isRegistry(spec)) refuse(location, `${field}.${name}`);
+      for (const [name, spec] of Object.entries(owner[field])) {
+        if (!isRegistry(spec) && !omittedGit(location, owner, name, spec)) refuse(location, `${field}.${name}`);
+      }
     }
   };
   declarations("package.json", manifest, SPECIFICATION_FIELDS);
@@ -165,6 +185,22 @@ function seedArchive(cache, bytes) {
   writeFileSync(path, bytes);
 }
 
+function seedMetadata(source, cache, toolchain) {
+  const index = join(source, "_cacache/index-v5");
+  if (!existsSync(index)) return;
+  cpSync(index, join(cache, "_cacache/index-v5"), { recursive: true, filter: path => {
+    if (lstatSync(path).size > ARCHIVE_LIMITS.archiveBytes) throw new Error("metadata index is larger than the archive limit");
+    return true;
+  } });
+  const command = `const c = require('node:module').createRequire(process.argv[1])('cacache');
+    c.ls(process.argv[2] + '/_cacache').then(entries => process.stdout.write(JSON.stringify(
+      [...new Set(Object.values(entries).filter(e => e.metadata?.resHeaders?.['content-type']?.includes('json') &&
+        !/\\.tgz(?:[?#]|$)/.test(e.key)).map(e => e.integrity))]
+    ))).catch(e => { throw e });`;
+  const integrities = JSON.parse(runNpmNode(toolchain, ["-e", command, toolchain.cli, source]).toString());
+  for (const integrity of integrities) seedArchive(cache, cachedArchive(source, integrity));
+}
+
 function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
   const unavailable = new Map();
   const sources = new Map();
@@ -179,6 +215,7 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
     if (entry.hasShrinkwrap === true) throw new Error("package has an npm-shrinkwrap.json: " + location);
     if (typeof entry.resolved !== "string" || !/^https?:\/\//.test(entry.resolved)) {
       record.unverified = true;
+      if (omitted(entry, contract.config)) continue;
       throw new Error("cannot authenticate an unverified registry archive: " + location);
     }
     let bytes;
@@ -201,11 +238,11 @@ function sourceEntries(lock, readArchive, contract, cache, entries, roots) {
 /** Replays an explicit npm install contract offline with scripts disabled, using independently
  * verified archive bytes in fresh private storage. Returns source entries/carried modules plus one
  * kind-tagged inventory. npm decides which packages to omit; every failed archive extraction
- * refuses the reference. Non-registry dependency specifications (root, lock entry or override) are
- * refused before any archive read or npm run. Errors publish no source metadata or inventory. Linked installs are
+ * refuses the reference. Non-registry specifications are refused except satisfied, omitted hosted git edges.
+ * An explicit metadataCache supplies bounded npm metadata, never archive authentication. Errors publish no inventory. Linked installs are
  * unsupported. Never reads the inspected installation. `manifest` is the root package.json bytes:
  * npm formats its generated hidden lockfile after them. */
-export function referenceInstallation({ manifest: manifestBytes, lock, readArchive, installer }) {
+export function referenceInstallation({ manifest: manifestBytes, lock, readArchive, installer, metadataCache }) {
   const entries = new Map();
   const roots = new Map();
   const errors = [];
@@ -221,7 +258,7 @@ export function referenceInstallation({ manifest: manifestBytes, lock, readArchi
         installer.toolchain?.platform !== process.platform || installer.toolchain.arch !== process.arch) {
       throw new Error("reference installation needs an explicit matching npm/platform/configuration contract");
     }
-    refuseNonRegistrySpecifications(manifest, lock, installer.toolchain);
+    refuseNonRegistrySpecifications(manifest, lock, installer);
     const project = join(scratch, "project");
     const cache = join(scratch, "cache");
     mkdirSync(project);
@@ -233,6 +270,7 @@ export function referenceInstallation({ manifest: manifestBytes, lock, readArchi
       chmodSync(join(project, "node_modules"), installer.nodeModulesMode);
     }
     const unavailable = sourceEntries(lock, readArchive, installer, cache, entries, roots);
+    if (metadataCache !== undefined) seedMetadata(metadataCache, cache, installer.toolchain);
     for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "peerDependenciesMeta"]) {
       if (!isDeepStrictEqual(manifest[field] ?? {}, lock.packages[""]?.[field] ?? {})) {
         throw new Error("root dependency metadata differs: " + field);
@@ -269,6 +307,11 @@ export function referenceInstallation({ manifest: manifestBytes, lock, readArchi
       const reifyRequire = require('node:module').createRequire(reify);
       if (requireNpm.resolve('pacote') !== reifyRequire.resolve('pacote')) throw Error('pacote instance differs from npm reifier');
       const pacote = requireNpm('pacote');
+      const fetchManifest = pacote.manifest;
+      pacote.manifest = (spec, ...options) => {
+        if (!requireNpm('npm-package-arg')(spec).registry) throw Error('non-registry dependency resolution: ' + spec);
+        return fetchManifest(spec, ...options);
+      };
       const extract = pacote.extract;
       fs.writeFileSync(failuresFile, '');
       pacote.extract = async (...args) => {
@@ -299,7 +342,7 @@ export function referenceInstallation({ manifest: manifestBytes, lock, readArchi
       }
     } catch (cause) {
       const missing = [...unavailable].map(([location, error]) => `${location}: ${error.message}`).join("; ");
-      throw new Error(cause.message + (missing ? `; source reads: ${missing}` : ""), { cause });
+      throw new Error(cause.message + (missing ? `; unavailable sources (may be omitted by npm): ${missing}` : ""), { cause });
     }
     const inventory = installationInventory(project);
     for (const [location, record] of entries) {
