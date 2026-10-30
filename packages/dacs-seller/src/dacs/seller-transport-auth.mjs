@@ -572,7 +572,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (live && request.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('context_session_terminal', 409);
         const owner = randomBytes(24).toString('hex');
         run('UPDATE peer_effects SET owner = ?, state = ? WHERE effect = ?', owner, 'uncertain', reservation.effectKey);
-        return Object.freeze({ disposition: 'uncertain', effectKey: reservation.effectKey, owner });
+        return Object.freeze({ disposition: 'uncertain', effectKey: reservation.effectKey, owner, live });
       });
     },
     // noEffect: a definite answer that started nothing (its rows go). retry:
@@ -681,8 +681,8 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     ...(typeof store.assertPending === 'function' ? { assertPending: reservation => store.assertPending(reservation) } : {}),
     // An expired delegation may still take an effect to read it back, never to run it again.
     ...(typeof store.claim === 'function' ? { claim: (reservation, request, options = {}) => store.claim(reservation, request, isReadbackOnly(request) ? { ...options, live: false } : options) } : {}),
-    // Handing an effect back to the retry, or releasing it, lets a later claim run it: never for an expired delegation.
-    ...(typeof store.reconcile === 'function' ? { reconcile: (reservation, request, status, text, options = {}) => isReadbackOnly(request) && (options.retry || options.noEffect)
+    // Settle against the fenced claim's granted mode; legacy context reservations still use the current clock.
+    ...(typeof store.reconcile === 'function' ? { reconcile: (reservation, request, status, text, options = {}) => (reservation?.live===false||(reservation?.live===undefined&&isReadbackOnly(request))) && (options.retry || options.noEffect)
       ? refuseExpired(request) : store.reconcile(reservation, request, status, text, options) } : {}),
     // Running a step again is new work: never for an expired delegation.
     ...(typeof store.resume === 'function' ? { resume: (reservation, request) => isReadbackOnly(request) ? refuseExpired(request) : store.resume(reservation, request) } : {}),
