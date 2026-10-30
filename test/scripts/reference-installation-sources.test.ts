@@ -36,7 +36,11 @@ describe("extraction source types", { timeout: 60_000 }, () => {
     writeFileSync(join(repository, "prepare.cjs"), `require('node:fs').writeFileSync(${JSON.stringify(prepareMarker)}, 'ran');`);
     execFileSync("git", ["init", repository], { stdio: "pipe" });
     execFileSync("git", ["add", "package.json", "prepare.cjs"], { cwd: repository });
-    execFileSync("git", ["commit", "-m", "test: add local package fixture"], { cwd: repository, stdio: "pipe" });
+    execFileSync("git", ["commit", "-m", "test: add local package fixture"], {
+      cwd: repository, stdio: "pipe", env: { ...process.env,
+        GIT_AUTHOR_NAME: "Package Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+        GIT_COMMITTER_NAME: "Package Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" },
+    });
     const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
     localSource = "file:" + repository;
     const archivePath = join(directory, "source.tgz");
@@ -70,7 +74,7 @@ describe("extraction source types", { timeout: 60_000 }, () => {
   });
   afterAll(() => { if (directory) rmSync(directory, { recursive: true, force: true }); });
 
-  it.each(cases)("refuses $shape at $placement (inBundle=$inBundle, optional=$optional) before any git or prepare effect", ({ shape, placement, inBundle, optional }) => {
+  it.each(cases)("prevents git and prepare effects for $shape at $placement (inBundle=$inBundle, optional=$optional)", ({ shape, placement, inBundle, optional }) => {
     const nested = placement !== "root";
     const location = nested ? "node_modules/a/node_modules/b" : "node_modules/b";
     const root = { dependencies: nested ? { a: "1.0.0" } : shape === "version git URL" ? {} : { b: "1.0.0" } };
@@ -88,6 +92,15 @@ describe("extraction source types", { timeout: 60_000 }, () => {
       readArchive: () => archive });
     expect.soft(existsSync(gitLog) ? readFileSync(gitLog, "utf8") : "", reference.errors.join()).toBe("");
     expect.soft(existsSync(prepareMarker)).toBe(false);
+    // npm 11 can prune unreachable bundled entries without extracting them.
+    if (reference.errors.length === 0) {
+      expect(inBundle).toBe(true);
+      expect(placement === "nested without edge" || (placement === "root" && shape === "version git URL")).toBe(true);
+      expect(reference.inventory).toBeInstanceOf(Map);
+      expect([...reference.inventory.keys()].some(path => path === location || path.startsWith(location + "/"))).toBe(false);
+      expect(reference.carried.size).toBe(0);
+      return;
+    }
     expect(reference.errors.length).toBeGreaterThan(0);
     expect(reference.inventory).toBeNull();
     expect(reference.entries.size).toBe(0);
