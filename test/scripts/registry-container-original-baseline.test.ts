@@ -165,7 +165,9 @@ describe("original container evidence and explicit simulations", () => {
     const engine = projection().securityGate.findings.engine;
     expect(engine).toMatchObject({ scanComplete: true, scan: { node: "v20.19.1", npm: "11.19.0", evaluatedPackages: 20, errors: [] },
       reportedPackage: "@npmcli/agent@5.0.2" });
-    expect(engine.violations).toEqual(baseline.policyFindings.engineViolations);
+    // Later baseline additions are outside this recorded lock snapshot.
+    expect(engine.violations).toEqual(baseline.policyFindings.engineViolations.filter(
+      (entry: { package: string; location: string }) => lock.packages[entry.location]?.version === entry.package.slice(entry.package.lastIndexOf("@") + 1)));
     expect(engine.violations).toHaveLength(16);
     expect(projection().securityGate.findings.gitDependencies).toEqual(baseline.policyFindings.gitDependencies);
     for (const [field, file] of [["lockSbom", "consumer-lock-sbom.err"], ["physicalSbom", "consumer-physical-sbom.err"]] as const) {
