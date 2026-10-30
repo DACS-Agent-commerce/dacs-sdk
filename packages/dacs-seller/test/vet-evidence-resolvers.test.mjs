@@ -23,7 +23,7 @@ const sign = (unsigned, separator, wallet) => core.signComponentArtifact(unsigne
 
 // A counterparty-signed record of `buyer` (verified by `seller`) whose requirement names one verified claim,
 // with that claim's VerifyResult, recipe and authority content kept as an operator would hold them.
-async function verifiedClaimFixture({ recipeVersion = 1, scheme = 'domain', identifier = 'alice.example', urlTemplate = 'https://authority.example/{identifier}', availability = 'live', defaultMethod = { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate } }, list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller, boundRequirement = bundleRequirement.required[0], steward = recipeSteward, resultWallet = resultSigner } = {}) {
+async function verifiedClaimFixture({ decision = 'pass', recipeVersion = 1, scheme = 'domain', identifier = 'alice.example', urlTemplate = 'https://authority.example/{identifier}', availability = 'live', defaultMethod = { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate } }, list = 'dealSpecific', authority = 'canonical-json', bundleRequirement = requirement, data = { active: true }, party = buyer, verifier = seller, boundRequirement = bundleRequirement.required[0], steward = recipeSteward, resultWallet = resultSigner } = {}) {
   const recipe = await sign({ recipeVersion, scheme, defaultMethod,
     defaultMaxAgeSec: 3600, parserRules: { format: 'json', successJsonPath: '$.active' }, retryClass: 'permanent', availability,
     governance: { proposedBy: steward.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' } }, 'dacs-recipe:v1:', steward);
@@ -33,7 +33,7 @@ async function verifiedClaimFixture({ recipeVersion = 1, scheme = 'domain', iden
     : authority === 'empty-bytes'
       ? { encoding: 'bytes', value: '', hash: core.sha256Hex(new Uint8Array(0)) }
       : { encoding: 'canonical-json', value: authorityValue, hash: core.sha256Hex(core.canonicalize(authorityValue)) };
-  const result = await sign({ resultVersion: '1', scheme, identifier, recipeVersion, method: defaultMethod.kind, decision: 'pass',
+  const result = await sign({ resultVersion: '1', scheme, identifier, recipeVersion, method: defaultMethod.kind, decision,
     reason: 'authority confirmed the claim', attestation: { anchor: { kind: 'https', locator: AUTHORITY_LOCATOR }, contentHash: authorityContent.hash, signer: resultWallet.claim },
     data, fetchedAt: NOW - 20, verifiedAt: NOW - 10 }, 'dacs-verifyresult:v1:', resultWallet);
   const resultRef = { anchor: { kind: 'storage-program', locator: `dacs2:${JOB}:${scheme}:${identifier}:v${recipeVersion}` }, contentHash: core.contentHash(result), recipeVersion };
@@ -48,7 +48,7 @@ async function verifiedClaimFixture({ recipeVersion = 1, scheme = 'domain', iden
   const calls = [];
   const evidence = {
     resolveContent: async (input) => { calls.push(['resolveContent', input]); return contents.has(input.anchor.locator) ? structuredClone(contents.get(input.anchor.locator)) : null; },
-    resolveRecipe: async (input) => { calls.push(['resolveRecipe', input]); return structuredClone(recipe); },
+    resolveRecipe: async (input) => { calls.push(['resolveRecipe', input]); return input.scheme === recipe.scheme && input.recipeVersion === recipe.recipeVersion ? structuredClone(recipe) : sign({ ...core.stripSignature(recipe), scheme: input.scheme, recipeVersion: input.recipeVersion }, 'dacs-recipe:v1:', steward); },
     resolveLatestRecipe: async (input) => { calls.push(['resolveLatestRecipe', input]); return { sessionRecipeRegistrySnapshotHash: SESSION_REGISTRY_PIN, recipeVersion: recipe.recipeVersion, availability: 'live' }; },
     isRecipeSignerAuthorized: async ({ signature }) => signature.signer === steward.claim,
     isVerifyResultSignerAuthorized: async ({ signature }) => signature.signer === resultWallet.claim,
@@ -303,7 +303,7 @@ async function replayTwoResults(a,b,resolveLatestRecipe,extraRecipes=[]){
  const invocation={...a.invocation,dealSpecific:[...a.invocation.dealSpecific,...b.invocation.dealSpecific]},record=await sign({...core.stripSignature(a.record),dealSpecific:[...a.record.dealSpecific,...b.record.dealSpecific]},core.ARTIFACT_SEPARATORS.CompositeVerificationRecord,seller);
  const contents=new Map([...a.contents,...b.contents]),ref={...a.ref,contentHash:core.contentHash(record)};
  const recipes=new Map([a.recipe,b.recipe,...extraRecipes].map(recipe=>[`${recipe.scheme}/${recipe.defaultMethod.kind}/${recipe.recipeVersion}`,recipe]));
- const evidence={...a.evidence,resolveContent:async({anchor})=>contents.get(anchor.locator)??null,resolveRecipe:async({scheme,method,recipeVersion})=>recipes.get(`${scheme}/${method}/${recipeVersion}`)??null,resolveLatestRecipe};
+ const evidence={...a.evidence,resolveContent:async({anchor})=>contents.get(anchor.locator)??null,resolveRecipe:async({scheme,method,recipeVersion})=>{ const exact=recipes.get(`${scheme}/${method}/${recipeVersion}`); if(exact)return exact; const family=[...recipes.values()].find(recipe=>recipe.scheme===scheme&&recipe.defaultMethod.kind===method); return resolveLatestRecipe&&family ? sign({...core.stripSignature(family),recipeVersion},'dacs-recipe:v1:',recipeSteward) : null; },resolveLatestRecipe};
  return vetRecordProblem(record,{ref,jobId:JOB,role:'buyer',party:buyer.claim,bundleHash:record.bundleHash,verifier:seller.claim,invocation,now:()=>NOW,evidence});
 }
 test('one replay resolves distinct implicit families against one session snapshot',async()=>{
@@ -443,10 +443,10 @@ for(const selection of [null,{sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY
  assert.match(await f.replay({evidence:{resolveLatestRecipe:async()=>selection}}),/no recipe version|not live|malformed/);
 });
 
-for(const pin of [undefined,2])for(const list of ['freshness','dealSpecific'])test(`unused verified family without a method refuses before aggregation, pin=${pin}, ${list}`,async()=>{
+for(const pin of [undefined,2])for(const list of ['freshness','dealSpecific'])test(`unused verified family without a method leaves a passing alternative satisfied, pin=${pin}, ${list}`,async()=>{
  const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},unknown={scheme:'email',verificationRequired:true,...(pin===undefined?{}:{recipeVersion:pin})};
  const f=await verifiedClaimFixture({list,bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,unknown]]},boundRequirement:pinned});
- assert.notEqual(await f.replay(),null);assert.equal(f.calls.filter(([name])=>name==='resolveLatestRecipe').length,0);
+ assert.equal(await f.replay(),null);assert.equal(f.calls.filter(([name])=>name==='resolveLatestRecipe').length,0);
 });
 for(const role of ['buyer','seller'])for(const issue of ['absent','wrong-version','wrong-scheme','disabled','failed','mocked','signature','unauthorized','method'])test(`unused explicit recipe pin is preflighted: ${role} ${issue}`,async()=>{
  const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},unused={scheme:'domain',verificationRequired:true,recipeVersion:2};
@@ -512,4 +512,102 @@ for(const required of [false,true])test(`a stale bound implicit member ${require
 test('an operator-gated implicit head is refused as not live',async()=>{
  const f=await verifiedClaimFixture({bundleRequirement:unpinnedRequirement});
  assert.match(await f.replay({evidence:{resolveLatestRecipe:async()=>({sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:1,availability:'operator_gated'})}}),/not live/);
+});
+
+for (const availability of ['operator_gated','closed_data','bilateral']) test(`bound implicit head must be signed live: ${availability}`, async () => {
+ const f=await verifiedClaimFixture({bundleRequirement:unpinnedRequirement,availability});
+ assert.match(await f.replay(),/not live/);
+});
+for (const availability of ['mocked','disabled','failed']) test(`bound implicit alternative cannot hide a non-live signed head: ${availability}`, async () => {
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},implicit={scheme:'domain',verificationRequired:true},bundleRequirement={requirementVersion:'1',required:[],oneOf:[[pinned,implicit]]};
+ const a=await verifiedClaimFixture({bundleRequirement,boundRequirement:pinned}),b=await verifiedClaimFixture({bundleRequirement,boundRequirement:implicit,recipeVersion:2,availability});
+ assert.match(await replayTwoResults(a,b,async()=>({sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:2,availability:'live'})),/not live/);
+});
+
+async function projectedHeadFixture() {
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},implicit={scheme:'domain',verificationRequired:true};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,implicit]]},boundRequirement:pinned});
+ const head=await sign({...core.stripSignature(f.recipe),recipeVersion:2},'dacs-recipe:v1:',recipeSteward);
+ const replay=(recipe=head)=>f.replay({evidence:{
+  resolveLatestRecipe:async()=>({sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:2,availability:'live'}),
+  resolveRecipe:async({recipeVersion})=>recipeVersion===1?f.recipe:recipe,
+ }});
+ return {f,head,replay};
+}
+for(const availability of ['operator_gated','mocked','disabled'])test(`projected implicit member preflights its signed head: ${availability}`,async()=>{
+ const {head,replay}=await projectedHeadFixture();
+ assert.match(await replay(await sign({...core.stripSignature(head),availability},'dacs-recipe:v1:',recipeSteward)),/not live/);
+});
+test('projected implicit member refuses an absent head descriptor',async()=>{
+ const {replay}=await projectedHeadFixture();assert.match(await replay(null),/not live/);
+});
+for(const issue of ['signature','unauthorized','version','scheme','method'])test(`projected implicit member authenticates its selected head: ${issue}`,async()=>{
+ const {head,replay}=await projectedHeadFixture();let recipe;
+ if(issue==='signature')recipe={...head,signature:{...head.signature,value:Buffer.alloc(64).toString('base64url')}};
+ else {
+  const patch=issue==='version'?{recipeVersion:3}:issue==='scheme'?{scheme:'email'}:issue==='method'?{defaultMethod:{kind:'verifiable-credential',format:'jwt'}}:{};
+  recipe=await sign({...core.stripSignature(head),...patch},'dacs-recipe:v1:',issue==='unauthorized'?testWallet(33):recipeSteward);
+ }
+ assert.match(await replay(recipe),/not live/);
+});
+for(const availability of ['operator_gated','absent'])test(`unused implicit method family authenticates its signed head: ${availability}`,async()=>{
+ const pinned={scheme:'domain',verificationRequired:true,recipeVersion:1},unused={scheme:'email',verificationRequired:true,parameters:{verificationMethod:'consensus-backed-proxy'}};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:[],oneOf:[[pinned,unused]]},boundRequirement:pinned});
+ const head=availability==='absent'?null:await sign({...core.stripSignature(f.recipe),scheme:'email',availability},'dacs-recipe:v1:',recipeSteward);
+ assert.match(await f.replay({evidence:{resolveRecipe:async({scheme})=>scheme==='domain'?f.recipe:head}}),/not live/);
+});
+for(const issue of ['throw','oversize'])test(`head descriptor read preserves ${issue} failure`,async()=>{
+ const {f}=await projectedHeadFixture(),cause=new Error('TEST head reader failure');
+ const pending=f.replay({evidence:{resolveLatestRecipe:async()=>({sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:2,availability:'live'}),resolveRecipe:async({recipeVersion})=>{
+  if(recipeVersion===1)return f.recipe;if(issue==='throw')throw cause;return {...f.recipe,padding:'x'.repeat(65537)};
+ }}});
+ if(issue==='throw')await assert.rejects(pending,error=>error===cause);else await assert.rejects(pending,RangeError);
+});
+test('a live signed head leaves a stale projected implicit alternative inapplicable',async()=>{
+ const {replay}=await projectedHeadFixture();assert.equal(await replay(),null);
+});
+for(const twoMembers of [false,true])test(`implicit head descriptor and selection reads are cached, two members=${twoMembers}`,async()=>{
+ const implicit={scheme:'domain',verificationRequired:true},other={...implicit,parameters:{active:true}};
+ const f=await verifiedClaimFixture({bundleRequirement:{requirementVersion:'1',required:twoMembers?[implicit,other]:[implicit]},boundRequirement:implicit});
+ assert.equal(await f.replay(),null);
+ for(const name of ['resolveRecipe','resolveLatestRecipe'])assert.equal(f.calls.filter(([kind])=>kind===name).length,1,name);
+});
+
+test('strict seller replay agrees with the qualification evaluator across member and head selections',async()=>{
+ const P1={scheme:'domain',verificationRequired:true,recipeVersion:1},P2={...P1,recipeVersion:2},I={scheme:'domain',verificationRequired:true};
+ const shapes=[{required:[I]},{required:[P1]},{required:[I,P1]},{required:[I,P2]},
+  ...[[P1,I],[P2,I],[P1,P2],[P1,P2,I]].map(group=>({required:[],oneOf:[group]})),
+  {required:[I],oneOf:[[P1,P2]]},{required:[P1],oneOf:[[I,P2]]},{required:[P2],oneOf:[[I,P1]]}];
+ const material=new Map();for(const version of [1,2])for(const decision of ['pass','error'])material.set(`${version}/${decision}`,await verifiedClaimFixture({recipeVersion:version,decision}));
+ const base=material.get('1/pass'),signedRecipes=new Map();
+ for(const version of [1,2])for(const availability of ['live','operator_gated','mocked'])signedRecipes.set(`${version}/${availability}`,await sign({...core.stripSignature(base.recipe),recipeVersion:version,availability},'dacs-recipe:v1:',recipeSteward));
+ let comparisons=0;
+ for(const shape of shapes){
+  const members=[...shape.required,...(shape.oneOf??[]).flat()],bindings=[];
+  for(const member of members)for(const version of member.recipeVersion?[member.recipeVersion]:[1,2])bindings.push([{member,version}]);
+  for(let a=0;a<members.length;a++)for(let b=a+1;b<members.length;b++)for(const versionA of members[a].recipeVersion?[members[a].recipeVersion]:[1,2])for(const versionB of members[b].recipeVersion?[members[b].recipeVersion]:[1,2])if(versionA!==versionB)bindings.push([{member:members[a],version:versionA},{member:members[b],version:versionB}]);
+  for(const binding of bindings)for(let mask=0;mask<2**binding.length;mask++){
+   const chosen=binding.map(({member,version},index)=>({member,version,...material.get(`${version}/${mask&(1<<index)?'error':'pass'}`)}));
+   const requirement={requirementVersion:'1',...shape},refs=chosen.map(f=>f.record.dealSpecific[0]);
+   const record=await sign({...core.stripSignature(base.record),requirementHash:core.sha256Hex(core.canonicalize(requirement)),dealSpecific:refs},core.ARTIFACT_SEPARATORS.CompositeVerificationRecord,seller);
+   const ref={...base.ref,contentHash:core.contentHash(record)},contents=new Map(chosen.flatMap(f=>[...f.contents]));
+   const invocation={...base.invocation,requirement,dealSpecific:chosen.map((f,index)=>({...f.invocation.dealSpecific[0],requirement:f.member,ref:refs[index]}))};
+   for(const headVersion of [1,2])for(const availability of ['live','operator_gated','mocked','absent'])for(const truthful of [true,false]){
+    const versions={'1':'live','2':'live'};if(availability==='absent')delete versions[String(headVersion)];else versions[String(headVersion)]=availability;
+    const registry={recipeRegistryVersion:1,latestByFamily:{domain:{'consensus-backed-proxy':headVersion}},versionsByFamily:{domain:{'consensus-backed-proxy':versions}}};
+    // Production authority authenticates the test closure; replay independently authenticates every signed artifact below.
+    const evaluated=await core.evaluateClaimRequirementQualification({generatedAt:NOW,recordJobId:JOB,requirement:shape,resolvedResults:chosen.map(f=>f.result),aggregationAuthority:{kind:'production',sessionStart:'TEST-matrix-session',vetInput:{jobId:JOB,recipeRegistryVersion:1,sessionContext:{jobId:JOB,recipeRegistryVersion:1}}}},
+     {resolveAuthenticatedSessionStart:()=>({jobId:JOB,recipeRegistryVersion:1}),authenticateProductionQualification:()=> 'valid',authenticateReplayBundle:()=>{throw Error('unexpected replay authority');},authenticateCompositeRecord:()=>{throw Error('unexpected replay authority');},authenticateVerifyResult:()=>{throw Error('unexpected replay authority');},resolveRecipeRegistry:()=>registry});
+    const evidence={...base.evidence,resolveContent:async({anchor})=>contents.get(anchor.locator)??null,
+     resolveRecipe:async({recipeVersion})=>{const state=versions[String(recipeVersion)];return state?signedRecipes.get(`${recipeVersion}/${state}`):null;},
+     resolveLatestRecipe:async()=>truthful&&availability==='absent'?null:{sessionRecipeRegistrySnapshotHash:SESSION_REGISTRY_PIN,recipeVersion:headVersion,availability:truthful?availability:'live'}};
+    const actual=await vetRecordProblem(record,{ref,jobId:JOB,role:'buyer',party:buyer.claim,bundleHash:record.bundleHash,verifier:seller.claim,invocation,now:()=>NOW,evidence});
+    const label=JSON.stringify({shape,binding:chosen.map(f=>[f.member,f.version,f.result.decision]),headVersion,availability,truthful,evaluated,actual});
+    if(actual===null)assert.equal(evaluated.decision,'pass',label);
+    if(evaluated.decision==='pass'&&!chosen.some(f=>f.member.recipeVersion===undefined&&f.version!==headVersion))assert.equal(actual,null,label);
+    comparisons++;
+   }
+  }
+ }
+ assert.ok(comparisons>1000);
 });

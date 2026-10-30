@@ -37,11 +37,12 @@
 //    `requirementHash` and replayed aggregation are checked here. Every
 //    verified member needs every method family at its pinned version, or the
 //    selected latest version when `recipeVersion` is absent. Pins must be
-//    steward-authorized and not mocked, disabled or failed. Implicit heads in the
-//    authenticated session registry snapshot must be live (DACS-2 §7.4.3).
+//    steward-authorized and not mocked, disabled or failed. For implicit heads,
+//    the selection names the head; its steward-authorized signed descriptor
+//    must be live, bound or unused (DACS-2 §7.4.3).
 //    Missing or disallowed family entries refuse replay; a result outside an
 //    implicit member's selected version cannot satisfy it, bound or projected.
-//    `resolveLatestRecipe` supplies the version, availability and snapshot pin.
+//    `resolveLatestRecipe` supplies the head version and snapshot pin.
 //    Both records share one pin.
 //    Direct helper replay uses optional `evidence`, independent of agent config:
 //    `evidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
@@ -293,16 +294,16 @@ function recipeFamilies(invocation) {
   for(const member of members){
     if(member?.verificationRequired!==true)continue;
     const methods=member.parameters?.verificationMethod!==undefined?[member.parameters.verificationMethod]:results.filter(result=>result?.scheme===member.scheme).map(result=>result.method);
-    if(!methods.length||methods.some(method=>typeof method!=='string'||!method))throw new TypeError('the verified requirement has no resolvable recipe method family');
+    if(methods.some(method=>typeof method!=='string'||!method))throw new TypeError('the verified requirement has no resolvable recipe method family');
     for(const method of methods)families.set(canonicalize([member.scheme,method,member.recipeVersion??null]),{scheme:member.scheme,method,...(member.recipeVersion===undefined?{}:{recipeVersion:member.recipeVersion})});
   }
   return [...families.values()];
 }
 
 // Every explicit pin must resolve to an authenticated recipe that CRQ permits.
-async function pinnedSessionRecipeProblem(read,selector) {
+async function pinnedSessionRecipeProblem(read,selector,permitted=['live','operator_gated','closed_data','bilateral']) {
   const recipe=await read('resolveRecipe',selector);
-  if(!object(recipe)||recipe.scheme!==selector.scheme||recipe.recipeVersion!==selector.recipeVersion||!['live','operator_gated','closed_data','bilateral'].includes(recipe.availability))return 'the Vet pinned recipe is missing, mocked, disabled or failed, or differs from its selector';
+  if(!object(recipe)||recipe.scheme!==selector.scheme||recipe.recipeVersion!==selector.recipeVersion||!permitted.includes(recipe.availability))return 'the Vet pinned recipe is missing, mocked, disabled or failed, or differs from its selector';
   const signature=recipe.signature,key=evidenceSignerKey(signature?.signer);
   if(!key||(await read('isRecipeSignerAuthorized',{recipe,signature}))!==true)return 'the Vet pinned recipe-signature is not authorized';
   try {
@@ -330,6 +331,15 @@ async function latestSessionRecipeProblem(read, { scheme, method, recipeVersion 
     if(pins.length===0)pins.push(pin);
     return null;
   });
+}
+
+// The selection names a family's head; the steward-signed descriptor at that
+// version decides whether it is live.
+async function implicitHeadProblem(read,{scheme,method},pins) {
+  const problem=await latestSessionRecipeProblem(read,{scheme,method},pins);
+  if(problem)return problem;
+  const {recipeVersion}=await read('resolveLatestRecipe',{scheme,method,required:true});
+  return await pinnedSessionRecipeProblem(read,{scheme,method,recipeVersion},['live'])&&'the Vet session registry latest recipe version is not live or does not authenticate';
 }
 
 // A malformed operator reply is a deterministic record problem, not an
@@ -428,8 +438,9 @@ const vetEvidenceDeps = (read) => ({
   verifyRequirementParameters: (input) => requirementParametersMatch(input),
 });
 
-// The core verifier's expectation for each invocation result: the retained
-// `sourceJobId` is bound to the job by the invocation check, not by the verifier.
+// The core verifier's expectation for each invocation result. Direct callers
+// bind `sourceJobId` and the locator with
+// `isSellerFulfilmentVetInvocationMismatch`; this helper does not.
 const expectedResults = (results) => results.map(({ ref, scheme, identifier, method, requirement }) => ({ ref, scheme, identifier, method, requirement }));
 
 // The reason a resolved Vet record does not back its reference and the
@@ -444,7 +455,8 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // whose result differs from its selected live version is unsatisfied; another
 // pinned alternative may pass, whether the implicit result is bound or projected.
 // Every verified member, bound or unused, preflights every method family.
-// Implicit heads must be live; exact pins must be steward-authorized and not
+// The selection names the implicit head; its steward-authorized signed recipe
+// must be live, bound or unused. Exact pins must be steward-authorized and not
 // mocked, disabled or failed. Missing or disallowed entries refuse replay.
 // Without evidence, a required verified member cannot be satisfied. Throws the
 // first failure of an evidence reader (timeout, oversize, a throw): that is
@@ -475,7 +487,7 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
     for(const family of recipeFamilies(invocation)){
       problem=family.recipeVersion!==undefined
         ?!reads?'the Vet pinned recipe evidence is unavailable':await pinnedSessionRecipeProblem(reads.read,family)
-        :!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim':await latestSessionRecipeProblem(reads.read,family,pins);
+        :!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim':await implicitHeadProblem(reads.read,family,pins);
       if(problem)break;
     }
     if(!problem)strict = await verifyCompositeVerificationRecord(record,
