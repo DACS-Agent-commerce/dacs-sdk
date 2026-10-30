@@ -757,6 +757,12 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     });
   }
 
+  function releaseFinalizedSignatureCommitment(session, jobId) {
+    // Only this job's finalized commitment, authenticated with both Agreement signatures, frees the slot.
+    // Reservation and session save are separate writes, so no saved marker is needed.
+    if (commitOnSignature || session.signatureCommitmentAttempt) durable.releaseSignatureCommitment(session.buyerBundle.presentedBy, jobId);
+  }
+
   // ---- DACS-3: finalized commitment (orchestrator) ----
   // `readbackOnly` is internal (never an HTTP body field): a retained
   // commitment is authenticated again, but an absent one is never published.
@@ -828,9 +834,6 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       session.agreementSignedProjection = structuredClone(signedProjection);
       session.signatureCommitmentAttempt = true;
     }
-    // This job's authenticated readback releases its buyer slot even without a
-    // saved marker: the reservation and the session save are separate writes.
-    if (!early && (commitOnSignature || session.signatureCommitmentAttempt)) durable.releaseSignatureCommitment(session.buyerBundle.presentedBy, jobId);
     persist(session);
     let finalized;
     let nativeCommitmentProjection;
@@ -903,7 +906,9 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
       retainCommitmentPhase(session,retained);
       session.agreement=agreement;session.agreementRef=agreementRef;
       if(native)session.agreementAnchor=nativeAgreementView(native);
-      if(session.stage==='proposed')session.stage='committed';persist(session);
+      if(session.stage==='proposed')session.stage='committed';
+      releaseFinalizedSignatureCommitment(session, jobId);
+      persist(session);
       return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
     }
     session.agreement = agreement;
@@ -915,6 +920,7 @@ export async function createSellerAgent({ signer, listing, anchors, now = () => 
     // time may be later within the same millisecond/second and cannot replace
     // that finalized fact in the SDK SessionRecord.
     retainCommitmentPhase(session, finalized);
+    releaseFinalizedSignatureCommitment(session, jobId);
     persist(session);
     return { status: 'committed', address: finalized.logicalAddress, resumed: finalized.resumed, ...(native ? { agreementAnchor: nativeAgreementView(native) } : {}) };
   }
