@@ -480,9 +480,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   unsatisfied; an independently passing pinned alternative may still satisfy
   its group. Missing, non-live or unprovable selected family heads refuse the
   replay before aggregation, including unused alternatives (DACS-2 §7.4.3).
+  Every verified member needs a resolvable method family. Unused explicit pins
+  also require an exact live, steward-authorized signed recipe before aggregation.
   Malformed replies and inconsistent snapshot pins also refuse the whole record.
   Both party records share one snapshot pin, and a replay caches each family's
-  bounded registry read. No older live version is chosen as fallback.
+  bounded registry read and each exact recipe descriptor. No older live version
+  is chosen as fallback.
   Reads retain their 64 KiB, value/list, 10 s individual and 30 s total limits;
   unavailable readers keep their original cause. These helper capabilities do
   not change the agent's invocation or restoration gate. A session
