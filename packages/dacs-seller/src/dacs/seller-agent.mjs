@@ -700,6 +700,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               let record;
               try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
+              if (record === null) return unavailable(new Error('Vet record is absent'),`the ${role} Vet record is absent`);
               const problem = await vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now });
               if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
               // DACS-2 VPC-3: a signed record is no admitted one. It is relied on
@@ -707,6 +708,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               let receipt;
               try { receipt = await readAdmissionCapability(admission,'readVetAnchorReceipt',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record read or authentication is unavailable`); }
+              if (receipt === null) return unavailable(new Error('Vet receipt is absent'),`the ${role} Vet record has no SR-2 receipt`);
               const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId, party });
               if (receiptProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${receiptProblem}` };
               // CORE SR2-4: the receipt's fields alone are assertions, not proof.
