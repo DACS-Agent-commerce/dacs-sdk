@@ -343,9 +343,17 @@ test('public protocol native readback availability is reported without retry tex
   assert.deepEqual(w.ops.history(w.op.id).filter(event => event.type === 'native_nonce_pending'), []);
 });
 
+const DIAGNOSTIC_TIME = 1700000000000;
+// Keep capability wall time aligned with valid provisioning, independently of
+// the service clock that refusal tests change after creating the saved rows.
+function diagnosticWorld(t, observation, options = {}) {
+  t.mock.timers.enable({ apis: ['Date'], now: DIAGNOSTIC_TIME });
+  return world(t, observation, options);
+}
+
 for (const method of ['status', 'verifyDeal', 'cancel']) {
   test(`account lookup refuses a wrong-owner operation before secondary reads (${method})`, async t => {
-    const w = world(t, INCLUDED, { publicApi: method !== 'cancel' });
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: method !== 'cancel' });
     w.db.prepare('UPDATE operations SET status=? WHERE id=?').run('awaiting_approval', w.op.id);
     const token = w.ops.handoffTokenFor(w.op.id), get = w.ops.get;
     w.ops.get = (_account, id) => get(w.op.accountId, id);
@@ -439,7 +447,7 @@ test(`public host readers remain diagnostic and cannot settle or consume a nonce
 
 for (const status of ['awaiting_approval', 'agreement_pending']) {
   test(`public expired ${status} portal/status/evidence reads never persist or offer approval`, async t => {
-    const w = world(t, INCLUDED, { publicApi: true });
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
     w.db.prepare('UPDATE operations SET status=?, expires_at=? WHERE id=?').run(status, new Date(0).toISOString(), w.op.id);
     const before = w.ops.get(w.op.accountId, w.op.id), history = w.ops.history(w.op.id), coords = w.coordinates.get(w.op.id);
     const token = w.ops.handoffTokenFor(w.op.id);
@@ -473,7 +481,7 @@ test('expired diagnostic readback with closed buyer access uses the same read-on
 
 for (const status of ['awaiting_approval', 'agreement_pending', 'approved', 'settled_verified']) {
   test(`public portal/status preserve ${status} outside an elapsed approval window`, t => {
-    const w = world(t, INCLUDED, { publicApi: true });
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
     const expiresAt = new Date(['approved', 'settled_verified'].includes(status) ? 0 : Date.now() + 3600000).toISOString();
     w.db.prepare('UPDATE operations SET status=?, expires_at=? WHERE id=?').run(status, expiresAt, w.op.id);
     const before = w.ops.get(w.op.accountId, w.op.id);
@@ -499,7 +507,7 @@ for (const sourceDisposition of [undefined, 'included', 'failed', 'pending', 'no
 }
 
 test('public nested protocol guidance remains historical and held', t => {
-  const w = world(t, INCLUDED, { publicApi: true, native: true });
+  const w = diagnosticWorld(t, INCLUDED, { publicApi: true, native: true });
   w.db.prepare('UPDATE operations SET state=? WHERE id=?').run(JSON.stringify({ protocol: { stage: 'agreement-signing' } }), w.op.id);
   const read = w.purchases.status(w.op.accountId, w.op.id, w.ops.handoffTokenFor(w.op.id));
   assert.equal(read.protocol.historical, true);
@@ -534,7 +542,7 @@ for (const failure of [null, undefined, 'TEST-reader-failed']) {
 }
 
 test('inclusion time accepts epoch milliseconds and old malformed saved times render safely', async t => {
-  const w = world(t, { ...INCLUDED, includedAt: 0 });
+  const w = diagnosticWorld(t, { ...INCLUDED, includedAt: 0 });
   assert.equal((await w.verify()).verification.outcome, 'verified');
   assert.equal(w.purchases.portalEvidence(w.op.id, w.ops.handoffTokenFor(w.op.id)).receipt.includedAt, '1970-01-01T00:00:00.000Z');
   const historical = w.coordinates.get(w.op.id).observation;
@@ -570,7 +578,7 @@ test('public diagnostics re-read saved settlements and never report saved succes
 for (const method of ['portalOperation', 'portalEvidence']) {
   for (const invalid of ['forged-operation', 'missing-token', 'wrong-token', 'missing-id', 'object-token']) {
     test(`${method} authenticates ${invalid} before secondary reads`, t => {
-      const w = world(t, INCLUDED, { publicApi: true });
+      const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
       const token = w.ops.handoffTokenFor(w.op.id), calls = [];
       const lookup = w.ops.getByHandoff, lookups = [];
       w.ops.getByHandoff = (...args) => { lookups.push(args); return lookup(...args); };
@@ -591,7 +599,7 @@ for (const method of ['portalOperation', 'portalEvidence']) {
 
   for (const mismatch of ['id', 'kind']) {
     test(`${method} rejects a host ${mismatch} mismatch before secondary reads`, t => {
-      const w = world(t, INCLUDED, { publicApi: true });
+      const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
       const calls = [];
       w.ops.getByHandoff = () => ({ ...w.op, [mismatch]: 'TEST-other' });
       w.coordinates.get = () => { calls.push('coordinates'); throw new Error('TEST-private-read'); };
@@ -602,7 +610,7 @@ for (const method of ['portalOperation', 'portalEvidence']) {
 }
 
 test('portal evidence authenticates each repeated read and uses fresh stored data', t => {
-  const w = world(t, INCLUDED, { publicApi: true });
+  const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
   const token = w.ops.handoffTokenFor(w.op.id), lookup = w.ops.getByHandoff, calls = [];
   w.ops.getByHandoff = (id, suppliedToken) => { calls.push([id, suppliedToken]); return lookup(id, suppliedToken); };
   const before = w.coordinates.get(w.op.id), history = w.ops.history(w.op.id);
@@ -621,7 +629,7 @@ test('portal evidence authenticates each repeated read and uses fresh stored dat
 });
 
 test('portal evidence refuses another operation handoff token', t => {
-  const w = world(t, INCLUDED, { publicApi: true });
+  const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
   const other = w.ops.createIdempotent({ accountId: w.op.accountId, kind: 'purchase', idempotencyKey: 'TEST-other', request: {},
     status: w.op.status, terms: w.op.terms, termsHash: CHAIN, expiresAt: w.op.expiresAt });
   assert.throws(() => w.purchases.portalEvidence(w.op.id, other.handoffToken), { code: 'not_found' });
@@ -631,7 +639,7 @@ test('portal evidence refuses another operation handoff token', t => {
 // reported as expired. Only the portal's action entry saves that transition.
 for (const status of ['awaiting_approval', 'agreement_pending']) {
   test(`portal evidence and status report an elapsed ${status} approval without saving it`, t => {
-    const w = world(t, INCLUDED, { native: status === 'agreement_pending' });
+    const w = diagnosticWorld(t, INCLUDED, { native: status === 'agreement_pending' });
     w.db.prepare('UPDATE operations SET status=?, expires_at=?, state=? WHERE id=?').run(status, new Date(Date.now() - 1000).toISOString(),
       JSON.stringify(status === 'agreement_pending' ? { protocol: { stage: 'agreement-pending' } } : {}), w.op.id);
     const token = w.ops.handoffTokenFor(w.op.id), events = w.ops.history(w.op.id).length;
@@ -656,7 +664,7 @@ for (const status of ['awaiting_approval', 'agreement_pending']) {
 for (const source of ['lookup', 'buyer-access']) {
   test(`portal evidence preserves ${source} refusals before private reads`, t => {
     const cause = new Error('TEST-host-refusal');
-    const w = world(t, INCLUDED, { publicApi: true, ...(source === 'buyer-access' ? { buyerRefusal: cause } : {}) });
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: true, ...(source === 'buyer-access' ? { buyerRefusal: cause } : {}) });
     if (source === 'lookup') w.ops.getByHandoff = () => { throw cause; };
     const calls = [];
     w.coordinates.get = () => { calls.push('coordinates'); };
@@ -712,7 +720,7 @@ for (const bookkeeping of ['overdue', 'operator-hold']) {
 
 for (const method of ['portalOperation', 'portalEvidence']) {
   test(`${method} verifies the saved capability even when the host accepts every token`, t => {
-    const w = world(t, INCLUDED, { publicApi: true });
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
     const token = w.ops.handoffTokenFor(w.op.id);
     w.ops.getByHandoff = () => w.ops.get(w.op.accountId, w.op.id);
     const get = w.coordinates.get, calls = [];
@@ -726,7 +734,7 @@ for (const method of ['portalOperation', 'portalEvidence']) {
 for (const method of ['portalOperation', 'portalEvidence']) {
   for (const expiry of [null, '', 'TEST-malformed-time', new Date(0).toISOString()]) {
     test(`${method} rejects missing, malformed or expired stored handoff expiry ${expiry}`, t => {
-      const w = world(t, INCLUDED, { publicApi: true });
+      const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
       const token = w.ops.handoffTokenFor(w.op.id);
       w.ops.getByHandoff = () => w.op;
       w.db.prepare('UPDATE operations SET handoff_expires_at=? WHERE id=?').run(expiry, w.op.id);
@@ -735,7 +743,7 @@ for (const method of ['portalOperation', 'portalEvidence']) {
     });
   }
   test(`${method} checks fresh stored token rotation and owner despite a permissive lookup`, t => {
-    const w = world(t, INCLUDED, { publicApi: true });
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
     const token = w.ops.handoffTokenFor(w.op.id);
     w.ops.getByHandoff = () => w.op;
     assert.ok(w.purchases[method](w.op.id, token));
@@ -743,7 +751,7 @@ for (const method of ['portalOperation', 'portalEvidence']) {
     assert.throws(() => w.purchases[method](w.op.id, token), { code: 'not_found' });
   });
   test(`${method} rejects a host owner mismatch for a valid capability`, t => {
-    const w = world(t, INCLUDED, { publicApi: true });
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
     w.ops.getByHandoff = () => ({ ...w.op, accountId: 'TEST-other-owner' });
     assert.throws(() => w.purchases[method](w.op.id, w.ops.handoffTokenFor(w.op.id)), { code: 'not_found' });
   });
@@ -790,7 +798,7 @@ test('a late network identity reply cannot start another read after the diagnost
 
 test('retained protocol readback authenticates its closed-access shortcut with the same saved capability', async t => {
   const refusal = Object.assign(new Error('TEST-closed'), { code: 'buyer_access_closed' });
-  const w = world(t, INCLUDED, { native: true, buyerRefusal: refusal });
+  const w = diagnosticWorld(t, INCLUDED, { native: true, buyerRefusal: refusal });
   w.ops.getByHandoff = () => w.op;
   let reads = 0;
   w.protocol.readIssued = async () => { reads++; return true; };
@@ -808,8 +816,10 @@ for (const method of ['portalOperation', 'portalEvidence', 'protocolRecheck']) {
     ['string', '0'], ['null', null], ['object', {}], ['fraction', 1.5], ['negative', -1],
     ['out of range', 8640000000000001], ['bigint', 0n], ['symbol', Symbol('TEST-clock')],
   ]) test(`${method} refuses an invalid ${label} clock before private reads`, async t => {
-    const w = world(t, INCLUDED, { publicApi: method !== 'protocolRecheck', native: true, now: () => clock });
+    let serviceClock = DIAGNOSTIC_TIME;
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: method !== 'protocolRecheck', native: true, now: () => serviceClock });
     const token = w.ops.handoffTokenFor(w.op.id);
+    serviceClock = clock;
     const calls = [];
     w.ops.getByHandoff = () => { calls.push('operation'); return w.op; };
     w.coordinates.get = () => { calls.push('coordinates'); };
@@ -820,8 +830,10 @@ for (const method of ['portalOperation', 'portalEvidence', 'protocolRecheck']) {
     assert.deepEqual(calls, []);
   });
   test(`${method} refuses an expired capability with a stale valid clock`, async t => {
-    const w = world(t, INCLUDED, { publicApi: method !== 'protocolRecheck', native: true, now: () => 0 });
+    let serviceClock = DIAGNOSTIC_TIME;
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: method !== 'protocolRecheck', native: true, now: () => serviceClock });
     const token = w.ops.handoffTokenFor(w.op.id);
+    serviceClock = 0;
     w.db.prepare('UPDATE operations SET handoff_expires_at=? WHERE id=?').run('1970-01-01T00:00:00.001Z', w.op.id);
     w.ops.getByHandoff = () => assert.fail('expired capability reached host lookup');
     const run = () => method === 'protocolRecheck' ? w.purchases[method]({ operationId: w.op.id, token }) : w.purchases[method](w.op.id, token);
@@ -831,8 +843,8 @@ for (const method of ['portalOperation', 'portalEvidence', 'protocolRecheck']) {
 }
 for (const method of ['portalOperation', 'portalEvidence']) {
   test(`${method} accepts an unexpired capability with a valid clock and rechecks it on repeat`, t => {
-    let clock = Date.now();
-    const w = world(t, INCLUDED, { publicApi: true, now: () => clock });
+    let clock = DIAGNOSTIC_TIME;
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: true, now: () => clock });
     const token = w.ops.handoffTokenFor(w.op.id);
     assert.ok(w.purchases[method](w.op.id, token));
     clock = 0;
@@ -857,7 +869,7 @@ test('purchase construction reports an actionable error for the pre-capability s
 // Wire vector pinned to the original store's hashHandoffToken contract:
 // 9d820e0:packages/dacs-client/test/helpers/purchase-integrity-operations.mjs:43.
 test('portal capabilities accept the pinned exact-byte hash vector', t => {
-  const w = world(t, INCLUDED, { publicApi: true });
+  const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
   w.db.prepare('UPDATE operations SET handoff_token_hash=? WHERE id=?').run(
     'afe0c673f2027d951dfa05cecb56c758114474d50893b91004207d3733a4fb55', w.op.id);
   w.ops.getByHandoff = () => w.op;
@@ -871,7 +883,7 @@ test('portal capabilities accept the pinned exact-byte hash vector', t => {
 for (const method of ['status', 'verifyDeal']) {
   for (const proof of ['missing', 'wrong', 'other-operation', 'expired']) {
     test(`public ${method} refuses a known owner/id with ${proof} capability`, async t => {
-      const w = world(t, INCLUDED, { publicApi: true });
+      const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
       let token = proof === 'missing' ? undefined : proof === 'wrong' ? 'TEST-wrong-token' : w.ops.handoffTokenFor(w.op.id);
       if (proof === 'other-operation') token = w.ops.createIdempotent({ accountId: w.op.accountId, kind: 'purchase',
         idempotencyKey: 'TEST-other-read', request: {}, status: w.op.status, terms: w.op.terms,
@@ -888,7 +900,7 @@ for (const method of ['status', 'verifyDeal']) {
     });
   }
   test(`public ${method} accepts its capability and rechecks expiry on repeat`, async t => {
-    const w = world(t, INCLUDED, { publicApi: true });
+    const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
     const token = w.ops.handoffTokenFor(w.op.id);
     const read = () => method === 'status' ? w.purchases.status(w.op.accountId, w.op.id, token)
       : w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, token });
@@ -902,7 +914,7 @@ for (const method of ['status', 'verifyDeal']) {
 for (const method of ['portalOperation', 'portalEvidence']) {
   for (const format of ['sqlite', 'local-iso', 'offset', 'epoch-text', 'normalized-date']) {
     test(`${method} refuses ambiguous or noncanonical ${format} expiry`, t => {
-      const w = world(t, INCLUDED, { publicApi: true });
+      const w = diagnosticWorld(t, INCLUDED, { publicApi: true });
       const token = w.ops.handoffTokenFor(w.op.id), iso = new Date(Date.now() + 3600000).toISOString();
       const expiry = { sqlite: iso.slice(0, 19).replace('T', ' '), 'local-iso': iso.slice(0, -1),
         offset: iso.replace('Z', '+00:00'), 'epoch-text': String(Date.now() + 3600000),
