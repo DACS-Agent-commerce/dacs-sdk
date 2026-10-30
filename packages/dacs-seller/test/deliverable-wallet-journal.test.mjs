@@ -171,6 +171,44 @@ test('a writer that is not a nonempty claim, or a delivery binding that is not a
   assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
 });
 
+test('a writer that names no account is refused before the wallet is asked', async (t) => {
+  const w = wallet(t);
+  const journal = w.open();
+  t.after(() => journal.close());
+  for (const writer of ['not-a-claim', 'did:demos:agent:zz', 42]) {
+    await assert.rejects(journal.submit(w.input({ writer })), TypeError, String(writer));
+    await assert.rejects(journal.reconcile(w.input({ writer })), TypeError, String(writer));
+  }
+  assert.equal(w.calls.sign, 0, 'nothing is signed for a writer with no address');
+  assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
+});
+
+test('a delivery binding that is incomplete or commits to other bytes than the report is refused before the wallet is asked', async (t) => {
+  const w = wallet(t), binding = w.input().deliveryBinding;
+  const journal = w.open();
+  t.after(() => journal.close());
+  const { fulfilmentId, ...noFulfilment } = binding, { payloadHash, ...noPayload } = binding;
+  for (const [label, deliveryBinding] of [['only a job id', { jobId: binding.jobId }], ['no fulfilment id', noFulfilment], ['no payload hash', noPayload],
+    ['another payload hash', { ...binding, payloadHash: '00'.repeat(32) }], ['another version', { ...binding, version: '2' }]]) {
+    await assert.rejects(journal.submit(w.input({ deliveryBinding })), TypeError, label);
+    await assert.rejects(journal.reconcile(w.input({ deliveryBinding })), TypeError, label);
+  }
+  assert.equal(w.calls.sign, 0, 'nothing is signed for a binding that does not fit the report');
+  assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
+});
+
+test('a signed CREATE whose binding has no canonical form is refused as a wallet_sign_invalid answer, never a bare TypeError', async (t) => {
+  const w = wallet(t);
+  const journal = w.open(join(w.dir, 'infinity.sqlite'), (options) => createDeliverableWalletJournal({ ...options, signCreate: async (asked) => {
+    const answer = await w.node.signCreate(asked);
+    return { ...answer, signedTransaction: answer.signedTransaction.replace(/"deliveryBinding":\{[^}]*\}/, '"deliveryBinding":{"x":1e999}') };
+  } }));
+  t.after(() => journal.close());
+  await assert.rejects(journal.submit(w.input()), { code: 'wallet_sign_invalid' });
+  assert.equal(await journal.readSignedProjection(w.input()), null, 'nothing is kept');
+  assert.equal(w.calls.broadcast.length, 0, 'nothing is sent');
+});
+
 test('the question belongs to the capability only when both are one journal\'s: a wrapper, two journals, an evidence journal or a scripted question is refused', async (t) => {
   const w = wallet(t);
   const journal = w.open(), other = w.open(join(w.dir, 'other.sqlite')), evidence = w.open(join(w.dir, 'evidence.sqlite'), createPaymentEvidenceWalletJournal);

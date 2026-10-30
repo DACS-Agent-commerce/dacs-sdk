@@ -26,13 +26,15 @@
 //    unless it is applied;
 //  - readSignedProjection({ logicalAddress }) is the kept CREATE's public projection.
 // input is { logicalAddress, report, writer, jobId, receiptContentHash,
-// deliveryBinding }, where receiptContentHash is the SHA-256 of the canonical
-// report and the report, the binding and logicalAddress (the Deliverable
-// address) must all name jobId; anything else is refused (TypeError) before the
-// wallet is asked.
+// deliveryBinding }, where writer names an account, receiptContentHash is the
+// SHA-256 of the canonical report, the report, the binding and logicalAddress
+// (the Deliverable address) must all name jobId, and the binding (version 1,
+// with its fulfilmentId) commits to the report as its payloadHash; anything else
+// is refused (TypeError) before the wallet is asked.
 // startSellerHost and createSellerAgent take the pair only from one journal
 // (deliverableJournalFor) with the capability whose submit it is.
 import { canonicalize, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { addressForClaim } from './demos-claims.mjs';
 import { nativeDemDeliverySubmitOf } from './native-dem-delivery-consumer.mjs';
 import { createSignedCreateJournal } from './payment-evidence-wallet-journal.mjs';
 import { deliverableAddress } from './purchase-protocol.mjs';
@@ -65,15 +67,24 @@ function canonicalRecord(value) {
   if (!object(value)) return null;
   try { return canonicalize(value); } catch { return null; }
 }
+// True when the claim names a writer account: the shared journal derives the
+// signer's address from it only after signCreate, so it is checked first.
+function writerHasAddress(writer) {
+  if (typeof writer !== 'string' || writer.length === 0) return false;
+  try { addressForClaim(writer); return true; } catch { return false; }
+}
 // The input of the shared journal for this Deliverable, or a TypeError. The job
 // id is checked as CORE §B.1 names it before the wallet is asked, and the
 // report, the delivery binding and the Deliverable address must all name that
 // same job, so no protocol effect is ever derived from an alternate spelling.
 function createInput({ logicalAddress, report, writer, jobId, receiptContentHash, deliveryBinding } = {}) {
   const canonicalReport = canonicalRecord(report), canonicalBinding = canonicalRecord(deliveryBinding);
-  if (canonicalReport === null || canonicalBinding === null || typeof writer !== 'string' || writer.length === 0 || !isCanonicalJobId(jobId)
+  if (canonicalReport === null || canonicalBinding === null || !writerHasAddress(writer) || !isCanonicalJobId(jobId)
       || receiptContentHash !== sha256Hex(canonicalReport)) {
-    throw new TypeError('the Deliverable journal needs the report, its writer, a canonical job id, a canonical delivery binding and the report\'s canonical SHA-256 as receiptContentHash');
+    throw new TypeError('the Deliverable journal needs the report, a writer that names an account, a canonical job id, a canonical delivery binding and the report\'s canonical SHA-256 as receiptContentHash');
+  }
+  if (deliveryBinding.version !== '1' || typeof deliveryBinding.fulfilmentId !== 'string' || deliveryBinding.fulfilmentId.length === 0 || deliveryBinding.payloadHash !== receiptContentHash) {
+    throw new TypeError('the Deliverable journal needs a delivery binding of version 1 that names its fulfilment and commits to the report\'s canonical SHA-256 as payloadHash');
   }
   if (report.jobId !== jobId || deliveryBinding.jobId !== jobId || logicalAddress !== deliverableAddress(jobId)) {
     throw new TypeError('the Deliverable journal is asked about another job: the report, the delivery binding and the Deliverable address must name the same canonical job id');
