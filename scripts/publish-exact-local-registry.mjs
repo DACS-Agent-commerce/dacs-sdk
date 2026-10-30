@@ -115,7 +115,7 @@ function readArchive(archivePath) {
 
 function loopbackRegistry(registryValue) {
   const registry = new URL(registryValue);
-  if (registry.username || registry.password || registry.search || registry.hash || registry.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(registry.hostname)) {
+  if (registry.username || registry.password || /[?#]/.test(registry.href) || registry.protocol !== "http:" || !["127.0.0.1", "localhost"].includes(registry.hostname)) {
     throw new Error("exact local publisher only accepts a loopback HTTP registry");
   }
   return registry;
