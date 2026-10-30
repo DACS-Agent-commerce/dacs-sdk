@@ -1,9 +1,15 @@
+# Registry/container audit baseline
+
+The machine-readable policy is `registry-container-audit-baseline.json`.
+The original sources and earlier dispositions remain recorded there.
 The registry/container acceptance job classifies npm audit advisories in the
-generated consumer's dependency tree by ID against
-`registry-container-audit-baseline.json`. Counts are diagnostics. A run that
-observes only listed IDs, or a subset of them (an advisory resolved since), is
-baseline-only (exit 4). Production publication remains blocked by #191;
-acceptance is not publication approval.
+generated consumer's dependency tree by ID against that file. Counts are
+diagnostics. A clean run with no advisory and every other policy gate passing
+is exit 0. A run that observes only listed IDs, or a subset of them (an
+advisory resolved since), is baseline-only (exit 4), provided every other
+policy gate passes or matches the baseline; a listed ID alone does not produce
+exit 4 when another gate is blocked, which exits 3. Production publication
+remains blocked by #191; acceptance is not publication approval.
 
 An advisory ID that is not listed, including a GHSA newly published against a
 dependency the tree already had, is treated by where the run comes from:
@@ -117,22 +123,32 @@ advisory IDs, image-inventory errors or missing required image packages.
 These are npm dependency findings in the generated image/consumer, not OS
 base-image CVEs. They receive the same #191 baseline-only disposition as the
 existing upstream findings. Neither is a reachability assessment or production
-publication approval. No gate predicate or exit code changes: replaying this
-evidence is exit 4, `securityGate.passed` remains false, and unrecorded rules
-still exit 3.
+publication approval. No gate predicate or exit code changes: a replay
+reconstructed with that run's completion metadata (see the fixture README) is
+exit 4, `securityGate.passed` remains false, and unrecorded rules still exit 3.
 
-A run whose failing checks match only these entries is baseline-only (exit 4).
-Each entry keeps the version and integrity its source run observed, as
-evidence, but matches by rule: the lock location, the dependency field and
-spec, the package name and required engine range, and the `npm sbom` line with
-installed versions elided. The pqcrypto image finding additionally requires the
-exact recorded manifest version `1.0.01`; another manifest version is unlisted
-even at the same package name and location. The generated consumer installs
-without a lockfile, so a patch release of another listed package that keeps the same rule (for example
-`@npmcli/agent@5.0.3` under make-fetch-happen's `^5.0.0`) stays baseline-only
-instead of failing every pull request, the drift job and prereleases. Any other
-non-registry dependency, engine violation, SBOM problem or production
-dependency, or a listed one at another location, spec or range, still exits 3.
+A run whose failing checks match only these entries is baseline-only (exit 4)
+when every other policy gate passes or matches the baseline. Each entry keeps
+the version and integrity its source run observed, and matching uses them:
+
+- Git findings pin the lock location, dependency field and spec, package
+  version and archive integrity.
+- Engine findings pin the package name and version, location, archive integrity
+  and required engine range.
+- Image findings pin the package name, location, installed version and archive
+  integrity. The pqcrypto image finding therefore matches only the
+  exact recorded manifest version `1.0.01`; another manifest version is
+  unlisted even at the same package name and location.
+- SBOM findings match one `npm sbom` line with the installed and required
+  versions elided after `invalid:`/`extraneous:` and `required by`. Only these
+  rules ignore installed versions.
+
+For Git, engine and image findings, a new patch version, a rebuilt archive or
+any other integrity is therefore unlisted and exits 3 until a reviewed PR
+updates the baseline entry, even when the lock spec and engine range are
+unchanged. Any other non-registry dependency, engine violation, SBOM problem or
+production dependency, or a listed one at another location, spec, range,
+version or integrity (except the SBOM-version elision above), still exits 3.
 
 Update the baseline only through a reviewed PR adding the observed IDs or
 findings and citing the workflow run/job and commit that produced

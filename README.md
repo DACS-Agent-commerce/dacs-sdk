@@ -1036,9 +1036,12 @@ are qualified package candidates, not evidence that the packages were published
 to npm.
 
 Registry/container acceptance writes evidence to the new directory passed to
-`--output-dir`. Failures after preflight retain partial evidence. Run on a host
-with Docker/Compose, curl 8.4+ and GNU mv. Create the parent first and choose a
-fresh output directory for each run:
+`--output-dir`. Handled failures after preflight (an exit, SIGINT or SIGTERM)
+retain partial evidence in that directory. Power loss or SIGKILL can leave the
+reserved directory empty, and the temporary copies staged under the runner's
+temporary directory may not survive a reboot. Run on a host with Docker/Compose,
+curl 8.4+ and GNU mv. Create the parent first and choose a fresh output
+directory for each run:
 
 ```sh
 mkdir -p registry-container-artifacts
