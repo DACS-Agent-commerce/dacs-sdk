@@ -96,14 +96,39 @@ export function collectEvidence(sourceDirectory, destinationDirectory, names, { 
 // The ancestor directories of a project-relative file name, outermost first.
 const ancestors = name => name.split("/").slice(0, -1).map((_part, index, parts) => parts.slice(0, index + 1).join("/"));
 
+// Compare the published tree with a fresh validated snapshot, including permissions and
+// exact bytes. An incomplete or different tree is never accepted as a completed seal.
+function verifyContext(expected, context) {
+  requireDirectory(context);
+  const compare = (source, destination) => {
+    const names = readdirSync(source).sort();
+    const current = readdirSync(destination).sort();
+    const mismatch = () => { throw new Error(`EEXIST: refusing a different sealed context ${context}`); };
+    if (names.length !== current.length || names.some((name, index) => name !== current[index])) mismatch();
+    for (const name of names) {
+      const sourcePath = join(source, name), destinationPath = join(destination, name);
+      const wanted = lstatSync(sourcePath), found = lstatSync(destinationPath);
+      if ((wanted.mode & 0o777) !== (found.mode & 0o777)) mismatch();
+      if (wanted.isDirectory() && found.isDirectory()) compare(sourcePath, destinationPath);
+      else if (wanted.isFile() && found.isFile()) {
+        const before = readBoundedFile(sourcePath, { noFollow: true });
+        const after = readBoundedFile(destinationPath, { noFollow: true });
+        if (!after || !before.bytes.equals(after.bytes)) mismatch();
+      } else mismatch();
+    }
+  };
+  compare(expected, context);
+}
+
 /** Copies exactly the regular files `names` (project-relative) of the generated project at
  * `project` into the new directory `context`, leaving out node_modules. Returns the digest record
  * { schema, files: { name: sha256 } }. Throws if the project root, a directory on a listed path
  * or a listed file is a link, a listed file is missing, irregular or oversized, a listed name is
  * inside node_modules, the project holds any other entry outside node_modules, or `context`
- * exists. The tree is built in a staging sibling and renamed into place when complete, so an
+ * exists unless `reuseExisting` verifies it against a fresh snapshot of the same inputs.
+ * The tree is built in a staging sibling and renamed into place when complete, so an
  * interrupted seal never leaves a partial `context`. */
-export function sealProject(project, context, names) {
+export function sealProject(project, context, names, { reuseExisting = false } = {}) {
   const listed = new Set(names.map(name => posix.normalize(name)));
   const directories = new Set([...listed].flatMap(ancestors));
   requireDirectory(project);
@@ -130,7 +155,7 @@ export function sealProject(project, context, names) {
   let existing;
   try { existing = lstatSync(context); }
   catch (error) { if (error.code !== "ENOENT") throw error; }
-  if (existing) throw new Error(`EEXIST: refusing to replace ${context}`);
+  if (existing && !reuseExisting) throw new Error(`EEXIST: refusing to replace ${context}`);
   const staging = `${context}.staging-${randomUUID()}`;
   mkdirSync(staging);
   try {
@@ -146,12 +171,21 @@ export function sealProject(project, context, names) {
     for (const directory of [...orderedDirectories].sort((a, b) => b.split("/").length - a.split("/").length)) {
       copyDirectoryMode(join(project, directory), join(staging, directory));
     }
-    renameSync(staging, context);
+    if (existing) verifyContext(staging, context);
+    else {
+      try { renameSync(staging, context); }
+      catch (error) {
+        if (!reuseExisting || !["EEXIST", "ENOTEMPTY"].includes(error.code)) throw error;
+        verifyContext(staging, context);
+      }
+    }
     return { schema: SEALED_CONTEXT_SCHEMA, files };
-  } catch (error) {
-    // `staging` was created here, and the published `context` never holds a partial tree.
+  } finally {
+    // Only remove this run's staging tree; another run may already be using the context.
+    for (const directory of orderedDirectories) {
+      try { chmodSync(join(staging, directory), 0o700); } catch {}
+    }
     try { rmSync(staging, { recursive: true, force: true }); } catch {}
-    throw error;
   }
 }
 
@@ -184,21 +218,11 @@ if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[
     try { lstatSync(third); }
     catch (error) { if (error.code === "ENOENT") recordExists = false; else throw error; }
     if (recordExists) throw new Error("EEXIST: refusing to replace " + third);
-    const sealed = sealProject(first, second, rest);
-    try {
-      publishFile(third, Buffer.from(JSON.stringify(sealed, null, 2) + "\n"));
-    } catch (error) {
-      // The record could not be published, so remove the context this run created rather than
-      // leaving a sealed tree that a retry would refuse. Directories copied from a read-only
-      // source get their owner-write bit back so their contents can be removed.
-      for (const name of rest) {
-        for (const directory of ancestors(name)) {
-          try { chmodSync(join(second, directory), 0o700); } catch {}
-        }
-      }
-      rmSync(second, { recursive: true, force: true });
-      throw error;
-    }
+    requireDirectory(dirname(third));
+    const sealed = sealProject(first, second, rest, { reuseExisting: true });
+    // If recording fails or the process stops here, the complete context remains available
+    // for verification on retry. Never remove a context a concurrent run may have reused.
+    publishFile(third, Buffer.from(JSON.stringify(sealed, null, 2) + "\n"));
   } else if (mode === "collect" && third !== undefined) {
     collectEvidence(first, second, evidenceEntries(first, [third, ...rest]), { optional });
   } else {

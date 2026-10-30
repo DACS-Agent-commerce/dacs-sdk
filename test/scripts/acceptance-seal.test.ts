@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -263,6 +263,108 @@ describe("sealed generated project", () => {
     expect(existsSync(linkedContext)).toBe(false);
     expect(readFileSync(host, "utf8")).toBe("host-only value\n");
   });
+  it.each(["ordinary", "binary", "empty", "read-only directory"])(
+    "recovers a complete %s context published before its digest record", kind => {
+      const root = scratch(); const { project, context, names } = generatedProject(root);
+      const source = join(project, "src/service.ts");
+      if (kind === "binary") writeFileSync(source, Buffer.from([0, 255, 128, 13, 10]));
+      if (kind === "empty") writeFileSync(source, "");
+      if (kind === "read-only directory") chmodSync(join(project, "src"), 0o555);
+      try {
+        // The review's crash boundary: context published, record not yet written.
+        const expected = sealProject(project, context, names);
+        const inode = statSync(context).ino;
+        const record = join(root, "sealed-context.json");
+        const cli = spawnSync(process.execPath,
+          ["scripts/acceptance-seal.mjs", "seal", project, context, record, ...names], { encoding: "utf8" });
+        expect(cli.status, cli.stderr).toBe(0);
+        expect(JSON.parse(readFileSync(record, "utf8"))).toEqual(expected);
+        expect(statSync(context).ino).toBe(inode);
+        expect(readFileSync(join(context, "src/service.ts"))).toEqual(readFileSync(source));
+        expect(readdirSync(dirname(context))).toEqual(["context"]);
+      } finally {
+        chmodSync(join(project, "src"), 0o755);
+        chmodSync(join(context, "src"), 0o755);
+      }
+    });
+
+  it.each(["different bytes", "missing file", "extra file", "extra directory", "file link", "directory link",
+    "file mode", "directory mode", "changed source", "oversized file", "context link", "context file", "empty context", "FIFO"])("refuses recovery with %s and keeps the context", kind => {
+    const root = scratch(); const { project, context, names } = generatedProject(root);
+    sealProject(project, context, names);
+    const file = join(context, "src/service.ts"), directory = join(context, "src");
+    if (kind === "different bytes") writeFileSync(file, "other");
+    if (kind === "missing file") rmSync(file);
+    if (kind === "extra file") writeFileSync(join(context, "extra"), "other");
+    if (kind === "extra directory") mkdirSync(join(context, "extra"));
+    if (kind === "file link") { rmSync(file); symlinkSync(join(project, "src/service.ts"), file); }
+    if (kind === "directory link") { rmSync(directory, { recursive: true }); symlinkSync(join(project, "src"), directory); }
+    if (kind === "file mode") chmodSync(file, 0o644);
+    if (kind === "directory mode") chmodSync(directory, (statSync(directory).mode & 0o777) ^ 0o020);
+    if (kind === "changed source") writeFileSync(join(project, "src/service.ts"), "changed input");
+    if (kind === "oversized file") truncateSync(file, EVIDENCE_MAX_BYTES + 1);
+    if (kind === "context link") { rmSync(context, { recursive: true }); symlinkSync(project, context); }
+    if (kind === "context file") { rmSync(context, { recursive: true }); writeFileSync(context, "other"); }
+    if (kind === "empty context") { rmSync(context, { recursive: true }); mkdirSync(context); }
+    if (kind === "FIFO") { rmSync(file); expect(spawnSync("mkfifo", [file]).status).toBe(0); }
+    const inode = statSync(context).ino, record = join(root, "sealed-context.json");
+    const cli = spawnSync(process.execPath,
+      ["scripts/acceptance-seal.mjs", "seal", project, context, record, ...names], { encoding: "utf8" });
+    expect(cli.status).not.toBe(0);
+    expect(existsSync(record)).toBe(false);
+    expect(statSync(context).ino).toBe(inode);
+    expect(readdirSync(dirname(context))).toEqual(["context"]);
+  });
+
+  it.each([false, true])("recovers concurrent identical seals (context already present: %s)", async existing => {
+    const root = scratch(); const { project, context, names } = generatedProject(root);
+    if (existing) sealProject(project, context, names);
+    const records = [join(root, "first.json"), join(root, "second.json")];
+    const results = await Promise.all(records.map(record => new Promise<{ status: number | null; stderr: string }>(resolve => {
+      const child = spawn(process.execPath, ["scripts/acceptance-seal.mjs", "seal", project, context, record, ...names]);
+      let stderr = ""; child.stderr.on("data", chunk => { stderr += chunk; });
+      child.on("exit", status => resolve({ status, stderr }));
+    })));
+    for (const result of results) expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(records[0]!)).toEqual(readFileSync(records[1]!));
+    expect(readdirSync(dirname(context))).toEqual(["context"]);
+  });
+
+  it.each([false, true])("keeps a complete context after record interruption and retries (reused: %s)", existing => {
+    const root = scratch(); const { project, context, names } = generatedProject(root);
+    const expected = { schema: "dacs-sealed-context/v1",
+      files: Object.fromEntries(Object.entries(PROJECT_FILES).map(([name, contents]) => [name, sha256(contents)])) };
+    if (existing) sealProject(project, context, names);
+    const inode = existing ? statSync(context).ino : undefined;
+    const record = join(root, "sealed-context.json");
+    const interrupted = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      import { resolve } from "node:path";
+      import { pathToFileURL } from "node:url";
+      const [project, context, record, ...names] = process.argv.slice(1);
+      const link = fs.linkSync;
+      fs.linkSync = (source, destination) => {
+        if (destination === record) throw new Error("record publication interrupted");
+        return link(source, destination);
+      };
+      syncBuiltinESMExports();
+      const script = resolve("scripts/acceptance-seal.mjs");
+      process.argv = [process.execPath, script, "seal", project, context, record, ...names];
+      await import(pathToFileURL(script).href);
+    `, project, context, record, ...names], { encoding: "utf8" });
+    expect(interrupted.status).not.toBe(0);
+    expect(interrupted.stderr).toContain("record publication interrupted");
+    const retainedInode = statSync(context).ino;
+    if (inode !== undefined) expect(retainedInode).toBe(inode);
+    expect(existsSync(record)).toBe(false);
+    const retried = spawnSync(process.execPath,
+      ["scripts/acceptance-seal.mjs", "seal", project, context, record, ...names], { encoding: "utf8" });
+    expect(retried.status, retried.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(record, "utf8"))).toEqual(expected);
+    expect(statSync(context).ino).toBe(retainedInode);
+  });
+
   it("executes through a symlinked directory and stays inert on import", () => {
     const root = scratch(); const { project, context, names } = generatedProject(root);
     const alias = join(root, "scripts"); symlinkSync(resolve("scripts"), alias);
@@ -276,7 +378,7 @@ describe("sealed generated project", () => {
     expect(JSON.parse(readFileSync(record, "utf8")).files["package.json"]).toBe(sha256(PROJECT_FILES["package.json"]!));
     expect(readFileSync(join(context, "package.json"), "utf8")).toBe(PROJECT_FILES["package.json"]);
   });
-  it("removes the sealed context when the digest record cannot be published", () => {
+  it("refuses a missing record directory before creating the sealed context", () => {
     const root = scratch(); const { project, names } = generatedProject(root);
     const context = join(root, "sealed", "context"), record = join(root, "absent-parent", "sealed-context.json");
     const cli = spawnSync(process.execPath, ["scripts/acceptance-seal.mjs", "seal", project, context, record, ...names], { encoding: "utf8" });
@@ -284,7 +386,7 @@ describe("sealed generated project", () => {
     expect(existsSync(context)).toBe(false);
     expect(existsSync(record)).toBe(false);
   });
-  it("removes a sealed context with read-only directories when the record cannot be published", () => {
+  it("refuses a missing record directory before sealing read-only directories", () => {
     const root = scratch(), project = join(root, "project"), context = join(root, "sealed", "context");
     mkdirSync(join(root, "sealed")); mkdirSync(join(project, "src"), { recursive: true });
     writeFileSync(join(project, "src", "service.ts"), "export {};\n");
