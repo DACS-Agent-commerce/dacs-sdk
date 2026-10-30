@@ -1,8 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sha256Hex} from '@kynesyslabs/dacs';
-import {seller} from './helpers/protocol-fixture.mjs';
-import {anchorFixture} from './helpers/anchor-isolated-fixture.mjs';
+import {anchorFixture,signSdkCreate} from './helpers/anchor-isolated-fixture.mjs';
 const jobs=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX'];
 async function world({sourceCopy=false,refused=false}={}){
  const w=await anchorFixture({signRpc:async()=> 'TEST rpc authentication'}),resends=[];
@@ -16,9 +14,7 @@ async function world({sourceCopy=false,refused=false}={}){
  };
  w.controls.reader.verifyReceipt=async()=> 'valid';
  w.controls.request=async request=>{
-  const signedTransaction=structuredClone(request.transaction);
-  signedTransaction.hash=sha256Hex(JSON.stringify(signedTransaction.content));
-  signedTransaction.signature={type:'ed25519',data:'0x'+seller.signBytes(Buffer.from(signedTransaction.hash)).toString('hex')};
+  const signedTransaction=await signSdkCreate(request.transaction);
   const row={stage:'broadcast-started',hash:signedTransaction.hash,signedTransaction};
   await w.journal.put('demo/wallet/lane',row);
   if(sourceCopy)await w.sourceJournal.put(`source/${request.jobId}`,row);

@@ -545,6 +545,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // no binding was written by an earlier server version, and the job is
   // quarantined for good (nothing is read back, signed or sent for it).
   // Answers 'bound', 'conflict' (bound to another binding) or 'legacy'.
+  const disposable=row=>!row.writeStarted&&!['selected','ended'].includes(row.lifecycle?.state);
   async function bind(job,addresses) {
     for(let tries=0;tries<3;tries+=1){
       const before=await state.read(job.jobId);
@@ -555,7 +556,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(current?.quarantine){outcome='legacy';return undefined;}
         if(current?.binding&&same(current.binding,job.binding)){outcome='bound';job.writeStarted||=current.writeStarted===true;return undefined;}
         if(current?.binding){
-          if(current.writeStarted){outcome='conflict';return undefined;}
+          if(!disposable(current)){outcome='conflict';return undefined;}
           outcome='bound';
           return{binding:clone(job.binding),writeStarted:false,ops:freshOps(),seller:null};
         }
@@ -568,8 +569,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     }
     fail('indeterminate','the job\'s party Vet state kept changing; nothing was signed or sent');
   }
-  // A failed run with no write deletes its row: nothing was signed or written.
-  const unbind=(job)=>state.update(job.jobId,current=>current?.binding&&same(current.binding,job.binding)&&!current.writeStarted&&current.lifecycle?.state!=='ended'?null:undefined);
+  // Only an unselected, unwritten row can be discarded after failure.
+  const unbind=(job)=>state.update(job.jobId,current=>{
+    if(!current?.binding||!same(current.binding,job.binding)||current.writeStarted||current.lifecycle?.state==='ended')return undefined;
+    return disposable(current)?null:{...current,ops:freshOps()}; // No effect started; retry prewrite failures under the kept selection.
+  });
   const forget=(job)=>{if(vets.get(job.jobId)===job)vets.delete(job.jobId);};
   // One Vet run per job in this provider, bound to everything that makes it valid for a
   // request: the scope except generatedAt, and the exact buyer identity bundle
@@ -610,7 +614,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(bound!=='bound')return{refused:bound};
         try{
           const session=createInMemoryFencedSessionStore();await session.create({jobId:scope.jobId,phase:'settle-pending',now:now()});const leased=await session.acquireLease({jobId:scope.jobId,owner:'devnet-demo-party-vet',ttlMs:300000,now:now()});if(!leased.ok)throw new Error(`party Vet lease failed: ${leased.reason}`);
-          await sellerSession(job);
+          guard(job,'party Vet');
+          if(!counterpartyReady()&&!(await state.read(job.jobId))?.counterpartyRecord)
+            fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
           if(job.buyerVet&&!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
           job.buyerVet??=await produce({job,identityBundle:buyerIdentityBundle,session,lease:leased.lease,role:'buyer'});
           if(job.buyerVet.refused)return job.buyerVet;
@@ -647,6 +653,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   async function admit(scope,buyerIdentityBundle){
     validate(scope);assertAccess(buyerIdentityBundle.presentedBy);
     const job={jobId:scope.jobId,binding:bindingFor(scope,buyerIdentityBundle),writeStarted:false};
+    const live=vets.get(scope.jobId);if(live&&!same(live.binding,job.binding))return{refused:'conflict'};
     const addresses=[buyerIdentityBundle.presentedBy,wallet.claim].map(party=>compositeVerificationAddress(job.jobId,party));
     const bound=await bind(job,addresses);if(bound!=='bound')return{refused:bound};
     const row=await state.update(job.jobId,current=>{
