@@ -148,7 +148,8 @@ export interface VerifyCompositeVerificationDeps<TKey> {
     input: VerifyAuthorityAttestationInput,
   ) => Promise<boolean> | boolean;
   /** DACS-2 §7.4.3: an implicit version satisfies a member only when selected
-   * as latest live by the authenticated session registry. Optional for compatibility. */
+   * as latest live by the authenticated session registry; a result at another
+   * version does not satisfy that member. Optional for compatibility. */
   isImplicitRecipeVersionSelected?: (
     input: VerifyAuthorityAttestationInput,
   ) => Promise<boolean> | boolean;
@@ -1525,11 +1526,7 @@ async function qualifyResolvedMember<TKey>(
   ) {
     try {
       const selected = await deps.isImplicitRecipeVersionSelected(Object.freeze(verificationInput()));
-      if (selected !== true) {
-        return !sharedProjection && resolved.result.decision !== "fail"
-          ? invalid("verify-result-recipe")
-          : "fail";
-      }
+      if (selected !== true) return "fail";
     } catch (error) {
       return unresolved("recipe-resolution", String(error));
     }
