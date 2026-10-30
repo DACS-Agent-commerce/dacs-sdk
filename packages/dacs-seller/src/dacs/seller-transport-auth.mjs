@@ -551,6 +551,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     assertPending(reservation) {
       const row = get('SELECT owner, state FROM peer_effects WHERE effect = ?', reservation?.effectKey);
       if (!row || row.owner !== reservation.owner || row.state !== 'pending') fail('peer_store_conflict', 503);
+      const slot=get('SELECT slot FROM peer_slots WHERE effect = ?',reservation.effectKey)?.slot;
+      if(slot?.endsWith(`:${PROPOSAL}`)&&TERMINAL_CONTEXT_STATES.has(contextSessionState({jobId:slot.slice(0,-PROPOSAL.length-1)})))fail('context_session_terminal',409);
     },
     // Called inside the seller job fence, before any restore or work, by the
     // one recovery of an uncertain seller command (not the context step). The
