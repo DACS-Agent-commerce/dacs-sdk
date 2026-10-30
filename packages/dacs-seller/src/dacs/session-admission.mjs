@@ -124,7 +124,7 @@ export function sessionAdmissionConfig(value) {
   if (value.readSessionRecipeRegistryPin !== undefined && typeof value.readSessionRecipeRegistryPin !== 'function') {
     throw new TypeError('sessionAdmission.readSessionRecipeRegistryPin must be a function when given');
   }
-  if ('vetEvidence' in value) throw new TypeError('vetEvidence belongs to the direct Vet replay helper; this agent restores only empty invocations');
+  if('vetEvidence' in value)throw new TypeError('vetEvidence belongs to the direct Vet replay helper; this agent restores only empty invocations');
   return value;
 }
 
@@ -492,10 +492,11 @@ const expectedResults = (results) => results.map(({ ref, scheme, identifier, met
 // A presence-only claim needs no VerifyResult (DACS-2 forbids a synthetic
 // result): its record is replayed over the exact `presence.bundle`, whose
 // presentation is verified (BP-4), against the operator's `presence.registryPin`
-// (PCR-6, CRQ-1), and is refused without a valid pin.
+// (PCR-6, CRQ-1), and is refused without a well-formed pin. The operator
+// supplies it; this presence path neither authenticates nor retains it.
 // `sessionRegistryPins` is one array shared by the record checks of one job:
-// the first authenticated session registry pin a record resolves becomes the
-// job's pin, and every later record of that job must resolve the same one.
+// the first pin (operator-supplied for presence, authenticated by verified
+// evidence otherwise) becomes the job's pin; later records must use it too.
 export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, presence, sessionRegistryPins }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
@@ -532,17 +533,17 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
         :!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim':await implicitHeadProblem(reads.read,family,pins);
       if(problem)break;
     }
-    if (!problem) strict = await verifyCompositeVerificationRecord(record,
+    if(!problem)strict = await verifyCompositeVerificationRecord(record,
       { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific),
         ...(presenceOnly ? { presence: { bundle: presence.bundle, sessionRecipeRegistrySnapshotHash: registryPin } } : {}) },
       { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify,
+        // Format-only: this compares the operator pin with itself; it does not authenticate it.
         isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
         verifyIdentityPresentation: (presented) => identityPresentationValid(presented.bundle, presented.bundleHash),
-        isImplicitRecipeVersionSelected: async ({ expected }) => {
-          const issue = !reads || typeof evidence.resolveLatestRecipe !== 'function' ? 'the Vet requirement does not pin a recipe version for a verified claim'
-            : await latestSessionRecipeProblem(reads.read, { scheme: expected.scheme, method: expected.method, recipeVersion: expected.ref.recipeVersion }, pins);
-          problem ??= issue;
-          return issue === null;
+        isImplicitRecipeVersionSelected:async({expected})=>{
+          const issue=!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim'
+            :await latestSessionRecipeProblem(reads.read,{scheme:expected.scheme,method:expected.method,recipeVersion:expected.ref.recipeVersion},pins);
+          problem??=issue;return issue===null;
         } });
   } catch (error) { thrown = error; } finally { reads?.close(); }
   if (reads?.malformed()) return reads.malformed();

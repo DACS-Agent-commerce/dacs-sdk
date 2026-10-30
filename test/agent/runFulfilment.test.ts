@@ -39,6 +39,7 @@ import {
 import {
   isSellerFulfilmentAuditSource,
   sellerFulfilmentAuditSourceHash,
+  sellerFulfilmentVetRequirementsViolation,
   type SellerFulfilmentAuditSourceV1,
 } from "../../src/seller/fulfilmentAuditSource.js";
 
@@ -1367,6 +1368,18 @@ describe("runFulfilmentCore", () => {
     }
     if (party === "buyer") f.listing.buyerRequirement = structuredClone(invocation.requirement);
     expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+    const [buyerVet, sellerVet] = f.auditSource.artifacts.vetRequirements;
+    if (!buyerVet || !sellerVet) throw new Error("party invocations missing");
+    const admissionInput = {
+      jobId: f.auditSource.session.jobId,
+      buyer: { primaryClaim: buyerVet.evaluatedParty, vetRecordRef: buyerVet.vetRecordRef },
+      seller: { primaryClaim: sellerVet.evaluatedParty, vetRecordRef: sellerVet.vetRecordRef },
+      buyerRequirement: f.listing.buyerRequirement,
+    };
+    expect(sellerFulfilmentVetRequirementsViolation(f.auditSource.artifacts.vetRequirements, admissionInput)).toMatch(/presence-only/);
+    expect(sellerFulfilmentVetRequirementsViolation(f.auditSource.artifacts.vetRequirements, {
+      ...admissionInput, acceptsPresenceOnly: true,
+    })).toBeNull();
 
     for (let attempt = 0; attempt < 2; attempt++) {
       expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({

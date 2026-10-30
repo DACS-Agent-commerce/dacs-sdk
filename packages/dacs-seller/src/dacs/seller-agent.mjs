@@ -754,14 +754,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             if (['buyer', 'seller'].some((role) => resolved.input[role].vetRecordRef.contentHash === notPerformed[role].vetRecordRef.contentHash)) {
               return { disposition: 'rejected', reason: 'the Vet context names the not-performed Vet references' };
             }
-            // The delivery audit source carries these invocations. The core
-            // delivery runner's own predicate refuses here, before signing,
-            // what it would refuse at delivery after payment: one invocation
-            // per party record, that party, its counterparty verifier, the
-            // Listing's buyer requirement and every required claim covered.
-            // A retained context is checked again, here and against its
-            // records below: it may have been kept under an earlier, weaker check.
-            const invocationProblem = sellerFulfilmentVetRequirementsViolation(resolved.vetRequirements, { jobId, buyerRequirement: listing.buyerRequirement,
+            // Match the delivery runner's invocation checks with the same
+            // explicit presence capability. Strict replay over the exact
+            // bundles follows before signing; restore replays these records too.
+            const invocationProblem = sellerFulfilmentVetRequirementsViolation(resolved.vetRequirements, { jobId, buyerRequirement: listing.buyerRequirement, acceptsPresenceOnly: true,
               buyer: { primaryClaim: session.buyerBundle.presentedBy, vetRecordRef: resolved.input.buyer.vetRecordRef },
               seller: { primaryClaim: claim, vetRecordRef: resolved.input.seller.vetRecordRef } });
             if (invocationProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${invocationProblem}` };
@@ -774,29 +770,32 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             const presentationProblem = sellerSessionPresentationProblem(sessionSeller, sellerBundle);
             if (presentationProblem) return { disposition: 'rejected', reason: `seller identity differs: ${presentationProblem}` };
             const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sessionSeller, session.buyerBundle.presentedBy]];
-            // A presence-only claim is replayed over the exact bundle against the
-            // registry snapshot the operator pinned for the job; the pin is read
-            // only then, once for both records.
-            let registryPin = null;
-            if (resolved.vetRequirements.some((entry) => hasPresenceOnlyClaim(entry.requirement))) {
-              try { registryPin = await readRegistryPin(admission, jobId); }
-              catch (cause) { return unavailable(cause, 'the pinned registry authority is unavailable'); }
-            }
-            // One job-wide pin: both party records' unpinned claims must resolve
-            // the same authenticated session registry snapshot before signing.
-            const sessionRegistryPins = [];
-            for (const [role, party, bundle, verifier] of parties) {
-              const ref = resolved.input[role].vetRecordRef;
-              const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
+            for (const [role] of parties) {
               // Restore replays each record against this profile's fixed
               // requirement and no freshness/deal-specific results. Sign only
               // the declaration restore can reproduce, so no persisted session
               // is refused by the next start of this seller.
+              const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(resolved.input[role].vetRecordRef));
               const expectedRequirement = role === 'seller' ? SELLER_REQUIREMENT : listing.buyerRequirement;
               if (!invocation || invocation.freshness.length !== 0 || invocation.dealSpecific.length !== 0 ||
                   canonicalize(invocation.requirement) !== canonicalize(expectedRequirement)) {
                 return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet requirement invocation differs from the requirement this profile restores` };
               }
+            }
+            // A presence-only claim is replayed over the exact bundle against the
+            // registry snapshot the operator pinned for the job; the pin is read
+            // only then, once for both records.
+            let registryPin = null;
+            if ([listing.buyerRequirement, SELLER_REQUIREMENT].some(hasPresenceOnlyClaim)) {
+              try { registryPin = await readRegistryPin(admission, jobId); }
+              catch (cause) { return unavailable(cause, 'the pinned registry authority is unavailable'); }
+            }
+            // One job-wide operator pin for strict presence replay of both
+            // records; the presence path checks its format, not its authority.
+            const sessionRegistryPins = [];
+            for (const [role, party, bundle, verifier] of parties) {
+              const ref = resolved.input[role].vetRecordRef;
+              const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
               let record;
               try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
@@ -1415,6 +1414,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let verifiedSchemaPayload;
     const deps = {
       auditSourceProfile: 'v2',
+      acceptsPresenceOnlyVetRequirements: true,
       receiptStore,
       resolveAuditSource: async (jobId) => jobId === session.jobId ? { status: 'verified', value: structuredClone(auditSource) } : { status: 'rejected', reason: 'another job was requested' },
       resolveAgreement: async (ref) => ref === agreement.ref ? { status: 'verified', value: structuredClone(agreement) } : { status: 'rejected', reason: 'another Agreement was requested' },
