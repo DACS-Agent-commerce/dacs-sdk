@@ -67,7 +67,7 @@ const refreshedEngines = [
     integrity: "sha512-o59N1PU8xk0bBV3HpJ4jjwldIeze17yXW1XTv02CEEKdC3E/tnJDU3CPWDNT4IZpkx9Srv9v1DJZ+JTdo46THg==",
     required: { node: "^22.22.2 || ^24.15.0 || >=26.0.0" } },
 ];
-const refreshedNotices = ["GHSA-4qx8-w7c3-pj3p", "GHSA-9j65-hcg3-gc64", "GHSA-9qmh-m7c6-f92p", "GHSA-mrhx-c7xc-m3w5"];
+const refreshedNotices = ["GHSA-4qx8-w7c3-pj3p", "GHSA-9j65-hcg3-gc64", "GHSA-9qmh-m7c6-f92p", "GHSA-mrhx-c7xc-m3w5", "GHSA-gcqx-w48m-w2h4", "GHSA-qr28-fpjm-wq7f"];
 describe("reviewed consumer baseline refresh", () => {
   const baseline = JSON.parse(readFileSync("scripts/registry-container-audit-baseline.json", "utf8"));
   const engineCheck = (violation: typeof refreshedEngines[number]) => classifyPolicyChecks({ securityGate: { findings: {

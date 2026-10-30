@@ -30,3 +30,15 @@ The toml and zod corrections likewise require parent range changes.
 Remove each entry after its upstream constraint is corrected and fresh consumer
 acceptance confirms it. Never convert incomplete evidence or a new identity to
 baseline success.
+
+## Additional fresh-lock notices
+
+An independent check at `442164bc` found two more IDs in optional dependency
+chains. npm 11.19.0 audits the virtual lock tree; CLI `--omit=dev` replaces the
+container default `omit=optional`, so these notices are part of that evidence.
+The audit scope is unchanged.
+
+| Finding | Dependency path and reason retained |
+| --- | --- |
+| `GHSA-gcqx-w48m-w2h4` | The optional path is demosdk 4.0.16 -> rubic-sdk 5.57.4 -> @tonconnect/ui 2.4.4 -> deepmerge ^4.3.1 (4.3.1). The returned-object prototype-poisoning notice has no corrected release in this range; 4.3.1 is the latest published version. Retain it until the parent/module is corrected. |
+| `GHSA-qr28-fpjm-wq7f` | The optional path is demosdk 4.0.16 -> rubic-sdk 5.57.4 -> web3 1.10.4 -> web3-bzz 1.10.4 -> swarm-js 0.1.42 -> xhr-request 1.1.0 -> query-string 5.1.1 -> decode-uri-component ^0.2.0 (0.2.2). The percent-encoded-run CPU correction is 0.5.1, outside the selected range; a compatible parent dependency update is required. |
