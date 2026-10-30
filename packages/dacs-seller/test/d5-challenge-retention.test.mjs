@@ -639,9 +639,16 @@ for (const outcome of ['noEffect', 'retry', 'complete', 'uncertain']) test(`term
   assert.equal(replay.disposition, outcome === 'uncertain' ? 'uncertain' : 'cached');
   if (replay.disposition === 'cached') assert.deepEqual(replay, { disposition: 'cached', status, text });
   const fresh = { ...proposal, nonce: 'fresh-proposal' };
-  if (outcome === 'noEffect' || outcome === 'retry') {
+  if (outcome === 'noEffect') {
     noMutations(() => assert.throws(() => w.store.classify(fresh, {}), { code: 'context_session_terminal' }));
     noMutations(() => assert.throws(() => w.store.reserve(fresh, {}), { code: 'context_session_terminal' }));
+  } else if (outcome === 'retry') {
+    noMutations(() => assert.equal(w.store.classify(fresh, {}), 'start'));
+    const retry = w.store.reserve(fresh, {});
+    assert.equal(retry.disposition, 'perform'); assert.equal(retry.retried, true);
+    assert.throws(() => w.store.assertPending(retry), { code: 'context_session_terminal' });
+    w.store.finish(retry, 503, '{}');
+    assert.equal(w.store.reserve(fresh, {}).disposition, 'uncertain');
   } else {
     assert.equal(w.store.classify(fresh, {}), 'known');
     assert.equal(w.store.reserve(fresh, {}).disposition, replay.disposition);
