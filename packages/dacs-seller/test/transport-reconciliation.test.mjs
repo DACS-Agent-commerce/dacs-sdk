@@ -18,10 +18,11 @@ import {createOperatorBuyerAccess} from '../src/devnet-demo/buyer-access.mjs';
 function command(agent,path,body,agreementHash){const rawBody=Buffer.from(JSON.stringify(body));return{body,rawBody,request:{method:'POST',path,jobId:body.transportIdentity?.jobId??body.jobId,buyer:buyer.claim,seller:seller.claim,listingPin:agent.listingPin,agreementHash,bodyHash:core.sha256Hex(rawBody)}};}
 // Real store, server auth, HTTP handler and client. `serve` swaps the agent behind the same journal (a restart).
 async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals',storeOptions={}){
- const store=createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now:()=>NOW,...storeOptions});t.after(()=>store.close());
+ const now=storeOptions.now??(()=>NOW);
+ const store=createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now,...storeOptions});t.after(()=>store.close());
  let hash=body.proposal?.plan.agreementHash??core.contentHash(agent.transportAgreementOf(body.jobId));
- const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:hash}),now:()=>NOW});
- const auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now:()=>NOW});
+ const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:hash}),now});
+ const auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now});
  const envelope=await client.request(path,body,JSON.stringify(body)),request=auth.readRequest(envelope.header);
  let handler=createSellerHttpHandler(agent,{authentication:auth});
  const server=createServer((req,res)=>handler(req,res));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
@@ -215,4 +216,32 @@ test('an unpaid outside buyer only has issued unknown writes inspected; a paid o
   assert.equal(reads,1);assert.equal(w.anchors.writes.length,writes);
   paid=true;const open=await w.agent.reconcileTransport({request,body,rawBody});assert.equal(open.disposition,'present',`the paid order keeps its job-scoped authority: ${open.reason} ${open.cause?.message}`);assert.equal(reads,1);
  }finally{w.close();}
+});
+
+for(const boundary of ['before','at','terminal'])test('effective recovery claim mode at expiry '+boundary,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);let at=NOW,terminal=false;
+ const w=await transport(t,agent,f.dir,body,undefined,{now:()=>at,contextSessionState:()=>terminal?'aborted-by-self':null});w.store.reserve(w.request,body);const before=f.signed.length;
+ const original=agent.reconcileTransport;let claimed;
+ const claim=w.store.claim;w.store.claim=(...args)=>(claimed=claim.apply(w.store,args));
+ agent.reconcileTransport=input=>{at=input.request.expiresAt-(boundary==='before'?1:0);terminal=boundary==='terminal';return original(input);};
+ const result=await outcome(w.peer.propose(body));
+ assert.equal(claimed.live,boundary==='before');
+ if(boundary==='before')assert.equal(result.value.disposition,'complete');else{assert.equal(result.error.name,'SellerUnavailableError');assert.equal(f.signed.length,before);assert.equal(agent.durableSessionOf(JOB),null);}
+});
+test('a live recovery claim may settle retry after its request expires',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);let at=NOW;
+ const w=await transport(t,agent,f.dir,body,undefined,{now:()=>at});w.store.reserve(w.request,body);f.admission.verifyReceiptWith(()=> 'indeterminate');
+ const claim=w.store.claim;w.store.claim=(reservation,request,options)=>{const kept=claim.call(w.store,reservation,request,options);at=request.expiresAt;return kept;};
+ assert.equal((await w.peer.propose(body)).disposition,'indeterminate');
+ f.admission.verifyReceiptWith(null);assert.equal((await w.peer.propose(body)).disposition,'complete');
+});
+for(const mode of ['unknown','none','no-reader'])test('closed resume gates before unavailable Vet restoration '+mode,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),first=await f.open(),body=await f.proposal(first);await first.receiveProposal(body);first.close();let paid=false,reads=0,vetReads=0,broken=false;
+ const resolve=f.config.sessionAdmission.resolveVetRecord;f.config.sessionAdmission.resolveVetRecord=(...args)=>{vetReads++;if(broken)throw Error('TEST Vet reader unavailable');return resolve(...args);};
+ f.config.buyerAccess=createOperatorBuyerAccess({openBuyerAccess:false,custodyBuyer:seller.claim,buyerForJob:()=>buyer.address,paymentObserved:()=>paid});
+ const unknown={status:'TEST-issued-readback'};if(mode!=='no-reader')f.config.readIssued=async(jobId,options)=>{assert.equal(jobId,JOB);assert.deepEqual(options,{unknownOnly:true});reads++;return mode==='unknown'?unknown:null;};
+ const agent=await f.open();vetReads=0;broken=true;const signs=f.signed.length;
+ if(mode==='unknown')assert.deepEqual(await agent.resume({jobId:JOB}),unknown);else await assert.rejects(agent.resume({jobId:JOB}),{code:'buyer_access_closed',status:409});
+ assert.equal(reads,mode==='no-reader'?0:1);assert.equal(vetReads,0);assert.equal(f.signed.length,signs);
+ paid=true;await assert.rejects(agent.resume({jobId:JOB}),{code:'seller_state_unverified'});assert.ok(vetReads>0);
 });
