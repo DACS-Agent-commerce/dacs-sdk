@@ -12,10 +12,14 @@ const deferred=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});retur
 const reply=value=>Buffer.from(JSON.stringify(value));
 const message=bundle=>Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`);
 const indeterminate=error=>error.code==='seller_presentation_indeterminate';
+// A directly driven seller session needs the same durable lifecycle membership
+// jobVet's admission records, or authorizeEffect refuses the fixture job.
+const INCARNATION='TEST-incarnation';
+const lifecycle=()=>({incarnation:INCARNATION,epoch:0,state:'open',times:[]});
 async function sessionFixture(t,store){
  const f=productionFixture();t.after(()=>f.base.close());if(store)f.config.store=store;
- const provider=await f.provider(),job={jobId:JOB,binding:{buyerIdentityBundle:f.input().buyerIdentityBundle},open:()=>true,writeStarted:false};
- await provider.state.update(JOB,()=>({binding:job.binding,writeStarted:false}));
+ const provider=await f.provider(),job={jobId:JOB,binding:{buyerIdentityBundle:f.input().buyerIdentityBundle},incarnation:INCARNATION,open:()=>true,writeStarted:false};
+ await provider.state.update(JOB,()=>({binding:job.binding,writeStarted:false,lifecycle:lifecycle()}));
  return{...f,provider,job,run:async()=>(await f.provider()).sellerSession(job),row:()=>provider.state.read(JOB)};
 }
 function interruptSave(f,predicate,{after=false}={}){
