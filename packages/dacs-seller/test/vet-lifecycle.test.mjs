@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createDevnetDemoAgreementContextProvider } from '../src/devnet-demo/agreement-context.mjs';
 import { identityBundleHash } from '@kynesyslabs/dacs';
 import { fixture, T, JOBS } from './helpers/bilateral-vet-fixture.mjs';
 const request=(w,input)=>({jobId:input.scope.jobId,listingPin:w.pin,buyerIdentityBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt});
@@ -51,8 +52,8 @@ for(const role of ['buyer','seller'])test(`crash before descriptor pinning canno
  const replacement=await signComponentArtifact({...unsigned,generatedAt:unsigned.generatedAt-1},ARTIFACT_SEPARATORS.CompositeVerificationRecord,{signer:signer.claim,algorithm:'ed25519',sign:signer.signBytes});
  w.records.set(address,fixtureRecord(address,replacement,w.seller));
  for(let i=0;i<2;i++){assert.equal(await w.provider().recoverBuyer(a),null);assert.notEqual((await w.provider().resolveSeller(request(w,a))).disposition,'present');}
- w.records.set(address,original);assert.equal((await w.provider().recoverBuyer(a)).disposition,'present');
- assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length],effects);assert.equal((await w.store.entries())[0][1].seller,null);w.base.close();
+ w.records.set(address,original);assert.equal(await w.provider().recoverBuyer(a),null);assert.equal((await w.provider().resolveBuyer(a)).disposition,'present');
+ assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length],effects);assert.ok((await w.store.entries())[0][1].seller);w.base.close();
 });
 test('a delete/recreate with identical binding and proofs has a different lifecycle incarnation',async()=>{
  const w=fixture(),a=w.input();await w.provider().resolveBuyer(a);const [key,old]=(await w.store.entries())[0],read=w.anchor.readRetained;let entered,resume,once=true;
@@ -74,20 +75,18 @@ test('same-provider ending during final verification prevents recovery and defer
  const pending=p.recoverBuyer(a);await ready;await p.release({jobId:JOBS[0]});resume();assert.equal(await pending,null);assert.equal(w.store.usage().jobs,0);w.base.close();
 });
 
-for(const boundary of ['production','retention'])test(`selection before ${boundary} completes invalidates the old ticket and preserves the selected request`,async()=>{
- const w=fixture(),a=w.input(),b=next(a),p=w.provider();let entered,resume,admitted,once=true;
- const ready=new Promise(r=>entered=r),gate=new Promise(r=>resume=r),admittedB=new Promise(r=>admitted=r),update=w.config.store.update;
- w.config.store.update=async(key,change)=>{
-  if(boundary==='retention'&&once){let pins=false;const result=await update(key,(row,rows)=>{const value=change(row,rows);pins=Boolean(!row?.seller&&value?.seller);if(pins)return undefined;return value;});if(pins){once=false;entered();await gate;return update(key,change);}if(result?.lifecycle?.times.includes(b.scope.generatedAt))admitted();return result;}
-  const result=await update(key,change);if(result?.lifecycle?.times.includes(b.scope.generatedAt))admitted();return result;
+for(const boundary of ['production','retention'])test(`selection before ${boundary} completes invalidates the old ticket and preserves the answered request`,async()=>{
+ const w=fixture(),a=w.input(),b=next(a),p=w.provider();await p.resolveBuyer(b);
+ let entered,resume,once=true;const ready=new Promise(r=>entered=r),gate=new Promise(r=>resume=r),update=w.config.store.update;
+ if(boundary==='retention')w.config.store.update=async(key,change)=>{
+  let answers=false;const result=await update(key,(row,rows)=>{const value=change(row,rows);answers=Boolean(once&&!row?.lifecycle?.times.includes(T)&&value?.lifecycle?.times.includes(T));return answers?undefined:value;});
+  if(answers){once=false;entered();await gate;return update(key,change);}return result;
  };
- if(boundary==='production'){const read=w.anchor.readRetained;w.anchor.readRetained=async input=>{const result=await read(input);if(once){once=false;entered();await gate;}return result;};}
- const first=p.resolveBuyer(a);const firstHeld=first.catch(error=>error);await ready;
- const second=w.provider().resolveBuyer(b),secondHeld=second.catch(error=>error);await admittedB;
- if(boundary==='retention')assert.equal((await secondHeld).disposition,'present');
+ else{const read=w.anchor.readRetained;w.anchor.readRetained=async input=>{const result=await read(input);if(once){once=false;entered();await gate;}return result;};}
+ const first=p.resolveBuyer(a).catch(e=>e);await ready;
  await w.provider().release({jobId:JOBS[0],generatedAt:b.scope.generatedAt});resume();
- assert.equal((await firstHeld).code,'context_released');await secondHeld;
- assert.equal(await w.provider().recoverBuyer(a),null);assert.equal((await w.provider().resolveBuyer(b)).disposition,'present');assert.equal(w.local.writes.length,2);assert.equal(w.seen.length,1);w.base.close();
+ assert.equal((await first).code,'context_released');assert.equal(await w.provider().recoverBuyer(a),null);
+ assert.equal((await w.provider().resolveBuyer(b)).disposition,'present');assert.equal(w.local.writes.length,2);assert.equal(w.seen.length,1);w.base.close();
 });
 test('ending an active producer reports durable invalidation before deferred deletion and starts no later effects',async()=>{
  const w=fixture(),p=w.provider(),a=w.input(),sign=w.config.wallet.signBytes;let entered,resume,once=true;
@@ -155,27 +154,87 @@ function pausePrewrite(w,{fail=false}={}){
  w.config.store={...store,read:async key=>{const row=await store.read(key);if(!paused&&row?.lifecycle&&!row.writeStarted&&++reads===2){paused=true;entered();await gate;if(fail)throw Error('TEST prewrite reader failed');}return row;}};
  return{ready,resume};
 }
-for(const sameProvider of [false,true])for(const selected of [false,true])test(`prewrite binding survives changed terms selected=${selected} same-provider=${sameProvider}`,async()=>{
+for(const sameProvider of [false,true])test(`prewrite request cannot select or replace its configured terms, same-provider=${sameProvider}`,async()=>{
  const w=fixture(),hold=pausePrewrite(w),p=w.provider(),input=w.input(),pending=p.resolveBuyer(input).catch(e=>e);
- await hold.ready;if(selected)await w.provider().release({jobId:JOBS[0],generatedAt:T});
+ await hold.ready;await assert.rejects(w.provider().release({jobId:JOBS[0],generatedAt:T}),{code:'context_released'});
  const changed=next(input);changed.scope.price={amount:'1',currency:'USD'};
- const result=await (sameProvider?p:w.provider()).resolveBuyer(changed).catch(e=>e);
- const row=(await w.store.entries())[0][1];hold.resume();await pending;
- if(selected||sameProvider){assert.notEqual(result?.disposition,'present');assert.deepEqual(row.binding.scope.price,input.scope.price);assert.equal(row.lifecycle.state,selected?'selected':'open');assert.deepEqual(row.lifecycle.times,[T]);}
- else assert.equal(result.disposition,'present');
- w.base.close();
+ assert.notEqual((await (sameProvider?p:w.provider()).resolveBuyer(changed)).disposition,'present');
+ const row=(await w.store.entries())[0][1];assert.deepEqual(row.binding.scope.price,input.scope.price);assert.equal(row.lifecycle.state,'open');assert.deepEqual(row.lifecycle.times,[]);
+ hold.resume();assert.equal((await pending).disposition,'present');w.base.close();
 });
-for(const field of ['payee','listingPin','buyerIdentityBundle'])test('selected prewrite binding preserves '+field,async()=>{
- const w=fixture(),hold=pausePrewrite(w),p=w.provider(),input=w.input(),pending=p.resolveBuyer(input).catch(e=>e);await hold.ready;await p.release({jobId:JOBS[0],generatedAt:T});
+for(const field of ['payee','listingPin','buyerIdentityBundle'])test('answered binding preserves '+field,async()=>{
+ const w=fixture(),p=w.provider(),input=w.input();await p.resolveBuyer(input);await p.release({jobId:JOBS[0],generatedAt:T});
  const changed=structuredClone(next(input));if(field==='buyerIdentityBundle')changed.buyerIdentityBundle.presentedAt++;else changed.scope[field]=field==='payee'?'TEST-other':{...changed.scope.listingPin,version:2};
- const result=await w.provider().resolveBuyer(changed).catch(e=>e),row=(await w.store.entries())[0][1];hold.resume();await pending;
- assert.notEqual(result?.disposition,'present');assert.equal(row.lifecycle.state,'selected');assert.deepEqual(row.binding.buyerIdentityBundle,input.buyerIdentityBundle);assert.equal(row.binding.scope.payee,input.scope.payee);assert.deepEqual(row.binding.scope.listingPin,input.scope.listingPin);w.base.close();
+ const result=await w.provider().resolveBuyer(changed).catch(e=>e),row=(await w.store.entries())[0][1];
+ assert.notEqual(result?.disposition,'present');assert.equal(row.lifecycle.state,'selected');assert.deepEqual(row.binding.buyerIdentityBundle,input.buyerIdentityBundle);w.base.close();
 });
-for(const failure of ['reader','closed'])test('selected prewrite cleanup preserves selection after '+failure,async()=>{
+for(const failure of ['reader','closed'])test('unanswered prewrite cleanup frees capacity after '+failure,async()=>{
  const w=fixture(),hold=pausePrewrite(w,{fail:failure==='reader'}),p=w.provider(),input=w.input();let open=true;
- const pending=p.resolveBuyer(input,{writable:()=>open}).catch(e=>e);await hold.ready;await p.release({jobId:JOBS[0],generatedAt:T});if(failure==='closed')open=false;hold.resume();await pending;
- const row=(await w.store.entries())[0]?.[1];assert.equal(row?.lifecycle?.state,'selected');assert.equal(row.lifecycle.selected,T);assert.deepEqual(row.binding.buyerIdentityBundle,input.buyerIdentityBundle);
- await assert.rejects(w.provider().resolveBuyer(next(input)),{code:'context_released'});
- assert.equal((await w.provider().resolveBuyer(input)).disposition,'present');assert.equal(w.controls.signs,2);assert.equal(w.local.writes.length,2);
- assert.equal((await w.provider().release({jobId:JOBS[0]})).deleted,true);assert.equal((await w.provider().sweep(()=>true)).deleted,0);w.base.close();
+ const pending=p.resolveBuyer(input,{writable:()=>open}).catch(e=>e);await hold.ready;
+ await assert.rejects(p.release({jobId:JOBS[0],generatedAt:T}),{code:'context_released'});if(failure==='closed')open=false;hold.resume();await pending;
+ assert.equal(w.store.usage().jobs,0);
+ assert.equal((await w.provider().resolveBuyer(next(input))).disposition,'present');assert.equal(w.controls.signs,2);assert.equal(w.local.writes.length,2);w.base.close();
+});
+
+for(const failure of ['receipt','admission-crash'])test(`sixteen ${failure} attempts leave answer capacity after restart`,async()=>{
+ const w=fixture(),a=w.input(),update=w.config.store.update;
+ for(let i=0;i<16;i++){
+  if(failure==='receipt')w.controls.receiptState='accepted';
+  else {let admitted=false;w.config.store.update=async(key,change)=>{const row=await update(key,change);if(admitted)throw new Error('TEST after admission');if(row?.lifecycle)admitted=true;return row;};}
+  await assert.rejects(w.provider().resolveBuyer({...a,scope:{...a.scope,generatedAt:T+i}}));
+  w.config.store.update=update;
+ }
+ w.controls.receiptState='finalized';
+ assert.equal((await w.provider().resolveBuyer({...a,scope:{...a.scope,generatedAt:T+16}})).disposition,'present');
+ assert.equal(w.local.writes.length,2);assert.equal(w.seen.length,1);w.base.close();
+});
+test('fifteen answers plus a failed attempt still allow the sixteenth answer',async()=>{
+ const w=fixture(),a=w.input();
+ for(let i=0;i<15;i++)await w.provider().resolveBuyer({...a,scope:{...a.scope,generatedAt:T+i}});
+ w.controls.receiptState='accepted';await assert.rejects(w.provider().resolveBuyer({...a,scope:{...a.scope,generatedAt:T+15}}));
+ w.controls.receiptState='finalized';assert.equal((await w.provider().resolveBuyer({...a,scope:{...a.scope,generatedAt:T+16}})).disposition,'present');w.base.close();
+});
+test('failed unanswered time cannot select or recover another answered context',async()=>{
+ const w=fixture(),a=w.input(),b=next(a);w.controls.receiptState='accepted';await assert.rejects(w.provider().resolveBuyer(a));
+ w.controls.receiptState='finalized';await w.provider().resolveBuyer(b);
+ await assert.rejects(w.provider().release({jobId:JOBS[0],generatedAt:T}),{code:'context_released'});
+ assert.equal(await w.provider().recoverBuyer(a),null);assert.notEqual((await w.provider().resolveSeller(request(w,a))).disposition,'present');
+ assert.equal((await w.provider().recoverBuyer(b)).disposition,'present');w.base.close();
+});
+for(const transition of ['release','sweep','unbind'])test(`${transition} after admission fences a delayed producer before any effect`,async()=>{
+ const w=fixture(),a=w.input(),update=w.config.store.update;let once=true,entered,resume;
+ const ready=new Promise(r=>entered=r),gate=new Promise(r=>resume=r);
+ w.config.store.update=async(key,change)=>{const row=await update(key,change);if(once&&row?.lifecycle){once=false;entered();await gate;}return row;};
+ const pending=w.provider().resolveBuyer(a).catch(e=>e);await ready;
+ if(transition==='release')assert.equal((await w.provider().release({jobId:JOBS[0]})).deleted,true);
+ else if(transition==='sweep')assert.equal((await w.provider().sweep(()=>true)).deleted,1);
+ else{let checks=0;await assert.rejects(w.provider().resolveBuyer(a,{writable:()=>++checks===1}),{code:'not-pending'});}
+ resume();assert.equal((await pending).code,'context_released');
+ assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length,w.issued.size],[0,0,0,0]);assert.equal(w.store.usage().jobs,0);w.base.close();
+});
+for(const field of ['listingPin','seller','payee','price'])test(`foreign ${field} is refused before binding or Vet effects`,async()=>{
+ const w=fixture(),a=w.input();
+ a.scope[field]=field==='listingPin'?{...w.pin,version:2}:field==='seller'?w.buyer.claim:field==='payee'?w.buyer.address:{amount:'9',currency:'DEM'};
+ assert.notEqual((await w.provider().resolveBuyer(a)).disposition,'present');
+ assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length,w.issued.size,w.store.usage().jobs],[0,0,0,0,0]);w.base.close();
+});
+for(const path of ['recoverBuyer','resolveSeller','resolveBuyer'])test(`${path} cannot project a retained request onto another Listing after restart`,async()=>{
+ const {fixtureListing}=await import('./fixtures/listings.mjs'),w=fixture(),a=w.input();await w.provider().resolveBuyer(a);
+ const [key,row]=(await w.store.entries())[0];await w.store.update(key,()=>({...row,seller:null}));w.config.retainedScope=async()=>a.scope;
+ w.config.listing=fixtureListing(w.seller,{version:2,pricing:{...w.listing.pricing,price:{amount:'9',currency:'DEM'}}});
+ const effects=[w.controls.signs,w.local.writes.length,w.seen.length,w.issued.size];
+ const result=await w.provider()[path](path==='resolveSeller'?request(w,a):path==='resolveBuyer'?next(a):a);
+ assert.notEqual(result?.disposition,'present');assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length,w.issued.size],effects);assert.equal((await w.store.read(key)).seller,null);w.base.close();
+});
+test('a Listing owned by another signer is refused at construction',()=>{
+ const {config,base,buyer}=fixture();config.listing={...config.listing,seller:{...config.listing.seller,identity:{...config.listing.seller.identity,presentedBy:buyer.claim}}};
+ assert.throws(()=>createDevnetDemoAgreementContextProvider(config));base.close();
+});
+
+test('delayed prewrite cleanup preserves a replacement admission with the same binding',async()=>{
+ const w=fixture(),hold=pausePrewrite(w),input=w.input(),pending=w.provider().resolveBuyer(input).catch(e=>e);await hold.ready;
+ const [key,old]=(await w.store.entries())[0];await w.provider().release({jobId:JOBS[0]});
+ const replacement={...old,lifecycle:{...old.lifecycle,incarnation:'TEST new admission'}};await w.store.update(key,()=>replacement);
+ hold.resume();await pending;
+ assert.deepEqual(await w.store.read(key),replacement);assert.equal(w.controls.signs,0);assert.equal(w.local.writes.length,0);w.base.close();
 });
