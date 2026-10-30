@@ -34,21 +34,18 @@
 //    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
-//    `requirementHash` and replayed aggregation are checked here. A required
-//    claim without `recipeVersion` selects the family's latest entry in the
-//    authenticated session registry snapshot (DACS-2 §7.4.3). A missing or
-//    non-live family head refuses replay; a result outside the selected live
-//    version cannot satisfy that member. `resolveLatestRecipe` supplies the
-//    version, availability and snapshot pin. Both records share one pin.
-//    Direct helper replay uses optional `evidence`, independent of agent config:
-//    `evidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
-//    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
-//    verifyAuthorityAttestation }`, read with the admission readers' limits
-//    (see vetRecordProblem).
+//    `requirementHash` and replayed aggregation are checked here. Verified
+//    claims without `recipeVersion` require resolveLatestRecipe to authenticate
+//    the family's latest live version in the job's registry snapshot.
 //    Presence-only claims instead replay over the exact authenticated bundle,
 //    without a synthetic VerifyResult. The optional
 //    readSessionRecipeRegistryPin({ jobId }) supplies their snapshot hash and
 //    is read once when either requirement includes a presence-only claim.
+//    Both replay modes must use one snapshot pin for the job. Direct helper
+//    replay uses optional `evidence`, independent of agent config:
+//    resolveContent, resolveRecipe, resolveLatestRecipe, isRecipeSignerAuthorized,
+//    isVerifyResultSignerAuthorized and verifyAuthorityAttestation. The helper
+//    qualifies each implicit member against its family's latest live version.
 //  - readVetAnchorReceipt({ jobId, role, party, ref }) answers the CORE §5.1
 //    AnchorReceipt the operator's SR-2 reader holds for that same record
 //    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
@@ -120,7 +117,7 @@ export function sessionAdmissionConfig(value) {
   if (value.readSessionRecipeRegistryPin !== undefined && typeof value.readSessionRecipeRegistryPin !== 'function') {
     throw new TypeError('sessionAdmission.readSessionRecipeRegistryPin must be a function when given');
   }
-  if('vetEvidence' in value)throw new TypeError('vetEvidence belongs to the direct Vet replay helper; this agent restores only empty invocations');
+  if ('vetEvidence' in value) throw new TypeError('vetEvidence belongs to the direct Vet replay helper; this agent restores only empty invocations');
   return value;
 }
 
@@ -504,10 +501,11 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
       { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify,
         isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
         verifyIdentityPresentation: (presented) => identityPresentationValid(presented.bundle, presented.bundleHash),
-        isImplicitRecipeVersionSelected:async({expected})=>{
-          const issue=!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim'
-            :await latestSessionRecipeProblem(reads.read,{scheme:expected.scheme,method:expected.method,recipeVersion:expected.ref.recipeVersion},pins);
-          problem??=issue;return issue===null;
+        isImplicitRecipeVersionSelected: async ({ expected }) => {
+          const issue = !reads || typeof evidence.resolveLatestRecipe !== 'function' ? 'the Vet requirement does not pin a recipe version for a verified claim'
+            : await latestSessionRecipeProblem(reads.read, { scheme: expected.scheme, method: expected.method, recipeVersion: expected.ref.recipeVersion }, pins);
+          problem ??= issue;
+          return issue === null;
         } });
   } catch (error) { thrown = error; } finally { reads?.close(); }
   if (reads?.malformed()) return reads.malformed();

@@ -22,10 +22,13 @@ for(const outcome of ['unattempted','present','indeterminate','absent','issuer',
  f.counterparty.issueChallenge=async input=>({...await issue(input),expiresAt:at+60000,...(++issued&&{})});
  await assert.rejects(f.run(),/TEST interrupted reservation/);at+=60001;
  f.counterparty.readRecord=async input=>{const out=await read(input);if(outcome==='unattempted')return out;if(['issuer','jobId','bundleHash','requirementHash'].includes(outcome))return{...out,[outcome]:'TEST wrong'};return{status:outcome};};
- assert.equal(f.controls.signs,0);assert.equal(signatures,0);
+ // The lower producer has already signed and anchored the buyer Vet record;
+ // the interrupted seller presentation reservation must still sign nothing.
+ assert.equal(f.controls.signs,1);assert.equal(signatures,0);
+ assert.equal(f.controls.presentationSigns,0);assert.equal(f.local.writes.length,1);
  if(outcome==='unattempted'){
-  const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(issued,2);assert.equal(signatures,1);
- }else{await assert.rejects(f.run(),e=>e.code==='seller_vet_reconciliation_required');assert.equal(issued,1);assert.equal(f.controls.presentationSigns,0);assert.equal(f.local.writes.length,1);}
+  const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(issued,2);assert.equal(signatures,1);assert.equal(f.controls.signs,2);
+ }else{await assert.rejects(f.run(),e=>e.code==='seller_vet_reconciliation_required');assert.equal(issued,1);assert.equal(f.controls.signs,1);assert.equal(f.controls.presentationSigns,0);assert.equal(f.local.writes.length,1);}
  f.base.close();
 });
 
