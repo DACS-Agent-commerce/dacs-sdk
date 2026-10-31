@@ -342,9 +342,16 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return { live: null, highestNonce, superseded: { txHash: live.txHash, reason: checked.reason } };
   }
 
-  async function prepareAnchor(input) {
+  async function permitWrite(authorize) {
+    if (authorize === undefined) return;
+    if (typeof authorize !== 'function') throw new TypeError('wallet authorization must be a function');
+    if (await authorize() !== true) throw Object.assign(new Error('wallet authorization was withdrawn'), { code: 'wallet_not_authorized' });
+  }
+
+  async function prepareAnchor(input, authorize) {
     let { live: signed, highestNonce, applied } = await liveFor(input);
     if (!signed) {
+      await permitWrite(authorize);
       const answer = await withDeadline((signal) => signCreate(structuredClone(input), { signal }),
         () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
@@ -360,9 +367,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     }
     return { ...signed, applied };
   }
-  async function anchorCreate(input) {
-    const signed = await locked(() => prepareAnchor(input));
-    if (!signed.applied) await sendSigned(signed);
+  async function anchorCreate(input, authorize) {
+    const signed = await locked(() => prepareAnchor(input, authorize));
+    if (!signed.applied) { await permitWrite(authorize); await sendSigned(signed); }
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
   }
 
@@ -414,7 +421,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
   }
 
-  async function reconcileCreate(input) {
+  async function reconcileCreate(input, authorize) {
     // An attempt whose answer names a transaction this journal never kept was
     // anchored through another journal (a lost or replaced file): its fate is
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
@@ -430,7 +437,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       return { status: 'unsigned', ...(prior ? { txHash: typeof named === 'string' ? named : prior.tx_hash } : {}), reason: superseded?.reason ?? 'the wallet journal keeps no live signed CREATE for this address' };
     }
     if (applied) return { status: 'applied', txHash: signed.txHash };
-    try { await sendSigned(signed); }
+    try { await permitWrite(authorize); await sendSigned(signed); }
     catch (error) { return { status: 'pending', txHash: signed.txHash, reason: `the same signed CREATE was not broadcast again: ${reason(error)}` }; }
     return { status: 'rebroadcast', txHash: signed.txHash, ...(unread ? { reason: unread } : {}) };
   }

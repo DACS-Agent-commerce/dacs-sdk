@@ -15,6 +15,8 @@
 // answers is checked as that journal checks one, and its metadata must carry
 // exactly that deliveryBinding.
 // Returns { submit, reconcile, readSignedProjection, journalId, close }:
+// submit and reconcile accept an optional authorization callback as their second
+// argument; it is checked after wallet reads before signing or broadcasting.
 //  - submit(input) is the `submit` of createNativeDemDeliveryCapability: it signs
 //    once, keeps and broadcasts, or broadcasts the kept CREATE again, and answers
 //    { status: 'accepted', reconciliationId: txHash }. It throws when the wallet
@@ -95,8 +97,8 @@ function createInput({ logicalAddress, report, writer, jobId, receiptContentHash
 /** Opens the seller's Deliverable journal (see above). Throws TypeError for an unusable option, path or file. */
 export function createDeliverableWalletJournal(options) {
   const core = createSignedCreateJournal({ ...options, table: DELIVERABLE_TABLE });
-  const submit = async (input) => ({ status: 'accepted', reconciliationId: (await core.anchor(createInput(input))).txHash });
-  const reconcile = async (input) => core.reconcile(createInput(input));
+  const submit = async (input, authorize) => ({ status: 'accepted', reconciliationId: (await core.anchor(createInput(input), authorize)).txHash });
+  const reconcile = async (input, authorize) => core.reconcile(createInput(input), authorize);
   const journal = Object.freeze({ submit, reconcile, readSignedProjection: core.readSignedProjection, journalId: core.journalId, close: core.close });
   journals.set(submit, journal);
   journals.set(reconcile, journal);

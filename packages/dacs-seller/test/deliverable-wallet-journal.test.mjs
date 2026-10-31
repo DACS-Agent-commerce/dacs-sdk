@@ -59,6 +59,55 @@ test('a Deliverable is signed once: the kept CREATE is broadcast again as the sa
   assert.equal(new Set(w.calls.broadcast).size, 1, 'every broadcast is the same signed bytes');
 });
 
+test('a withdrawn Deliverable authorization signs and broadcasts nothing', async (t) => {
+  const w = wallet(t), journal = w.open();
+  t.after(() => journal.close());
+  await assert.rejects(journal.submit(w.input(), () => false), { code: 'wallet_not_authorized' });
+  assert.equal(w.calls.sign, 0);
+  assert.deepEqual(w.calls.broadcast, []);
+  assert.equal(await journal.readSignedProjection(w.input()), null);
+  assert.equal((await journal.submit(w.input(), () => true)).status, 'accepted');
+  assert.equal(w.calls.sign, 1);
+});
+
+test('authorization lost while signing keeps the exact CREATE without broadcasting it', async (t) => {
+  const w = wallet(t);
+  let authorized = true;
+  const journal = w.open(w.path, options => createDeliverableWalletJournal({ ...options,
+    signCreate: async input => { const signed = await options.signCreate(input); authorized = false; return signed; } }));
+  t.after(() => journal.close());
+  await assert.rejects(journal.submit(w.input(), () => authorized), { code: 'wallet_not_authorized' });
+  assert.equal(w.calls.sign, 1);
+  assert.deepEqual(w.calls.broadcast, []);
+  const kept = await journal.readSignedProjection(w.input());
+  assert.ok(kept);
+  authorized = true;
+  assert.equal((await journal.submit(w.input(), () => authorized)).reconciliationId, kept.hash);
+  assert.equal(w.calls.sign, 1);
+  assert.deepEqual(w.calls.broadcast, [JSON.stringify(kept)]);
+});
+
+test('authorization is checked after nonce readback before rebroadcasting a Deliverable', async (t) => {
+  const w = wallet(t);
+  let authorized = true, revokeDuringRead = false;
+  const journal = w.open(w.path, options => createDeliverableWalletJournal({ ...options,
+    readAccountNonce: async () => { const nonce = await options.readAccountNonce(); if (revokeDuringRead) authorized = false; return nonce; } }));
+  t.after(() => journal.close());
+  w.faults.broadcast.push('throw');
+  await assert.rejects(journal.submit(w.input()), /TEST node unreachable/);
+  revokeDuringRead = true;
+  const held = await journal.reconcile(w.input(), () => authorized);
+  assert.equal(held.status, 'pending');
+  assert.match(held.reason, /authorization was withdrawn/);
+  assert.equal(w.calls.sign, 1);
+  assert.equal(w.calls.broadcast.length, 1);
+  authorized = true; revokeDuringRead = false;
+  assert.equal((await journal.reconcile(w.input(), () => authorized)).status, 'rebroadcast');
+  assert.equal(w.calls.sign, 1);
+  assert.equal(w.calls.broadcast.length, 2);
+  assert.equal(new Set(w.calls.broadcast).size, 1);
+});
+
 test('a CREATE the node applied is not broadcast again', async (t) => {
   const w = wallet(t);
   const journal = w.open();
