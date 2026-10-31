@@ -231,6 +231,7 @@ describe("native DEM process recovery", () => {
       return {
         status: "completed" as const,
         settlement: {
+          execution: "executed" as const,
           ok: true as const,
           txHash: TX_HASH,
           chainId: "demos",

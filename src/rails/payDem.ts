@@ -7,6 +7,7 @@ import {
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "./demosRpc.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
@@ -28,7 +29,10 @@ const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 const DEFAULT_INCLUSION_POLL_INTERVAL_MS = 500;
 const DEFAULT_STATUS_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS = 60_000;
+const DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS = 30_000;
 const DACS_DEMOS_INCLUDED_STATE = "included";
+const DEMOS_EXECUTED_RECORD_STATUS = "confirmed";
+const DEMOS_FAILED_RECORD_STATUS = "failed";
 
 type AnyMethod = (...args: never[]) => unknown;
 
@@ -163,6 +167,15 @@ function canonicalDemosTxHash(value: unknown): string | null {
  * included, so minting evidence on acceptance would attest an unobserved payment.
  * A transfer that doesn't reach observed inclusion settles `ok: false` and no
  * finality is stamped — evidence is never minted for a payment we didn't see land.
+ *
+ * EXECUTION-GATED (#338): inclusion alone is not execution. A node can include a
+ * transaction and record it `failed` (for example a stale nonce). After the
+ * status index reports `included`, the rail reads the node's transaction record
+ * for the signed hash and reports success only for a `confirmed` record at the
+ * same block whose body is exactly the prepared transfer (hash, payer, payee,
+ * nonce, amount). A `failed` record settles `ok: false`; a record the bounded
+ * read cannot establish stays indeterminate (`ok: false` with the hash retained,
+ * so the settlement intent stays held). Neither ever causes another broadcast.
  *
  * Amount units (§9.5.9 step 2): the agreement's DACS `Price.amount` is a canonical
  * DECIMAL DEM string; the chain moves integer OS base units (1 DEM = 10^9 OS). The
@@ -682,6 +695,17 @@ export interface PayDemRailConfig {
   statusRequestTimeoutMs?: number;
   /** Bound for the post-inclusion account-nonce projection (default 60 seconds). */
   nonceVisibilityTimeoutMs?: number;
+  /**
+   * Overall budget for reading the node's transaction record after inclusion
+   * (default 30 seconds). Each read is also bounded by `statusRequestTimeoutMs`.
+   * When execution is not established within it, the settlement is
+   * indeterminate and never resubmitted. The read-only HTTP reader caps each
+   * reply at 64 KiB before decoding and aborts at the smaller request timeout
+   * or remaining observation budget. Decoded records also have depth, node
+   * and collection limits. Unavailable or malformed records are polled at
+   * `inclusionPollIntervalMs`; a stalled read ends observation immediately.
+   */
+  transactionRecordTimeoutMs?: number;
 }
 
 /** Immutable public recovery facts persisted before a pay-DEM broadcast. */
@@ -960,6 +984,38 @@ async function observeDemosTerminalByHash(
   }
 }
 
+type TransactionIdentityBinding =
+  | Readonly<{ status: "bound"; transaction: Record<string, unknown> }>
+  | Readonly<{ status: "no-body" }>
+  | Readonly<{ status: "hash-mismatch" }>
+  | Readonly<{ status: "nonce-mismatch" }>;
+
+/**
+ * Bind a node-supplied transaction body to the signed transfer's hash and
+ * nonce. Shared by the pre-broadcast confirmation and the post-inclusion
+ * transaction record, so both are held to the same signed identity.
+ */
+function transactionIdentityBinding(
+  transaction: unknown,
+  input: Readonly<{ signedHash: string; signedNonce: number }>,
+): TransactionIdentityBinding {
+  if (transaction === null || typeof transaction !== "object" ||
+      Array.isArray(transaction)) {
+    return { status: "no-body" };
+  }
+  const candidate = transaction as Record<string, unknown>;
+  const candidateHash = canonicalDemosTxHash(candidate.hash);
+  if (candidateHash === null || candidateHash !== input.signedHash) {
+    return { status: "hash-mismatch" };
+  }
+  const content = candidate.content;
+  if (content === null || typeof content !== "object" || Array.isArray(content) ||
+      confirmedNonce((content as Record<string, unknown>).nonce) !== input.signedNonce) {
+    return { status: "nonce-mismatch" };
+  }
+  return { status: "bound", transaction: candidate };
+}
+
 function confirmedTransactionBinding(
   value: unknown,
   input: Readonly<{ signedHash: string; signedNonce: number }>,
@@ -973,28 +1029,23 @@ function confirmedTransactionBinding(
       };
     }
   )?.response?.data;
-  const transaction = data?.transaction;
-  if (transaction === null || typeof transaction !== "object" ||
-      Array.isArray(transaction)) {
+  const binding = transactionIdentityBinding(data?.transaction, input);
+  if (binding.status === "no-body") {
     throw new DacsError(
       "pay-dem: confirmation has no stable transaction body; refusing broadcast",
     );
   }
-  const confirmed = transaction as Record<string, unknown>;
-  const confirmedHash = canonicalDemosTxHash(confirmed.hash);
-  if (confirmedHash === null || confirmedHash !== input.signedHash) {
+  if (binding.status === "hash-mismatch") {
     throw new DacsError(
       "pay-dem: confirmed transaction hash does not match the signed transfer; refusing broadcast",
     );
   }
-  const content = confirmed.content;
-  if (content === null || typeof content !== "object" || Array.isArray(content) ||
-      confirmedNonce((content as Record<string, unknown>).nonce) !== input.signedNonce) {
+  if (binding.status === "nonce-mismatch") {
     throw new DacsError(
       "pay-dem: confirmed transaction nonce does not match the signed transfer; refusing broadcast",
     );
   }
-  return confirmed;
+  return binding.transaction;
 }
 
 function nativeTransferBodyMatches(
@@ -1094,11 +1145,200 @@ function confirmedDebitFromValidity(
   return feeOs === null ? null : input.amountOs + feeOs;
 }
 
+type ObservedDemosExecution =
+  | Readonly<{ state: "executed" }>
+  | Readonly<{ state: "failed" }>
+  | Readonly<{ state: "indeterminate"; reason: string; cause?: unknown }>;
+
+const TRANSACTION_RECORD_LIMITS = Object.freeze({
+  maxBytes: DEMOS_TRANSACTION_RECORD_MAX_BYTES,
+  maxCollectionLength: 256,
+  maxDepth: 16,
+  maxNodes: 2048,
+});
+
+// Bound work before the generic snapshot validates, clones and canonicalizes.
+// Transport implementations must also cap bytes before decoding their reply.
+function transactionRecordWithinLimits(root: unknown): boolean {
+  let bytes = 0;
+  let nodes = 0;
+  const visit = (value: unknown, depth: number): boolean => {
+    nodes += 1;
+    if (depth > TRANSACTION_RECORD_LIMITS.maxDepth ||
+        nodes > TRANSACTION_RECORD_LIMITS.maxNodes) return false;
+    if (typeof value === "string") {
+      if (value.length > TRANSACTION_RECORD_LIMITS.maxBytes) return false;
+      bytes += Buffer.byteLength(JSON.stringify(value));
+    } else if (value === null || typeof value !== "object") {
+      bytes += 32;
+    } else {
+      if (nodeTypes.isProxy(value)) return false;
+      const array = Array.isArray(value);
+      if (array && value.length > TRANSACTION_RECORD_LIMITS.maxCollectionLength) return false;
+      const keys = Reflect.ownKeys(value);
+      if (keys.length > TRANSACTION_RECORD_LIMITS.maxCollectionLength + (array ? 1 : 0)) return false;
+      bytes += keys.length + 2;
+      for (const key of keys) {
+        if (array && key === "length") continue;
+        if (typeof key !== "string" || key.length > TRANSACTION_RECORD_LIMITS.maxBytes) return false;
+        bytes += Buffer.byteLength(JSON.stringify(key)) + 1;
+        if (bytes > TRANSACTION_RECORD_LIMITS.maxBytes) return false;
+        const descriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (!descriptor || !("value" in descriptor) || !visit(descriptor.value, depth + 1)) return false;
+      }
+    }
+    return bytes <= TRANSACTION_RECORD_LIMITS.maxBytes;
+  };
+  return visit(root, 0);
+}
+
+/**
+ * Establish whether an included transaction executed (#338). The status index
+ * can report `included` for a transaction the node recorded as `failed`, so read
+ * the node's transaction record for the retained signed hash. Only a
+ * `confirmed` record at the observed inclusion block whose body is exactly the
+ * prepared transfer is execution. A `failed` record bound the same way is not
+ * settled. A record that is missing, pending, unreadable or malformed, or that
+ * carries another hash, is polled again within the budget; a stalled read, or
+ * a confirmed or failed record for the signed hash whose nonce, block or body
+ * does not bind the prepared transfer, is indeterminate at once. Like the
+ * status poll, this never retries or duplicates the broadcast.
+ *
+ * Node semantics this relies on, verified against kynesyslabs/node
+ * `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578` (what node2 reports
+ * at `GET /version`) and `stabilisation@52e2e569`:
+ * - `getTransactionStatus` reports `included` for every stored row, failed ones
+ *   included, and never produces `failed` (`src/libs/blockchain/chainTypes.ts`
+ *   `TxStatus`, `chainTransactions.ts` `getTransactionStatus`);
+ * - the record `status` is `confirmed`, `failed` or `pending`
+ *   (`src/utilities/constants.ts` `TRANSACTION_STATUS`);
+ * - `content.nonce` is a pg `bigint` column, so it is served as a decimal
+ *   string (`src/model/entities/Transactions.ts`);
+ * - `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and
+ *   as a decimal string above it (`src/libs/blockchain/transaction.ts`
+ *   `fromEntityToWireNumber`); both forms are accepted;
+ * - not-found is `{result: 400, response: "error"}` at 61b8e75 and
+ *   `{result: 404, response: null}` at 52e2e569; both are polled.
+ * The default branch (`testnet`) has no `getTransactionStatus`. The recorded
+ * node2 records in `test/fixtures/demos-node2-records.json` pin this shape;
+ * see `docs/pay-dem-execution.md`.
+ *
+ * @internal Exported for tests; terminal failed-record proof is issued only
+ * after these binding checks. Not re-exported from the rails
+ * index or the package root.
+ * The injected reader must enforce a response-byte ceiling before decoding
+ * and cancel its transport at the request deadline; this observer bounds the
+ * decoded record and total observation work independently.
+ */
+export async function observeDemosExecutionByHash(
+  txHash: string,
+  getTxByHash: (hash: string) => Promise<unknown>,
+  expected: Readonly<{
+    blockNumber: number;
+    transfer: Readonly<{
+      payer: string;
+      payee: string;
+      amountOs: bigint;
+      nonce: number;
+      postFork: boolean;
+    }>;
+  }>,
+  options: Readonly<{
+    transactionRecordTimeoutMs: number;
+    inclusionPollIntervalMs: number;
+    statusRequestTimeoutMs: number;
+  }>,
+): Promise<ObservedDemosExecution> {
+  const deadline = Date.now() + options.transactionRecordTimeoutMs;
+  let pending = "transaction record was not observed";
+  let readFailure: { cause: unknown } | undefined;
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { state: "indeterminate", reason: pending, ...readFailure };
+
+    const request = Promise.resolve().then(() => getTxByHash(txHash));
+    const result = await boundedPromise(
+      request,
+      Math.max(1, Math.min(options.statusRequestTimeoutMs, remaining)),
+    );
+    // As with the status poll, never stack reads on a transport that ignored
+    // its bound.
+    if (result.status === "timeout") {
+      return { state: "indeterminate", reason: "transaction record read timed out" };
+    }
+    if (result.status === "rejected") {
+      pending = "transaction record read failed";
+      readFailure = { cause: result.reason };
+    } else {
+      readFailure = undefined;
+      if (!transactionRecordWithinLimits(result.value)) {
+        return { state: "indeterminate", reason: "transaction record exceeds observation limits" };
+      }
+      let snapshot: unknown;
+      try {
+        snapshot = snapshotCanonicalJsonRead(
+          result.value,
+          "pay-dem transaction record",
+        );
+      } catch {
+        snapshot = undefined;
+      }
+      const identity = transactionIdentityBinding(snapshot, {
+        signedHash: txHash,
+        signedNonce: expected.transfer.nonce,
+      });
+      const record = snapshot as Record<string, unknown>;
+      if (identity.status === "no-body" || identity.status === "hash-mismatch") {
+        pending = "transaction record is missing or malformed";
+      } else if (record.status === DEMOS_FAILED_RECORD_STATUS ||
+          record.status === DEMOS_EXECUTED_RECORD_STATUS) {
+        // A terminal status says something about this transfer only when the
+        // record binds it, whether the status is `failed` or `confirmed`.
+        if (identity.status !== "bound") {
+          return {
+            state: "indeterminate",
+            reason: "transaction record does not bind the signed nonce",
+          };
+        }
+        if (confirmedNonce(record.blockNumber) !== expected.blockNumber) {
+          return {
+            state: "indeterminate",
+            reason: "transaction record block does not match the observed inclusion",
+          };
+        }
+        if (!nativeTransferBodyMatches(
+          identity.transaction,
+          expected.transfer,
+          "confirmed",
+        )) {
+          return {
+            state: "indeterminate",
+            reason: "transaction record does not match the prepared transfer",
+          };
+        }
+        if (Date.now() >= deadline) {
+          return { state: "indeterminate", reason: "transaction record observation timed out" };
+        }
+        return record.status === DEMOS_FAILED_RECORD_STATUS
+          ? { state: "failed" }
+          : { state: "executed" };
+      } else {
+        pending = "transaction record has no terminal execution status";
+      }
+    }
+
+    const afterRead = deadline - Date.now();
+    if (afterRead <= 0) return { state: "indeterminate", reason: pending, ...readFailure };
+    await wait(Math.min(options.inclusionPollIntervalMs, afterRead));
+  }
+}
+
 /**
  * Construct a pay-dem rail from a Demos RPC + wallet secret. Lazily imports
  * demosdk so the SDK core stays importable without the chain deps installed.
  * Submits via sign → confirm → durable preparation journal → one broadcast,
- * while independently observing inclusion by the signed hash.
+ * while independently observing inclusion and then execution (the node's
+ * transaction record) by the signed hash.
  *
  * The low-level rail signs a fresh transaction on every call. The exported
  * runSession bridge, {@link payDemSettle}, therefore wraps it in the shared
@@ -1159,6 +1399,12 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     "pay-dem nonceVisibilityTimeoutMs",
     DEFAULT_NONCE_VISIBILITY_TIMEOUT_MS,
   );
+  const transactionRecordTimeoutMs = optionalPositiveInteger(
+    config,
+    "transactionRecordTimeoutMs",
+    "pay-dem transactionRecordTimeoutMs",
+    DEFAULT_TRANSACTION_RECORD_TIMEOUT_MS,
+  );
 
   const { Demos } = await import("@kynesyslabs/demosdk/websdk");
   const demos = new Demos();
@@ -1207,6 +1453,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
     "nodeCall",
     "pay-dem Demos.nodeCall",
   );
+  const fetchRecord = stableMethod<typeof fetch>(globalThis, "fetch", "pay-dem record fetch");
   const waitForNonce = stableMethod<(
     address: string,
     nonce: number,
@@ -1247,7 +1494,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       journalPreparedTransfer: invocationJournal,
       assertCurrentBeforeBroadcast,
       effectFence,
-    }) => {
+    }): Promise<DemosTransferResult> => {
       if (configuredMaxTotalDebitOs !== undefined &&
           invocationMaxTotalDebitOs !== undefined &&
           invocationMaxTotalDebitOs > configuredMaxTotalDebitOs) {
@@ -1428,9 +1675,42 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         };
       }
 
+      // `included` is not execution (#338): the node can include the signed
+      // transaction and record it failed. Require the transaction record to
+      // show this exact prepared transfer executed before reporting success.
+      const recordDeadline = Date.now() + transactionRecordTimeoutMs;
+      const execution = await observeDemosExecutionByHash(
+        txHash,
+        (hash) => readDemosTransactionRecord(rpc, hash,
+          Math.max(1, Math.min(statusRequestTimeoutMs, recordDeadline - Date.now())), fetchRecord),
+        { blockNumber: terminal.blockNumber, transfer: transferBinding },
+        {
+          transactionRecordTimeoutMs,
+          inclusionPollIntervalMs,
+          statusRequestTimeoutMs,
+        },
+      );
+      if (execution.state === "failed") {
+        return {
+          ok: false,
+          state: "failed",
+          hash: txHash,
+          blockNumber: terminal.blockNumber,
+          message: "pay-dem transaction was included but its record reports it failed",
+        };
+      }
+      if (execution.state === "indeterminate") {
+        return {
+          ok: false,
+          state: "indeterminate",
+          hash: txHash,
+          message: `pay-dem execution was not established: ${execution.reason}`,
+        };
+      }
+
       // Inclusion can precede the account read reflecting the consumed nonce.
       // Bound even a non-cooperative projection read. DACS-4 §9.5.1 PC-7 makes
-      // the included payment final regardless: a lag may delay only idempotent
+      // the executed payment final regardless: a lag may delay only idempotent
       // evidence-anchor bookkeeping and can never authorise resubmission.
       await boundedPromise(
         Promise.resolve().then(() => waitForNonce(address, signedNonce)),
