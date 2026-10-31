@@ -3048,6 +3048,9 @@ describe("acceptance failure class", () => {
     ["registry-auth", 22, { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 4873\ncurl: (22) The requested URL returned error: 403" }],
     ["registry-start", 125, { "registry.log": "Error response from daemon: Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout\n" +
       "docker: Error response from daemon: driver failed programming external connectivity: Bind for 0.0.0.0:4873 failed: port is already allocated." }],
+    ["consumer", 125, { "generation.log": "npm error code ECONNRESET\ndocker: Error response from daemon: failed to create task for container: " +
+      "OCI runtime create failed: unable to start container process: exec: \"sh\": executable file not found in $PATH: unknown." }],
+    ["registry-ready", 22, { "registry.log": "registry ping did not succeed within 30 attempts\ncurl: (22) The requested URL returned error: 403" }],
     // A final error no grammar names leaves no cause, so earlier transport text cannot stand in for one.
     ["publish", 1, { "registry.log": "npm warn retry ECONNRESET\nnpm error 403 Forbidden - PUT http://127.0.0.1:4873/x" }],
     ["registry-start", 1, { "registry.log": "dial tcp: lookup registry-1.docker.io: no such host\nfailed to create builder" }],
