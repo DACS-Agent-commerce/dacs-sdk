@@ -572,9 +572,6 @@ const NETWORK_FAILURE_SIGNATURES = [
 ];
 const networkSignature = new RegExp(NETWORK_FAILURE_SIGNATURES.map(signature => signature.source).join("|"));
 
-// A report-shaped `npm audit --json` document: a result for the audit policy.
-const isAuditReport = value => typeof value === "object" && value !== null &&
-  AUDIT_REPORT_FIELDS.some(key => Object.hasOwn(value, key));
 const parsedJson = text => { try { return JSON.parse(text ?? ""); } catch { return undefined; } };
 
 // When the audit endpoint fails, `npm audit --json` writes npm's audit error
@@ -585,7 +582,8 @@ const parsedJson = text => { try { return JSON.parse(text ?? ""); } catch { retu
 // integer) and bounded message, which the summary's readers classify; or null
 // for anything else, a report included.
 function auditEndpointEvidence(value) {
-  if (typeof value !== "object" || value === null || typeof value.message !== "string" || isAuditReport(value)) return null;
+  if (typeof value !== "object" || value === null || typeof value.message !== "string" ||
+      AUDIT_REPORT_FIELDS.some(key => Object.hasOwn(value, key))) return null;
   const statusCode = value.statusCode === undefined || Number.isInteger(value.statusCode) ? value.statusCode : null;
   return JSON.stringify({ statusCode, message: value.message.replace(/\s+/g, " ").slice(0, 300) });
 }
@@ -601,8 +599,6 @@ const CAUSE_LINES = {
   docker: /^(?:docker: |Error response from daemon: )/,
   // An uncaught JavaScript error.
   thrown: /^(?:[A-Z][A-Za-z]*)?Error: /,
-  // The whole entry the acceptance script records when Verdaccio never answers.
-  ping: /^registry ping did not succeed within 30 attempts$/,
 };
 // npm prints a cause's errno and syscall before its message.
 const NPM_CAUSE_BLOCK_LINES = 8;
@@ -633,7 +629,7 @@ function causeFailure(name, entries, programs, exitCode) {
   const cause = finalCause(entries, programs);
   if (cause === null || (cause.program === "npm" && !networkErrorCode(cause.match[1])) ||
       (cause.program === "curl" && Number(cause.match[1]) !== exitCode)) return failure("functional");
-  const evidence = cause.program === "ping" ? [cause.match[0]] : cause.block.map(({ line }) => `${name}: ${line}`);
+  const evidence = cause.block.map(({ line }) => `${name}: ${line}`);
   const retryable = evidence.find(retryableFailureEvidence);
   return retryable === undefined ? failure("functional") : failure("network", [retryable]);
 }
@@ -675,13 +671,13 @@ function imageBuildFailure({ read, exitCode }) {
   return causeFailure("docker-build.log", output, ["npm"], exitCode);
 }
 
-// An audit endpoint error is network or functional by its status; only a
-// report-shaped audit is a policy result. Anything else means nothing was audited.
+// The audit policy records its verdict, a rejection included, and exits 0, so a
+// stop at this stage means it could not evaluate: network or functional by npm's
+// audit endpoint error, otherwise functional. Never policy, whatever the document.
 function auditPolicyFailure({ read }) {
-  const audit = parsedJson(read("npm-audit.json"));
-  const endpoint = auditEndpointEvidence(audit);
+  const endpoint = auditEndpointEvidence(parsedJson(read("npm-audit.json")));
   if (endpoint) return failure(retryableFailureEvidence(endpoint) ? "network" : "functional", [endpoint]);
-  return failure(isAuditReport(audit) ? "policy" : "functional");
+  return failure("functional");
 }
 
 // Only the dependency policy's own closed report, rejecting, is a policy result.
@@ -701,7 +697,7 @@ const consumerFailure = input => input.read("dependency-policy.json") === undefi
 const STAGE_FAILURES = {
   "release-set": logFailure("release-set.log", ["npm"]),
   "registry-start": logFailure("registry.log", ["docker"]),
-  "registry-ready": logFailure("registry.log", ["ping", "curl"]),
+  "registry-ready": logFailure("registry.log", ["curl"]),
   "registry-auth": logFailure("registry.log", ["curl"]),
   publish: logFailure("registry.log", ["npm", "thrown"]),
   consumer: consumerFailure,
