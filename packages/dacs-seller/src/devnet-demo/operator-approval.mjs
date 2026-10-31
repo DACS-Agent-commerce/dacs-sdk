@@ -207,7 +207,7 @@ export function parsePolicyLedger(text){
 // hold line opens one, a release line ends it (a repeated release changes
 // nothing), a refusal line is the decision log only. A hold enters the rows
 // as {contextHold, jobId, effect, writes, totalOs, recordedAt, released,
-// originLine}; contextHoldRows turns it into outstanding writes.
+// releasedLine (the first release line), originLine}; contextHoldRows turns it into outstanding writes.
 function contextLedgerLine(row,rows,malformed,lineNumber){
   if(row.event==='refused'){
     if(!exact(row,['format','event','jobId','buyer','reason','recordedAt'])||typeof row.reason!=='string'||!Number.isSafeInteger(row.recordedAt))malformed();
@@ -222,7 +222,7 @@ function contextLedgerLine(row,rows,malformed,lineNumber){
   }
   const hold=rows.find(entry=>entry.contextHold===row.holdId);
   if(row.event!=='release'||!exact(row,['format','event','holdId','jobId','recordedAt'])||!hold||hold.jobId!==row.jobId||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0||row.recordedAt<hold.recordedAt)malformed();
-  hold.released=true;
+  hold.released=true;hold.releasedLine??=lineNumber;
 }
 
 // Each open context hold counts its unconverted writes as outstanding policy
@@ -231,22 +231,31 @@ function contextLedgerLine(row,rows,malformed,lineNumber){
 // line than the hold (originLine): every ledger line is appended under the
 // policy lock, so line order is the order admission saw, and approving,
 // signing or completing an attempt never moves it. Clocks play no part. A row
-// without an originLine converts nothing. `converting` is the write being
-// decided, which has no line yet: it takes one of its job's held writes
-// instead of adding a new one.
+// without an originLine converts nothing. Writes are taken in line order, not
+// in the order the rows are listed (an open attempt is listed last). A write
+// that started while a released hold was open may have been that hold's, so it
+// takes the hold that ends first and an open hold keeps its slot counted.
+// `converting` is the write being decided, which has no line yet: it takes one
+// of its job's held writes instead of adding a new one.
 function contextHoldRows(ledger,converting=null){
   const vet=(row,jobId)=>row.decision==='approved'&&row.policy&&row.outcome!=='released'&&row.jobId===jobId&&row.artifactKind==='CompositeVerificationRecord';
   let taken=converting?.artifactKind!=='CompositeVerificationRecord';
-  const rows=[],converted=new Set();
-  for(const hold of ledger.filter(row=>row.contextHold&&!row.released)){
-    let remaining=hold.writes;
-    // One write consumes one slot across all holds, in ledger order, including
-    // holds retained across a shutdown and a replacement hold for the same job.
-    for(const row of ledger){
-      if(remaining>0&&!converted.has(row)&&vet(row,hold.jobId)&&row.originLine>hold.originLine){remaining--;converted.add(row);}
+  const holds=ledger.filter(row=>row.contextHold).map(hold=>({hold,remaining:hold.writes,end:hold.released?hold.releasedLine??Infinity:Infinity}));
+  const writes=ledger.filter(row=>!row.contextHold&&Number.isSafeInteger(row.originLine)).sort((a,b)=>a.originLine-b.originLine);
+  // One write consumes one slot across all holds, including holds retained
+  // across a shutdown and a replacement hold for the same job.
+  for(const row of writes){
+    let chosen=null;
+    for(const slot of holds){
+      if(slot.remaining>0&&vet(row,slot.hold.jobId)&&row.originLine>slot.hold.originLine&&row.originLine<slot.end&&(!chosen||slot.end<chosen.end))chosen=slot;
     }
-    if(!taken&&converting.jobId===hold.jobId&&remaining>0){remaining-=1;taken=true;}
-    for(let index=0;index<remaining;index++)rows.push({decision:'approved',policy:true,outcome:null,jobId:hold.jobId,totalOs:hold.totalOs,contextSlot:hold.contextHold});
+    if(chosen)chosen.remaining--;
+  }
+  const rows=[];
+  for(const{hold,remaining}of holds.filter(slot=>!slot.hold.released)){
+    let open=remaining;
+    if(!taken&&converting.jobId===hold.jobId&&open>0){open-=1;taken=true;}
+    for(let index=0;index<open;index++)rows.push({decision:'approved',policy:true,outcome:null,jobId:hold.jobId,totalOs:hold.totalOs,contextSlot:hold.contextHold});
   }
   return rows;
 }
@@ -291,7 +300,9 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}
  * with confirm(validity) and settle(request, outcome). Listing writes and manual mode always ask manual. In policy
  * mode the policy decides (policy.decide): an approved write is already sign-authorized; a held write is asked of
  * manual only when its (phase, reason) is in the closed manual table, and the answer goes to the policy's sign gate
- * (policy.authorizeHeld); every other refusal is final. Policy errors reject; a manual answer or sign gate that
+ * (policy.authorizeHeld); every other refusal is final. Manual is shown the held request's own bytes
+ * (decision.requestBytes); a request that no longer matches them is not asked about and its attempt is released
+ * (policy.releaseHeld), as is a hold outside the table. Policy errors reject; a manual answer or sign gate that
  * throws first releases the held attempt (policy.releaseHeld). confirm checks the one policy-approved write in flight
  * at the policy's confirmation gate, and is false for any other approval. */
 export function composeSellerApproval({mode,policy,manual}){
@@ -305,11 +316,15 @@ export function composeSellerApproval({mode,policy,manual}){
       freezeRequest(request);return true;
     }
     const decision=await policy.decide(request);
-    let answer=decision.outcome==='approved'?'signed':'refused';
-    if(decision.outcome==='held'&&manualReason(kind,decision.reason)){
+    let answer=decision.outcome==='approved'?'signed':'refused',held=null;
+    if(decision.outcome==='held'){
+      // Manual is asked about exactly the bytes the policy held, which the sign line will carry. A request that is
+      // no longer those bytes, or a hold outside the manual table, is not asked about: its attempt ends here.
+      held=typeof decision.requestBytes==='string'&&JSON.stringify(request)===decision.requestBytes?JSON.parse(decision.requestBytes):null;
+      if(!held||!manualReason(held.content?.artifactKind,decision.reason)){await policy.releaseHeld(request,'confirmation-refused');return false;}
       // A shutdown or error that ends the manual answer or its sign gate decides nothing: the attempt is released
       // and the error kept.
-      try{answer=await policy.authorizeHeld(request,(await manual(JSON.parse(requestBytes),undefined,{attemptId:decision.attemptId}))===true);}
+      try{answer=await policy.authorizeHeld(request,(await manual(held,undefined,{attemptId:decision.attemptId}))===true);}
       catch(error){
         await policy.releaseHeld(request,[OPERATOR_CLOSING,'seller_approval_stopped'].includes(error?.code)?'operator-released':'sign-authorization-failed').catch(()=>{});
         throw error;
@@ -318,7 +333,7 @@ export function composeSellerApproval({mode,policy,manual}){
     // The sign line could not be retained: nothing was signed and the attempt is released, so the write is
     // decided again after a pause (before payment a refusal would be final for its artifact).
     if(answer==='unsigned'){
-      process.stderr.write(`seller-policy-sign-authorization failed: the ${kind} write for job ${request.content.jobId} was not signed; it is decided again\n`);
+      process.stderr.write(`seller-policy-sign-authorization failed: the ${held.content.artifactKind} write for job ${held.content.jobId} was not signed; it is decided again\n`);
       await policy.pause();return approve(request);
     }
     if(answer==='signed')prepared=request;
@@ -342,7 +357,8 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
 
 /** Create exact manual approval, or bounded seller policy approval with durable attempts and sign reservations.
  * Manual mode: approve(request, undefined, {attemptId}) asks authorize (or the TTY) and records the answer.
- * Policy mode: decide(request) resolves {outcome:'approved'|'held'|'refused', reason, attemptId}, and rejects with
+ * Policy mode: decide(request) resolves {outcome:'approved'|'held'|'refused', reason, attemptId} (a hold also carries
+ * requestBytes, the exact bytes its attempt and any sign line keep), and rejects with
  * code seller_approval_pending while the same request's held attempt waits for its manual answer; prepare(request)
  * resolves its approval as a boolean and opens no attempt (a hold is logged as a refusal); authorizeHeld(request,
  * accepted) ends a held attempt at the sign gate ('signed', 'refused', or 'unsigned' when its sign line could not be
@@ -453,7 +469,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:sha(bytes),requestBytes:bytes,method:copy?.method??null,address:copy?.address??null,totalOs:declaredOs(copy)?.toString()??null,
       decision:'rejected',approvalMode:'policy',policyReason:reason,...(attemptId?{attemptId}:{}),recordedAt:clock()});
     if(attemptId){records.set(request,{...record,attemptId,reason});open.add(attemptId);}
-    return{outcome:attemptId?'held':'refused',reason,attemptId};
+    return attemptId?{outcome:'held',reason,attemptId,requestBytes:bytes}:{outcome:'refused',reason,attemptId};
   });
   // The sign gate for a held attempt's manual answer: only its recorded class is waived; every other check runs
   // again (the attempt's own hold no longer counts against its limits).
