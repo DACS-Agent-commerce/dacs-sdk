@@ -74,3 +74,36 @@ describe("signing domains", () => {
     }
   });
 });
+import { TESTNET_PROFILE_TP1, TP1_CAPABILITIES, TP1_DECLARATION, TP1_APPROVED_IDENTITY_RECORD } from "../../src/wire/profile.js";
+describe("TESTNET_PROFILE_TP1", () => {
+  it("names TP-1, its proposed base, tuple and declaration, and is frozen", () => {
+    expect(TESTNET_PROFILE_TP1).toMatchObject({
+      id: "dacs-testnet-tp1",
+      status: "proposed; composition qualification pending",
+      declaration: "experimental testnet implementation; not a conformant live DACS profile",
+      relationToStandard: "SDK declaration of the SDK's testnet release; it does not change or extend the DACS Standard",
+      base: { repo: "DACS-Standard", commit: "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20" },
+      tuple: { CORE: "0.3", "DACS-1": "0.7", "DACS-2": "0.6", "DACS-3": "0.5", "DACS-4": "0.8", "DACS-5": "0.5" },
+    });
+    expect(TP1_DECLARATION).toBe(TESTNET_PROFILE_TP1.declaration);
+    expect(Object.isFrozen(TESTNET_PROFILE_TP1)).toBe(true);
+    expect(Object.isFrozen(TESTNET_PROFILE_TP1.tuple)).toBe(true);
+  });
+
+  it("pins the approved record and limits current guarantees to the wire", () => {
+    expect(TESTNET_PROFILE_TP1.network.identityRecord).toBe(TP1_APPROVED_IDENTITY_RECORD);
+    expect(TESTNET_PROFILE_TP1.network.approvedIdentityRecordDigests).toEqual(["5c234f784b8fbbb77a53886594dbdf3689fbbc336f04c2c930edfd57f225e330"]);
+    expect(TESTNET_PROFILE_TP1.network.refusedChainIdentities).toEqual([]);
+    expect(TESTNET_PROFILE_TP1.network.status).toMatch(/record approved on 2026-10-20 pinned/);
+    expect(TESTNET_PROFILE_TP1.network.composition).toContain("broadcast refusal is not checked");
+    expect(JSON.stringify(TESTNET_PROFILE_TP1)).not.toContain("834375ad6381d9eedbaea18bfe841416fe680e00fa74b09ab711fde45d08e8e2");
+  });
+
+  it("states the TP-1 restrictions as capabilities", () => {
+    expect(TP1_CAPABILITIES).toMatchObject({
+      capability: "FP-DEM", negotiation: ["negotiate-fixed-price"], rails: ["pay-dem"],
+      delivery: { channel: "demos-storage", address: "dacs4:deliverable:{jobId}" },
+      services: ["fixed-text", "pure-synchronous-text-module"], output: { maxCharacters: 16384, synchronous: true }, buyerRequestInput: false,
+    });
+  });
+});
