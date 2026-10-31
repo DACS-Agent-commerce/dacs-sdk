@@ -1714,3 +1714,119 @@ describe("strict DACS-2 composite verification closure", () => {
     ).resolves.toMatchObject({ status: "invalid", code: "legacy-record" });
   });
 });
+
+
+describe("implicit recipe selection policy", () => {
+  async function implicitFixture(shared: boolean, required = false) {
+    const f = await fixture();
+    const pinned = f.expectedResult.requirement;
+    const implicit = { scheme: "domain", verificationRequired: true };
+    const requirement: CompositeBundleRequirement = shared
+      ? required ? { requirementVersion: "1", required: [pinned, implicit] }
+        : { requirementVersion: "1", required: [], oneOf: [[pinned, implicit]] }
+      : { requirementVersion: "1", required: [implicit] };
+    const record = await withRecord(f.record, { requirementHash: sha256Hex(canonicalize(requirement)) });
+    const expected = { ...f.expected, requirement, dealSpecific: [{ ...f.expectedResult, requirement: shared ? pinned : implicit }] };
+    return { ...f, record, expected };
+  }
+  test("qualifies only actual implicit projections with immutable authenticated inputs", async () => {
+    const f = await implicitFixture(true); let calls = 0;
+    const deps = { ...f.deps, isImplicitRecipeVersionSelected(input: Parameters<typeof f.deps.verifyAuthorityAttestation>[0]) {
+      calls++; expect(Object.isFrozen(input)).toBe(true);expect(input.expected.requirement.recipeVersion).toBeUndefined();
+      expect(Object.isFrozen(input.expected)).toBe(true); expect(Object.isFrozen(input.recipe)).toBe(true);expect(Object.isFrozen(input.result)).toBe(true);
+      if(input.content.encoding === "bytes")input.content.value.fill(0);
+      return true;
+    } };
+    expect((await verifyCompositeVerificationRecord(f.record, f.expected, deps)).status).toBe("valid");expect(calls).toBe(1);
+    expect(f.authorityBytes[0]).not.toBe(0);
+    const pinned = await fixture();expect((await verifyCompositeVerificationRecord(pinned.record,pinned.expected,deps)).status).toBe("valid");expect(calls).toBe(1);
+  });
+  test("false fails an implicit shared member while a pinned alternative still passes", async () => {
+    const f = await implicitFixture(true);
+    expect((await verifyCompositeVerificationRecord(f.record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>false})).status).toBe("valid");
+    const required = await implicitFixture(true,true);
+    expect((await verifyCompositeVerificationRecord(required.record,required.expected,{...required.deps,isImplicitRecipeVersionSelected:()=>false})).status).toBe("invalid");
+  });
+  test("false fails a required bound implicit member before the no-parameters early return", async () => {
+    const f = await implicitFixture(false);
+    expect(await verifyCompositeVerificationRecord(f.record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>false})).toMatchObject({status:"invalid",code:"aggregation-mismatch"});
+  });
+  test("false leaves a bound implicit alternative unsatisfied while a pinned member passes", async () => {
+    const f = await fixture();
+    const implicit = { scheme: "email", verificationRequired: true };
+    const requirement: CompositeBundleRequirement = { requirementVersion: "1", required: [], oneOf: [[f.expectedResult.requirement, implicit]] };
+    const result = { ...await withResult(f.result, { scheme: "email", identifier: "alice@example.test" }) };
+    const ref: VerifyResultRef = { ...f.ref, anchor: { kind: "storage-program", locator: "stor:implicit-result" }, contentHash: contentHash(result) };
+    f.resolved.set(ref.anchor.locator, { encoding: "canonical-json", value: result });
+    const { signature, ...unsignedRecipe } = f.recipe;
+    const recipe = await signComponentArtifact({ ...unsignedRecipe, scheme: "email" }, "dacs-recipe:v1:", {
+      algorithm: signature.algorithm, signer: signature.signer, sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    });
+    const record = await withRecord(f.record, { requirementHash: sha256Hex(canonicalize(requirement)), dealSpecific: [f.ref, ref] });
+    const expected = { ...f.expected, requirement, dealSpecific: [f.expectedResult, { ...f.expectedResult, ref, scheme: "email", identifier: "alice@example.test", requirement: implicit }] };
+    expect((await verifyCompositeVerificationRecord(record,expected,{
+      ...f.deps, resolveRecipe: async ({ scheme }) => scheme === "email" ? recipe : f.recipe, isImplicitRecipeVersionSelected:()=>false,
+    })).status).toBe("valid");
+  });
+  test("a signed fail record agrees with a stale bound implicit pass result", async () => {
+    const f = await implicitFixture(false);
+    const record = await withRecord(f.record, { overallDecision: "fail" });
+    expect((await verifyCompositeVerificationRecord(record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>false})).status).toBe("valid");
+  });
+  test("a thrown selection policy is unresolved and omission retains compatibility", async () => {
+    const f = await implicitFixture(false);
+    expect(await verifyCompositeVerificationRecord(f.record,f.expected,{...f.deps,isImplicitRecipeVersionSelected:()=>{throw Error("TEST registry unavailable");}})).toMatchObject({status:"unresolved",code:"recipe-resolution"});
+    expect((await verifyCompositeVerificationRecord(f.record,f.expected,f.deps)).status).toBe("valid");
+  });
+  test("selected error excludes a stale pass projection before aggregation", async () => {
+    const f = await fixture();
+    const pin1 = f.expectedResult.requirement, pin2 = { ...pin1, recipeVersion: 2 };
+    const implicit = { scheme: "domain", verificationRequired: true };
+    const requirement: CompositeBundleRequirement = { requirementVersion: "1", required: [implicit], oneOf: [[pin1, pin2]] };
+    const result2 = await withResult(f.result, { recipeVersion: 2, decision: "error" });
+    const ref2: VerifyResultRef = { anchor: { kind: "storage-program", locator: "stor:current-error" }, recipeVersion: 2, contentHash: contentHash({ ...result2 }) };
+    f.resolved.set(ref2.anchor.locator, { encoding: "canonical-json", value: { ...result2 } });
+    const { signature, ...unsignedRecipe } = f.recipe;
+    const recipe2 = await signComponentArtifact({ ...unsignedRecipe, recipeVersion: 2 }, "dacs-recipe:v1:", {
+      algorithm: signature.algorithm, signer: signature.signer, sign: bytes => ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    });
+    const expected = { ...f.expected, requirement, dealSpecific: [f.expectedResult, { ...f.expectedResult, ref: ref2, requirement: pin2 }] };
+    const deps = { ...f.deps, resolveRecipe: async ({ recipeVersion }: { recipeVersion: number }) => recipeVersion === 2 ? recipe2 : f.recipe,
+      isImplicitRecipeVersionSelected: ({ result }: { result: VerifyResult }) => result.recipeVersion === 2 };
+    const record = await withRecord(f.record, { requirementHash: sha256Hex(canonicalize(requirement)), dealSpecific: [f.ref, ref2], overallDecision: "error" });
+    expect(await verifyCompositeVerificationRecord(record, expected, deps)).toMatchObject({ status: "valid" });
+    expect(await verifyCompositeVerificationRecord(await withRecord(record, { overallDecision: "fail" }), expected, deps)).toMatchObject({ status: "invalid", code: "aggregation-mismatch" });
+  });
+  for (const decision of ["error", "indeterminate"] as const) {
+    test(`stale ${decision} is excluded from a required implicit member`, async () => {
+      const f = await implicitFixture(false);
+      const result = await withResult(f.result, { decision });
+      const ref = { ...f.ref, contentHash: contentHash({ ...result }) };
+      f.resolved.set(ref.anchor.locator, { encoding: "canonical-json", value: { ...result } });
+      const [bound] = f.expected.dealSpecific;
+      if (!bound) throw Error("missing test result");
+      const expected = { ...f.expected, dealSpecific: [{ ...bound, ref }] };
+      const record = await withRecord(f.record, { dealSpecific: [ref], overallDecision: "fail" });
+      const deps = { ...f.deps, isImplicitRecipeVersionSelected: () => false };
+      expect(await verifyCompositeVerificationRecord(record, expected, deps)).toMatchObject({ status: "valid" });
+      expect(await verifyCompositeVerificationRecord(await withRecord(record, { overallDecision: decision }), expected, deps)).toMatchObject({ status: "invalid", code: "aggregation-mismatch" });
+      expect(await verifyCompositeVerificationRecord(await withRecord(record, { overallDecision: decision }), expected, f.deps)).toMatchObject({ status: "valid" });
+      let calls = 0;
+      expect(await verifyCompositeVerificationRecord(record, expected, { ...f.deps, isImplicitRecipeVersionSelected: () => { calls++; throw Error("TEST registry non-pass read"); } })).toMatchObject({ status: "unresolved", code: "recipe-resolution" });
+      expect(calls).toBe(1);
+    });
+  }
+  test("a stale mocked recipe is excluded before its downgraded error aggregates", async () => {
+    const f = await implicitFixture(false);
+    const { signature, ...unsignedRecipe } = f.recipe;
+    const recipe = await signComponentArtifact({ ...unsignedRecipe, availability: "mocked" as const }, "dacs-recipe:v1:", {
+      algorithm: signature.algorithm, signer: signature.signer, sign: bytes => ed25519Sign(bytes, privateKeyFromSeed(VERIFIER_SEED)),
+    });
+    const record = await withRecord(f.record, { overallDecision: "fail" });
+    let calls = 0;
+    expect(await verifyCompositeVerificationRecord(record, f.expected, { ...f.deps, resolveRecipe: async () => recipe,
+      isImplicitRecipeVersionSelected: () => { calls++; return false; } })).toMatchObject({ status: "valid" });
+    expect(calls).toBe(1);
+  });
+
+});

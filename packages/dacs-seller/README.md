@@ -58,8 +58,8 @@ const host = await startSellerHost({
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
   sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt,
-                         // readRevocationSurfaces, readRevocationMarker }: the seller-owned session admission,
-                         // Vet record reader, receipt reader and receipt verifier, and revocation readers
+                         // readRevocationSurfaces, readRevocationMarker }: the seller-owned session
+                         // admission, Vet record reader, receipt reader and receipt verifier, revocation readers
                          // (src/dacs/session-admission.mjs); admit must name both participants on the exact
                          // [PROFILE.json](PROFILE.json) profile: standardRevision
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
@@ -441,9 +441,37 @@ per-client limiter so one client cannot exhaust the shared request budget.
   also pass the SDK's strict CompositeVerificationRecord check against its
   invocation: its `requirementHash` is the hash of that exact requirement
   and its decision replays from the invocation's results (DACS-2 §7.7.1).
-  This package resolves no VerifyResult, so a requirement with a required
-  claim is refused. Otherwise the Agreement is not signed, before any
-  payment. A session
+  The agent currently restores only empty result invocations and refuses
+  evidence-bearing invocations before replay. Supplying `sessionAdmission.vetEvidence`
+  is rejected explicitly; it does not enable verified-claim proposals.
+
+  The direct `vetRecordProblem` helper separately accepts `evidence` for strict
+  replay preparation: `resolveContent`, `resolveRecipe`,
+  `isRecipeSignerAuthorized`, `isVerifyResultSignerAuthorized` and
+  `verifyAuthorityAttestation`, plus optional `resolveLatestRecipe`. Each receives
+  `{ jobId, role, party }`. Content replies are `null` or an `{ encoding, value }`
+  envelope: `encoding: 'canonical-json'` carries a JSON object, and
+  `encoding: 'bytes'` carries canonical base64url bytes. Recipe and result
+  signatures, authority evidence and requirement parameters are independently checked.
+  `resolveLatestRecipe({ scheme, method, required })` returns the authenticated
+  `{ sessionRecipeRegistrySnapshotHash, recipeVersion, availability }` selection
+  or `null`. Every verified member, bound or unused, needs each derivable method
+  family at its version. The selection names an implicit family's head; the
+  steward-authorized signed descriptor at that version must be live, bound or
+  unused. An explicit pin needs an exact steward-authorized signed recipe that
+  is not mocked, disabled or failed (DACS-2 CRQ-2/CRQ-3). A result outside an
+  implicit member's selected version does not apply to it, whatever its decision;
+  an independently passing pinned alternative may still satisfy its group.
+  Malformed replies and inconsistent snapshot pins refuse the whole record.
+  Direct callers pass one `sessionRegistryPins` array per job across both party
+  records, seeded with the job's retained pin after a restart. They also bind
+  `sourceJobId` and the result locator with `isSellerFulfilmentVetInvocationMismatch`
+  before replay. Each replay caches each family's bounded registry read and
+  exact recipe descriptor. No older live version is chosen as fallback.
+  When the check fails, the Agreement is not signed, before any payment.
+  Reads retain their 64 KiB, value/list, 10 s individual and 30 s total limits;
+  unavailable readers keep their original cause. These helper capabilities do
+  not change the agent's invocation or restoration gate. A session
   in flight, signed under its pin, continues without a new admission or
   revocation check. The agent's startup check reads only the Listing's own
   bytes, signature and rail; revocation is checked per new session (above).

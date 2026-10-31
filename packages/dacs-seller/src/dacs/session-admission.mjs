@@ -34,7 +34,21 @@
 //    §7.7.2: the seller for the buyer's record, the buyer for the seller's),
 //    the job, the evaluated party, its bundle, a passing decision and, under
 //    the SDK's strict verifier, the requirement invocation's exact
-//    `requirementHash` and replayed aggregation are checked here.
+//    `requirementHash` and replayed aggregation are checked here. Every
+//    verified member needs every method family at its pinned version, or the
+//    selected latest version when `recipeVersion` is absent. Pins must be
+//    steward-authorized and not mocked, disabled or failed. For implicit heads,
+//    the selection names the head; its steward-authorized signed descriptor
+//    must be live, bound or unused (DACS-2 §7.4.3).
+//    Missing or disallowed family entries refuse replay; a result outside an
+//    implicit member's selected version cannot satisfy it, bound or projected.
+//    `resolveLatestRecipe` supplies the head version and snapshot pin.
+//    Both records share one pin.
+//    Direct helper replay uses optional `evidence`, independent of agent config:
+//    `evidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
+//    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
+//    verifyAuthorityAttestation }`, read with the admission readers' limits
+//    (see vetRecordProblem).
 //  - readVetAnchorReceipt({ jobId, role, party, ref }) answers the CORE §5.1
 //    AnchorReceipt the operator's SR-2 reader holds for that same record
 //    (DACS-2 VPC-3: a Vet record is relied on only once it has a receipt at
@@ -51,8 +65,9 @@
 //    before any signature. The receipt's writer is not compared with the
 //    record's signer: the Standard does not tie them (SR2-5 binds the writer
 //    the receipt names, not the record's verifier).
-import { ARTIFACT_SEPARATORS, admitRawJson, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isIdentityBundle, publicKeyFromRaw, resolveRecipe as authenticatePinnedRecipe, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
+import { isCanonicalEd25519Signature, isSmallOrderPublicKey } from './demos-claims.mjs';
 
 // PROFILE.json: the exact corrective profile this package implements (the
 // Standard's JID-1 candidate tuple at standardRevision, spec/PROFILE.md).
@@ -97,6 +112,7 @@ export function sessionAdmissionConfig(value) {
   if (!object(value) || ['admit', 'resolveVetRecord', 'readVetAnchorReceipt', 'verifyVetAnchorReceipt', 'readRevocationSurfaces', 'readRevocationMarker'].some((name) => typeof value[name] !== 'function')) {
     throw new TypeError('sessionAdmission must expose admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt, readRevocationSurfaces and readRevocationMarker');
   }
+  if('vetEvidence' in value)throw new TypeError('vetEvidence belongs to the direct Vet replay helper; this agent restores only empty invocations');
   return value;
 }
 
@@ -163,20 +179,32 @@ function boundedRevocationValue(value) {
 }
 
 const ADMISSION_MAX_LIST_ITEMS=256;
+// The value and list bounds every returned representation shares: the outer
+// reply of every read, and a VerifyResult decoded from byte content, whose
+// encoding hides its lists and value count from the outer reply's own shape.
+function boundedAdmissionValue(value, options) {
+  const pending=[value];let values=0;
+  while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
+  return value;
+}
 // Admission capabilities cap wire bytes before decoding and honor this signal.
-// Returned representations also receive independent byte/value/list bounds.
-export async function readAdmissionCapability(admission,method,input){
-  const controller=new AbortController(),options={...REVOCATION_READ_LIMITS,signal:controller.signal};let timer;
+// Returned representations also receive independent byte/value/list bounds. An
+// optional `parentSignal` (the caller's shared deadline) aborts an active read
+// too, so a read that ignores its own per-read deadline cannot outlive it.
+export async function readAdmissionCapability(admission,method,input,parentSignal){
+  const controller=new AbortController(),options={...REVOCATION_READ_LIMITS,signal:controller.signal};let timer,rejectAborted;
+  const forwardAbort=()=>controller.abort();
+  if(parentSignal){if(parentSignal.aborted)controller.abort();else parentSignal.addEventListener('abort',forwardAbort,{once:true});}
   const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('admission deadline expired','TimeoutError'));},options.timeoutMs);});
+  const aborted=parentSignal?new Promise((_,reject)=>{rejectAborted=()=>reject(new DOMException('admission read aborted','AbortError'));if(parentSignal.aborted)rejectAborted();else parentSignal.addEventListener('abort',rejectAborted,{once:true});}):null;
   try{
-    return await Promise.race([Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
+    const work=Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
       if(controller.signal.aborted)throw new DOMException('admission read aborted','AbortError');
       if(value===undefined)throw new TypeError('admission capability returned no value');
-      const result=boundedRevocationValue(value),pending=[result];let values=0;
-      while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
-      return result;
-    }),deadline]);
-  }finally{clearTimeout(timer);controller.abort();}
+      return boundedAdmissionValue(boundedRevocationValue(value),options);
+    });
+    return await Promise.race(aborted?[work,deadline,aborted]:[work,deadline]);
+  }finally{clearTimeout(timer);if(rejectAborted)parentSignal.removeEventListener('abort',rejectAborted);parentSignal?.removeEventListener('abort',forwardAbort);controller.abort();}
 }
 
 export async function listingRevocationProblem(admission, input) {
@@ -233,14 +261,211 @@ export function vetAnchorReceiptProblem(receipt, { ref, jobId, party }) {
   return null;
 }
 
+// The direct replay helper reads authenticated operator evidence for a record
+// whose requirement names verified claims. The optional
+// `resolveLatestRecipe` answers DACS-2 §7.4.3 for an unpinned claim.
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+// One strict replay reads its evidence within this time in total, on top of
+// each read's own byte, value and deadline limits.
+const VET_EVIDENCE_REPLAY_TIMEOUT_MS = 30_000;
+// Without `evidence` nothing resolves, so a requirement whose decision needs
+// a result body is unresolved and refused.
+const NO_EVIDENCE_DEPS = Object.freeze({ resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
+  verifyAuthorityAttestation: () => 'unresolved', verifyRequirementParameters: (input) => requirementParametersMatch(input) });
+const vetEvidenceTimeout = () => new DOMException('the Vet evidence deadline expired', 'TimeoutError');
+
+// DACS-2 §7.5.2: a ClaimRequirement's exact parameters are re-derived from the
+// authenticated result. `verificationMethod` is the result's method; every
+// other parameter must occur, canonically equal, in the result's `data`.
+function requirementParametersMatch({ result, expected }) {
+  for (const [key, expectedValue] of Object.entries(expected.requirement.parameters ?? {})) {
+    if (key === 'verificationMethod') { if (result.method !== expectedValue) return false; }
+    else if (!object(result.data) || !Object.prototype.hasOwnProperty.call(result.data, key) || !same(result.data[key], expectedValue)) return false;
+  }
+  return true;
+}
+
+// Preflight every verified member's family metadata, including unused pins.
+// Result projection and aggregation remain the core verifier's decisions.
+function recipeFamilies(invocation) {
+  const requirement=invocation.requirement, families=new Map();
+  const members=[...(Array.isArray(requirement?.required)?requirement.required:[]),...(Array.isArray(requirement?.oneOf)?requirement.oneOf.flatMap(group=>Array.isArray(group)?group:[]):[])];
+  const results=[...(Array.isArray(invocation.freshness)?invocation.freshness:[]),...(Array.isArray(invocation.dealSpecific)?invocation.dealSpecific:[])];
+  for(const member of members){
+    if(member?.verificationRequired!==true)continue;
+    const methods=member.parameters?.verificationMethod!==undefined?[member.parameters.verificationMethod]:results.filter(result=>result?.scheme===member.scheme).map(result=>result.method);
+    if(methods.some(method=>typeof method!=='string'||!method))throw new TypeError('the verified requirement has no resolvable recipe method family');
+    for(const method of methods)families.set(canonicalize([member.scheme,method,member.recipeVersion??null]),{scheme:member.scheme,method,...(member.recipeVersion===undefined?{}:{recipeVersion:member.recipeVersion})});
+  }
+  return [...families.values()];
+}
+
+// Every explicit pin must resolve to an authenticated recipe that CRQ permits.
+async function pinnedSessionRecipeProblem(read,selector,permitted=['live','operator_gated','closed_data','bilateral']) {
+  const recipe=await read('resolveRecipe',selector);
+  if(!object(recipe)||recipe.scheme!==selector.scheme||recipe.recipeVersion!==selector.recipeVersion||!permitted.includes(recipe.availability))return 'the Vet pinned recipe is missing, mocked, disabled or failed, or differs from its selector';
+  const signature=recipe.signature,key=evidenceSignerKey(signature?.signer);
+  if(!key||(await read('isRecipeSignerAuthorized',{recipe,signature}))!==true)return 'the Vet pinned recipe-signature is not authorized';
+  try {
+    await authenticatePinnedRecipe('Vet replay',selector,{readRegistry:async()=>({entries:[recipe]}),stewardSigner:signature.signer,stewardPublicKey:key,
+      verify:(bytes,signature,publicKey)=>ed25519Verify(bytes,signature,publicKeyFromRaw(publicKey))});
+  } catch { return 'the Vet pinned recipe shape, method or signature does not authenticate'; }
+  return null;
+}
+
+// DACS-2 §7.4.3: qualify each actual implicit result/member projection
+// against the authenticated registry's latest live version. A stale member
+// fails only that member; unavailable/non-live or malformed selection evidence refuses replay.
+// Successful selections across both party records must share one snapshot.
+async function latestSessionRecipeProblem(read, { scheme, method, recipeVersion }, pins) {
+  return read('resolveLatestRecipe', { scheme, method, required: true }, selection=>{
+    if (selection === null) return 'the Vet session registry has no recipe version for the unpinned claim';
+    if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion', 'availability'])) throw malformedEvidence('the Vet session registry selection is malformed');
+    const pin = selection.sessionRecipeRegistrySnapshotHash;
+    if (typeof pin !== 'string' || !SHA256_HEX.test(pin)) throw malformedEvidence('the Vet session registry pin is malformed');
+    if (pins.length > 0 && pins[0] !== pin) throw malformedEvidence('the Vet session registry resolved another session registry snapshot');
+    if (!Number.isSafeInteger(selection.recipeVersion) || selection.recipeVersion < 1) throw malformedEvidence('the Vet session registry recipe version is malformed');
+    if (!['live','operator_gated','closed_data','bilateral','mocked','disabled','failed'].includes(selection.availability)) throw malformedEvidence('the Vet session registry availability is malformed');
+    if (selection.availability !== 'live') return 'the Vet session registry latest recipe version is not live';
+    if (recipeVersion !== undefined && selection.recipeVersion !== recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
+    if(pins.length===0)pins.push(pin);
+    return null;
+  });
+}
+
+// The selection names a family's head; the steward-signed descriptor at that
+// version decides whether it is live.
+async function implicitHeadProblem(read,{scheme,method},pins) {
+  const problem=await latestSessionRecipeProblem(read,{scheme,method},pins);
+  if(problem)return problem;
+  const {recipeVersion}=await read('resolveLatestRecipe',{scheme,method,required:true});
+  return await pinnedSessionRecipeProblem(read,{scheme,method,recipeVersion},['live'])&&'the Vet session registry latest recipe version is not live or does not authenticate';
+}
+
+// A malformed operator reply is a deterministic record problem, not an
+// unavailable read: it keeps its own marker so the caller can reject the
+// record instead of reporting the evidence source as down.
+const VET_EVIDENCE_MALFORMED = Symbol('Vet evidence malformed');
+const malformedEvidence = (message) => Object.assign(new TypeError(message), { [VET_EVIDENCE_MALFORMED]: true });
+
+// The evidence reads of one replay, each bounded by readAdmissionCapability
+// and all by one deadline. The deadline also aborts the read in flight, so a
+// reader that ignores its own per-read limit cannot hold the replay past 30 s.
+// The first failure is kept (even a rejection with `undefined`) so the caller
+// sees the real cause (timeout, oversize, throw), not the verifier's
+// "unresolved".
+function vetEvidenceReads(evidence, scope) {
+  const controller = new AbortController(), selections=new Map();
+  let expired = false, failed = false, failure, malformed, timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { expired = true; controller.abort(); reject(vetEvidenceTimeout()); }, VET_EVIDENCE_REPLAY_TIMEOUT_MS);
+  });
+  // A deadline that fires between reads has no racer; keep its rejection handled.
+  deadline.catch(() => {});
+  const read = async (method, input, decode = (reply) => reply) => {
+    try {
+      if (expired) throw vetEvidenceTimeout();
+      const key=['resolveLatestRecipe','resolveRecipe'].includes(method)?canonicalize([method,input.scheme,input.method,input.recipeVersion??null]):null;
+      if(key!==null&&!selections.has(key))selections.set(key,readAdmissionCapability(evidence,method,{...scope,...input},controller.signal));
+      const pending=key===null?readAdmissionCapability(evidence,method,{...scope,...input},controller.signal):selections.get(key);
+      const reply = await Promise.race([pending, deadline]);
+      if (expired) throw vetEvidenceTimeout();
+      return decode(reply);
+    } catch (error) {
+      if (error?.[VET_EVIDENCE_MALFORMED]) { malformed ??= error.message; throw error; }
+      const cause = expired ? vetEvidenceTimeout() : error; if (!failed) { failed = true; failure = cause; } throw cause;
+    }
+  };
+  return { read, failure: () => (failed ? failure : undefined), hasFailure: () => failed, malformed: () => malformed,
+    close: () => { clearTimeout(timer); controller.abort(); } };
+}
+
+// The content shape the core verifier takes from an operator reply: null
+// (absent), canonical JSON, or base64url bytes. A VerifyResult returned as
+// bytes is decoded to the canonical JSON object the core re-hashes, under the
+// same value and list bounds a canonical-json reply receives; an authority
+// proof stays bytes so its byte hash is preserved, and its empty value is a
+// legitimate (hashing to the empty digest) raw body.
+function vetEvidenceContent(reply, resultContent = false) {
+  if (reply === null) return null;
+  if (exactKeys(reply, ['encoding', 'value'])) {
+    if (reply.encoding === 'canonical-json' && object(reply.value)) return reply;
+    if (reply.encoding === 'bytes' && typeof reply.value === 'string' && (reply.value === '' ? !resultContent : isCanonicalBase64Url(reply.value))) {
+      const value = Uint8Array.from(Buffer.from(reply.value, 'base64url'));
+      if (!resultContent) return { encoding: 'bytes', value };
+      let decoded;
+      try { decoded = boundedAdmissionValue(admitRawJson(value, { maxBytes: REVOCATION_READ_LIMITS.maxBytes }), REVOCATION_READ_LIMITS); }
+      catch (error) {
+        // Only a byte bound says the evidence source could not answer; every
+        // other admission failure is a deterministic malformed document.
+        if (error instanceof RangeError || error?.code === 'BYTE-LIMIT-EXCEEDED') throw error;
+        throw malformedEvidence(`the Vet evidence content reply is malformed: ${String(error?.message ?? error).slice(0, 120)}`);
+      }
+      if (object(decoded)) return { encoding: 'canonical-json', value: decoded };
+    }
+  }
+  throw malformedEvidence('the Vet evidence content reply is malformed');
+}
+
+// The self-certifying Ed25519 key a signer claim names, or null: the Demos
+// agent claim the session participants use, or the canonical
+// `key:<32-byte lowercase hex>` claim a recipe steward or VerifyResult signer
+// may use. A small-order point proves only trivial signatures and is refused.
+const KEY_CLAIM = /^key:([0-9a-f]{64})$/;
+function evidenceSignerKey(claim) {
+  if (typeof claim !== 'string') return null;
+  const match = KEY_CLAIM.exec(claim);
+  let raw;
+  try { raw = match ? Uint8Array.from(Buffer.from(match[1], 'hex')) : canonicalDemosAgentPublicKey(claim); }
+  catch { return null; }
+  return raw && !isSmallOrderPublicKey(raw) ? raw : null;
+}
+
+// The core verifier's resolvers over the operator's readers. Content is
+// authenticated by the verifier itself (hash against its reference, both
+// signatures); the operator decides which signers may sign and whether the
+// authority proof holds. Only an explicit `true` authorizes a signer, and only
+// `valid` or `unresolved` is a usable attestation verdict.
+const vetEvidenceDeps = (read) => ({
+  resolve: (ref) => read('resolveContent', { anchor: ref.anchor, contentHash: ref.contentHash }, (reply) => vetEvidenceContent(reply, ref.recipeVersion !== undefined)),
+  resolveRecipe: (selector) => read('resolveRecipe', selector),
+  isRecipeSignerAuthorized: async (recipe, signature) => (await read('isRecipeSignerAuthorized', { recipe, signature })) === true,
+  isVerifyResultSignerAuthorized: async (result, signature, expected) => (await read('isVerifyResultSignerAuthorized', { result, signature, expected })) === true,
+  verifyAuthorityAttestation: async (input) => {
+    const verdict = await read('verifyAuthorityAttestation', input);
+    return verdict === 'valid' || verdict === 'unresolved' ? verdict : 'invalid';
+  },
+  verifyRequirementParameters: (input) => requirementParametersMatch(input),
+});
+
+// The core verifier's expectation for each invocation result. Direct callers
+// bind `sourceJobId` and the locator with
+// `isSellerFulfilmentVetInvocationMismatch`; this helper does not.
+const expectedResults = (results) => results.map(({ ref, scheme, identifier, method, requirement }) => ({ ref, scheme, identifier, method, requirement }));
+
 // The reason a resolved Vet record does not back its reference and the
 // requirement invocation that names it, or null. `verifier` is the evaluated
 // party's counterparty (DACS-2 §7.7.2). DACS-2 §7.7.1: the record must hash
 // the invocation's exact BundleRequirement (`requirementHash`) and its
 // decision must replay from the invocation's expected results under the core
-// strict verifier. No VerifyResult resolver is configured, so a requirement
-// whose decision needs a result body is unresolved and refused.
-export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, verifier, invocation, now }) {
+// strict verifier. The VerifyResults, recipes and authority proofs that replay
+// needs come from this direct helper's operator `evidence`,
+// read for this `role`'s record. A claim without `recipeVersion` is compared
+// with the operator's authenticated session registry family head. A member
+// whose result differs from its selected live version is unsatisfied; another
+// pinned alternative may pass, whether the implicit result is bound or projected.
+// Every verified member, bound or unused, preflights every method family.
+// The selection names the implicit head; its steward-authorized signed recipe
+// must be live, bound or unused. Exact pins must be steward-authorized and not
+// mocked, disabled or failed. Missing or disallowed entries refuse replay.
+// Without evidence, a required verified member cannot be satisfied. Throws the
+// first failure of an evidence reader (timeout, oversize, a throw): that is
+// unavailable evidence, not a record that fails its
+// requirement. Malformed content or registry replies are record problems.
+// `sessionRegistryPins` is one array shared by the record checks of one job:
+// the first authenticated session registry pin a record resolves becomes the
+// job's pin, and every later record of that job must resolve the same one.
+export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, sessionRegistryPins }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
@@ -248,14 +473,36 @@ export async function vetRecordProblem(record, { ref, jobId, party, bundleHash, 
       || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
-  let strict;
+  const reads = evidence ? vetEvidenceReads(evidence, { jobId, role, party }) : null;
+  // Every signature is verified with the key its own signer claim names (a
+  // Demos agent or a canonical `key:` claim); the operator's policy decides
+  // which signers other than the verifier may sign.
+  const resolvePublicKey = (signature) => (signature?.algorithm !== 'ed25519'
+    || (!sameCanonicalClaimIdentity(signature.signer, verifier) && !reads) ? null : evidenceSignerKey(signature.signer));
+  const verify = ({ signedBytes: bytes, signature, publicKey }) => publicKey instanceof Uint8Array
+    && isCanonicalEd25519Signature(signature?.value) && ed25519Verify(bytes, Buffer.from(signature.value, 'base64url'), publicKeyFromRaw(publicKey));
+  const pins = sessionRegistryPins ?? [];
+  let strict, thrown, problem;
   try {
-    strict = await verifyCompositeVerificationRecord(record,
-      { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: invocation.freshness, dealSpecific: invocation.dealSpecific },
-      { nowMs: now, resolve: async () => null, resolveRecipe: async () => null, isRecipeSignerAuthorized: () => false, isVerifyResultSignerAuthorized: () => false,
-        resolvePublicKey: (signature) => (sameCanonicalClaimIdentity(signature.signer, verifier) ? verifier : null), verify: ({ signedBytes: bytes, signature }) => verifyComponent({ signedBytes: bytes, signature }),
-        verifyAuthorityAttestation: () => 'unresolved' });
-  } catch (error) { return `the Vet record does not verify against its requirement: ${String(error?.message ?? error).slice(0, 120)}`; }
+    for(const family of recipeFamilies(invocation)){
+      problem=family.recipeVersion!==undefined
+        ?!reads?'the Vet pinned recipe evidence is unavailable':await pinnedSessionRecipeProblem(reads.read,family)
+        :!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim':await implicitHeadProblem(reads.read,family,pins);
+      if(problem)break;
+    }
+    if(!problem)strict = await verifyCompositeVerificationRecord(record,
+      { jobId, evaluatedParty: party, bundleHash, requirement: invocation.requirement, verifier, freshness: expectedResults(invocation.freshness), dealSpecific: expectedResults(invocation.dealSpecific) },
+      { nowMs: now, ...(reads ? vetEvidenceDeps(reads.read) : NO_EVIDENCE_DEPS), resolvePublicKey, verify,
+        isImplicitRecipeVersionSelected:async({expected})=>{
+          const issue=!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim'
+            :await latestSessionRecipeProblem(reads.read,{scheme:expected.scheme,method:expected.method,recipeVersion:expected.ref.recipeVersion},pins);
+          problem??=issue;return issue===null;
+        } });
+  } catch (error) { thrown = error; } finally { reads?.close(); }
+  if (reads?.malformed()) return reads.malformed();
+  if (reads?.hasFailure()) throw reads.failure();
+  if (problem && strict?.status !== 'valid') return problem;
+  if (thrown) return `the Vet record does not verify against its requirement: ${String(thrown?.message ?? thrown).slice(0, 120)}`;
   if (strict?.status !== 'valid') return `the Vet record does not verify against its requirement (${strict?.status ?? 'missing'}: ${strict?.code ?? 'unknown'})`;
   return null;
 }
