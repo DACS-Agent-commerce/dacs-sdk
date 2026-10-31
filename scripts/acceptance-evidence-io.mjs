@@ -13,6 +13,23 @@ export function boundedEvidenceText(text) {
   return text;
 }
 
+/** Reads a regular file of at most the evidence budget; `noFollow` refuses a link at its last
+ * component (ELOOP). Returns its bytes and permission bits, or undefined only for a missing file. */
+export function readBoundedFile(path, { noFollow = false } = {}) {
+  let descriptor;
+  try { descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? constants.O_NOFOLLOW : 0)); }
+  catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error("evidence must be a regular file");
+    const bytes = Buffer.alloc(EVIDENCE_MAX_BYTES + 1);
+    let length = 0, count;
+    while (length < bytes.length && (count = readSync(descriptor, bytes, length, bytes.length - length, null)) > 0) length += count;
+    if (length > EVIDENCE_MAX_BYTES) throw new Error("evidence byte limit exceeded");
+    return { bytes: bytes.subarray(0, length), mode: stat.mode & 0o777 };
+  } finally { closeSync(descriptor); }
+}
+
 // A byte order mark stays in the text, as Buffer decoding kept it.
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
@@ -24,17 +41,8 @@ function decodeEvidence(bytes) {
 /** Reads at most the evidence budget before decoding; returns undefined only for a missing file.
  * Throws for a file that is not regular, over the budget or not valid UTF-8. */
 export function readEvidence(path) {
-  let descriptor;
-  try { descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK); }
-  catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
-  try {
-    if (!fstatSync(descriptor).isFile()) throw new Error("evidence must be a regular file");
-    const bytes = Buffer.alloc(EVIDENCE_MAX_BYTES + 1);
-    let length = 0, count;
-    while (length < bytes.length && (count = readSync(descriptor, bytes, length, bytes.length - length, null)) > 0) length += count;
-    if (length > EVIDENCE_MAX_BYTES) throw new Error("evidence byte limit exceeded");
-    return decodeEvidence(bytes.subarray(0, length));
-  } finally { closeSync(descriptor); }
+  const file = readBoundedFile(path);
+  return file === undefined ? undefined : decodeEvidence(file.bytes);
 }
 
 /** Reads evidence a step cannot go without, as readEvidence does; a missing file throws an
@@ -59,11 +67,18 @@ export function* evidenceLines(text = "") {
   }
 }
 
-/** Replaces a JSON result by sibling rename, removing temporary files even on failure. */
-export function atomicWriteJson(path, value) {
+/** Replaces `path` by sibling rename, so an existing entry (a link included) is never written
+ * through; flushes the new file to storage before publishing and removes the temporary file even
+ * on failure. */
+export function atomicWriteFile(path, contents, { write = writeFileSync } = {}) {
   const temporary = `${path}.tmp-${randomUUID()}`;
   try {
-    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+    write(temporary, contents, { flag: "wx", flush: true });
     renameSync(temporary, path);
   } finally { rmSync(temporary, { force: true }); }
+}
+
+/** Replaces a JSON result by sibling rename, removing temporary files even on failure. */
+export function atomicWriteJson(path, value) {
+  atomicWriteFile(path, JSON.stringify(value, null, 2) + "\n");
 }
