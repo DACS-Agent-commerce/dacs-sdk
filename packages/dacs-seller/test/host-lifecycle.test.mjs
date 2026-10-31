@@ -1,3 +1,4 @@
+import {NATIVE_PAYMENT_EVIDENCE} from '../src/dacs/native-payment-evidence-consumer.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs, {chmodSync} from 'node:fs';
@@ -15,7 +16,7 @@ import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
-import {createSellerTransportClientAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER} from '../src/dacs/seller-transport-auth.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent}={}){
  const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
@@ -290,3 +291,21 @@ test('host refuses malformed options before opening any state',async t=>{
  ];
  for(const [label,options,expected] of cases)await assert.rejects(startSellerHost(options),expected,label);
 });
+
+for(const method of ['readRetained','verifyReceipt','publish'])test(`staged native payment enters no ${method} and host closes cleanly`,async t=>{
+ const f=await fixture(t),native=f.native;let calls=0;
+ const artifactAnchor={...native,[method]:async input=>{calls++;return native[method](input);}};
+ const host=await f.start({artifactAnchor}),request=await f.proposal(host),client=f.client(host,request);
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');await anchorAgreement(f,request,answer);
+ await assertStagedPayment(host,request);
+ assert.equal(calls,0);await host.close();const reopened=await f.start();await reopened.close();
+});
+
+async function assertStagedPayment(host,request){
+ const body={jobId:request.transportIdentity.jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim,nativePaymentEvidence:NATIVE_PAYMENT_EVIDENCE},text=JSON.stringify(body),path='/dacs/v1/payments';
+ const auth=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW});
+ const signed=await auth.request(path,body,text);
+ const response=await fetch(host.url+path,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:text});
+ const answer=await response.text();auth.verifyResponse(signed.payload,{header:response.headers.get(SELLER_TRANSPORT_HEADER),status:response.status,text:answer});
+ assert.equal(response.status,503);assert.equal(JSON.parse(answer).error,'settlement_profile_unavailable');
+}

@@ -252,3 +252,26 @@ test('fixture commitment replay accepts a fresh observation time without rewriti
  assert.deepEqual(agent.TESTsessions.get(JOB).phaseResults,kept.phaseResults);
  assert.equal(f.anchors.writes.length,writes);
 });
+
+for(const early of [false,true])test(`cached fixture ${early?'signature':'ordinary'} commitment authenticates every HTTP replay`,async t=>{
+ const {agentFixture}=await import('./helpers/seller-agent-isolated-fixture.mjs'),{JOBS}=await import('./helpers/bilateral-vet-fixture.mjs');
+ const w=await agentFixture({early});t.after(()=>w.close());
+ const {jobId,agreement,signedProjection}=await w.negotiate(JOBS[0],{anchor:false}),agent=w.agent;
+ const body=early?{jobId,agreement,signedProjection}:{jobId};
+ const cached=await (early?agent.commitOnSignature(body):agent.commit(body)),writes=w.anchors.writes.length;
+ const store={reserve:()=>({disposition:'cached',status:200,text:JSON.stringify(cached)})};
+ const authentication={seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>({jobId}),validate(){},responseHeader:async()=> 'TEST-header'};
+ const handler=createSellerHttpHandler(agent,{authentication,commitOnSignature:early});
+ const post=()=>exchange(handler,{url:early?'/dacs/v1/commitments/signature':'/dacs/v1/commitments',text:JSON.stringify(body)});
+ assert.equal((await post()).status,200);
+ const read=w.anchors.controls.read;
+ w.anchors.controls.read=(row,address)=>address===core.finalityCommitmentAddress(jobId)&&row.status==='present'?{...row,receipt:{...row.receipt,evidence:{...row.receipt.evidence,value:'TEST changed proof'}}}:row;
+ for(let attempt=0;attempt<2;attempt++)assert.equal((await post()).status,503);
+ w.anchors.controls.read=read;assert.equal((await post()).status,200);assert.equal(w.anchors.writes.length,writes);
+});
+
+test('fixture read-only commitment without a retained CREATE has zero effects',async t=>{
+ const f=await fixtureProfile(t),writes=f.anchors.writes.length;
+ await assert.rejects(f.agent.readCommitment({jobId:JOB}),{code:'commitment_readback_required'});
+ assert.equal(f.anchors.writes.length,writes);
+});

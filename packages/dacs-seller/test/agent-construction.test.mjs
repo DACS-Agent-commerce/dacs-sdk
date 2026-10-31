@@ -225,7 +225,7 @@ test('restart fails closed when a Vet reader stalls past its deadline',async t=>
  t.mock.timers.enable({apis:['setTimeout']});
  const attempt=f.open({sessionAdmission:stall});let state='pending';
  attempt.then(()=>{state='resolved';},()=>{state='rejected';});
- const pending=assert.rejects(attempt,error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message)&&error.cause?.message==='the Vet reader deadline expired');
+ const pending=assert.rejects(attempt,error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message)&&error.cause?.name==='TimeoutError');
  await reached;await Promise.resolve();
  assert.equal(state,'pending','a stalled reader must not settle the restore');
  assert.equal(seen.maxBytes,64*1024);assert.equal(seen.timeoutMs,10_000);assert.ok(seen.signal instanceof AbortSignal,'every Vet reader receives an abort signal');
