@@ -212,8 +212,9 @@ function validateBody(p, body) {
 
 // Durable intent precedes effects; ambiguous work stays fenced across restart.
 // Lazy context admissions own pre-Agreement jobs and their unpaid-start limits.
+const CONTEXT_EFFECT_INDEX = 'CREATE INDEX IF NOT EXISTS peer_context_admissions_effect ON peer_context_admissions(effect)';
 const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (job TEXT PRIMARY KEY, buyer TEXT NOT NULL, seller TEXT NOT NULL,
-  listing_pin TEXT NOT NULL, scope_hash TEXT NOT NULL, effect TEXT NOT NULL, admitted_at INTEGER NOT NULL)`;
+  listing_pin TEXT NOT NULL, scope_hash TEXT NOT NULL, effect TEXT NOT NULL, admitted_at INTEGER NOT NULL); ${CONTEXT_EFFECT_INDEX}`;
 
 // Trusted seller state retains terminal ownership; unknown state retains challenges.
 const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
@@ -264,6 +265,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     }
   });
   const admissions = () => Boolean(get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'peer_context_admissions'"));
+  if (admissions()) db.exec(CONTEXT_EFFECT_INDEX);
   // Legacy slots identify mutating effects. Legacy reads have no job identity;
   // any such unmapped effect conservatively prevents job-row reclamation.
   transaction(() => {
@@ -541,6 +543,26 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       const row = admissions() ? get('SELECT * FROM peer_context_admissions WHERE job = ?', jobId) : null;
       return row ? { jobId: row.job, buyer: row.buyer, seller: row.seller, listingPin: JSON.parse(row.listing_pin), scopeHash: row.scope_hash, effect: row.effect, admittedAt: row.admitted_at } : null;
     },
+    /** Classify a policy hold's exact job/effect at startup without changing the journal.
+     * Returns absent, complete, pending, uncertain or retry; throws on invalid or inconsistent bindings. */
+    contextHoldState({ jobId, effect }) {
+      requireJobId(jobId);
+      if (!isHash(effect)) fail('peer_context_reconciliation_conflict', 503);
+      return transaction(() => {
+        const saved = get('SELECT state, status, response FROM peer_effects WHERE effect = ?', effect);
+        const mapped = get('SELECT job FROM peer_effect_jobs WHERE effect = ?', effect);
+        const admission = admissions() ? get('SELECT effect FROM peer_context_admissions WHERE job = ?', jobId) : null;
+        const other = admissions() ? get('SELECT job FROM peer_context_admissions WHERE effect = ? AND job <> ? LIMIT 1', effect, jobId) : null;
+        if (!saved && !mapped && admission?.effect !== effect && !other) return 'absent';
+        if (!saved || mapped?.job !== jobId || admission?.effect !== effect || other
+            || !['complete', 'pending', 'uncertain', 'retry'].includes(saved.state)
+            || (saved.state === 'complete' && (!uint(saved.status) || saved.status < 200 || saved.status >= 500
+              || typeof saved.response !== 'string' || Buffer.byteLength(saved.response) > SELLER_TRANSPORT_MAX_RESPONSE))) {
+          fail('peer_context_reconciliation_conflict', 503);
+        }
+        return saved.state;
+      }, true);
+    },
     // The completed context step's journaled {status, text}, or null.
     contextAnswer(jobId) {
       requireJobId(jobId);
@@ -706,6 +728,8 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     // True when request or delegation expiry permits only journaled readback;
     // reconciliation may complete retained work but cannot start an effect.
     readbackOnly: isReadbackOnly,
+    // Check-only cached refreshes must still be live when agent work starts.
+    assertLive(request) { if (isReadbackOnly(request)) refuseExpired(request); },
     readRequest(header) {
       const request = verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) });
       authenticatedRequests.set(request, canonicalize(request));
