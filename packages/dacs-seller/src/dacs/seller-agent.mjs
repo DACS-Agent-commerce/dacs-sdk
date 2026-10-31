@@ -28,6 +28,7 @@ import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreat
 import { canonicalize, paymentEvidenceAddress, verifySellerPaymentIntake, commitFixedPriceAgreement, contentHash, isListing, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, ARTIFACT_SEPARATORS, compositeVerificationAddress, createFsFencedSessionStore, runDurableFulfilmentToDeliveryReady, verifySettlementEvidence, isCompositeVerificationRecord, isCanonicalBase64Url, signedBytes } from '@kynesyslabs/dacs';
 import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
 import { randomBytes } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { MAX_STORAGE_ARTIFACT_BYTES, assertStorageJsonDepth } from './wallet-transactions.mjs';
 import { join } from 'node:path';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
@@ -487,7 +488,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // another journal: as the native publisher's authorize hook (called under its
   // address lock with nothing awaited before the CREATE intent), or just before
   // a wallet or delivery call. A holder that lost its job's row sends nothing.
-  const heldFor = (jobId) => () => { assertSettlementCredit(jobId); return durable ? durable.assertHeld(jobId) : true; };
+  const transportAuthority = new AsyncLocalStorage();
+  const heldFor = (jobId) => {
+    const transport = transportAuthority.getStore();
+    return () => { transport?.check(); assertSettlementCredit(jobId); return durable ? durable.assertHeld(jobId) : true; };
+  };
   function recordPhase(session, index, invokedAt, result, write = true) {
     const contextDelta = structuredClone(result.contextDelta ?? {});
     const entry = { index, step: structuredClone(listing.pipeline[index]), invokedAt, result: { ...structuredClone(result), contextDelta }, contextDelta };
@@ -518,8 +523,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
   for (const session of durable?.sessions() ?? []) await restore(session);
   // An authenticated transport command hands in its reservation's checks: it
-  // is checked inside the job fence before restore or work, and its outcome
-  // is settled there, before the fence is released.
+  // is checked inside the job fence before restore or work. A pending
+  // reservation is settled there; a cached refresh only checks authority.
   const recoveryCall = (fn, before) => durable ? (input, { transport } = {}) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
     transport?.check();
     const jobId = input?.transportIdentity?.jobId ?? input?.jobId;
@@ -528,8 +533,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     await restore(session);
     if (!transport) return fn(input);
     let result;
-    try { transport.check();const answer=await fn(input,{transport});transport.check();result={answer}; } catch (error) { result = { error }; }
-    transport.settle(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
+    try { transport.check();const answer=await transportAuthority.run(transport,()=>fn(input,{transport}));transport.check();result={answer}; } catch (error) { result = { error }; }
+    transport.settle?.(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
     if (result.error) throw result.error;
     return result.answer;
   }).catch((error) => {

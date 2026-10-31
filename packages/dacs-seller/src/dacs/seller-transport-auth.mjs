@@ -728,6 +728,8 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
     // True when request or delegation expiry permits only journaled readback;
     // reconciliation may complete retained work but cannot start an effect.
     readbackOnly: isReadbackOnly,
+    // Check-only cached refreshes must still be live when agent work starts.
+    assertLive(request) { if (isReadbackOnly(request)) refuseExpired(request); },
     readRequest(header) {
       const request = verifiedHeader(header, 'request', null, { requireDelegation, onDelegation: (request, delegation) => delegations.set(request, clone(delegation)) });
       authenticatedRequests.set(request, canonicalize(request));

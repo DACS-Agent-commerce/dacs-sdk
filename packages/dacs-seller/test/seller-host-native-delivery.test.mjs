@@ -10,6 +10,7 @@
 // on that node, each read back through the package's SR-2 adapter.
 import test from 'node:test';
 import http from 'node:http';
+import { Readable } from 'node:stream';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtempSync, realpathSync, rmSync,readFileSync } from 'node:fs';
@@ -25,7 +26,7 @@ import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '..
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE_CHAIN_IDENTITY } from '../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
-import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, sellerSessionDelegationSigningBytes } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
@@ -541,9 +542,10 @@ async function world(t, { deliveryJournal = false, buyerRequirement = null, agen
   // startSellerHost over these capabilities with `changes` (for refusals).
   const startShipped = (changes) => seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor, ...changes });
   // The host stopped and its agent composed over the same state (the caller closes it).
-  const agentFor = async ({ stopHost = true, readIssued = null } = {}) => {
+  const agentFor = async ({ stopHost = true, readIssued = null, deliveryEvidenceEnabled: publishEvidence = deliveryEvidenceEnabled, beforePublish = null } = {}) => {
     if (stopHost) { await host.close(); hosts.splice(hosts.indexOf(host), 1); }
-    return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, readIssued });
+    const anchor = beforePublish ? { ...artifactAnchor, publish: async input => { await beforePublish(); return artifactAnchor.publish(input); } } : artifactAnchor;
+    return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence });
   };
   // Model an authenticated checkpoint written by an older agent before its
   // adapter recovery fix, using the store's own fenced save and signature.
@@ -2561,4 +2563,72 @@ test('a report nested past the storage CREATE depth is held before the permit is
  const done=await p.claim(tx);
  assert.equal(done.delivery?.status,'delivery-ready',shown(done));
  assert.equal(w.createsAt(deliverable),1);
+});
+
+for (const stage of ['entry', 'restore', 'publish']) for (const expiry of ['delegation', 'request']) test(`cached payment refresh refuses ${expiry} expiry during agent ${stage}`, { timeout: NATIVE_FLOW_TIMEOUT_MS }, async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.equal(w.createsAt(address), 0);
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const released = new Promise(resolve => { release = resolve; });
+  let pauseRestore = false;
+  const admission = w.capabilities().sessionAdmission, resolveVetRecord = admission.resolveVetRecord;
+  admission.resolveVetRecord = async query => {
+    if (pauseRestore) { pauseRestore = false; enter(); await released; }
+    return resolveVetRecord(query);
+  };
+  const agent = await w.agentFor({ deliveryEvidenceEnabled: true,
+    beforePublish: stage === 'publish' ? async () => { enter(); await released; } : null });
+  const session = agent.durableSessionOf(p.jobId), sessionKey = key(99);
+  let time = Math.max(NOW, w.node.latestBlockMs());
+  const now = () => time, pin = agent.listingPin;
+  const store = seller.createSellerTransportStore({ path: join(w.dataDirectory, 'transport', 'transport.sqlite'), now });
+  t.after(() => { agent.close(); store.close(); });
+  const facade = { ...agent, submitPayment: async (body, options) => {
+    if (stage === 'entry') { enter(); await released; }
+    return agent.submitPayment(body, options);
+  } };
+  const handler = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({
+    sellerSigner: w.sellerKey, listingPin: pin, store, now, requireDelegation: true,
+  }) });
+  const body = { jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE };
+  const rawBody = JSON.stringify(body);
+  const signedRequest = async () => {
+    const payload = { version: '1', kind: 'seller-session-delegation', buyer: w.buyerKey.claim,
+      sessionPublicKey: sessionKey.claim.slice('did:demos:agent:'.length), seller: w.sellerKey.claim,
+      listingPin: pin, jobId: p.jobId, notBefore: time - 1000, expiresAt: Math.min(time + 600000, session.agreement.terms.deadline) };
+    const delegation = { payload, signature: w.buyerKey.sign(sellerSessionDelegationSigningBytes(payload)).toString('base64url') };
+    const signed = await seller.createSellerTransportClientAuth({ sessionSigner: sessionKey, delegation, seller: w.sellerKey.claim,
+      resolveJob: () => ({ listingPin: pin, agreementHash: session.agreementHash, deadline: session.agreement.terms.deadline }), now,
+    }).request('/dacs/v1/payments', body, rawBody);
+    return { ...signed, delegationExpiry: payload.expiresAt };
+  };
+  const post = async (signed) => {
+    const req = Readable.from([Buffer.from(rawBody)]);
+    Object.assign(req, { url: '/dacs/v1/payments', method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header },
+      socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
+    const res = { destroyed: false, writableEnded: false, headersSent: false,
+      writeHead(status) { this.status = status; this.headersSent = true; }, end(text) { this.body = JSON.parse(text); this.writableEnded = true; } };
+    await handler(req, res);
+    return res;
+  };
+  const signed = await signedRequest();
+  pauseRestore = stage === 'restore';
+  const pending = post(signed);
+  await entered;
+  time = (expiry === 'delegation' ? signed.delegationExpiry : signed.payload.expiresAt) + 1;
+  release();
+  const refused = await pending;
+  assert.equal(w.createsAt(address), 0, 'an expired refresh must not initiate a missing evidence CREATE');
+  assert.equal(refused.status, 408, shown(refused.body));
+  assert.equal(refused.body.error, expiry === 'delegation' ? 'peer_delegation_expired' : 'peer_expired');
+  const repeated = await post(signed);
+  assert.equal(repeated.status, 408, shown(repeated.body));
+  assert.equal(repeated.body.error, 'peer_expired', 'an expired envelope cannot refresh the saved success');
+  assert.equal(w.createsAt(address), 0);
+  const fresh = await signedRequest();
+  assert.equal((await post(fresh)).body.delivery?.status, 'delivered', 'a live request can finish the retained delivery');
+  assert.equal((await post(fresh)).body.delivery?.status, 'delivered');
+  assert.equal(w.createsAt(address), 1, 'the authorized retry publishes exactly once');
 });

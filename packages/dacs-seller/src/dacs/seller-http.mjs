@@ -172,7 +172,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
             const answer = { status: 'held', reason: 'peer_delegation_expired: a completed delivery answer is authenticated only under a live session delegation' };
             return await send(res, 200, answer, request, { text: await pointed(200, JSON.stringify(answer), request.jobId, req.url) });
           }
-          const answer = await route(agent, body), text = JSON.stringify(answer);
+          // A cached refresh owns no pending reservation. Recheck its live
+          // authority inside the agent's job fence, including after restore.
+          const transport = Object.freeze({ check: () => authentication.assertLive(request) });
+          const answer = await route(agent, body, { transport }), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }
         if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
