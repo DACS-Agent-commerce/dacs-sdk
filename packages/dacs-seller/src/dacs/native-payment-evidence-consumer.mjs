@@ -80,7 +80,7 @@ export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability =
     // answerProjectionOnly (DACS_BUYER_CHAIN_READBACK=on): the buyer never asks
     // the seller's wallet journal. Only the bytes it was given (its own retained
     // ones or the seller answer's) are authenticated; with none it is unknown.
-    async readEvidence({ agreement, writer, txHash, blockNumber, committedAt, signedProjection, answerProjectionOnly = false }) {
+    async readEvidence({ agreement, writer, txHash, blockNumber, committedAt, signedProjection, retainedReceipt, answerProjectionOnly = false }) {
       const terms = agreementTerms(agreement);
       const address = paymentEvidenceAddress(agreement.jobId, terms.rail, terms.paymentPhaseIndex);
       try {
@@ -102,6 +102,7 @@ export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability =
         const decided = (result) => answerProjectionOnly && result.disposition === 'rejected' ? { ...result, authenticated: true } : result;
         const validity = await adapter.verifyReceipt({ receipt: record.receipt, logicalAddress: address, artifact: record.artifact, expectedWriter: writer, artifactKind: 'SettlementEvidence', ...(projection ? { signedProjection: projection } : {}) });
         if (validity !== 'valid') return { disposition: 'indeterminate', nativeReadStatus: `receipt-${validity}`, reason: `native-payment-evidence-receipt-${validity}` };
+        if(retainedReceipt!==undefined){const retainedValidity=await adapter.verifyReceipt({receipt:retainedReceipt,logicalAddress:address,artifact:record.artifact,expectedWriter:writer,artifactKind:'SettlementEvidence',...(projection?{signedProjection:projection}:{})});if(retainedValidity!=='valid')return decided({disposition:retainedValidity==='invalid'?'rejected':'indeterminate',reason:'native-retained-receipt-'+retainedValidity});}
         const check = await checkNativePaymentEvidence({ artifact: record.artifact, agreement, writer, txHash, blockNumber });
         if (check.decision !== 'pass') return decided({ disposition: 'rejected', reason: check.reasons.join('; ') });
         const observed = await observer.observeDemosTransfer(txHash);
@@ -116,7 +117,7 @@ export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability =
           signedProjection: JSON.parse(JSON.stringify(projection)),
           evidenceMode: source ? 'explicit-pinned-source; one-node-included-view; not-independent-finality' : 'simulated-fixture; one-node-included-view; not-independent-finality' };
       } catch (error) { return { disposition: 'indeterminate', nativeReadStatus: error.code ?? 'error',
-        ...(error.code ? { code:error.code } : {}), reason: String(error.message).slice(0,240) }; }
+        ...(error.code ? { code:error.code } : {}), ...(['name-index-miss','native-address-miss'].includes(error.observation)?{nativeObservation:error.observation}:{}), reason: String(error.message).slice(0,240) }; }
     } });
   capabilities.add(capability);
   return capability;

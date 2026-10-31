@@ -2,6 +2,7 @@ import test from'node:test';
 import assert from'node:assert/strict';
 import * as core from'@kynesyslabs/dacs';
 import {commitmentFixture}from'./helpers/commitment-fixture.mjs';
+import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import {anchorFixture}from'./helpers/anchor-isolated-fixture.mjs';
 import {readbackFixture}from'./helpers/sr2-readback-fixture.mjs';
 import {seller,buyer,JOB,NOW}from'./helpers/protocol-fixture.mjs';
@@ -84,12 +85,13 @@ test('successful native commitment replays exact state after restart and rejects
  assert.equal(fresh.stageOf(JOB),stage);assert.equal(f.local.writes.length,1);
 });
 });
-test('real publisher retries unsigned pre-intent absence once and holds included readback after restart',async t=>{
+for(const finalizedReadback of[false,true])test(`real publisher retries unsigned pre-intent absence once and ${finalizedReadback?'accepts finalized readback':'holds included readback after restart'}`,async t=>{
  const publisher=await anchorFixture({now:()=>NOW}),f=await commitmentFixture(t,{publisher:publisher.open()}),{agent}=await f.prepare();publisher.source.readRpc=async()=>({result:503,response:null,require_reply:false,extra:null});
  let failure;try{await agent.commit({jobId:JOB});}catch(error){failure=error;}assert.equal(failure?.code,'commitment_failed');assert.equal(publisher.journal.rows.size,0);assert.equal(publisher.captured.length,0);agent.close();
  publisher.source.readRpc=async()=>({result:200,response:0,require_reply:false,extra:null});publisher.source.binding=async()=>({disposition:'included'});publisher.source.observeBinding=async()=>publisher.source.transportBinding;
- publisher.controls.request=async request=>{const signed=structuredClone(request.transaction);signed.hash=core.sha256Hex(JSON.stringify(signed.content));signed.signature={type:'ed25519',data:'0x'+seller.signBytes(Buffer.from(signed.hash)).toString('hex')};const backend=readbackFixture({signedTransaction:signed,observedAt:NOW});Object.assign(publisher.controls.reader,backend.adapter);await publisher.sourceJournal.put('TEST accepted',{stage:'observed',hash:signed.hash,signedTransaction:signed});return{success:true,data:{hash:signed.hash,writeProof:{disposition:'included'}}};};
+ publisher.controls.request=async request=>{const signed=structuredClone(request.transaction);signed.hash=core.sha256Hex(JSON.stringify(signed.content));signed.signature={type:'ed25519',data:'0x'+seller.signBytes(Buffer.from(signed.hash)).toString('hex')};const backend=readbackFixture({signedTransaction:signed,observedAt:NOW});let reader=backend.adapter;if(finalizedReadback){const finalized=finalizedCommitmentReader(backend.adapter,{claim:seller.claim,sign:seller.signBytes});finalized.record({logicalAddress:backend.logicalAddress,artifact:backend.artifact,signedProjection:signed,blockRef:{id:backend.state.block.hash,height:String(backend.state.block.number),timestamp:NOW}});reader=finalized;}Object.assign(publisher.controls.reader,reader);await publisher.sourceJournal.put('TEST accepted',{stage:'observed',hash:signed.hash,signedTransaction:signed});return{success:true,data:{hash:signed.hash,writeProof:{disposition:'included'}}};};
  const fresh=await f.open(),included=error=>error.code==='commitment_failed'&&/exact finalized SR-2 binding/.test(error.message);
+ if(finalizedReadback){assert.equal((await fresh.commit({jobId:JOB})).status,'committed');assert.equal(publisher.captured.length,1);return;}
  await assert.rejects(fresh.commit({jobId:JOB}),included);assert.equal(publisher.captured.length,1);
  const retained=await publisher.open().readRetained({logicalAddress:core.finalityCommitmentAddress(JOB),artifactKind:'FinalityCommitmentRecord',fresh:true});
  assert.equal(retained.status,'present');assert.equal(retained.receipt.state,'included');assert.equal(publisher.journal.rows.size,1);

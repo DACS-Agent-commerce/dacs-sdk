@@ -195,7 +195,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   }
   async function nativeRead(address) {
     if (!NATIVE_ADDRESS.test(address)) reject('invalid', 'malformed native address');
-    const value = await call(`/storage-program/${address}`);
+    let value;try{value=await call(`/storage-program/${address}`);}catch(error){if(error?.status===404)error.observation='native-address-miss';throw error;}
     if (!object(value) || value.success !== true || value.storageAddress !== address
       || typeof value.owner !== 'string' || typeof value.programName !== 'string') reject('indeterminate', 'native readback lacks an exact address, owner, data or metadata');
     return value;
@@ -310,7 +310,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     const projection = signedProjection === undefined ? undefined : clone(signedProjection);
     if (!expectedWriter) reject('writer-required', 'logical readback requires the independently expected writer');
     const native = await resolve(logicalAddress, expectedWriter, nativeAddress ?? projection?.content?.to);
-    if (!native) reject('indeterminate', 'name-index visibility does not establish authenticated absence');
+    if (!native) throw Object.assign(new DemosSr2Error('indeterminate','name-index visibility does not establish authenticated absence'),{observation:'name-index-miss'});
     if (expectedArtifactKind !== undefined && native.metadata.artifactKind !== expectedArtifactKind) reject('invalid', 'native readback binds another artifact kind');
     if (expectedDeliveryBinding !== undefined && canonicalize(native.metadata.deliveryBinding) !== canonicalize(expectedDeliveryBinding)) reject('invalid', 'native readback binds another delivery scope');
     const saved = await retained(logicalAddress, expectedWriter);
