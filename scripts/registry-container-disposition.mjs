@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { posix } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { join, posix } from "node:path";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
@@ -37,7 +39,98 @@ export function classifyRegistryAudit(observedAdvisories, baseline, directAdviso
     directAdvisories: [...directAdvisories].sort() };
 }
 
+
+// The consumer installs registry packages only. This is an allowlist: every
+// installed (non-root) lock entry resolves to a tarball under the configured
+// registry's origin and path and carries an integrity, and every dependency
+// spec in the manifest and the lock is a registry spec (a version, range or
+// tag, or an npm: alias of one) in a plain-object dependency map. Anything else
+// is a violation: dependency maps that are arrays, strings or null, Git URLs and
+// GitHub/GitLab shorthands with or without a ref, tarballs on any other host
+// (codeload.github.com included), file:, link:, paths, entries without
+// `resolved` or `integrity`, and `overrides`.
+const digestBytes = { sha1: 20, sha256: 32, sha384: 48, sha512: 64 };
+function validIntegrity(value) {
+  return typeof value === "string" && value.trim() !== "" && value.trim().split(/\s+/).every(token => {
+    const match = /^(sha1|sha256|sha384|sha512)-([A-Za-z0-9+/]+={0,2})(?:\?[!-~]+)?$/.exec(token);
+    if (!match) return false;
+    const bytes = Buffer.from(match[2], "base64");
+    return bytes.length === digestBytes[match[1]] && bytes.toString("base64") === match[2];
+  });
+}
+const specFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
 const isPlainObject = value => typeof value === "object" && value !== null && !Array.isArray(value);
+
+// Use the executing npm's parser, including loose semver and alias-name rules.
+// Acceptance pins npm; this keeps dependency grammar separate from engine ranges.
+let npmPackageArg;
+function registrySourceSpec(value) {
+  if (typeof value !== "string") return false;
+  if (!npmPackageArg) {
+    const npmEntry = process.env.npm_execpath ?? join(execFileSync("npm", ["root", "--global"],
+      { encoding: "utf8" }).trim(), "npm/bin/npm-cli.js");
+    npmPackageArg = createRequire(npmEntry)("npm-package-arg");
+  }
+  try {
+    const parsed = npmPackageArg.resolve("dependency", value);
+    // Older npm parsers (npm 10.8) read `npm:node_modules` as an alias with no
+    // package name instead of refusing it.
+    return parsed.registry === true && (parsed.type !== "alias" || typeof parsed.subSpec?.name === "string");
+  } catch { return false; }
+}
+
+// The run's own registry: HTTPS, or the loopback Verdaccio the acceptance
+// script starts (reached as host.docker.internal from a non-Linux container).
+export function consumerRegistry(value) {
+  const registry = new URL(value);
+  if (!(registry.protocol === "https:" || (registry.protocol === "http:" &&
+      ["127.0.0.1", "localhost", "host.docker.internal"].includes(registry.hostname)))) {
+    throw new Error(`registry dependency policy needs an HTTPS or loopback registry, not ${value}`);
+  }
+  return { origin: registry.origin, path: registry.pathname.endsWith("/") ? registry.pathname : registry.pathname + "/" };
+}
+
+export function registryDependencyViolations({ manifest, lock, registry }) {
+  const { origin, path } = consumerRegistry(registry);
+  const violations = [];
+  if (!isPlainObject(manifest)) violations.push({ location: "package.json", field: "manifest", value: null });
+  if (isPlainObject(lock?.packages) && !isPlainObject(lock.packages[""])) violations.push({ location: "package-lock.json", field: "root", value: null });
+  const specs = (location, owner) => {
+    for (const field of specFields) {
+      // A present map that is not a plain object (an array, a string, null)
+      // has no specs to check, so it is a violation itself.
+      if (owner?.[field] !== undefined && !isPlainObject(owner[field])) {
+        violations.push({ location, field, value: JSON.stringify(owner[field]) });
+        continue;
+      }
+      for (const [name, value] of Object.entries(owner?.[field] ?? {})) {
+        if (!registrySourceSpec(value)) {
+          violations.push({ location, field: `${field}.${name}`, value });
+        }
+      }
+    }
+  };
+  specs("package.json", manifest);
+  for (const [location, owner] of [["package.json", manifest], ["", lock?.packages?.[""]]]) {
+    if (owner?.overrides !== undefined) violations.push({ location, field: "overrides", value: JSON.stringify(owner.overrides) });
+  }
+  if (!isPlainObject(lock?.packages)) return [...violations, { location: "package-lock.json", field: "packages", value: null }];
+  for (const [location, entry] of Object.entries(lock.packages)) {
+    if (!isPlainObject(entry)) { violations.push({ location, field: "entry", value: JSON.stringify(entry) }); continue; }
+    specs(location, entry);
+    if (location === "") continue;
+    let url = null;
+    try { url = typeof entry.resolved === "string" ? new URL(entry.resolved) : null; } catch { /* not a URL */ }
+    const invalidLink = entry.link !== undefined && entry.link !== false;
+    if (invalidLink || url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+      violations.push({ location, field: invalidLink ? "link" : "resolved", value: entry.resolved ?? null });
+    }
+    if (!validIntegrity(entry.integrity)) {
+      violations.push({ location, field: "integrity", value: entry.integrity ?? null });
+    }
+  }
+  return violations;
+}
 
 // npm's EBADENGINE check (npm-install-checks) tests each non-optional package's
 // engines.node and engines.npm with semver.satisfies(current, range,
