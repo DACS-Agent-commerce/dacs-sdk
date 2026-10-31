@@ -43,7 +43,7 @@ export async function sdkSignedCreate(input, { nonce, timestamp, artifact = inpu
   const storageAddress = deriveStorageAddress(from, programName, nonce, '');
   const tx = buildStorageProgramCreatePayload({ from, storageAddress, programName, logicalAddress: input.logicalAddress, signedListing: artifact, nonce, timestamp });
   tx.content.data[1].metadata = { logicalAddress: input.logicalAddress, contentHash: input.receiptContentHash,
-    envelopeHash: sha256Hex(canonicalize(artifact)), artifactKind: input.artifactKind };
+    envelopeHash: sha256Hex(canonicalize(artifact)), artifactKind: input.artifactKind, ...(input.deliveryBinding ? { deliveryBinding: input.deliveryBinding } : {}) };
   prepare?.(tx.content);
   const { hash, content, signature } = await (await sdkWallet(postFork, nodeFee)).sign(tx, { nonce });
   return { hash, content, signature };
