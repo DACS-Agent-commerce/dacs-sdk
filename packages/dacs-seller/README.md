@@ -1,4 +1,4 @@
-# `@kynesyslabs/dacs-seller`
+# Seller source kit
 
 A self-hosted DACS seller: one seller agent for one signed fixed-price DEM
 Listing, behind the authenticated seller transport and its durable journal, on
@@ -25,6 +25,8 @@ qualification for a current testnet deployment.
 The repository's `engines` require Node.js `^20.19.0 || >=22.12.0`; the
 durable stores use the native `better-sqlite3` module. Use the same version of
 `@kynesyslabs/dacs` as this kit.
+Build the core SDK from this checkout and run the example from a script in
+`packages/dacs-seller/`.
 
 ```js
 import { startSellerHost } from './src/index.mjs';
@@ -153,6 +155,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   checks only the data directory itself — a private, real, 0700 directory
   owned by this user — not its ancestors, so place it where no other user can
   replace it.
+  The other durable and transport stores validate their immediate store directories.
   Job capacity counts saved sessions and active reservations. An unsaved
   reservation is reclaimed only when its holder is proven exited; live or
   unproven holders continue to reserve capacity.
@@ -302,3 +305,198 @@ per-client limiter so one client cannot exhaust the shared request budget.
   transaction index, including failed transactions, on the same chain.
   `checkedThroughBlock` must be at least the nonce snapshot's `blockHeight`.
   A bare nonce or an unfenced absence never authorizes supersession.
+  The journal keeps the signed CREATE and its nonce in its SQLite file (a
+  private 0600 file) before it broadcasts it, and keeps at most one live signed
+  CREATE per address. Its `readSignedProjection({ logicalAddress })` answers
+  that CREATE's public projection, read only; the agent authenticates the
+  evidence readback with it. The file has its own `journalId`: the agent keeps
+  it with each anchor attempt and never asks another journal (a lost or
+  replaced file) about that attempt, so such a file holds the claim (`held`,
+  `reconcileError.code: "wallet_journal_changed"`) instead of signing a second
+  CREATE; restore the file to resolve it. The journal also refuses
+  (`wallet_journal_unknown_attempt`) an attempt whose `txHash` it never kept. While that CREATE can still be executed, the journal
+  broadcasts the same signed bytes again (`rebroadcast`, or `pending` when the
+  broadcast fails). The node never executes a transaction whose nonce the
+  account has reached: it refuses it, or includes it as failed. So once the
+  account nonce has reached the kept nonce (read first), and a complete
+  authenticated index proves non-execution through that snapshot height, the
+  journal marks it superseded (and keeps it). It then answers `unsigned`, and the next anchor signs the same evidence
+  anew, with a higher nonce. A read that fails, times out (`readTimeoutMs`,
+  10 s by default) or answers anything else never supersedes it. Timeouts and malformed
+  replies stay held. A complete name/native-address miss can ask only the
+  retained owning journal; the miss alone never authorizes a send.
+- It never uses the simulated fixture substrate. Native Agreement readback and
+  native artifact publication are required together, and the agent refuses a
+  fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
+  the fixture substrate (`anchors`) only with `simulatedFixture: true`: that
+  test profile signs over not-performed Vet references and an unsigned
+  in-code rail, and is not covered by PROFILE.json.
+- It selects its rail only from `railAuthority` (DACS-4 9.4.3-9.4.4, DACS-1
+  LRR-6): the complete `demos-native:DEM` RailDefinition signed by the steward
+  key the operator gives, with `governance.anchoring: "in-code"` (PA-1). The
+  core SDK checks the signature and the availability. A new session is refused
+  (`rail_unavailable`) unless the rail is `live`: `disabled`, `failed`, gated
+  (this package runs no operator preflight) and `mocked` rails are not
+  selected. Each session pins the exact signed definition before its Agreement
+  is signed, and commitment and payment intake read the rail from that pin
+  only. A pin is in flight from the seller's Agreement signature on: a later
+  revision (a disabled rail or a new `railRegistryVersion`) does not change
+  it, and the session keeps the registry version it pinned. A proposal the
+  seller has not signed (a rejected one, for example) has no session yet, and
+  its retry selects the rail again under the current authority. A pin the
+  trusted steward did not sign is refused. During key rotation, configure
+  `railAuthority.historicalStewards` as an array of distinct
+  `{ stewardClaim, stewardPublicKey }` pairs from the operator's trusted key
+  history. The same claim may have multiple historical keys. Keep each old identity while its sessions remain in flight. Those
+  sessions reverify their exact signed pins under that identity after restart;
+  new sessions always use the current steward and definition. Saved pins
+  supply no trusted keys: a saved key selects only from that trusted history.
+  Existing pins without explicit steward identity use their signed definition
+  and the trusted key history for their claim.
+- It opens a new session only for a presentation of a challenge it issued,
+  on a Listing its own revocation check finds not revoked, and only under
+  `sessionAdmission`, before anything of it is kept, read, signed or sent.
+  - **Issuing.** `host.issueSessionChallenge({ jobId, buyer })` keeps a fresh
+    256-bit nonce for that job and buyer, valid for ten minutes, before it
+    returns `{ jobId, buyer, sessionNonce, issuedAt, expiresAt }`. The operator
+    hands it to the buyer, whose bundle carries it as `sessionNonce` (CORE
+    SN-1..SN-3; delivering the challenge to the buyer is up to the operator).
+  - **Generation.** Only the seller generates the nonce, using its own CSPRNG.
+    Supplying `sessionNonce` to the issuer is refused. The buyer copies the
+    returned value into its bundle and signs afterward (CORE SN-1..SN-3).
+  - **Consumption.** A presentation attempt for a new session consumes the
+    nonce its bundle carries, durably and before the attempt is validated:
+    before its signature, its buyer and job binding, the revocation check and
+    `admit` (CORE SN-4, IBH-4). A refused attempt consumes it too, a `503`
+    included, so after a refused attempt the buyer asks the operator for a
+    new challenge. After an admitted one, the buyer sends the admitted
+    presentation again (a new challenge would be another bundle, refused as
+    `session_not_admitted`). Configuration, Listing validity and rail selection
+    gates come first, as does a presentation with no session nonce
+    (`session_not_admitted`, DACS-1 §6.3.2); those refusals consume nothing.
+    Buyer-access and malformed-bundle refusals consume a recognized challenge.
+  - **Later presentations.** Any later presentation that carries the nonce is
+    refused (`session_not_admitted`): another one, a re-signed one, or one
+    for another job. The presentation that was admitted is the one exception:
+    sent again (a retry after a lost answer), it continues its own session,
+    including after the challenge lifetime. Expiry bounds first admission.
+  - **Refused before `admit`.** On first admission, a nonce the seller did
+    not issue, one issued for another job or buyer, or an expired one is
+    refused before `admit` is asked.
+
+  **Revocation.** The agent decides whether its Listing is revoked itself,
+  with the core SDK's DACS-1 RB-4..RB-6 check (`checkListingRevocation`), for
+  every new session. The operator gives only readers:
+  `readRevocationSurfaces({ jobId, listingPin })` answers the discovery
+  surfaces it read for the Listing (1 to 16 core `RevocationSurface`s), and
+  `readRevocationMarker(markerAnchor)` the RevocationMarker a surface's
+  binding names, or null. A `revoked` surface counts only through its marker,
+  which the core fetches, hashes and verifies against the Listing signer;
+  that refuses the session (`session_not_admitted`). A reader that throws, a
+  missing, stale (a catalog entry older than a day), unverified or malformed
+  surface, or a marker that does not read back or verify makes the check
+  indeterminate, which refuses it too (`session_admission_unavailable`, with
+  the cause). An `active` surface is the reader's reading: Demos gives no
+  authenticated proof that a revocation marker is absent (CORE §5.1).
+
+  Its `admit` answer must bind the exact job, buyer, buyer bundle and Listing
+  pin, and must name both parties configured for this package's exact
+  profile (the Standard commit and the complete document tuple in
+  PROFILE.json; CORE §11.1.2). It carries nothing else: an answer with a
+  revocation reading or a challenge is refused.
+
+  Anything missing, malformed, duplicated or different is refused
+  (`session_not_admitted`), and an `admit` that throws is refused too
+  (`session_admission_unavailable`). Neither refusal keeps an effect. Each Vet
+  reference the context gives is relied on only through the record
+  `resolveVetRecord` returns, and only with the SR-2 receipt
+  `readVetAnchorReceipt` returns for it (DACS-2 VPC-3: a signed record is not
+  thereby admitted). The receipt must be a CORE §5.1 receipt for the
+  reference's own address (the job's canonical `dacs2:composite:` address)
+  and exact hash, an established observation, at `included` or `finalized` for
+  Demos (`accepted` is allowed only by bindings with durable admission); none,
+  one for another address or hash, an indeterminate
+  observation, or a `submitted`, `rejected`, `dropped`, `replaced`,
+  `expired` or `reorged` one refuses before the Agreement is signed
+  (`VET_RECORD_UNVERIFIED`). The host checks what the receipt names and its
+  state, then asks the operator's `verifyVetAnchorReceipt({ jobId, role,
+  party, ref, record, receipt })` and signs only on the answer `'valid'`
+  (CORE SR2-4: the receipt's fields alone are assertions, not proof); an
+  `'invalid'` or `'indeterminate'` answer, any other value, or a throw
+  refuses before any signature. The verifier authenticates the receipt's
+  evidence against the chain, as the operator's reader does a revocation
+  surface; the package does not do it, since the receipt may name any writer
+  (SR2-5 binds the writer the receipt names, with no rule tying it to the
+  record's signer). The record must be a CompositeVerificationRecord
+  with the reference's exact hash, for this job, party and bundle, with a
+  `pass` decision (DACS-2 §7.7.1). It must be signed by the party's
+  counterparty verifier, which the reference names as `signer` (DACS-2
+  §7.7.2): the buyer's record by this seller, the seller's own record by the
+  buyer. The seller's bundle in the context is the Listing's, or a
+  presentation of exactly that identity made for the session (another
+  `presentedAt` and `sessionNonce`, as the package's Vet provider presents it
+  to the buyer's challenge) whose presentation the seller signed; the seller's
+  record must be of that bundle. The context's Vet requirement invocations go into the delivery
+  audit source, so the agent checks them with the SDK delivery runner's own
+  check (`sellerFulfilmentVetRequirementsViolation`) before it signs: exactly
+  one per record, evaluating its party, naming that counterparty as
+  verifier, the Listing's `buyerRequirement` for the buyer's record, and
+  every required claim covered by a result for this job. Each record must
+  also pass the SDK's strict CompositeVerificationRecord check against its
+  invocation: its `requirementHash` is the hash of that exact requirement
+  and its decision replays from the invocation's results (DACS-2 §7.7.1).
+  This package resolves no VerifyResult, so a requirement with a required
+  claim is refused. Otherwise the Agreement is not signed, before any
+  payment. A session
+  in flight, signed under its pin, continues without a new admission or
+  revocation check. The agent's startup check reads only the Listing's own
+  bytes, signature and rail; revocation is checked per new session (above).
+- The profile gates (`vet_context_required`, `session_admission_required`,
+  `settlement_profile_unavailable`, `rail_unavailable`,
+  `native_evidence_required`, `bundle_finalization_unavailable`) refuse before
+  any read, write, signature
+  or send, and the transport answers them as definite refusals that keep no
+  effect in the journal: once the operator completes the configuration, the
+  same request runs.
+- It starts only with the whole chain to delivery: native payment evidence,
+  the DEM delivery context and native DEM delivery. The agent signs an
+  Agreement only over the Vet references the context gives
+  (`vet_context_required` otherwise; it never signs the synthetic
+  not-performed references), commits and takes payment only with the whole
+  chain (`settlement_profile_unavailable`), and takes payment only as native
+  payment evidence (`native_evidence_required`), so these capabilities and the supported Listing size are checked before
+  commitment or payment intake. Actual delivery still depends on valid producer
+  output and available operator capabilities. These
+  capabilities accept only `TEST-` authorities and a loopback fixture node
+  (below), so the host does not start against a real node.
+- It signs no completed DACS-5 bundle (`bundle_finalization_unavailable`
+  from both the bundle request and the countersignature, after the delivery
+  check): the ST-11 finalizer, which needs finalized and independently
+  resolved Vet, commitment, settlement and bundle records, is not part of this
+  package. The session ends at delivery.
+- It does not mount the Vet and Agreement context route itself: the challenge
+  a session needs is the one `host.issueSessionChallenge` issued, which the
+  operator delivers to the buyer. The host keeps every issued challenge
+  with its seller state. Expired unattempted challenges may be reclaimed;
+  accepted presentations retain their exact admission checkpoint for replay.
+  Retired unsigned admissions release active capacity within bounded history.
+  The operator issues challenges only for buyers about to present.
+- The devnet source transport and wallet custody are not part of this
+  package (the payment-evidence journal composes the operator's own wallet
+  primitives). The kit builders that need them (the devnet artifact
+  anchor, issued-write readback and the source mode of native payment
+  evidence) refuse every value here; the operator supplies its own
+  capabilities. Native DEM delivery and the DEM delivery context accept only
+  `TEST-` authorities, as in the source kit. Native writes also need a
+  qualified node deployment (`QUALIFIED_NODE_COMMITS`).
+- Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
+  journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
+  (`seller-write-batch.mjs`).
+
+This checkout provides source modules. Build the core from the same checkout
+before importing the seller source kit.
+
+The rail availability checks implement DACS-4 RAV-R1 through RAV-R3 and
+RAV-R5. The seller does not emit the RAV-R4 `errorClass: substrate` field.
+The SR-2 fixture's genesis response (numeric block zero and a `confirmed`
+status) is a simulation contract, not the pinned node's genesis RPC shape.
