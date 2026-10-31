@@ -1204,6 +1204,105 @@
           "after": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 split 02 isolate buyer runtime imports",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent-error.mjs",
+          "before": null,
+          "after": "a701b193b0b8e1b01237d684ca33c4ee8ea001b6"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent.mjs",
+          "before": "64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b",
+          "after": "f4040282b697373ed8c41585699c049b8230f325"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "afac16899f4f2d95463ce7f3ab6e9aa7e03e0ef1",
+          "after": "b7e0ec6e243d6e81499a97dcbbb609566a0a4134"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "0997b8a6390c44daf9f5075711406d9f2d60dd98",
+          "after": "68a8a8946386f010d7a157a25e184bfb52370108"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "54bead46b8880560f26cacda3d10f6024e24596d",
+          "after": "ecab598d2695975c776aaddd6038e71db5432f6f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": null,
+          "after": "32c65aec6b18cde12321600f9eb1c6ba4e439cae"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": null,
+          "after": "3c96ca8c5a47dcb88862af46324df331961d153e"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 share wallet payload identity and test import isolation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "b7183e63a75b68cda34c2b30a4d532963794b13f",
+          "after": "59a2fd307756d036f813edd17dec2fa8be23e68f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": "32c65aec6b18cde12321600f9eb1c6ba4e439cae",
+          "after": "e9ec2d2e168a27c87ac04b1df345cf6bd8de0242"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": null,
+          "after": "e1085f274e14f20b87335189155f76284fd3b92a"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 restore standalone provider and strengthen import vectors",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "59a2fd307756d036f813edd17dec2fa8be23e68f",
+          "after": "b7183e63a75b68cda34c2b30a4d532963794b13f"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "e1085f274e14f20b87335189155f76284fd3b92a",
+          "after": "3df4a602a8fba8bcdaba2a75919aeebd53f1a46d"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-seam-parameters.test.mjs",
+          "before": "3c96ca8c5a47dcb88862af46324df331961d153e",
+          "after": "7cbf9eb0efa87e4b197e8d320a9080363465ef61"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 generate pure payload helpers from provider",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/payload-helpers.mjs",
+          "before": "e9ec2d2e168a27c87ac04b1df345cf6bd8de0242",
+          "after": "f121637cb5c6f739597a3b9bf7f1253b61c1ec19"
+        },
+        {
+          "path": "packages/dacs-client/test/d11-import-boundary.test.mjs",
+          "before": "3df4a602a8fba8bcdaba2a75919aeebd53f1a46d",
+          "after": "e737b5abec7b991fd5401d943998cd3ce60bc1bc"
+        }
+      ]
     }
   ]
 }

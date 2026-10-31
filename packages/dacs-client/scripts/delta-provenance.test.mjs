@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,3 +69,23 @@ function checkMainMerge(t, { detached = false } = {}) {
 }
 test('launch review: unrelated main commits and a PR merge preserve client provenance',t=>checkMainMerge(t));
 test('launch review: unrelated main commits and a PR merge preserve client provenance from a detached HEAD',t=>checkMainMerge(t,{detached:true}));
+
+for (const subject of ['delta(client): D11 TEST accepted source repair', 'fix(client): D11 TEST accepted source repair']) {
+ test(`D11 source history accepts ${subject.split(':')[0]} records`, t => {
+  const dir=scratch(t),git=(...args)=>execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false',...args]);
+  // Exercise this checkout's checker even before its test commit is published.
+  copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));
+  appendFileSync(join(dir,moved),'\n// TEST D11 source repair\n');git('add','--',moved);
+  const node=(...args)=>execFileSync(process.execPath,args,{cwd:dir});
+  node('packages/dacs-client/scripts/delta-map.mjs','--record','D11',subject);
+  const files=[moved,'packages/dacs-client/DELTA-COMMITS.json','packages/dacs-client/DELTA-LEDGER.json','packages/dacs-client/DELTA-MAP.md'];
+  if(git('diff','--name-only','HEAD','--','packages/dacs-client/scripts/delta-map.mjs').length)files.push('packages/dacs-client/scripts/delta-map.mjs');files.sort();
+  const inventory=join(dir,'packages/dacs-client/DELTA-COMMITS.json'),rows=JSON.parse(readFileSync(inventory,'utf8'));
+  rows.push({sha:null,subject,files});writeFileSync(inventory,JSON.stringify(rows,null,2)+'\n');
+  node('packages/dacs-client/scripts/delta-map.mjs');git('add','--',...files);git('commit','-qm',subject);
+  let result=check(dir);assert.equal(result.status,0,result.text);
+  const checker=join(dir,'packages/dacs-client/scripts/delta-map.mjs');
+  writeFileSync(checker,readFileSync(checker,'utf8').replace("'D1','D11','D15'","'D1','D15'"));
+  result=check(dir);assert.equal(result.status,1,result.text);assert.match(result.text,/invalid delta/);
+ });
+}
