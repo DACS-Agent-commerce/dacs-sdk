@@ -1,0 +1,798 @@
+{
+  "fixture": "plugin-wire-82bf8c4.tp1-revision-adapted",
+  "nature": "Second adaptation of plugin-wire-82bf8c4.original for testnet profile TP-1, derived from plugin-wire-82bf8c4.tp1-adapted. NOT verbatim: every message differs from the original by exactly the changes listed and the key substitution K-1, and was re-signed in one run.",
+  "publicationNote": "Metadata redacted for publication on 2026-10-18; the same cases were re-signed with fresh test keys by the pinned adapter.",
+  "derivedFrom": [
+    {
+      "fixture": "plugin-wire-82bf8c4.original",
+      "sha256": "4be1730d77d9cfdc2d840b876dee6adc0d261b70a7a903add2515751c905121b"
+    },
+    {
+      "fixture": "plugin-wire-82bf8c4.tp1-adapted",
+      "sha256": "89be02a422d5063281cab8e7b9e9f0dd27650a4da06dd66e6d4927161a988a35"
+    }
+  ],
+  "generator": {
+    "path": "scripts/wire/adapt-tp1-revision-fixture.mjs",
+    "sha256": "b3ed612130f2f9b836791a697862e7c7accacf330e7cdc7aae31c85ebb83bf7c"
+  },
+  "changes": [
+    {
+      "id": "D6-1",
+      "what": "request signing domain",
+      "from": "dacs-chatgpt-plugin:loopback-seller-peer:v1:",
+      "to": "dacs-seller-http:v1:request:"
+    },
+    {
+      "id": "D6-2",
+      "what": "response signing domain (the original signs responses under the request domain)",
+      "from": "dacs-chatgpt-plugin:loopback-seller-peer:v1:",
+      "to": "dacs-seller-http:v1:response:"
+    },
+    {
+      "id": "D6-3",
+      "what": "delegation signing domain",
+      "from": "dacs-chatgpt-plugin:seller-session-delegation:v1:",
+      "to": "dacs-seller-http:v1:delegation:"
+    },
+    {
+      "id": "D6-4",
+      "what": "new exact member `profile` {id, base, chainIdentity, pinVersion} in request, response and delegation payloads",
+      "from": null,
+      "to": "profile"
+    },
+    {
+      "id": "D6-5",
+      "what": "new exact member `revision` (the profile revision, \"TP-1\") in every profile member: {id, revision, base, chainIdentity, pinVersion}",
+      "from": null,
+      "to": "profile.revision"
+    }
+  ],
+  "keySubstitution": {
+    "id": "K-1",
+    "what": "The pre-revision adaptation's run-time keys were discarded. Four new run-time keys replace them one for one; each message is signed by the substitute of the key that signed it there, over the same bytes of the new message, and a message that carried another message's signature carries that message's new signature. Every claim and session key in the messages is substituted the same way.",
+    "parties": {
+      "buyer": {
+        "from": "did:demos:agent:2002fd818ac2a900da591fff013b7c5b4b0354d698ce1a56e42808bb6e84182c",
+        "to": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73"
+      },
+      "seller": {
+        "from": "did:demos:agent:28d80c2163008429ada59684df0261bb921b3198464cb8cc2f23333fe4dbc5d4",
+        "to": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45"
+      },
+      "session": {
+        "from": "did:demos:agent:5eb31d92eed78891a14d8109f7859f2d1cb83695008ab67febb636a7de7199e5",
+        "to": "did:demos:agent:3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e"
+      },
+      "other": {
+        "from": "did:demos:agent:7edd1784a8da02c58a3ad31004d48999f4814e1f03ea064e7f1bfa49ecaf9a02",
+        "to": "did:demos:agent:d761c11819117904e2aaddb2437ab32d3a36364d23512f84bdccb562b36c9d09"
+      }
+    }
+  },
+  "syntheticIdentityRecord": {
+    "label": "SYNTHETIC test-only record; not the approved record; not a Demos chain identity",
+    "record": {
+      "format": "dacs-testnet-identity-record/v1",
+      "recordId": "synthetic-test-only/wire-fixture/ff8c13f0",
+      "network": "demos-testnet",
+      "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+      "pinVersion": "synthetic-test-only/1",
+      "provenance": {
+        "approvedBy": "SYNTHETIC test generator; approves nothing outside tests",
+        "approvedAt": "2026-10-14T12:00:00.000Z",
+        "source": "generated at run time; not a Demos chain identity"
+      }
+    },
+    "digest": "41a62c23baefcd880c7d4fff86f51dfd18380e00a898cc38579f86f62efa1bf8"
+  },
+  "keys": "Ed25519 keys were generated at run time and discarded; this file holds public keys and signatures only.",
+  "now": 1791979200000,
+  "parties": {
+    "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+    "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+    "session": "did:demos:agent:3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+    "other": "did:demos:agent:d761c11819117904e2aaddb2437ab32d3a36364d23512f84bdccb562b36c9d09"
+  },
+  "job": {
+    "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+    "otherJobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4J",
+    "listingPin": {
+      "listingId": "wire-fixture-report",
+      "version": 1,
+      "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+    },
+    "otherListingPin": {
+      "listingId": "wire-fixture-report",
+      "version": 2,
+      "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+    },
+    "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+    "path": "/dacs/v1/commitments"
+  },
+  "localBindings": {
+    "buyer": {
+      "endpoint": "https://rpc-a.wire-fixture.invalid/",
+      "transportAuthority": "test-transport-a",
+      "connectionId": "conn-a-1"
+    },
+    "seller": {
+      "endpoint": "https://rpc-b.wire-fixture.invalid/",
+      "transportAuthority": "test-transport-b",
+      "connectionId": "conn-b-1"
+    }
+  },
+  "note": "No originalVerdict: the original module was not run on these messages. plugin-wire-82bf8c4.tp1-adapted records its verdicts on the pre-revision adaptation; it refuses every profile-bearing message.",
+  "valid": {
+    "request": {
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979230000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6ImcxRnlITHFCbGphUHZ1S1lCT0J5WVI1MUZhY1c0ZXJGNzJ2OXNSaVN3UThiVzlmSUxiSExOcnFPZUNqeEpGRWcyM3pwS05JSE1tSk1rMjdUZlpzWkF3In0",
+      "signingBytes": "dacs-seller-http:v1:request:{\"agreementHash\":\"7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e\",\"bodyHash\":\"be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db\",\"buyer\":\"did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73\",\"expiresAt\":1791979230000,\"jobId\":\"01K7FZ8Q9W3V5T2R1N0M8K6J4H\",\"kind\":\"request\",\"listingPin\":{\"contentHash\":\"97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6\",\"listingId\":\"wire-fixture-report\",\"version\":1},\"method\":\"POST\",\"nonce\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYX\",\"path\":\"/dacs/v1/commitments\",\"profile\":{\"base\":\"d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20\",\"chainIdentity\":\"fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d\",\"id\":\"dacs-testnet-tp1\",\"pinVersion\":\"synthetic-test-only/1\",\"revision\":\"TP-1\"},\"seller\":\"did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45\",\"version\":\"1\"}",
+      "bodyText": "{\"jobId\":\"01K7FZ8Q9W3V5T2R1N0M8K6J4H\"}"
+    },
+    "response": {
+      "request": {
+        "version": "1",
+        "kind": "request",
+        "method": "POST",
+        "path": "/dacs/v1/commitments",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "listingPin": {
+          "listingId": "wire-fixture-report",
+          "version": 1,
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+        },
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "expiresAt": 1791979230000,
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        }
+      },
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "95525cfbfc204421e3c2ff6c03f46169e7f6f9c3a1fba44bc2f443d62c631578",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979260000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "response",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "requestHash": "07f5f415dbd2a5351af25602e4d0065b2b00c16d92ed4c5a61f3ee28fc2369c3",
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "status": 200,
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiI5NTUyNWNmYmZjMjA0NDIxZTNjMmZmNmMwM2Y0NjE2OWU3ZjZmOWMzYTFmYmE0NGJjMmY0NDNkNjJjNjMxNTc4IiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTI2MDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXNwb25zZSIsImxpc3RpbmdQaW4iOnsiY29udGVudEhhc2giOiI5N2IyNmQxYmNiMTczOWVkMjI1OWE2NjQ2YmJiM2E4MDQ3ZDYwYzhjMWY2MzRmYzlmZDBmZmQyMWU1OTIxOGI2IiwibGlzdGluZ0lkIjoid2lyZS1maXh0dXJlLXJlcG9ydCIsInZlcnNpb24iOjF9LCJtZXRob2QiOiJQT1NUIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWCIsInBhdGgiOiIvZGFjcy92MS9jb21taXRtZW50cyIsInByb2ZpbGUiOnsiYmFzZSI6ImQ0NWMwYTI5MjAwNmIyZmQyZTQwZDJkYmUwY2Q3ZWQ1MThhZDBmMjAiLCJjaGFpbklkZW50aXR5IjoiZmE5NTcyYTA3N2JiYzU4MzUxOTMzNmVlOWE4ZTQyNGExZjZiMzZjZmI1OWMyMjA4YjI2NTdjZTgwMzQwODM3ZCIsImlkIjoiZGFjcy10ZXN0bmV0LXRwMSIsInBpblZlcnNpb24iOiJzeW50aGV0aWMtdGVzdC1vbmx5LzEiLCJyZXZpc2lvbiI6IlRQLTEifSwicmVxdWVzdEhhc2giOiIwN2Y1ZjQxNWRiZDJhNTM1MWFmMjU2MDJlNGQwMDY1YjJiMDBjMTZkOTJlZDRjNWE2MWYzZWUyOGZjMjM2OWMzIiwic2VsbGVyIjoiZGlkOmRlbW9zOmFnZW50OjlkZWI1MGQ4ZmYxNzMzNWY3MzNjYWNmZTM2ZWY1NjhjOGZhZTUzYTQ4NzY3NWVmNjQ1MDYyZThkYzc5OGVhNDUiLCJzdGF0dXMiOjIwMCwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoib0g5WnZBYldYVVRYeXZackFvclViN0JNMjE3U3drdE4ydzRucEdCZkZBMmE3VHhWY25QdDBuZW5JLWNMQkI5NVdJVzV5LW1mOWN3UUVlYnlYTnNHRGcifQ",
+      "signingBytes": "dacs-seller-http:v1:response:{\"agreementHash\":\"7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e\",\"bodyHash\":\"95525cfbfc204421e3c2ff6c03f46169e7f6f9c3a1fba44bc2f443d62c631578\",\"buyer\":\"did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73\",\"expiresAt\":1791979260000,\"jobId\":\"01K7FZ8Q9W3V5T2R1N0M8K6J4H\",\"kind\":\"response\",\"listingPin\":{\"contentHash\":\"97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6\",\"listingId\":\"wire-fixture-report\",\"version\":1},\"method\":\"POST\",\"nonce\":\"AAECAwQFBgcICQoLDA0ODxAREhMUFRYX\",\"path\":\"/dacs/v1/commitments\",\"profile\":{\"base\":\"d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20\",\"chainIdentity\":\"fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d\",\"id\":\"dacs-testnet-tp1\",\"pinVersion\":\"synthetic-test-only/1\",\"revision\":\"TP-1\"},\"requestHash\":\"07f5f415dbd2a5351af25602e4d0065b2b00c16d92ed4c5a61f3ee28fc2369c3\",\"seller\":\"did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45\",\"status\":200,\"version\":\"1\"}",
+      "status": 200,
+      "text": "{\"status\":\"committed\"}"
+    },
+    "delegation": {
+      "payload": {
+        "version": "1",
+        "kind": "seller-session-delegation",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "listingPin": {
+          "listingId": "wire-fixture-report",
+          "version": 1,
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+        },
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "notBefore": 1791979199000,
+        "expiresAt": 1791982800000,
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        }
+      },
+      "signature": "0x7f17af94925f1de8c075b1f4b87ca995ea1cfbee83fc3fb34e70e8fca82459252684f2666d71e080042b6eacd0e57353e00fa66b760d1e737a91302f5d11bd08",
+      "signingBytes": "dacs-seller-http:v1:delegation:{\"buyer\":\"did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73\",\"expiresAt\":1791982800000,\"jobId\":\"01K7FZ8Q9W3V5T2R1N0M8K6J4H\",\"kind\":\"seller-session-delegation\",\"listingPin\":{\"contentHash\":\"97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6\",\"listingId\":\"wire-fixture-report\",\"version\":1},\"notBefore\":1791979199000,\"profile\":{\"base\":\"d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20\",\"chainIdentity\":\"fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d\",\"id\":\"dacs-testnet-tp1\",\"pinVersion\":\"synthetic-test-only/1\",\"revision\":\"TP-1\"},\"seller\":\"did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45\",\"sessionPublicKey\":\"3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e\",\"version\":\"1\"}"
+    },
+    "delegatedRequest": {
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979230000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJkZWxlZ2F0aW9uIjp7InBheWxvYWQiOnsiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk4MjgwMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJzZWxsZXItc2Vzc2lvbi1kZWxlZ2F0aW9uIiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm5vdEJlZm9yZSI6MTc5MTk3OTE5OTAwMCwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInNlc3Npb25QdWJsaWNLZXkiOiIzNDkyNDIzZDZjYWYyMzY0OTU4NWQ0MjdmNmRlMDliNmNiMWU2YjQyOTQ3NDFkNGQxOGJkN2IzZmY0NDkyMTVlIiwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoiMHg3ZjE3YWY5NDkyNWYxZGU4YzA3NWIxZjRiODdjYTk5NWVhMWNmYmVlODNmYzNmYjM0ZTcwZThmY2E4MjQ1OTI1MjY4NGYyNjY2ZDcxZTA4MDA0MmI2ZWFjZDBlNTczNTNlMDBmYTY2Yjc2MGQxZTczN2E5MTMwMmY1ZDExYmQwOCJ9LCJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkZ4WVZGQk1TRVJBUERnME1Dd29KQ0FjR0JRUURBZ0VBIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6IkVQLUhtVXZ4VEVhclZ0SDRPdFBIdVFUdDVEYTV0bUFxVTREZWpVNHo3Q0xoR1AxT0RQNHVKZjUyOTRwdk03a0ZXOTU4RTRMU25WOEwtcG1iSFY3REF3In0",
+      "bodyText": "{\"jobId\":\"01K7FZ8Q9W3V5T2R1N0M8K6J4H\"}"
+    }
+  },
+  "requestNegatives": [
+    {
+      "id": "request/wrong-signer",
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979230000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6InEwT1VRdGVGS1o2b054XzhqZHEzZ05OQVk1Y21UY3FPbWdub0owQkVOVEhfdTRMc3R0WTVxQzVZOVduUjgtRHk2aWpkcXFqdFZmRlIyUGQ0ZVdLckRRIn0"
+    },
+    {
+      "id": "request/extra-field",
+      "payload": null,
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiZXh0cmEiOiJ4Iiwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Ims5RWZCTmI0QmhVVnhTTnZuSW9QclBtODJweEotbXlzY3ZuOEJ4RFRDOUQ5aFdSaDdwOFpQYzRoVUN2eVNwWldPakxQNmF0Mng0WERwbUdTOHcySkJ3In0"
+    },
+    {
+      "id": "request/bad-nonce",
+      "payload": null,
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6InNob3J0IiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Ims5RWZCTmI0QmhVVnhTTnZuSW9QclBtODJweEotbXlzY3ZuOEJ4RFRDOUQ5aFdSaDdwOFpQYzRoVUN2eVNwWldPakxQNmF0Mng0WERwbUdTOHcySkJ3In0"
+    },
+    {
+      "id": "request/expired",
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979199999,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTE5OTk5OSwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Im9NclZtcmZwdldCNm9USEJlc0p0R2ZiRmlhRTJMdVN2MWc4QWJDWXFpNWhSU0xmekkwWXJncE5fendlVEg1N1pUVnp6eW9RRkgzRV9kcWxqYjRjdUFRIn0"
+    },
+    {
+      "id": "request/lifetime-over-60s",
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979260001,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTI2MDAwMSwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6ImF2QW5ZTVBONkZWZVIzSVE0bFpBWFdPME1XQkVoYmFQV3pjNmU4VEFvNVhlczFTbGpHSGV4a2tkVlExbHp5d056WWRLZjF1dEh5Y00yeUd0Sk9Rd0RRIn0"
+    },
+    {
+      "id": "request/wrong-listing",
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979230000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6ImcxRnlITHFCbGphUHZ1S1lCT0J5WVI1MUZhY1c0ZXJGNzJ2OXNSaVN3UThiVzlmSUxiSExOcnFPZUNqeEpGRWcyM3pwS05JSE1tSk1rMjdUZlpzWkF3In0",
+      "server": {
+        "listingPin": {
+          "listingId": "wire-fixture-report",
+          "version": 2,
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+        }
+      }
+    },
+    {
+      "id": "request/wrong-audience",
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979230000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6ImcxRnlITHFCbGphUHZ1S1lCT0J5WVI1MUZhY1c0ZXJGNzJ2OXNSaVN3UThiVzlmSUxiSExOcnFPZUNqeEpGRWcyM3pwS05JSE1tSk1rMjdUZlpzWkF3In0",
+      "server": {
+        "seller": "other"
+      }
+    },
+    {
+      "id": "request/body-mismatch",
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979230000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6ImcxRnlITHFCbGphUHZ1S1lCT0J5WVI1MUZhY1c0ZXJGNzJ2OXNSaVN3UThiVzlmSUxiSExOcnFPZUNqeEpGRWcyM3pwS05JSE1tSk1rMjdUZlpzWkF3In0",
+      "bodyText": "{\"jobId\":\"01K7FZ8Q9W3V5T2R1N0M8K6J4J\"}"
+    },
+    {
+      "id": "request/delegation-required",
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979230000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6ImcxRnlITHFCbGphUHZ1S1lCT0J5WVI1MUZhY1c0ZXJGNzJ2OXNSaVN3UThiVzlmSUxiSExOcnFPZUNqeEpGRWcyM3pwS05JSE1tSk1rMjdUZlpzWkF3In0",
+      "requireDelegation": true
+    },
+    {
+      "id": "request/delegated-outlives-delegation",
+      "payload": {
+        "agreementHash": "7fa131a575e918dd57dc4aa5815183ec34da45431c7ee5291fb498fa1580336e",
+        "bodyHash": "be82cbbce3e35bd4dc3d901d360c3ce4eacca0d76655e55fe9a5fa0a8b9388db",
+        "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+        "expiresAt": 1791979260000,
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+        "kind": "request",
+        "listingPin": {
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6",
+          "listingId": "wire-fixture-report",
+          "version": 1
+        },
+        "method": "POST",
+        "nonce": "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA",
+        "path": "/dacs/v1/commitments",
+        "profile": {
+          "id": "dacs-testnet-tp1",
+          "revision": "TP-1",
+          "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+          "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+          "pinVersion": "synthetic-test-only/1"
+        },
+        "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+        "version": "1"
+      },
+      "header": "eyJkZWxlZ2F0aW9uIjp7InBheWxvYWQiOnsiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTIzMDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJzZWxsZXItc2Vzc2lvbi1kZWxlZ2F0aW9uIiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm5vdEJlZm9yZSI6MTc5MTk3OTE5OTAwMCwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInNlc3Npb25QdWJsaWNLZXkiOiIzNDkyNDIzZDZjYWYyMzY0OTU4NWQ0MjdmNmRlMDliNmNiMWU2YjQyOTQ3NDFkNGQxOGJkN2IzZmY0NDkyMTVlIiwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoiMHhiMWE4ZjExMjQ1ZTNlODA4ZmM1MjliYWE5OWI5ZTdmY2I4NDFjZDBlZTI3NjA3YmY0ZTNiZGM4ODNhZTQ1OWE2NTZjNWI0OGUxYTZiNjg5OWY1NDNmNjVlYWY5ZDkwYjYxMWUzZjI1ZWQwYWNmYzVkMTUyYmU2YTYwMzc1MmYwZCJ9LCJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiJiZTgyY2JiY2UzZTM1YmQ0ZGMzZDkwMWQzNjBjM2NlNGVhY2NhMGQ3NjY1NWU1NWZlOWE1ZmEwYThiOTM4OGRiIiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTI2MDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXF1ZXN0IiwibGlzdGluZ1BpbiI6eyJjb250ZW50SGFzaCI6Ijk3YjI2ZDFiY2IxNzM5ZWQyMjU5YTY2NDZiYmIzYTgwNDdkNjBjOGMxZjYzNGZjOWZkMGZmZDIxZTU5MjE4YjYiLCJsaXN0aW5nSWQiOiJ3aXJlLWZpeHR1cmUtcmVwb3J0IiwidmVyc2lvbiI6MX0sIm1ldGhvZCI6IlBPU1QiLCJub25jZSI6IkZ4WVZGQk1TRVJBUERnME1Dd29KQ0FjR0JRUURBZ0VBIiwicGF0aCI6Ii9kYWNzL3YxL2NvbW1pdG1lbnRzIiwicHJvZmlsZSI6eyJiYXNlIjoiZDQ1YzBhMjkyMDA2YjJmZDJlNDBkMmRiZTBjZDdlZDUxOGFkMGYyMCIsImNoYWluSWRlbnRpdHkiOiJmYTk1NzJhMDc3YmJjNTgzNTE5MzM2ZWU5YThlNDI0YTFmNmIzNmNmYjU5YzIyMDhiMjY1N2NlODAzNDA4MzdkIiwiaWQiOiJkYWNzLXRlc3RuZXQtdHAxIiwicGluVmVyc2lvbiI6InN5bnRoZXRpYy10ZXN0LW9ubHkvMSIsInJldmlzaW9uIjoiVFAtMSJ9LCJzZWxsZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6OWRlYjUwZDhmZjE3MzM1ZjczM2NhY2ZlMzZlZjU2OGM4ZmFlNTNhNDg3Njc1ZWY2NDUwNjJlOGRjNzk4ZWE0NSIsInZlcnNpb24iOiIxIn0sInNpZ25hdHVyZSI6Ik5zNTRrd2J5TE9abWxiYjY5dHdJTUQ4MEY2ekR4cUt4NzhscDU0RjAzWlpOb21XN1JJd0o1Rl85U0ZsbnhUNC1iZWVnTTk0YWN1ZzB6WDBmNFJOVkFnIn0",
+      "requireDelegation": true
+    }
+  ],
+  "delegationNegatives": [
+    {
+      "id": "delegation/expired",
+      "delegation": {
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+          "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+          "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        },
+        "signature": "0x7f17af94925f1de8c075b1f4b87ca995ea1cfbee83fc3fb34e70e8fca82459252684f2666d71e080042b6eacd0e57353e00fa66b760d1e737a91302f5d11bd08"
+      },
+      "scope": {
+        "time": 1791982800000
+      }
+    },
+    {
+      "id": "delegation/not-yet-valid",
+      "delegation": {
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+          "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+          "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        },
+        "signature": "0x7f17af94925f1de8c075b1f4b87ca995ea1cfbee83fc3fb34e70e8fca82459252684f2666d71e080042b6eacd0e57353e00fa66b760d1e737a91302f5d11bd08"
+      },
+      "scope": {
+        "time": 1791979198000
+      }
+    },
+    {
+      "id": "delegation/wrong-seller-scope",
+      "delegation": {
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+          "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+          "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        },
+        "signature": "0x7f17af94925f1de8c075b1f4b87ca995ea1cfbee83fc3fb34e70e8fca82459252684f2666d71e080042b6eacd0e57353e00fa66b760d1e737a91302f5d11bd08"
+      },
+      "scope": {
+        "seller": "other"
+      }
+    },
+    {
+      "id": "delegation/wrong-listing-scope",
+      "delegation": {
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+          "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+          "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        },
+        "signature": "0x7f17af94925f1de8c075b1f4b87ca995ea1cfbee83fc3fb34e70e8fca82459252684f2666d71e080042b6eacd0e57353e00fa66b760d1e737a91302f5d11bd08"
+      },
+      "scope": {
+        "listingPin": {
+          "listingId": "wire-fixture-report",
+          "version": 2,
+          "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+        }
+      }
+    },
+    {
+      "id": "delegation/wrong-job-scope",
+      "delegation": {
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+          "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+          "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        },
+        "signature": "0x7f17af94925f1de8c075b1f4b87ca995ea1cfbee83fc3fb34e70e8fca82459252684f2666d71e080042b6eacd0e57353e00fa66b760d1e737a91302f5d11bd08"
+      },
+      "scope": {
+        "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4J"
+      }
+    },
+    {
+      "id": "delegation/beyond-deadline",
+      "delegation": {
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+          "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+          "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        },
+        "signature": "0x7f17af94925f1de8c075b1f4b87ca995ea1cfbee83fc3fb34e70e8fca82459252684f2666d71e080042b6eacd0e57353e00fa66b760d1e737a91302f5d11bd08"
+      },
+      "scope": {
+        "deadline": 1791982799999
+      }
+    },
+    {
+      "id": "delegation/bad-signature",
+      "delegation": {
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+          "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+          "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979199000,
+          "expiresAt": 1791982800000,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        },
+        "signature": "0x20e40ebf31f5314096cf8db25f2d030167c047aa85c43d222ffa5fd90c6a8634aa44596ab579b31bf9fefd02e15b7795e183f72a5362a674cca3b35eeea77402"
+      },
+      "scope": {}
+    },
+    {
+      "id": "delegation/lifetime-over-24h",
+      "delegation": {
+        "payload": {
+          "version": "1",
+          "kind": "seller-session-delegation",
+          "buyer": "did:demos:agent:ed23af79b837ec2d7dd7deedf7cb41a0a16b65cb9748bd163cc559e69f6f2a73",
+          "sessionPublicKey": "3492423d6caf23649585d427f6de09b6cb1e6b4294741d4d18bd7b3ff449215e",
+          "seller": "did:demos:agent:9deb50d8ff17335f733cacfe36ef568c8fae53a487675ef645062e8dc798ea45",
+          "listingPin": {
+            "listingId": "wire-fixture-report",
+            "version": 1,
+            "contentHash": "97b26d1bcb1739ed2259a6646bbb3a8047d60c8c1f634fc9fd0ffd21e59218b6"
+          },
+          "jobId": "01K7FZ8Q9W3V5T2R1N0M8K6J4H",
+          "notBefore": 1791979200000,
+          "expiresAt": 1792065600001,
+          "profile": {
+            "id": "dacs-testnet-tp1",
+            "revision": "TP-1",
+            "base": "d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20",
+            "chainIdentity": "fa9572a077bbc583519336ee9a8e424a1f6b36cfb59c2208b2657ce80340837d",
+            "pinVersion": "synthetic-test-only/1"
+          }
+        },
+        "signature": "0x7f17af94925f1de8c075b1f4b87ca995ea1cfbee83fc3fb34e70e8fca82459252684f2666d71e080042b6eacd0e57353e00fa66b760d1e737a91302f5d11bd08"
+      },
+      "scope": {}
+    }
+  ],
+  "responseNegatives": [
+    {
+      "id": "response/wrong-status",
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiI5NTUyNWNmYmZjMjA0NDIxZTNjMmZmNmMwM2Y0NjE2OWU3ZjZmOWMzYTFmYmE0NGJjMmY0NDNkNjJjNjMxNTc4IiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTI2MDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXNwb25zZSIsImxpc3RpbmdQaW4iOnsiY29udGVudEhhc2giOiI5N2IyNmQxYmNiMTczOWVkMjI1OWE2NjQ2YmJiM2E4MDQ3ZDYwYzhjMWY2MzRmYzlmZDBmZmQyMWU1OTIxOGI2IiwibGlzdGluZ0lkIjoid2lyZS1maXh0dXJlLXJlcG9ydCIsInZlcnNpb24iOjF9LCJtZXRob2QiOiJQT1NUIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWCIsInBhdGgiOiIvZGFjcy92MS9jb21taXRtZW50cyIsInByb2ZpbGUiOnsiYmFzZSI6ImQ0NWMwYTI5MjAwNmIyZmQyZTQwZDJkYmUwY2Q3ZWQ1MThhZDBmMjAiLCJjaGFpbklkZW50aXR5IjoiZmE5NTcyYTA3N2JiYzU4MzUxOTMzNmVlOWE4ZTQyNGExZjZiMzZjZmI1OWMyMjA4YjI2NTdjZTgwMzQwODM3ZCIsImlkIjoiZGFjcy10ZXN0bmV0LXRwMSIsInBpblZlcnNpb24iOiJzeW50aGV0aWMtdGVzdC1vbmx5LzEiLCJyZXZpc2lvbiI6IlRQLTEifSwicmVxdWVzdEhhc2giOiIwN2Y1ZjQxNWRiZDJhNTM1MWFmMjU2MDJlNGQwMDY1YjJiMDBjMTZkOTJlZDRjNWE2MWYzZWUyOGZjMjM2OWMzIiwic2VsbGVyIjoiZGlkOmRlbW9zOmFnZW50OjlkZWI1MGQ4ZmYxNzMzNWY3MzNjYWNmZTM2ZWY1NjhjOGZhZTUzYTQ4NzY3NWVmNjQ1MDYyZThkYzc5OGVhNDUiLCJzdGF0dXMiOjIwMCwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoib0g5WnZBYldYVVRYeXZackFvclViN0JNMjE3U3drdE4ydzRucEdCZkZBMmE3VHhWY25QdDBuZW5JLWNMQkI5NVdJVzV5LW1mOWN3UUVlYnlYTnNHRGcifQ",
+      "status": 201,
+      "text": "{\"status\":\"committed\"}"
+    },
+    {
+      "id": "response/wrong-body",
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiI5NTUyNWNmYmZjMjA0NDIxZTNjMmZmNmMwM2Y0NjE2OWU3ZjZmOWMzYTFmYmE0NGJjMmY0NDNkNjJjNjMxNTc4IiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTI2MDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXNwb25zZSIsImxpc3RpbmdQaW4iOnsiY29udGVudEhhc2giOiI5N2IyNmQxYmNiMTczOWVkMjI1OWE2NjQ2YmJiM2E4MDQ3ZDYwYzhjMWY2MzRmYzlmZDBmZmQyMWU1OTIxOGI2IiwibGlzdGluZ0lkIjoid2lyZS1maXh0dXJlLXJlcG9ydCIsInZlcnNpb24iOjF9LCJtZXRob2QiOiJQT1NUIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWCIsInBhdGgiOiIvZGFjcy92MS9jb21taXRtZW50cyIsInByb2ZpbGUiOnsiYmFzZSI6ImQ0NWMwYTI5MjAwNmIyZmQyZTQwZDJkYmUwY2Q3ZWQ1MThhZDBmMjAiLCJjaGFpbklkZW50aXR5IjoiZmE5NTcyYTA3N2JiYzU4MzUxOTMzNmVlOWE4ZTQyNGExZjZiMzZjZmI1OWMyMjA4YjI2NTdjZTgwMzQwODM3ZCIsImlkIjoiZGFjcy10ZXN0bmV0LXRwMSIsInBpblZlcnNpb24iOiJzeW50aGV0aWMtdGVzdC1vbmx5LzEiLCJyZXZpc2lvbiI6IlRQLTEifSwicmVxdWVzdEhhc2giOiIwN2Y1ZjQxNWRiZDJhNTM1MWFmMjU2MDJlNGQwMDY1YjJiMDBjMTZkOTJlZDRjNWE2MWYzZWUyOGZjMjM2OWMzIiwic2VsbGVyIjoiZGlkOmRlbW9zOmFnZW50OjlkZWI1MGQ4ZmYxNzMzNWY3MzNjYWNmZTM2ZWY1NjhjOGZhZTUzYTQ4NzY3NWVmNjQ1MDYyZThkYzc5OGVhNDUiLCJzdGF0dXMiOjIwMCwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoib0g5WnZBYldYVVRYeXZackFvclViN0JNMjE3U3drdE4ydzRucEdCZkZBMmE3VHhWY25QdDBuZW5JLWNMQkI5NVdJVzV5LW1mOWN3UUVlYnlYTnNHRGcifQ",
+      "status": 200,
+      "text": "{\"status\":\"other\"}"
+    },
+    {
+      "id": "response/other-signer",
+      "header": "eyJwYXlsb2FkIjp7ImFncmVlbWVudEhhc2giOiI3ZmExMzFhNTc1ZTkxOGRkNTdkYzRhYTU4MTUxODNlYzM0ZGE0NTQzMWM3ZWU1MjkxZmI0OThmYTE1ODAzMzZlIiwiYm9keUhhc2giOiI5NTUyNWNmYmZjMjA0NDIxZTNjMmZmNmMwM2Y0NjE2OWU3ZjZmOWMzYTFmYmE0NGJjMmY0NDNkNjJjNjMxNTc4IiwiYnV5ZXIiOiJkaWQ6ZGVtb3M6YWdlbnQ6ZWQyM2FmNzliODM3ZWMyZDdkZDdkZWVkZjdjYjQxYTBhMTZiNjVjYjk3NDhiZDE2M2NjNTU5ZTY5ZjZmMmE3MyIsImV4cGlyZXNBdCI6MTc5MTk3OTI2MDAwMCwiam9iSWQiOiIwMUs3Rlo4UTlXM1Y1VDJSMU4wTThLNko0SCIsImtpbmQiOiJyZXNwb25zZSIsImxpc3RpbmdQaW4iOnsiY29udGVudEhhc2giOiI5N2IyNmQxYmNiMTczOWVkMjI1OWE2NjQ2YmJiM2E4MDQ3ZDYwYzhjMWY2MzRmYzlmZDBmZmQyMWU1OTIxOGI2IiwibGlzdGluZ0lkIjoid2lyZS1maXh0dXJlLXJlcG9ydCIsInZlcnNpb24iOjF9LCJtZXRob2QiOiJQT1NUIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWCIsInBhdGgiOiIvZGFjcy92MS9jb21taXRtZW50cyIsInByb2ZpbGUiOnsiYmFzZSI6ImQ0NWMwYTI5MjAwNmIyZmQyZTQwZDJkYmUwY2Q3ZWQ1MThhZDBmMjAiLCJjaGFpbklkZW50aXR5IjoiZmE5NTcyYTA3N2JiYzU4MzUxOTMzNmVlOWE4ZTQyNGExZjZiMzZjZmI1OWMyMjA4YjI2NTdjZTgwMzQwODM3ZCIsImlkIjoiZGFjcy10ZXN0bmV0LXRwMSIsInBpblZlcnNpb24iOiJzeW50aGV0aWMtdGVzdC1vbmx5LzEiLCJyZXZpc2lvbiI6IlRQLTEifSwicmVxdWVzdEhhc2giOiIwN2Y1ZjQxNWRiZDJhNTM1MWFmMjU2MDJlNGQwMDY1YjJiMDBjMTZkOTJlZDRjNWE2MWYzZWUyOGZjMjM2OWMzIiwic2VsbGVyIjoiZGlkOmRlbW9zOmFnZW50OjlkZWI1MGQ4ZmYxNzMzNWY3MzNjYWNmZTM2ZWY1NjhjOGZhZTUzYTQ4NzY3NWVmNjQ1MDYyZThkYzc5OGVhNDUiLCJzdGF0dXMiOjIwMCwidmVyc2lvbiI6IjEifSwic2lnbmF0dXJlIjoiTFlzR0k2Y0UzQkgyMUlzdGQxb3lpelVyR09nZEkxSGE0TEc2Q3dxd2NncHZwSWRPYnVhSDRxTWNTZHZaZ1NIeWFDX05QaGR5eDhjLUNSTWZwSnBBQ3cifQ",
+      "status": 200,
+      "text": "{\"status\":\"committed\"}"
+    }
+  ]
+}
