@@ -30,9 +30,27 @@ export function readBoundedFile(path, { noFollow = false } = {}) {
   } finally { closeSync(descriptor); }
 }
 
-/** Reads at most the evidence budget before decoding; returns undefined only for a missing file. */
+// A byte order mark stays in the text, as Buffer decoding kept it.
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// Decodes evidence bytes; throws for invalid UTF-8 rather than substituting characters.
+function decodeEvidence(bytes) {
+  try { return strictUtf8.decode(bytes); } catch { throw new Error("evidence is not valid UTF-8"); }
+}
+
+/** Reads at most the evidence budget before decoding; returns undefined only for a missing file.
+ * Throws for a file that is not regular, over the budget or not valid UTF-8. */
 export function readEvidence(path) {
-  return readBoundedFile(path)?.bytes.toString("utf8");
+  const file = readBoundedFile(path);
+  return file === undefined ? undefined : decodeEvidence(file.bytes);
+}
+
+/** Reads evidence a step cannot go without, as readEvidence does; a missing file throws an
+ * ENOENT error that names its path. */
+export function readRequiredEvidence(path) {
+  const text = readEvidence(path);
+  if (text === undefined) throw Object.assign(new Error(`ENOENT: evidence file missing: ${path}`), { code: "ENOENT" });
+  return text;
 }
 
 /** Iterates bounded diagnostic lines; throws before admitting an oversized line or list. */
