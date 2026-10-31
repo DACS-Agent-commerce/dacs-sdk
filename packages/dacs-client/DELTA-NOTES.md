@@ -42,7 +42,7 @@ Public API addition for boundary review: `src/index.ts:312` re-exports the exist
 - `src/dacs/artifact-reference.mjs:1`: pure logical/transaction references extracted from the former fixture dependency; canonicalSignature is in signatures.mjs.
 - `src/dacs/seller-session-limits.mjs:1`: relocate the copied pure bounds module out of the portal directory. The original path is deleted by D1; no implementation change.
 - `src/purchase-limits.mjs:1`: extract the existing immutable limits so importing purchases does not execute the plugin's switch-file startup configuration.
-- `src/seams/purchase-store-not-wired.mjs:1`: transaction/isUniqueViolation stubs for D11. No store implementation or registration mechanism.
+- `src/seams/purchase-store-not-wired.mjs:1`: the private synchronous SQLite purchase transaction adapter (`createSqlitePurchaseStore`) and its qualifier (`purchaseStore`) for D11. The exported transaction/isUniqueViolation remain NotWiredError stubs; no registration mechanism.
 - `src/seams/wallet-actions-not-wired.mjs:1`: wallet challenge and portal payload/check stubs for D11.
 - `src/seams/buyer-access-not-wired.mjs:1`: the in-process operator capability is unavailable pending D11.
 - `src/seams/seller-integration-not-wired.mjs:1`: legacy fixture anchor operations in the shared seller closure throw; no plugin fixture module is pulled in. D11/seller split must dispose of that closure.
@@ -178,3 +178,38 @@ Launch review payment bound, delivery-evidence gate and non-observation correcti
 - `src/dacs/listing.mjs`: DACS-1 LRR-3 / LRR-6. A present `railVersion` must be exactly 1; an absent one means the latest version, which in the client's in-code PA-1 resolution is that same version, so it is admitted.
 - `src/dacs/chain.mjs`: CORE §5.1. A storage-program 404 or a malformed success body carries no authenticated absence proof, so `readStorageProgram` reports it as `indeterminate`, never `absent`. Both callers already admitted only `found`.
 - Tests: `test/delivery-evidence-gate.test.mjs` drives the delivery-evidence gate with seller evidence signed by a runtime Ed25519 key and checked by the SDK `verifySettlementEvidence`. The control reaches `delivered`; a different `deliverableContentHash`, receipt writer, `jobId`, evidence hash, outcome, phase or signing key each keeps `delivery-ready` with the evidence rejected, and the first four are refused only by the client's own clauses. `test/price-bound.test.mjs` pins the bound at 9007199254740991 and 9007199254740992 OS on every admission path and against a node-shaped transaction body. `test/storage-read-nonobservation.test.mjs` pins the non-observation results. `test/delivery-access-model.test.mjs` now admits an absent `railVersion` and refuses a null one.
+
+D11 SQLite callback history:
+
+This delta records two historical statement-guard commits and their reciprocal hold pins. The write-lease change in the preceding SQLite core superseded their implementation and refusal tests:
+
+- `fix(client): D11 refuse SQL callbacks under the statement guard`: superseded by `fix(client): D11 enforce the write lease in SQLite instead of patching statements`.
+- `fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard`: superseded by `fix(client): D11 enforce the write lease in SQLite instead of patching statements`.
+
+These records add no runtime behavior. SQL callbacks remain allowed inside a leased transaction; SQLite's write lock prevents a rival worker from claiming the lease while that transaction is active. The module and its 28 lease tests come from the preceding core change. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
+
+D11 transaction adapter dependency split:
+
+The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
+
+D11 SQLite transaction split:
+
+PR 03 title: `feat(client): extract the SQLite transaction-liveness lease`.
+
+PR 03 plan row: | 3 | feat(client): extract the SQLite transaction-liveness lease | Supply the internal connection-local transaction-liveness lease only. | `src/util/sqlite-write-lease.mjs` and its isolated lease tests | No transaction orchestration or public export |.
+
+PR 03 acceptance: `test/sqlite-write-lease.test.mjs` covers the marker, ordinary-table rollback refusal, schema refresh, commit barrier and permanent retirement; `scripts/delta-provenance.test.mjs` and `scripts/check-hold.test.mjs` check the split records and package controls. The adapter's atomicity, nested-call, diagnostic and crash/reopen acceptance belongs to PR 03c (#503), after PR 03b's statement boundary (#502).
+
+PR 03 supplies only the connection-local transaction-liveness lease: its temporary marker, schema-trigger refresh, private commit barrier and permanent handle retirement. It adds no transaction orchestration or public export; the purchase-store seam remains unwired at this point.
+
+Only main/temp ordinary tables are supported; attached schemas are refused because their names and versions cannot establish binding identity after replacement. Schema refresh installs ordinary-table triggers under its own BEGIN IMMEDIATE and commits before publishing their schema fingerprint. Acquisition refuses enclosing caller transactions without changing their work. After arming and BEGIN IMMEDIATE, start refuses a different locked schema fingerprint before marking the lease live; the caller must roll back, disarm and reacquire before retrying. Accepted guards survive body rollback because installation was committed separately; failed installation rolls back, or retires the handle if recovery fails.
+
+PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter and the atomicity, nested-call, host-boundary, diagnostic and crash/reopen tests. Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03. Their exact subjects and before/after hashes remain in the register so that the published history stays auditable.
+
+The provenance removal test selects the last record with changed file bytes, so historical bookkeeping records cannot prevent it from testing omission of a real change.
+
+## D11 — Purchase connection admission
+
+Admission reads one closed policy for main and listed TEMP. Persistent main accepts DELETE/TRUNCATE/PERSIST with EXTRA and WAL with FULL/EXTRA; volatile main also accepts MEMORY. Listed TEMP accepts DELETE/TRUNCATE/PERSIST/MEMORY. Journal OFF is refused for both main and TEMP. Reading admission never opens absent TEMP, changes host configuration or invokes the callback. Private exports remain empty; transaction orchestration stays separate.
+
+Regressions cover initialized TEMP OFF, unqualified OFF followed by main WAL, repair/retry, absent/discarded/reopened TEMP, four native result defaults, and the real lease rollback marker. Earlier main journal/durability and result-format regressions are retained. Historical extraction records use the existing archive fields solely to audit immutable published history.
