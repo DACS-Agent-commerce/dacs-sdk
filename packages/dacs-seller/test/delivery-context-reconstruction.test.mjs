@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { ARTIFACT_SEPARATORS, canonicalize, contentHash, identityBundleHash, deriveFixedPriceAgreement, signComponentArtifact, sha256Hex } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, canonicalize, compositeVerificationAddress, contentHash, identityBundleHash, deriveFixedPriceAgreement, signComponentArtifact, sha256Hex } from '@kynesyslabs/dacs';
 import { createDemDeliveryContext, resolveDemDeliverySellerContext, releaseDemDeliveryContext, demDeliveryContextUsage } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability, nativeDemDeliveryConfig, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, provenUnsignedAbsence, isProvenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { vetRecordProblem } from '../src/dacs/session-admission.mjs';
@@ -42,23 +42,45 @@ for (const role of ['buyer', 'seller']) for (const qualified of [false, true]) f
   });
 }
 
-const refMutations = {
-  self: (ref, role) => { ref.signer = role === 'buyer' ? buyer.claim : seller.claim; },
-  foreign: ref => { ref.signer = testWallet(19).claim; },
-  missing: ref => { delete ref.signer; },
-  malformed: ref => { ref.signer = 'TEST-invalid'; },
-  nonstring: ref => { ref.signer = [ref.signer]; },
-  address: ref => { ref.anchor.locator += '-other'; },
-  kind: ref => { ref.anchor.kind = 'https'; },
-  'array hash': ref => { ref.contentHash = [ref.contentHash]; },
-  'number hash': ref => { ref.contentHash = 123; },
-  'invalid hash': ref => { ref.contentHash = 'z'.repeat(64); },
-  extra: ref => { ref.extra = null; },
+const refProblems = {
+  malformed: 'Vet ref is not an exact signed record ref',
+  address: 'Vet ref is not at the canonical composite address',
+  signer: 'Vet ref is not signed by its counterparty verifier',
 };
-for (const role of ['buyer', 'seller']) for (const [name, mutate] of Object.entries(refMutations)) {
+const refMutations = {
+  self: ['signer', (ref, role) => { ref.signer = role === 'buyer' ? buyer.claim : seller.claim; }],
+  foreign: ['signer', ref => { ref.signer = testWallet(19).claim; }],
+  missing: ['signer', ref => { delete ref.signer; }],
+  malformed: ['malformed', ref => { ref.signer = 'TEST-invalid'; }],
+  nonstring: ['malformed', ref => { ref.signer = [ref.signer]; }],
+  address: ['address', ref => { ref.anchor.locator += '-other'; }],
+  kind: ['address', ref => { ref.anchor.kind = 'https'; }],
+  'other party address': ['address', (ref, role) => { ref.anchor.locator = compositeVerificationAddress(JOB, role === 'buyer' ? seller.claim : buyer.claim); }],
+  'other job address': ['address', (ref, role) => { ref.anchor.locator = compositeVerificationAddress(`${JOB.slice(0, -1)}B`, role === 'buyer' ? buyer.claim : seller.claim); }],
+  'address and signer': ['address', (ref, role) => { ref.anchor.locator += '-other'; ref.signer = role === 'buyer' ? buyer.claim : seller.claim; }],
+  'missing anchor': ['malformed', ref => { delete ref.anchor; }],
+  'missing hash': ['malformed', ref => { delete ref.contentHash; }],
+  'array hash': ['malformed', ref => { ref.contentHash = [ref.contentHash]; }],
+  'number hash': ['malformed', ref => { ref.contentHash = 123; }],
+  'invalid hash': ['malformed', ref => { ref.contentHash = 'z'.repeat(64); }],
+  extra: ['malformed', ref => { ref.extra = null; }],
+};
+for (const role of ['buyer', 'seller']) for (const [name, [problem, mutate]] of Object.entries(refMutations)) {
   test(`${role} refuses ${name} reference`, async () => {
     const f = await signedFixture(); mutate(f.input[role].vetRecordRef, role);
-    assert.equal((await resolve(f.input, f)).disposition, 'rejected');
+    const result = await resolve(f.input, f);
+    assert.equal(result.disposition, 'rejected');
+    assert.equal(result.reason, `DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: ${role} ${refProblems[problem]}`);
+  });
+}
+for (const role of ['buyer', 'seller']) for (const ref of [null, undefined]) {
+  test(`${role} refuses ${ref} reference`, async () => {
+    const f = await signedFixture();
+    if (ref === undefined) delete f.input[role].vetRecordRef;
+    else f.input[role].vetRecordRef = ref;
+    const result = await resolve(f.input, f);
+    assert.equal(result.disposition, 'rejected');
+    assert.equal(result.reason, `DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: ${role} ${refProblems.malformed}`);
   });
 }
 

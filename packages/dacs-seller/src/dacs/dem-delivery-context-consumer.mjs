@@ -63,9 +63,12 @@ function reconstruct(input, expected) {
     ['seller', expected.seller.identityBundle.presentedBy, expected.buyer.identityBundle.presentedBy]];
   for (const [role, party, verifier] of roles) {
     const ref = input[role]?.vetRecordRef;
-    if (!isAttestationRef(ref) || typeof ref.signer !== 'string' || ref.anchor.kind !== 'storage-program'
-        || ref.anchor.locator !== compositeVerificationAddress(expected.jobId, party) || !sameCanonicalClaimIdentity(ref.signer, verifier)) {
-      return `${role} Vet ref is not at its canonical address with its counterparty verifier`;
+    if (!isAttestationRef(ref)) return `${role} Vet ref is not an exact signed record ref`;
+    if (ref.anchor.kind !== 'storage-program' || ref.anchor.locator !== compositeVerificationAddress(expected.jobId, party)) {
+      return `${role} Vet ref is not at the canonical composite address`;
+    }
+    if (typeof ref.signer !== 'string' || !sameCanonicalClaimIdentity(ref.signer, verifier)) {
+      return `${role} Vet ref is not signed by its counterparty verifier`;
     }
     expected[role].vetRecordRef = ref;
   }
