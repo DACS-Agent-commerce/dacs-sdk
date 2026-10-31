@@ -5,18 +5,20 @@ import { createDevnetDemoAgreementContextProvider, SELLER_REQUIREMENT } from '..
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
 import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
+import { createDemDeliveryContext, resolveDemDeliverySellerContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 
 // Exercise a seller-only signing boundary independently of buyer Vet ordering.
 async function isolatedSellerSession(f){
  const p=await f.provider(),input=f.input(),{generatedAt,...scope}=input.scope;
  const job={jobId:scope.jobId,binding:{scope,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT},open:()=>true,writeStarted:false};
- await p.state.update(job.jobId,()=>({binding:job.binding,writeStarted:false,ops:{},seller:null}));
+ job.incarnation='TEST isolated incarnation';
+ await p.state.update(job.jobId,()=>({binding:job.binding,lifecycle:{incarnation:job.incarnation,epoch:0,state:'open',times:[]},writeStarted:false,ops:{},seller:null}));
  return()=>p.sellerSession(job);
 }
 
-test('staged Vet factory refuses before any signer, anchor or row operation',()=>{
+test('Vet factory validates ownership before any signer, anchor or row operation',()=>{
  let effects=0;const effect=()=>{effects++;throw new Error('TEST effect');};
- assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled/);assert.equal(effects,0);
+ assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{claim:seller.claim,signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled|Vet producer and native anchor/);assert.equal(effects,0);
 });
 // SN-2 bounds an issued challenge only by a floor: at least 32 lowercase-hex
 // characters and no upper bound. Odd lengths are conforming too.
@@ -179,7 +181,7 @@ test('a record evaluated under a rotated presentation is not pinned to the new o
   return record;
  };
  const row=await p.state.read(input.scope.jobId);
- await assert.rejects(p.produceSeller({jobId:row.jobId,binding:row.binding,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
+ await assert.rejects(p.produceSeller({jobId:row.jobId,binding:row.binding,incarnation:row.lifecycle.incarnation,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
  assert.equal((await p.state.read(input.scope.jobId)).counterpartyRecord,undefined);
  f.base.close();
 });
@@ -342,13 +344,36 @@ test('a finished job replays its retained seller Vet without a buyer verifier',a
  assert.equal(f.controls.signs,signs);
  f.base.close();
 });
-test('context authentication refuses an incomplete context instead of throwing',async()=>{
- const f=productionFixture(),p=await f.provider(),input=f.input();
- const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
- const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
-  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
- assert.equal(await p.contextAuthentic({}),false);
- assert.equal(await p.contextAuthentic(null),false);
+async function producedContext(f){
+ const input=f.input(),p=await f.provider(),answer=await p.resolveBuyer(input,{writable:()=>true});
+ assert.equal(answer.disposition,'present');
+ return{context:()=>structuredClone(answer.value.input),resolve:async context=>{
+  const capability=createDemDeliveryContext({authority:'TEST-produced-context',resolveBuyer:()=>null,
+   resolveSeller:()=>({disposition:'present',value:{input:context,vetRequirements:[]}})});
+  return resolveDemDeliverySellerContext(capability,{jobId:JOB,listing:f.listing,buyerBundle:input.buyerIdentityBundle,generatedAt:input.scope.generatedAt});
+ }};
+}
+test('produced context binds the supplied references to the canonical anchor',async()=>{
+ const f=productionFixture(),{context,resolve}=await producedContext(f);
+ assert.equal((await resolve(context())).disposition,'present');
+ for(const [role,field,value] of [['buyer','kind','https'],['buyer','locator','https://absent.invalid/wrong'],['seller','kind','https'],['seller','locator','https://absent.invalid/wrong']]){
+  const altered=context();altered[role].vetRecordRef.anchor[field]=value;
+  assert.equal((await resolve(altered)).disposition,'rejected',`${role} ${field}`);
+ }
+ f.base.close();
+});
+test('produced context binds the exact identity bundles including presentations',async()=>{
+ const f=productionFixture(),{context,resolve}=await producedContext(f);
+ const unsigned=context();delete unsigned.seller.identityBundle.presentation;
+ assert.equal((await resolve(unsigned)).disposition,'rejected');
+ const changed=context();changed.buyer.identityBundle.presentedAt-=1;
+ assert.equal((await resolve(changed)).disposition,'rejected');
+ f.base.close();
+});
+
+test('produced context refuses an incomplete context instead of throwing',async()=>{
+ const f=productionFixture(),{context,resolve}=await producedContext(f);
+ for(const altered of [{},null])assert.notEqual((await resolve(altered)).disposition,'present');
  for(const [label,mutate] of [
   ['no seller',ctx=>{delete ctx.seller;}],
   ['null buyer',ctx=>{ctx.buyer=null;}],
@@ -356,40 +381,14 @@ test('context authentication refuses an incomplete context instead of throwing',
   ['no seller bundle',ctx=>{delete ctx.seller.identityBundle;}],
  ]){
   const altered=context();mutate(altered);
-  assert.equal(await p.contextAuthentic(altered),false,label);
+  assert.notEqual((await resolve(altered)).disposition,'present',label);
  }
  f.base.close();
 });
-test('context authentication binds the supplied references to the canonical anchor',async()=>{
- const f=productionFixture(),p=await f.provider(),input=f.input();
- const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
- const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
-  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
- assert.equal(await p.contextAuthentic(context()),true);
- for(const [role,field,value] of [['buyer','kind','https'],['buyer','locator','https://absent.invalid/wrong'],['seller','kind','https'],['seller','locator','https://absent.invalid/wrong']]){
-  const altered=context();altered[role].vetRecordRef.anchor[field]=value;
-  assert.equal(await p.contextAuthentic(altered),false,`${role} ${field}`);
- }
- f.base.close();
-});
-test('context authentication refuses a non-canonical bundle instead of throwing',async()=>{
- const f=productionFixture(),p=await f.provider(),input=f.input();
- const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
- const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
-  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
+test('produced context refuses a non-canonical bundle instead of throwing',async()=>{
+ const f=productionFixture(),{context,resolve}=await producedContext(f);
  const altered=context();altered.seller.identityBundle.extra=1n;
- assert.equal(await p.contextAuthentic(altered),false);
- f.base.close();
-});
-test('context authentication binds the exact identity bundles including presentations',async()=>{
- const f=productionFixture(),p=await f.provider(),input=f.input();
- const result=await p.jobVet(input.scope,input.buyerIdentityBundle,()=>true);
- const context=()=>({jobId:JOB,buyer:{identityBundle:structuredClone(input.buyerIdentityBundle),vetRecordRef:structuredClone(result.buyerVet.recordRef)},
-  seller:{identityBundle:structuredClone(result.sellerVet.identityBundle),vetRecordRef:structuredClone(result.sellerVet.recordRef)}});
- const unsigned=context();delete unsigned.seller.identityBundle.presentation;
- assert.equal(await p.contextAuthentic(unsigned),false);
- const changed=context();changed.buyer.identityBundle.presentedAt-=1;
- assert.equal(await p.contextAuthentic(changed),false);
+ assert.notEqual((await resolve(altered)).disposition,'present');
  f.base.close();
 });
 
@@ -446,7 +445,7 @@ test('replacement between session and row read refuses before the old nonce ledg
   if(++reads===2)await p.state.update(input.scope.jobId,row=>({...row,presentation:{challenge:{...row.presentation.challenge,sessionNonce:'b'.repeat(32)},bundle:{...row.presentation.bundle,sessionNonce:'b'.repeat(32)}}}));
   return read(key);
  };
- await assert.rejects(p.produceSeller({jobId:saved.jobId,binding:saved.binding,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
+ await assert.rejects(p.produceSeller({jobId:saved.jobId,binding:saved.binding,incarnation:saved.lifecycle.incarnation,open:()=>true,writeStarted:true}),e=>e.code==='binding-changed');
  assert.equal(ledgerReads,0);assert.equal(f.seen.length,0);f.base.close();
 });
 test('two providers refuse the short-lived nonce then rotate it exactly once',async()=>{
@@ -457,7 +456,7 @@ test('two providers refuse the short-lived nonce then rotate it exactly once',as
  const row=await p.state.read(input.scope.jobId),q=await f.provider();let arrivals=0,ready,release;
  const entered=new Promise(r=>ready=r),gate=new Promise(r=>release=r);
  f.counterparty.readRecord=async request=>{const out=await read(request);if(++arrivals===2)ready();await gate;return out;};
- const job=()=>({jobId:row.jobId,binding:row.binding,open:()=>true,writeStarted:true});
+ const job=()=>({jobId:row.jobId,binding:row.binding,incarnation:row.lifecycle.incarnation,open:()=>true,writeStarted:true});
  const results=[p.produceSeller(job()),q.produceSeller(job())].map(work=>assert.rejects(work,e=>e.code==='seller_challenge_expired'));
  await entered;at=f.expiries.get(row.presentation.bundle.sessionNonce)-1;release();await Promise.all(results);
  assert.equal(f.seen.length,0);f.counterparty.readRecord=read;
@@ -475,4 +474,12 @@ for(const kind of ['signature','missing-presentation','duplicate-claim'])test(`i
   assert.equal(f.controls.signs,0);assert.equal(f.issued.size,0);assert.equal(f.seen.length,0);assert.equal(f.local.writes.length,0);assert.equal((await f.base.entries()).length,0);
   const result=await f.run();assert.equal(result.sellerVet.record.overallDecision,'pass');assert.equal(f.issued.size,1);assert.equal(f.seen.length,1);
  }finally{f.base.close();}
+});
+
+for(const lifecycle of [null,{incarnation:'TEST other',state:'open'}])test(`seller effect gates refuse a missing or changed admission: ${JSON.stringify(lifecycle)}`,async()=>{
+ const f=productionFixture(),p=await f.provider(),input=f.input(),{generatedAt,...scope}=input.scope;
+ const job={jobId:scope.jobId,binding:{scope,buyerIdentityBundle:input.buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT},incarnation:'TEST expected',open:()=>true,writeStarted:false};
+ await p.state.update(job.jobId,()=>({binding:job.binding,lifecycle,writeStarted:false,ops:{},seller:null}));
+ await assert.rejects(p.sellerSession(job),{code:'context_released'});
+ assert.equal(f.controls.signs,0);assert.equal(f.issued.size,0);assert.equal(f.local.writes.length,0);f.base.close();
 });

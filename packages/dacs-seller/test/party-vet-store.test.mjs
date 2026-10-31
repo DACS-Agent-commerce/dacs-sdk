@@ -273,3 +273,12 @@ for (const kind of ['empty', 'foreign']) test(`rejected ${kind} database remains
   assert.throws(() => openStore({ path }), code('journal-integrity'));
   assert.deepEqual(readFileSync(path), before);
 });
+
+for(const durable of [false,true])test(`every retained row counts until deletion, durable=${durable}`,async t=>{
+ const store=durable?openStore({path:join(dirFor(t),'rows.sqlite'),maxJobs:1}):createInMemoryPartyVetStore({maxJobs:1});t.after(()=>store.close());
+ const row={version:'dacs-devnet-demo-party-vet-state/v2',writer:'TEST-writer',jobId:'TEST-job',revision:1,lifecycle:{state:'ended'}};
+ await store.update('party-vet/TEST-row',()=>row);assert.equal(store.usage().jobs,1);
+ await assert.rejects(store.update('active',()=>({work:'TEST'})),{code:'journal-capacity'});
+ await store.update('party-vet/TEST-row',()=>null);assert.equal(store.usage().bytes,0);
+ await store.update('active',()=>({work:'TEST'}));assert.equal(store.usage().jobs,1);
+});
