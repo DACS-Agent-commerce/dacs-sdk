@@ -23,6 +23,7 @@ import {
   pinSessionRecipeSelection,
   recoverSessionRecipePin,
   recoverSessionRecipeRegistrySnapshot,
+  selectDurableSessionRecipe,
 } from "../../src/agent/durableRecipePin.js";
 import {
   createInMemoryFencedSessionStore,
@@ -236,6 +237,22 @@ afterEach(async () => {
 });
 
 describe("job-scoped generation-fenced recipe registry pins", () => {
+  test("durable recipe selection uses authenticated latest and historical entries", async () => {
+    const { provider } = await registry([recipe(1), recipe(2)], 1);
+    const store = createInMemoryFencedSessionStore(), jobId = "recipe-selection-api";
+    await store.create({ jobId, now: 0 });
+    const lease = await sessionLease(store, jobId, "selection-test", 0);
+    const snapshot = await pinRegistry(store, jobId, provider, lease);
+    const family = { scheme: "key", method: "self-signed" as const };
+    expect(selectDurableSessionRecipe(snapshot, family).recipe.recipeVersion).toBe(2);
+    expect(selectDurableSessionRecipe(snapshot, { ...family, recipeVersion: 1 }).recipe.recipeVersion).toBe(1);
+    expect(() => selectDurableSessionRecipe(snapshot, { ...family, recipeVersion: 3 })).toThrow(/resolved 0 entries/);
+    expect(() => selectDurableSessionRecipe(snapshot, { ...family, scheme: "domain" })).toThrow(/no current recipe family/);
+    for (const copy of [structuredClone(snapshot), { ...snapshot }]) {
+      expect(() => selectDurableSessionRecipe(copy, family)).toThrow(/authenticated.*snapshot/);
+    }
+  });
+
   test("persists one complete authenticated snapshot and derives immutable requirement pins", async () => {
     const store = createInMemoryFencedSessionStore();
     const jobId = "recipe-snapshot-complete";
