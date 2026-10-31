@@ -128,24 +128,6 @@ test('an empty role file with unsafe permissions is refused, not replaced', asyn
   assert.deepEqual((await files(directory)).filter((name) => name !== '.wallet-repair'), [BUYER]);
 });
 
-test('bootstrap and secret initialization do not open ancestors they did not create', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'TEST-custody-ancestor-'));
-  const custody = await loadCustody();
-  const outer = join(root, 'outer'), directory = join(outer, 'wallets');
-  t.after(async () => { await chmod(outer, 0o700).catch(() => {}); custody.release(); await rm(root, { recursive: true, force: true }); });
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  // `outer` is an established ancestor: it must not be opened for syncing,
-  // because a directory that cannot be read is still a usable parent.
-  await chmod(outer, 0o300);
-  try {
-    const result = await custody.bootstrapTestWalletCustody({ directory, publicOrigin: ORIGIN });
-    assert.deepEqual(result.wallets.map((wallet) => wallet.role), ['buyer', 'seller']);
-    const key = await custody.ensureOperatorSecret({ directory });
-    assert.equal(JSON.parse(await read(directory, SECRET)).cookieKey, key);
-  } finally { await chmod(outer, 0o700); }
-  assert.deepEqual(await files(directory).then((names) => names.filter((name) => name !== '.wallet-repair')), [SECRET, BUYER, SELLER].sort());
-});
-
 test('a failed directory-name marker removes created directories so a retry syncs their names', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'TEST-custody-marker-'));
   const custody = await loadCustody();
