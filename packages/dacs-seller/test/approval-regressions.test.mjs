@@ -272,12 +272,14 @@ const REASONS=['request-shape','debit','write-fee-cap','create-bytes','artifact'
  'sign-authorization-open','operator-fee-budget','job-write-limit','hourly-write-limit','hourly-dem-limit'];
 const MANUAL_TABLE={before:['seller-record-missing','cancellation-unknown'],after:['write-fee-cap','job-write-limit','hourly-write-limit','hourly-dem-limit']};
 for(const [kind,phase] of [['CompositeVerificationRecord','before'],['FinalityCommitmentRecord','before'],['Deliverable','after'],['SettlementEvidence','after']])test(`the composer asks manual for a held ${kind} only for its table reasons`,async()=>{
- const asked=[];
+ const asked=[],released=[];
  for(const reason of REASONS){
-  const policy={decide:async()=>({outcome:'held',reason,attemptId:'TEST'}),authorizeHeld:async()=>'refused',releaseHeld:async()=>{},settle:async()=>{}};
-  await composeSellerApproval({mode:'policy',policy,manual:()=>{asked.push(reason);return true;}})({content:{artifactKind:kind}});
+  const request={content:{artifactKind:kind}};
+  const policy={decide:async()=>({outcome:'held',reason,attemptId:'TEST',requestBytes:JSON.stringify(request)}),authorizeHeld:async()=>'refused',releaseHeld:async(held,why)=>{released.push([reason,why]);},settle:async()=>{}};
+  await composeSellerApproval({mode:'policy',policy,manual:()=>{asked.push(reason);return true;}})(request);
  }
  assert.deepEqual(asked,MANUAL_TABLE[phase]);
+ assert.deepEqual(released,REASONS.filter(reason=>!MANUAL_TABLE[phase].includes(reason)).map(reason=>[reason,'confirmation-refused']));
 });
 
 // Purchase authority read last before every sign and confirmation line: a purchase that changes on that read
@@ -360,11 +362,44 @@ for(const [label,end] of [['the wallet released it',(f,a,r)=>a.settle(r,'release
   d.answer(true);assert.equal(await pending,false);
   assert.equal((await ledgerLines(f)).length,lines);assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
  });
-test('a manual answer for bytes changed after the approval started writes nothing and leaves the ledger readable',async t=>{
- const f=await fixture(t,purchase,OVER_CAP),r=payDem();
- const pending=composeSellerApproval({mode:'policy',policy:f.p,manual:createExactOperatorApproval({...f.settings,authorize:()=>false})})(r);
+// A policy whose decide returns after `change(request)` altered the request, as if it changed while the composer waited.
+const changingAfterDecide=(f,change)=>Object.assign((...args)=>f.p(...args),f.p,{decide:async request=>{const decision=await f.p.decide(request);change(request);return decision;}});
+test('a request changed after the policy held it is not asked about, writes no manual line and ends released',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),r=payDem();let prompts=0;
+ const manual=createExactOperatorApproval({...f.settings,authorize:()=>{prompts++;return true;}});
+ assert.equal(await composeSellerApproval({mode:'policy',policy:changingAfterDecide(f,request=>{request.purpose='TEST changed';}),manual})(r),false);
+ assert.equal(prompts,0);assert.deepEqual(await attemptReasons(f),['confirmation-refused']);
+ assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);assert.equal((await ledgerLines(f)).some(line=>line.decision&&!line.approvalMode),false);
+});
+test('a request changed and changed back around the policy hold is not asked about',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),r=payDem(),original=r.purpose;let prompts=0;
+ const pending=composeSellerApproval({mode:'policy',policy:changingAfterDecide(f,request=>{request.purpose=original;}),manual:()=>{prompts++;return true;}})(r);
  r.purpose='TEST changed';assert.equal(await pending,false);
- assert.deepEqual(await attemptReasons(f),['manual-declined']);assert.equal((await ledgerLines(f)).some(line=>line.decision&&!line.approvalMode),false);
+ assert.equal(prompts,0);assert.deepEqual(await attemptReasons(f),['confirmation-refused']);assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+});
+test('a request changed before the policy captures it is shown to manual as the bytes its sign line keeps',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),r=payDem();let shown=null;
+ const pending=composeSellerApproval({mode:'policy',policy:f.p,manual:request=>{shown=request.purpose;return true;}})(r);
+ r.purpose='TEST changed';assert.equal(await pending,true);
+ assert.equal(shown,'TEST changed');assert.equal((await openSignRows(f))[0].request.purpose,'TEST changed');
+});
+test('a manual approval on the same ledger answers for the bytes the policy captured, not the earlier request',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),r=payDem();let asked=null;
+ const manual=createExactOperatorApproval({...f.settings,authorize:answer=>{asked=answer;return true;}});
+ const pending=composeSellerApproval({mode:'policy',policy:f.p,manual})(r);
+ r.purpose='TEST changed';assert.equal(await pending,true);
+ assert.equal(asked.request.purpose,'TEST changed');assert.equal(asked.approvalHash,(await openSignRows(f))[0].approvalHash);
+});
+test('a Vet request changed into a held write of another kind is asked about once and leaves no open attempt',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),r=vetRequest();let prompts=0;
+ const pending=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}})(r);
+ Object.assign(r,payDem());assert.equal(await pending,true);assert.equal(prompts,1);
+ assert.deepEqual([...(await f.read()).attempts.values()].filter(attempt=>attempt.outcome===null&&!attempt.reservation),[]);
+});
+test('a manual answer for bytes changed during the wait writes no sign line and leaves the ledger readable',async t=>{
+ const f=await fixture(t,purchase,OVER_CAP),r=payDem();
+ assert.equal(await composeSellerApproval({mode:'policy',policy:f.p,manual:createExactOperatorApproval({...f.settings,authorize:()=>{r.purpose='TEST changed';return true;}})})(r),false);
+ assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);assert.deepEqual(await attemptReasons(f),['confirmation-refused']);
 });
 test('a manual approval on another ledger writes no line for an attempt it does not have',async t=>{
  const f=await fixture(t,purchase,OVER_CAP),other=f.evidencePath+'-manual';
