@@ -64,6 +64,7 @@ export async function mkdir(path, ...rest) {
   await state.beforeMkdir?.(path);
   const created = await real.mkdir(path, ...rest);
   state.mkdirCreated.push(created);
+  await state.afterMkdir?.(path);
   return created;
 }
 export async function readFile(path, ...rest) { record('readFile', path); return real.readFile(path, ...rest); }
@@ -85,7 +86,7 @@ export async function writeFile(path, data, ...rest) {
 /**
  * Loads the real custody source with stubbed imports.
  * Returns the custody exports, the load's `state` (record of file operations in
- * `events`, and the hooks `failWrite(path)`, `beforePublish(path)`, `beforeMkdir(path)`,
+ * `events`, and the hooks `failWrite(path)`, `beforePublish(path)`, `beforeMkdir(path)`, `afterMkdir(path)`,
  * `failOpen(path)`, `failSync(path)`, the injected `filesystemError`, the mkdir
  * results in `mkdirCreated`, `afterLstat(path, info)`, `beforeUnlink(path)`,
  * validation/connection errors and key-generation counters)
@@ -95,7 +96,7 @@ export async function writeFile(path, data, ...rest) {
 export async function loadCustody() {
   const key = `TEST_CUSTODY_FIXTURE_${(loads += 1)}`;
   const state = { events: [], generated: 0, disconnected: 0, failGenerationAt: null, failWrite: null, beforePublish: null,
-    beforeUnlink: null, afterLstat: null, beforeMkdir: null, mkdirCreated: [], failOpen: null, failSync: null, filesystemError: null };
+    beforeUnlink: null, afterLstat: null, beforeMkdir: null, afterMkdir: null, mkdirCreated: [], failOpen: null, failSync: null, filesystemError: null };
   globalThis[key] = state;
   const fileSystem = dataUrl(filesystemStub(key));
   const swap = (source, replacements) => replacements.reduce((text, [from, to]) => text.split(from).join(to), source);

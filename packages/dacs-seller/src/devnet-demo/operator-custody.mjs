@@ -43,8 +43,8 @@ async function readDirectorySyncMarker(directory){
 }
 // A directory's name is durable only once the entry is synced in its parent.
 // Sync the parent of every directory this attempt created, and of those an
-// interrupted attempt recorded in the marker. Never open an ancestor that was
-// already there: it belongs to something else and may not be readable.
+// interrupted attempt recorded in the marker. The private ancestor chain is
+// also synced on reuse below, including when an attempt left no marker.
 async function syncCreatedDirectoryNames(directory,created){
   const marker=join(directory,DIRECTORY_SYNC_MARKER);
   if(created.length){
@@ -78,12 +78,10 @@ async function privateDirectory(path){
   }
   await syncCreatedDirectoryNames(path,created);
   // Resync the private chain on reuse too: an interrupted caller may have
-  // created it before recording its marker. Newly created parents were already
-  // required to sync above. An established unreadable ancestor cannot be a
-  // mode-0700 directory created by this mkdir, so keep it as a boundary.
+  // created it before recording its marker. An unreadable parent is no proof
+  // that its child entry is durable: require its open and sync to succeed too.
   for(let parent=dirname(path);;parent=dirname(parent)){
     const parentInfo=await lstat(parent);
-    if((parentInfo.mode&0o400)===0)break;
     await syncDirectory(parent);
     if((parentInfo.mode&0o077)!==0||dirname(parent)===parent)break;
   }
@@ -209,6 +207,7 @@ async function ensureWallet({directory,role,walletRuntime}){
  * with the same pair and never replaces a mnemonic. Returns the directory and
  * both wallets (role, address, claim, path); recovery phrases are not returned.
  * Throws for invalid retained phrases/addresses or non-private/malformed records.
+ * Parent directory opens and syncs must succeed before any credential access.
  * Concurrent legacy empty-file repairs refuse while another live repair holds
  * the process lock; retry after that repair has finished.
  */
@@ -278,7 +277,8 @@ async function readOperatorSecret(path){
  * Returns the operator's cookie key from `app-secret.json` in the custody directory,
  * creating the file first when it is missing. A new file is published whole. The
  * directory is synced before every successful return, including reuse and retry;
- * when another writer publishes first,
+ * containing-parent opens and syncs must also succeed before credential access.
+ * When another writer publishes first,
  * that writer's key is returned. Throws when the stored record is not private or is malformed.
  */
 export async function ensureOperatorSecret({directory}){
