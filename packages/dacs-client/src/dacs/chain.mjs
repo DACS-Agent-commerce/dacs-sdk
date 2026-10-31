@@ -85,9 +85,10 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return response;
   };
 
-  function nodePayload(message, data, fetcher = observingFetch) {
+  function nodePayload(message, data, fetcher = observingFetch, signal) {
     return fetchBoundedJson(base, {
       fetchImpl: fetcher,
+      signal,
       method: 'POST',
       body: { method: 'nodeCall', params: [{ message, data }] },
       timeoutMs,
@@ -96,8 +97,8 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     });
   }
 
-  async function nodeCall(message, data) {
-    const payload = await nodePayload(message, data);
+  async function nodeCall(message, data, { signal } = {}) {
+    const payload = await nodePayload(message, data, observingFetch, signal);
     if (!payload || payload.result !== 200 || !Object.hasOwn(payload, 'response')) {
       throw new OutboundError('unavailable', `Demos RPC ${message} returned a non-200 result`);
     }
@@ -107,13 +108,14 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   // One block read with this answer's own simulation marker. A non-200 answer
   // is no block (some nodes answer block zero with an error); a failed
   // request still throws.
-  async function blockRead(blockNumber) {
+  async function blockRead(blockNumber, signal) {
     let marked = false;
     const payload = await nodePayload('getBlockByNumber', { blockNumber }, async (input, init) => {
       const response = await observingFetch(input, init);
       marked = Boolean(response.headers.get(SIMULATION_HEADER));
       return response;
-    });
+    }, signal);
+    signal?.throwIfAborted();
     const answered = isRecord(payload) && payload.result === 200 && Object.hasOwn(payload, 'response');
     return { block: answered && isRecord(payload.response) ? payload.response : null, marked };
   }
@@ -125,13 +127,13 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   // simulated fixture without a real chain identity and is reported as such.
   // This is one RPC's answer: it exposes a wrong network behind an honest RPC,
   // not a dishonest RPC. Nothing here is carried in a signed transaction.
-  async function networkIdentity() {
-    const zero = await blockRead(0);
+  async function networkIdentity({ signal } = {}) {
+    const zero = await blockRead(0, signal);
     if (loopback && zero.marked) return { mode: 'simulated-fixture', identity: null };
     const genesisNumber = zero.block ? zero.block.number ?? zero.block.id : undefined;
     let identity = zero.block && (genesisNumber === undefined || genesisNumber === 0) ? chainIdentityOf(zero.block.hash) : null;
     if (!identity) {
-      const { block } = await blockRead(1);
+      const { block } = await blockRead(1, signal);
       if (block?.number === 1 && block.status === 'confirmed' && typeof block.hash === 'string' && block.hash.trim() && isRecord(block.content)) {
         identity = chainIdentityOf(block.content.previousHash);
       }
@@ -174,8 +176,8 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return nonceFromNode(response);
   }
 
-  async function getTransaction(hash) {
-    return nodeCall('getTxByHash', { hash });
+  async function getTransaction(hash, options) {
+    return nodeCall('getTxByHash', { hash }, options);
   }
 
   // Exact account balance in OS, read as the deployment's
@@ -242,10 +244,23 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return payload;
   }
 
-  const observer = createPayDemSellerObserver({ rpc: base, timeoutMs, maxResponseBytes: 4 * 1024 * 1024, fetchImpl: observingFetch });
+  const transferObserver = (fetcher) => createPayDemSellerObserver({ rpc: base, timeoutMs, maxResponseBytes: 4 * 1024 * 1024, fetchImpl: fetcher });
+  const observer = transferObserver(observingFetch);
+
+  // Each request keeps its own timeoutMs; there is no whole-observation
+  // deadline. A caller's signal is added to every request of a per-call
+  // observer; once aborted, the observation rejects with its reason.
+  async function observeTransfer(hash, { signal } = {}) {
+    if (!signal) return observer.observeDemosTransfer(hash);
+    signal.throwIfAborted();
+    const result = await transferObserver((input, init) => observingFetch(input, { ...init, signal: AbortSignal.any([init.signal, signal]) })).observeDemosTransfer(hash);
+    signal.throwIfAborted();
+    return result;
+  }
 
   return {
     network,
+    observer: '@kynesyslabs/dacs observePayDemTransferCore (single-node consistent view; not a validator-quorum proof)',
     rpcOrigin: origin,
     // Source-pinned expected chain identity (src/config.mjs), or null.
     pinnedIdentity: chainIdentityOf(pinnedIdentity),
@@ -259,6 +274,6 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     getTransactionFees,
     getTransaction,
     getIdentities,
-    observeTransfer: (hash) => observer.observeDemosTransfer(hash),
+    observeTransfer,
   };
 }
