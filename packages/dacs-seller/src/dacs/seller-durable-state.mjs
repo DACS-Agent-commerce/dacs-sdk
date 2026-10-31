@@ -1,3 +1,4 @@
+import { admitSessionChallenge } from './session-challenge-limits.mjs';
 // Opt-in host-local recovery for the SIMULATED seller adapter. This retains
 // seller-authenticated application context beside the pinned SDK stores. It
 // never obtains a buyer key or reconstructs facts from a cached HTTP answer.
@@ -11,6 +12,7 @@ import { isMainThread } from 'node:worker_threads';
 import { admitRawJson, canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { anchorWriteMessage, canonicalSignature, verifyFixtureRecord } from './fixture-anchors.mjs';
 
+const CHALLENGE_PAGE_SIZE=128;
 const DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const same = (a, b) => canonicalize(a) === canonicalize(b);
@@ -623,11 +625,31 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // kept with its job, buyer and lifetime before any presentation exists;
       // the first attempt that carries it is kept in the same transaction
       // that reads it, so it is consumed before the attempt is validated.
-      issueChallenge(nonce, value) {
+      issueChallenge(nonce, value, limits=null) {
         transaction(() => {
           if (effect(`session-challenge:${nonce}`)) fail('seller_challenge_taken');
+          if(limits){
+            function* retained(){
+              let after='';
+              for(;;){
+                const page=db.prepare("SELECT id,value FROM seller_effects WHERE id LIKE 'session-challenge:%' AND id>? ORDER BY id LIMIT ?").all(after,CHALLENGE_PAGE_SIZE);
+                for(const row of page){after=row.id;yield[row.id,verified(row.value,'effect',row.id)];}
+                if(page.length<CHALLENGE_PAGE_SIZE)return;
+              }
+            }
+            admitSessionChallenge(retained(),value,limits);
+          }
           putEffect(`session-challenge:${nonce}`, { kind: 'session-challenge', ...clone(value), attempt: null });
         });
+      },
+      // Read-only authenticated lookup of one challenge this seller issued, for
+      // binding a retained session to the exact nonce it was admitted with.
+      challenge(nonce) {
+        if (typeof nonce !== 'string' || !/^[0-9a-f]{64}$/.test(nonce)) return null;
+        const retained = effect(`session-challenge:${nonce}`);
+        if (retained === null) return null;
+        if (retained.kind !== 'session-challenge') fail('seller_state_corrupt');
+        return retained;
       },
       // The challenge as it was before this attempt (null when never issued);
       // the attempt is kept only when it is the first. A malformed first
