@@ -4,13 +4,13 @@ import { isDemDeliveryContextAuthority } from './dem-delivery-context-consumer.m
 export const NATIVE_DEM_DELIVERY_SOURCE = 'dacs-chatgpt-plugin/native-dem-delivery/v1';
 const capabilities = new WeakMap();
 
-/** Register all four native operations; throws for invalid labels or missing operations. */
-export function createNativeDemDeliveryCapability({ authority, submit, reconcile, read, verifyReceipt }) {
+/** Register native operations; optional submitAuthorized must enforce its callback under the publisher's lock. */
+export function createNativeDemDeliveryCapability({ authority, submitAuthorized, submit = submitAuthorized, reconcile, read, verifyReceipt }) {
   if (!isDemDeliveryContextAuthority(authority) || [submit, reconcile, read, verifyReceipt].some(fn => typeof fn !== 'function')) {
     throw new TypeError('native DEM delivery requires explicit TEST authority and complete seller/buyer operations');
   }
   const capability = Object.freeze({ source: NATIVE_DEM_DELIVERY_SOURCE, authority });
-  capabilities.set(capability, { submit, reconcile, read, verifyReceipt });
+  capabilities.set(capability, { submit, submitAuthorized, reconcile, read, verifyReceipt });
   return capability;
 }
 
@@ -44,9 +44,11 @@ export function isProvenUnsignedAbsence(value) {
   return provenUnsigned.has(value) && value.status === 'absent';
 }
 
-/** Submit an isolated input copy; rejects without registered native authority. */
-export async function submitNativeDemDelivery(capability, input) {
-  return operations(capability).submit(structuredClone(input));
+/** Submit isolated data; an authorization callback requires a registered guarded operation or holds delivery. */
+export async function submitNativeDemDelivery(capability, input, authorize) {
+  const { submit, submitAuthorized } = operations(capability);
+  if (authorize !== undefined && (typeof authorize !== 'function' || typeof submitAuthorized !== 'function')) return { status: 'indeterminate', reason: 'native delivery requires guarded submission' };
+  return (authorize === undefined ? submit : submitAuthorized)(structuredClone(input), authorize);
 }
 /** Reconcile an isolated input copy; rejects without registered native authority. */
 export async function reconcileNativeDemDelivery(capability, input) {
