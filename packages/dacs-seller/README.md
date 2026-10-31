@@ -499,13 +499,14 @@ per-client limiter so one client cannot exhaust the shared request budget.
   and its decision replays from the invocation's results (DACS-2 §7.7.1).
   The direct `vetRecordProblem` helper counts presence in the party's exact
   bundle with a verified per-claim presentation and a runtime-authenticated,
-  job-bound `presence.sessionSnapshot` (`DurableSessionRecipeRegistrySnapshot`).
+  job-bound `sessionSnapshot` (`DurableSessionRecipeRegistrySnapshot`);
+  `presence.sessionSnapshot` remains accepted for existing presence callers.
   Bare hashes, copied snapshots and snapshots for another job are refused.
   When a job uses this snapshot, every verified recipe and implicit family head,
   including those in sibling records and unused alternatives, comes from its
   authenticated entries. Operator recipe readers cannot replace them. Recovered
-  snapshots with the same authenticated hash retain this authority; an earlier
-  operator-supplied string pin cannot establish it. Completed operator recipe
+  snapshots with the same authenticated hash retain this authority; a saved
+  string pin cannot establish it. Completed explicit-only operator recipe
   replays also prevent a later switch to snapshot authority for that job.
   `sessionAdmission.readSessionRecipeRegistryPin` is unsupported and rejected
   at configuration: a hash reader cannot supply authenticated registry authority.
@@ -521,26 +522,32 @@ per-client limiter so one client cannot exhaust the shared request budget.
   The direct `vetRecordProblem` helper separately accepts `evidence` for strict
   replay preparation: `resolveContent`, `resolveRecipe`,
   `isRecipeSignerAuthorized`, `isVerifyResultSignerAuthorized` and
-  `verifyAuthorityAttestation`, plus optional `resolveLatestRecipe`. Each receives
+  `verifyAuthorityAttestation`. Each receives
   `{ jobId, role, party }`. Content replies are `null` or an `{ encoding, value }`
   envelope: `encoding: 'canonical-json'` carries a JSON object, and
   `encoding: 'bytes'` carries canonical base64url bytes. Recipe and result
   signatures, authority evidence and requirement parameters are independently checked.
-  `resolveLatestRecipe({ scheme, method, required })` returns the authenticated
-  `{ sessionRecipeRegistrySnapshotHash, recipeVersion, availability }` selection
-  or `null`. Every verified member, bound or unused, needs each derivable method
-  family at its version. The selection names an implicit family's head; the
-  steward-authorized signed descriptor at that version must be live, bound or
-  unused. An explicit pin needs an exact steward-authorized signed recipe that
+  Every unpinned verified member requires `sessionSnapshot`, produced at session
+  start by `pinSessionRecipeRegistrySnapshot` or restored by
+  `recoverSessionRecipeRegistrySnapshot`. The producer authenticates the exact
+  finalized registry index receipt and every referenced steward-signed recipe;
+  replay checks runtime provenance and the job binding. Supplying both snapshot
+  options requires the same authenticated snapshot hash. Plain
+  `resolveLatestRecipe` replies cannot establish authority and are not read.
+  Every verified member, bound or unused, needs each derivable method
+  family at its version. The snapshot selects an implicit family's latest head;
+  its steward-authorized signed descriptor must be live and not deprecated,
+  whether bound or unused. An explicit pin needs an exact steward-authorized signed recipe that
   is not mocked, disabled or failed (DACS-2 CRQ-2/CRQ-3). A result outside an
   implicit member's selected version does not apply to it, whatever its decision;
   an independently passing pinned alternative may still satisfy its group.
-  Malformed replies and inconsistent snapshot pins refuse the whole record.
+  Malformed replies and inconsistent snapshot authority refuse the whole record.
   Direct callers pass one `sessionRegistryPins` array per job across both party
-  records, seeded with the job's retained pin after a restart. They also bind
+  records, seeded with the recovered authenticated snapshot after a restart.
+  They also bind
   `sourceJobId` and the result locator with `isSellerFulfilmentVetInvocationMismatch`
-  before replay. Each replay caches each family's bounded registry read and
-  exact recipe descriptor. No older live version is chosen as fallback.
+  before replay. Each replay reuses immutable snapshot entries or caches exact
+  operator recipe reads. No older live version is chosen as fallback.
   When the check fails, the Agreement is not signed, before any payment.
   Reads retain their 64 KiB, value/list, 10 s individual and 30 s total limits;
   unavailable readers keep their original cause. These helper capabilities do
