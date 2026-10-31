@@ -7,5 +7,5 @@ export async function leaseInternals() {
   source = source.replaceAll("'@kynesyslabs/dacs'", JSON.stringify(import.meta.resolve('@kynesyslabs/dacs')))
     .replaceAll("'better-sqlite3'", JSON.stringify(import.meta.resolve('better-sqlite3')))
     .replaceAll("'./fixture-anchors.mjs'", JSON.stringify(new URL('fixture-anchors.mjs', url).href));
-  return import(`data:text/javascript;base64,${Buffer.from(source + '\nexport { takeLease, leaseState, holderState, lockHolder, NAMESPACE, PROCESS };').toString('base64')}`);
+  return import(`data:text/javascript;base64,${Buffer.from(source + '\nexport { takeLease, leaseState, holderState, holderRunsHere, lockHolder, NAMESPACE, PROCESS };').toString('base64')}`);
 }
