@@ -89,6 +89,42 @@ function workflowStepScript(stepName: string, path = workflowPath): string {
   return body.join("\n");
 }
 
+// The keys of a workflow's top-level `on:` or `jobs:` block, without a YAML
+// dependency: each is a two-space-indented `key:` line in the block.
+function workflowBlockKeys(path: string, block: "on" | "jobs") {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.indexOf(`${block}:`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const keys: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break;
+    const key = /^ {2}([\w-]+):/.exec(line)?.[1];
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+// One job's own keys: each four-space `key: value` line, with the trimmed
+// lines nested under it appended one per line.
+function workflowJob(path: string, jobId: string) {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.indexOf(`  ${jobId}:`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const job: Record<string, string> = {};
+  let key = "";
+  for (const line of lines.slice(start + 1)) {
+    if (/^ {0,2}\S/.test(line)) break;
+    const own = /^ {4}([\w-]+):\s*(.*)$/.exec(line);
+    if (own) {
+      key = own[1] ?? "";
+      job[key] = own[2] ?? "";
+    } else if (key && line.trim() !== "") {
+      job[key] += `\n${line.trim()}`;
+    }
+  }
+  return job;
+}
+
 const scratch: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -358,6 +394,166 @@ describe("registry/container workflow wiring", () => {
 
   // Daybreak r9 P2: prerelease publication never ran the advisory gate, so an
   // advisory published after the baseline could not stop it.
+  it("publishes a prerelease only after the acceptance job passes with drift enforced", () => {
+    const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
+    expect(workflowBlockKeys(publish, "on")).toEqual(["workflow_dispatch"]);
+    expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish-environment", "publish"]);
+    const gate = workflowJob(publish, "registry-container-acceptance");
+    expect(gate).toEqual({ permissions: "\ncontents: read", uses: "./.github/workflows/registry-container-acceptance.yml",
+      with: "\nenforce-audit-drift: true" });
+    const job = workflowJob(publish, "publish");
+    expect(job.steps).toContain("node scripts/publish-release-set.mjs");
+    // No job-level `if:`: always(), failure() or !cancelled() there would run
+    // the publish job after the acceptance job failed.
+    expect(job).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
+      environment: "npm-prerelease-gated", permissions: "\ncontents: read\nactions: read\nid-token: write" });
+    expect(job).not.toHaveProperty("if");
+    // The OIDC permission is the publish job's alone; the called acceptance
+    // gets neither it nor any secret, and nothing in it can continue on error.
+    const workflow = readFileSync(publish, "utf8");
+    expect(workflow.match(/id-token: write/g)).toHaveLength(1);
+    expect(/\npermissions:\n((?: {2}.+\n)+)/.exec(workflow)?.[1]).toBe("  contents: read\n");
+    expect(workflow).not.toMatch(/secrets: inherit/);
+    expect(acceptance).not.toMatch(/continue-on-error|secrets\./);
+    // Code r10 P3-1: nor can the called side skip the acceptance. A skipped
+    // called job, or a skipped acceptance step before the drift step, would
+    // not run the gate at all; only the later steps run always().
+    expect(workflowBlockKeys(workflowPath, "jobs")).toEqual(["registry-container-consumer"]);
+    const called = workflowJob(workflowPath, "registry-container-consumer");
+    expect(Object.keys(called)).toEqual(["name", "runs-on", "timeout-minutes", "steps"]);
+    expect(called).not.toHaveProperty("if");
+    expect(workflowStepCondition("Run registry-shaped Linux and Docker acceptance")).toBeUndefined();
+    expect(workflowStepCondition("Check advisory-ID drift")).toBe("always()");
+  });
+
+  // Daybreak r10 P2: a manual dispatch runs the workflow file at the selected
+  // ref, so an older tag still ran the ungated publish-prerelease.yml with the
+  // same environment. Publication credentials now belong to a workflow file and
+  // an environment that no older ref names.
+  it("keeps publication credentials to a gated workflow and environment no older ref names", () => {
+    const directory = join(repoRoot, ".github/workflows");
+    const gatedName = "publish-prerelease-gated.yml";
+    const files = readdirSync(directory).filter((name) => /\.ya?ml$/.test(name));
+    expect(files).not.toContain("publish-prerelease.yml");
+    expect(files).toContain(gatedName);
+    const gated = join(directory, gatedName);
+    expect(workflowJob(gated, "publish")).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
+      environment: "npm-prerelease-gated" });
+    expect(workflowJob(gated, "registry-container-acceptance"))
+      .toMatchObject({ uses: "./.github/workflows/registry-container-acceptance.yml", with: "\nenforce-audit-drift: true" });
+    const environments = (text: string) => [...text.matchAll(/^ +environment:(.*)$/gm)].map((match) => match[1]?.trim());
+    expect(environments(readFileSync(gated, "utf8"))).toEqual(["npm-prerelease-gated"]);
+    const publishes = /\bnpm publish\b|npm-publish|publish-release-set|release:set:publish/;
+    for (const name of files.filter((file) => file !== gatedName)) {
+      const text = readFileSync(join(directory, name), "utf8");
+      expect(text, name).not.toContain("npm-prerelease-gated");
+      expect(environments(text), name).not.toContain("npm-prerelease");
+      expect(text, name).not.toMatch(/NPM_TOKEN|NODE_AUTH_TOKEN/);
+      expect(/id-token: *write/.test(text) && publishes.test(text), `${name} requests OIDC and publishes`).toBe(false);
+    }
+  });
+
+  // Final r11 review: GitHub creates a missing environment, unprotected, the
+  // first time a job names it, so a dispatch before owner step 1 published
+  // with no approval. The publish job now needs a job that names no
+  // environment and fails unless the protected one already exists.
+  it("fails closed until the publish environment exists with its protection", () => {
+    const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
+    const guard = workflowJob(publish, "publish-environment");
+    expect(Object.keys(guard)).toEqual(["runs-on", "timeout-minutes", "permissions", "steps"]);
+    expect(guard.permissions).toBe("\ncontents: read\nactions: read");
+    expect(guard.steps).not.toMatch(/continue-on-error|\bif:/);
+    const run = (environment: unknown, policies: unknown, beforePublish = false, transportFailure = 0) => {
+      const directory = mkdtempSync(join(tmpdir(), "dacs-publish-environment-"));
+      scratch.push(directory);
+      const checkout = join(directory, "checkout");
+      mkdirSync(join(checkout, "scripts"), { recursive: true });
+      for (const file of ["check-publish-environment.mjs", "require-publish-environment.sh", "bounded-http.sh", "http-json-limits.mjs"]) {
+        writeFileSync(join(checkout, "scripts", file), readFileSync(join(repoRoot, "scripts", file)));
+      }
+      // The publisher stub performs no external write. A failing recheck must
+      // stop before it is invoked, even after the earlier job admitted setup.
+      const published = join(directory, "published");
+      writeFileSync(join(checkout, "scripts/publish-release-set.mjs"),
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(published)}, "called");`);
+      const fixture = (name: string, value: unknown) => {
+        if (value === undefined) return "echo 'curl: HTTP 404' >&2; exit 1";
+        writeFileSync(join(directory, name), JSON.stringify(value));
+        return `cat '${join(directory, name)}'`;
+      };
+      const calls = join(directory, "http-calls");
+      const PATH = stubBin(directory, { curl: 'case "$*" in *--version*) echo "curl 8.5.0"; exit 0 ;; esac\n' +
+        `echo "HTTP $*" >> '${calls}'\n` + (transportFailure ? `exit ${transportFailure}\n` : "") +
+        `case "$*" in\n  */deployment-branch-policies) ${fixture("policies.json", policies)} ;;\n` +
+        `  *) ${fixture("environment.json", environment)} ;;\nesac` });
+      const runnerTemp = join(directory, "runner-temp");
+      mkdirSync(runnerTemp);
+      const result = runBash(["-e", "-c", workflowStepScript(beforePublish
+        ? "Publish or safely resume the exact release set" : "Require the protected publish environment", publish)], {
+        cwd: checkout, env: { PATH, GITHUB_REPOSITORY: "DACS-Agent-commerce/dacs-sdk", RUNNER_TEMP: runnerTemp,
+          GH_TOKEN: "test-token" } });
+      return { ...result, calls: existsSync(calls) ? readFileSync(calls, "utf8") : "", published: existsSync(published) };
+    };
+    const reviewers = { type: "required_reviewers", prevent_self_review: true,
+      reviewers: [{ type: "User", reviewer: { login: "maintainer" } }] };
+    const protectedEnvironment = { name: "npm-prerelease-gated", can_admins_bypass: false, protection_rules: [reviewers, { type: "branch_policy" }],
+      deployment_branch_policy: { protected_branches: false, custom_branch_policies: true } };
+    const tagOnly = { total_count: 1, branch_policies: [{ name: "v*", type: "tag" }] };
+    const passed = run(protectedEnvironment, tagOnly);
+    expect(passed.status, passed.stdout + passed.stderr).toBe(0);
+    expect(passed.calls.match(/--max-filesize 65536/g)).toHaveLength(2);
+    expect(passed.calls).toContain("https://api.github.com/repos/DACS-Agent-commerce/dacs-sdk/environments/npm-prerelease-gated/deployment-branch-policies");
+    for (const failure of [28, 63]) {
+      const stopped = run(protectedEnvironment, tagOnly, true, failure);
+      expect(stopped.status).toBe(failure);
+      expect(stopped.published).toBe(false);
+    }
+    const rechecked = run(protectedEnvironment, tagOnly, true);
+    expect(rechecked.status, rechecked.stdout + rechecked.stderr).toBe(0);
+    expect(rechecked.published).toBe(true);
+    const changed = run({ ...protectedEnvironment, can_admins_bypass: true }, tagOnly, true);
+    expect(changed.status).not.toBe(0);
+    expect(changed.published).toBe(false);
+    // As GitHub creates it on first use: no rules, every branch may deploy.
+    const created = { name: "npm-prerelease-gated", protection_rules: [], deployment_branch_policy: null };
+    for (const [environment, policies, reason] of [
+      [undefined, tagOnly, undefined],
+      [created, { total_count: 0, branch_policies: [] }, "it has no required reviewers"],
+      ...[true, undefined, null, "false"].map(can_admins_bypass =>
+        [{ ...protectedEnvironment, can_admins_bypass }, tagOnly, "does not prohibit admin bypass"] as const),
+      [{ ...protectedEnvironment, protection_rules: [{ ...reviewers, reviewers: [] }] }, tagOnly, "it has no required reviewers"],
+      [{ ...protectedEnvironment, protection_rules: [{ ...reviewers, prevent_self_review: false }] }, tagOnly,
+        "it does not prevent self-review"],
+      [{ ...protectedEnvironment, deployment_branch_policy: null }, tagOnly, "not limited to custom tag patterns"],
+      [{ ...protectedEnvironment, deployment_branch_policy: { protected_branches: true, custom_branch_policies: false } },
+        tagOnly, "not limited to custom tag patterns"],
+      [protectedEnvironment, { total_count: 2, branch_policies: [{ name: "v*", type: "tag" }, { name: "main", type: "branch" }] },
+        "other than the v* tag pattern"],
+      // Only the runbook's pattern: `*`, or any other tag pattern, lets a
+      // non-release tag deploy.
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "*", type: "tag" }] }, "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 2, branch_policies: [{ name: "v*", type: "tag" }, { name: "*", type: "tag" }] },
+        "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "release-*", type: "tag" }] },
+        "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "v*", type: "branch" }] },
+        "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 31, branch_policies: [{ name: "v*", type: "tag" }] }, "could not be read in full"],
+      // Custom policies with no pattern let nothing deploy; a nameless tag
+      // policy names no pattern.
+      [protectedEnvironment, { total_count: 0, branch_policies: [] }, "could not be read in full"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: "", type: "tag" }] }, "other than the v* tag pattern"],
+      [protectedEnvironment, { total_count: 1, branch_policies: [{ name: null, type: "tag" }] }, "other than the v* tag pattern"],
+      [protectedEnvironment, undefined, undefined],
+      [{ ...protectedEnvironment, name: "npm-prerelease" }, tagOnly, "does not exist"],
+    ] as const) {
+      const result = run(environment, policies);
+      expect(result.status, JSON.stringify([environment, policies])).not.toBe(0);
+      if (reason) expect(result.stdout).toContain(`::error title=Unprotected publish environment::`);
+      if (reason) expect(result.stdout).toContain(reason);
+    }
+  }, 30_000);
+
   it("cannot select the warn policy from a caller that enforces drift", () => {
     // The called workflow's only input is enforce-audit-drift, and the policy
     // is set nowhere but the acceptance step, which never warns when it is true.
@@ -383,6 +579,32 @@ describe("registry/container workflow wiring", () => {
     expect(runWorkflowStep(4, baselineOnlySummary(), true, undefined, "workflow_dispatch").status).toBe(0);
   });
 
+  it("requires code-owner review of the baseline, the scripts that decide it, and every workflow", () => {
+    const owners = readFileSync(join(repoRoot, ".github/CODEOWNERS"), "utf8").split("\n");
+    // The whole workflows directory, so a workflow added later is owned too, and
+    // the package script mapping and local publisher the acceptance runs.
+    for (const path of ["scripts/registry-container-audit-baseline.json", "scripts/registry-container-audit-baseline.md",
+      "scripts/registry-container-disposition.mjs", "scripts/runtime-image-inventory.mjs",
+      "scripts/verify-registry-container-consumer.sh",
+      "scripts/publish-exact-local-registry.mjs", "scripts/check-publish-environment.mjs", "scripts/require-publish-environment.sh",
+      "scripts/bounded-http.sh", "scripts/http-json-limits.mjs", "package.json",
+      "scripts/acceptance-evidence-io.mjs", "scripts/bounded-build.mjs", "scripts/bounded-command.mjs",
+      "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh",
+      "scripts/acceptance-seal.mjs", "scripts/registry-container-registry.sh",
+      "scripts/publish-release-set.mjs", "scripts/verify-release-set.mjs", "scripts/check-npm-advisories.mjs",
+      // The wrapper, installer and evidence assembly that acceptance executes,
+      // and the closure their decisions are imported from.
+      "scripts/acceptance-ci.sh", "scripts/acceptance-bootstrap.mjs", "scripts/acceptance-fixtures.mjs",
+      "scripts/installation-closure.mjs", "scripts/installation-archive-worker.mjs",
+      "scripts/reference-installation.mjs", "scripts/acceptance-directory.mjs",
+      "scripts/verify-package-lifecycle.mjs", "scripts/verify-package.mjs",
+      "package-lock.json", ".github/workflows/", ".github/CODEOWNERS"]) {
+      expect(owners).toContain(`/${path} @randomblocker`);
+    }
+    // A later, more specific pattern would replace the directory's owner.
+    const patterns = owners.filter((line) => line.trim() !== "" && !line.startsWith("#")).map((line) => line.split(/\s+/)[0]);
+    expect(patterns.filter((pattern) => pattern?.includes("workflows"))).toEqual(["/.github/workflows/"]);
+  });
 });
 
 // Runs the acceptance script up to its first npm command, with stubs that
@@ -1712,6 +1934,38 @@ describe("advisory-ID baseline", () => {
   });
   // Code r10 P3-2: a baseline-only exit 4 lets a prerelease publish, so the
   // #191 baseline may waive transitive findings only.
+  it("never lets the #191 baseline waive an advisory that is high or critical on a direct dependency", () => {
+    const listed = "GHSA-23hp-3jrh-7fpw";
+    expect(baseline.advisoryIds).toContain(listed);
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } =
+      baselineOnlySummary();
+    summary.audit.directAdvisories = [listed];
+    for (const policy of ["warn", "fail"]) {
+      const result = registryContainerDisposition(summary, undefined, { unlistedAdvisories: policy });
+      expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", unlistedAdvisories: [],
+        checks: { audit: "blocked" } });
+      expect(result.message).toContain("#191 baseline advisories that are high or critical on a direct dependency, " +
+        `which the baseline cannot waive: ${listed}`);
+    }
+    // Prerelease publication's enforced call, and a pull request, refuse a claimed 4.
+    for (const [enforce, event] of [[true, "workflow_dispatch"], [false, "pull_request"]] as const) {
+      const claimed = runWorkflowStep(4, summary, enforce, undefined, event);
+      expect(claimed.status).toBe(4);
+      expect(claimed.stdout).toContain("::error title=Registry/container acceptance policy failure::");
+      expect(claimed.stdout).not.toContain("::warning title=#191 security gate blocked::");
+    }
+    // The same baselined ID, transitive, stays baseline-only and does not stop a prerelease.
+    summary.audit.directAdvisories = [];
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
+    expect(runWorkflowStep(4, summary, true, undefined, "workflow_dispatch").status).toBe(0);
+    // SECURITY.md and the runbook say so.
+    const prose = (path: string) => readFileSync(join(repoRoot, path), "utf8").replace(/\s+/g, " ");
+    expect(prose("SECURITY.md")).toContain("baseline (exit 4) passes that prerequisite, so baseline-only findings do " +
+      "not stop a prerelease");
+    expect(prose("SECURITY.md")).toContain("always does, even when the #191 baseline lists it");
+    expect(prose("docs/npm-prerelease-release.md")).toContain("so baseline-only findings do not stop a prerelease. " +
+      "The baseline waives transitive findings only");
+  });
   it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
     const summary = baselineOnlySummary();
     summary.audit.observedAdvisories = baseline.advisoryIds.slice(10);
