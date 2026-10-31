@@ -1,6 +1,7 @@
+import { appendApprovalLedgerLine, syncApprovalLedger as syncContextLedger } from './approval-ledger-append.mjs';
 import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
-import { closeSync, fsyncSync, openSync, truncateSync, writeSync } from 'node:fs';
+import { truncateSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { admitRawJson, canonicalDemosAgentPublicKey, canonicalize, compositeVerificationAddress, contentHash, finalityCommitmentAddress, isCanonicalJobId, isCompositeVerificationRecord, isFinalityCommitmentRecord, isSettlementEvidence, paymentEvidenceAddress, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
@@ -333,24 +334,7 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
   });
 }
 
-// Sync both a retained append and its publication directory. Parent creation
-// is one leaf only; its existing parent's entry is synchronized as well.
-function syncContextLedger(evidencePath){
-  for(const path of [evidencePath,dirname(resolve(evidencePath)),dirname(dirname(resolve(evidencePath)))]){
-    const handle=openSync(path,'r');try{fsyncSync(handle);}finally{closeSync(handle);}
-  }
-}
-const appendContextLine=async(evidencePath,line)=>{
-  await mkdir(dirname(evidencePath),{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error;});
-  let text='';try{text=await readFile(evidencePath,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
-  const bytes=Buffer.from(`${text.length&&!text.endsWith('\n')?'\n':''}${JSON.stringify({format:CONTEXT_FORMAT,...line})}\n`);
-  const handle=openSync(evidencePath,'a',0o600);
-  try{
-    for(let done=0;done<bytes.length;){const written=writeSync(handle,bytes,done,bytes.length-done);if(!(written>0))throw new Error('context line was not written');done+=written;}
-    fsyncSync(handle);
-  }finally{closeSync(handle);}
-  syncContextLedger(evidencePath);
-};
+const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePath,{format:CONTEXT_FORMAT,...line});
 // A crash in appendContextLine can leave its line torn: the ledger's last
 // line, unterminated, not complete JSON, and starting as a context line does.
 // That append never returned, so it reserved or released nothing; under the
