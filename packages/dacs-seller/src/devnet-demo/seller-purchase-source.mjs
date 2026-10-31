@@ -13,10 +13,15 @@ function agreementBinding(projection){
   return structuredClone(binding);
 }
 
+/** Whether ref is exactly a Demos payment transaction reference: {kind:'demos', txHash (64 lower-case hex), blockNumber (safe integer >= 0)}. */
+export const isPaymentTxRef = (ref) => ref !== null && typeof ref === 'object' && !Array.isArray(ref) && Object.keys(ref).sort().join() === 'blockNumber,kind,txHash'
+  && ref.kind === 'demos' && typeof ref.txHash === 'string' && /^[0-9a-f]{64}$/.test(ref.txHash) && Number.isSafeInteger(ref.blockNumber) && ref.blockNumber >= 0 && !Object.is(ref.blockNumber, -0);
+
 const PAYMENT_OBSERVATION_LIMITS = Object.freeze({ timeoutMs: 10_000, maxBytes: 1024 });
 // The observer must read current chain authority, cap wire bytes before decode,
-// and honor signal. Only a fresh reading of this exact job/Agreement is usable.
-async function freshPaymentObserved(observePayment, projection, agreement, now) {
+// and honor signal. Only a fresh reading of this exact job/Agreement is usable,
+// and a verified reading must name the payment transaction it verified.
+async function freshPaymentReading(observePayment, projection, agreement, now) {
   if (typeof observePayment !== 'function' || !agreement || contentHash(agreement) !== projection.agreementHash) return null;
   const observedAt = now();
   if (!Number.isSafeInteger(observedAt) || observedAt < 0) return null;
@@ -29,7 +34,8 @@ async function freshPaymentObserved(observePayment, projection, agreement, now) 
     if (!Number.isSafeInteger(checkedAt) || checkedAt < observedAt) return null;
     if (contentHash(query.agreement) !== projection.agreementHash || reading?.jobId !== projection.jobId || reading.agreementHash !== projection.agreementHash ||
         !Number.isSafeInteger(reading.observedAt) || reading.observedAt < observedAt || reading.observedAt > checkedAt) return null;
-    return reading.disposition === 'verified' ? true : reading.disposition === 'absent' ? false : null;
+    if (reading.disposition === 'verified') return isPaymentTxRef(reading.paymentTxRef) ? { observed: true, txRef: structuredClone(reading.paymentTxRef) } : null;
+    return reading.disposition === 'absent' ? { observed: false, txRef: null } : null;
   } catch { return null; }
   finally { clearTimeout(timer); controller.abort(); }
 }
@@ -41,9 +47,12 @@ async function freshPaymentObserved(observePayment, projection, agreement, now) 
 // names a buyer outside closed access, which the app source refuses too.
 // The seller is never told of a buyer-side cancellation; operator-approval.mjs
 // holds pre-payment writes for that reason. Seller records alone always keep
-// prePaymentOpen false; missing current payment authority is null.
-/** Resolve snapshots asynchronously; observePayment must return a fresh {disposition,jobId,agreementHash,observedAt}.
- * paymentObserved is true for verified, false for authoritative absence, and null for indeterminate authority. */
+// prePaymentOpen null (unknown); false is reserved for known closed purchases.
+// Missing current payment authority is null.
+/** Resolve snapshots asynchronously; observePayment must return a fresh {disposition,jobId,agreementHash,observedAt},
+ * and a verified reading also its paymentTxRef (isPaymentTxRef). paymentObserved is true for verified, false for
+ * authoritative absence, and null for indeterminate authority (including a verified reading without a valid
+ * paymentTxRef); paymentTxRef is the verified transaction when paymentObserved is true, else null. */
 export function sellerRecordsPurchaseResolver({sessionOf,buyerAccess,now,observePayment}){
   return async(jobId)=>{
     const session=sessionOf(jobId);
@@ -60,8 +69,9 @@ export function sellerRecordsPurchaseResolver({sessionOf,buyerAccess,now,observe
     const ref=agreement?.listingRef,price=agreement?.terms?.price,amount=price?.currency==='DEM'?demOs(price.amount):null;
     const projection={jobId:session.jobId,seller:party('seller'),buyer,listingPin:ref?{listingId:ref.listingId,version:ref.version,contentHash:ref.contentHash}:null,
       sourceBinding:agreementBinding(session.agreementSignedProjection),agreementHash:session.agreementHash??null,amountOs:amount===null?null:amount.toString(),
-      paymentObserved:null,prePaymentOpen:false};
-    projection.paymentObserved=await freshPaymentObserved(observePayment,projection,session.agreement,now);
+      paymentObserved:null,paymentTxRef:null,prePaymentOpen:null};
+    const payment=await freshPaymentReading(observePayment,projection,session.agreement,now);
+    Object.assign(projection,{paymentObserved:payment?.observed??null,paymentTxRef:payment?.txRef??null});
     return projection;
   };
 }

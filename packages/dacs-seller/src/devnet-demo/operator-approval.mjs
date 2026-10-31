@@ -2,8 +2,12 @@ import { dirname, resolve } from 'node:path';
 import { mkdir, readFile } from 'node:fs/promises';
 import { closeSync, fsyncSync, openSync, truncateSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalDemosAgentPublicKey, canonicalize, compositeVerificationAddress, contentHash, finalityCommitmentAddress, isCanonicalJobId, isCompositeVerificationRecord, isFinalityCommitmentRecord, isSettlementEvidence, paymentEvidenceAddress, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
+import { isPaymentTxRef } from './seller-purchase-source.mjs';
+import { isDevnetPurchasedReport } from './deliverable.mjs';
+import { buildStorageProgramCreatePayload } from '../dacs/wallet-transactions.mjs';
+import { DEVNET_DEMO_ARTIFACT_KIND, DEVNET_DEMO_ARTIFACT_POLICY } from '../dacs/devnet-source.mjs';
 
 const sha=(value)=>createHash('sha256').update(value).digest('hex');
 const OS=/^(0|[1-9][0-9]*)$/,POSITIVE_OS=/^[1-9][0-9]*$/,HASH=/^[0-9a-f]{64}$/;
@@ -384,6 +388,227 @@ export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Dat
   });
 }
 
+// The closed table of seller writes, keyed by artifact kind (SettlementEvidence
+// also by phase). Each row names the request kind; the artifact's exact
+// members and their authorities without a purchase (artifact: the seller signs
+// or produces it) and against the purchase (bound: null or a refusal reason);
+// and its logical address. BEFORE_PAYMENT and AFTER_PAYMENT say when the write
+// may happen. CREATE metadata adds artifactBinding for the demo request kind
+// and deliveryBinding for a Deliverable (expectedCreate). Party members carry
+// the Agreement's own claim spellings (p.buyer, p.seller), as the addresses
+// and records derived from them do; the seller signs with policy.seller.
+const SETTLEMENT_EVIDENCE_KIND='devnet-settlement-evidence-storage-create';
+const WRITE_KINDS=new Map([
+  ['CompositeVerificationRecord',{kind:DEVNET_DEMO_ARTIFACT_KIND,
+    artifact:(a,c,policy)=>isCompositeVerificationRecord(a)&&a.signature.signer===policy.seller,
+    bound:(a,p)=>[p.buyer,p.seller].includes(a.evaluatedParty)?null:'evaluated-party',
+    address:(c,a)=>compositeVerificationAddress(c.jobId,a.evaluatedParty)}],
+  ['FinalityCommitmentRecord',{kind:DEVNET_DEMO_ARTIFACT_KIND,
+    artifact:(a,c,policy)=>isFinalityCommitmentRecord(a)&&a.pattern==='fixed-price'&&a.signature.signer===policy.seller,
+    bound:(a,p)=>!same(a.listingRef,p.listingPin)?'listing':a.agreementHash!==p.agreementHash?'agreement':same([...a.parties].sort(),[p.buyer,p.seller].sort())?null:'parties',
+    address:c=>finalityCommitmentAddress(c.jobId)}],
+  ['Deliverable',{kind:DEVNET_DEMO_ARTIFACT_KIND,
+    artifact:(a,c,policy)=>isDevnetPurchasedReport(a,{producer:policy.seller}),
+    bound:(a,p,c,policy)=>!same(a.listing,p.listingPin)?'listing':a.agreementHash!==p.agreementHash?'agreement':deliveryBindingRefusal(c,p,policy),
+    address:c=>`dacs4:deliverable:${c.jobId}`}],
+  ['SettlementEvidence:pay-dem',{kind:SETTLEMENT_EVIDENCE_KIND,
+    artifact:(a,c,policy)=>exact(a,PAYMENT_EVIDENCE_KEYS)&&isSettlementEvidence(a)&&a.outcome==='success'&&a.paymentTxRefs.length===1&&exact(a.paymentTxRefs[0],['kind','txHash','blockNumber'])&&a.paymentTxRefs[0].kind==='demos'
+      &&a.settlementFinality.model==='bft-final'&&a.settlementFinality.finalityObservedAt===a.observedAt&&a.signature.signer===policy.seller,
+    bound:(a,p)=>!same(a.paymentAmount,{amount:demString(BigInt(p.amountOs)),currency:'DEM'})?'payment-amount':same(a.paymentTxRefs[0],p.paymentTxRef)?null:'payment-tx',
+    address:(c,a,policy)=>{const index=listingPhaseIndex(policy.paymentPhaseIndex);return index===null?null:paymentEvidenceAddress(c.jobId,'demos-native:DEM',index);}}],
+  ['SettlementEvidence:deliver-storage-program',{kind:DEVNET_DEMO_ARTIFACT_KIND,
+    artifact:(a,c,policy)=>exact(a,DELIVERY_EVIDENCE_KEYS)&&isSettlementEvidence(a)&&a.outcome==='success'&&HASH.test(a.dacsSdkAuditSourceHash)&&HASH.test(a.deliverableContentHash)
+      &&same(a.deliverableAnchor,{kind:'storage-program',locator:`dacs4:deliverable:${c.jobId}`})&&a.signature.signer===policy.seller,
+    bound:(a,p,c,policy)=>deliveredHash(policy,c.jobId)===a.deliverableContentHash?null:'deliverable',
+    address:c=>`dacs4:evidence:${c.jobId}`}],
+]);
+
+// The payload hash of the seller's verified, retained Deliverable for the job
+// (the hash delivery evidence commits to), read like listingPin; null when the
+// host supplies none, so no delivery evidence is approved without it.
+function deliveredHash(policy,jobId){
+  const hash=typeof policy.deliveredPayloadHash==='function'?policy.deliveredPayloadHash(jobId):null;
+  return typeof hash==='string'&&HASH.test(hash)?hash:null;
+}
+const writeKind=(c,artifact)=>WRITE_KINDS.get(c.artifactKind==='SettlementEvidence'?`SettlementEvidence:${artifact.phase}`:c.artifactKind)??null;
+
+// A Deliverable's delivery binding: its purchase, the verified Listing's
+// delivery phase and its payload. Only fulfilmentId is the seller's own.
+function deliveryBindingRefusal(c,p,policy){
+  const binding=c.deliveryBinding,phaseIndex=listingPhaseIndex(policy.deliveryPhaseIndex);
+  return phaseIndex!==null&&typeof binding?.fulfilmentId==='string'&&binding.fulfilmentId.length>0&&binding.fulfilmentId.length<=128
+    &&same(binding,{version:'1',profile:DELIVERY_PROFILE,jobId:c.jobId,phase:'deliver-storage-program',phaseIndex,listing:p.listingPin,agreementHash:p.agreementHash,
+      fulfilmentId:binding.fulfilmentId,purchaseAmount:{amount:demString(BigInt(p.amountOs)),currency:'DEM'},payloadHash:c.contentHash})?null:'delivery-binding';
+}
+
+// The host reads phase indexes from protocolSupport(its verified Listing).
+// Missing phase context (null) cannot authorize an automatic phase write.
+function listingPhaseIndex(read){
+  const index=typeof read==='function'?read():null;
+  return Number.isSafeInteger(index)&&!Object.is(index,-0)&&index>=0?index:null;
+}
+
+// CORE CF-5: a request's exact JSON (its CREATE and stored artifact) admitted
+// as raw UTF-8: no duplicate member, unsafe number, lone surrogate or nesting
+// over 128, as the SDK admits received bytes. Throws for anything else.
+function admittedJson(text){
+  if(typeof text!=='string'||!text.isWellFormed())throw new TypeError('exact request JSON is not well-formed text');
+  return admitRawJson(Buffer.from(text,'utf8'));
+}
+
+// The request as the packaged wallet shows it, before any member is used:
+// exact members, this seller's wallet and network, and well-typed coordinates.
+// purpose, evidence, sending and debit.note are display text.
+function requestShapeValid(request,policy){
+  const c=request?.content;
+  return exact(request,['method','address','purpose','content'])&&request.method==='sendTransaction'&&request.address===policy.address&&typeof request.purpose==='string'
+    &&exact(c,[...REQUEST_CONTENT_KEYS,...(c?.artifactKind==='Deliverable'?['deliveryBinding']:[])])&&c.action===CREATE_ACTION&&c.contentHashProfile===CONTENT_HASH_PROFILE
+    &&KINDS.has(c.artifactKind)&&isCanonicalJobId(c.jobId)&&c.owner===policy.seller&&c.wallet===policy.address
+    &&typeof c.logicalAddress==='string'&&c.logicalAddress.length>0&&c.logicalAddress.length<=256&&c.programName===c.logicalAddress.replace(/:/g,'%3A')
+    &&Number.isSafeInteger(c.nonce)&&c.nonce>=1&&Number.isSafeInteger(c.timestamp)&&c.timestamp>=0&&typeof c.evidence==='string'&&typeof c.sending==='string'
+    &&c.network===policy.sourceBinding.network&&c.chainIdentity===policy.sourceBinding.chainIdentity&&same(c.networkBinding,policy.sourceBinding);
+}
+
+// The declared debit in OS, [storage fee, SDK gas, network fee, RPC fee], or
+// null unless exact: canonical DEM strings, no seller amount or additional fee,
+// the SDK's fixed gas, and both totals the sum of the parts.
+function debitOs(d){
+  if(!exact(d,['storageFeeDem','sellerAmountDem','sdkGasDem','networkFeeDem','rpcFeeDem','additionalFeeDem','totalDem','totalOs','note'])
+    ||d.sellerAmountDem!=='0'||d.additionalFeeDem!=='0'||typeof d.note!=='string'||typeof d.totalOs!=='string'||!OS.test(d.totalOs))return null;
+  const fees=['storageFeeDem','sdkGasDem','networkFeeDem','rpcFeeDem'].map(key=>demOs(d[key]));
+  return fees.includes(null)||fees[0]<=0n||fees[1]!==OS_PER_DEM||fees.reduce((a,b)=>a+b,0n)!==BigInt(d.totalOs)||demOs(d.totalDem)!==BigInt(d.totalOs)?null:fees;
+}
+
+// The one CREATE this seller should sign for the request's coordinates and
+// artifact: the seller CREATE builder's operation with the row's exact
+// metadata, or null when the builder refuses them.
+function expectedCreate(row,c,artifact,policy){
+  let op;
+  try{op=buildStorageProgramCreatePayload({from:c.wallet,storageAddress:c.storageAddress,programName:c.programName,logicalAddress:c.logicalAddress,signedListing:artifact,nonce:c.nonce,timestamp:c.timestamp}).content.data[1];}catch{return null;}
+  Object.assign(op.metadata,{contentHash:c.contentHash,envelopeHash:c.envelopeHash,artifactKind:c.artifactKind,networkBinding:policy.sourceBinding,
+    ...(row.kind===DEVNET_DEMO_ARTIFACT_KIND?{artifactBinding:{version:'1',policy:DEVNET_DEMO_ARTIFACT_POLICY,authority:policy.artifactAuthority,artifactKind:c.artifactKind,jobId:c.jobId,logicalAddress:c.logicalAddress,writer:policy.seller}}:{}),
+    ...(c.artifactKind==='Deliverable'?{deliveryBinding:c.deliveryBinding}:{})});
+  return op;
+}
+
+// Whether the request carries exactly the expected CREATE (in the wallet's
+// canonical bytes) and its artifact's stored bytes, hashes and byte count.
+function createMatches(row,c,artifact,policy){
+  if(row.kind===DEVNET_DEMO_ARTIFACT_KIND&&typeof policy.artifactAuthority!=='string')return false;
+  const op=expectedCreate(row,c,artifact,policy);
+  try{
+    return op!==null&&c.exactCreate===canonicalize(op)&&c.exactStorageBytes===JSON.stringify(op.data)&&c.contentHash===contentHash(artifact)
+      &&c.envelopeHash===sha(c.exactStorageBytes)&&c.storageBytes===Buffer.byteLength(c.exactStorageBytes);
+  }catch{return false;}
+}
+
+// The resolver's projection as one closed state: none (no seller record of
+// the job), closed (a buyer outside closed access, or an ended purchase),
+// draft (a proposal with no signed Agreement), agreed-unpaid, paid, or
+// indeterminate (any other projection, or unknown payment authority). The
+// parties are the Agreement's primary claims, checked as the SDK compares
+// them: a canonical Demos agent buyer, this seller by CF-3 identity, and two
+// distinct identities. The Agreement's transport binding is the policy's, whole.
+// Payment names the transaction the observer verified, and only then.
+function purchaseState(p,policy,jobId){
+  if(p===null)return 'none';
+  if(p===false)return 'closed';
+  if(!exact(p,PURCHASE_KEYS)||p.jobId!==jobId||canonicalDemosAgentPublicKey(p.buyer)===null||!sameCanonicalClaimIdentity(p.seller,policy.seller)||sameCanonicalClaimIdentity(p.buyer,p.seller)
+    ||!same(p.listingPin,policy.listingPin())||typeof p.amountOs!=='string'||!POSITIVE_OS.test(p.amountOs)||![true,false,null].includes(p.prePaymentOpen))return 'indeterminate';
+  if(p.agreementHash===null)return p.sourceBinding===null&&p.paymentObserved===null&&p.paymentTxRef===null?'draft':'indeterminate';
+  if(typeof p.agreementHash!=='string'||!HASH.test(p.agreementHash)||!same(p.sourceBinding,policy.sourceBinding)||typeof p.paymentObserved!=='boolean'
+    ||(p.paymentObserved?!isPaymentTxRef(p.paymentTxRef):p.paymentTxRef!==null))return 'indeterminate';
+  return p.paymentObserved?'paid':p.prePaymentOpen===false?'closed':'agreed-unpaid';
+}
+
+// What a purchase state allows this write: null, a refusal, or a hold for
+// exact manual approval (HOLD_REASONS): a Vet record before the seller holds
+// an Agreement, or a write before payment while buyer cancellation is
+// unknown. A held write (its exact bytes manually approved) is not held again.
+function stateRefusal(state,p,c,held){
+  if(state==='indeterminate')return 'purchase';
+  if(state==='closed')return 'purchase-closed';
+  if(AFTER_PAYMENT.has(c.artifactKind))return state==='paid'?null:state==='agreed-unpaid'?'payment-not-observed':'purchase';
+  if(state==='paid')return 'payment-already-observed';
+  if(state!=='agreed-unpaid')return c.artifactKind!=='CompositeVerificationRecord'?'purchase':held?null:'seller-record-missing';
+  return p.prePaymentOpen===true||held?null:'cancellation-unknown';
+}
+
+// Fresh purchase authority for an admitted write: its state and, with a seller
+// record, the bindings its artifact names (row.bound). A hold is returned only
+// when every other check passes.
+async function purchaseRefusal(row,c,artifact,policy,held){
+  const p=await policy.resolvePurchase(c.jobId),state=purchaseState(p,policy,c.jobId),reason=stateRefusal(state,p,c,held);
+  if(reason&&!HOLD_REASONS.has(reason))return reason;
+  return (state==='none'?null:row.bound(artifact,p,c,policy))??reason;
+}
+
+/** Validate one exact seller write request; return null when policy may approve it, else a reason.
+ * Checks, in order: the request's shape ('request-shape'), its exact debit ('debit') under limits.maxWriteTotalOs
+ * ('write-fee-cap'), its write kind (WRITE_KINDS, 'request-shape'), its exact CREATE and stored bytes against the
+ * one expected CREATE ('create-bytes'), the artifact's members ('artifact') and logical address ('logical-address'),
+ * then fresh purchase authority (purchaseRefusal). 'seller-record-missing' and 'cancellation-unknown' are holds for
+ * exact manual approval, returned only once everything else passes; held (these exact bytes were manually approved)
+ * waives them and nothing else. Payment evidence must name the purchase's verified paymentTxRef ('payment-tx');
+ * delivery evidence the hash policy.deliveredPayloadHash(jobId) returns ('deliverable'). Never throws for a
+ * malformed request; purchase resolver and policy input errors propagate. */
+export async function policyRefusal(request,policy,limits,{held=false}={}){
+  if(!requestShapeValid(request,policy))return 'request-shape';
+  const c=request.content,fees=debitOs(c.debit);
+  if(fees===null)return 'debit';
+  if(BigInt(c.debit.totalOs)>BigInt(limits.maxWriteTotalOs))return 'write-fee-cap';
+  let artifact;
+  try{admittedJson(c.exactCreate);artifact=admittedJson(c.exactStorageBytes);}catch{return 'create-bytes';}
+  if(!artifact||typeof artifact!=='object'||Array.isArray(artifact))return 'create-bytes';
+  const row=writeKind(c,artifact);
+  if(row?.kind!==c.kind)return 'request-shape';
+  if(!createMatches(row,c,artifact,policy)||fees[0]!==BigInt(Math.max(1,Math.ceil(c.storageBytes/STORAGE_CHUNK_BYTES)))*OS_PER_DEM)return 'create-bytes';
+  if(artifact.jobId!==c.jobId||!row.artifact(artifact,c,policy))return 'artifact';
+  if(c.logicalAddress!==row.address(c,artifact,policy))return 'logical-address';
+  return purchaseRefusal(row,c,artifact,policy,held===true);
+}
+
+/** Return the sender removals in OS (storage fee plus SDK gas) a node confirmed for exactly this policy-checked
+ * request, or null. Node 61b8e75 executes the request's CREATE: its exact content keys, destination, network and
+ * chain identity, data ['storageProgram', exactCreate], the declared fees, and exactly its four sender edits in
+ * order (confirmedEditsMatch). Wire amounts are whole-DEM numbers before the denomination fork, OS strings after
+ * it (amount '0'). Bound to its transaction hash, the executed answer may also carry the nonce, timestamp and
+ * nonce step as decimal strings, and a gas_operation with exactly the declared fees, as the client reader accepts
+ * (sdk-provider.mjs anchorContentMatches). Never rounds or coerces a fee. */
+export function confirmedWriteOs(validity,request){
+  const data=validity?.response?.data,tx=data?.transaction,c=tx?.content,r=request?.content,fees=debitOs(r?.debit);
+  const postFork=c?.amount==='0',hashBound=typeof tx?.hash==='string'&&HASH.test(tx.hash);
+  const wireOs=(value)=>postFork?(typeof value==='string'&&OS.test(value)?BigInt(value):null)
+    :Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0)?BigInt(value)*OS_PER_DEM:null;
+  const integer=(value,expected)=>value===expected||(hashBound&&value===String(expected));
+  const feesMatch=(value,keys)=>exact(value,keys)&&['network_fee','rpc_fee','additional_fee'].every((key,i)=>wireOs(value[key])===[fees[2],fees[3],0n][i]);
+  if(fees===null||validity?.result!==200||data?.valid!==true||data.custom_charges!=null
+    ||!(data.gas_operation==null||(exact(data.gas_operation,['fees'])&&feesMatch(data.gas_operation.fees,['network_fee','rpc_fee','additional_fee'])))
+    ||!exact(c,CONFIRMED_CONTENT_KEYS)||c.type!=='storageProgram'||!(postFork||c.amount===0)||c.from!==r.wallet||c.from_ed25519_address!==r.wallet
+    ||c.to!==r.storageAddress||!integer(c.nonce,r.nonce)||!integer(c.timestamp,r.timestamp)||c.network!==r.network||c.chainIdentity!==r.chainIdentity
+    ||!Array.isArray(c.data)||c.data.length!==2||c.data[0]!=='storageProgram'||JSON.stringify(c.data[1])!==r.exactCreate
+    ||!feesMatch(c.transaction_fee,['network_fee','rpc_fee','additional_fee','rpc_address'])||c.transaction_fee.rpc_address!==null)return null;
+  return confirmedEditsMatch(c.gcr_edits,r,c.data[1].metadata,fees,wireOs,integer,hashBound?tx.hash:null)?fees[0]+fees[1]:null;
+}
+
+// The executed edits of one storage CREATE, in order: the storage fee removal,
+// this exact CREATE at its address, the SDK gas removal and a one-step nonce
+// increment, each the wallet's and none rolled back (as sdk-provider.mjs
+// anchorEditsMatch checks them in the client).
+function confirmedEditsMatch(edits,r,metadata,[storageFee,gas],wireOs,integer,txHash){
+  if(!Array.isArray(edits)||edits.length!==4)return false;
+  const expected=[['balance','remove',storageFee],['storageProgram'],['balance','remove',gas],['nonce','add']];
+  return edits.every((e,i)=>{
+    if(e?.type!==expected[i][0]||e.isRollback!==false||!(e.txhash===''||(txHash!==null&&e.txhash===txHash)))return false;
+    if(i===1)return exact(e,['type','target','isRollback','txhash','context'])&&e.target===r.storageAddress
+      &&exact(e.context,['operation','sender','data'])&&e.context.operation==='CREATE_STORAGE_PROGRAM'&&e.context.sender===r.wallet
+      &&exact(e.context.data,['variables','metadata'])&&JSON.stringify(e.context.data.variables)===r.exactCreate&&JSON.stringify(e.context.data.metadata)===JSON.stringify(metadata);
+    return exact(e,['type','operation','isRollback','account','txhash','amount'])&&e.operation===expected[i][1]&&e.account===r.wallet
+      &&(i===3?integer(e.amount,1):wireOs(e.amount)===expected[i][2]);
+  });
+}
+
+
 async function readPolicyLedger(evidencePath){
   let text='';
   try{text=await readFile(evidencePath,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}
@@ -406,3 +631,61 @@ function serializedPolicy(evidencePath,work){
 }
 
 const policyTails=new Map();
+
+const KINDS=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord','SettlementEvidence','Deliverable']);
+
+const BEFORE_PAYMENT=new Set(['CompositeVerificationRecord','FinalityCommitmentRecord']);
+
+const AFTER_PAYMENT=new Set(['SettlementEvidence','Deliverable']);
+
+const CREATE_ACTION='immutable DACS storage anchor CREATE';
+const CONTENT_HASH_PROFILE='SDK CF-1 signed scope (top-level signature/signatures omitted)';
+const DELIVERY_PROFILE='dacs-native-delivery-publication/v1';
+const OS_PER_DEM=1_000_000_000n;
+// The node charges 1 DEM of storage fee per started 10 KiB of stored bytes.
+const STORAGE_CHUNK_BYTES=10_240;
+
+// The request content members besides a Deliverable's deliveryBinding.
+const REQUEST_CONTENT_KEYS=['kind','action','artifactKind','jobId','owner','wallet','logicalAddress','storageAddress','programName','contentHash','contentHashProfile','envelopeHash',
+  'storageBytes','exactStorageBytes','exactCreate','nonce','timestamp','debit','network','chainIdentity','networkBinding','evidence','sending'];
+
+// Exact pay-dem and delivery SettlementEvidence members, as the packaged wallet admits them.
+const PAYMENT_EVIDENCE_KEYS=['evidenceVersion','jobId','phase','outcome','paymentTxRefs','paymentAmount','settlementFinality','observedAt','signature'];
+const DELIVERY_EVIDENCE_KEYS=['evidenceVersion','jobId','phase','outcome','dacsSdkAuditSourceHash','deliverableContentHash','deliverableAnchor','observedAt','signature'];
+
+// The purchase resolver's projection members (seller-purchase-source.mjs).
+const PURCHASE_KEYS=['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','paymentTxRef','prePaymentOpen'];
+
+// The executed CREATE content keys (Node 61b8e75, as the client checks them).
+const CONFIRMED_CONTENT_KEYS=['type','from','from_ed25519_address','to','amount','data','nonce','timestamp','transaction_fee','network','chainIdentity','gcr_edits'];
+
+// Canonical equality; anything that is not JSON is unequal.
+const same=(a,b)=>{try{return canonicalize(a)===canonicalize(b);}catch{return false;}};
+
+// A canonical DEM decimal string in OS, or null; demString is its inverse.
+const demOs=(value)=>typeof value==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{0,8}[1-9])?$/.test(value)?BigInt(value.split('.')[0])*OS_PER_DEM+BigInt((value.split('.')[1]??'').padEnd(9,'0')):null;
+const demString=(os)=>{const fraction=(os%OS_PER_DEM).toString().padStart(9,'0').replace(/0+$/,'');return fraction?`${os/OS_PER_DEM}.${fraction}`:`${os/OS_PER_DEM}`;};
+
+// The write kind and artifact of a request policyRefusal admitted; throws for one it refuses as malformed.
+function admittedWrite(request){
+  const c=request.content,artifact=admittedJson(c.exactStorageBytes),row=writeKind(c,artifact);
+  if(!row)throw new TypeError('the request names no seller write kind');
+  return{c,artifact,row};
+}
+
+/** Await fresh purchase authority for a write before payment (null for any other write): null while its purchase
+ * is still open and still the one its exact artifact names, else a refusal or hold reason (as policyRefusal; held:
+ * true when these exact bytes were manually approved). Throws for a request policyRefusal refuses as malformed;
+ * resolver errors propagate; callers must append synchronously after this resolves. */
+export async function stillOpenBeforePayment(request,policy,held=false){
+  const{c,artifact,row}=admittedWrite(request);
+  return BEFORE_PAYMENT.has(c.artifactKind)?purchaseRefusal(row,c,artifact,policy,held===true):null;
+}
+
+/** Await fresh purchase authority immediately before sign authority, for any write: as stillOpenBeforePayment
+ * before payment; after payment, null while the purchase is still paid and still the one its exact artifact
+ * names (listing, Agreement, amount, payment transaction, delivered payload and delivery binding), else a refusal reason. Throws as stillOpenBeforePayment. */
+export async function stillAuthorizedToSign(request,policy,held=false){
+  const{c,artifact,row}=admittedWrite(request);
+  return purchaseRefusal(row,c,artifact,policy,held===true);
+}

@@ -92,7 +92,7 @@ async function purchaseWorld({ buyerClaim = buyer.claim } = {}) {
 
 test('seller-only state never opens pre-payment policy without buyer cancellation authority', async () => {
   const w = await purchaseWorld(); delete w.session.agreement; delete w.session.nativeEvidenceWork;
-  assert.equal((await sellerRecordsPurchaseResolver(w.options)(JOB)).prePaymentOpen, false);
+  assert.equal((await sellerRecordsPurchaseResolver(w.options)(JOB)).prePaymentOpen, null);
 });
 
 test('closed access refuses a qualified Agreement buyer before observing payment', async () => {
@@ -112,7 +112,7 @@ for (const presenter of ['qualified', 'bare']) test(`allowed qualified Agreement
   let accessCalls = 0;
   const resolve = sellerRecordsPurchaseResolver({ ...w.options, buyerAccess: () => ({ allowsWallet: address => { accessCalls++; assert.equal(address, buyer.address); return true; } }) });
   const projection = await resolve(JOB);
-  assert.equal(projection.buyer, claim); assert.equal(projection.prePaymentOpen, false); assert.equal(accessCalls, 1);
+  assert.equal(projection.buyer, claim); assert.equal(projection.prePaymentOpen, null); assert.equal(accessCalls, 1);
 });
 
 for (const [label, mutate] of [
@@ -134,15 +134,32 @@ test('a saved verified intake or settlement ID is indeterminate without a fresh 
   assert.equal((await sellerRecordsPurchaseResolver(w.options)(JOB)).paymentObserved, null);
 });
 
+const PAYMENT_TX_REF = Object.freeze({ kind: 'demos', txHash: '5'.repeat(64), blockNumber: 9 });
 test('approval projection rereads exact payment authority and holds unavailable or stale readings', async () => {
   const w = await purchaseWorld(); let disposition = 'verified', calls = 0;
-  const resolve = sellerRecordsPurchaseResolver({ ...w.options, observePayment: async query => { calls++; return { disposition, jobId: query.jobId, agreementHash: query.agreementHash, observedAt: query.observedAt }; } });
+  const resolve = sellerRecordsPurchaseResolver({ ...w.options, observePayment: async query => { calls++; return { disposition, jobId: query.jobId, agreementHash: query.agreementHash, observedAt: query.observedAt, ...(disposition === 'verified' ? { paymentTxRef: { ...PAYMENT_TX_REF } } : {}) }; } });
   assert.equal((await resolve(JOB)).paymentObserved, true); w.advance(); disposition = 'absent';
   assert.equal((await resolve(JOB)).paymentObserved, false); assert.equal(calls, 2);
   const unavailable = sellerRecordsPurchaseResolver({ ...w.options, observePayment: async () => { throw new Error('TEST chain unavailable'); } });
   assert.equal((await unavailable(JOB)).paymentObserved, null);
   const mismatched = sellerRecordsPurchaseResolver({ ...w.options, observePayment: async query => ({ disposition: 'verified', jobId: 'TEST another', agreementHash: query.agreementHash, observedAt: query.observedAt }) });
   assert.equal((await mismatched(JOB)).paymentObserved, null);
+});
+
+test('a verified payment reading projects the transaction it verified; an absent one projects none', async () => {
+  const w = await purchaseWorld(); let reading = { disposition: 'verified', paymentTxRef: { ...PAYMENT_TX_REF } };
+  const resolve = sellerRecordsPurchaseResolver({ ...w.options, observePayment: query => ({ ...reading, jobId: query.jobId, agreementHash: query.agreementHash, observedAt: query.observedAt }) });
+  const paid = await resolve(JOB); assert.equal(paid.paymentObserved, true); assert.deepEqual(paid.paymentTxRef, PAYMENT_TX_REF);
+  w.advance(); reading = { disposition: 'absent' };
+  const unpaid = await resolve(JOB); assert.equal(unpaid.paymentObserved, false); assert.equal(unpaid.paymentTxRef, null);
+});
+
+for (const [label, paymentTxRef] of [['no transaction', undefined], ['a null transaction', null], ['an upper-case hash', { ...PAYMENT_TX_REF, txHash: 'A'.repeat(64) }],
+  ['a negative block', { ...PAYMENT_TX_REF, blockNumber: -1 }], ['a fractional block', { ...PAYMENT_TX_REF, blockNumber: 1.5 }], ['an extra member', { ...PAYMENT_TX_REF, TEST: 'extra' }],
+  ['another kind', { ...PAYMENT_TX_REF, kind: 'TEST' }]]) test(`a verified payment reading with ${label} is indeterminate`, async () => {
+  const w = await purchaseWorld();
+  const resolve = sellerRecordsPurchaseResolver({ ...w.options, observePayment: query => ({ disposition: 'verified', jobId: query.jobId, agreementHash: query.agreementHash, observedAt: query.observedAt, paymentTxRef }) });
+  const projection = await resolve(JOB); assert.equal(projection.paymentObserved, null); assert.equal(projection.paymentTxRef, null);
 });
 
 test('purchase projections retain unknown/access refusal and diagnostic helper contracts', async () => {
