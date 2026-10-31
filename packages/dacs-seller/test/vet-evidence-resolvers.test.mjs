@@ -1,7 +1,7 @@
 // Strict Vet replay with a requirement that names a verified claim: the record
 // passes only through the operator's authenticated VerifyResult, recipe and
 // authority evidence, every read is bounded, and a failing reader keeps its cause.
-import { sessionRegistrySnapshot } from './helpers/session-registry-fixture.mjs';
+import { sessionRegistrySnapshot, sessionRegistryFixture } from './helpers/session-registry-fixture.mjs';
 import { fixtureIdentityBundle } from './fixtures/listings.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -613,15 +613,137 @@ test('strict seller replay agrees with the qualification evaluator across member
  assert.ok(comparisons>1000);
 });
 
-for (const list of ['freshness', 'dealSpecific']) for (const matches of [true, false]) test(`mixed presence and verified ${list} requires the authenticated snapshot hash: ${matches}`, async () => {
+for (const list of ['freshness', 'dealSpecific']) for (const matches of [true, false]) test(`mixed ${list} uses snapshot entries regardless of operator selection hash: ${matches}`, async () => {
   const bundle = fixtureIdentityBundle(buyer, NOW);
   const member = { scheme: 'did', verificationRequired: false };
   const bundleRequirement = { ...unpinnedRequirement, required: [unpinnedRequirement.required[0], member] };
-  const f = await verifiedClaimFixture({ list, bundleRequirement, bundleHash: core.identityBundleHash(bundle) });
+  const f = await verifiedClaimFixture({ list, bundleRequirement, bundleHash: core.identityBundleHash(bundle), steward: seller });
   const sessionSnapshot = await sessionRegistrySnapshot(JOB);
   const problem = await f.replay({ input: { presence: { bundle, sessionSnapshot } }, evidence: {
     resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: matches ? sessionSnapshot.snapshotHash : SESSION_REGISTRY_PIN, recipeVersion: f.recipe.recipeVersion, availability: 'live' }),
   } });
-  if (matches) assert.equal(problem, null);
-  else assert.match(problem, /another session registry snapshot/);
+  assert.equal(problem, null);
+});
+
+const snapshotMethod = 'consensus-backed-proxy';
+async function snapshotReplayFixture({ version = 1, explicit = false, mixed = true, list = 'dealSpecific', ...patch } = {}) {
+  const bundle = fixtureIdentityBundle(buyer, NOW);
+  const member = { scheme: 'domain', verificationRequired: true, parameters: { verificationMethod: snapshotMethod }, ...(explicit ? { recipeVersion: version } : {}) };
+  return { bundle, ...await verifiedClaimFixture({ recipeVersion: version, steward: seller, list,
+    bundleRequirement: { requirementVersion: '1', required: [member, ...(mixed ? [{ scheme: 'did', verificationRequired: false }] : [])] },
+    bundleHash: core.identityBundleHash(bundle), ...patch }) };
+}
+const snapshotInput = (f, sessionSnapshot, pins = []) => ({ presence: { bundle: f.bundle, sessionSnapshot }, sessionRegistryPins: pins });
+const noRecipeReaders = { resolveRecipe: async () => { throw Error('operator recipe reader must not run'); }, resolveLatestRecipe: async () => { throw Error('operator head reader must not run'); } };
+async function reviseRecipe(f, patch) {
+  return sign({ ...core.stripSignature(f.recipe), ...patch }, 'dacs-recipe:v1:', seller);
+}
+
+for (const list of ['freshness', 'dealSpecific']) for (const explicit of [false, true]) test(`snapshot excludes v2 for ${list}, explicit=${explicit}`, async () => {
+  const f = await snapshotReplayFixture({ version: 2, explicit, list });
+  const sessionSnapshot = await sessionRegistrySnapshot(JOB);
+  assert.notEqual(await f.replay({ input: snapshotInput(f, sessionSnapshot), evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash, recipeVersion: 2, availability: 'live' }),
+  } }), null);
+});
+
+for (const explicit of [false, true]) test(`strict replay uses the snapshot descriptor, explicit=${explicit}`, async () => {
+  const f = await snapshotReplayFixture({ explicit });
+  const changed = await reviseRecipe(f, { defaultMaxAgeSec: 7200 });
+  const sessionSnapshot = await sessionRegistrySnapshot(JOB, 'changed-descriptor', [changed]);
+  assert.notEqual(await f.replay({ input: snapshotInput(f, sessionSnapshot), evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash, recipeVersion: 1, availability: 'live' }),
+    verifyAuthorityAttestation: async ({ recipe }) => core.contentHash(recipe) === core.contentHash(f.recipe) ? 'valid' : 'invalid',
+  } }), null);
+});
+
+test('snapshot latest head refuses older results and accepts its own v2 descriptor', async () => {
+  const old = await snapshotReplayFixture(), latest = await snapshotReplayFixture({ version: 2 });
+  const v2 = await reviseRecipe(latest, { governance: { ...latest.recipe.governance, supersedes: 1 } });
+  const sessionSnapshot = await sessionRegistrySnapshot(JOB, 'two-versions', [old.recipe, v2]);
+  assert.notEqual(await old.replay({ input: snapshotInput(old, sessionSnapshot), evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash, recipeVersion: 1, availability: 'live' }),
+  } }), null);
+  assert.equal(await latest.replay({ input: snapshotInput(latest, sessionSnapshot), evidence: noRecipeReaders }), null);
+});
+
+for (const explicit of [false, true]) test(`verified sibling inherits snapshot entries, explicit=${explicit}`, async () => {
+  const first = await snapshotReplayFixture({ explicit: true }), sibling = await snapshotReplayFixture({ version: 2, explicit, mixed: false, party: seller, verifier: buyer });
+  const sessionSnapshot = await sessionRegistrySnapshot(JOB), pins = [];
+  assert.equal(await first.replay({ input: snapshotInput(first, sessionSnapshot, pins) }), null);
+  assert.notEqual(await sibling.replay({ input: { sessionRegistryPins: pins }, evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash, recipeVersion: 2, availability: 'live' }),
+  } }), null);
+});
+
+test('verified-first string pin cannot establish snapshot authority for a later presence record', async () => {
+  const first = await snapshotReplayFixture({ version: 2, mixed: false }), later = await snapshotReplayFixture();
+  const sessionSnapshot = await sessionRegistrySnapshot(JOB), pins = [];
+  assert.equal(await first.replay({ input: { sessionRegistryPins: pins }, evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash, recipeVersion: 2, availability: 'live' }),
+  } }), null);
+  assert.match(await later.replay({ input: snapshotInput(later, sessionSnapshot, pins), evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash, recipeVersion: 1, availability: 'live' }),
+  } }), /another session registry snapshot/);
+  assert.notEqual(await first.replay({ input: snapshotInput(first, sessionSnapshot) }), null);
+});
+
+test('a completed explicit replay without snapshot authority cannot be combined with later presence', async () => {
+  const first = await snapshotReplayFixture({ version: 2, explicit: true, mixed: false });
+  const later = await snapshotReplayFixture({ explicit: true }), pins = [];
+  assert.equal(await first.replay({ input: { sessionRegistryPins: pins } }), null);
+  assert.match(await later.replay({ input: snapshotInput(later, await sessionRegistrySnapshot(JOB), pins) }), /another session registry snapshot/);
+});
+
+for (const kind of ['wrong-job', 'clone', 'spread']) test(`verified-only replay refuses a supplied ${kind} snapshot`, async () => {
+  const f = await snapshotReplayFixture({ explicit: true, mixed: false }), original = await sessionRegistrySnapshot(JOB);
+  const sessionSnapshot = kind === 'wrong-job' ? await sessionRegistrySnapshot(core.generateCanonicalJobId())
+    : kind === 'clone' ? structuredClone(original) : { ...original };
+  assert.match(await f.replay({ input: snapshotInput(f, sessionSnapshot) }), /runtime-authenticated job registry snapshot/);
+});
+
+test('an unused explicit oneOf alternative must exist in the job snapshot', async () => {
+  const member = { scheme: 'domain', verificationRequired: true, recipeVersion: 2, parameters: { verificationMethod: snapshotMethod } };
+  const f = await snapshotReplayFixture({ version: 2, explicit: true, bundleRequirement: { requirementVersion: '1', required: [], oneOf: [
+    [{ scheme: 'did', verificationRequired: false }, member],
+  ] }, boundRequirement: member });
+  const record = await sign({ ...core.stripSignature(f.record), dealSpecific: [] }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, seller);
+  assert.notEqual(await vetRecordProblem(record, { ref: { ...f.ref, contentHash: core.contentHash(record) }, jobId: JOB,
+    party: buyer.claim, bundleHash: record.bundleHash, verifier: seller.claim, invocation: { ...f.invocation, dealSpecific: [] },
+    now: () => NOW, evidence: f.evidence, ...snapshotInput(f, await sessionRegistrySnapshot(JOB)) }), null);
+});
+
+test('recovered snapshot objects retain the same job authority and recipe selection', async () => {
+  const f = await snapshotReplayFixture({ explicit: true }), outside = await snapshotReplayFixture({ version: 2 });
+  const { sessionSnapshot, recover } = await sessionRegistryFixture(JOB), pins = [];
+  assert.equal(await f.replay({ input: snapshotInput(f, sessionSnapshot, pins) }), null);
+  const recovered = await recover();
+  assert.notEqual(recovered, sessionSnapshot);
+  assert.equal(await f.replay({ input: snapshotInput(f, recovered, pins), evidence: noRecipeReaders }), null);
+  assert.notEqual(await outside.replay({ input: snapshotInput(outside, recovered, pins) }), null);
+});
+
+for (const explicit of [false, true]) for (const verifiedFirst of [false, true]) test(`concurrent own-program record checks keep one snapshot, explicit=${explicit}, verifiedFirst=${verifiedFirst}`, async () => {
+  const presence = await snapshotReplayFixture({ explicit: true }), sibling = await snapshotReplayFixture({ version: 2, explicit, mixed: false, party: seller, verifier: buyer });
+  const sessionSnapshot = await sessionRegistrySnapshot(JOB), pins = [];
+  const runPresence = () => presence.replay({ input: snapshotInput(presence, sessionSnapshot, pins) });
+  const runSibling = () => sibling.replay({ input: { sessionRegistryPins: pins }, evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash, recipeVersion: 2, availability: 'live' }),
+  } });
+  const results = await Promise.all(verifiedFirst ? [runSibling(), runPresence()] : [runPresence(), runSibling()]);
+  assert.notEqual(results[verifiedFirst ? 0 : 1], null);
+});
+
+for (const [availability, deprecated, explicit, accepted] of [
+  ...['operator_gated', 'closed_data', 'bilateral', 'mocked', 'disabled', 'failed'].map(state => [state, false, false, false]),
+  ['live', true, false, false],
+  ...['live', 'operator_gated', 'closed_data', 'bilateral', 'mocked', 'disabled', 'failed'].map(state => [state, false, true, ['live', 'operator_gated', 'closed_data', 'bilateral'].includes(state)]),
+]) test(`snapshot availability ${availability}, deprecated=${deprecated}, explicit=${explicit}`, async () => {
+  const f = await snapshotReplayFixture({ explicit });
+  const recipe = await reviseRecipe(f, { availability, governance: { ...f.recipe.governance, ...(deprecated ? { deprecated: true, deprecationReason: 'TEST superseded' } : {}) } });
+  const sessionSnapshot = await sessionRegistrySnapshot(JOB, 'availability', [recipe]);
+  const problem = await f.replay({ input: snapshotInput(f, sessionSnapshot), evidence: {
+    resolveLatestRecipe: async () => ({ sessionRecipeRegistrySnapshotHash: sessionSnapshot.snapshotHash, recipeVersion: 1, availability: 'live' }),
+  } });
+  if (accepted) assert.equal(problem, null); else assert.notEqual(problem, null);
 });
