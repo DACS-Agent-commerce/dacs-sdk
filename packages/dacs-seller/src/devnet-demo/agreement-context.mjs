@@ -5,12 +5,13 @@ import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { OperationError } from '../operations.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
-import { canonicalize, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { types as nodeTypes } from 'node:util';
+import { admitRawJson, canonicalize, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 
 const operationQueues=new Map(),signingContext=new AsyncLocalStorage();
 const clone=(value)=>JSON.parse(canonicalize(value));
 const same=(a,b)=>canonicalize(a)===canonicalize(b);
-const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
+const fail=(code,message,cause)=>{throw Object.assign(new Error(message,{cause}),{code});};
 // Pending receipts and native uncertainty keep anchor work retryable; signed bytes stay retained.
 const PENDING_RECEIPT_STATES=new Set(['accepted','included']);
 const RETRYABLE_ANCHOR_CODES=new Set(['indeterminate','journal-busy','journal-capacity']);
@@ -175,14 +176,15 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
   }};
 }
 
-// Produces the buyer's genuine partyVetCore composite. Its native receipt is
-// verified again before the canonical logical ref is used. store: the seller's party Vet
+// Produces both genuine partyVetCore composites and the exact derive input
+// consumed by buyer and seller. Native receipts are verified again before the
+// canonical logical refs enter the Agreement. store: the seller's party Vet
 // store (party-vet-store.mjs), one per seller, shared by every route that
 // writes this seller's Vets.
 // retainedScope({jobId,buyer}) (seller context route, seller-context-route.mjs
 // createSellerContextRecords): the scope of that buyer's completed route step
 // from the seller's durable records, or null.
-export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
+export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
   throw new Error("Vet context is not assembled");
   if(anchor?.writer!==wallet?.claim || typeof wallet?.signBytes!=='function') throw new TypeError('Vet producer and native anchor must belong to the seller');
   if(typeof anchor.hasIntent!=='function') throw new TypeError('the native anchor must answer whether a CREATE intent is retained');
@@ -201,13 +203,244 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const nonPass = record => ({ disposition:'rejected', code:'party_vet_non_pass',
     errorClass:vetPhaseFailureClass(record.overallDecision),
     reason:`${record.evaluatedParty === listing.seller.identity.presentedBy ? 'seller' : 'buyer'} Vet decision: ${record.overallDecision}` });
-  const validReceipt = async (read,logicalAddress,artifact,authority) => read?.status==='present'
+  // counterparty is a buyer-owned capability, not a seller signing adapter.
+  // Its issuer must retain and consume its challenge before evaluating this
+  // exact presentation. The seller independently authenticates the returned CVR.
+  const counterpartyReady = () => counterparty && ['issueChallenge','readRecord','evaluate'].every(key=>typeof counterparty[key]==='function');
+  // Capabilities must bound wire bytes before decoding. Independently bound
+  // their returned representation and deadline, including a stalled callback.
+  // A buyer evaluation may legitimately hold its one-use nonce for this whole
+  // deadline while it signs its record.
+  const COUNTERPARTY_TIMEOUT_MS=10000,CHALLENGE_MARGIN_MS=COUNTERPARTY_TIMEOUT_MS+5000;
+  // The buyer checks on its own clock up to one call deadline after send.
+  // Allow 5 seconds of clock skew: a consumed rejected nonce cannot rotate.
+  // Delivery beyond the call deadline is outside this seller's control.
+  const usableChallenge=challenge=>Number.isSafeInteger(challenge?.expiresAt)&&challenge.expiresAt-now()>=CHALLENGE_MARGIN_MS;
+  const callCounterparty = async(method,input)=>{
+    if(!counterpartyReady())fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
+    const controller=new AbortController(),maxBytes=65536,timeoutMs=COUNTERPARTY_TIMEOUT_MS;
+    let timer;
+    try{
+      const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(new DOMException('counterparty deadline expired','TimeoutError'));},timeoutMs);});
+      const value=await Promise.race([Promise.resolve().then(()=>counterparty[method](clone(input),{signal:controller.signal,maxBytes,timeoutMs})),timeout]);
+      // A genuine Uint8Array from another JavaScript realm does not pass
+      // instanceof; the Node brand check is the same one admitRawJson uses.
+      if(nodeTypes.isUint8Array(value))return admitRawJson(value,{maxBytes});
+      let budget=maxBytes;
+      const text=JSON.stringify(value,(key,member)=>{
+        budget-=Buffer.byteLength(key)+(typeof member==='string'?Buffer.byteLength(member):8);
+        if(budget<0)throw new RangeError('counterparty reply exceeds byte budget');
+        return member;
+      });
+      return admitRawJson(Buffer.from(text),{maxBytes});
+    }catch(cause){fail('counterparty_vet_unavailable',`counterparty ${method} failed`,cause);}
+    finally{clearTimeout(timer);controller.abort();}
+  };
+  const strictRecord = (record, {jobId,bundle,requirement,authority}) => verifyCompositeVerificationRecord(record,
+    {jobId,evaluatedParty:bundle.presentedBy,bundleHash:identityBundleHash(bundle),requirement,verifier:authority,freshness:[],dealSpecific:[]},
+    {nowMs:now,resolve:async()=>null,resolveRecipe:async()=>null,isRecipeSignerAuthorized:()=>false,isVerifyResultSignerAuthorized:()=>false,
+      resolvePublicKey:signature=>sameCanonicalClaimIdentity(signature.signer,authority)?authority:null,verify:verifier.verify,verifyAuthorityAttestation:()=> 'unresolved'});
+  const validReceipt = async (read,logicalAddress,artifact,authority,{fresh=false}={}) => read?.status==='present'
     && read.receipt?.state==='finalized' && read.receipt?.observationDisposition==='established'
-    && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority})==='valid';
+    && await anchor.verifyReceipt({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',receipt:read.receipt,verifier:authority,fresh})==='valid';
+  const unattempted=(read,request)=>read?.status==='unattempted'
+    && sameCanonicalClaimIdentity(read.issuer,request.buyer) && read.jobId===request.jobId
+    && read.bundleHash===identityBundleHash(request.identityBundle)
+    && read.requirementHash===sha256Hex(canonicalize(request.requirement));
+  // The buyer's ledger answers indeterminate while another provider has
+  // consumed the challenge but has not retained its result yet. Retry that
+  // authoritative read for the counterparty's whole permitted evaluation
+  // interval; a winning evaluation may hold its record signature until that
+  // deadline. Any record it returns is still strictly verified by the caller.
+  const READ_POLL_MS=25;
+  async function readRecordSettled(request) {
+    const deadline=Date.now()+COUNTERPARTY_TIMEOUT_MS;
+    for(;;){
+      const read=await callCounterparty('readRecord',request);
+      if(read?.status!=='indeterminate'||Date.now()>=deadline)return read;
+      await new Promise((resolve)=>setTimeout(resolve,READ_POLL_MS));
+    }
+  }
+  async function sellerSession(job) {
+    const retained=await state.read(job.jobId);
+    // A retained buyer-issued record is replayed without the buyer's ledger. An
+    // unfinished job still needs its verifier first: resuming a retained
+    // presentation must not sign it, or anchor the buyer CVR, before the
+    // missing capability is discovered.
+    if(!retained?.counterpartyRecord&&!counterpartyReady())
+      fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
+    let kept=retained?.presentation;
+    let expired=null;
+    // A retained buyer-issued record already proves what happened; a finished
+    // job must not depend on the buyer's ledger staying reachable.
+    if(kept&&!usableChallenge(kept.challenge)&&!retained?.counterpartyRecord){
+      const request={jobId:job.jobId,buyer:job.binding.buyerIdentityBundle.presentedBy,seller:wallet.claim,identityBundle:kept.bundle,requirement:SELLER_REQUIREMENT};
+      const read=await readRecordSettled(request);
+      // An expired presentation cannot be evaluated, signed or not. A result
+      // already retained for it is still reused as-is (produceSeller reads and
+      // verifies it); an exact unused outcome lets a fresh challenge replace
+      // the presentation. Anything else is uncertainty and must hold. An
+      // unsigned presentation can never have produced a result.
+      if(!unattempted(read,request)){
+        if(!kept.bundle.presentation||read?.status!=='present')fail('seller_vet_reconciliation_required','the expired seller challenge has no authoritative unused outcome');
+      }else{expired=kept;kept=null;}
+    }
+    if(!kept){
+      if(!counterpartyReady()) fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
+      const buyer=job.binding.buyerIdentityBundle.presentedBy;
+      // Issuing a challenge writes the buyer verifier's one-use nonce ledger.
+      // A purchase that is already closed must not start that effect.
+      guard(job,'seller challenge');
+      const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim});
+      if(!sameCanonicalClaimIdentity(challenge?.issuer,buyer) || challenge?.jobId!==job.jobId || !sameCanonicalClaimIdentity(challenge?.seller,wallet.claim)
+        // SN-2 sets only a floor for an issued challenge: at least 32
+        // lowercase-hex characters, with no upper bound.
+        || typeof challenge.sessionNonce!=='string' || !/^[a-f0-9]{32,}$/.test(challenge.sessionNonce) || !usableChallenge(challenge)) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
+      if(expired&&challenge.sessionNonce===expired.challenge.sessionNonce)fail('seller_challenge_reused','the expired seller challenge cannot be issued again');
+      const {presentation:_publicationProof,...identity}=listing.seller.identity;
+      const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
+      // The challenge was issued while the purchase was pending; if it closed
+      // during that await, drop it instead of retaining a presentation for a
+      // purchase that cannot proceed.
+      const openState=job.open();
+      if(openState!==true)fail('not-pending',`the purchase is no longer pending (${typeof openState==='string'?openState:'its check gave no answer'}); the seller challenge was not retained`);
+      kept=(await state.update(job.jobId,(current,rows)=>{
+        // Claim the nonce in the job row, under the store transaction. It is
+        // retained across restarts and released with the ended purchase.
+        if(rows().some(([,row])=>row.jobId!==job.jobId && row.writer===wallet.claim
+          && sameCanonicalClaimIdentity(row.presentation?.challenge?.issuer,buyer)
+          && row.presentation.challenge.sessionNonce===challenge.sessionNonce))
+          fail('seller_challenge_reused','buyer challenge was already presented for another job');
+        if(!current?.binding || !same(current.binding,job.binding)) fail('binding-changed','seller presentation binding changed');
+        if(current.presentation&&(!expired||!same(current.presentation,expired)))return undefined;
+        if(current.counterpartyRecord)fail('seller_vet_reconciliation_required','the seller challenge already has a retained record');
+        return {...current,presentation:value};
+      })).presentation;
+    }
+    if(!kept.bundle.presentation){
+      if(!usableChallenge(kept.challenge)) fail('seller_challenge_expired','seller challenge expired before presentation');
+      guard(job,'seller presentation');await markWrite(job);guard(job,'seller presentation');
+      // The challenge may expire during that durable write. A presentation
+      // signed under it would be refused by a conforming buyer (CORE SN-4), so
+      // fail here: the row stays unsigned and the next attempt rotates the
+      // unused challenge.
+      if(!usableChallenge(kept.challenge)) fail('seller_challenge_expired','seller challenge expired before presentation');
+      const raw=await wallet.signBytes(Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(kept.bundle)}`));
+      const signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
+      const bundle={...kept.bundle,presentation:{kind:'per-claim',signatures:[{ref:wallet.claim,signature}]}};
+      kept=(await state.update(job.jobId,current=>{
+        if(!current?.binding || !same(current.binding,job.binding) || !same(current.presentation.challenge,kept.challenge)) fail('binding-changed','seller presentation binding changed');
+        if(current.presentation.bundle.presentation)return undefined;
+        return {...current,presentation:{...current.presentation,bundle}};
+      })).presentation;
+    }
+    return clone(kept.bundle);
+  }
+  async function contextAuthentic(input) {
+    // The bundle hash leaves presentation bytes out. Authenticate the exact
+    // bundles this job retained (including the seller's signed presentation)
+    // before accepting references derived from them.
+    const retained=await state.read(input?.jobId).catch(()=>null);
+    // A caller-supplied bundle may not canonicalize (a BigInt, a cycle). That
+    // is a mismatch, not a reason to throw out of an authentication check.
+    let bundlesMatch;
+    try{bundlesMatch=Boolean(retained?.binding && retained.presentation?.bundle
+      && input?.buyer?.identityBundle && input?.seller?.identityBundle
+      && same(input.buyer.identityBundle,retained.binding.buyerIdentityBundle)
+      && same(input.seller.identityBundle,retained.presentation.bundle));}catch{return false;}
+    if(!bundlesMatch)return false;
+    for(const [role,authority,requirement] of [['buyer',wallet.claim,listing.buyerRequirement],['seller',input.buyer.identityBundle.presentedBy,SELLER_REQUIREMENT]]){
+      const bundle=input[role].identityBundle,ref=input[role].vetRecordRef;
+      const logicalAddress=compositeVerificationAddress(input.jobId,bundle.presentedBy);
+      const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
+      // A supplied reference must name the canonical logical address this
+      // profile reads, not an unrelated or merely equivalent-looking anchor.
+      if(ref?.anchor?.kind!=='storage-program' || ref?.anchor?.locator!==logicalAddress
+        || read.status!=='present' || !sameCanonicalClaimIdentity(ref.signer,authority) || contentHash(read.artifact)!==ref.contentHash
+        || !await validReceipt(read,logicalAddress,read.artifact,authority))return false;
+      if((await strictRecord(read.artifact,{jobId:input.jobId,bundle,requirement,authority})).status!=='valid')return false;
+    }
+    return true;
+  }
   // A buyer Vet kept in memory for a retry is read back from the anchor again before it is reused.
   async function buyerVetAnchored({recordRef}) {
     const logicalAddress=recordRef.anchor.locator,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
     return read.status==='present'&&contentHash(read.artifact)===recordRef.contentHash&&await validReceipt(read,logicalAddress,read.artifact,wallet.claim);
+  }
+  // Another provider instance may consume the one-use challenge first. After a
+  // failed evaluate the buyer is asked again; only a retained record is taken,
+  // and it is verified like any other. A nonce still consumed with no record
+  // after the whole evaluation interval is in progress, not terminally lost.
+  async function evaluateOrReadRetained(request) {
+    try{return await callCounterparty('evaluate',request);}
+    catch(error){
+      const retained=await readRecordSettled(request).catch(()=>null);
+      if(retained?.status==='present')return retained.record;
+      if(retained?.status==='indeterminate')fail('indeterminate','the counterparty evaluation has no authoritative outcome yet',error);
+      throw error;
+    }
+  }
+  async function produceSeller(job) {
+    const identityBundle=await sellerSession(job),authority=job.binding.buyerIdentityBundle.presentedBy;
+    const logicalAddress=compositeVerificationAddress(job.jobId,wallet.claim);
+    const retainedRow=await state.read(job.jobId);
+    let record=retainedRow?.counterpartyRecord;
+    // A replaced presentation cannot borrow or skip the retained lifetime check.
+    if(!record&&!same(retainedRow?.presentation?.bundle??null,identityBundle))
+      fail('binding-changed','the seller presentation changed before evaluation');
+    if(!record){
+      guard(job,'counterparty Vet');
+      const request={jobId:job.jobId,buyer:authority,seller:wallet.claim,identityBundle,requirement:SELLER_REQUIREMENT};
+      // Buyer retains its result before answering evaluate. A lost seller save
+      // reads that result; only an exact, authoritative unattempted nonce may
+      // start evaluation. Absence/unknown never authorizes another consumption.
+      const retained=await readRecordSettled(request);
+      if(retained?.status==='present')record=retained.record;
+      else if(unattempted(retained,request)){
+        if(!usableChallenge(retainedRow.presentation.challenge))
+          fail('seller_challenge_expired','seller challenge expired before evaluation');
+        // The ledger read is awaited. A purchase cancelled meanwhile starts no
+        // evaluation: its one-use challenge would otherwise be consumed and a
+        // record signed after the purchase closed.
+        guard(job,'counterparty Vet');
+        record=await evaluateOrReadRetained(request);
+      }
+      else fail('seller_vet_reconciliation_required','the buyer nonce ledger has no authoritative outcome');
+      const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
+      if(!sameCanonicalClaimIdentity(record?.signature?.signer,authority) || strict.status!=='valid') fail('seller_vet_invalid',`buyer-issued seller Vet failed strict verification: ${strict.status}:${strict.code}`);
+      await state.update(job.jobId,current=>{
+        if(!current?.binding || !same(current.binding,job.binding)) fail('binding-changed','counterparty Vet binding changed');
+        if(current.counterpartyRecord){if(!same(current.counterpartyRecord,record))fail('conflict','counterparty returned another Vet record');return undefined;}
+        // Another provider may replace an expired presentation while this
+        // evaluation runs. The record already names the old bundle hash, so
+        // pinning it to another challenge's presentation would wedge the job:
+        // retry against the presentation that is actually retained.
+        if(!current.presentation?.bundle || identityBundleHash(current.presentation.bundle)!==identityBundleHash(identityBundle))
+          fail('binding-changed','the seller presentation changed while its Vet was evaluated');
+        return {...current,counterpartyRecord:clone(record)};
+      });
+    }
+    const strict=await strictRecord(record,{jobId:job.jobId,bundle:identityBundle,requirement:SELLER_REQUIREMENT,authority});
+    if(!sameCanonicalClaimIdentity(record?.signature?.signer,authority) || strict.status!=='valid')fail('seller_vet_invalid','retained seller Vet is not authenticated by the buyer');
+    if(record.overallDecision!=='pass')return {refused:nonPass(record)};
+    // The native anchor caches verified readbacks briefly, and that cache is
+    // per provider instance. Returning success on a repeat therefore needs a
+    // fresh read and a fresh receipt verification, not cached evidence.
+    let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
+    if(read.status!=='present'){
+      guard(job,'counterparty anchor');await markWrite(job);
+      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>job.open()});
+      // A returned refusal and an unknown submission are different outcomes:
+      // keep the anchor's own reason and its retryable/terminal class.
+      if(read?.status!=='present'){
+        const outcome=writerCode(null,read),reason=oneLine(read?.reason??'no reason');
+        if(outcome==='indeterminate')fail('indeterminate',`seller Vet publication is not known yet: ${reason}`,read);
+        fail('seller_vet_receipt_invalid',`seller Vet publication was ${outcome}: ${reason}`,read);
+      }
+    }
+    if(contentHash(read.artifact??{})!==contentHash(record) || !await validReceipt(read,logicalAddress,record,authority,{fresh:true}))fail('seller_vet_receipt_invalid','seller Vet has no verified finalized anchor receipt');
+    const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(record),signer:authority};
+    return {record,recordRef,identityBundle};
   }
   // Marks the job durably before its first signature or anchor intent; from
   // then on its binding is kept, because a write may exist.
@@ -365,12 +598,13 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // anchored record. Unknown signature outcomes require reconciliation; it
   // never repeats a signer or creates another record for the party. A run that
   // fails before any write drops its binding, so a fresh attempt can bind.
-  // A request for a finished job reads the record back again before it is
+  // A request for a finished job reads both records back again before it is
   // answered (recheckFinished), so a receipt that stopped qualifying is refused.
-  // The run answers {job,buyerVet}, or {refused:'conflict'|'legacy'}.
+  // The run answers {job,buyerVet,sellerVet}, or {refused:'conflict'|'legacy'}.
   async function recheckFinished(job) {
     if(!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet no longer has a verified finalized anchor receipt');
-    return{job,buyerVet:job.buyerVet};
+    const sellerVet=await produceSeller(job);
+    return sellerVet.refused?sellerVet:{job,buyerVet:job.buyerVet,sellerVet};
   }
   function jobVet(scope,buyerIdentityBundle,open) {
     const {generatedAt:_generatedAt,...terms}=scope,binding={scope:terms,buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
@@ -386,10 +620,15 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(bound!=='bound')return{refused:bound};
         try{
           const session=createInMemoryFencedSessionStore();await session.create({jobId:scope.jobId,phase:'settle-pending',now:now()});const leased=await session.acquireLease({jobId:scope.jobId,owner:'devnet-demo-party-vet',ttlMs:300000,now:now()});if(!leased.ok)throw new Error(`party Vet lease failed: ${leased.reason}`);
+          guard(job,'party Vet');
+          if(!counterpartyReady()&&!(await state.read(job.jobId))?.counterpartyRecord)
+            fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
           if(job.buyerVet&&!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
           job.buyerVet??=await produce({job,identityBundle:buyerIdentityBundle,session,lease:leased.lease,role:'buyer'});
           if(job.buyerVet.refused)return job.buyerVet;
-          return{job,buyerVet:job.buyerVet};
+          const sellerVet=await produceSeller(job);
+          if(sellerVet.refused)return sellerVet;
+          return{job,buyerVet:job.buyerVet,sellerVet};
         }catch(error){
           // Nothing was signed or written under this binding: drop it before
           // any waiter sees the failure.
