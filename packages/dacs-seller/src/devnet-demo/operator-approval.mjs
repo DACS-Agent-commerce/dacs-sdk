@@ -612,11 +612,24 @@ function freezeRequest(value){
 // (releaseSellerContextHolds). A step a shutdown cut runs again only under a
 // new hold for the writes still to make. Both reject with seller_state_locked
 // while another process holds the ledger.
-export function createSellerContextAdmission({evidencePath,sellerApproval,now=()=>Date.now()}){
+// A context host supplies its transportStore under its lifetime state lock and
+// awaits ready before serving. Startup closes orphan/completed holds; reserve
+// and release also await it and propagate its failure. Without a store this is
+// only the low-level ledger primitive, with no cross-ledger startup recovery.
+// ready resolves the released hold ids; it rejects on ledger, journal or sync
+// errors, inconsistent bindings or an invalid release clock.
+export function createSellerContextAdmission({evidencePath,sellerApproval,transportStore=null,now=()=>Date.now()}){
   const settings=sellerApprovalSettings(sellerApproval),policyMode=settings.mode==='policy';
+  if(transportStore!==null&&typeof transportStore?.contextHoldState!=='function')throw new TypeError('context startup needs the transport store');
+  const ready=transportStore===null?Promise.resolve([]):reconcileContextHolds({evidencePath,store:transportStore,now});
+  let startupComplete=transportStore===null;
+  ready.then(()=>{startupComplete=true;},()=>{});
+  // Once ready, retain immediate queue ordering with the low-level ledger API.
+  const afterStartup=work=>startupComplete?work():ready.then(work);
   const append=(line)=>appendContextLine(evidencePath,line);
   return Object.freeze({
-    reserve:({jobId,effect,writes,hold})=>!policyMode?Promise.resolve(null):serializedPolicy(evidencePath,async()=>{
+    ready,
+    reserve:({jobId,effect,writes,hold})=>afterStartup(()=>!policyMode?Promise.resolve(null):serializedPolicy(evidencePath,async()=>{
       if(!isCanonicalJobId(jobId)||typeof effect!=='string'||!HASH.test(effect)||!Number.isSafeInteger(writes)||writes<1||writes>SELLER_POLICY_MAX_WRITES||typeof hold!=='string'||!hold)return 'request-shape';
       await cutTornContextLine(evidencePath);
       let snapshot;
@@ -634,8 +647,8 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
       if(refusal)return refusal;
       await append({event:'hold',holdId:hold,jobId,effect,writes,totalOs:settings.maxWriteTotalOs,recordedAt:at});
       return null;
-    }),
-    release:({jobId,hold})=>!policyMode?Promise.resolve():releaseSellerContextHolds({evidencePath,jobId,holdId:hold,now}).then(()=>{}),
+    })),
+    release:({jobId,hold})=>afterStartup(()=>!policyMode?Promise.resolve():releaseSellerContextHolds({evidencePath,jobId,holdId:hold,now}).then(()=>{})),
   });
 }
 
@@ -663,18 +676,35 @@ async function cutTornContextLine(evidencePath){
 // retained lines and resolves [].
 export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Date.now()}){
   return serializedPolicy(evidencePath,async()=>{
-    const at=now(),released=[];
     await cutTornContextLine(evidencePath);
     const rows=(await readPolicyLedger(evidencePath)).rows;
     const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId||row.contextHold.startsWith(holdId+':')));
-    if(!Number.isSafeInteger(at)||at<0||openHolds.some(row=>at<row.recordedAt))throw new RangeError('context release cannot predate its hold');
-    if(!openHolds.length&&rows.some(row=>row.contextHold&&row.jobId===jobId))syncContextLedger(evidencePath);
-    for(const open of openHolds){
-      await appendContextLine(evidencePath,{event:'release',holdId:open.contextHold,jobId,recordedAt:at});
-      released.push(open.contextHold);
-    }
-    return released;
+    return releaseContextRows({evidencePath,rows:rows.filter(row=>row.jobId===jobId),openHolds,now});
   });
+}
+
+function reconcileContextHolds({evidencePath,store,now}){
+  return serializedPolicy(evidencePath,async()=>{
+    await cutTornContextLine(evidencePath);
+    const rows=(await readPolicyLedger(evidencePath)).rows,openHolds=[];
+    for(const row of rows.filter(row=>row.contextHold&&!row.released)){
+      const state=store.contextHoldState({jobId:row.jobId,effect:row.effect});
+      if(!['absent','complete','pending','uncertain','retry'].includes(state))throw new Error('unknown context hold state');
+      if(state==='absent'||state==='complete')openHolds.push(row);
+    }
+    return releaseContextRows({evidencePath,rows,openHolds,now});
+  });
+}
+
+async function releaseContextRows({evidencePath,rows,openHolds,now}){
+  const at=now(),released=[];
+  if(!Number.isSafeInteger(at)||at<0||openHolds.some(row=>at<row.recordedAt))throw new RangeError('context release cannot predate its hold');
+  if(!openHolds.length&&rows.some(row=>row.contextHold))syncContextLedger(evidencePath);
+  for(const open of openHolds){
+    await appendContextLine(evidencePath,{event:'release',holdId:open.contextHold,jobId:open.jobId,recordedAt:at});
+    released.push(open.contextHold);
+  }
+  return released;
 }
 
 // The closed table of seller writes, keyed by artifact kind (SettlementEvidence
