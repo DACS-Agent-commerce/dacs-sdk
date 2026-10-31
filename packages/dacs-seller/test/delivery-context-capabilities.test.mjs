@@ -47,3 +47,26 @@ test('native capabilities and unsigned-absence proofs cannot be copied or forged
   const absent = provenUnsignedAbsence('TEST no signature'); assert.equal(isProvenUnsignedAbsence(absent), true); assert.equal(isProvenUnsignedAbsence({ ...absent }), false);
   assert.equal((await readNativeDemDelivery(capability, {})).status, 'present'); assert.equal(await verifyNativeDemDeliveryReceipt(capability, {}), 'valid');
 });
+
+test('guarded native submission refuses ordinary-only or malformed operations before any effect', async () => {
+  let calls = 0;
+  const operations = { authority: 'TEST-native', submit: async () => { calls++; return { status: 'accepted' }; },
+    reconcile: async () => ({ status: 'absent' }), read: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
+  for (const submitAuthorized of [undefined, true]) {
+    const capability = createNativeDemDeliveryCapability({ ...operations, submitAuthorized });
+    assert.equal((await submitNativeDemDelivery(capability, {}, () => true)).status, 'indeterminate');
+  }
+  assert.equal(calls, 0);
+});
+
+test('guarded native submission isolates data while preserving the live authorization callback', async () => {
+  let checked = 0;
+  const authorize = () => { checked++; return true; }, input = { value: { retained: true } };
+  const capability = createNativeDemDeliveryCapability({ authority: 'TEST-native',
+    submit: async () => { assert.fail('ordinary submit must not run'); },
+    submitAuthorized: async (copy, guard) => { assert.equal(guard, authorize); copy.value.retained = false; assert.equal(guard(), true); return { status: 'accepted' }; },
+    reconcile: async () => ({ status: 'absent' }), read: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' });
+  assert.equal((await submitNativeDemDelivery(capability, input, authorize)).status, 'accepted');
+  assert.deepEqual(input, { value: { retained: true } });
+  assert.equal(checked, 1);
+});

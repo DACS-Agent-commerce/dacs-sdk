@@ -1427,17 +1427,15 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             canonicalize(input.artifact.cleartextPayload) !== canonicalize(input.artifact.anchoredValue)) return { status: 'rejected', reason: 'delivery candidate differs from the exact report' };
         if(nativeDelivery){
           const report=structuredClone(input.artifact.anchoredValue),binding=deliveryBinding(input.fulfilmentId);
-          // A lost job lock throws here, before anything leaves. The SDK's delivery WAL keeps a thrown
-          // submission at its intent (an answer such as 'rejected' would be its retained outcome), so the
-          // next holder reads back authoritative absence and submits once.
+          // Check now and through the publisher's authorization hook before signing. A throw keeps the SDK
+          // intent pending; authoritative unsigned absence permits one retry.
           heldFor(session.jobId)?.();
-          // Kept before the capability is asked: from here on only a readback
-          // (or the reader's proven absence) tells whether this CREATE exists.
+          // Retain before submission: only authenticated readback or proven unsigned absence settles this intent.
           session.deliverySentReport={settlementId:work.intake.settlementId,canonical:canonicalize(report)};
           session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,substrate:'source-native-delivery'};
           persist(session);
-          const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding});
+          const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding},heldFor(session.jobId));
           if(answer.status!=='accepted')return answer;
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,reconciliationId:answer.reconciliationId,substrate:'source-native-delivery'};
           persist(session);return answer;
