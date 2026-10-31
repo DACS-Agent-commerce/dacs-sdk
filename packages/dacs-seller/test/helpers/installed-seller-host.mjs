@@ -170,6 +170,16 @@ const { nativeDemDelivery: _undelivered, ...withoutDelivery } = capabilities();
 const { railAuthority: _unrailed, ...withoutRail } = capabilities();
 const { sessionAdmission: _unadmitted, ...withoutAdmission } = capabilities();
 const { reconcilePaymentEvidence: _unreconciled, ...withoutJournal } = capabilities();
+// The packed Deliverable journal: its resume goes only with a capability made from its guarded submit.
+const deliveryJournal = seller.createDeliverableWalletJournal({ path: join(journalDirectory, 'delivery-wallet-journal.sqlite'), signCreate: refuse('deliveryWallet.signCreate'),
+  broadcast: refuse('deliveryWallet.broadcast'), readAccountNonce: refuse('deliveryWallet.readAccountNonce'), readTransactionState: refuse('deliveryWallet.readTransactionState') });
+const journalDelivery = (operations) => createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', reconcile: refuse('nativeDemDelivery.reconcile'),
+  read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt'), ...operations });
+out.deliverableJournal = {
+  guarded: await refusal({ signer, listing, dataDirectory, ...capabilities(), nativeDemDelivery: journalDelivery({ submitAuthorized: deliveryJournal.submitAuthorized }), resumeDeliverableCreate: deliveryJournal.resume }),
+  unguarded: await refusal({ signer, listing, dataDirectory, ...capabilities(), nativeDemDelivery: journalDelivery({ submit: deliveryJournal.submitAuthorized }), resumeDeliverableCreate: deliveryJournal.resume }),
+};
+deliveryJournal.close();
 out.refusedConfigurations = {
   missingJournal: await refusal({ signer, listing, dataDirectory, ...withoutJournal }),
   missingSessionAdmission: await refusal({ signer, listing, dataDirectory, ...withoutAdmission }),

@@ -99,6 +99,8 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.match(out.refusedConfigurations.unknownOption, /^TypeError: .*anchors/);
   assert.match(out.refusedConfigurations.relativeDirectory, /^TypeError: .*dataDirectory/);
   assert.match(out.refusedConfigurations.otherSigner, /does not control this Listing/);
+  assert.equal(out.deliverableJournal.guarded, null, 'the packed host starts with the Deliverable journal\'s guarded submit and its resume');
+  assert.match(out.deliverableJournal.unguarded, /^TypeError: resumeDeliverableCreate/, 'and refuses its resume beside a capability with no guarded submit');
   assert.match(out.refusedConfigurations.scriptedJournal, /^TypeError: .*only from one createPaymentEvidenceWalletJournal/, 'the answers that allow a second evidence signature come only from the package wallet journal');
   assert.match(out.refusedConfigurations.scriptedAgent, /^TypeError: .*only from one createPaymentEvidenceWalletJournal/, 'an agent the operator composes takes them only from the package wallet journal too');
 
