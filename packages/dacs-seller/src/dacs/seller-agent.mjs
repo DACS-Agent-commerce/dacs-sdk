@@ -410,7 +410,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if(!nativeProfile)return null;
     const checkpoint=retainedVetRefs(session);
     if (!admission) return 'the seller has no session admission to authenticate retained Vet records';
-    const sellerBundle = session.sellerBundle ?? listing.seller.identity, sellerProblem = sellerSessionPresentationProblem(sellerBundle, listing.seller.identity);
+    const sellerBundle = session.sellerBundle ?? session.demDeliveryContext?.input?.seller?.identityBundle ?? listing.seller.identity, sellerProblem = sellerSessionPresentationProblem(sellerBundle, listing.seller.identity);
     if (sellerProblem) return `seller ${sellerProblem}`;
     const parties = [
       ['buyer', session.buyerBundle.presentedBy, checkpoint.buyer, identityBundleHash(session.buyerBundle), claim, listing.buyerRequirement],
@@ -1308,6 +1308,55 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       payloadHash:sha256Hex(canonicalize(deliveryReport(session,work.intake.settlementId))) };
   }
 
+
+
+
+
+  // A lost response after the native Deliverable CREATE has applied leaves the
+  // SDK's durable delivery WAL at an intent. Before re-entering that runner,
+  // authenticate the exact original public projection and retain only the
+  // fulfilment binding the runner already returned. Absence/indeterminate
+  // readback is deliberately non-authoritative here: it must never turn a
+  // caller retry into another seller approval or CREATE. The one exception is
+  // an absence the reader proved (a shutdown cut the approval before anything
+  // was signed): the runner then reconciles its WAL, reads the same absence
+  // and submits again, which asks the operator again.
+  async function recoverNativeDeliveryBinding(session, work) {
+    if (!nativeDelivery || session.deliveryReady) return { status: 'not-needed' };
+    const result = session.deliveryHold?.result;
+    if (result?.decision !== 'indeterminate' || !['delivery-submission-ambiguous', 'delivery-resolution-pending'].includes(result.code) ||
+        result.safeToRetryDelivery !== false || result.recovery?.action !== 'reconcile-delivery' ||
+        typeof result.fulfilmentId !== 'string' || !result.fulfilmentId) return { status: 'not-needed' };
+    const { disposition: _disposition, fulfilment: _fulfilment, reason: _reason, permitId: _permitId, ...authorization } = work.intake;
+    if (!result.consumedPaymentAuthorization || canonicalize(result.consumedPaymentAuthorization) !== canonicalize(authorization)) {
+      return { status: 'held', reason: 'retained SDK delivery recovery authority differs from the native payment intake' };
+    }
+    const report = deliveryReport(session, work.intake.settlementId);
+    const binding = nativeDeliveryBinding(session, work, result.fulfilmentId);
+    if (session.deliveryAdapter && (session.deliveryAdapter.fulfilmentId !== result.fulfilmentId ||
+        !session.deliveryAdapter.deliveryBinding ||
+        canonicalize(session.deliveryAdapter.deliveryBinding) !== canonicalize(binding))) {
+      return { status: 'held', reason: 'retained native delivery recovery binding differs from the SDK fulfilment intent' };
+    }
+    let read;
+    try {
+      read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: deliverableAddress(session.jobId), report,
+        receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: binding });
+    } catch (error) {
+      return { status: 'held', reason: `native delivery reconciliation readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` };
+    }
+    if (isProvenUnsignedAbsence(read)) return { status: 'askable' };
+    if (read?.status !== 'present') return { status: 'held', reason: read?.reason ?? 'original native Deliverable CREATE is not authenticated on fresh readback' };
+    const reconciliationId = read.receipt?.transactionRef?.value;
+    if (typeof reconciliationId !== 'string' || !reconciliationId) {
+      return { status: 'held', reason: 'a present native Deliverable readback has no authenticated transaction reference' };
+    }
+    session.deliveryAdapter = { fulfilmentId: result.fulfilmentId, deliveryBinding: binding,
+      reconciliationId, substrate: 'source-native-delivery-recovered-readonly' };
+    persist(session);
+    return { status: 'present' };
+  }
+
   // Runs the SDK delivery runner over this job's retained fulfilment. A lost
   // response after the native Deliverable CREATE leaves the SDK's delivery WAL
   // at an intent; the runner re-enters it through reconcileDeliverySubmission
@@ -1621,6 +1670,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   async function advanceAuthenticatedNativeDelivery(session, work, read) {
     if (!deliveryContext) return nativeEvidenceResponse(work, 'held-missing-consumed-v2-fulfilment-and-Vet-audit');
     if (nativeDelivery && session.deliveryReady) return readPersistedNativeDelivery(session, work, read);
+    const recovery = await recoverNativeDeliveryBinding(session, work);
+    if (recovery.status === 'held') {
+      session.deliveryHold = { reason: recovery.reason, ...(session.deliveryHold?.result ? { result: session.deliveryHold.result } : {}) };
+      persist(session);
+      return nativeEvidenceResponse(work, { status: 'held', reason: recovery.reason });
+    }
     const delivery = await runSdkDeliveryReady(session, work, read);
     if (delivery.status !== 'delivery-ready') {
       session.deliveryHold = { reason: delivery.reason, ...(delivery.result ? { result: structuredClone(delivery.result) } : {}) };

@@ -200,6 +200,13 @@ test('retained proposal authenticates the context references actually stored by 
  assert.deepEqual(answer.contribution,first.contribution);
 });
 
+test('retained proposal authenticates the context references actually stored by this phase',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),request=await f.proposal(agent);
+ const first=await agent.receiveProposal(request);assert.equal(first.disposition,'complete');agent.close();
+ const resumed=await f.open(),answer=await resumed.receiveProposal(request);assert.equal(answer.disposition,'complete');
+ assert.deepEqual(answer.contribution,first.contribution);
+});
+
 for(const history of ['expired','expiry-boundary','consumed','retired'])test(`${history} rows do not count against live challenge limits`,async()=>{
  const {admitSessionChallenge}=await import('../src/dacs/session-challenge-limits.mjs');
  const rows=Array.from({length:16},(_,i)=>[String(i),{kind:'session-challenge',jobId:JOB,expiresAt:history==='expired'?99:history==='expiry-boundary'?100:101,attempt:['consumed','retired'].includes(history)?{}:null,...(history==='retired'?{retired:true}:{})}]);

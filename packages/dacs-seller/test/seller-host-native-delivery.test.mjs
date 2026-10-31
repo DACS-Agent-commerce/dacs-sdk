@@ -998,6 +998,11 @@ test('a native payment is delivered: the Deliverable CREATE reads back bound to 
   const answer = await p.claim(tx);
   assert.equal(answer.status, 'payment-evidenced', shown(answer));
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer.delivery));
+  // The durable fulfilment runner captures claim, inspectPermit and consumePermit
+  // from the seller's receipt store; a wrapper missing any of them answers
+  // durable-dependencies-invalid before any delivery work. This claim reaching
+  // delivery-ready proves all three are callable.
+  assert.doesNotMatch(JSON.stringify(answer), /durable-dependencies-invalid/, shown(answer));
   assert.equal(answer.delivery.logicalAddress, deliverable);
   assert.deepEqual(w.effects.signCreate, [paymentAddress(p)]);
   assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
@@ -1164,6 +1169,98 @@ test('a consumer composed as the README shows, without a projection reader, take
 
 // A Deliverable that landed while the seller's records after it were lost: a
 // later run reads it back first and never submits it again on a name-index miss.
+test('a landed Deliverable whose records were lost is not submitted again while its readback lags: one CREATE, then delivery', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`, name = core.logicalToStorageProgramName(deliverable);
+  w.faults.deliverySubmit.push('land-lose-lock');
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  // A retained CREATE can bypass the name index; keep its transaction unreadable too.
+  w.node.faults.transactionDown = (hash) => hash === w.signedCreate(deliverable)?.hash;
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the job lost its lock during the submission');
+  await w.restart();
+  for (const claim of [1, 2]) {
+    const held = await p.claim(tx);
+    assert.notEqual(held.delivery?.status, 'delivery-ready', `claim ${claim}: ${shown(held)}`);
+  }
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
+  w.node.faults.indexEmpty = () => false;
+  w.node.faults.transactionDown = () => false;
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
+// The Deliverable's submission is recorded before the capability is asked, so a
+// failure or a death before anything is signed leaves a record with no CREATE.
+// A reader that kept no signed CREATE proves that absence, and the paid order is
+// then submitted again, once (README: the delivery capability's contract).
+test('a Deliverable submission that fails before anything is signed does not strand the paid order: the next claim submits it once, with and without a restart', async (t) => {
+  for (const restart of [false, true]) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('fail');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable', `restart ${restart}: the first submission failed`);
+    assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+    assert.equal(w.createsAt(deliverable), 0, 'nothing was signed');
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', `restart ${restart}: ${shown(answer)}`);
+    assert.deepEqual(w.effects.deliverySubmit, [deliverable, deliverable], 'asked again after the proven absence');
+    assert.equal(w.createsAt(deliverable), 1, 'exactly one CREATE');
+    assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+    assert.equal(w.createsAt(deliverable), 1);
+  }
+});
+
+// Regression (delivery recovery): the recorded delivery hold must not let a
+// retry skip the fresh payment-evidence check. A submission that failed before
+// signing leaves an ambiguous hold; while the buyer's payment evidence cannot
+// be read back, every retry is held and asks for no Deliverable. Only a fresh
+// authenticated payment read may drive recovery.
+test('a failed delivery does not skip the payment-evidence check: an unreadable payment holds it with no second submission', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('fail');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the first submission failed before signing');
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+  assert.equal(w.createsAt(deliverable), 0, 'nothing was signed');
+  w.node.faults.transactionDown = (hash) => hash === w.signedCreate(paymentAddress(p)).hash;
+  for (const attempt of [1, 2]) {
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'held', `attempt ${attempt}: ${shown(held)}`);
+    assert.notEqual(held.delivery?.status, 'delivery-ready', `attempt ${attempt}: ${shown(held)}`);
+  }
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is asked for once');
+  assert.equal(w.createsAt(deliverable), 0);
+  w.node.faults.transactionDown = () => false;
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable, deliverable], 'asked again only after the payment is read back');
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
+// The proof is the capability's: a CREATE it signed and kept, whose answer was
+// lost before it was broadcast, reads back as a plain absence. The host holds
+// it and never asks again, since the kept bytes may still land.
+test('a Deliverable the capability signed but lost is held, never submitted again, whatever the read says', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('sign-then-lose');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  for (const restart of [false, true]) {
+    if (restart) await w.restart();
+    for (const claim of [1, 2]) {
+      const held = await p.claim(tx);
+      assert.notEqual(held.delivery?.status, 'delivery-ready', `restart ${restart}, claim ${claim}: ${shown(held)}`);
+    }
+  }
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is asked for once');
+});
+
+// The package's Vet provider presents the seller's Listing identity afresh for
+// each session (to the buyer's challenge): the seller accepts that exact
+// presentation, signed by itself, and refuses one it did not sign.
 test('the seller takes its own session presentation from the Vet context to delivery, and refuses one it did not sign', async (t) => {
   const w = await world(t, { sellerPresentation: 'session' });
   const p = await w.purchase(), tx = p.pay();
@@ -1177,6 +1274,22 @@ test('the seller takes its own session presentation from the Vet context to deli
 
 // A signer that fails while signing the payment evidence released no
 // signature: the next claim signs the same evidence and the order is delivered.
+test('a seller signer failure while signing the payment evidence does not strand the paid order, also across a restart', async (t) => {
+  const w = await world(t);
+  for (const restart of [false, true]) {
+    const p = await w.purchase(), tx = p.pay();
+    w.faults.sign.push('throw-evidence');
+    const refused = await p.claim(tx);
+    assert.deepEqual([refused.status, refused.reason, refused.step], ['indeterminate', 'seller_native_evidence_not_started', 'evidence-signing'], shown(refused));
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', `restart ${restart}: ${shown(answer)}`);
+    assert.equal(w.createsAt(paymentAddress(p)), 1);
+  }
+});
+
+// The transport admits a 0x-prefixed transaction hash; the agent reads it as
+// core payment intake does.
 test('a payment claimed with a 0x-prefixed transaction hash is delivered, its evidence naming the plain hash', async (t) => {
   const w = await world(t);
   const p = await w.purchase(), tx = p.pay();
@@ -1189,6 +1302,76 @@ test('a payment claimed with a 0x-prefixed transaction hash is delivered, its ev
 // A held paid claim whose next run a gate refuses (a rotated steward key
 // refuses its pinned rail) keeps its effect and slot: a different claim in the
 // meantime is refused, never bound to the job, and the paid claim is delivered.
+test('a gate that refuses a held paid claim for now keeps it bound to the job: another claim cannot take it, and the claim is delivered once the gate passes', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), name = core.logicalToStorageProgramName(paymentAddress(p)), original = w.rails.authority;
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  // A retained CREATE can bypass the name index; keep its transaction unreadable too.
+  w.node.faults.transactionDown = (hash) => hash === w.signedCreate(paymentAddress(p))?.hash;
+  assert.equal((await p.claim(tx)).status, 'held');
+  w.rails.authority = w.otherRail(); await w.restart();
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the pinned rail is refused for now');
+  w.rails.authority = original; await w.restart();
+  const second = p.pay();
+  for (const other of [`0x${tx}`, second]) assert.equal((await p.claim(other)).error, 'peer_operation_conflict', `another claim (${other.slice(0, 6)}) is refused`);
+  w.node.faults.indexEmpty = () => false;
+  w.node.faults.transactionDown = () => false;
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  await w.restart();
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+});
+
+// DACS-4 PC-7(b): a lost or replaced wallet-journal file keeps nothing of the
+// anchor already sent; the agent never asks it about that attempt, so nothing
+// is signed twice, and the order goes on once the one CREATE reads back.
+test('a replaced wallet-journal file never signs a second evidence CREATE for an anchor the earlier one sent', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  // Keep the original signed CREATE pending so reconciliation must consult its owning journal.
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).anchorOutcome, 'sent');
+  w.replaceWallet('replaced-wallet-journal.sqlite'); await w.restart();
+  for (const claim of [1, 2]) {
+    const held = await p.claim(tx);
+    assert.ok(['held','payment-evidenced'].includes(held.status),shown(held));
+    assert.equal((held.anchorError ?? held.reconcileError)?.code, 'wallet_journal_changed', shown(held));
+  }
+  // The original bytes can still land after the journal file was replaced.
+  w.node.rebroadcast(w.signedCreate(address).hash);
+  assert.deepEqual(w.effects.signCreate, [address], 'signed once');
+  assert.equal(w.createsAt(address), 1);
+  w.node.faults.indexEmpty = () => false;
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.equal(w.createsAt(address), 1);
+});
+
+// The agent's own reconciliation of an uncertain payment claim for a request
+// whose session delegation expired (readOnly) runs nothing that can sign or send.
+test('read-only reconciliation of a held payment claim neither signs nor sends: it is not run again', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p), name = core.logicalToStorageProgramName(address);
+  w.node.faults.indexEmpty = (programName) => programName === name;
+  // A retained signed projection reads its transaction directly, independently
+  // of the name index. Keep that read unavailable so this is still held work.
+  w.node.faults.transactionDown = (hash) => hash === w.signedCreate(address)?.hash;
+  assert.equal((await p.claim(tx)).status, 'held');
+  const agent = await w.agentFor();
+  try {
+    const before = { signCreate: [...w.effects.signCreate], broadcast: w.effects.broadcast.length };
+    const proof = await agent.reconcileTransport({ ...(await w.signedClaim(p, tx)), readOnly: true });
+    assert.equal(proof.disposition, 'indeterminate', shown(proof));
+    assert.match(proof.reason, /peer_delegation_expired/);
+    assert.deepEqual({ signCreate: w.effects.signCreate, broadcast: w.effects.broadcast.length }, before, 'nothing signed or broadcast');
+    assert.equal((await agent.reconcileTransport(await w.signedClaim(p, tx))).disposition, 'retry', 'control: a live request runs the retained work');
+  } finally { agent.close(); }
+});
+
+// README (Scope): this package is a fixture-only kit. Nothing in it can read or
+// write a real Demos node, so the capabilities it builds refuse a real node's
+// endpoint, an unregistered source and a non-TEST authority; the claim is pinned
+// here so it cannot drift into one of a seller that runs on a real node.
 test('the package builds capabilities only for the loopback fixture node and TEST authorities: a real node endpoint and an unregistered source are refused', () => {
   for (const rpcUrl of ['https://node2.demos.sh/', 'http://node2.demos.sh/', 'http://localhost:53550/', 'http://127.0.0.1:9/node']) {
     assert.throws(() => createNativePaymentEvidenceConsumer({ rpcUrl }), { name: 'TypeError', message: /owned literal loopback or the exact opaque source/ }, rpcUrl);
@@ -1208,6 +1391,62 @@ test('a paid native order with an additive signature field in its DeliverableSpe
   await w.restart();
   assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
   assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 1);
+});
+
+test('a supersession decision lost before the agent checkpoint replays after restart and delivers once', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  const old = w.signedCreate(address);
+  await w.purchase(); // Its commitment overtakes the dropped evidence nonce.
+  const kept = await w.retainedSession(p.jobId); // Stop the host before the cut.
+  const answer = await w.walletJournal().reconcilePaymentEvidence({ logicalAddress: address,
+    artifact: kept.nativeEvidenceWork.evidence, writer: w.sellerKey.claim, artifactKind: 'SettlementEvidence', jobId: p.jobId,
+    receiptContentHash: kept.nativeEvidenceWork.intake.evidenceHash,
+    attempt: { outcome: kept.nativeEvidenceWork.anchorOutcome, answer: { txHash: old.hash } } });
+  assert.equal(answer.status, 'unsigned');
+  assert.equal(answer.txHash, old.hash);
+  // Process death here: the wallet decision is durable, the agent saw none of it.
+  w.restartWallet(); await w.restart();
+  const delivered = await p.claim(tx);
+  assert.equal(delivered.delivery?.status, 'delivery-ready', shown(delivered));
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.effects.signed.length, 2);
+});
+
+test('a commitment readback outage on the first payment claim stays indeterminate and recovers', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  let outage = 1;
+  w.node.faults.indexDown = () => outage-- > 0;
+  const held = await p.claim(tx);
+  assert.equal(held.status, 'indeterminate', shown(held));
+  assert.equal(w.effects.signCreate.length, 0);
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(w.createsAt(paymentAddress(p)), 1);
+});
+
+
+test('a paid order resumes once after restart with a rotated steward and trusted historical key; new orders pin the new steward', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.signCreate.push('throw');
+  assert.notEqual((await p.claim(tx)).status, 'payment-evidenced');
+  const previous = w.rails.authority;
+  w.rails.authority = { ...w.otherRail(), historicalStewards: [{ stewardClaim: previous.stewardClaim, stewardPublicKey: previous.stewardPublicKey }] };
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  await w.restart();
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 1);
+  const next = await w.purchase();
+  const session = await w.retainedSession(next.jobId);
+  assert.equal(session.railPin.rail.signature.signer, w.rails.authority.stewardClaim);
+  assert.notEqual(session.railPin.rail.signature.signer, previous.stewardClaim);
 });
 
 test('complete payload digest includes a top-level signature and survives restart', async (t) => {
@@ -1371,6 +1610,236 @@ test('host maxJobs above the default transport cap admits job 10001 with the ord
 
 
 
+test('a delivery evidence publisher outage remains retryable through crash reconciliation until publication completes', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), tx = p.pay();
+  w.faults.artifactPublish.push('SettlementEvidence');
+  const first = await p.claim(tx);
+  assert.equal(first.delivery?.evidencePublication, 'held-readback-only', shown(first));
+  await w.crashMidClaim(p, tx);
+  w.faults.artifactPublish.push('SettlementEvidence');
+  const held = await p.claim(tx);
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
+  await w.restart();
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(done.delivery?.evidencePublication, 'native-read-back', shown(done));
+  assert.equal(w.effects.published.filter(kind => kind === 'SettlementEvidence').length, 1);
+  assert.equal(w.createsAt(paymentAddress(p)), 1);
+  assert.equal(w.effects.deliverySubmit.length, 1);
+});
+
+test('ordinary commitments recover after Agreement-read and pre-publication failures, across restart, and never repeat a CREATE', async (t) => {
+  for (const failure of ['agreement', 'publisher']) {
+    const w = await world(t), p = await w.purchase({ commit: false });
+    if (failure === 'agreement') w.faults.agreementRead.push('throw');
+    else w.faults.artifactPublish.push('FinalityCommitmentRecord');
+    await assert.rejects(p.client().commit(p.jobId));
+    assert.equal(w.effects.published.length, 0);
+    await w.restart();
+    assert.equal((await p.client().commit(p.jobId)).status, 'committed', failure);
+    assert.equal((await p.client().commit(p.jobId)).status, 'committed', failure);
+    assert.equal(w.effects.published.filter(kind => kind === 'FinalityCommitmentRecord').length, 1);
+  }
+});
+
+test('the native host delivers without the unused compatibility observer', async (t) => {
+  const w = await world(t, { compatibilityObserver: false });
+  const p = await w.purchase();
+  assert.equal((await p.claim(p.pay())).delivery?.status, 'delivery-ready');
+});
+
+
+test('an uncertain commitment CREATE only reads back after restart and is never published twice', async t => {
+ const w = await world(t), p = await w.purchase({ commit: false });
+ w.faults.artifactPublish.push('FinalityCommitmentRecord:land-throw');
+ await assert.rejects(p.client().commit(p.jobId));
+ assert.equal(w.effects.published.length, 1);
+ await w.restart();
+ w.faults.artifactRead.push('unknown');
+ await assert.rejects(p.client().commit(p.jobId));
+ assert.equal(w.effects.published.length, 1, 'uncertainty authorizes no new publication');
+ assert.equal((await p.client().commit(p.jobId)).status, 'committed');
+ assert.equal(w.effects.published.length, 1);
+});
+
+test('a non-idempotent commitment publisher is called once despite a lagging index and restart', async (t) => {
+  const w = await world(t, { idempotentArtifacts: false }), p = await w.purchase({ commit: false });
+  const address = core.finalityCommitmentAddress(p.jobId);
+  w.faults.artifactPublish.push('FinalityCommitmentRecord:land-throw');
+  await assert.rejects(p.client().commit(p.jobId));
+  w.faults.artifactRead.push('absent');
+  await assert.rejects(p.client().commit(p.jobId));
+  await w.restart();
+  w.faults.artifactRead.push('unbranded');
+  await assert.rejects(p.client().commit(p.jobId));
+  const agent = await w.agentFor();
+  try {
+    w.faults.artifactRead.push('absent');
+    await assert.rejects(agent.resume({ jobId: p.jobId }), { code: 'commitment_failed' });
+    assert.equal((await agent.resume({ jobId: p.jobId })).status, 'committed');
+  } finally { agent.close(); }
+  assert.equal(w.effects.published.filter(kind => kind === 'FinalityCommitmentRecord').length, 1);
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('read-only commitment reconciliation cannot start provably unsent work', async t => {
+ const w = await world(t), p = await w.purchase({ commit: false });
+ w.faults.artifactPublish.push('FinalityCommitmentRecord');
+ await assert.rejects(p.client().commit(p.jobId));
+ const agent = await w.agentFor();
+ try {
+  const body = { jobId: p.jobId }, text = JSON.stringify(body);
+  const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
+   resolveJob: () => ({ listingPin: seller.listingPin(w.listing), agreementHash: p.agreementHash }), now: w.capabilities().now }).request('/dacs/v1/commitments', body, text);
+  const answer = await agent.reconcileTransport({ request: payload, body, rawBody: Buffer.from(text), readOnly: true });
+  assert.equal(answer.disposition, 'indeterminate');
+  assert.equal(w.effects.published.length, 0);
+ } finally { agent.close(); }
+ await w.restart();
+ assert.equal((await p.client().commit(p.jobId)).status, 'committed');
+ assert.equal(w.effects.published.length, 1);
+});
+
+// The public host forwards issuance to the same verifier-owned generator.
+test('the host refuses caller-chosen challenges and accepts a buyer presentation of its own challenge', async (t) => {
+  const w = await world(t), jobId = '01J8N4YV7YVYQ4DB7M8T'+String(++jobSequence).padStart(6,'0');
+  const chosen = identityFor(w.buyerKey, NOW);
+  await assert.rejects(w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
+  await assert.rejects(w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: '01'.repeat(16) }), { code: 'challenge_invalid' });
+  const issued = await w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim });
+  assert.match(issued.sessionNonce, /^[0-9a-f]{64}$/);
+  assert.notEqual(issued.sessionNonce, chosen.sessionNonce);
+  const purchase = await w.purchase({ commit: false });
+  assert.match(purchase.agreementHash, /^[0-9a-f]{64}$/, 'the seller accepted the presentation and signed its Agreement');
+});
+
+
+// Agreement reads during execution must never replace the object the job holder
+// is updating. A cached transport success still needs current durable credit.
+test('concurrent Agreement state reads cannot hide settlement collisions from cached delivery answers', async (t) => {
+  for (const concurrentRead of [false, true]) {
+    const w = await world(t);
+    const a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+    let observed = false;
+    w.node.faults.beforeSearch = async () => {
+      if (!observed) {
+        observed = true;
+        if (concurrentRead) {
+          const state = await a.client().agreementState(a.transportIdentity);
+          assert.equal(state.proposal.proposalHash, a.transportIdentity.proposalHash);
+        }
+      }
+    };
+    assert.equal((await a.claim(tx)).delivery?.status, 'delivery-ready');
+    assert.equal(observed, true);
+    w.node.faults.beforeSearch = async () => {};
+    assert.equal((await a.claim(tx)).delivery?.status, 'delivery-ready', 'uncontested cached success is allowed');
+    assert.deepEqual(await b.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
+    assert.equal((await a.claim(tx)).error, 'seller_unavailable', `concurrent read ${concurrentRead}: suspended credit cannot disclose cached success`);
+    await assert.rejects(a.client().agreementState(a.transportIdentity), { code: 'seller_unavailable' });
+    await w.restart();
+    assert.equal((await a.claim(tx)).error, 'seller_unavailable');
+    assert.equal(w.createsAt(`dacs4:deliverable:${a.jobId}`), 1);
+  }
+});
+
+test('a landed Deliverable with a lost adapter checkpoint recovers on immediately successful readback with one CREATE', async (t) => {
+  for (const checkpoint of ['current-intent', 'legacy-intent', 'legacy-resolution-pending', 'legacy-submission-ambiguous']) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('land-lose-lock');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+    if (checkpoint === 'current-intent') await w.restart();
+    else await w.editRetainedSession(p.jobId, (session) => {
+      delete session.deliveryAdapter;
+      if (checkpoint !== 'legacy-intent') {
+        const { disposition, fulfilment, reason, permitId, ...authorization } = session.nativeEvidenceWork.intake;
+        session.deliveryHold = { reason: `indeterminate:${checkpoint === 'legacy-resolution-pending' ? 'delivery-resolution-pending' : 'delivery-submission-ambiguous'}:canonical delivery is absent`, result: {
+          decision: 'indeterminate', code: checkpoint === 'legacy-resolution-pending' ? 'delivery-resolution-pending' : 'delivery-submission-ambiguous',
+          fulfilmentId: session.deliverySubmitted[0], safeToRetryDelivery: false,
+          recovery: { action: 'reconcile-delivery', reconciliationId: w.signedCreate(address).hash }, consumedPaymentAuthorization: authorization,
+        } };
+      }
+    });
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', `${checkpoint}: ${shown(answer.delivery)}`);
+    for (let i = 0; i < 2; i++) assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+    await w.restart();
+    assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+    assert.deepEqual(w.effects.deliverySubmit, [address]);
+    assert.equal(w.createsAt(address), 1);
+  }
+});
+
+// Recovery must answer a definite hold when the capability's answer cannot be
+// authenticated, and when the retained authority or adapter binding differs
+// from the payment intake: a missing answer, a throwing read, a `present`
+// answer with no transaction reference, an answer that is not present, a
+// changed payment authorization, a changed adapter binding and an older
+// adapter checkpoint with no delivery binding. None of these may become a
+// thrown seller_unavailable or another submission.
+test('native delivery recovery holds on an unauthenticated or mismatched recovery state', async (t) => {
+  const cases = [
+    ['a missing readback', { read: () => null }],
+    ['a throwing readback', { read: () => { throw new Error('TEST native read unavailable'); } }],
+    ['a present readback without a transaction reference', { read: () => ({ status: 'present' }) }],
+    ['a readback that is not present', { read: () => ({ status: 'absent', reason: 'TEST lagging index' }) }],
+    ['a present readback whose bytes differ from the report', { read: (present) => ({ ...present, artifact: { ...present.artifact, body: [...present.artifact.body, 'TEST tampered readback'] } }) }],
+    ['a changed payment authorization', { edit: (session) => { session.deliveryHold.result.consumedPaymentAuthorization = { jobId: 'TEST-another-job' }; } }],
+    ['a changed adapter binding', { edit: (session) => { session.deliveryAdapter = { fulfilmentId: session.deliverySubmitted[0], deliveryBinding: { version: '9' } }; } }],
+    ['an older adapter checkpoint without a delivery binding', { edit: (session) => { session.deliveryAdapter = { fulfilmentId: session.deliverySubmitted[0] }; } }],
+  ];
+  for (const [label, { read, edit }] of cases) {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), address = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('land-lose-lock');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable', label);
+    await w.editRetainedSession(p.jobId, (session) => {
+      delete session.deliveryAdapter;
+      const { disposition, fulfilment, reason, permitId, ...authorization } = session.nativeEvidenceWork.intake;
+      session.deliveryHold = { reason: 'indeterminate:delivery-resolution-pending:canonical delivery is absent', result: {
+        decision: 'indeterminate', code: 'delivery-resolution-pending', fulfilmentId: session.deliverySubmitted[0], safeToRetryDelivery: false,
+        recovery: { action: 'reconcile-delivery', reconciliationId: w.signedCreate(address).hash }, consumedPaymentAuthorization: authorization,
+      } };
+      if (edit) edit(session);
+    });
+    if (read) w.faults.deliveryRead = read;
+    const held = await p.claim(tx);
+    assert.equal(held.status, 'payment-evidenced', `${label}: ${shown(held)}`);
+    assert.equal(held.delivery?.status, 'held', `${label}: ${shown(held)}`);
+    assert.deepEqual(w.effects.deliverySubmit, [address], `${label}: no second submission`);
+    assert.equal(w.createsAt(address), 1, label);
+  }
+});
+
+
+test('settlement disclosure checks durable payment identities even when this agent only cached the unpaid proposal', async (t) => {
+  const w = await world(t);
+  const a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+  const stale = await w.agentFor({ stopHost: false });
+  t.after(() => stale.close());
+  assert.equal((await a.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.doesNotThrow(() => stale.assertSettlementCredit(a.jobId), 'one uncontested settlement remains allowed');
+  assert.throws(() => stale.deliveryStateOf(a.jobId), { code: 'seller_state_unverified' }, 'a synchronous getter cannot authenticate another instance\'s changed session');
+  assert.throws(() => stale.stageOf(a.jobId), { code: 'seller_state_unverified' });
+  const current = await w.agentFor({ stopHost: false });
+  try {
+    assert.equal(typeof current.deliveryStateOf(a.jobId).fulfilmentId, 'string');
+    assert.equal(current.stageOf(a.jobId), 'delivery-ready');
+  } finally { current.close(); }
+  assert.deepEqual(await b.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
+  assert.throws(() => stale.assertSettlementCredit(a.jobId), { code: 'settlement_collision' });
+  assert.throws(() => stale.agreementState(a.transportIdentity), { code: 'settlement_collision' });
+  assert.throws(() => stale.deliveryStateOf(a.jobId), { code: 'settlement_collision' });
+  assert.throws(() => stale.stageOf(a.jobId), { code: 'seller_state_unverified' });
+  assert.throws(() => stale.durableSessionOf(a.jobId), { code: 'seller_state_unverified' });
+  const reconciled = await w.agentFor({ stopHost: false });
+  try {
+    assert.equal(reconciled.stageOf(a.jobId), 'settlement-indeterminate');
+    assert.equal(reconciled.durableSessionOf(a.jobId).settlementCredit, 'indeterminate');
+  } finally { reconciled.close(); }
+});
 for(const value of [undefined,null,0,{}])test(`missing or malformed journal identity ${JSON.stringify(value)} cannot release another journal's pending CREATE`,async t=>{
  const w=await world(t,{projectionReader:false}),p=await w.purchase(),tx=p.pay(),address=paymentAddress(p),name=core.logicalToStorageProgramName(address);w.node.faults.transactionDown=hash=>hash===w.signedCreate(address)?.hash;w.node.faults.indexEmpty=program=>program===name;w.faults.broadcast.push('lost');assert.equal((await p.claim(tx)).status,'held');await w.editRetainedSession(p.jobId,session=>{if(value===undefined)delete session.nativeEvidenceWork.walletJournal;else session.nativeEvidenceWork.walletJournal=value;});await w.host().close();w.replaceWallet('TEST-replacement.sqlite');await w.restart();w.node.faults.transactionDown=()=>false;for(let i=0;i<2;i++)assert.notEqual((await p.claim(tx)).status,'payment-evidenced');assert.equal(w.createsAt(address),1);assert.equal(w.effects.signCreate.filter(x=>x===address).length,1);
 });
