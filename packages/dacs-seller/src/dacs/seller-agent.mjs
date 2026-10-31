@@ -47,11 +47,12 @@ const paymentPending = (answer) => answer?.status === 'held' || (answer?.status 
  * false`, proof that no work of exactly this command is kept. A recovery
  * settles only what the store accepts (completion, or a proposal/payment retry
  * or release), and under an expired delegation only completion. */
-export function transportOutcome(path, { answer, error, held, cause = error, causeCode } = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
+export function transportOutcome(path, { answer, error, held, cause = error } = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
   const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
   const refusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
   const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
-  if (held !== undefined || (error && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false, ...(cause ? { cause, ...(causeCode ? { causeCode } : {}) } : {}) };
+  if (held !== undefined || (error && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
+    ...(cause === undefined ? {} : { cause, causeCode: [cause, cause?.cause].some(c => c?.name === 'TimeoutError' || c?.code === 'ETIMEDOUT') ? 'timeout' : 'reader' }) };
   const noEffect = rejected && !resumed && !retained;
   const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
   const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
@@ -277,6 +278,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // The SDK calls claim only after authenticating the complete payment tuple.
   // Keep that tuple before the primitive's provisional election, including a loser.
   const receiptStore = {
+    inspectPermit: (permitId) => rawReceiptStore.inspectPermit(permitId),
     claim: async candidate => { bindSettlement(candidate.settlementId, candidate.jobId, structuredClone(candidate)); return rawReceiptStore.claim(candidate); },
 
   };
@@ -394,7 +396,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // address lock with nothing awaited before the CREATE intent), or just before
   // a wallet or delivery call. A holder that lost its job's row sends nothing.
   const heldFor = (jobId) => () => { assertSettlementCredit(jobId); return durable ? durable.assertHeld(jobId) : true; };
-  function recordPhase(session, index, invokedAt, result) {
+  function recordPhase(session, index, invokedAt, result, write = true) {
     const contextDelta = structuredClone(result.contextDelta ?? {});
     const entry = { index, step: structuredClone(listing.pipeline[index]), invokedAt, result: { ...structuredClone(result), contextDelta }, contextDelta };
     session.phaseResults ??= [];
@@ -407,7 +409,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     session.startedAt ??= invokedAt;
     session.phaseResults.push(entry);
     session.lastUpdatedAt = Math.max(session.lastUpdatedAt ?? session.startedAt, invokedAt);
-    persist(session);
+    if (write) persist(session);
     return entry;
   }
   async function restore(session) {
@@ -794,7 +796,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   async function readBuyerAgreement(agreementAddress,buyer,agreementHash,signedProjection) {
     const reader=agreementAnchor??anchors,method=agreementAnchor?'readAgreement':'read';let read,returnedAgreementCause;
     const input=agreementAnchor?{logicalAddress:agreementAddress,writer:buyer,agreementHash,...signedProjection===undefined?{}:{signedProjection}}:agreementAddress;
-    try {read=await readAdmissionCapability({read:async(query,limits)=>{const value=await reader[method](query,limits);returnedAgreementCause=value?.cause;return value;}},'read',input);}
+    try {read=await readAdmissionCapability({read:async(query,limits)=>{
+      const value=await reader[method](query,limits);returnedAgreementCause=value?.cause;
+      // A reader's diagnostic Error is kept separately from its bounded JSON
+      // answer. Preserve every other descriptor and the prototype for validation.
+      if(!value||typeof value!=='object'||Array.isArray(value)||!Object.hasOwn(value,'cause'))return value;
+      const properties=Object.getOwnPropertyDescriptors(value);delete properties.cause;
+      return Object.create(Object.getPrototypeOf(value),properties);
+    }},'read',input);}
     catch(cause){throw new SellerAgentError('substrate_unavailable','SR-2 Agreement read failed',503,{cause});}
     const status=agreementAnchor?read?.disposition:read?.status;
     if(status==='absent')throw new SellerAgentError('agreement_not_anchored','the buyer has not anchored the Agreement');
@@ -816,10 +825,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   const nativeAgreementView = (native) => ({ source: native.source, evidenceMode: native.evidenceMode, nativeAddress: native.nativeAddress, txRef: native.txRef });
 
-  function retainCommitmentPhase(session, finalized) {
+  function retainCommitmentPhase(session, finalized, write = true) {
     // Ordinary commit has now authenticated the anchored Agreement and both signatures.
     const agreementRef={anchor:{kind:'storage-program',locator:fixedPriceAgreementLogicalAddress(session.jobId)},contentHash:finalized.agreementHash};
-    recordPhase(session,0,session.proposalAdmission.observedAt,{ok:true,contextDelta:{'negotiate-fixed-price':{agreementHash:finalized.agreementHash,agreementRef}}});
+    recordPhase(session,0,session.proposalAdmission.observedAt,{ok:true,contextDelta:{'negotiate-fixed-price':{agreementHash:finalized.agreementHash,agreementRef}}},write);
     const commitmentRef = { anchor:{kind:'storage-program',locator:finalized.logicalAddress}, contentHash:contentHash(finalized.record), signer: claim };
     const commitmentTxRef = finalized.anchorTxRef;
     const commitmentDelta = { 'commit-payee-bound-agreement': {
@@ -834,7 +843,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       attestationRef: commitmentRef,
       anchorReceipt: structuredClone(finalized.anchorReceipt),
       contextDelta: commitmentDelta,
-    });
+    }, write);
   }
 
   function releaseFinalizedSignatureCommitment(session, jobId) {
@@ -983,25 +992,30 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         ? await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:retained.logicalAddress,artifact:retained.record,artifactKind:'FinalityCommitmentRecord',receipt:retained.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true})
         : commitmentReader(anchors, claim).verifyAnchorReceipt({record:retained.record,anchorReceipt:retained.anchorReceipt});
       if(verdict!=='valid')throw new SellerAgentError('commitment_changed','retained commitment proof no longer authenticates',503);
-      retainCommitmentPhase(session,retained);
-      session.agreement=agreement;session.agreementRef=agreementRef;
-      if(native)session.agreementAnchor=nativeAgreementView(native);
-      if(session.stage==='proposed')session.stage='committed';
-      releaseFinalizedSignatureCommitment(session, jobId);
-      persist(session);
+      const adopted=structuredClone(session);
+      adopted.agreement=agreement;adopted.agreementRef=agreementRef;
+      if(native)adopted.agreementAnchor=nativeAgreementView(native);
+      if(adopted.stage==='proposed')adopted.stage='committed';
+      retainCommitmentPhase(adopted,retained,false);
+      releaseFinalizedSignatureCommitment(adopted, jobId);
+      persist(adopted);Object.assign(session,adopted);
       return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
     }
-    session.agreement = agreement;
-    session.agreementRef = agreementRef;
-    if (native) session.agreementAnchor = nativeAgreementView(native);
-    session.commitment = finalized;
-    if(session.stage==='proposed')session.stage='committed';
+    // A conflicting or out-of-order phase must not change the live session:
+    // validate and keep the complete adoption on a copy, then save it once.
+    const adopted = structuredClone(session);
+    adopted.agreement = agreement;
+    adopted.agreementRef = agreementRef;
+    if (native) adopted.agreementAnchor = nativeAgreementView(native);
+    adopted.commitment = structuredClone(finalized);
+    if(adopted.stage==='proposed')adopted.stage='committed';
     // The native receipt is the authoritative commitment time. Local wall
     // time may be later within the same millisecond/second and cannot replace
     // that finalized fact in the SDK SessionRecord.
-    retainCommitmentPhase(session, finalized);
-    releaseFinalizedSignatureCommitment(session, jobId);
-    persist(session);
+    retainCommitmentPhase(adopted, finalized, false);
+    releaseFinalizedSignatureCommitment(adopted, jobId);
+    persist(adopted);
+    Object.assign(session, adopted);
     return { status: 'committed', address: finalized.logicalAddress, resumed: finalized.resumed, ...(native ? { agreementAnchor: nativeAgreementView(native) } : {}) };
   }
 
@@ -1047,6 +1061,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (cause) { out.causeCode = cause?.cause?.name === 'TimeoutError' ? 'timeout' : 'reader'; Object.defineProperty(out, 'cause', { value: cause }); }
       return out;
     };
+    const failed = (error) => held(typeof error?.code === 'string' ? error.code : 'seller_commitment_readback_indeterminate', error);
     const bound = () => {
       try {
         return request.method === 'POST' && isCanonicalJobId(request.jobId) && Boolean(body) && typeof body === 'object' && !Array.isArray(body) &&
@@ -1069,9 +1084,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let answer;
     try { answer = await commit(input, options); }
     catch (error) {
-      if (readOnly || early || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return held(error?.code ?? error?.message ?? error, error);
+      if (readOnly || early || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return failed(error);
       try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
-      catch (retryError) { return held(retryError?.code ?? retryError?.message ?? retryError, retryError); }
+      catch (retryError) { return failed(retryError); }
     }
     return answer?.status === 'committed' || answer?.status === 'commitment-held' ? { disposition: 'present', value: answer } : held('commitment readback did not establish a retained outcome');
   }
@@ -1154,12 +1169,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         case '/dacs/v1/agreements/state': return { answer: agreementState(body.transportIdentity) };
         case '/dacs/v1/commitments': case '/dacs/v1/commitments/signature': {
           const proof = await reconcileCommitmentTransport({ request, body, readOnly });
-          return proof?.disposition === 'present' ? { answer: proof.value } : { held: proof?.reason ?? 'seller_commitment_readback_indeterminate', cause: proof?.cause, causeCode: proof?.causeCode };
+          return proof?.disposition === 'present' ? { answer: proof.value } : { held: proof?.reason ?? 'seller_commitment_readback_indeterminate', cause: proof?.cause };
         }
         case '/dacs/v1/payments': {
           const work = session?.nativeEvidenceWork ?? session?.paymentWork;
           if (work && (work.txHash !== paymentTxHash(body.txHash) || work.payerPayingKey !== body.payerPayingKey)) return { held: 'seller_payment_context_mismatch' };
-          return readOnly ? { held: 'seller_payment_readback_unavailable' } : { answer: await submitPayment(body) };
+          if (!readOnly) return { answer: await submitPayment(body) };
+          return fixtureSettlement ? { answer: await fixtureSettlement.readPayment(body) } : { held: 'seller_payment_readback_unavailable' };
         }
         case '/dacs/v1/bundles/request': case '/dacs/v1/bundles/countersignature': case '/dacs/v1/bundles/buyer-copy': return { held: 'bundle_finalization_unavailable' };
         default: return { held: 'seller_transport_reconciliation_unsupported' };
