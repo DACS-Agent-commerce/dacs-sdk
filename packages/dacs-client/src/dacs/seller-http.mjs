@@ -6,7 +6,7 @@
 // requests, independently signed seller responses and a durable intent journal.
 // Only an authenticated definite refusal becomes SellerRefusedError in that
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
-import { SellerAgentError } from './seller-agent.mjs';
+import { SellerAgentError } from './seller-agent-error.mjs';
 import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 
