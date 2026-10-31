@@ -1035,6 +1035,38 @@ checksums, one CycloneDX SBOM per package and combined release provenance. These
 are qualified package candidates, not evidence that the packages were published
 to npm.
 
+Registry/container acceptance writes evidence to the new directory passed to
+`--output-dir`. Handled failures after preflight (an exit, SIGINT or SIGTERM)
+retain partial evidence in that directory. Power loss or SIGKILL can leave the
+reserved directory empty, and the temporary copies staged under the runner's
+temporary directory may not survive a reboot. Run on a host with Docker/Compose,
+curl 8.4+ and GNU mv. Create the parent first and choose a fresh output
+directory for each run:
+
+```sh
+mkdir -p registry-container-artifacts
+review_parent=$(mktemp -d registry-container-artifacts/review.XXXXXX)
+npm run acceptance:registry-container -- --output-dir "$review_parent/evidence"
+```
+
+The ignored `registry-container-artifacts/` path keeps evidence out of the Git
+worktree. A directory outside the repository also works; other in-repository
+paths appear as untracked files.
+Acceptance requires explicit completion and consistent policy outcomes. npm HTTP
+responses have byte and time limits. Commands wrapped with `run_bounded` have
+deadlines. Failed runs retain collected evidence, including structured
+`doctor.json`, `doctor.log` and the recorded exit status when available.
+The acceptance audits the generated consumer's tree by advisory ID against
+`scripts/registry-container-audit-baseline.json`. On pull requests an advisory
+ID outside that baseline is a warning, unless it is high or critical on a
+direct dependency of the consumer; the scheduled drift job, manual runs and
+release paths fail on it (see the audit policy in [SECURITY.md](./SECURITY.md)).
+`Publish gated npm prerelease` publishes only after that acceptance passes with
+drift enforced. It replaces `publish-prerelease.yml`, which older refs still
+contain, so publication credentials must belong only to the new workflow and its
+`npm-prerelease-gated` environment (owner steps in the runbook below).
+Production publication remains blocked by #191.
+
 Maintainer-controlled prerelease publication and first-release credential
 bootstrap are documented in
 [the npm prerelease release runbook](./docs/npm-prerelease-release.md).
