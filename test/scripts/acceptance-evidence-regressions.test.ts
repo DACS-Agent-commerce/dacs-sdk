@@ -1,28 +1,33 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const modulePath = "../../scripts/registry-container-disposition.mjs";
-const { classifyPolicyChecks, extractPolicyFindings, POLICY_SOURCES, unlistedPolicyFindings } = await import(modulePath);
+const { classifyPolicyChecks, extractPolicyFindings, POLICY_SOURCES, registryAuditDriftDisposition, registryAuditPolicy,
+  registryContainerDisposition, RELEASE_VERSION, unlistedPolicyFindings } = await import(modulePath);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
 const roots: string[] = [];
 const scratch = () => { const root = mkdtempSync(join(tmpdir(), "dacs-evidence-")); roots.push(root); return root; };
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-const cli = (args: string[]) => spawnSync(process.execPath,
-  ["scripts/registry-container-disposition.mjs", ...args], { cwd: repoRoot, encoding: "utf8" });
-// The policy gates read a summary's recorded findings only.
-const passing = () => ({ securityGate: { findings: { schema: "dacs-registry-policy-findings/v1", gitDependencies: [],
-  productionImageDependencies: [], productionImageInventory: { scanComplete: true, errors: [], missing: [] },
-  engine: { exitCode: 0, code: null, scanComplete: true, violations: [] },
-  lockSbom: { exitCode: 0, code: null, problems: [] }, physicalSbom: { exitCode: 0, code: null, problems: [] } } as Record<string, unknown> } });
+const cli = (args: string[], env: Record<string, string> = {}) => spawnSync(process.execPath,
+  ["scripts/registry-container-disposition.mjs", ...args], { cwd: repoRoot, encoding: "utf8", env: { ...process.env, ...env } });
+type Gate = { auditExitCode: number; findings: Record<string, unknown> } & Record<string, unknown>;
+const passing = () => ({
+  schema: "dacs-registry-container-acceptance/v1", complete: true, packageVersion: RELEASE_VERSION,
+  generatedTestsPassed: true, functionalPassed: true, docker: { policy: { schema: "dacs-runtime-image-policy/v1" } as Record<string, unknown> },
+  audit: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0, observedAdvisories: [] as string[], unlistedAdvisories: [] as string[], directAdvisories: [] as string[] },
+  securityGate: { auditExitCode: 0, findings: { schema: "dacs-registry-policy-findings/v1", gitDependencies: [], productionImageDependencies: [],
+    productionImageInventory: { scanComplete: true, errors: [], missing: [] },
+    engine: { exitCode: 0, code: null, scanComplete: true, violations: [] },
+    lockSbom: { exitCode: 0, code: null, problems: [] }, physicalSbom: { exitCode: 0, code: null, problems: [] } } } as Gate,
+});
 const withFindings = (findings: Record<string, unknown>) => {
   const summary = passing();
   summary.securityGate.findings = { ...summary.securityGate.findings, ...findings };
   return summary;
 };
-const allPassed = { registryDependency: "passed", productionImage: "passed", engineStrict: "passed", lockSbom: "passed", physicalSbom: "passed" };
 
 // Every closed source of a run whose policy gates all pass.
 const passingSources = (): Record<string, string> => ({
@@ -45,33 +50,31 @@ const gateSources: Record<string, string[]> = {
   lockSbom: ["consumer-lock-sbom.err", "consumer-lock-sbom.exit-code"],
   physicalSbom: ["consumer-physical-sbom.err", "consumer-physical-sbom.exit-code"],
 };
-const expectGatesBlockedBy = (checks: Record<string, string>, name: string) => {
-  for (const [gate, sources] of Object.entries(gateSources)) {
-    expect(checks[gate], gate).toBe(sources.includes(name) ? "blocked" : "passed");
-  }
-};
 
 describe("closed acceptance sources", () => {
   it("reads exactly the closed list of sources and passes them when complete", () => {
     expect([...POLICY_SOURCES].sort()).toEqual(Object.keys(passingSources()).sort());
-    expect(classifyPolicyChecks(withFindings(extracted(passingSources())), baseline)).toEqual(allPassed);
+    expect(registryContainerDisposition(withFindings(extracted(passingSources())))).toMatchObject({ exitCode: 0 });
   });
 
   it.each(Object.keys(passingSources()))("blocks every gate %s feeds when it is missing, never reading it as empty", name => {
     const files = passingSources();
     delete files[name];
     const findings = extracted(files);
-    expectGatesBlockedBy(classifyPolicyChecks(withFindings(findings), baseline), name);
+    const checks = classifyPolicyChecks(withFindings(findings), baseline);
+    for (const [gate, sources] of Object.entries(gateSources)) {
+      expect(checks[gate], gate).toBe(sources.includes(name) ? "blocked" : "passed");
+    }
     expect(JSON.stringify(findings)).toContain(JSON.stringify(name));
-    const blocked = Object.entries(gateSources).filter(([, sources]) => sources.includes(name)).map(([gate]) => gate);
-    const named = unlistedPolicyFindings(withFindings(findings), baseline, blocked);
-    for (const gate of blocked) expect(named[gate], gate).toContain(`incomplete evidence: ${name}`);
+    const result = registryContainerDisposition(withFindings(findings));
+    expect(result.exitCode).toBe(3);
+    expect(result.message).toContain(`incomplete evidence: ${name}`);
   });
 
   it.each(Object.keys(passingSources()).filter(name => name.endsWith(".json") || name.endsWith(".exit-code")))(
     "blocks the gates %s feeds when it cannot be read", name => {
       const files = { ...passingSources(), [name]: "{" };
-      expectGatesBlockedBy(classifyPolicyChecks(withFindings(extracted(files)), baseline), name);
+      expect(registryContainerDisposition(withFindings(extracted(files))).exitCode).toBe(3);
     });
 
   it.each([
@@ -85,6 +88,12 @@ describe("closed acceptance sources", () => {
     expect(classifyPolicyChecks(withFindings(findings), baseline).registryDependency).toBe("blocked");
   });
 
+  it("blocks the audit gate when the summary records no audit evidence", () => {
+    const summary = passing();
+    Reflect.deleteProperty(summary, "audit");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
   it.each([
     {},
     { packages: {} },
@@ -96,7 +105,10 @@ describe("closed acceptance sources", () => {
     for (const key of ["gitDependencies", "engine", "productionImageDependencies", "productionImageInventory"]) {
       expect(findings[key], key).toEqual({ incomplete: ["generated-package-lock.json"] });
     }
-    expectGatesBlockedBy(classifyPolicyChecks(withFindings(findings), baseline), "generated-package-lock.json");
+    const checks = classifyPolicyChecks(withFindings(findings), baseline);
+    for (const [gate, sources] of Object.entries(gateSources)) {
+      expect(checks[gate], gate).toBe(sources.includes("generated-package-lock.json") ? "blocked" : "passed");
+    }
   });
 
   it.each(["", " ", "bad", "-1", "256", "1.5"])("does not decode invalid exit evidence %j as success", text => {
@@ -130,7 +142,24 @@ describe("closed acceptance sources", () => {
   });
 });
 
-describe("policy gate states", () => {
+describe("complete acceptance evidence regressions", () => {
+  it.each([
+    ["typescriptPresent", true], ["rubicSdkPresent", true], ["productionDependencyPolicyPassed", false],
+  ])("ignores a composer image flag %s that contradicts the inventory", (field, value) => {
+    const summary = passing();
+    summary.docker.policy = { ...summary.docker.policy, [field]: value };
+    expect(registryContainerDisposition(summary).exitCode).toBe(0);
+  });
+
+  it.each([false, true, undefined])("ignores the composer's overall gate status %s", passed => {
+    const clean = passing();
+    Object.assign(clean.securityGate, { passed, registryDependencyPolicyPassed: passed, engineStrictExitCode: 9 });
+    expect(registryContainerDisposition(clean).exitCode).toBe(0);
+    const violating = withFindings({ gitDependencies: [{ location: "node_modules/a", field: "dependencies.b", value: "file:b" }] });
+    Object.assign(violating.securityGate, { passed, registryDependencyPolicyPassed: passed });
+    expect(registryContainerDisposition(violating)).toMatchObject({ exitCode: 3, checks: { registryDependency: "blocked" } });
+  });
+
   it.each(["typescript", "rubic-sdk"])("retains prohibited image package %s wherever the inventory holds it", name => {
     for (const nested of [false, true]) for (const installedName of [name, "other-package"]) {
       const location = nested ? `node_modules/parent/node_modules/${name}` : `node_modules/${name}`;
@@ -147,8 +176,8 @@ describe("policy gate states", () => {
       const { productionImageDependencies, productionImageInventory } = extracted(files);
       expect(productionImageInventory).toMatchObject({ scanComplete: true, missing: [], errors: [] });
       expect(productionImageDependencies).toEqual([{ ...item, integrity: "sha512-fixture" }]);
-      expect(classifyPolicyChecks(withFindings({ productionImageDependencies, productionImageInventory }), baseline).productionImage)
-        .toBe("blocked");
+      expect(registryContainerDisposition(withFindings({ productionImageDependencies, productionImageInventory })))
+        .toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
     }
   });
 
@@ -157,7 +186,8 @@ describe("policy gate states", () => {
     ["an inventory error", { scanComplete: true, errors: ["unreadable runtime-image inventory entry: {}"], missing: [] }],
     ["a missing required package", { scanComplete: true, errors: [], missing: ["node_modules/a"] }],
   ])("blocks the image gate on %s", (_label, productionImageInventory) => {
-    expect(classifyPolicyChecks(withFindings({ productionImageInventory }), baseline).productionImage).toBe("blocked");
+    expect(registryContainerDisposition(withFindings({ productionImageInventory })))
+      .toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
   });
 
   describe("baseline match of a prohibited image package", () => {
@@ -179,20 +209,22 @@ describe("policy gate states", () => {
     });
   });
 
-  it.each([
-    ["gitDependencies", "registryDependency"], ["engine", "engineStrict"], ["lockSbom", "lockSbom"], ["physicalSbom", "physicalSbom"],
-    ["productionImageDependencies", "productionImage"], ["productionImageInventory", "productionImage"],
-  ])("blocks the gate of missing %s findings", (key, gate) => {
-    const summary = passing();
-    Reflect.deleteProperty(summary.securityGate.findings, key);
-    expect(classifyPolicyChecks(summary, baseline)).toEqual({ ...allPassed, [gate]: "blocked" });
+  it.each(["gitDependencies", "engine", "lockSbom", "physicalSbom", "productionImageDependencies", "productionImageInventory"])(
+    "rejects missing %s findings", key => {
+      const summary = passing();
+      Reflect.deleteProperty(summary.securityGate.findings, key);
+      expect(registryContainerDisposition(summary).exitCode).toBe(3);
+    });
+
+  it("requires explicit completion", () => {
+    const summary = passing(); Reflect.deleteProperty(summary, "complete");
+    expect(registryContainerDisposition(summary).exitCode).toBe(1);
   });
 
-  it.each([["engine", "engineStrict"], ["lockSbom", "lockSbom"], ["physicalSbom", "physicalSbom"]])(
-    "rejects contradictory %s evidence", (key, gate) => {
-      const contradictory = { exitCode: 1, code: "fixture-error", scanComplete: true, violations: [], problems: [] };
-      expect(classifyPolicyChecks(withFindings({ [key]: contradictory }), baseline)[gate]).toBe("blocked");
-    });
+  it.each(["engine", "lockSbom", "physicalSbom"])("rejects contradictory %s evidence", key => {
+    const contradictory = { exitCode: 1, code: "fixture-error", scanComplete: true, violations: [], problems: [] };
+    expect(registryContainerDisposition(withFindings({ [key]: contradictory })).exitCode).toBe(3);
+  });
 
   it.each([["lockSbom", "lockSbom"], ["physicalSbom", "physicalSbom"]])(
     "blocks %s exit 1 that lists no problem", (key, gate) => {
@@ -290,14 +322,17 @@ describe("policy gate states", () => {
   });
 
   it("rejects an incomplete engine scan behind a successful exit code", () => {
-    const engine = { exitCode: 0, code: null, scanComplete: false, violations: [] };
-    expect(classifyPolicyChecks(withFindings({ engine }), baseline).engineStrict).toBe("blocked");
+    expect(registryContainerDisposition(withFindings({ engine: { exitCode: 0, code: null, scanComplete: false, violations: [] } })).exitCode).toBe(3);
+  });
+
+  it.each([undefined, "other/v1"])("rejects drift evidence with schema %s", schema => {
+    expect(registryAuditDriftDisposition({ schema, complete: false, audit: { observedAdvisories: [], unlistedAdvisories: [] } }).exitCode).toBe(3);
   });
 });
 
 describe("pinned baseline identities", () => {
   const known = baseline.policyFindings;
-  const classify = (findings: Record<string, unknown>) => classifyPolicyChecks(withFindings(findings), baseline);
+  const classify = (findings: Record<string, unknown>) => registryContainerDisposition(withFindings(findings), baseline);
   const git = known.gitDependencies[0];
   const engine = known.engineViolations[0];
   const image = known.productionImageDependencies.find((item: { name: string }) => item.name === "pqcrypto");
@@ -305,55 +340,91 @@ describe("pinned baseline identities", () => {
     violations: [violation], reportedPackage: violation.package } });
 
   it("waives each recorded identity exactly as recorded", () => {
-    expect(classify({ gitDependencies: [git] }).registryDependency).toBe("baseline");
-    expect(classify(engineFinding(engine)).engineStrict).toBe("baseline");
-    expect(classify({ productionImageDependencies: [image] }).productionImage).toBe("baseline");
+    expect(classify({ gitDependencies: [git] }).exitCode).toBe(4);
+    expect(classify(engineFinding(engine)).exitCode).toBe(4);
+    expect(classify({ productionImageDependencies: [image] }).exitCode).toBe(4);
   });
 
   it.each(["location", "field", "value", "version", "integrity"])("blocks a Git finding with another %s", key => {
-    expect(classify({ gitDependencies: [{ ...git, [key]: "changed" }] }).registryDependency).toBe("blocked");
+    expect(classify({ gitDependencies: [{ ...git, [key]: "changed" }] })).toMatchObject({ exitCode: 3, checks: { registryDependency: "blocked" } });
   });
 
   it.each(["package", "location", "integrity", "required"])("blocks an engine finding with another %s", key => {
-    expect(classify(engineFinding({ ...engine, [key]: key === "required" ? { node: ">=99" } : "changed" })).engineStrict)
-      .toBe("blocked");
+    expect(classify(engineFinding({ ...engine, [key]: key === "required" ? { node: ">=99" } : "changed" })))
+      .toMatchObject({ exitCode: 3, checks: { engineStrict: "blocked" } });
   });
 
   it.each(["name", "location", "version", "integrity"])("blocks an image finding with another %s", key => {
-    expect(classify({ productionImageDependencies: [{ ...image, [key]: key === "version" ? "1.0.1" : "changed" }] }).productionImage)
-      .toBe("blocked");
-  });
-
-  it.each([undefined, null, "false", 137, 2])("never waives a missing, malformed or interrupted exit code %j", outcome => {
-    const checks = classify({
-      engine: { exitCode: outcome, code: "EBADENGINE", scanComplete: true,
-        violations: known.engineViolations, reportedPackage: known.engineViolations[0].package },
-      lockSbom: { exitCode: outcome, code: "ESBOMPROBLEMS", problems: known.lockSbomProblems },
-      physicalSbom: { exitCode: outcome, code: "ESBOMPROBLEMS", problems: known.physicalSbomProblems } });
-    expect(checks).toMatchObject({ engineStrict: "blocked", lockSbom: "blocked", physicalSbom: "blocked" });
+    expect(classify({ productionImageDependencies: [{ ...image, [key]: key === "version" ? "1.0.1" : "changed" }] }))
+      .toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
   });
 });
 
-describe("policy findings CLI", () => {
-  it("refuses a missing argument with a usage error", () => {
-    const result = cli(["--policy-findings"]);
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("usage: --policy-findings <evidence-directory> <output>");
+describe("unlisted advisory policy", () => {
+  const baselineId: string = baseline.advisoryIds[0];
+  const unlistedId = "GHSA-2222-3333-4444";
+  const withAudit = (observed: string[], direct: string[] = []) => {
+    const summary = passing();
+    Object.assign(summary.audit, { high: observed.length, total: observed.length, observedAdvisories: observed,
+      unlistedAdvisories: observed.filter(id => id === unlistedId), directAdvisories: direct });
+    summary.securityGate.auditExitCode = observed.length ? 1 : 0;
+    return summary;
+  };
+
+  it("warns on an unlisted transitive ID under warn and blocks it under fail", () => {
+    expect(registryContainerDisposition(withAudit([unlistedId]), undefined, { unlistedAdvisories: "warn" }))
+      .toMatchObject({ exitCode: 4, checks: { audit: "unlisted" }, unlistedAdvisories: [unlistedId] });
+    expect(registryContainerDisposition(withAudit([unlistedId]))).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
   });
 
-  it("invalidates saved findings after a failed repeat", () => {
-    const root = scratch(), output = join(root, "policy.json");
-    expect(cli(["--policy-findings", root, output]).status).toBe(0);
-    mkdirSync(join(root, "engine-strict.log"));
-    expect(cli(["--policy-findings", root, output]).status).not.toBe(0);
-    expect(existsSync(output)).toBe(false);
+  it.each(["warn", "fail"])("blocks a direct high/critical ID under %s whether unlisted, baselined or assessed", policy => {
+    const assessed = { ...baseline, advisoryIds: baseline.advisoryIds.filter((id: string) => id !== baselineId),
+      assessedAdvisories: [{ id: baselineId, assessment: "SECURITY.md#audit-policy" }] };
+    for (const [summary, known] of [[withAudit([unlistedId], [unlistedId]), baseline], [withAudit([baselineId], [baselineId]), baseline],
+      [withAudit([baselineId], [baselineId]), assessed]] as const) {
+      expect(registryContainerDisposition(summary, known, { unlistedAdvisories: policy }))
+        .toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+    }
   });
 
-  it.each(["generated-package-lock.json", "dependency-policy.json", "engine-strict.log"])(
-    "refuses an output that names its source %s without deleting it", name => {
-      const root = scratch();
-      writeFileSync(join(root, name), "evidence");
-      expect(cli(["--policy-findings", root, join(root, ".", name)]).status).not.toBe(0);
-      expect(readFileSync(join(root, name), "utf8")).toBe("evidence");
-    });
+  it("throws for an unknown policy", () => {
+    expect(() => registryContainerDisposition(passing(), undefined, { unlistedAdvisories: "ignore" }))
+      .toThrow('unknown unlisted-advisory policy "ignore"');
+  });
+
+  it("warns and writes a step-summary line for DACS_UNLISTED_ADVISORIES=warn, and annotates a blocked run", () => {
+    const root = scratch(), path = join(root, "summary.json"), stepSummary = join(root, "step-summary.md");
+    writeFileSync(path, JSON.stringify(withAudit([unlistedId])));
+    writeFileSync(stepSummary, "");
+    const warned = cli([path], { DACS_UNLISTED_ADVISORIES: "warn", GITHUB_STEP_SUMMARY: stepSummary });
+    expect(warned.status).toBe(4);
+    expect(warned.stdout).toContain(`::warning title=Advisory IDs outside the #191 baseline::${unlistedId}. Pull requests only warn`);
+    expect(readFileSync(stepSummary, "utf8")).toContain(`fail on them): ${unlistedId}\n`);
+    const blocked = cli([path], { DACS_UNLISTED_ADVISORIES: "", GITHUB_STEP_SUMMARY: stepSummary });
+    expect(blocked.status).toBe(3);
+    expect(blocked.stdout).toContain("::error title=Registry/container acceptance policy failure::");
+    expect(blocked.stderr).toContain(`advisory IDs not in the #191 baseline: ${unlistedId}`);
+  });
+});
+
+describe("captured nested-only advisory", () => {
+  const fixture = (name: string) => {
+    const read = (file: string) => JSON.parse(readFileSync(join(repoRoot, "test/scripts/fixtures/npm-audit-nested-advisory", name, file), "utf8"));
+    const policy = registryAuditPolicy(read("npm-audit.json"), read("package-lock.json"), baseline);
+    const summary = passing();
+    summary.audit = { ...policy.observed, observedAdvisories: policy.observedAdvisories,
+      unlistedAdvisories: policy.unlistedAdvisories, directAdvisories: policy.directAdvisories };
+    summary.securityGate.auditExitCode = 1;
+    return summary;
+  };
+
+  it("is baseline-only (exit 4) when the high advisory is on the nested copy alone", () => {
+    expect(registryContainerDisposition(fixture("nested-only"))).toMatchObject({ exitCode: 4, checks: { audit: "baseline" },
+      directAdvisories: [] });
+  });
+
+  it.each(["warn", "fail"])("blocks under %s when the high advisory covers the direct version", policy => {
+    expect(registryContainerDisposition(fixture("direct-affected"), undefined, { unlistedAdvisories: policy }))
+      .toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
 });

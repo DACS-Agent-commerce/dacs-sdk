@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,8 +10,10 @@ import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
 import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
+export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
 export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
 export const POLICY_FINDINGS_SCHEMA = "dacs-registry-policy-findings/v1";
+export const RELEASE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const baselinePath = new URL("./registry-container-audit-baseline.json", import.meta.url);
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
 
@@ -534,6 +536,100 @@ function releaseCopyErrors(location, record, { name, integrity, version }, regis
   }
   return errors;
 }
+
+// Why an acceptance run stopped.
+export const FAILURE_CLASSES = ["network", "policy", "functional"];
+const MAX_FAILURE_EVIDENCE_ENTRIES = 5;
+const MAX_FAILURE_EVIDENCE_BYTES = 8192;
+// Transient transport failures as npm, Docker, Git, curl and the registry
+// ping report them; any one of them in a diagnostic is network evidence.
+const NETWORK_FAILURE_SIGNATURES = [
+  /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|ESOCKETTIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH)\b/,
+  /\bE(?:5\d\d|408|429)\b/,
+  /socket hang up/,
+  // npm's request timeout (code FETCH_ERROR) and body timeout.
+  /network timeout at: /,
+  /Response timeout while trying to fetch/,
+  /TLS handshake timeout/,
+  /i\/o timeout/,
+  /toomanyrequests/,
+  /curl: \((?:6|7|28|35|52|56)\)/,
+  /dial tcp: lookup .+: (?:no such host|server misbehaving|temporary failure)/,
+  /Could not resolve (?:host|proxy):/,
+  /Failed to connect to .+ port \d+/,
+  /Connection (?:timed out|refused)/,
+  /connect: (?:connection refused|network is unreachable)/,
+  /\b(?:408|429|5\d\d) [^\r\n]+ - (?:GET|POST) https?:\/\//,
+  /invalid json response body at /,
+  /Invalid response body while trying to fetch /,
+  // The whole entry the acceptance script records when Verdaccio never answers.
+  /^registry ping did not succeed within 30 attempts$/,
+];
+const networkSignature = new RegExp(NETWORK_FAILURE_SIGNATURES.map(signature => signature.source).join("|"));
+const firstNpmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
+// Fields of an audit report; npm's audit error object has none of them.
+const AUDIT_REPORT_FIELDS = ["auditReportVersion", "vulnerabilities", "metadata"];
+const retryableStatus = status => status === 408 || status === 429 || (status >= 500 && status <= 599);
+
+// Whether one saved diagnostic shows a transient network failure: npm's audit
+// error object with a retryable status (or none, with a network message), or
+// other output whose npm error code, if any, is a network one.
+function retryableFailureEvidence(text) {
+  let endpoint;
+  try { endpoint = JSON.parse(text); } catch {
+    const code = firstNpmErrorCode(text);
+    return (code === null || code === "FETCH_ERROR" || networkSignature.test(code)) && networkSignature.test(text);
+  }
+  if (typeof endpoint?.message !== "string" || AUDIT_REPORT_FIELDS.some(key => Object.hasOwn(endpoint, key))) return false;
+  if (endpoint.statusCode === undefined) return networkSignature.test(endpoint.message);
+  return Number.isInteger(endpoint.statusCode) && retryableStatus(endpoint.statusCode);
+}
+
+const boundedEvidenceList = evidence => Array.isArray(evidence) && evidence.length <= MAX_FAILURE_EVIDENCE_ENTRIES &&
+  [...evidence].every(line => typeof line === "string" && Buffer.byteLength(line) <= MAX_FAILURE_EVIDENCE_BYTES);
+
+// The class an interrupted run's own record supports: the recorded one when
+// the stage is named and any evidence is a bounded list of strings, and for
+// network only when every entry is retryable evidence. Otherwise functional.
+function interruptedFailureClass(summary) {
+  const evidence = summary.failureEvidence;
+  const supported = typeof summary.failedStage === "string" && summary.failedStage.trim() !== "" &&
+    FAILURE_CLASSES.includes(summary.failureClass) && (evidence === undefined || boundedEvidenceList(evidence)) &&
+    (summary.failureClass !== "network" || (evidence?.length > 0 && evidence.every(retryableFailureEvidence)));
+  return supported ? summary.failureClass : "functional";
+}
+
+// The one admission every reading of a summary shares: `interrupted` with the
+// failure class its evidence supports, `complete`, or `refused` with why a
+// summary is neither. The release version and embedded schemas are checked
+// before a complete run is classified.
+function admitAcceptanceRun(summary, packageVersion) {
+  if (summary?.schema !== ACCEPTANCE_SUMMARY_SCHEMA) {
+    return { state: "refused", message: "registry/container acceptance summary has an unexpected schema" };
+  }
+  if (summary.complete === false) return { state: "interrupted", failureClass: interruptedFailureClass(summary) };
+  if (summary.complete !== true) return { state: "refused", message: "acceptance is not complete" };
+  // A complete run has no failure of its own. A top-level failure class is
+  // only the copy --record writes of the disposition, which is recomputed.
+  if (Object.hasOwn(summary, "failedStage") || Object.hasOwn(summary, "failureEvidence") ||
+      (Object.hasOwn(summary, "failureClass") && summary.failureClass !== summary.disposition?.failureClass)) {
+    return { state: "refused", message: "complete acceptance summary records a failure: failedStage, failureEvidence " +
+      "or a failureClass its disposition does not record" };
+  }
+  if (summary.docker?.policy?.schema !== RUNTIME_IMAGE_POLICY_SCHEMA ||
+      summary.securityGate?.findings?.schema !== POLICY_FINDINGS_SCHEMA) {
+    return { state: "refused", message: "registry/container acceptance summary embeds evidence with an unexpected schema" };
+  }
+  // A summary for another (or no) version says nothing about this release:
+  // its candidates were checked against the version it names.
+  if (typeof packageVersion !== "string" || packageVersion === "" || summary.packageVersion !== packageVersion) {
+    return { state: "refused", message: "registry/container acceptance summary is for package " +
+      `version ${JSON.stringify(summary.packageVersion)}, not the release version ${JSON.stringify(packageVersion)}` };
+  }
+  return { state: "complete" };
+}
+
+const stoppedAt = summary => `stage ${String(summary.failedStage || "unknown")}`;
 
 // The text's every `npm error code`, or null for none. Repeated or differing
 // codes come back joined by a space, which no single code equals, so a log that
@@ -1081,12 +1177,129 @@ export function unlistedPolicyFindings(summary, baseline, blocked) {
   return Object.fromEntries(blocked.filter(name => name in named).map(name => [name, named[name]()]));
 }
 
+// "fail" (the default) or "warn": what an advisory ID outside the baseline does.
+export const UNLISTED_ADVISORY_POLICIES = ["fail", "warn"];
+
+// The audit gate, from the recorded audit evidence and npm's exit code. A
+// high/critical advisory on a direct version blocks whichever list records
+// it; an unlisted one is "unlisted" under the warn policy and blocks otherwise.
+function auditCheck(summary, baseline, unlistedAdvisories) {
+  let policy;
+  try { policy = summaryAudit(summary, baseline); } catch (error) { return { state: "blocked", reason: String(error) }; }
+  const exitCode = summary.securityGate?.auditExitCode;
+  const expected = expectedAuditExitCode(summary.audit);
+  if (exitCode !== expected) {
+    return { state: "blocked", policy, reason: `npm audit exited ${JSON.stringify(exitCode)} for these counts, not ${expected}` };
+  }
+  if (policy.directAdvisories.length > 0) return { state: "blocked", policy };
+  if (policy.unlistedAdvisories.length > 0) return { state: unlistedAdvisories === "warn" ? "unlisted" : "blocked", policy };
+  return { state: policy.observedAdvisories.length > policy.assessedAdvisories.length ? "baseline" : "passed", policy };
+}
+
+// Exit 0 when every gate passed, 4 when the rest are baseline-only or
+// (warn) unlisted, otherwise 3.
+const gatesExitCode = states => states.every(state => state === "passed") ? 0
+  : states.some(state => state === "blocked") ? 3 : 4;
+
+// The message of a complete run's security result, built after the decision.
+function securityMessage(exitCode, checks, audit, summary, baseline) {
+  const named = state => Object.keys(checks).filter(name => checks[name] === state);
+  const policy = audit.policy;
+  if (exitCode === 0) return "registry/container acceptance passed";
+  if (exitCode === 4) {
+    return "functional registry/container rehearsal passed; production publication remains blocked" +
+      (named("baseline").length ? ` by #191 baseline findings (${named("baseline").join(", ")})` : "") +
+      (checks.audit === "unlisted" ? "; advisory IDs not in the #191 baseline (a pull-request warning; the scheduled " +
+        `drift job and release paths fail on them): ${policy.unlistedAdvisories.join(", ")}` : "");
+  }
+  const outside = Object.entries(unlistedPolicyFindings(summary, baseline, named("blocked")))
+    .map(([name, items]) => `${name}: ${items.length ? items.map(item =>
+      typeof item === "string" ? item : JSON.stringify(item)).join("; ") : "no finding recorded"}`);
+  const direct = list => (list ?? []).filter(id => policy.directAdvisories.includes(id));
+  const clause = (ids, text) => ids.length ? `; ${text}: ${ids.join(", ")}` : "";
+  return "functional registry/container rehearsal passed, but the #191 security gate is blocked beyond the recorded " +
+    `baseline (${named("blocked").join(", ")})` +
+    (outside.length ? `; findings outside the #191 baseline: ${outside.join(" | ")}` : "") +
+    (audit.reason ? `; ${audit.reason}` : "") +
+    (policy?.unlistedAdvisories.length ? `; advisory IDs not in the #191 baseline: ${policy.unlistedAdvisories.join(", ")}. ` +
+      "Review them, then add them to scripts/registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review" : "") +
+    (policy ? clause(direct(policy.unlistedAdvisories), "of those, high or critical on a direct dependency, which fail " +
+      "pull requests too") +
+      clause(direct(policy.assessedAdvisories), "assessed advisories that are high or critical on a direct dependency, " +
+        "which an assessment cannot accept") +
+      clause(direct(baseline.advisoryIds), "#191 baseline advisories that are high or critical on a direct dependency, " +
+        "which the baseline cannot waive") : "");
+}
+
+/** Classifies an acceptance summary into an exit code: 0 passed, 1 functional
+ * failure or interrupted run (with its failure class), 3 a blocked or
+ * malformed security result, 4 only #191 baseline findings or, under the
+ * "warn" policy, unlisted transitive advisory IDs. Returns the exit code,
+ * failure class, message, gate states and audit classification. Throws for an
+ * unknown unlisted-advisory policy. */
+export function registryContainerDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8")),
+  { unlistedAdvisories = "fail", packageVersion = RELEASE_VERSION } = {}) {
+  if (!UNLISTED_ADVISORY_POLICIES.includes(unlistedAdvisories)) {
+    throw new Error(`unknown unlisted-advisory policy ${JSON.stringify(unlistedAdvisories)}`);
+  }
+  const run = admitAcceptanceRun(summary, packageVersion);
+  if (run.state === "refused") return { exitCode: 1, failureClass: "functional", message: run.message };
+  if (run.state === "interrupted") {
+    return { exitCode: 1, failureClass: run.failureClass,
+      message: `registry/container acceptance stopped at ${stoppedAt(summary)} (${run.failureClass} failure)` };
+  }
+  if (summary.functionalPassed !== true || summary.generatedTestsPassed !== true) {
+    return { exitCode: 1, failureClass: "functional", message: "functional registry/container rehearsal failed" };
+  }
+  const audit = auditCheck(summary, baseline, unlistedAdvisories);
+  const checks = { ...classifyPolicyChecks(summary, baseline), audit: audit.state };
+  const exitCode = gatesExitCode(Object.values(checks));
+  return { exitCode, failureClass: exitCode === 0 ? null : "policy", checks,
+    message: securityMessage(exitCode, checks, audit, summary, baseline), ...audit.policy };
+}
+
+/** Compares a summary's advisory IDs with the baseline: exit 0 with none
+ * unlisted, 3 with unlisted IDs or unreadable evidence, and 1 (evaluated:
+ * false) for an interrupted run, which has no IDs to compare. */
+export function registryAuditDriftDisposition(summary, baseline = JSON.parse(readFileSync(baselinePath, "utf8"))) {
+  const run = admitAcceptanceRun(summary, RELEASE_VERSION);
+  if (run.state === "refused") return { exitCode: 3, message: run.message };
+  if (run.state === "interrupted") {
+    return { exitCode: 1, evaluated: false, failureClass: run.failureClass, message: "Advisory-ID drift was not evaluated: " +
+      `acceptance stopped at ${stoppedAt(summary)} (${run.failureClass} failure` +
+      `${run.failureClass === "network" ? "; rerun the workflow" : ""})` };
+  }
+  try {
+    const policy = summaryAudit(summary, baseline);
+    return { exitCode: policy.unlistedAdvisories.length ? 3 : 0, message: policy.unlistedAdvisories.length
+      ? `Unlisted advisory IDs: ${policy.unlistedAdvisories.join(", ")}` : "No advisory-ID drift", ...policy };
+  } catch (error) { return { exitCode: 3, message: String(error) }; }
+}
+
 // Removes a previous report before its inputs are read, so a failed repeat
 // leaves no stale result; an output naming an input is refused first.
 function invalidateReport(output, inputs) {
   if (inputs.some(input => resolve(input) === resolve(output))) throw new Error("evidence input and output must differ");
   rmSync(output, { force: true });
 }
+
+// Replaces a JSON result by sibling rename, removing the temporary file even on failure.
+function atomicWriteJson(path, value) {
+  const temporary = `${path}.tmp-${randomUUID()}`;
+  try {
+    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+    renameSync(temporary, path);
+  } finally { rmSync(temporary, { force: true }); }
+}
+
+function annotate(result) {
+  if (result.exitCode !== 0 && result.exitCode !== 4) {
+    process.stdout.write(`::error title=Registry/container acceptance ${result.failureClass} failure::${result.message}\n`);
+  }
+}
+
+// The modes that read an acceptance summary; a bare path classifies one.
+const SUMMARY_MODES = ["--record", "--audit-drift"];
 
 // Node runs the main module by its real path, or by its linked path under
 // --preserve-symlinks-main, so compare real paths. An entry that is not a file
@@ -1119,6 +1332,44 @@ if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.u
     invalidateReport(output, [input, ...POLICY_SOURCES.map(name => join(input, name))]);
     const read = name => existsSync(join(input, name)) ? readFileSync(join(input, name), "utf8") : undefined;
     writeFileSync(output, JSON.stringify(extractPolicyFindings(read), null, 2) + "\n");
+  } else if (typeof mode === "string" && (SUMMARY_MODES.includes(mode) || !mode.startsWith("--"))) {
+    const drift = mode === "--audit-drift";
+    const record = mode === "--record";
+    const summaryPath = drift || record ? process.argv[3] : mode;
+    if (!summaryPath) throw new Error(`usage: ${mode} <acceptance-summary.json>`);
+    const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+    // Unset means fail closed; only the pull_request acceptance job sets warn.
+    const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
+    const result = drift ? registryAuditDriftDisposition(summary)
+      : registryContainerDisposition(summary, undefined, { unlistedAdvisories });
+    // A refused summary is left as it is: recording the refusal would make its
+    // failure class match its disposition and admit it on the next reading.
+    if (record && admitAcceptanceRun(summary, RELEASE_VERSION).state !== "refused") {
+      const { exitCode, failureClass, message, checks } = result;
+      atomicWriteJson(summaryPath, { ...summary, failureClass,
+        disposition: { exitCode, failureClass, message, checks, unlistedAdvisories } });
+    }
+    // The pull-request re-check of exit 4 turns unlisted IDs into a warning and
+    // a step-summary line; failing acceptance names them in its error.
+    if (!drift && !record && result.exitCode === 4 && result.unlistedAdvisories?.length) {
+      const ids = result.unlistedAdvisories.join(", ");
+      process.stdout.write(`::warning title=Advisory IDs outside the #191 baseline::${ids}. Pull requests only warn; ` +
+        "the scheduled drift job and release paths fail until they are reviewed and recorded in " +
+        "scripts/registry-container-audit-baseline.json and .md.\n");
+      if (process.env.GITHUB_STEP_SUMMARY) {
+        appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- Advisory IDs outside the #191 baseline (warning on this ` +
+          `pull request; the scheduled drift job and release paths fail on them): ${ids}\n`);
+      }
+    }
+    if (drift && result.unlistedAdvisories?.length) {
+      process.stdout.write(`::warning title=Registry audit advisory drift::Unlisted advisory IDs: ${result.unlistedAdvisories.join(", ")}. Production publication remains blocked by #191.\n`);
+    }
+    if (drift && result.evaluated === false) {
+      process.stdout.write(`::warning title=Registry audit advisory drift::${result.message}\n`);
+    }
+    if (!drift) annotate(result);
+    (result.exitCode === 0 ? process.stdout : process.stderr).write(`${result.message}\n`);
+    process.exit(result.exitCode);
   } else {
     throw new Error("unsupported registry policy mode: " + String(mode));
   }

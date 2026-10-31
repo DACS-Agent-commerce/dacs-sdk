@@ -11,7 +11,7 @@ import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { classifyPolicyChecks, classifyRegistryAudit, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
+const { RELEASE_VERSION, classifyPolicyChecks, classifyRegistryAudit, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const archiveModulePath = "../../scripts/installation-closure.mjs";
@@ -24,10 +24,118 @@ const workflowPath = join(repoRoot, ".github/workflows/registry-container-accept
 // A runtime-image inventory that matches the lock's production closure.
 const completeInventory = { scanComplete: true, errors: [], missing: [] };
 
+// The shape written by scripts/verify-registry-container-consumer.sh when the
+// rehearsal works and only the recorded #191 transitive audit findings remain.
+function baselineOnlySummary() {
+  return {
+    schema: "dacs-registry-container-acceptance/v1", complete: true,
+    packageVersion: JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string,
+    generatedTestsPassed: true,
+    functionalPassed: true,
+    docker: { policy: { schema: "dacs-runtime-image-policy/v1", typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true } },
+    audit: { directAdvisories: [] as string[], observedAdvisories: ["GHSA-23hp-3jrh-7fpw"], unlistedAdvisories: [] as string[], info: 0, low: 20, moderate: 30, high: 13, critical: 3, total: 66 },
+    securityGate: {
+      passed: false,
+      registryDependencyPolicyPassed: true,
+      productionImageDependencyPolicyPassed: true,
+      engineStrictExitCode: 0,
+      auditExitCode: 1,
+      lockSbomExitCode: 0,
+      physicalSbomExitCode: 0,
+      findings: { schema: "dacs-registry-policy-findings/v1", gitDependencies: [], productionImageDependencies: [],
+        engine: { exitCode: 0, code: null, scanComplete: true, violations: [] },
+        lockSbom: { exitCode: 0, code: null, problems: [] }, physicalSbom: { exitCode: 0, code: null, problems: [] },
+        productionImageInventory: completeInventory } as Record<string, unknown>,
+    },
+  };
+}
+
 const scratch: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+
+
+
+
+describe("registry/container acceptance disposition", () => {
+  it("passes only when both the rehearsal and the release security gate pass", () => {
+    const summary = baselineOnlySummary();
+    summary.securityGate.passed = true;
+    Object.assign(summary.audit, { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 });
+    summary.audit.observedAdvisories = [];
+    summary.securityGate.auditExitCode = 0;
+    expect(registryContainerDisposition(summary).exitCode).toBe(0);
+    expect(registryContainerDisposition({ ...summary, functionalPassed: false }).exitCode).toBe(1);
+    expect(registryContainerDisposition({}).exitCode).toBe(1);
+  });
+
+  it("reports audit findings within the recorded #191 baseline distinctly from a regression", () => {
+    expect(registryContainerDisposition(baselineOnlySummary()).exitCode).toBe(4);
+  });
+
+  it("treats a summary without the expected schema or passing generated tests as a functional failure", () => {
+    const { schema: _schema, ...unversioned } = baselineOnlySummary();
+    expect(registryContainerDisposition(unversioned).exitCode).toBe(1);
+    expect(registryContainerDisposition({ ...baselineOnlySummary(), schema: "other/v1" }).exitCode).toBe(1);
+    expect(registryContainerDisposition({ ...baselineOnlySummary(), generatedTestsPassed: false }).exitCode)
+      .toBe(1);
+  });
+
+  it("refuses a summary for another or no package version", () => {
+    const { packageVersion: version, ...unversioned } = baselineOnlySummary();
+    expect(version).toBe(RELEASE_VERSION);
+    for (const summary of [unversioned, { ...unversioned, packageVersion: "999.999.999" },
+      { ...unversioned, packageVersion: `${version}-other` }, { ...unversioned, packageVersion: null }]) {
+      expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass: "functional",
+        message: expect.stringContaining(`not the release version ${JSON.stringify(version)}`) });
+    }
+    // The version is the caller's release, never the summary's own claim.
+    expect(registryContainerDisposition(baselineOnlySummary(), undefined, { packageVersion: "0.0.0" }).exitCode).toBe(1);
+    expect(registryContainerDisposition(baselineOnlySummary(), undefined, { packageVersion: "" }).exitCode).toBe(1);
+    expect(registryContainerDisposition({ ...baselineOnlySummary(), packageVersion: "1.2.3" }, undefined,
+      { packageVersion: "1.2.3" }).exitCode).toBe(4);
+  });
+
+  // Each gate reads the extracted findings only; the composer's flags repeat them.
+  const unrecordedPackage = { name: "unrecorded", location: "node_modules/unrecorded", version: "1.0.0", integrity: null };
+  const sbomFailure = { exitCode: 1, code: "ESBOMPROBLEMS", problems: ["missing: unrecorded@1.0.0, required by consumer@1.0.0"] };
+  it.each([
+    ["a registry dependency policy violation", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.findings.gitDependencies = [{ ...unrecordedPackage, field: "dependencies.git", value: "github:owner/repo" }];
+    }],
+    ["a production image dependency violation", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.findings.productionImageDependencies = [unrecordedPackage];
+    }],
+    ["an engine-strict failure", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.findings.engine = { exitCode: 1, code: "EBADENGINE", scanComplete: true, reportedPackage: "unrecorded@1.0.0",
+        violations: [{ package: "unrecorded@1.0.0", location: "node_modules/unrecorded", integrity: null, required: { node: ">=99" } }] };
+    }],
+    ["a lockfile SBOM failure", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.findings.lockSbom = sbomFailure;
+    }],
+    ["a physical SBOM failure", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.securityGate.findings.physicalSbom = sbomFailure;
+    }],
+    ["a failed audit with no findings", (s: ReturnType<typeof baselineOnlySummary>) => {
+      s.audit.total = 0;
+      s.audit.observedAdvisories = [];
+    }],
+  ])("keeps %s as a blocking security result", (_label, mutate) => {
+    const summary = baselineOnlySummary();
+    mutate(summary);
+    expect(registryContainerDisposition(summary).exitCode).toBe(3);
+  });
+
+  it("cross-checks the unlisted advisory IDs the summary recorded", () => {
+    // An unlisted ID dropped from the recorded list is an inconsistent summary.
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push("GHSA-2222-3333-4444");
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3,
+      message: expect.stringContaining("does not match baseline") });
+    expect(registryAuditDriftDisposition(summary).exitCode).toBe(3);
+  });
 });
 
 const CANDIDATE_VERSION = "0.1.0-test";
@@ -238,8 +346,13 @@ describe("npm audit graph severity", () => {
         edge("leaf", "high", "https://github.com/advisories/GHSA-2pr8-phx7-x9h3")] } };
     const result = fixture.run(reversed ? Object.fromEntries(Object.entries(graph).reverse()) : graph);
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(readFileSync(fixture.output, "utf8"))).toMatchObject({ directAdvisories: [], unlistedAdvisories: [],
+    const policy = JSON.parse(readFileSync(fixture.output, "utf8"));
+    expect(policy).toMatchObject({ directAdvisories: [], unlistedAdvisories: [],
       observedAdvisories: [id, "GHSA-2pr8-phx7-x9h3"], observed: { moderate: 1, high: 2, total: 3 } });
+    const summary = baselineOnlySummary();
+    Object.assign(summary.audit, policy.observed, { observedAdvisories: policy.observedAdvisories,
+      unlistedAdvisories: policy.unlistedAdvisories, directAdvisories: policy.directAdvisories });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
   });
 
   it.each([["low", "critical"], ["critical", "low"]])("uses the maximum own severity in order %j, %j", (first, second) => {
@@ -266,6 +379,18 @@ describe("npm audit graph severity", () => {
     const result = fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("fixture", "low")] } });
     expect(result.status).not.toBe(0);
     expect(existsSync(fixture.output)).toBe(false);
+  });
+
+  it("blocks a recorded direct high advisory, and classifies the stopped audit stage as policy", () => {
+    const fixture = auditFixture();
+    expect(fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("fixture", "high")] } }).status).toBe(0);
+    const policy = JSON.parse(readFileSync(fixture.output, "utf8"));
+    const summary = baselineOnlySummary();
+    Object.assign(summary.audit, policy.observed, { observedAdvisories: policy.observedAdvisories,
+      unlistedAdvisories: policy.unlistedAdvisories, directAdvisories: policy.directAdvisories });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+    expect(registryContainerDisposition({ ...summary, complete: false, failedStage: "audit-policy", failureClass: "policy" }))
+      .toMatchObject({ exitCode: 1, failureClass: "policy" });
   });
 });
 
@@ -815,6 +940,49 @@ describe("advisory-ID baseline", () => {
       .toMatchObject({ unlistedAdvisories: ["GHSA-23hp-3jrh-7fpw"], assessedAdvisories: [] });
   });
 });
+
+// Once #191's findings are gone, SECURITY.md's audit policy still allows
+// transitive advisories assessed for reachability; the gate must be able to
+// pass with them, and never with a direct high/critical one.
+describe("assessed advisories", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const assessedId = "GHSA-2222-3333-4444";
+  const assessed = { ...baseline, assessedAdvisories: [{ id: assessedId, assessment: "SECURITY.md#audit-policy" }] };
+  const cleared = (direct: string[] | null = []) => {
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } = baselineOnlySummary();
+    summary.securityGate.passed = true;
+    summary.audit.observedAdvisories = [assessedId];
+    if (direct !== null) summary.audit.directAdvisories = direct;
+    else Reflect.deleteProperty(summary.audit, "directAdvisories");
+    return summary;
+  };
+
+  it("passes the gate (exit 0) when every observed advisory is an assessed transitive one", () => {
+    expect(registryContainerDisposition(cleared(), assessed)).toMatchObject({ exitCode: 0, failureClass: null,
+      checks: { audit: "passed" }, assessedAdvisories: [assessedId] });
+    expect(registryAuditDriftDisposition(cleared(), assessed)).toMatchObject({ exitCode: 0 });
+    // Not yet assessed: the same tree is an unlisted ID.
+    expect(registryContainerDisposition({ ...cleared(), audit: { ...cleared().audit, unlistedAdvisories: [assessedId] } }))
+      .toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
+  it("keeps #191 baseline IDs beside assessed ones baseline-only", () => {
+    const summary = cleared();
+    summary.audit.observedAdvisories = ["GHSA-23hp-3jrh-7fpw", assessedId];
+    summary.securityGate.passed = false;
+    expect(registryContainerDisposition(summary, assessed)).toMatchObject({ exitCode: 4, checks: { audit: "baseline" } });
+  });
+
+  it("never accepts an assessed advisory that is high or critical on a direct dependency", () => {
+    const result = registryContainerDisposition(cleared([assessedId]), assessed, { unlistedAdvisories: "warn" });
+    expect(result).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+    expect(result.message).toContain(`which an assessment cannot accept: ${assessedId}`);
+    // A summary that does not record directness cannot show it is transitive.
+    expect(registryContainerDisposition(cleared(null), assessed)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
+  });
+
+});
+
 // Selected original lock entries used by the offline engine scan.
 const b7b180f = join(repoRoot, "test/scripts/fixtures/registry-container-b7b180f");
 describe("runtime-image package inventory", () => {
@@ -992,6 +1160,43 @@ it("pins the recorded pqcrypto image version while accepting its recorded metada
   } });
   expect(classifyPolicyChecks(summary("1.0.01"), baseline).productionImage).toBe("baseline");
   expect(classifyPolicyChecks(summary("9.0.0"), baseline).productionImage).toBe("blocked");
+});
+
+describe("baseline Git and image archive identities", () => {
+  const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  it.each([
+    ["Git", "gitDependencies", "registryDependency"],
+    ["typescript", "productionImageDependencies", "productionImage"],
+    ["pqcrypto", "productionImageDependencies", "productionImage"],
+  ] as const)("pins the recorded version and integrity of %s findings at the same location", (name, group, check) => {
+    const known = name === "Git" ? baseline.policyFindings[group][0]
+      : baseline.policyFindings[group].find((entry: { name: string }) => entry.name === name);
+    const classify = (finding: Record<string, unknown>) => {
+      const summary = baselineOnlySummary();
+      summary.securityGate.findings[group] = [finding];
+      return { check: classifyPolicyChecks(summary, baseline)[check], exit: registryContainerDisposition(summary, baseline).exitCode };
+    };
+    expect(classify(known)).toEqual({ check: "baseline", exit: 4 });
+    for (const change of [{ version: "9.9.9" }, { integrity: sri(Buffer.from("different archive")) },
+      { version: undefined }, { integrity: undefined }]) {
+      expect(classify({ ...known, ...change }), JSON.stringify(change)).toEqual({ check: "blocked", exit: 3 });
+    }
+  });
+
+  it("pins the recorded version and integrity of engine findings at the same location and range", () => {
+    const known = baseline.policyFindings.engineViolations[0];
+    const classify = (violation: Record<string, unknown>) => {
+      const summary = baselineOnlySummary();
+      summary.securityGate.findings.engine = { exitCode: 1, code: "EBADENGINE", scanComplete: true,
+        violations: [violation], reportedPackage: violation.package };
+      return { check: classifyPolicyChecks(summary, baseline).engineStrict, exit: registryContainerDisposition(summary, baseline).exitCode };
+    };
+    expect(classify(known)).toEqual({ check: "baseline", exit: 4 });
+    for (const change of [{ package: known.package.replace(/@[^@]*$/, "@99.0.0") },
+      { integrity: sri(Buffer.from("different archive")) }, { integrity: undefined }]) {
+      expect(classify({ ...known, ...change }), JSON.stringify(change)).toEqual({ check: "blocked", exit: 3 });
+    }
+  });
 });
 
 // A candidate is declared and installed under its own name only, so an alias
