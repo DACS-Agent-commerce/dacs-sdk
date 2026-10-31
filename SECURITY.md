@@ -196,7 +196,7 @@ pure-surface install are:
    then has zero chain dependencies; adapter consumers install the substrate package
    explicitly.
 2. **Optional peer** — declare demosdk as
-   `peerDependencies: { "@kynesyslabs/demosdk": "^4" }` **plus**
+   `peerDependencies: { "@kynesyslabs/demosdk": "^4.0.16" }` **plus**
    `peerDependenciesMeta: { "@kynesyslabs/demosdk": { "optional": true } }` (npm does
    NOT auto-install an optional peer), guard the substrate subpath's runtime
    `import()` to throw a clear "install @kynesyslabs/demosdk" error when absent, and

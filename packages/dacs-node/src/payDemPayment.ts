@@ -151,7 +151,7 @@ export interface DacsPayDemPaymentNoticeV1 {
 export type DacsPayDemBuyerChainReconciliationV1 = Readonly<
   | {
       status: "completed";
-      settlement: Readonly<PayDemReconciledSettlement>;
+      settlement: Readonly<PayDemReconciledSettlement & { execution: "executed" }>;
     }
   | { status: "absent"; absenceProofHash: string }
   | { status: "indeterminate"; reasonCode: string; retryAt?: number }
@@ -169,6 +169,16 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
     retained: Readonly<DacsLiveOrderInputV1<FixedPricePayDemOrderInput>>;
   }>): Promise<Readonly<DacsPayDemBuyerPaymentAuthorityV1>> |
     Readonly<DacsPayDemBuyerPaymentAuthorityV1>;
+  /**
+   * Return `completed` only when the node's transaction record for the
+   * prepared hash shows the transfer executed. A status-index `included`
+   * alone is not execution: a node reports it for a transaction whose record
+   * `failed` (#338). Every completed settlement must attest
+   * `execution: "executed"` after checking a bound confirmed record. The track
+   * checks and removes that attestation before storing the settlement or
+   * publishing its notice. Missing or other execution evidence stays
+   * indeterminate without changing wallet accounting or publishing a notice.
+   */
   reconcile(input: Readonly<{
     payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
     prepared?: Readonly<PayDemPreparedTransfer>;
@@ -190,7 +200,7 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
 export interface DacsPayDemWalletSpendRecoveryAuthenticatorOptionsV1 {
   /** Integrity-checked generated buyer effect/checkpoint store. */
   database: DacsNodeSqliteDatabase;
-  /** Finalized Demos transfer observer for the exact prepared transaction hash. */
+  /** Finalized Demos transfer observer, including the exact prepared hash and nonce. */
   observeDemosTransfer(txHash: string): Promise<DemosTransferObservation>;
 }
 
@@ -465,7 +475,10 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
         return false;
       }
       const chain = await observeDemosTransfer(prepared.txHash);
-      if (chain.status !== "included" || chain.txHash !== prepared.txHash ||
+      if (chain.status !== "included" || chain.execution !== "executed" ||
+          typeof chain.nonce !== "number" || !Number.isSafeInteger(chain.nonce) ||
+          chain.nonce < 0 || Object.is(chain.nonce, -0) || chain.nonce !== prepared.nonce ||
+          chain.txHash !== prepared.txHash ||
           chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
           chain.amountOs !== payment.amountOs) {
         return false;
@@ -717,12 +730,18 @@ function captureChainReconciliation(
     if (!plainObject(raw) || raw.amountOs !== payment.amountOs) {
       throw new DacsPayDemBuyerPaymentError("pay-dem-reconciliation-invalid");
     }
+    if (raw.execution !== undefined && raw.execution !== "executed") {
+      throw new DacsPayDemBuyerPaymentError("pay-dem-reconciliation-invalid");
+    }
     const settlement = { ...raw };
     delete settlement.amountOs;
-    return Object.freeze({
-      status: "completed",
-      result: result(captureSettlement(settlement, payment)),
-    });
+    delete settlement.execution;
+    const captured = captureSettlement(settlement, payment);
+    if (raw.execution === undefined) {
+      return Object.freeze({ status: "indeterminate",
+        reasonCode: "pay-dem-chain-execution-unconfirmed" });
+    }
+    return Object.freeze({ status: "completed", result: result(captured) });
   }
   if (value.status === "absent" && exactKeys(value, ["status", "absenceProofHash"]) &&
       typeof value.absenceProofHash === "string" && HASH_RE.test(value.absenceProofHash)) {
@@ -889,7 +908,11 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             );
           }
           await beginEffect;
-          settlement = captureSettlement(raw, payment);
+          if (!plainObject(raw) || raw.execution !== "executed") {
+            throw new DacsPayDemBuyerPaymentError("pay-dem-chain-execution-unconfirmed");
+          }
+          const { execution: _execution, ...settlementData } = raw;
+          settlement = captureSettlement(settlementData, payment);
           await claim!.permit.settle(walletSettlement(payment, settlement));
           await options.publishNotice({
             notice: createDacsPayDemPaymentNoticeV1(payment, settlement),

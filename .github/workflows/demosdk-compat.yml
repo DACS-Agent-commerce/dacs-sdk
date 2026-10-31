@@ -1,0 +1,111 @@
+name: demosdk compatibility
+
+# ci.yml already typechecks and tests demosdk 4.0.18 on ordinary PRs.
+# This daily workflow detects new in-range releases before another PR arrives
+# and adds build/declaration emit at 4.0.18 and the newest in-range release.
+# Its PR runs cover changes to this workflow or dependency configuration only;
+# source changes already receive the ci.yml compatibility checks.
+# When bumping ci.yml's pinned demosdk, update the matrix entry here too.
+
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/demosdk-compat.yml"
+      - "package.json"
+      - "package-lock.json"
+
+permissions:
+  contents: read
+
+jobs:
+  demosdk-compat:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        demosdk: ["locked", "4.0.18", "newest-in-range"]
+    name: typecheck + build (demosdk ${{ matrix.demosdk }})
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.21.1"
+
+      - name: Record compatibility environment
+        run: |
+          {
+            echo "Runner: $RUNNER_OS $RUNNER_ARCH; image $ImageOS $ImageVersion"
+            cat /etc/os-release
+            uname -r
+            node --version
+            npm --version
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install locked dependencies
+        # Typecheck and build need no install scripts.
+        run: npm ci --no-audit --ignore-scripts
+
+      - name: Install demosdk ${{ matrix.demosdk }} without saving
+        if: matrix.demosdk != 'locked'
+        env:
+          DEMOSDK: ${{ matrix.demosdk }}
+        run: |
+          if [ "$DEMOSDK" = "newest-in-range" ]; then
+            # The peer range is the published contract; dev must match it.
+            # version.test.ts separately pins the lockfile to the range floor.
+            spec="$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
+            dev="$(node -p "require('./package.json').devDependencies['@kynesyslabs/demosdk']")"
+            if [ "$spec" != "$dev" ]; then
+              echo "demosdk peer range $spec differs from dev range $dev" >&2
+              exit 1
+            fi
+          else
+            spec="$DEMOSDK"
+          fi
+          npm install --no-save --no-audit --ignore-scripts "@kynesyslabs/demosdk@${spec}"
+          git diff --exit-code -- package.json package-lock.json
+
+      - name: Check the resolved demosdk version
+        env:
+          DEMOSDK: ${{ matrix.demosdk }}
+        run: |
+          resolved="$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")"
+          echo "demosdk resolved: $resolved"
+          echo "demosdk ${DEMOSDK}: resolved ${resolved}" >> "$GITHUB_STEP_SUMMARY"
+          case "$DEMOSDK" in
+            locked)
+              expected="$(node -p "require('./package-lock.json').packages['node_modules/@kynesyslabs/demosdk'].version")"
+              ;;
+            newest-in-range)
+              # The newest release the registry lists in the published peer
+              # range, read independently of the install that resolved it.
+              spec="$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
+              expected="$(npm view "@kynesyslabs/demosdk@${spec}" version --json | node -e '
+                const versions = [].concat(JSON.parse(require("fs").readFileSync(0, "utf8")));
+                const parts = (v) => v.split(/[.+-]/, 3).map(Number);
+                versions.sort((a, b) => {
+                  const [x, y] = [parts(a), parts(b)];
+                  return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
+                });
+                console.log(versions.at(-1));
+              ')"
+              ;;
+            *)
+              expected="$DEMOSDK"
+              ;;
+          esac
+          echo "demosdk expected: $expected"
+          test "$resolved" = "$expected"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
