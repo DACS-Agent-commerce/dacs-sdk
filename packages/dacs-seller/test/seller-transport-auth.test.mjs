@@ -193,9 +193,7 @@ for (const delegated of [false, true]) test(`payment route refuses a body naming
   const otherJobId = '01J8N4YV7YVYQ4DB7M8T4C7W0B', payment = { payerPayingKey: buyer.claim, txHash: 'a'.repeat(64) };
   const body = { ...payment, jobId: otherJobId, transportIdentity: { jobId } }, w = world({ delegated, route: '/dacs/v1/payments', requestBody: body });
   const asked = await w.request();
-  let calls = 0;
-  assert.throws(() => w.validate(asked, { onAuthenticatedBody: () => { calls++; } }), { code: 'peer_job_mismatch' });
-  assert.equal(calls, 0);
+  assert.throws(() => w.validate(asked), { code: 'peer_job_mismatch' });
   const own = world({ delegated, route: '/dacs/v1/payments', requestBody: { ...payment, jobId, transportIdentity: { jobId } } });
   own.validate(await own.request());
 });

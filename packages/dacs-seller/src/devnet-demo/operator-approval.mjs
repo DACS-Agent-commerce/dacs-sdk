@@ -682,7 +682,7 @@ export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Dat
     const at=now(),released=[];
     await cutTornContextLine(evidencePath);
     const rows=(await readPolicyLedger(evidencePath)).rows;
-    const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId));
+    const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId||row.contextHold.startsWith(holdId+':')));
     if(!Number.isSafeInteger(at)||at<0||openHolds.some(row=>at<row.recordedAt))throw new RangeError('context release cannot predate its hold');
     if(!openHolds.length&&rows.some(row=>row.contextHold&&row.jobId===jobId))syncContextLedger(evidencePath);
     for(const open of openHolds){
