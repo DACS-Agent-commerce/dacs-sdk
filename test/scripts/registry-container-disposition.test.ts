@@ -11,7 +11,7 @@ import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { RELEASE_VERSION, classifyAcceptanceFailure, failureSummary, classifyPolicyChecks, classifyRegistryAudit, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
+const { RELEASE_VERSION, classifyAcceptanceFailure, classifyPolicyChecks, classifyRegistryAudit, extractPolicyFindings, failureSummary, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines, unlistedPolicyFindings } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const archiveModulePath = "../../scripts/installation-closure.mjs";
