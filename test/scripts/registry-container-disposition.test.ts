@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
+import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
@@ -154,6 +155,115 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
 const TREE = "installed tree is not the locked archives: ";
 // Node and the environment may write warnings to a command's stderr; a passing command must tolerate them.
 const AMBIENT_WARNING = '--import=data:text/javascript,process.emitWarning("ambient")';
+
+describe("npm audit graph severity", () => {
+  const severities = ["info", "low", "moderate", "high", "critical"];
+  const id = "GHSA-23hp-3jrh-7fpw";
+  const edge = (name: string, severity: string, url = `https://github.com/advisories/${id}`) =>
+    ({ name, url, severity, range: "*" });
+  type PackageFinding = { severity: string; isDirect: boolean; via: (string | ReturnType<typeof edge>)[] };
+  // Each package marked isDirect is a root dependency in the audited lock.
+  function auditFixture() {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-audit-severity-"));
+    scratch.push(directory);
+    const input = join(directory, "audit.json"), lock = join(directory, "lock.json"), output = join(directory, "policy.json");
+    const run = (vulnerabilities: Record<string, PackageFinding>) => {
+      writeFileSync(input, JSON.stringify(auditReport(vulnerabilities)));
+      writeFileSync(lock, JSON.stringify(auditLock(vulnerabilities)));
+      return spawnSync(process.execPath, [join(repoRoot, "scripts/registry-container-disposition.mjs"), "--audit-policy", input, lock, output],
+        { cwd: repoRoot, encoding: "utf8" });
+    };
+    return { run, output };
+  }
+
+  it.each(severities.flatMap(severity => severities.filter(via => via !== severity)
+    .flatMap(via => [true, false].map(isDirect => ({ severity, via, isDirect }))))) (
+    "refuses a $severity package with only a $via advisory (direct: $isDirect)", ({ severity, via, isDirect }) => {
+      const fixture = auditFixture();
+      const result = fixture.run({ fixture: { severity, isDirect, via: [edge("fixture", via)] } });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("npm audit package severity disagrees with reachable advisories");
+      expect(existsSync(fixture.output)).toBe(false);
+    });
+
+  it.each([
+    { root: { severity: "high", isDirect: true, via: ["leaf"] },
+      leaf: { severity: "low", isDirect: false, via: [edge("leaf", "low")] } },
+    { root: { severity: "high", isDirect: true, via: ["leaf"] },
+      leaf: { severity: "high", isDirect: false, via: ["root", edge("leaf", "low")] } },
+  ])("refuses contradictory inherited severities %j", graph => {
+    const fixture = auditFixture();
+    const result = fixture.run(graph);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("npm audit package severity disagrees with reachable advisories");
+    expect(existsSync(fixture.output)).toBe(false);
+  });
+
+  it.each(severities.flatMap((severity, index) => severities.slice(index + 1)
+    .flatMap(via => [true, false].map(isDirect => ({ severity, via, isDirect }))))) (
+    "accepts $severity inherited from aggregated $via evidence (direct: $isDirect)", ({ severity, via, isDirect }) => {
+      const fixture = auditFixture();
+      const result = fixture.run({ root: { severity, isDirect, via: ["leaf"] },
+        leaf: { severity: via, isDirect: false, via: [edge("leaf", via)] } });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(readFileSync(fixture.output, "utf8"))).toMatchObject({
+        observedAdvisories: [id], directAdvisories: [] });
+    });
+
+  it.each([
+    { severity: "low", own: "moderate", inherited: "critical", accepted: false },
+    { severity: "critical", own: "low", inherited: "high", accepted: false },
+    { severity: "moderate", own: "low", inherited: "critical", accepted: true },
+    { severity: "high", own: "high", inherited: "critical", accepted: true },
+  ])("bounds mixed evidence by own and reachable advisories: %j", ({ severity, own, inherited, accepted }) => {
+    const fixture = auditFixture();
+    const result = fixture.run({ root: { severity, isDirect: true, via: [edge("root", own), "leaf"] },
+      leaf: { severity: inherited, isDirect: false, via: [edge("leaf", inherited)] } });
+    expect(result.status === 0, result.stderr).toBe(accepted);
+    expect(existsSync(fixture.output)).toBe(accepted);
+    if (accepted) expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories)
+      .toEqual(own === "high" ? [id] : []);
+  });
+
+  it.each([false, true])("admits a collapsed two-copy audit graph in either package order (reversed: %s)", reversed => {
+    const fixture = auditFixture();
+    // npm groups leaf@1 (moderate) and leaf@2 (high) into one name-level record.
+    const graph = { parent: { severity: "moderate", isDirect: true, via: ["leaf"] },
+      other: { severity: "high", isDirect: true, via: ["leaf"] },
+      leaf: { severity: "high", isDirect: false, via: [edge("leaf", "moderate"),
+        edge("leaf", "high", "https://github.com/advisories/GHSA-2pr8-phx7-x9h3")] } };
+    const result = fixture.run(reversed ? Object.fromEntries(Object.entries(graph).reverse()) : graph);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(fixture.output, "utf8"))).toMatchObject({ directAdvisories: [], unlistedAdvisories: [],
+      observedAdvisories: [id, "GHSA-2pr8-phx7-x9h3"], observed: { moderate: 1, high: 2, total: 3 } });
+  });
+
+  it.each([["low", "critical"], ["critical", "low"]])("uses the maximum own severity in order %j, %j", (first, second) => {
+    const fixture = auditFixture();
+    expect(fixture.run({ fixture: { severity: "critical", isDirect: true, via: [edge("fixture", first), edge("fixture", second)] } }).status).toBe(0);
+    expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories).toEqual([id]);
+  });
+
+  it("propagates a higher severity through an already reached inherited cycle", () => {
+    const fixture = auditFixture();
+    expect(fixture.run({
+      low: { severity: "low", isDirect: false, via: [edge("low", "low")] },
+      root: { severity: "critical", isDirect: true, via: ["low", "middle"] },
+      middle: { severity: "critical", isDirect: false, via: ["root", "critical"] },
+      critical: { severity: "critical", isDirect: false, via: [edge("critical", "critical")] },
+    }).status).toBe(0);
+    expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories).toEqual([]);
+  });
+
+  it("refuses direct evidence whose own advisory is below its package severity", () => {
+    const fixture = auditFixture();
+    expect(fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("fixture", "high")] } }).status).toBe(0);
+    expect(JSON.parse(readFileSync(fixture.output, "utf8")).directAdvisories).toEqual([id]);
+    const result = fixture.run({ fixture: { severity: "high", isDirect: true, via: [edge("fixture", "low")] } });
+    expect(result.status).not.toBe(0);
+    expect(existsSync(fixture.output)).toBe(false);
+  });
+});
 
 describe("complete installed package scopes", { timeout: 60_000 }, () => {
   it.each([

@@ -1,0 +1,7 @@
+{
+  "message": "request to http://127.0.0.1:40835/-/npm/v1/security/audits/quick failed, reason: socket hang up",
+  "error": {
+    "summary": "",
+    "detail": ""
+  }
+}
