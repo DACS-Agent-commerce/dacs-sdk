@@ -139,6 +139,9 @@ describe("registry/container acceptance disposition", () => {
 });
 
 const CANDIDATE_VERSION = "0.1.0-test";
+// A summary the producer composed for CANDIDATE_VERSION, judged as that release.
+const candidateDisposition = (summary: unknown, baseline?: unknown, options: Record<string, unknown> = {}) =>
+  registryContainerDisposition(summary, baseline, { packageVersion: CANDIDATE_VERSION, ...options });
 const CANDIDATE_REGISTRY = "http://host.docker.internal:4873";
 const CANDIDATES = ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"];
 const DUAL_RAIL_DEPENDENCIES = [...CANDIDATES, "@kynesyslabs/demosdk", "@x402/core", "@x402/evm", "@x402/fetch", "better-sqlite3", "viem"];
@@ -267,6 +270,42 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
 const TREE = "installed tree is not the locked archives: ";
 // Node and the environment may write warnings to a command's stderr; a passing command must tolerate them.
 const AMBIENT_WARNING = '--import=data:text/javascript,process.emitWarning("ambient")';
+
+// Executes the script's own summary program over a stage holding the evidence
+// a complete run collects; `overrides` replaces individual evidence files.
+function writeSummary(overrides: Record<string, string> = {}) {
+  const stage = mkdtempSync(join(tmpdir(), "dacs-registry-summary-stage-"));
+  scratch.push(stage);
+  const files: Record<string, string> = {
+    "docker-image.json": JSON.stringify([{ Id: "sha256:image", Size: 1, Config: { User: "10001:10001" } }]),
+    "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: baselineOnlySummary().audit } }),
+    "dependency-policy.json": JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: true,
+      violations: [] }),
+    "audit-policy.json": JSON.stringify({ schema: "dacs-registry-audit-policy/v1",
+      observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [], directAdvisories: [] }),
+    "runtime-image-policy.json": JSON.stringify({ schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
+      typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true }),
+    "policy-findings.json": JSON.stringify(baselineOnlySummary().securityGate.findings),
+    "release-provenance.json": JSON.stringify({ version: CANDIDATE_VERSION }),
+    "engine-strict.exit-code": "0\n",
+    "npm-audit.exit-code": "1\n",
+    "consumer-lock-sbom.exit-code": "0\n",
+    "consumer-physical-sbom.exit-code": "0\n",
+    "generated-tests.exit-code": "0\n",
+    "doctor.exit-code": "5\n",
+    "doctor.json": readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"),
+    ...overrides,
+  };
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(stage, name), body);
+  const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
+    .split('node - "$artifact_stage" "$version" "$runtime_image"')[1]!.split("<<'NODE'\n")[1]!
+    .split("\nNODE")[0]!;
+  const result = spawnSync(process.execPath, [
+    "-", stage, CANDIDATE_VERSION, "dacs-one-click-acceptance:test", "live-demos", "seller", "both",
+  ], { input: script, encoding: "utf8" });
+  expect(result.status).toBe(0);
+  return JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"));
+}
 
 describe("npm audit graph severity", () => {
   const severities = ["info", "low", "moderate", "high", "critical"];
@@ -790,6 +829,77 @@ describe("registry/container evidence", () => {
       expect(result.stderr).toContain(`${TREE}changed: ${location}/package.json`);
     });
 
+  it("composes only evidence of its producer's schema for the release version", () => {
+    const evidence: Array<[string, Record<string, unknown>]> = [
+      ["dependency-policy.json", { schema: "dacs-registry-dependency-policy/v1", passed: true, violations: [] }],
+      ["audit-policy.json", { schema: "dacs-registry-audit-policy/v1",
+        observedAdvisories: baselineOnlySummary().audit.observedAdvisories, unlistedAdvisories: [] }],
+      ["runtime-image-policy.json", { schema: "dacs-runtime-image-policy/v1", functionalPassed: true,
+        typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: true }],
+      ["policy-findings.json", { schema: "dacs-registry-policy-findings/v1", gitDependencies: [],
+        productionImageInventory: completeInventory }],
+    ];
+    const builder = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")
+      .split('node - "$artifact_stage" "$version" "$runtime_image"')[1]!.split("<<'NODE'\n")[1]!
+      .split("\nNODE")[0]!;
+    for (const [name, body] of evidence) {
+      for (const schema of [undefined, "wrong/v999"]) {
+        expect(() => writeSummary({ [name]: JSON.stringify({ ...body, schema }) }), `${name} ${String(schema)}`)
+          .toThrow();
+      }
+      expect(builder).toContain(`["${name}", `);
+    }
+    expect(() => writeSummary({ "release-provenance.json": JSON.stringify({ version: "999.999.999" }) })).toThrow();
+
+    // The disposition re-checks the schemas the summary embeds, and the
+    // release version the summary was composed for.
+    const passing = writeSummary();
+    expect(passing.packageVersion).toBe(CANDIDATE_VERSION);
+    expect(candidateDisposition(passing).exitCode).toBe(4);
+    expect(registryContainerDisposition(passing)).toMatchObject({ exitCode: 1, failureClass: "functional" });
+    expect(candidateDisposition({ ...passing, packageVersion: "999.999.999" }).exitCode).toBe(1);
+    const embedded = (change: (summary: typeof passing) => void) => {
+      const summary = structuredClone(passing);
+      change(summary);
+      return candidateDisposition(summary);
+    };
+    for (const schema of [undefined, "wrong/v999"]) {
+      expect(embedded((summary) => { summary.docker.policy.schema = schema; }))
+        .toMatchObject({ exitCode: 1, failureClass: "functional" });
+      expect(embedded((summary) => { summary.securityGate.findings.schema = schema; }))
+        .toMatchObject({ exitCode: 1, failureClass: "functional" });
+    }
+  });
+
+  it("derives the summary fields from the checks that ran", () => {
+    const passing = writeSummary();
+    expect(passing).toMatchObject({
+      generatedMode: "live-demos", generatedRole: "seller", generatedRails: ["x402", "pay-dem"],
+      registryDependencyOnly: true, generatedTestsPassed: true, functionalPassed: true,
+      doctor: { observedExitCode: 5, disposition: "blocked-without-credentials" },
+    });
+    expect(candidateDisposition(passing).exitCode).toBe(4);
+
+    // The policy findings carry the violation as the producer extracts it from that report.
+    const fileDependency = { location: "package.json", value: "file:../dacs" };
+    const violation = writeSummary({
+      "dependency-policy.json": JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: false,
+        violations: [fileDependency] }),
+      "policy-findings.json": JSON.stringify({ ...baselineOnlySummary().securityGate.findings,
+        gitDependencies: [{ ...fileDependency, field: null, version: null, integrity: null }] }),
+    });
+    expect(violation.registryDependencyOnly).toBe(false);
+    expect(candidateDisposition(violation).exitCode).toBe(3);
+
+    const failedTests = writeSummary({ "generated-tests.exit-code": "1\n" });
+    expect(failedTests).toMatchObject({ generatedTestsPassed: false, functionalPassed: false });
+    expect(candidateDisposition(failedTests).exitCode).toBe(1);
+
+    const doctor = writeSummary({ "doctor.exit-code": "0\n" });
+    expect(doctor).toMatchObject({ functionalPassed: false, doctor: { disposition: "unexpected" } });
+    expect(candidateDisposition(doctor).exitCode).toBe(1);
+  });
+
   it("reports registry-source violations and refuses an unreplayable override contract", () => {
     const fixture = dependencyPolicyHarness();
     fixture.lockPackage("node_modules/x", { "package.json": packageJson("x", "1.0.0") }, { resolved: "https://example.com/x-1.0.0.tgz" });
@@ -981,6 +1091,40 @@ describe("assessed advisories", () => {
     expect(registryContainerDisposition(cleared(null), assessed)).toMatchObject({ exitCode: 3, checks: { audit: "blocked" } });
   });
 
+  it("records directness from the audited lock and lets the summary pass the gate", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-audit-policy-"));
+    scratch.push(directory);
+    const via = (name: string, id: string, severity: string) => ({ source: 1, name, dependency: name, title: "t",
+      url: `https://github.com/advisories/${id}`, severity, cwe: [], cvss: {}, range: "<2" });
+    const report = { auditReportVersion: 2, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 1, high: 2, critical: 0, total: 3 } },
+      vulnerabilities: {
+        direct: { name: "direct", severity: "high", isDirect: true, via: [via("direct", "GHSA-3333-4444-5555", "high"), "transitive"] },
+        moderate: { name: "moderate", severity: "moderate", isDirect: true, via: [via("moderate", "GHSA-4444-5555-6666", "moderate")] },
+        transitive: { name: "transitive", severity: "high", isDirect: false, via: [via("transitive", "GHSA-23hp-3jrh-7fpw", "high")] },
+      } };
+    writeFileSync(join(directory, "npm-audit.json"), JSON.stringify(report));
+    // The root declares direct@1.0.0 and moderate@1.0.0, not transitive.
+    writeFileSync(join(directory, "package-lock.json"), JSON.stringify(auditLock(report.vulnerabilities)));
+    const policyPath = join(directory, "audit-policy.json");
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
+      join(directory, "npm-audit.json"), join(directory, "package-lock.json"), policyPath], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(policyPath, "utf8"))).toMatchObject({
+      observedAdvisories: ["GHSA-23hp-3jrh-7fpw", "GHSA-3333-4444-5555", "GHSA-4444-5555-6666"],
+      unlistedAdvisories: ["GHSA-3333-4444-5555", "GHSA-4444-5555-6666"], assessedAdvisories: [],
+      directAdvisories: ["GHSA-3333-4444-5555"], passed: false });
+
+    const policy = { schema: "dacs-registry-audit-policy/v1", observedAdvisories: [assessedId],
+      unlistedAdvisories: [], assessedAdvisories: [assessedId], directAdvisories: [], passed: true };
+    const summary = writeSummary({ "audit-policy.json": JSON.stringify(policy), "npm-audit.exit-code": "1\n" });
+    expect(summary.securityGate.passed).toBe(true);
+    expect(summary.audit).toMatchObject({ assessedAdvisories: [assessedId], directAdvisories: [] });
+    expect(candidateDisposition(summary, assessed)).toMatchObject({ exitCode: 0 });
+    expect(writeSummary({ "audit-policy.json": JSON.stringify({ ...policy, passed: false }), "npm-audit.exit-code": "1\n" })
+      .securityGate.passed).toBe(false);
+    expect(writeSummary({ "audit-policy.json": JSON.stringify({ ...policy, observedAdvisories: [], assessedAdvisories: [] }),
+      "npm-audit.exit-code": "1\n" }).securityGate.passed).toBe(false);
+  });
 });
 
 // Selected original lock entries used by the offline engine scan.
