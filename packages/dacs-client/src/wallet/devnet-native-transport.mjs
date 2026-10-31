@@ -84,6 +84,15 @@ export const transferRefusal = (error) => Object.hasOwn(TRANSFER_REFUSALS,error?
 const clone = (v) => structuredClone(v);
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const envelope = (response, result = 200) => ({ result, response, require_reply: false, extra: null });
+// A node's reply without any top-level `writeProof`. Only this transport may add
+// one, after it has read the inclusion itself; a reply of any other shape is
+// returned unchanged.
+const withoutNodeWriteProof = (answer) => {
+  if (answer === null || typeof answer !== 'object' || Array.isArray(answer) || !Object.hasOwn(answer, 'writeProof')) return answer;
+  const withoutProof = { ...answer };
+  delete withoutProof.writeProof;
+  return withoutProof;
+};
 
 export const isDevnetNativeTransport = (v) => Boolean(v && capabilities.has(v));
 export const isDevnetAgreementTransport = (v) => Boolean(v && (agreementCapabilities.has(v) || settlementCapabilities.has(v) || deliveryCapabilities.has(v) || demoCapabilities.has(v)));
@@ -169,6 +178,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     return fetchBoundedJson(pinned.endpoint, { method:'POST', body, headers, fetchImpl,
       timeoutMs, maxBytes:4*1024*1024, expectedOrigin:new URL(pinned.endpoint).origin });
   };
+  // The node's reply as `rpc` hands it to a wallet: never with a node-supplied `writeProof`.
+  const rawWithoutWriteProof = async (body, headers) => withoutNodeWriteProof(await raw(body, headers));
   // The pinned observer reads transaction and block facts concurrently.
   // Serialize their actual connection fences; this creates no write permit.
   const observe = async (path,body) => journal.withWalletLock('devnet/source-read/'+declaration?.bindingId,()=>fenced(async()=>{
@@ -793,7 +804,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     },
     async rpc(body, headers) {
       const call=body?.params?.length === 1 ? body.params[0] : null;
-      if(body?.method === 'nodeCall' && ['getNetworkInfo','getNetworkParameters','getAddressNonce'].includes(call?.message)) return raw(body,headers);
+      if(body?.method === 'nodeCall' && ['getNetworkInfo','getNetworkParameters','getAddressNonce'].includes(call?.message)) return rawWithoutWriteProof(body,headers);
       if(body?.method !== 'execute' || !['confirmTx','broadcastTx'].includes(call?.extra)) fail('native_only','this transport exposes only native sends and their preparation reads');
       const tx=signedTransaction(body,headers), { l, release }=await claimLease(tx.content.from);
       try {
@@ -816,7 +827,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         });
         step(tx,'sign','complete',l.signStarted);
         const started=now();
-        const answer=await raw(body,headers);
+        const answer=await rawWithoutWriteProof(body,headers);
         step(tx,'validate','complete',started);
         if(answer?.result === 200 && answer.response?.data?.valid === true) {
           if(JSON.stringify(answer.response.data.transaction) !== JSON.stringify(tx)) fail('signed_bytes_changed','the new native transport requires byte-identical signed confirmation');
@@ -843,7 +854,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           await retain(intent(tx.hash),issued);
           const started=now();
           let answer;
-          try { answer=await raw(body,headers); } // one call, never retry on unknown
+          try { answer=await rawWithoutWriteProof(body,headers); } // one call, never retry on unknown; the inclusion poll below is the only source of a writeProof
           catch(error){step(tx,'broadcast','unknown',started);throw error;}
           step(tx,'broadcast','complete',started);
           const answered={ ...issued,stage:answer?.result === 200 ? 'broadcast-accepted' : 'broadcast-answered' };

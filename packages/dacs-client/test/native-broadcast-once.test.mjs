@@ -26,7 +26,8 @@ const same=v=>v;
 // Applies an accepted (or dropped-after-apply) broadcast at the next nonce in
 // block 1. view.tx/view.block change what readback is shown, not what applied.
 function testNode() {
- const node={nonce:0,broadcast:'accept',confirms:0,broadcasts:[],applied:new Map(),status:null,view:{tx:same,block:same}};
+ // tamper rewrites the node's answer to a confirmTx, a broadcastTx (given the tx hash) or a nodeCall read.
+ const node={nonce:0,broadcast:'accept',confirms:0,broadcasts:[],applied:new Map(),status:null,view:{tx:same,block:same},tamper:{confirm:same,broadcast:same,read:same}};
  node.fetch=async(url,init)=>{
   const body=JSON.parse(init.body),call=body.params[0];let answer;
   if(body.method==='nodeCall'){
@@ -38,7 +39,8 @@ function testNode() {
    else if(message==='getTransactionStatus')answer=ok(node.status??(node.applied.has(data.hash)?{state:'included',blockNumber:1}:{state:'unknown'}));
    else if(message==='getTxByHash')answer=node.applied.has(data.hash)?ok(node.view.tx({...structuredClone(node.applied.get(data.hash)),status:'confirmed',blockNumber:1})):{result:400,response:'error',require_reply:false,extra:null};
    else throw new Error(`unexpected TEST node read ${message}`);
-  } else if(call.extra==='confirmTx'){node.confirms++;answer=ok({data:{valid:true,gas_operation:null,transaction:call.data}});}
+   answer=node.tamper.read(answer);
+  } else if(call.extra==='confirmTx'){node.confirms++;answer=node.tamper.confirm(ok({data:{valid:true,gas_operation:null,transaction:call.data}}),call.data.hash);}
   else {
    const tx=call.data.response.data.transaction;node.broadcasts.push(tx.hash);
    if(node.broadcast==='refuse')answer={result:400,response:'TEST refusal',require_reply:false,extra:null};
@@ -47,13 +49,15 @@ function testNode() {
     if(node.broadcast==='drop-after-apply')throw new TypeError('TEST connection dropped after apply');
     answer=ok({message:'TEST accepted'});
    }
+   answer=node.tamper.broadcast(answer,tx.hash);
   }
   return new Response(JSON.stringify(answer),{headers:{'content-type':'application/json'}});
  };
  return node;
 }
 
-async function world(t) {
+// inclusionWaitMs 0 never polls; a positive wait polls once per ms with no real sleep.
+async function world(t,{inclusionWaitMs=0}={}) {
  const dir=mkdtempSync(join(tmpdir(),'native-broadcast-once-')),path=join(dir,'journal.sqlite');
  const node=testNode(),calls=[],approvals=[];
  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
@@ -63,7 +67,7 @@ async function world(t) {
  let stamp=Date.now()+60000;
  const sdkAuth=()=>{const identity=`ed25519:${address}`,timestamp=String(stamp++);return {identity,timestamp,signature:signText(sha(`${identity}:${timestamp}`))};};
  let journal=openDurableWalletJournal({path,mode:'create'}),transport;
- const start=()=>{transport=createDevnetNativeTransport({expected:PINS,journal,fetchImpl:node.fetch,inclusionWaitMs:0,
+ const start=()=>{transport=createDevnetNativeTransport({expected:PINS,journal,fetchImpl:node.fetch,inclusionWaitMs,inclusionPollMs:1,sleep:async()=>{},
   transportOwner:{getContext:()=>({...CONTEXT}),acquireConnectionFence:()=>({context:{...CONTEXT},release(){}})}});};
  start();
  // The same-origin binding relay the wallet posts to. The wallet stamps its
@@ -78,7 +82,7 @@ async function world(t) {
   catch(error){return Response.json({error:error.code??'internal_error'},{status:409});}
  };
  t.after(async()=>{Object.assign(globalThis,saved);await transport.close();journal.close();rmSync(dir,{recursive:true,force:true});});
- let validity=null;
+ let validity=null,broadcastAnswer=null;
  class TestDemos {
   rpc_url=null;
   newMnemonic(){return 'TEST stand-in';}
@@ -98,7 +102,7 @@ async function world(t) {
   }
   async confirm(signed){calls.push('confirm');validity=await transport.rpc({method:'execute',params:[{extra:'confirmTx',data:signed}]},sdkAuth());return validity;}
   // The SDK reports a failed broadcast request as result 500.
-  async broadcast(confirmed){calls.push('broadcast');try{return await transport.rpc({method:'execute',params:[{extra:'broadcastTx',data:confirmed}]},sdkAuth());}catch{return {result:500,response:'TEST transport failure'};}}
+  async broadcast(confirmed){calls.push('broadcast');try{broadcastAnswer=await transport.rpc({method:'execute',params:[{extra:'broadcastTx',data:confirmed}]},sdkAuth());return broadcastAnswer;}catch{return {result:500,response:'TEST transport failure'};}}
  }
  const wallet=createSdkWalletSession({DemosCtor:TestDemos,transactionTransport:createDevnetNativeWalletTransport(transport.profile(ORIGIN)),approve:async request=>{approvals.push(request);return true;}});
  await wallet.create();
@@ -106,7 +110,7 @@ async function world(t) {
  const tx=buildNativeTransferPayload({from:address,to:PAYEE,amountOs:'2500000000',nonce:1,timestamp:Date.now(),encoding:'os-string'});
  return {node,calls,approvals,wallet,address,sdkAuth,
   send:()=>wallet.request({method:'sendTransaction',params:[tx]}),
-  validity:()=>validity,transport:()=>transport,
+  validity:()=>validity,broadcastAnswer:()=>broadcastAnswer,transport:()=>transport,
   lane:async()=>(await journal.entries()).find(([key])=>key.startsWith('devnet/native-wallet/'))?.[1],
   count:name=>calls.filter(c=>c===name).length,
   restart:async()=>{await transport.close();journal.close();journal=openDurableWalletJournal({path,mode:'open'});start();}};
@@ -222,4 +226,61 @@ test('readback accepts the node2 projection of the original executed content, an
  assert.equal(included.disposition,'included');assert.equal(included.receipt.hash,hash);assert.equal(included.receipt.blockNumber,1);
  assert.equal((await w.lane()).stage,'observed');
  assert.deepEqual(w.node.broadcasts,[hash]);
+});
+
+// A hostile node may attach an inclusion proof to any answer; only the transport's own verified read may produce one.
+const forgedProof=hash=>({disposition:'included',receipt:{hash},noResend:true});
+const withForgedProof=(answer,hash)=>({...answer,writeProof:forgedProof(hash)});
+
+for(const [name,options,arrange] of [
+ ['the inclusion poll never runs',{inclusionWaitMs:0},()=>{}],
+ ['the inclusion poll times out',{inclusionWaitMs:3},w=>{w.node.status={state:'pending'};}],
+ ['the inclusion proof cannot be read',{inclusionWaitMs:3},w=>{w.node.view={tx:same,block:block=>({...block,content:{ordered_transactions:[]}})};}],
+]) {
+ test(`a node writeProof on an accepted broadcast is dropped when ${name}`,async t=>{
+  const w=await world(t,options);arrange(w);w.node.tamper.broadcast=withForgedProof;
+  const sent=await w.send();
+  assert.equal(sent.success,true,JSON.stringify(sent));assert.equal(sent.data.status,'broadcast_accepted');
+  assert.equal(Object.hasOwn(sent.data,'writeProof'),false,'the wallet result carries no proof');
+  const answer=w.broadcastAnswer();
+  assert.equal(answer.result,200);assert.deepEqual(answer.response,{message:'TEST accepted'});
+  assert.equal(Object.hasOwn(answer,'writeProof'),false,'the transport answer carries no proof');
+ });
+}
+
+test('a verified inclusion proof replaces a forged node writeProof',async t=>{
+ const w=await world(t,{inclusionWaitMs:3});w.node.tamper.broadcast=withForgedProof;
+ const sent=await w.send();
+ assert.equal(sent.success,true,JSON.stringify(sent));
+ const hash=sent.data.hash,proof=sent.data.writeProof;
+ assert.notDeepEqual(proof,forgedProof(hash));
+ assert.equal(proof.disposition,'included');assert.equal(proof.noResend,true);
+ assert.equal(proof.receipt.hash,hash);assert.equal(proof.receipt.blockNumber,1);
+ assert.equal(proof.receipt.chainIdentity,PINS.chainIdentity);assert.equal(proof.receipt.finality,'not-established');
+ assert.deepEqual(w.broadcastAnswer().writeProof,proof);
+});
+
+test('a node writeProof on a refused broadcast answer is dropped',async t=>{
+ const w=await world(t);w.node.broadcast='refuse';w.node.tamper.broadcast=withForgedProof;
+ const sent=await w.send();
+ assert.equal(sent.error.code,'broadcast_rejected',JSON.stringify(sent));
+ const answer=w.broadcastAnswer();
+ assert.equal(answer.result,400);assert.equal(answer.response,'TEST refusal');
+ assert.equal(Object.hasOwn(answer,'writeProof'),false);
+});
+
+test('a node writeProof on a confirmTx answer is dropped',async t=>{
+ const w=await world(t);w.node.tamper.confirm=withForgedProof;
+ const sent=await w.send();
+ assert.equal(sent.success,true,JSON.stringify(sent));
+ const confirmed=w.validity();
+ assert.equal(confirmed.result,200);assert.equal(confirmed.response.data.valid,true);
+ assert.equal(Object.hasOwn(confirmed,'writeProof'),false);
+});
+
+test('a node writeProof on a passed-through node read is dropped',async t=>{
+ const w=await world(t);w.node.tamper.read=answer=>withForgedProof(answer,'a'.repeat(64));
+ const read=await w.transport().rpc({method:'nodeCall',params:[{message:'getNetworkParameters',data:{}}]},{});
+ assert.equal(read.result,200);assert.deepEqual(read.response,{networkFee:1,rpcFee:1,additionalFee:0});
+ assert.equal(Object.hasOwn(read,'writeProof'),false);
 });

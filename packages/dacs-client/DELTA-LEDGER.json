@@ -1204,6 +1204,22 @@
           "after": "3e3d956374b8a297f027ceba8bbb0a929b991ef7"
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 drop node-supplied writeProof from native transport answers",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "54bead46b8880560f26cacda3d10f6024e24596d",
+          "after": "20b321441f7ac6734c0b655a17599dc141de05c8"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+          "before": "8b5be5a52eb1ddbc3ddd415a88845ce331c5c77d",
+          "after": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54"
+        }
+      ]
     }
   ]
 }
