@@ -1220,6 +1220,38 @@
           "after": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54"
         }
       ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 record the negotiate phase after Agreement anchor readback",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent.mjs",
+          "before": "64e31cfc12b77ec4d9c041b8ccc9f0ec5721665b",
+          "after": "384fab8a7491581134087606e38f1fd8be707ad6"
+        },
+        {
+          "path": "packages/dacs-client/test/negotiate-phase-after-readback.test.mjs",
+          "before": null,
+          "after": "8ff951141d1fcefb4c3c02c154576735cb21edf5"
+        }
+      ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 record the negotiate phase before the commitment effect",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-agent.mjs",
+          "before": "384fab8a7491581134087606e38f1fd8be707ad6",
+          "after": "c3df821edd6aee12144e120640149b7e47d98a57"
+        },
+        {
+          "path": "packages/dacs-client/test/negotiate-phase-after-readback.test.mjs",
+          "before": "8ff951141d1fcefb4c3c02c154576735cb21edf5",
+          "after": "9869cc55d5b9235033ffd0382583a5e3948f5f4f"
+        }
+      ]
     }
   ]
 }

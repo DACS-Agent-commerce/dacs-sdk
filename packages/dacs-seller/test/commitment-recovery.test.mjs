@@ -8,13 +8,12 @@ import {readbackFixture}from'./helpers/sr2-readback-fixture.mjs';
 import {seller,buyer,JOB,NOW}from'./helpers/protocol-fixture.mjs';
 import {localAnchor,signAnchorWrite}from'./helpers/local-anchor-fixture.mjs';
 import {contributionVerifier,agreementInput}from'../src/dacs/purchase-protocol.mjs';
-import {buildStorageProgramCreatePayload,deriveStorageAddress}from'../src/dacs/wallet-transactions.mjs';
+import {agreementCreateProjection as projection}from'./helpers/agreement-create-projection.mjs';
 import {createSellerAgent}from'../src/dacs/seller-agent.mjs';
 import {fixtureListing,fixtureIdentityBundle}from'./fixtures/listings.mjs';
 import {createSellerHttpHandler}from'../src/dacs/seller-http.mjs';
 import {provenUnsignedAbsence}from'../src/dacs/native-dem-delivery-consumer.mjs';
 import {exchange}from'./helpers/d5-http-fixture.mjs';
-function projection(agreement){const logicalAddress=core.fixedPriceAgreementLogicalAddress(agreement.jobId),programName=core.logicalToStorageProgramName(logicalAddress),storageAddress=deriveStorageAddress(buyer.address,programName,1,'');const tx=buildStorageProgramCreatePayload({from:buyer.address,storageAddress,programName,logicalAddress,signedListing:agreement,nonce:1,timestamp:NOW});tx.content.from_ed25519_address=buyer.address;Object.assign(tx.content.data[1].metadata,{artifactKind:'Agreement',contentHash:core.contentHash(agreement),envelopeHash:core.sha256Hex(core.canonicalize(agreement))});tx.hash=core.sha256Hex(JSON.stringify(tx.content));tx.signature={type:'ed25519',data:'0x'+buyer.signBytes(Buffer.from(tx.hash)).toString('hex')};return tx;}
 
 const JOB2='01J8N4YV7YVYQ4DB7M8T4C7W0B';
 async function secondEarlyRequest(f,agent){
