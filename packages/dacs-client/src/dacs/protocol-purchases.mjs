@@ -2,7 +2,7 @@ import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
 import { deliveryDeadlineView, DELIVERY_TIME_SOURCE, verifiedDelivery } from './delivery-deadline-watch.mjs';
-import { transaction } from '../seams/purchase-store-not-wired.mjs';
+import { purchaseStore } from '../seams/purchase-store-not-wired.mjs';
 // The plugin's buyer side of one DACS fixed-price pay-dem purchase, driven
 // from a purchase operation's durable state (operation.state.protocol).
 //
@@ -21,7 +21,7 @@ import { transaction } from '../seams/purchase-store-not-wired.mjs';
 // complete simulated profiles have no admission or continuation path.
 import { canonicalize, contentHash, generateCanonicalJobId, bundleAddress, decodeDemosAnchorReceiptProof, demosSignedTransactionProofHash, finalityCommitmentAddress, sha256Hex } from '@kynesyslabs/dacs';
 import { isDevnetAgreementTransport, DEVNET_AGREEMENT_KIND } from '../wallet/devnet-native-transport.mjs';
-import { OperationError } from '../client-errors.mjs';
+import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { verifyDemosSignature, claimForAddress } from '../signatures.mjs';
 import { attachIdentityPresentation, buildUnsignedIdentityBundle, verifyComponent } from './listing.mjs';
 import { createSellerAgentClient, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
@@ -49,7 +49,6 @@ import { SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mj
 import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPaymentConfig } from './native-agreement-payment-consumer.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, usesNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { sourceDemoSellerTransportConfig } from './source-demo-seller-transport.mjs';
-import { operatorBuyerAccessConfig } from '../seams/buyer-access-not-wired.mjs';
 import { verifySellerSessionDelegation } from './seller-transport-auth.mjs';
 import { readDemDeliveryReady } from './dem-delivery-consumer.mjs';
 import { CHAIN_POINTER_ASK_LIMIT, CHAIN_READBACK_OPERATOR_ACTION, chainPointerAskDue, deliveryPointerDiffers, missingChainPointers, replacementAnswerProblem } from './seller-session-lifecycle.mjs';
@@ -256,13 +255,23 @@ export class StaleProtocolCheck extends OperationError {
   }
 }
 
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null }) {
+// D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
+// already-resolved operator capability (null when it has none, so the paths
+// that need one refuse with buyer_access_closed).
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null }) {
+  const { transaction } = purchaseStore(store);
+  if (deliveryDeadlineWatch !== null) throw new TypeError('deliveryDeadlineWatch is not wired; invoke the separate watch.observe method explicitly');
+  if (dacsProtocol?.buyerAccess !== undefined) throw new TypeError('buyerAccess moved to the top-level createProtocolPurchases option');
+  if (buyerAccess !== null && (typeof buyerAccess?.assertWallet !== 'function' || Object.prototype.toString.call(buyerAccess.assertWallet) === '[object AsyncFunction]')) throw new NotWiredError('buyer-access-not-wired');
   const commitOnSignature = commitOnSignatureConfig(dacsProtocol?.commitOnSignature);
-  const buyerAccess = operatorBuyerAccessConfig(dacsProtocol?.buyerAccess);
   const assertBuyerAccess = (wallet, operation = null) => {
     if(!buyerAccess && (dacsProtocol?.nativeSellerCommitment || operation?.terms?.protocol?.sellerCommitment === DEVNET_NATIVE_COMMITMENT_MARKER))
       throw new OperationError('buyer_access_closed','operator buyerAccess capability is missing; nothing was signed or sent',{buyerAccessMissing:true});
-    buyerAccess?.assertWallet(wallet);
+    const checked = buyerAccess?.assertWallet(wallet);
+    if (checked !== undefined) {
+      if (checked && typeof checked.then === 'function') Promise.resolve(checked).catch(() => {});
+      throw new NotWiredError('buyer-access-not-wired');
+    }
   };
   const walletConfig = dacsProtocol?.walletAgreement;
   const sellerRequestTimeoutMs = dacsProtocol?.sellerRequestTimeoutMs ?? AUTHENTICATED_SELLER_TIMEOUT_MS;
@@ -422,7 +431,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       if (!stored || stored.status !== 'settled_verified' || !deliveryIsFinal(stored.state.protocol) || stored.state.protocol.chainReadbackHeld) return stored ?? null;
       const missing = missingChainPointers(stored);
       if (!missing.length) return stored;
-      const held = heldForOperator(missing, reason);
+      const held = { ...heldForOperator(missing, reason), source: 'host-supplied' };
       return ops.transition(stored.id, stored.status, stored.status, { state: { protocol: { ...stored.state.protocol, chainReadbackHeld: held } }, event: 'protocol_chain_readback_held', data: held });
     });
   }
@@ -858,6 +867,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // purchase readback cache on, its Agreement hit re-reads the current program
   // state only, reusing this purchase's authenticated transaction/block proof.
   async function recheckCommitment(operation, { reuseVerified = false } = {}) {
+    assertPurchaseActionsAdmitted();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertAgreementPaymentHeld(operation);
     if (!available) throw unavailable();
@@ -1147,6 +1157,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   return {
     available,
     actionsAdmitted: false,
+    nativePaymentReadbackAvailable: Boolean(nativePayment),
     // Chain readback: the buyer's own chain reader, for the
     // operator's buyer driver; the operator-action hold, for its key sweep.
     ...(chainReadback ? { chainReadback } : {}),
