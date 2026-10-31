@@ -18,7 +18,7 @@ it("supplies every required generated Compose variable with inert run-local inpu
     const setup = source.slice(source.indexOf("# Inert Compose inputs"), source.indexOf("\nenv \\\n"));
     // Run this Node by absolute path; a `node` found through PATH would be the host's.
     const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
-    const render = block.replace(/docker compose[\s\S]*/, `${node} -e 'process.stdout.write(JSON.stringify(process.env))'`);
+    const render = block.replace(/node "\$bounded_support\/bounded-command\.mjs" "\$COMMAND_TIMEOUT_SECONDS" 1 docker compose[\s\S]*/, `${node} -e 'process.stdout.write(JSON.stringify(process.env))'`);
     // A poisoned `node` first on PATH proves no step resolves node through PATH.
     const bin = join(root, "bin");
     mkdirSync(bin);
@@ -68,7 +68,7 @@ const envIndex = args.indexOf("--env-file");
 const envFile = envIndex < 0 ? path.join(path.dirname(file), ".env") : args[envIndex + 1];
 process.stdout.write(fs.readFileSync(envFile, "utf8") || "rendered config\\n");
 `, { mode: 0o700 });
-    const env = { acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: `${bin}:/usr/bin:/bin` };
+    const env = { bounded_support: join(process.cwd(), "scripts"), COMMAND_TIMEOUT_SECONDS: "1800", acceptance_root: root, artifact_stage: root, project: join(root, "project with spaces"), PATH: [bin, dirname(process.execPath), "/usr/bin", "/bin"].join(delimiter) };
     const result = spawnSync("bash", ["--norc", "--noprofile", "-eu", "-c", setup + "\n" + render], { encoding: "utf8", env });
     expect(result.status, result.stderr).toBe(0);
     const artifact = readFileSync(join(root, "compose.rendered.yaml"), "utf8");

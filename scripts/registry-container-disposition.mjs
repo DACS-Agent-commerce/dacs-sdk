@@ -597,6 +597,8 @@ const CAUSE_LINES = {
   npm: /^npm error code (\S+)$/,
   curl: /^curl: \((\d+)\) /,
   docker: /^(?:docker: |Error response from daemon: )/,
+  // Git's own fatal error line, for the vector sync the release-set stage runs.
+  git: /^fatal: /,
   // An uncaught JavaScript error.
   thrown: /^(?:[A-Z][A-Za-z]*)?Error: /,
 };
@@ -695,6 +697,7 @@ const consumerFailure = input => input.read("dependency-policy.json") === undefi
 
 // Every stage that can stop on something other than a functional failure.
 const STAGE_FAILURES = {
+  "release-set": logFailure("release-set.log", ["npm", "git"]),
   "registry-start": logFailure("registry.log", ["docker"]),
   "registry-ready": logFailure("registry.log", ["curl"]),
   "registry-auth": logFailure("registry.log", ["curl"]),

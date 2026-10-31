@@ -1,10 +1,14 @@
-import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
+import { projectTemplates } from "../../packages/create-dacs-agent/src/templates.js";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
 import { auditLock, auditReport } from "./npm-audit-fixtures.js";
@@ -56,7 +60,22 @@ afterEach(() => {
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-
+// Every child runs without rc files and with an explicit PATH whose `node` is
+// this process's own binary, never a host node.
+function stubBin(directory: string, stubs: Record<string, string> = {}) {
+  const bin = join(directory, "bin");
+  mkdirSync(bin, { recursive: true });
+  const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
+  for (const [name, body] of Object.entries({ node: `exec ${node} "$@"`, ...stubs })) {
+    writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(bin, name), 0o700);
+  }
+  return [bin, dirname(process.execPath), process.env.PATH ?? ""].join(delimiter);
+}
+function runBash(args: string[], options: { cwd: string; env: Record<string, string> }) {
+  return spawnSync("bash", ["--norc", "--noprofile", ...args], { cwd: options.cwd, encoding: "utf8",
+    env: { HOME: options.cwd, ...options.env } });
+}
 
 
 describe("registry/container acceptance disposition", () => {
@@ -128,6 +147,26 @@ describe("registry/container acceptance disposition", () => {
     expect(registryContainerDisposition(summary).exitCode).toBe(3);
   });
 
+  it("is the exit status the acceptance script reports for a written summary", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-summary-"));
+    scratch.push(directory);
+    const summaryPath = join(directory, "acceptance-summary.json");
+    writeFileSync(summaryPath, JSON.stringify(baselineOnlySummary()));
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", summaryPath], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    expect(result.status).toBe(4);
+    expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8"))
+      .toContain('node scripts/registry-container-disposition.mjs --record "$output_dir/acceptance-summary.json"');
+    const recorded = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--record", summaryPath], {
+      cwd: repoRoot, encoding: "utf8",
+    });
+    expect(recorded.status).toBe(4);
+    expect(JSON.parse(readFileSync(summaryPath, "utf8"))).toMatchObject({ failureClass: "policy",
+      disposition: { exitCode: 4, failureClass: "policy" } });
+  });
+
   it("cross-checks the unlisted advisory IDs the summary recorded", () => {
     // An unlisted ID dropped from the recorded list is an inconsistent summary.
     const summary = baselineOnlySummary();
@@ -137,6 +176,158 @@ describe("registry/container acceptance disposition", () => {
     expect(registryAuditDriftDisposition(summary).exitCode).toBe(3);
   });
 });
+
+// Runs the acceptance script up to its first npm command, with stubs that
+// leave partial consumer phase output behind and then fail with status 17.
+function runEarlyFailure(extraStubCommands = "") {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-failure-"));
+  scratch.push(directory);
+  const npmBody = [
+    'for directory in "$RUNNER_TEMP"/dacs-registry-acceptance.*; do',
+    '  printf "partial doctor diagnostic\\n" > "$directory/exec-out/doctor.log"',
+    '  printf "partial engine diagnostic\\n" > "$directory/measure-out/engine-strict.log"',
+    extraStubCommands,
+    "done",
+    "exit 17",
+  ].join("\n");
+  // curl, docker and npm are stubs and node is this process's binary; the
+  // script's temporary root is this private directory.
+  chmodSync(directory, 0o700);
+  const PATH = stubBin(directory, { curl: 'printf "curl 8.5.0\\n"' , docker: "exit 0", npm: npmBody });
+  const output = join(directory, "evidence");
+  const result = runBash(["scripts/verify-registry-container-consumer.sh", "--output-dir", output], {
+    cwd: repoRoot, env: { RUNNER_TEMP: directory, HOME: directory, PATH, OUTPUT_DIR: output },
+  });
+  return { directory, output, result };
+}
+
+// A gzip'd ustar archive holding package/package.json, as npm pack writes it.
+const packManifestTarball = (manifest: Record<string, string>) =>
+  packTarball({ "package.json": JSON.stringify(manifest) });
+
+// Runs the whole acceptance script through its consumer containers, where the
+// generated project's doctor fails (exit 1, not the expected 5) unless the run
+// is `complete`. Docker, npm and curl are stubs; node is this process's
+// binary; the registry is a loopback server that serves exactly the published
+// candidates.
+async function runToConsumerStage(complete = false, failStart = false, hooks: ConsumerHooks = {}) {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-doctor-")); scratch.push(directory); chmodSync(directory, 0o700);
+  const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version as string;
+  const releaseSet = join(directory, "release-set"); mkdirSync(releaseSet);
+  const served: Record<string, { integrity: string; tarball: string; manifest: { name: string; version: string }; shasum: string }> = {};
+  const archives: Record<string, Buffer> = {};
+  const packages: Record<string, { integrity: string }> = {};
+  for (const [name, file] of [["@kynesyslabs/dacs", "kynesyslabs-dacs"], ["@kynesyslabs/dacs-node", "kynesyslabs-dacs-node"], ["create-dacs-agent", "create-dacs-agent"]] as const) {
+    const manifest = { name, version };
+    const bytes = packManifestTarball(manifest); const tarball = "/" + file + ".tgz";
+    writeFileSync(join(releaseSet, `${file}-${version}.tgz`), bytes); archives[tarball] = bytes;
+    served["/" + name.replace("/", "%2f")] = { integrity: sri(bytes), tarball, manifest, shasum: createHash("sha1").update(bytes).digest("hex") }; packages[name] = { integrity: sri(bytes) };
+  }
+  writeFileSync(join(releaseSet, "release-provenance.json"), JSON.stringify({ version, source: { clean: true }, packages }));
+  writeFileSync(join(releaseSet, "SHA256SUMS"), "fixture\n");
+  const npmRoot = join(directory, "npm-root"); mkdirSync(join(npmRoot, "npm/node_modules/libnpmpublish"), { recursive: true });
+  writeFileSync(join(npmRoot, "npm/package.json"), JSON.stringify({ version: "11.19.0" }));
+  writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/package.json"), JSON.stringify({ main: "index.js" }));
+  writeFileSync(join(npmRoot, "npm/node_modules/libnpmpublish/index.js"), "exports.publish = async () => {};\n");
+  const npmEntry = process.env.npm_execpath;
+  if (!npmEntry) throw new Error("driver fixture needs the executing npm parser");
+  // The dependency grammar and the audit policy's advisory ranges read these npm modules.
+  for (const name of ["npm-package-arg", "semver"]) {
+    symlinkSync(dirname(createRequire(npmEntry).resolve(`${name}/package.json`)), join(npmRoot, "npm/node_modules", name));
+  }
+  const server = createServer((request, response) => {
+    const archive = archives[request.url ?? ""]; const record = served[request.url ?? ""];
+    response.writeHead(archive || record ? 200 : 404, { "content-type": archive ? "application/octet-stream" : "application/json" });
+    response.end(archive ?? JSON.stringify(record ? { name: record.manifest.name, "dist-tags": { acceptance: version }, versions: { [version]: { ...record.manifest,
+      dist: { integrity: record.integrity, shasum: record.shasum, tarball: `http://${request.headers.host}${record.tarball}` } } } } : {}));
+  });
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  const address = server.address(); if (!address || typeof address === "string") throw new Error("fixture server has no port");
+  const port = address.port; const registry = `http://127.0.0.1:${port}`;
+  // Each consumer phase copies its part of the fixture into the mounts it was given.
+  const fixture = join(directory, "consumer-fixture"); const project = join(fixture, "install", "one-click-agent");
+  for (const [name, contents] of Object.entries(projectTemplates({ packageName: "one-click-agent", deployment: "docker",
+    mode: "live-demos", role: "seller", rails: "both" }))) {
+    mkdirSync(dirname(join(project, name)), { recursive: true }); writeFileSync(join(project, name), contents);
+  }
+  const dependencies = Object.fromEntries(["@kynesyslabs/dacs", "@kynesyslabs/dacs-node", "@kynesyslabs/demosdk", "@x402/core", "@x402/evm", "@x402/fetch", "better-sqlite3", "viem"].map(name => [name, version]));
+  const manifest = { name: "one-click-agent", version, dependencies };
+  const lock: Record<string, unknown> = { "": manifest };
+  const inventory: Array<{ location: string; name: string; version: string }> = [];
+  // The audit policy resolves every direct dependency in the lock; non-candidates get placeholder bytes.
+  for (const name of Object.keys(dependencies)) {
+    const location = "node_modules/" + name; const integrity = packages[name]?.integrity ?? sri(Buffer.from(name));
+    lock[location] = { version, resolved: `${registry}/${name}.tgz`, integrity };
+    mkdirSync(join(project, location), { recursive: true }); writeFileSync(join(project, location, "package.json"), JSON.stringify({ name, version }));
+    inventory.push({ location, name, version });
+  }
+  const lockText = JSON.stringify({ packages: lock });
+  writeFileSync(join(project, "package.json"), JSON.stringify(manifest)); writeFileSync(join(project, "package-lock.json"), lockText);
+  const doctor = JSON.parse(readFileSync(join(repoRoot, "test/scripts/fixtures/registry-container-doctor-without-credentials.json"), "utf8"));
+  doctor.sdkVersion = version;
+  delete doctor.reportHash;
+  doctor.reportHash = sha256Hex(canonicalize(doctor));
+  // The fake measure phase emits the checker's output; real-npm and bundle tests exercise the checker itself.
+  const measured: Record<string, string> = { "dependency-policy.exit-code": "0\n",
+    "dependency-policy.json": JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: true, violations: [] }),
+    "npm-audit.exit-code": "0\n", "npm-audit.json": JSON.stringify({ metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } }, vulnerabilities: {} }),
+    "engine-strict.exit-code": "0\n", "engine-strict.log": "", "engine-versions.json": JSON.stringify({ node: "20.19.1", npm: "11.19.0" }) };
+  for (const kind of ["lock", "physical"]) { measured[`consumer-${kind}.cdx.json`] = "{}"; measured[`consumer-${kind}-sbom.err`] = ""; measured[`consumer-${kind}-sbom.exit-code`] = "0\n"; }
+  const executed: Record<string, string> = { "generated-tests.exit-code": "0\n", "doctor.exit-code": "5\n", "doctor.log": "blocked without credentials\n",
+    "doctor.json": JSON.stringify(doctor) };
+  for (const [phase, files] of [["measure", measured], ["execute", executed]] as const) {
+    mkdirSync(join(fixture, phase));
+    for (const [name, value] of Object.entries(files)) writeFileSync(join(fixture, phase, name), value);
+  }
+  const pinned = join(directory, "npm-pinned"); const built = join(directory, "image-built"); const commands = join(directory, "docker-commands");
+  const builtLock = join(directory, "built-lock"); const lateRemovals = join(directory, "late-removals");
+  const phase = (name: keyof ConsumerHooks, steps: string[]) => [`  *-${name})`, ...steps, hooks[name] ?? "", `  exit ${name === "doctor" ? complete ? 5 : 1 : 0} ;;`];
+  const PATH = stubBin(directory, {
+    curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  */-/ping*) printf \'{}\' ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
+    npm: ['case "$1" in', `  install) case "$*" in *npm@11.19.0*) touch '${pinned}' ;; *) exit 92 ;; esac ;;`,
+      `  --version) if [ -f '${pinned}' ]; then echo 11.19.0; else echo 10.9.9; fi ;;`, `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
+      `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),
+    docker: [`printf '%s\\n' "$*" | tr '\\n' ' ' >> '${commands}'`, `echo >> '${commands}'`, ...(failStart ? ['if [ "$1 $2" = "run --detach" ]; then exit 17; fi'] : []), `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
+      // The build context's lock as the image would install it.
+      `if [ "$1" = build ]; then touch '${built}'; for context; do :; done; cp "$context/package-lock.json" '${builtLock}'; exit 0; fi`,
+      `if [ "$1 $2" = 'image inspect' ]; then [ -f '${built}' ] || exit 98; case "$*" in *--format*) echo 10001:10001 ;; *) printf '%s' '[{"Id":"fixture","Size":1,"Config":{"User":"10001:10001"}}]' ;; esac; exit 0; fi`,
+      // A consumer container removed only after its output was collected or deleted is recorded.
+      'if [ "$1 $2" = "rm --force" ]; then case "$3" in dacs-consumer-*) for root in "$RUNNER_TEMP"/dacs-registry-acceptance.*; do',
+      `  if [ ! -d "$root/exec-out" ] || [ -e "$root/artifacts/doctor.log" ]; then echo "$3" >> '${lateRemovals}'; fi; done ;; esac; fi`,
+      'if [ "$1" = compose ]; then echo "services: {}"; exit 0; fi', 'if [ "$1" != run ]; then exit 0; fi', 'name=; work=; out=; writable=; previous=',
+      'for argument in "$@"; do', '  case "$previous" in', '    --name) name=$argument ;;',
+      '    --volume) case "$argument" in *:ro) ;; *) writable="$writable ${argument%:*}" ;; esac',
+      '      case "$argument" in *:/work|*:/work:ro) work=${argument%%:/work*} ;; *:/out) out=${argument%:/out} ;; esac ;;',
+      '  esac', '  previous=$argument', 'done',
+      'case "$name" in', ...phase("install", [`  cp -r '${fixture}/install/.' "$work/"`]),
+      ...phase("measure", ['  case "$*" in *--dependency-policy*) ;; *) exit 99 ;; esac', `  cp '${fixture}/measure/'* "$out/"`]),
+      ...phase("tests", [`  [ -f '${built}' ] || exit 98`, '  echo generated-image-tests']),
+      ...phase("doctor", complete ? [`  [ -f '${built}' ] || exit 98`, `  cat '${fixture}/execute/doctor.json'`,
+        `  cat '${fixture}/execute/doctor.log' >&2`] : ['  echo "doctor: release metadata is unreadable" >&2']),
+      'esac', 'case "$*" in', `  *--entrypoint*) [ -f '${built}' ] || exit 98 ;;`, 'esac', 'case "$*" in', '  *"--entrypoint id"*) echo 10001 ;;',
+      '  *"--entrypoint test"*) exit 1 ;;', `  *"--entrypoint node"*) printf '%s' '${JSON.stringify({ schema: "dacs-runtime-image-inventory/v1", packages: inventory })}' ;;`, 'esac', 'exit 0'].join("\n"),
+  });
+  const output = join(directory, "evidence");
+  try {
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>(done => {
+      const child = spawn("bash", ["--norc", "--noprofile", "scripts/verify-registry-container-consumer.sh", "--output-dir", output], { cwd: repoRoot, env: { RUNNER_TEMP: directory, PATH } });
+      let stdout = ""; let stderr = ""; child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+      child.on("close", status => done({ status, stdout, stderr }));
+    });
+    return { directory, output, result, commands, lockText, builtLock, lateRemovals };
+  } finally { server.close(); }
+}
+
+// Shell run by the fake consumer phase of that name, after it copied its fixture
+// and before it exits, with the phase's mounts in $work and $out and every
+// writable host mount in $writable.
+type ConsumerHooks = Partial<Record<"install" | "measure" | "tests" | "doctor", string>>;
+// The volumes and environment of each named consumer phase run, as Docker received them.
+function consumerRuns(commands: string) {
+  return Object.fromEntries(readFileSync(commands, "utf8").split("\n").filter(line => line.startsWith("run ") && line.includes(" --name dacs-consumer-"))
+    .map((line, order) => [/ --name dacs-consumer-\S+-(\w+) /.exec(line)![1]!, { line, order,
+      volumes: [...line.matchAll(/--volume (\S+)/g)].map(match => match[1]!) }]));
+}
 
 const CANDIDATE_VERSION = "0.1.0-test";
 // A summary the producer composed for CANDIDATE_VERSION, judged as that release.
@@ -188,6 +379,9 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
   const manifest: Record<string, unknown> = {
     dependencies: Object.fromEntries(DUAL_RAIL_DEPENDENCIES.map(name => [name, CANDIDATE_VERSION])) };
   const report = join(directory, "report.json");
+  expect(readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8")).toContain(
+    'node /acceptance-sdk/scripts/registry-container-disposition.mjs --dependency-policy "$PWD" "$npm_config_registry" \\\n' +
+    '      /out/dependency-policy.json /release-set "$DACS_PACKAGE_VERSION"');
   // The files installed at a lock location instead of its archive's; `null` installs none.
   const installed: Record<string, Record<string, string> | null> = {};
   // `environment` adds to the install's and command's environment; `script` and `projectPath` are the
@@ -724,6 +918,163 @@ describe("registry/container evidence", () => {
   it("rejects an unknown policy mode", () => {
     expect(spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--dependency-polciy"],
       { cwd: repoRoot }).status).not.toBe(0);
+  });
+
+
+  it("traverses consumer policy, image build, evidence assembly and disposition with pinned npm", async () => {
+    const { directory, output, result, commands } = await runToConsumerStage(true);
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(existsSync(join(directory, "npm-pinned"))).toBe(true);
+    const invoked = readFileSync(commands, "utf8");
+    expect(invoked).toMatch(/^build .*--tag /m);
+    expect(invoked).toContain("--file "); expect(invoked).toContain("Dockerfile.acceptance");
+    expect(invoked).toContain("--env DACS_BOUNDED_NPM_HTTP=1");
+    expect(invoked).toContain("--env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs");
+    expect(invoked).toContain("--env npm_config_fetch_retries=2");
+    expect(invoked).toContain("/acceptance-sdk/package.json:ro");
+    expect(invoked).toContain("/acceptance-sdk/scripts:ro");
+    expect(invoked).toContain("--dependency-policy");
+    for (const name of ["doctor.json", "compose.rendered.yaml", "docker-image.json", "runtime-image-inventory.json", "runtime-image-policy.json", "policy-findings.json", "release-set.log"]) expect(existsSync(join(output, name)), name).toBe(true);
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: true, functionalPassed: true, disposition: { exitCode: 0 } });
+  }, 30_000);
+  it.each(["git-dns.txt", "git-connect.txt"])("classifies the release-set Git diagnostic %s through its stage mapping", name => {
+    const text = readFileSync(join(repoRoot, "test/scripts/fixtures/acceptance-transport", name), "utf8");
+    expect(classifyAcceptanceFailure({ stage: "release-set", read: () => text }).failureClass).toBe("network");
+  });
+
+  it("retains release-set network errors and classifies them as network failures", () => {
+    const { output } = runEarlyFailure('printf "npm error code ECONNRESET\\n"');
+    expect(readFileSync(join(output, "release-set.log"), "utf8")).toContain("ECONNRESET");
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({ failedStage: "release-set", failureClass: "network", failureEvidence: [expect.stringContaining("ECONNRESET")] });
+  });
+
+  it("exports partial evidence and preserves the early failure status", () => {
+    const { output, result } = runEarlyFailure();
+    expect(result.status).toBe(17);
+    expect(readFileSync(join(output, "acceptance.exit-code"), "utf8")).toBe("17\n");
+    // Partial output of both consumer phases is collected without a complete set.
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+    expect(readFileSync(join(output, "engine-strict.log"), "utf8")).toBe("partial engine diagnostic\n");
+    // The runner's tool versions are evidence too; the stubs print nothing.
+    expect(readFileSync(join(output, "runner-tools.txt"), "utf8")).toMatch(/^bash \d+\.\d+/);
+  });
+
+  it("keeps the consumer's diagnostics when the generated doctor fails before any of them is exported", async () => {
+    const { output, result, directory, lockText } = await runToConsumerStage();
+    expect(result.status, result.stderr).toBe(1);
+    const evidence = (name: string) => readFileSync(join(output, name), "utf8");
+    expect(evidence("doctor.log")).toBe("doctor: release metadata is unreadable\n");
+    expect(evidence("doctor.exit-code")).toBe("1\n");
+    expect(evidence("generated-tests.exit-code")).toBe("0\n");
+    expect(JSON.parse(evidence("generated-package.json"))).toMatchObject({ name: "one-click-agent" });
+    expect(evidence("generated-package-lock.json")).toBe(lockText);
+    expect(evidence("dependency-policy.json")).toContain('"passed":true');
+    expect(evidence("generation.log")).toContain("generated-image-tests");
+    for (const name of ["release-provenance.json", "SHA256SUMS", "registry.log", "runner-tools.txt"]) {
+      expect(existsSync(join(output, name)), name).toBe(true);
+    }
+    expect(JSON.parse(evidence("acceptance-summary.json"))).toMatchObject({ complete: false, failedStage: "image-checks",
+      exitCode: 1, failureClass: "functional" });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance functional failure::stopped at stage image-checks");
+    // The temporary acceptance root, which held them, is gone.
+    expect(readdirSync(directory).filter((name) => name.startsWith("dacs-registry-acceptance."))).toEqual([]);
+  });
+
+  it("gives each consumer phase a closed set of mounts, in install, measure, tests, doctor order", async () => {
+    const { result, commands } = await runToConsumerStage(true);
+    expect(result.status, result.stderr).toBe(0);
+    const runs = consumerRuns(commands);
+    const local = (volume: string) => volume.replace(/^\S*\/dacs-registry-acceptance\.[^/]+/, "<root>").replace(repoRoot, "<repo>");
+    const support = "<repo>/scripts:/acceptance-support:ro";
+    expect(runs.install?.volumes.map(local)).toEqual(["<root>/gen:/work", support]);
+    expect(runs.measure?.volumes.map(local)).toEqual(["<root>/gen:/work:ro", "<root>/measure-out:/out", support,
+      "<repo>/scripts:/acceptance-sdk/scripts:ro", "<repo>/package.json:/acceptance-sdk/package.json:ro", "<root>/release-set:/release-set:ro"]);
+    expect(runs.tests?.volumes).toEqual([]); expect(runs.doctor?.volumes).toEqual([]);
+    // Neither the evidence stage nor the sealed build context is ever mounted.
+    for (const line of readFileSync(commands, "utf8").split("\n").filter(line => line.startsWith("run "))) {
+      expect(line).not.toMatch(/--volume \S*\/(?:artifacts|sealed)[/:]/);
+    }
+    expect([runs.install?.order, runs.measure?.order, runs.tests?.order, runs.doctor?.order]).toEqual([0, 1, 2, 3]);
+  }, 30_000);
+
+  it("measures before any package code runs and keeps scripts off during install", async () => {
+    const { result, commands } = await runToConsumerStage(true);
+    expect(result.status, result.stderr).toBe(0);
+    const { install, measure, tests, doctor } = consumerRuns(commands);
+    for (const step of ["--dependency-policy", "npm audit ", "npm sbom --sbom-format", "npm sbom --package-lock-only", "--engine-strict"]) {
+      expect(measure?.line, step).toContain(step); expect(doctor?.line, step).not.toContain(step);
+    }
+    expect(readFileSync(join(repoRoot, "packages/create-dacs-agent/src/liveTemplates.ts"), "utf8")).toContain("RUN npm rebuild better-sqlite3");
+    expect(measure?.line).not.toContain("npm rebuild"); expect(tests?.line).toContain("--read-only");
+    expect(install?.line).toContain("--env npm_config_ignore_scripts=true"); expect(doctor?.line).not.toContain("npm ");
+    expect(install?.line).toContain("npm install --global --ignore-scripts npm@11.19.0");
+    expect(install?.line).toContain("npm install --ignore-scripts ");
+    expect(measure?.line).toMatch(new RegExp(` --user ${process.getuid?.()}:${process.getgid?.()} `));
+    for (const run of [install, measure]) {
+      for (const setting of ["--init", "--env npm_config_cache=/work/.npm-cache", "--env DACS_BOUNDED_NPM_HTTP=1",
+        "--env NODE_OPTIONS=--require=/acceptance-support/bounded-npm-http.cjs", "--env npm_config_fetch_retries=2"]) {
+        expect(run?.line, setting).toContain(setting);
+      }
+    }
+  }, 30_000);
+
+  it("reports the measured policy when package code rewrites it in every mount it can write", async () => {
+    const report = (violations: unknown[]) => JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0, violations });
+    const { output, result } = await runToConsumerStage(true, false, {
+      measure: `  printf '%s' '${report([{ location: "node_modules/viem", field: "resolved", value: "https://codeload.github.com/fixture/viem/tar.gz/main" }])}' > "$out/dependency-policy.json"`,
+      doctor: `  for mount in $writable; do printf '%s' '${report([])}' > "$mount/dependency-policy.json"; done`,
+    });
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8")), result.stderr).toMatchObject({
+      complete: true, registryDependencyOnly: false, securityGate: { passed: false, registryDependencyPolicyPassed: false } });
+    expect(result.status).not.toBe(0);
+  }, 30_000);
+
+  it("builds and records the lock as measured when package code rewrites it afterwards", async () => {
+    const { output, result, commands, lockText, builtLock } = await runToConsumerStage(true, false, {
+      doctor: `  [ -z "$work" ] || printf '%s' '{"packages":{"node_modules/viem":{"resolved":"https://codeload.github.com/fixture/viem/tar.gz/main"}}}' > "$work/one-click-agent/package-lock.json"`,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(builtLock, "utf8")).toBe(lockText);
+    expect(readFileSync(join(output, "generated-package-lock.json"), "utf8")).toBe(lockText);
+    expect(JSON.parse(readFileSync(join(output, "sealed-context.json"), "utf8")).files["package-lock.json"])
+      .toBe(createHash("sha256").update(lockText).digest("hex"));
+    const build = readFileSync(commands, "utf8").split("\n").find(line => line.startsWith("build "));
+    expect(build).toMatch(/--file \S+\/sealed\/context\/Dockerfile\.acceptance .* \S+\/sealed\/context\s*$/);
+  }, 30_000);
+
+  it.each([
+    ["install", "evidence-seal", ['  rm "$work/one-click-agent/.dockerignore"', '  ln -s HOST/secret "$work/one-click-agent/.dockerignore"']],
+  ])("refuses links planted in the %s phase without changing or exporting a host file", async (phase, failedStage, plant) => {
+    const host = mkdtempSync(join(tmpdir(), "dacs-registry-host-")); scratch.push(host);
+    writeFileSync(join(host, "secret"), "host-only value\n"); writeFileSync(join(host, "target.json"), "{}\n");
+    const { output, result, commands } = await runToConsumerStage(true, false, { [phase]: plant.join("\n").replaceAll("HOST", `'${host}'`) });
+    expect(result.status).not.toBe(0);
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: false, failedStage, failureClass: "functional" });
+    expect(readFileSync(join(host, "secret"), "utf8")).toBe("host-only value\n"); expect(readFileSync(join(host, "target.json"), "utf8")).toBe("{}\n");
+    expect(spawnSync("grep", ["-r", "host-only value", output]).status).toBe(1);
+    expect(readFileSync(commands, "utf8")).not.toMatch(/^build /m);
+  }, 30_000);
+
+  it("removes a consumer container its deadline stopped before collecting or deleting its mounts", async () => {
+    const { output, result, commands, lateRemovals } = await runToConsumerStage(true, false, {
+      doctor: '  printf "partial\\n" >&2\n  exit 124' });
+    expect(result.status).toBe(124);
+    expect(readFileSync(commands, "utf8")).toMatch(/^rm --force dacs-consumer-\S+-doctor\s*$/m);
+    expect(existsSync(lateRemovals)).toBe(false);
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toContain("partial\n");
+  }, 30_000);
+
+  it("finishes cleanup and keeps the original status when an evidence write fails", () => {
+    // A directory where the exit-code file belongs makes that write fail.
+    const { directory, output, result } = runEarlyFailure(
+      '  mkdir -p "$directory/artifacts/acceptance.exit-code"',
+    );
+    expect(result.status).toBe(17);
+    expect(readFileSync(join(output, "doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+    const retained = readdirSync(directory).filter(name => name.startsWith("dacs-registry-acceptance."));
+    expect(retained).toHaveLength(1);
+    expect(readFileSync(join(directory, retained[0] ?? "missing", "exec-out/doctor.log"), "utf8")).toBe("partial doctor diagnostic\n");
+    expect(result.stderr).toContain("retained at ");
   });
 
   it.each(["dacs", "dacs-node"])("rejects a %s lock entry with different tarball bytes and reports both digests", name => {
@@ -1292,6 +1643,19 @@ describe("lock engine scan", () => {
     expect(satisfiesEngineRange(version, range)).toBe(expected);
   });
 
+  it("records the container's Node and npm with the script's own command, not a second npm ci", () => {
+    const script = readFileSync(join(repoRoot, "scripts/verify-registry-container-consumer.sh"), "utf8");
+    expect(script).not.toContain("--no-engine-strict");
+    const command = script.split("\n").find((line) => line.includes("> /out/engine-versions.json"))!.trim()
+      .replace("/out/engine-versions.json", "engine-versions.json");
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-versions-"));
+    scratch.push(directory);
+    const result = runBash(["-ceu", command], { cwd: directory,
+      env: { PATH: stubBin(directory, { npm: "echo 11.19.0" }) } });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(readFileSync(join(directory, "engine-versions.json"), "utf8")))
+      .toEqual({ node: process.version, npm: "11.19.0" });
+  });
 });
 
 it("pins the recorded pqcrypto image version while accepting its recorded metadata spelling", () => {
@@ -2223,7 +2587,18 @@ describe("acceptance failure class", () => {
     ["publish", 1, { "registry.log": "FetchError: request to http://127.0.0.1:4873/x failed, reason: connect ECONNREFUSED 127.0.0.1:4873" }, "network"],
     ["publish", 1, { "registry.log": "Error: candidate integrity mismatch" }, "functional"],
     ["image-build", 1, { "docker-build.log": "#14 2.0 error TS2307: Cannot find module" }, "functional"],
-    ["release-set", 1, { "release-set.log": "npm error code ETIMEDOUT" }, "functional"],
+    // The release-set stage runs npm and, for the vector sync, Git: each one's own final cause decides.
+    ["release-set", 1, { "release-set.log": "npm error code ETIMEDOUT" }, "network"],
+    ["release-set", 1, { "release-set.log": "npm error code EINTEGRITY" }, "functional"],
+    ["release-set", 128, { "release-set.log": "fatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com" }, "network"],
+    ["release-set", 128, { "release-set.log": "fatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 503" }, "network"],
+    ["release-set", 128, { "release-set.log": "fatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 403" }, "functional"],
+    ["release-set", 128, { "release-set.log": "fatal: not a git repository (or any of the parent directories): .git" }, "functional"],
+    ["release-set", 1, { "release-set.log": "fatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com\nnpm error code EINTEGRITY" }, "functional"],
+    ["release-set", 1, { "release-set.log": "npm error code EINTEGRITY\nfatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com" }, "network"],
+    ["release-set", 1, { "release-set.log": "Error: Command failed: git clone https://github.com/o/r.git\nfatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com\nError: Command failed: git clone" }, "network"],
+    ["release-set", 1, { "release-set.log": "Error: connect ECONNREFUSED 127.0.0.1:4873" }, "functional"],
+    ["release-set", 1, {}, "functional"],
     // A retryable HTTP status as curl --fail and the Docker registry client spell it.
     ["registry-auth", 22, { "registry.log": "curl: (22) The requested URL returned error: 503" }, "network"],
     ["registry-auth", 22, { "registry.log": "curl: (22) The requested URL returned error: 429 Too Many Requests" }, "network"],
@@ -2396,7 +2771,7 @@ describe("acceptance failure class", () => {
   });
 
   // Review D-11 and cold F4: only stages with their own classifier, by own key.
-  it.each(["constructor", "__proto__", "hasOwnProperty", "toString", "release-set", "image-policy", ""])(
+  it.each(["constructor", "__proto__", "hasOwnProperty", "toString", "image-policy", ""])(
     "classifies stage %j, which has no classifier of its own, as functional", stage => {
       expect(classifyAcceptanceFailure({ stage, exitCode: 1, read: reader({ "registry.log": "npm error code ECONNRESET" }) }))
         .toEqual({ failureClass: "functional", evidence: [] });
@@ -2610,4 +2985,26 @@ describe("acceptance failure class", () => {
       expectClass("consumer", 1, { "generation.log": npmOutput("npm-install-network-errors", name) }, "network");
     });
 
+  it("records the class in the early-failure summary and its annotation", () => {
+    const { output, result } = runEarlyFailure();
+    expect(result.status).toBe(17);
+    expect(JSON.parse(readFileSync(join(output, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      schema: "dacs-registry-container-acceptance/v1", complete: false, failedStage: "release-set", exitCode: 17,
+      failureClass: "functional" });
+    expect(result.stdout).toContain(
+      "::error title=Registry/container acceptance functional failure::stopped at stage release-set with exit 17");
+  });
+
+});
+
+describe("run-local cleanup ownership", () => {
+  it("reserves the output before another process can create an empty directory", () => {
+    const { directory, output, result } = runEarlyFailure('if mkdir "$OUTPUT_DIR" 2>/dev/null; then touch "$RUNNER_TEMP/concurrent-created"; fi');
+    expect(result.status).toBe(17); expect(existsSync(join(directory, "concurrent-created"))).toBe(false);
+    expect(readFileSync(join(output, "acceptance.exit-code"), "utf8")).toBe("17\n");
+  });
+  it("removes the unique registry name even when Docker fails during start", async () => {
+    const { result, commands } = await runToConsumerStage(false, true);
+    expect(result.status, result.stderr).toBe(17); expect(readFileSync(commands, "utf8")).toMatch(/^rm --force dacs-registry-/m);
+  }, 30000);
 });
