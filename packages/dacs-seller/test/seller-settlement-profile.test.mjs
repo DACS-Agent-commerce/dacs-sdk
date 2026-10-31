@@ -1,6 +1,10 @@
-// Internal seller construction, profile validation, retained reads and issued
-// challenges. Real fixed-key Listings and authenticated SQLite state; commercial
-// proposal, payment and delivery flows are introduced on later branches.
+// The native seller profile signs an Agreement only with the operator's
+// authenticated Vet context and over a rail its steward-signed rail authority
+// makes selectable, pinned into the session first, and commits or takes
+// payment only with the whole chain to delivery and that pin; the standalone
+// host starts only with that chain and the rail authority. No
+// module hooks; real Listing, signers and agent. Every capability records the
+// call and refuses, so a refused step is shown to have reached nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';

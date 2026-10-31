@@ -32,7 +32,7 @@ const presentAt=(party,sessionNonce,presentedAt)=>{
 const vetRef=(jobId,party,verifier)=>({anchor:{kind:'storage-program',locator:core.compositeVerificationAddress(jobId,party)},contentHash:'b'.repeat(64),signer:verifier});
 const sessionFor=(jobId,bundle,checkpoint)=>({jobId,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),stage:'vetted',vetCheckpoint:checkpoint});
 // CORE SN-4: the admitted attempt binds the exact complete presentation.
-const admittedAttempt=session=>({presentationHash:core.contentHash(session.buyerBundle)});
+const admittedAttempt=session=>({presentationHash:core.sha256Hex(core.canonicalize(session.buyerBundle))});
 const admitWith=(state,nonce,session)=>{const attempt=admittedAttempt(session);state.attemptChallenge(nonce,attempt);state.admitChallenge(nonce,attempt.presentationHash);};
 async function saveSession(f,session,prepare){
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
@@ -85,6 +85,13 @@ test('an attempted, admitted challenge stays retained but does not consume live 
  const fresh=await f.open({maxJobs:1});try{assert.ok(await fresh.issueSessionChallenge({jobId:otherJob,buyer:buyer.claim}),'a consumed challenge is a retained tombstone, not a live slot');}finally{fresh.close();}
  const reopened=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});
  try{assert.deepEqual(reopened.challenge(issued.sessionNonce).attempt,{presentationHash:'a'.repeat(64),admitted:true});}finally{reopened.close();}
+});
+test('an attempted challenge, admitted or refused, holds no live issuance slot',()=>{
+ const value={jobId:JOB,issuedAt:NOW};
+ for(const admitted of [false,true]){
+  const row={kind:'session-challenge',jobId:JOB,issuedAt:NOW-1,expiresAt:NOW+1000,attempt:{presentationHash:'a'.repeat(64),admitted}};
+  assert.doesNotThrow(()=>admitSessionChallenge(new Map([['nonce',row]]),value,{maxOutstanding:1,maxPerJob:1}));
+ }
 });
 test('malformed challenge requests are coded refusals',async t=>{
  const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
@@ -229,7 +236,7 @@ test('restart refuses a retained session admitted for a different presentation',
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement});
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{
-  const attempt={presentationHash:core.contentHash(other)};state.attemptChallenge(issued.sessionNonce,attempt);state.admitChallenge(issued.sessionNonce,attempt.presentationHash);
+  const attempt={presentationHash:core.sha256Hex(core.canonicalize(other))};state.attemptChallenge(issued.sessionNonce,attempt);state.admitChallenge(issued.sessionNonce,attempt.presentationHash);
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
  }finally{state.close();}
  await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),error=>error.code==='seller_state_unverified'&&/another presentation/.test(error.message));
