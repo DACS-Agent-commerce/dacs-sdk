@@ -202,6 +202,24 @@ test('a rail authority that is not the steward-signed demos-native:DEM PA-1 defi
   assert.deepEqual(w.reached, []);
 });
 
+test('the standalone host refuses to start without the whole chain to delivery', async (t) => {
+  const w = await world(t);
+  const { nativeArtifactAnchor: artifactAnchor, ...rest } = w.capabilities;
+  const { now: _now, ...required } = rest;
+  for (const missing of ['nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']) {
+    const dataDirectory = w.dir({ empty: true });
+    const options = { ...required, artifactAnchor, dataDirectory, nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence, demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery() };
+    delete options[missing];
+    await assert.rejects(seller.startSellerHost(options), { name: 'TypeError', message: new RegExp(`requires ${missing}$`) });
+    assert.deepEqual(readdirSync(dataDirectory), [], `nothing is opened without ${missing}`);
+  }
+  assert.deepEqual(w.reached, []);
+});
+
+// ---- The pinned native rail through payment intake, and the HTTP journal ----
+// A scripted native chain: the seller's commitment CREATE is retained as
+// finalized, the buyer's Agreement reads back once it is anchored, and the
+// transfer observation (native payment evidence) counts each fetch and fails.
 const clone = (value) => JSON.parse(JSON.stringify(value));
 function nativeChain(w) {
   const TX = 'a1'.repeat(32), BLOCK = 'b2'.repeat(32), seen = { publish: 0, fetch: 0 }, retained = { stored: null, agreement: null };
