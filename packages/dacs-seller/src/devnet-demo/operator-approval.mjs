@@ -920,7 +920,10 @@ async function readPolicyLedger(evidencePath){
   return parsePolicyLedger(text);
 }
 
-function serializedPolicy(evidencePath,work){
+/** Run work() holding the approval ledger's writer lock: after this process's earlier ledger writers, then under the
+ * cross-process lock in `<ledger>.policy-lock`. Resolves or rejects as work does; rejects with code
+ * seller_state_locked, before work runs, while another live process holds that lock. */
+export function serializedPolicy(evidencePath,work){
   const key=resolve(evidencePath),result=(policyTails.get(key)??Promise.resolve()).then(async()=>{
     // Reuse the process lock separately from the operator's lifetime lock.
     // Every ledger writer shares it, including releases and exact retries.
