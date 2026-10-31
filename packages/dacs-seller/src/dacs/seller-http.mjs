@@ -36,7 +36,7 @@ const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
 const reportsDeliveryReady = (text) => {
-  try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && answer.delivery?.status === 'delivery-ready'; } catch { return false; }
+  try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && ['delivery-ready','delivered'].includes(answer.delivery?.status); } catch { return false; }
 };
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
@@ -159,9 +159,19 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (!['committed','commitment-held'].includes(answer?.status)) throw new SellerTransportError('commitment_readback_required',503);
           return await send(res,200,answer,request,{text:await pointed(200,JSON.stringify(answer),request.jobId,req.url)});
         }
+        const readbackOnly = authentication.readbackOnly?.(request) === true;
         if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && reportsDeliveryReady(reservation.text)) {
-          // A cached delivery-ready answer is only a record of it: the agent authenticates the payment
-          // evidence and reads the Deliverable again, and what it answers now is sent, never the saved success.
+          // A cached completed answer is only a record of it. Under a live
+          // delegation the agent authenticates the payment evidence and reads
+          // the Deliverable again, and what it answers now is sent, never the
+          // saved success. An expired delegation admits journaled readback
+          // only, so that refresh (which may publish new delivery evidence)
+          // never runs; the saved answer alone authenticates nothing, so the
+          // claim is held instead of replayed as delivered.
+          if (readbackOnly) {
+            const answer = { status: 'held', reason: 'peer_delegation_expired: a completed delivery answer is authenticated only under a live session delegation' };
+            return await send(res, 200, answer, request, { text: await pointed(200, JSON.stringify(answer), request.jobId, req.url) });
+          }
           const answer = await route(agent, body), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }

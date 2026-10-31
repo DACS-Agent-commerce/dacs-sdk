@@ -2,8 +2,31 @@ import { createFixtureSettlement } from './fixture-settlement.mjs';
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
+// Seller agent for one verified fixed-price DEM Listing, acting as phase
+// orchestrator (seller-as-phase-orchestrator-v1). Transport-neutral: every
+// method takes and returns plain JSON; seller-http.mjs is a narrow adapter.
+//
+// The seller identity is supplied by the operator as a signing callback over
+// raw bytes (never the plugin buyer's key; the agent never sees a buyer key).
+// Protocol steps use the pinned SDK seller surface:
+//  - respondToFixedPriceAgreementProposalDurable re-derives the Agreement from
+//    seller-local authenticated context before signing its contribution;
+//  - commitFixedPriceAgreement signs and anchors the FinalityCommitmentRecord
+//    after Agreement readback by default, or on exact signatures when enabled;
+//  - verifySellerPaymentIntake verifies the pay-dem claim (payer, payee,
+//    amount, inclusion after the finalized commitment, deadline, SB-1 identity,
+//    SB-2 one-transaction-one-session receipt store) and derives the exact
+//    unsigned payment SettlementEvidence.
+// The explicit DEM delivery profile additionally consumes that same permit in
+// runDurableFulfilmentToDeliveryReady using a seller-retained V2 SessionRecord,
+// genuine partyVetCore provenance and independent delivery receipt readback.
+// The delivery SettlementEvidence is published only when the operator enables
+// deliveryEvidenceEnabled (finishDeliveryEvidence); otherwise its publication,
+// and the final bundle closure, stay behind an explicit later SDK finaliser
+// call. Not deployed anywhere; tests run it on owned loopback only.
 import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreateAuthorization } from './commit-on-signature.mjs';
 import { canonicalize, paymentEvidenceAddress, verifySellerPaymentIntake, commitFixedPriceAgreement, contentHash, isListing, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, ARTIFACT_SEPARATORS, compositeVerificationAddress, createFsFencedSessionStore, runDurableFulfilmentToDeliveryReady, verifySettlementEvidence, isCompositeVerificationRecord, isCanonicalBase64Url, signedBytes } from '@kynesyslabs/dacs';
+import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
 import { randomBytes } from 'node:crypto';
 import { MAX_STORAGE_ARTIFACT_BYTES, assertStorageJsonDepth } from './wallet-transactions.mjs';
 import { join } from 'node:path';
@@ -17,7 +40,7 @@ import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } fr
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
 import { nativeDemDeliveryConfig, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
-import { agreementInput, agreementTerms, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
+import { agreementInput, agreementTerms, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
 
 /** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
@@ -110,9 +133,36 @@ export function buildReport({ agreement, listing, settlementId }) {
   };
 }
 
-// Internal seller proposal, commitment, payment and delivery profile. The
-// native profile commits or takes payment only with the whole chain to
-// delivery (nativePaymentEvidence, demDeliveryContext, nativeDemDelivery).
+// The substrate is chosen once, never by fallback. `agreementAnchor` and
+// `nativeArtifactAnchor` (programmatic operator capabilities) together select
+// the native profile: commit reads the buyer's Agreement as its native Demos
+// SR-2 storage CREATE and publishes the FinalityCommitmentRecord natively. Any
+// other native capability needs both, and that profile takes no `anchors`: a
+// remaining fixture read or write refuses (fixture_substrate_disabled). The
+// simulated fixture substrate is used only when it is passed as `anchors` with
+// no native capability and `simulatedFixture: true`: that profile signs over
+// the not-performed Vet references and the unsigned in-code rail, so it is
+// never chosen by default.
+// The native profile signs an Agreement only with the operator's authenticated
+// Vet context (`demDeliveryContext`), never the synthetic not-performed Vet
+// references, and only over a rail its steward-signed `railAuthority` makes
+// selectable, pinned into the session first (rail-authority.mjs). It commits
+// or takes payment only with the whole chain to delivery
+// (`nativePaymentEvidence`, `demDeliveryContext`, `nativeDemDelivery`) and the
+// pinned rail: a commitment it could not settle would make the buyer pay for
+// nothing. No profile signs a completed DACS-5 bundle (the ST-11 finalizer is
+// not wired; bundle_finalization_unavailable).
+// The native profile opens a new session only for a presentation of a
+// challenge this seller issued for its job and buyer (issueSessionChallenge;
+// the first attempt consumes it, durably), on a Listing its own revocation
+// check (core checkListingRevocation over the operator's readings) finds not
+// revoked, and under the operator's `sessionAdmission` (session-admission.mjs):
+// the exact profile of both parties and the Vet records the references name,
+// checked strictly against the requirement invocations the delivery runner
+// checks, for a retained context too.
+// `contextRequest({jobId, buyerBundle, generatedAt})` (seller context route,
+// seller-context-route.mjs createSellerContextRecords exactRequest) is true only
+// when the seller durably admitted exactly that context request for the job.
 const MAX_CHALLENGES_PER_JOB=16;
 export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
@@ -1570,7 +1620,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   async function advanceAuthenticatedNativeDelivery(session, work, read) {
     if (!deliveryContext) return nativeEvidenceResponse(work, 'held-missing-consumed-v2-fulfilment-and-Vet-audit');
-    if (nativeDelivery && session.deliveryReady) return readPersistedNativeDelivery(session, work);
+    if (nativeDelivery && session.deliveryReady) return readPersistedNativeDelivery(session, work, read);
     const delivery = await runSdkDeliveryReady(session, work, read);
     if (delivery.status !== 'delivery-ready') {
       session.deliveryHold = { reason: delivery.reason, ...(delivery.result ? { result: structuredClone(delivery.result) } : {}) };
@@ -1582,18 +1632,19 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       return nativeEvidenceResponse(work, { status: 'held', reason: delivery.reason });
     }
     const result = delivery.ready.result, deliveredHash = sha256Hex(canonicalize(result.artifact.anchoredValue));
-    session.deliveryReady = { fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress, contentHash: deliveredHash, anchorReceipt: structuredClone(result.anchorReceipt),
-      evidenceHash: result.evidenceHash, paymentPermitId: work.intake.permitId, finalisation: structuredClone(delivery.ready.finalisation), auditSource: structuredClone(delivery.auditSource),
+    session.deliveryReady = { fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress, contentHash: deliveredHash,
+      anchorReceipt: structuredClone(result.anchorReceipt), evidenceHash: result.evidenceHash, evidence: structuredClone(result.evidence), paymentPermitId: work.intake.permitId,
+      finalisation: structuredClone(delivery.ready.finalisation), auditSource: structuredClone(delivery.auditSource),
       ...(nativeDelivery ? { deliveryBinding: nativeDeliveryBinding(session, work, result.fulfilmentId), substrate: 'source-native-one-node-delivery' } : { substrate: 'loopback-sr2-fixture' }) };
     session.stage = 'delivery-ready';
     persist(session);
-    return nativeEvidenceResponse(work, { status: 'delivery-ready', fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress,
+    return finishDeliveryEvidence(session, work, { status: 'delivery-ready', fulfilmentId: result.fulfilmentId, logicalAddress: result.logicalAddress,
       contentHash: deliveredHash, anchorReceipt: result.anchorReceipt, evidenceHash: result.evidenceHash,
       ...(nativeDelivery ? { deliveryBinding: nativeDeliveryBinding(session, work, result.fulfilmentId) } : {}),
       substrate: nativeDelivery ? nativeDeliverySubstrate : 'mixed-test-native-payment-plus-loopback-sr2-delivery', evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
   }
 
-  async function readPersistedNativeDelivery(session, work) {
+  async function readPersistedNativeDelivery(session, work, paymentRead) {
     const ready = session.deliveryReady, report = deliveryReport(session, work.intake.settlementId);
     const binding = nativeDeliveryBinding(session, work, ready.fulfilmentId);
     const reread = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: ready.logicalAddress, report, receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: binding });
@@ -1601,11 +1652,95 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       canonicalize(ready.deliveryBinding) === canonicalize(binding) && sameNativeDeliveryReceipt(reread.receipt, ready.anchorReceipt) &&
       await verifyNativeDemDeliveryReceipt(nativeDelivery, {jobId:session.jobId,logicalAddress:ready.logicalAddress,report,receipt:reread.receipt,receiptContentHash:ready.contentHash,deliveryBinding:binding,signedProjection:reread.signedProjection}) === 'valid';
     if (!valid) return nativeEvidenceResponse(work, { status: 'held', reason: reread.reason ?? 'persisted SDK delivery-ready result did not authenticate on fresh native read' });
-    return nativeEvidenceResponse(work, { status: 'delivery-ready', fulfilmentId: ready.fulfilmentId, logicalAddress: ready.logicalAddress,
+    // A delivery-ready session retained before this seller kept its own copy
+    // (below) has only the evidence hash. The exact signed evidence is still in
+    // the SDK's durable evidence-publication checkpoint: recover it there and
+    // accept it only against that retained hash. Nothing is rebuilt, signed or
+    // submitted to the Deliverable again.
+    if (deliveryEvidenceEnabled && !ready.evidence) {
+      const recovered = await recoverRetainedDeliveryEvidence(session, work, paymentRead);
+      if (recovered.reason) return nativeEvidenceResponse(work, { status: 'held', reason: recovered.reason });
+    }
+    return finishDeliveryEvidence(session, work, { status: 'delivery-ready', fulfilmentId: ready.fulfilmentId, logicalAddress: ready.logicalAddress,
       contentHash: ready.contentHash, anchorReceipt: reread.receipt, evidenceHash: ready.evidenceHash, deliveryBinding: binding,
       substrate: nativeDeliverySubstrate, evidencePublication: 'deferred-to-explicit-sdk-finaliser' });
   }
 
+  async function recoverRetainedDeliveryEvidence(session, work, paymentRead) {
+    try {
+      const delivery = await runSdkDeliveryReady(session, work, paymentRead);
+      const evidence = delivery.status === 'delivery-ready' ? delivery.ready?.result?.evidence : undefined;
+      if (!evidence) return { reason: 'retained delivery evidence is unavailable from the SDK checkpoint' };
+      if (contentHash(evidence) !== session.deliveryReady.evidenceHash) return { reason: 'SDK checkpoint delivery evidence differs from the retained hash' };
+      session.deliveryReady.evidence = structuredClone(evidence);
+      persist(session);
+      return { evidence };
+    } catch (error) {
+      return { reason: `retained delivery evidence recovery failed: ${String(error?.message ?? error).slice(0, 200)}` };
+    }
+  }
+
+  // The option only gates new publication; retained work is always read back.
+  const drivesDeliveryEvidence=(session)=>deliveryEvidenceEnabled||Boolean(session.deliveryEvidenceWork);
+
+  async function finishDeliveryEvidence(session, work, pointer) {
+    if(!drivesDeliveryEvidence(session))return nativeEvidenceResponse(work,pointer);
+    const ready=session.deliveryReady,report=deliveryReport(session,work.intake.settlementId),address=deliveryEvidenceAddress(session.jobId),evidence=ready.evidence;
+    const held=(reason)=>nativeEvidenceResponse(work,{...pointer,evidencePublication:'held-readback-only',reason});
+    if(!isNativeDeliveryEvidence(evidence,claim,address)||contentHash(evidence)!==ready.evidenceHash||evidence.deliverableContentHash!==sha256Hex(canonicalize(report)))return held('retained delivery evidence differs from the verified Deliverable');
+    const check=await verifySettlementEvidence(evidence,{orchestrator:claim,agreement:{amount:agreementTerms(session.agreement).price.amount,currency:'DEM'},attestationRef:signedFixtureRef(address,ready.evidenceHash),result:{ok:true},expectedAnchorLocator:deliverableAddress(session.jobId)},ed25519Deps);
+    if(check.decision!=='pass')return held('delivery evidence verifier refused the retained evidence');
+    // No-resend: the artifact anchor journals its CREATE intent before it asks
+    // the wallet. A retained intent (sent, lost, denied or unknown) is only
+    // ever read back. Only an absence the capability itself proves unsigned (a
+    // branded no-intent verdict, as the shipped artifact anchor returns for
+    // proofOfNoIntent) permits the write again; a plain absent (a lagging name
+    // index, or a verdict that lost its proof) does not establish that nothing
+    // was signed, so it holds instead of asking a non-idempotent capability for
+    // a second CREATE at the same address.
+    let read;
+    try{
+      if(!session.deliveryEvidenceWork){
+        session.deliveryEvidenceWork={address,evidenceHash:ready.evidenceHash};persist(session);
+        read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
+      }else{
+        if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash)return held('retained delivery evidence work differs from the verified Deliverable');
+        read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true});
+        if(read?.status==='absent'&&deliveryEvidenceEnabled&&isProvenUnsignedAbsence(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
+      }
+    }catch(error){return held(String(error?.message??error).slice(0,240));}
+    if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');
+    if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash||canonicalize(read.artifact)!==canonicalize(evidence))return held('delivery evidence readback differs');
+    const cause=(error)=>`delivery evidence verifier unavailable: ${String(error?.message??error).slice(0,200)}`;
+    // A verifier that throws or cannot answer is an unavailable readback, not a
+    // failed effect: the paid claim stays a retry, never a thrown 503.
+    let verdict;
+    try{verdict=await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:read.receipt,signedProjection:read.signedProjection});}
+    catch(error){return held(cause(error));}
+    if(verdict==='indeterminate')return held('delivery evidence readback is unavailable');
+    if(verdict!=='valid')return held('delivery evidence readback differs');
+    const retained=session.deliveryEvidenceWork.receipt;
+    if(retained){
+      if(!sameNativeDeliveryReceipt(retained,read.receipt))return held('retained delivery evidence receipt differs');
+      try{verdict=await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:retained,signedProjection:read.signedProjection});}
+      catch(error){return held(cause(error));}
+      if(verdict==='indeterminate')return held('retained delivery evidence receipt is unavailable');
+      if(verdict!=='valid')return held('retained delivery evidence receipt differs');
+    }
+    session.deliveryEvidenceWork.receipt??=structuredClone(read.receipt);
+    session.stage='delivered';persist(session);
+    return nativeEvidenceResponse(work,{...pointer,status:'delivered',evidencePublication:'native-read-back',evidenceRef:signedFixtureRef(address,ready.evidenceHash),evidenceReceipt:session.deliveryEvidenceWork.receipt});
+  }
+
+  // Everything before the durable work checkpoint is free of external effects:
+  // the commitment is only read back, and the SDK permit claim, settlement
+  // binding and evidence signature are local and replay-idempotent for this
+  // exact job/payment. A failure here is a no-effect transport answer; after
+  // verified intake it remains indeterminate so the buyer retries the paid order.
+  // Thrown,
+  // it would leave the authenticated transport fenced as uncertain with no
+  // retained work for its read-only reconciliation to reduce, so the paid
+  // order could never be delivered. A durable checkpoint keeps throwing.
   async function startNativePaymentEvidence({ session, jobId, hash, payerPayingKey }) {
     let step = 'commitment-readback', paymentVerified = false;
     try {
@@ -1803,7 +1938,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (reconciliation.status === 'held') throw new SellerAgentError('seller_reconciliation_required', 'an anchor outcome remains unknown', 503);
     if (session.countersignatureWork && !session.sellerCopy) return countersign({ jobId, buyerSignature: session.countersignatureWork.buyerSignature });
     if (session.paymentWork && !session.payment) return submitPayment({ jobId, txHash: session.paymentWork.txHash, payerPayingKey: session.paymentWork.payerPayingKey });
-    if (session.nativeEvidenceWork && (!session.deliveryReady || deliveryEvidenceEnabled)) return submitPayment({ jobId, txHash: session.nativeEvidenceWork.txHash,
+    if (session.nativeEvidenceWork && (!session.deliveryReady || drivesDeliveryEvidence(session))) return submitPayment({ jobId, txHash: session.nativeEvidenceWork.txHash,
       payerPayingKey: session.nativeEvidenceWork.payerPayingKey, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
     if (session.commitCreatedAt && !session.commitment) return commit({ jobId });
     return { status: 'retained', stage: session.stage };

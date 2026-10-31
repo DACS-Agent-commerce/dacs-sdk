@@ -66,8 +66,8 @@ test('an indeterminate answer before the evidence checkpoint keeps nothing: the 
   const w = await world(t, [{ status: 'indeterminate', reason: 'demos-pending' }, DELIVERED]);
   assert.deepEqual(await w.pay(), { status: 'indeterminate', reason: 'demos-pending' });
   assert.deepEqual(await w.pay(), DELIVERED, 'the transfer, now included, reaches payment intake');
-  assert.deepEqual(await w.pay(), DELIVERED, 'the delivered answer is final');
-  assert.equal(w.calls.length, 2);
+  assert.deepEqual(await w.pay(), DELIVERED, 'the delivered answer is freshly authenticated');
+  assert.equal(w.calls.length, 3);
   assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), { error: 'peer_operation_conflict', status: 409 }, 'a delivered job takes no other claim');
 });
 
@@ -86,7 +86,7 @@ test('a held answer after the evidence checkpoint runs the agent again on a fres
   assert.deepEqual(await w.pay(), held, 'the readback is still absent');
   assert.deepEqual(await w.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
   assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 3, 'the conflicting body and the final answer never reach the agent');
+  assert.equal(w.calls.length, 4, 'the conflicting body is refused; the completed claim authenticates again');
 });
 
 // Only payment claims and durable proposals resume through reconciliation.
@@ -118,14 +118,18 @@ test('evidenced payment with a delivery not done yet is retried until the delive
   for (const answer of pending) assert.deepEqual(await w.pay(), answer);
   assert.deepEqual(await w.pay(), DELIVERED);
   assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 4);
+  assert.equal(w.calls.length, 5);
 });
 
 // A session delegation admits a request after its expiry only to read back
 // what the journal already holds (docs/SELLER-SESSION-DELEGATION.md). Running
 // a payment claim again can sign and send (a new evidence CREATE): never then.
 const THROW = Symbol('throw');
-async function delegatedWorld(t, answers) {
+// `publication` models an agent whose delivery-evidence publication is switched
+// on at the operator's request: while enabled, the delivered answer it would
+// give carries a new evidence CREATE. The transport must never let an expired
+// delegation run the claim again, so that CREATE must never be asked for.
+async function delegatedWorld(t, answers, publication = null) {
   const sellerKey = key(), buyerKey = key(), sessionKey = key();
   let time = NOW;
   const clock = () => time;
@@ -149,6 +153,7 @@ async function delegatedWorld(t, answers) {
       calls.push(body.txHash);
       const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
       if (answer === THROW) throw new Error('TEST the claim outcome is unknown');
+      if (publication?.enabled && answer?.delivery?.status === 'delivered') publication.calls.push(body.txHash);
       return structuredClone(answer);
     },
     // An agent that would run the claim again: the transport must not let it under an expired delegation.
@@ -169,7 +174,7 @@ async function delegatedWorld(t, answers) {
   assert.equal((await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle })).disposition, 'complete');
   const claim = { jobId, txHash: 'a1'.repeat(32), payerPayingKey: buyerKey.claim, nativePaymentEvidence: 'sdk-pay-dem-intake-native-evidence/loopback-v1' };
   const pay = async (body = claim) => { try { return await client.submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
-  return { calls, reconciles, claim, pay, expire: () => { time = payload.expiresAt + 1; } };
+  return { calls, reconciles, claim, pay, publication, expire: () => { time = payload.expiresAt + 1; } };
 }
 
 test('a held payment claim is not run again once its session delegation expired: the journal answers its last answer and the agent is not called', async (t) => {
@@ -190,6 +195,30 @@ test('an uncertain payment claim reconciles read only once its session delegatio
   assert.deepEqual(await w.pay(), { error: 'seller_unavailable', status: undefined }, 'still uncertain');
   assert.deepEqual(w.reconciles, [true], 'the agent is asked to reconcile read only');
   assert.equal(w.calls.length, 1, 'and the claim never runs again');
+});
+
+// The saved answer alone does not authenticate current payment, Deliverable or
+// delivery evidence, and re-running the claim under an expired delegation could
+// publish a new evidence CREATE. Neither is allowed: the transport holds.
+const DEFERRED = { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'deferred-to-explicit-sdk-finaliser' } };
+for (const [label, answers, enabled] of [
+  ['delivery-ready', [DEFERRED, DELIVERED], false],
+  ['delivered', [DELIVERED], true],
+]) test(`a completed ${label} answer is held, never replayed unauthenticated, once its session delegation expired`, async (t) => {
+  const publication = { enabled, calls: [] };
+  const w = await delegatedWorld(t, answers, publication);
+  const first = await w.pay();
+  assert.equal(first.delivery?.status, label === 'delivered' ? 'delivered' : 'delivery-ready', 'the order completes');
+  const agentCalls = w.calls.length, publications = publication.calls.length;
+  w.expire();
+  publication.enabled = true; // the operator switches publication on for the restarted seller
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const held = await w.pay();
+    assert.equal(held.status, 'held', 'a cached completion is not reported as success under an expired delegation');
+    assert.match(held.reason ?? '', /delegation_expired/);
+  }
+  assert.equal(w.calls.length, agentCalls, 'the claim never runs again under the expired delegation');
+  assert.equal(publication.calls.length, publications, 'no delivery evidence CREATE is asked for after expiry');
 });
 
 test('a waiting proposal keeps its HTTP retry slot until the durable responder completes', async (t) => {
