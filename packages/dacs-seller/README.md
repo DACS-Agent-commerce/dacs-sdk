@@ -196,7 +196,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   intake reads it (lower case, with or without `0x`). Under a seller session
   delegation that has expired, a held claim answers its last answer and an
   uncertain one stays uncertain: neither runs again, since a run can sign and
-  send. The Deliverable is submitted again only on an absence that is
+  send. A cached completed payment refresh also rechecks request and delegation
+  expiry inside the job fence and before authorizing a native CREATE; expiry
+  while waiting refuses the refresh without changing its cached claim.
+  The Deliverable is submitted again only on an absence that is
   authoritative (the agent never asked for it, or the delivery reader proved
   nothing was signed); a readback that misses or fails holds the delivery. A
   seller signature whose signer failed released nothing, so the next holder of
