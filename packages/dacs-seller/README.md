@@ -550,6 +550,31 @@ per-client limiter so one client cannot exhaust the shared request budget.
   in flight, signed under its pin, continues without a new admission or
   revocation check. The agent's startup check reads only the Listing's own
   bytes, signature and rail; revocation is checked per new session (above).
+- The staged bilateral Vet provider retains the exact seller presentation
+  signing bytes in its party Vet job row. An atomic reservation permits one
+  signer invocation across providers. A failed or interrupted signer call or
+  outcome save leaves that reservation pending; a retry never signs again.
+  If the reservation write commits but its acknowledgement is lost, the row is
+  pending although the signer was never called; because the process cannot tell
+  whether another provider holds it, a retry requires wallet reconciliation and
+  never signs a second time.
+  Completed presentations are verified before reuse. Unsigned rows from older
+  versions have no safe reservation and remain held without another signer call.
+
+  For the presentation, `wallet.signBytes(bytes, request)` receives a frozen
+  request with `jobId`, `signer`, `reservation` and `signedBytes` (lowercase hex).
+  A wallet that supports recovery must retain its signature under that identity
+  before answering. Its optional read-only
+  `wallet.reconcilePresentationSignature(request, { signal, maxBytes, timeoutMs })`
+  returns raw JSON bytes of exactly `{ ...request, status: 'signed', signature }`.
+  The provider admits at most 4,096 bytes before decoding and waits at most ten
+  seconds. Remote adapters must enforce the byte limit before decoding their
+  own wire replies and honor the abort signal. The recovered signature must
+  verify for the exact retained bundle. Missing capability, unknown or absent
+  outcome, mismatched identity, invalid signature, malformed reply or timeout
+  returns `seller_presentation_indeterminate`; none permits another signature
+  or challenge. A lost save acknowledgement reuses the completed job row
+  without a wallet lookup. This changes no signed wire format or factory gate.
 - The profile gates (`vet_context_required`, `session_admission_required`,
   `settlement_profile_unavailable`, `rail_unavailable`,
   `native_evidence_required`, `bundle_finalization_unavailable`) refuse before

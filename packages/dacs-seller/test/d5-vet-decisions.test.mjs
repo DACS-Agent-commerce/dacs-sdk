@@ -6,8 +6,9 @@ import * as sdk from '@kynesyslabs/dacs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {compositeVerificationAddress,vetPhaseFailureClass} from '@kynesyslabs/dacs';
+import {seller as fixtureSeller} from './helpers/protocol-fixture.mjs';
 import { purchaseSupport } from '../src/dacs/listing.mjs';
-const buyer='did:demos:agent:'+'1'.repeat(64),seller='did:demos:agent:'+'2'.repeat(64),jobId='01ARZ3NDEKTSV4RRFFQ69G5FAW';
+const buyer='did:demos:agent:'+'1'.repeat(64),seller=fixtureSeller.claim,jobId='01ARZ3NDEKTSV4RRFFQ69G5FAW';
 let decision='pass',nonPassParty=buyer,records=new Map(),madeRequirements=[],strictRequirements=[];
 globalThis.__d5Strict=async(_record,expected)=>{strictRequirements.push(structuredClone(expected.requirement));return {status:'valid'}};
 globalThis.__d5PartyVet=async (input,deps)=>{
@@ -27,11 +28,10 @@ const {createDevnetDemoAgreementContextProvider}=await privateModule(sourceUrl,[
 const {createInMemoryPartyVetStore}=await import('../src/devnet-demo/party-vet-store.mjs');
 const stores=new WeakMap();
 const {fixtureListing}=await import('./fixtures/listings.mjs');
-const {seller:fixtureSeller}=await import('./helpers/protocol-fixture.mjs');
 const sdkFixtureListing=fixtureListing(fixtureSeller,{now:1800000000000});sdkFixtureListing.seller.identity={...bundleTemplate()};
 function bundleTemplate(){return {presentedBy:seller,bundleVersion:'1',presentedAt:1800000000000,sessionNonce:'b'.repeat(64),claims:[{ref:seller}]};}
 const {listingPin:pinFor}=await import('../src/dacs/purchase-protocol.mjs');
-const scope={jobId,seller,price:purchaseSupport(sdkFixtureListing).price,listingPin:pinFor(sdkFixtureListing),generatedAt:1800000000000,payee:'0x'+'2'.repeat(64)};
+const scope={jobId,seller,price:purchaseSupport(sdkFixtureListing).price,listingPin:pinFor(sdkFixtureListing),generatedAt:1800000000000,payee:fixtureSeller.address};
 const bundle={presentedBy:buyer,bundleVersion:'1',presentedAt:scope.generatedAt,sessionNonce:'a'.repeat(64),claims:[{ref:buyer}],presentation:{kind:'per-claim',signatures:[{ref:buyer,signature:'fixture'}]}};
 function provider(buyerRequirement={requirementVersion:'1',required:[],preferredPresentation:'any'}){
  let store=stores.get(records);if(!store){store=createInMemoryPartyVetStore();stores.set(records,store);}
@@ -39,7 +39,7 @@ function provider(buyerRequirement={requirementVersion:'1',required:[],preferred
   madeRequirements.push(structuredClone(input.requirement));
   return {recordVersion:'1',jobId,evaluatedParty:seller,overallDecision:nonPassParty===seller?decision:'pass',signature:{signer:buyer}};
  }};
- const provider=createDevnetDemoAgreementContextProvider({anchor:{writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}};}},wallet:{claim:seller,signBytes:()=>Buffer.alloc(64)},listing:{...sdkFixtureListing, buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
+ const provider=createDevnetDemoAgreementContextProvider({anchor:{writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}};}},wallet:{claim:seller,signBytes:fixtureSeller.signBytes},listing:{...sdkFixtureListing, buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
  return {...provider,resolveBuyer:(input,options={writable:()=>true})=>provider.resolveBuyer(input,options)};
 }
 async function retainProofs(){
