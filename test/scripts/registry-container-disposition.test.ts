@@ -3242,6 +3242,18 @@ describe("acceptance failure class", () => {
     ["registry-start", { "registry.log": "docker: Error response from daemon: received unexpected HTTP status: 503 Service Unavailable." }, "network"],
     ["image-build", { "docker-build.log": "#3 ERROR: failed to resolve source metadata for docker.io/library/node:20: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/node/manifests/20: 503 Service Unavailable" }, "network"],
     ["image-build", { "docker-build.log": "#3 ERROR: failed to resolve source metadata for docker.io/library/node:20: unexpected status from HEAD request to https://registry-1.docker.io/v2/library/node/manifests/20: 401 Unauthorized" }, "functional"],
+    // A log ends on one terminal cause (npm's error code, curl's exit line, a bare
+    // `Error:`): a recovered transport error before a nonretryable one is functional.
+    ["consumer", { "generation.log": "npm error code E403\nnpm error 403 Forbidden - GET http://127.0.0.1:4873/left-pad - network timeout at: 30000ms" }, "functional"],
+    ["publish", { "registry.log": "npm warn retry ECONNRESET\nnpm error code EINTEGRITY" }, "functional"],
+    ["publish", { "registry.log": "npm warn retry ECONNRESET\nnpm error code E409" }, "functional"],
+    ["image-build", { "docker-build.log": "#7 9.1 npm warn retry ECONNRESET\n#7 9.2 npm error code EINTEGRITY" }, "functional"],
+    ["registry-auth", { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 4873\ncurl: (22) The requested URL returned error: 403" }, "functional"],
+    ["publish", { "registry.log": "npm warn retry ECONNRESET\nError: candidate integrity mismatch" }, "functional"],
+    // ...and a nonretryable error before the transport failure that ended the run stays network.
+    ["publish", { "registry.log": "npm error code E403\nnpm warn retry ECONNRESET\nnpm error code ECONNRESET" }, "network"],
+    ["registry-auth", { "registry.log": "curl: (22) The requested URL returned error: 403\ncurl: (7) Failed to connect to 127.0.0.1 port 4873" }, "network"],
+    ["publish", { "registry.log": "npm warn retry ECONNRESET\nnpm error code ETIMEDOUT" }, "network"],
     // Output of downloaded or generated code can print any npm line: once the
     // consumer stage has written its dependency policy, its log is not evidence.
     ["consumer", { "dependency-policy.json": "{}", "generation.log": "not ok 1 - seller test failed\nnpm error code ECONNRESET" }, "functional"],
