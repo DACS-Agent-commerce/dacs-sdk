@@ -77,9 +77,14 @@ describe("acceptance evidence I/O", () => {
     expect(summary).toMatchObject({ complete: false, failureClass: "functional" });
     expect(JSON.stringify(summary).length).toBeLessThan(1024);
   });
-  it.each(["docker-dns.txt", "git-dns.txt", "git-connect.txt"])("recognizes captured transport diagnostic %s", name => {
+  it("recognizes a captured Docker transport diagnostic in a stage that runs Docker", () => {
+    const text = fixture("docker-dns.txt");
+    expect(classifyAcceptanceFailure({ stage: "registry-start", exitCode: 1, read: () => text })).toMatchObject({ failureClass: "network" });
+  });
+  // Each stage reads only the cause lines of the programs it runs; registry start runs no Git.
+  it.each(["git-dns.txt", "git-connect.txt"])("names no cause from Git's diagnostic %s in a stage that runs Docker", name => {
     const text = fixture(name);
-    expect(classifyAcceptanceFailure({ stage: "registry-start", read: () => text })).toMatchObject({ failureClass: "network" });
+    expect(classifyAcceptanceFailure({ stage: "registry-start", exitCode: 1, read: () => text })).toEqual({ failureClass: "functional", evidence: [] });
   });
 });
 
