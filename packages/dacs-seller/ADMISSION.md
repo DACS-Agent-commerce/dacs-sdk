@@ -55,8 +55,9 @@ new starts across jobs. The seller's process-lifetime state lock is required
 when D12 opens these journals. Refused fresh traffic leaves no decision-log
 line; otherwise a flood could grow the log despite a start-count refusal.
 Accepted holds and exact write decisions remain durable. Reconciliation of a
-present context releases all unused context holds for that job. The hold's
-effect field is informational; holdId and jobId select release/conversion.
+present context releases all unused context holds for that job. Startup uses
+each hold's effect and job to check the transport journal; holdId and jobId
+select release/conversion.
 
 The pre-payment hold remains an explicit product limitation, including for
 closed-access custody buyers. Authentication alone never removes it. The
@@ -90,12 +91,41 @@ is required even when admission refuses; holds, provider calls and new effects
 remain absent on refusal. Buyer-owned seller challenges use a separate durable
 ledger and the exact accepted seller presentation is retained per job.
 
-There is a remaining policy-ledger race: another route can consume journal
-capacity between the dry admission check and the real reservation. A final
-refusal then leaves one hold and one release line, with no provider call or
-transport effect. B29 executes that conflict. Cross-ledger atomicity is not
-established; the SDK maintainer must resolve it with D12's host composition and decision-log
-contract. This P3 remains open.
+The transport reservation commits before policy admission opens its hold. A
+policy refusal or exception cleans up fresh work and retains resumed
+uncertainty. The two ledgers are not one atomic transaction: older runs and
+crashes after completion or during release can leave open policy holds.
+
+A host mounting the context route must hold its process-lifetime seller state
+lock, open its retained transport store, and pass that same store to policy
+admission before serving requests:
+
+```js
+const admission = createSellerContextAdmission({
+  evidencePath, sellerApproval, transportStore: store, now,
+});
+await admission.ready;
+// Only now mount/serve the route using admission.reserve and admission.release.
+```
+
+`ready` resolves the released hold IDs. Under the policy writer lock, startup
+repairs recognized torn context tails and checks every open hold against
+`peer_effects`, `peer_effect_jobs` and `peer_context_admissions`. It releases
+exact hold IDs for absent or completed effects, including resumed holds and
+orphan effects for a job with a later admission. Pending, uncertain and retry
+effects stay held. Inconsistent bindings, unknown states, ledger/journal read
+errors, invalid release clocks and sync failures reject startup. Reserve and
+release also await `ready`, so a failed startup cannot admit writes. Repeating
+startup syncs retained releases and appends no duplicate release lines.
+
+Cleanup releases unused capacity only: signed-write reservations, original
+request bytes, consumed challenges and transport answers remain unchanged.
+Completion is not proof of Vet success; cached present answers still require
+source readback. Retain both ledgers: replacing a lost transport journal with an
+empty one is not recovery. Omitting `transportStore` retains the low-level
+ledger-only API and does not perform startup recovery. The standalone host
+does not mount this route. `context-hold-startup.test.mjs` covers these crash
+windows, gating, repeat startup, inconsistent records and a fresh process.
 
 
 Challenge retention has an independent total capacity, `maxChallenges`, defaulting to `maxRecords` (10,000). A new issuance at capacity returns `context_challenge_capacity` (503) before any mutation, policy hold or provider call; identical outstanding requests still read the retained challenge. Reclamation is part of successful issuance, after all limits and unpaid-start checks. It deletes only expired rows outside the full one-hour issuance window whose bound session is in an exact DACS-5 terminal state: finalised, vet-failed, negotiate-failed, commit-failed, settle-failed, aborted-by-self, aborted-by-other or failed-substrate. Consumption or expiry alone is insufficient. This retains CORE §B.8 SN-4 state through session termination and preserves hourly counters. Cleanup inspects terminal states only when space is needed and stops once enough rows are reclaimable. T1–T6 and T14 test limits, terminal/non-terminal states, restart, replay, zero-mutation refusals and early scan termination.
