@@ -117,18 +117,28 @@ function takeLease(dir) {
   } catch (error) { lease?.close(); closeSync(fd); throw error; }
   LEASES.set(dir, { lease, fd });
 }
-// The start time of the process a PID names here now, or null.
-function runningStart(pid) {
+const START_UNREADABLE = Symbol('start-unreadable');
+const procStat = (pid) => readFileSync(`/proc/${pid}/stat`, 'utf8');
+// The start time of the process a PID names here now; null only when the kernel
+// says no process has that PID (ESRCH); START_UNREADABLE when one may run but
+// its start can't be read (procfs mounted with hidepid shows another user's
+// live process as missing, EPERM, a failed or malformed read).
+function runningStart(pid, readStat = procStat) {
   if (!Number.isSafeInteger(pid) || pid < 1) return null;
-  if (NAMESPACE.pids === 'proc') { try { return startTicks(readFileSync(`/proc/${pid}/stat`, 'utf8')); } catch { return null; } }
-  try { process.kill(pid, 0); } catch (error) { if (error.code !== 'EPERM') return null; }
-  return psStart(pid);
+  let signalled = true;
+  try { process.kill(pid, 0); } catch (error) { signalled = error.code !== 'ESRCH'; }
+  if (!signalled) return null;
+  if (NAMESPACE.pids === 'proc') { try { return startTicks(readStat(pid)) ?? START_UNREADABLE; } catch { return START_UNREADABLE; } }
+  return psStart(pid) ?? START_UNREADABLE;
 }
 // True when the row's holder ran in this PID namespace on this boot and its
-// PID still runs the process that took the row (same start time): that holder
-// is alive whatever its lease shows. Otherwise the lease alone decides.
-function holderRunsHere(row, holder) {
-  return Boolean(NAMESPACE?.pids && sameNamespace(holder) && runningStart(row.pid) === holder.namespace.start);
+// PID still runs the process that took the row (same start time), or runs a
+// process whose start can't be read: that holder is alive whatever its lease
+// shows. Otherwise the lease alone decides.
+function holderRunsHere(row, holder, readStat) {
+  if (!NAMESPACE?.pids || !sameNamespace(holder)) return false;
+  const start = runningStart(row.pid, readStat);
+  return start !== null && (start === START_UNREADABLE || start === holder.namespace.start);
 }
 // The state of process `id`'s lease: 'held' (another process holds it), 'free'
 // (it can be taken), or 'unchecked' (missing, not a private regular file,
