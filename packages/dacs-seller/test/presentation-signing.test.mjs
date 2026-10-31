@@ -176,6 +176,16 @@ test('legacy unsigned rows cannot authorize signing but valid signed rows still 
  await f.provider.state.update(JOB,row=>{delete row.presentation.bundle.presentation;return row;});
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);
 });
+// An earlier version stored whatever string the wallet returned, so a signed row
+// may carry hex. It stays valid, and must not read as a replaced presentation.
+test('a legacy signed row with a hex signature still reaches evaluation unchanged',async t=>{
+ const f=await sessionFixture(t);const bundle=await f.run();const hex=Buffer.from(bundle.presentation.signatures[0].signature,'base64url').toString('hex');
+ await f.provider.state.update(JOB,row=>{delete row.presentation.signing;row.presentation.bundle.presentation.signatures[0].signature=hex;return row;});
+ const kept=(await f.row()).presentation.bundle;
+ assert.deepEqual(await f.run(),kept);
+ await f.provider.produceSeller(f.job);
+ assert.deepEqual((await f.row()).presentation.bundle,kept);assert.equal(f.controls.signs,1);
+});
 test('completed presentations from a changed binding cannot replay',async t=>{
  const f=await sessionFixture(t);await f.run();await f.provider.state.update(JOB,row=>({...row,binding:{TEST:'new binding'}}));
  await assert.rejects(f.run(),error=>error.code==='binding-changed');
