@@ -547,6 +547,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       const row = admissions() ? get("SELECT e.status, e.response FROM peer_context_admissions a JOIN peer_effects e ON e.effect = a.effect WHERE a.job = ? AND e.state = 'complete'", jobId) : null;
       return row ? { status: row.status, text: row.response } : null;
     },
+    // Recheck the reserved original command inside the seller job fence.
+    assertPending(reservation) {
+      const row=get('SELECT owner, state FROM peer_effects WHERE effect = ?',reservation?.effectKey);
+      if(!row||row.owner!==reservation.owner||row.state!=='pending')fail('peer_store_conflict',503);
+      const slot=get('SELECT slot FROM peer_slots WHERE effect = ?',reservation.effectKey)?.slot;
+      if(slot?.endsWith(`:${PROPOSAL}`)&&TERMINAL_CONTEXT_STATES.has(contextSessionState({jobId:slot.slice(0,-PROPOSAL.length-1)})))fail('context_session_terminal',409);
+    },
     // noEffect: a definite answer that started nothing (its rows go). retry:
     // an answer the agent marks as not final yet (a 200 answer, or a refusal
     // of a claim whose work the agent retains); its effect stays bound to its
@@ -642,6 +649,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   const refuseExpired = request => fail(delegations.get(request)?.payload.expiresAt <= now() ? 'peer_delegation_expired' : 'peer_expired', 408);
   const guardedStore = Object.freeze({
     bind: (value) => store.bind(value),
+    ...(typeof store.assertPending==='function'?{assertPending:reservation=>store.assertPending(reservation)}:{}),
     issueContextChallenge: (request, ...args) => isReadbackOnly(request) ? refuseExpired(request) : store.issueContextChallenge(request, ...args),
     attemptContextPresentation: (request, ...args) => isReadbackOnly(request) ? refuseExpired(request) : store.attemptContextPresentation(request, ...args),
     reserve: (request, body, options = {}) => store.reserve(request, body, isReadbackOnly(request) ? { ...options, journaledOnly: true } : options),

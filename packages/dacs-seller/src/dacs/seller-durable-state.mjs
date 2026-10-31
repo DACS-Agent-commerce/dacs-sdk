@@ -680,6 +680,11 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           if (!bound) putEffect(id, { kind: 'session-job', jobId, buyer: prior.buyer, presentationHash, ...(bundleHash===undefined?{}:{buyerBundleHash:bundleHash}), sessionNonce: nonce, admittedAt: accepted?.admittedAt ?? null });
         });
       },
+      // Retire an unsigned candidate's capacity while retaining its accepted
+      // presentation for exact retry; retirement never permits nonce reuse.
+      retireChallenge(nonce,presentationHash) {
+        transaction(()=>{const prior=effect(`session-challenge:${nonce}`);if(prior?.attempt?.presentationHash!==presentationHash||prior.attempt.admitted!==true)fail('seller_state_corrupt');putEffect(`session-challenge:${nonce}`,{...prior,attempt:{...prior.attempt,retired:true}});});
+      },
       // The accepted presentation reserved for a job, or null. Read-only.
       jobBinding(jobId) {
         const binding = effect(`session-job:${jobId}`);

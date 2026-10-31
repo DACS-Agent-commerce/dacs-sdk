@@ -4,7 +4,7 @@
 // makes a later presentation invalid. Retained records are therefore never
 // deleted here: they are tombstones (consumed, or expired before any attempt)
 // and do not occupy live issuance capacity. Only a challenge still open for a
-// presentation - never attempted and not yet expired - counts.
+// presentation - never attempted and not yet expired - counts as live.
 export function admitSessionChallenge(entries,value,{maxOutstanding,maxPerJob}){
   if(![maxOutstanding,maxPerJob].every(limit=>Number.isSafeInteger(limit)&&limit>0))throw new TypeError('challenge limits must be positive safe integers');
   let total=0,job=0;
@@ -17,5 +17,5 @@ export function admitSessionChallenge(entries,value,{maxOutstanding,maxPerJob}){
     if(row.attempt!==null||row.expiresAt<=value.issuedAt)continue;
     total++;if(row.jobId===value.jobId)job++;
   }
-  if(total>=maxOutstanding||job>=maxPerJob)throw Object.assign(new Error('the seller has reached retained challenge capacity'),{code:'seller_challenge_capacity'});
+  if(total>=maxOutstanding||job>=maxPerJob)throw Object.assign(new Error('the seller has reached live challenge capacity'),{code:'seller_challenge_capacity'});
 }

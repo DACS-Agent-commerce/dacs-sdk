@@ -20,6 +20,14 @@ function fixture(t){
  const config={signer,listing,durableDirectory:dir,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission};
  return{config,dir,listing,signer,admission,advance:ms=>{time+=ms;},open:changes=>createSellerAgent({...config,...changes})};
 }
+// The simulated fixture profile: no session admission, so no retained Vet
+// evidence can ever be authenticated for a session that claims it.
+function fixtureProfile(t){
+ const dir=mkdtempSync(join(tmpdir(),'TEST-agent-construction-fixture-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
+ const listing=fixtureListing(seller,{now:NOW}),signer={claim:seller.claim,sign:seller.signBytes};
+ const config={signer,listing,durableDirectory:dir,now:()=>NOW,anchors:{read:async()=>null,write:async()=>null},simulatedFixture:true};
+ return{config,dir,listing,signer,open:changes=>createSellerAgent({...config,...changes})};
+}
 // A buyer presentation that carries exactly the nonce the seller issued.
 const presentWith=(party,sessionNonce)=>{
  const unsigned=buildUnsignedIdentityBundle({address:party.address,presentedAt:NOW-1000,sessionSeed:'construction',sessionNonce});
@@ -129,6 +137,16 @@ test('restart refuses a retained vetted session with no exact, job-bound, verifi
   await admit(sessionFor(JOB,bundle,checkpoint));
   await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&pattern.test(error.message));
  }
+});
+// A durable store may be reopened under the simulated fixture profile (an
+// upgrade or downgrade of the operator's configuration). A session that claims
+// Vet cannot be authenticated there: with no admission, its retained challenge,
+// checkpoints, records and receipts are unproven, so restore must hold it.
+test('restart refuses a fixture-profile session that claims Vet without an admission to authenticate it',async t=>{
+ const f=fixtureProfile(t),agent=await f.open();agent.close();
+ const bundle=presentWith(buyer,'ab'.repeat(32));
+ await saveSession(f,sessionFor(JOB,bundle,{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}));
+ await assert.rejects(f.open(),error=>error.code==='seller_state_unverified');
 });
 test('read paths refuse a retained session another writer left unverified',async t=>{
  const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
