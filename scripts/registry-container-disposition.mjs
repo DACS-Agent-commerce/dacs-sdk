@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, posix } from "node:path";
+import { fileURLToPath } from "node:url";
+import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
+import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
 const advisoryId = /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/;
@@ -130,6 +135,148 @@ export function registryDependencyViolations({ manifest, lock, registry }) {
     }
   }
   return violations;
+}
+
+// The release candidates. A consumer of both rails also depends on the rest.
+const CANDIDATE_NAMES = ["@kynesyslabs/dacs", "@kynesyslabs/dacs-node"];
+const DUAL_RAIL_DEPENDENCIES = [...CANDIDATE_NAMES, "@kynesyslabs/demosdk", "@x402/core", "@x402/evm", "@x402/fetch",
+  "better-sqlite3", "viem"];
+// npm runs these when it installs a package. A candidate declaring one would
+// run its own code before this check, so it is refused.
+const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall"];
+const MAX_LISTED_DIFFERENCES = 20;
+
+// The release candidates in `releaseSet`, as `{ name, integrity, version,
+// files }`: each packed tarball must be the one release-provenance.json
+// records for `version` before either is compared with the consumer's lock.
+function releaseCandidates(releaseSet, version) {
+  const provenance = JSON.parse(readFileSync(join(releaseSet, "release-provenance.json"), "utf8"));
+  if (provenance?.version !== version) throw new Error(`release-provenance.json is not for version ${version}`);
+  const candidates = CANDIDATE_NAMES.map(name => {
+    const bytes = readFileSync(join(releaseSet, `${name.slice(1).replace("/", "-")}-${version}.tgz`));
+    const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64");
+    const recorded = provenance.packages?.[name]?.integrity;
+    if (recorded !== integrity) {
+      throw new Error(`release-provenance.json records ${String(recorded)} for ${name}, but the packed tarball is ${integrity}`);
+    }
+    return { name, integrity, version, bytes };
+  });
+  const fileSets = packedFileSets(new Map(candidates.map(({ name, bytes }) => [name, bytes])));
+  return candidates.map(({ name, integrity, version }) => {
+    const files = fileSets.get(name);
+    const manifest = JSON.parse(files.get("package.json").toString("utf8"));
+    if (manifest?.name !== name || manifest?.version !== version) {
+      throw new Error(`packed candidate manifest does not match the release: ${name}@${version}`);
+    }
+    return { name, integrity, version, files };
+  });
+}
+
+function declaredInstallScripts(files) {
+  const scripts = JSON.parse(files.get("package.json").toString("utf8"))?.scripts;
+  return [...INSTALL_LIFECYCLE_SCRIPTS.filter(script => isPlainObject(scripts) && script in scripts),
+    ...(files.has("binding.gyp") ? ["binding.gyp"] : [])];
+}
+
+// Certify a location from its independently verified closure archive, never
+// from lock claims alone. Bundles and opaque entries have no such files.
+function releaseCopyErrors(location, record, { name, integrity, version }, registry) {
+  const entry = record?.entry ?? {};
+  const { origin, path } = consumerRegistry(registry);
+  const errors = [];
+  if (!record?.files || record.unverified || entry.inBundle === true) {
+    errors.push("candidate package has no independently verified release archive: " + location);
+  }
+  let url = null;
+  try { url = new URL(entry.resolved); } catch { /* not a URL */ }
+  if (url === null || url.origin !== origin || !url.pathname.startsWith(path)) {
+    errors.push("candidate package did not resolve through the isolated registry: " + location);
+  } else if (entry.integrity !== integrity) {
+    errors.push(`candidate package integrity does not match the packed tarball: ${location} ` +
+      `(expected ${integrity}, observed ${String(entry.integrity)})`);
+  }
+  if (entry.name !== undefined && entry.name !== name) errors.push("candidate package lock name does not match the release: " + location);
+  if (entry.version !== version) {
+    errors.push(`candidate package lock version does not match the release: ${location} (expected ${version}, observed ${String(entry.version)})`);
+  }
+  return errors;
+}
+
+// Hoisted, nested and shallow installs use lock locations as installed paths.
+// The tree matched npm's own install of the lock before this is trusted.
+function candidateInventory(closure) {
+  const modules = new Map();
+  for (const [location, record] of closure.entries) {
+    if (!record.present) continue;
+    modules.set(location, { entry: record.entry, name: location.replace(/^.*node_modules\//, "") });
+  }
+  return { modules };
+}
+
+// Every installed lock location named for a candidate, top-level or nested,
+// must be an independently locked release archive of that candidate.
+function authenticateCandidateInventory(closure, inventory, candidates, registry) {
+  const errors = [];
+  for (const candidate of candidates) {
+    if (!closure.entries.get("node_modules/" + candidate.name)?.present) {
+      errors.push("candidate package is not installed at the top level: " + candidate.name);
+    }
+  }
+  for (const [location, module] of inventory.modules) {
+    for (const candidate of candidates.filter(({ name }) => name === module.name)) {
+      errors.push(...releaseCopyErrors(location, closure.entries.get(location), candidate, registry));
+    }
+  }
+  return errors;
+}
+
+// What keeps the installation from holding only release copies of
+// `candidates`, given its closure: candidates that run install code, and lock
+// locations named for a candidate that are not its release.
+function candidateIntegrityErrors({ registry, candidates, closure }) {
+  const inventory = candidateInventory(closure);
+  return [
+    ...candidates.flatMap(({ name, files }) => {
+      const scripts = declaredInstallScripts(files);
+      return scripts.length ? [`candidate package runs code when installed (${scripts.join(", ")}): ${name}`] : [];
+    }),
+    ...authenticateCandidateInventory(closure, inventory, candidates, registry),
+  ];
+}
+
+// Checks the consumer at `projectPath`, installed by npm ci --ignore-scripts
+// and unused by any package code so far (such code could change the tree
+// after extraction), and writes its registry dependency report. Every
+// installed path must be the one npm installs from the same lock and archives,
+// and every lock location named for a candidate the release in `releaseSet`;
+// otherwise it throws listing each difference.
+function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet, version }) {
+  const project = realpathSync(projectPath);
+  // npm reads both files as UTF-8 text and ignores a leading byte-order mark.
+  const npmJson = bytes => JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
+  const manifestBytes = readFileSync(join(project, "package.json"));
+  const manifest = npmJson(manifestBytes);
+  const lock = npmJson(readFileSync(join(project, "package-lock.json")));
+  const missing = DUAL_RAIL_DEPENDENCIES.filter(name => typeof manifest.dependencies?.[name] !== "string");
+  if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
+  const candidates = releaseCandidates(releaseSet, version);
+  const installer = npmInstallContract(project);
+  if (installer.config["install-strategy"] === "linked") {
+    throw new Error("cannot authenticate candidate copies under install-strategy=linked: lock locations are not installed paths");
+  }
+  const closure = referenceInstallation({ manifest: manifestBytes, lock, installer,
+    metadataCache: installer.config.cache,
+    readArchive: (_location, entry) => cachedArchive(installer.config.cache, entry.integrity) });
+  // A failed replay publishes no entries or inventory, so no candidate rule can be judged.
+  if (closure.errors.length) throw new Error(closure.errors.join("\n"));
+  const differences = installationDifferences(project, closure).map(line => "installed tree is not the locked archives: " + line);
+  const errors = [...differences.slice(0, MAX_LISTED_DIFFERENCES),
+    ...(differences.length > MAX_LISTED_DIFFERENCES ? [`and ${differences.length - MAX_LISTED_DIFFERENCES} more differences`] : []),
+    ...candidateIntegrityErrors({ registry, candidates, closure })];
+  if (errors.length) throw new Error(errors.join("\n"));
+  const violations = registryDependencyViolations({ manifest, lock, registry });
+  writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
+    violations }, null, 2) + "\n");
 }
 
 // npm's EBADENGINE check (npm-install-checks) tests each non-optional package's
@@ -384,4 +531,22 @@ export function runtimeImageInventoryFindings(inventory, lock) {
     .filter(([location]) => !seen.has(location) && required.has(location))
     .map(([location]) => location);
   return { scanComplete: errors.length === 0, errors, unexpected, missing };
+}
+
+// Node runs the main module by its real path, or by its linked path under
+// --preserve-symlinks-main, so compare real paths. An entry that is not a file
+// (stdin "-", or none) means this module was imported.
+const entryPath = (() => { try { return realpathSync(process.argv[1]); } catch { return null; } })();
+if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.url))) {
+  const [mode] = process.argv.slice(2);
+  if (mode === "--dependency-policy") {
+    const [projectPath, registry, report, releaseSet, version] = process.argv.slice(3);
+    if (report) rmSync(report, { force: true });
+    if (!projectPath || !registry || !report || !releaseSet || !version) {
+      throw new Error("usage: --dependency-policy <project> <registry> <report> <release-set> <version>");
+    }
+    writeDependencyPolicyReport({ projectPath, registry, report, releaseSet, version });
+  } else {
+    throw new Error("unsupported registry policy mode: " + String(mode));
+  }
 }
