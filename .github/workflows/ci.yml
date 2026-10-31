@@ -48,8 +48,15 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Prepare locked seller consumer
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
+
       - name: Test seller internal primitives and journals
-        run: node --test --test-concurrency=1 packages/dacs-seller/test/*.test.mjs
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:test
 
       - name: Check held client snapshot and native authorization contracts
         if: matrix.node-version == '22'

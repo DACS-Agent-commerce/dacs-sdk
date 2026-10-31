@@ -114,6 +114,7 @@ Run the seller checks from the repository root after building the core:
 
 ```sh
 npm run build
+npm run seller:prepare
 node --experimental-vm-modules --test --test-concurrency=1 packages/dacs-seller/test/*.test.mjs
 ```
 

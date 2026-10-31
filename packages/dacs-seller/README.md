@@ -1,4 +1,4 @@
-# Seller source kit
+# `@kynesyslabs/dacs-seller`
 
 A self-hosted DACS seller: one seller agent for one signed fixed-price DEM
 Listing, behind the authenticated seller transport and its durable journal, on
@@ -25,12 +25,10 @@ qualification for a current testnet deployment.
 The repository's `engines` require Node.js `^20.19.0 || >=22.12.0`; the
 durable stores use the native `better-sqlite3` module. Use the same version of
 `@kynesyslabs/dacs` as this kit.
-Build the core SDK from this checkout and run the example from a script in
-`packages/dacs-seller/`.
+The private package uses a core tarball built from the same checkout.
 
 ```js
-import { startSellerHost } from './src/index.mjs';
-import { createOperatorBuyerAccess } from './src/devnet-demo/buyer-access.mjs';
+import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
 const host = await startSellerHost({
   signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
@@ -74,25 +72,23 @@ const host = await startSellerHost({
 // host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
 ```
 
-Imports in this README are paths inside this directory: it has no package
-manifest yet, so `@kynesyslabs/dacs-seller` cannot be installed or imported by
-name. `src/dacs/listing.mjs` exports `buildUnsignedIdentityBundle`,
-`attachIdentityPresentation`, `buildListingDraft`, `listingSigningMessage` and
-`attachListingSignature`, which build the signed Listing; a wallet signs the
-returned messages. A buyer builds its presentation with
-`buildUnsignedIdentityBundle({ address, presentedAt, sessionNonce })`, where
-`sessionNonce` is the challenge the seller issued.
-`createPaymentEvidenceWalletJournal` composes the payment evidence anchor and
-`reconcilePaymentEvidence` from the operator's wallet (below).
-`validateSellerListing` (`src/dacs/rail-authority.mjs`) reads a Listing
-through the core SDK and resolves its rail from a `railAuthority` (or, for
-tests only, `simulatedFixture: true`). `createSellerAgent` is exported by
-`src/dacs/seller-agent.mjs`.
-The root `src/index.mjs` exports `startSellerHost`, `createSellerHttpHandler`,
-`createSellerAgentClient`, `createSellerTransportStore`,
-`createSellerTransportServerAuth`, `createSellerTransportClientAuth` and
-`createPaymentEvidenceWalletJournal`. The kit's other modules are reachable by
-path; they are not a stable API.
+`buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
+`buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
+build the signed Listing; a wallet signs the returned messages. A buyer
+builds its presentation with `buildUnsignedIdentityBundle({ address,
+presentedAt, sessionNonce })`, where `sessionNonce` is the challenge the
+seller issued. `createPaymentEvidenceWalletJournal` composes the payment
+evidence anchor and `reconcilePaymentEvidence` from the operator's wallet
+(below).
+`validateListing` reads a Listing through the core SDK and resolves its rail
+from a `railAuthority` (or, for tests only, `simulatedFixture: true`). The other root
+exports are the parts the host composes, for operators who compose their own:
+`createSellerHttpHandler`, `createSellerTransportStore`,
+`createSellerTransportServerAuth` and the buyer side `createSellerAgentClient`
+and `createSellerTransportClientAuth`. The incomplete `createSellerAgent` constructor
+stays outside the root API, as required by [PROFILE.json](PROFILE.json).
+The kit's other modules are reachable
+by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
 recovery. It must synchronously return identical JSON for the same Agreement,
@@ -210,7 +206,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   the call, leaves a record with no CREATE, and only the capability can tell
   that from a CREATE it signed and lost. Its `read` returns
   `provenUnsignedAbsence(reason)` (from
-  `src/dacs/native-dem-delivery-consumer.mjs`)
+  `@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs`)
   exactly when it can prove no signed CREATE for the address was sent or
   remains available to send; the agent then asks again, and the paid order is
   delivered with one CREATE. Any other answer (a miss, a lagging name index,
@@ -500,3 +496,22 @@ The rail availability checks implement DACS-4 RAV-R1 through RAV-R3 and
 RAV-R5. The seller does not emit the RAV-R4 `errorClass: substrate` field.
 The SR-2 fixture's genesis response (numeric block zero and a `confirmed`
 status) is a simulation contract, not the pinned node's genesis RPC shape.
+
+## Package checks
+
+From the repository root, build and provision the locked smoke consumer before testing:
+
+```sh
+npm run build
+npm run seller:prepare
+npm run seller:test
+```
+
+Setup derives the consumer graph from `package-lock.json`, packs this checkout,
+and installs the native SQLite binding. Tests use that prepared environment
+offline and run every executable seller file once. Root `npm test` runs the
+separate TypeScript suite. Existing unresolved stack failures still block a
+complete seller-suite pass. For another setup, pass a directory to
+`seller:prepare -- <path>` and set `DACS_SELLER_SMOKE_DIR` to it for tests: a
+completed setup is reused, an interrupted or outdated one is rebuilt, and a
+directory that is not a seller consumer setup is never replaced.
