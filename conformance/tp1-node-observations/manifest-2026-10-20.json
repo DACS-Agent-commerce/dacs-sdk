@@ -1,0 +1,29 @@
+{
+  "format": "dacs-node-read-observations/v1",
+  "endpoint": "https://node2.demos.sh",
+  "capturedAt": "2026-10-20",
+  "sourceCommit": "11e7c8207732e25035de5a04cab25c5346046493",
+  "version": "0.9.8",
+  "branch": "stabilisation",
+  "dirty": true,
+  "builtAt": "2026-10-20T11:09:32Z",
+  "deploymentArtifactDigest": null,
+  "deploymentOverlay": null,
+  "qualification": "Observed responses only. Deployment bytes and overlay were not supplied; this is not a reproducible or qualified node build.",
+  "executionFailedTransaction": {
+    "observed": false,
+    "sourceInference": "The inspected chainTransactions.ts getTransactionStatus maps stored records to included without checking execution. Its comment says execution failures are not recorded and surface as unknown. This is not evidence that failed execution is included by the deployed node; no live failed transfer was initiated or captured. The file is byte-identical at 61b8e75 and 11e7c82 (SHA-256 cb33b1c5170b176f600346e6e99ed1ff2f20951ca796d8044185b35ef2853d62)."
+  },
+  "chainIdentity": "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc",
+  "history": {
+    "manifest": "manifest.json",
+    "note": "Captured 2026-10-18 from the build at 61b8e75, which served the previous chain (block 1 previousHash 83082fbb733d76475a33a9f52fe3700d667a976c2d46bef33a149f47057f7dd4). Kept unchanged as history; that identity is no longer approved."
+  },
+  "sha256": {
+    "block0-2026-10-20.json": "7d8d3a837345c564a6668be5510abb32107919ee94a4f959423e28924fb40a17",
+    "block1-2026-10-20.json": "b4d6b126d0324b0ec656867112e5d7b189238f89fe994a93aeec7ebb6effd44f",
+    "genesis-string-zero-2026-10-20.json": "25548f371d468fef46b126ad8093d6895cb4ec9d082d976737de6f8879a7524e",
+    "network-2026-10-20.json": "a758726d9a783d32897b479d6eed0cb0c26a3b72d1c4abdc338204327a59f277"
+  },
+  "timestampNotes": "Every read retains its exact UTC timestamp. block0 is numeric blockNumber 0; genesis-string-zero is string blockNumber \"0\"."
+}
