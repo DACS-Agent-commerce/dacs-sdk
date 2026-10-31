@@ -81,7 +81,9 @@
 // refused as wallet_journal_stale_attempt; reconcile the successor separately.
 // The seller's Deliverable journal (deliverable-wallet-journal.mjs) is this
 // journal over its own table and file: createSignedCreateJournal is the body of
-// both, and a Deliverable CREATE also carries (and is checked for) its delivery binding.
+// both, and a Deliverable CREATE also carries (and is checked for) its delivery
+// binding. Its only wallet operation is guardedCreate: owner-bound, and
+// authorized right before each signature and broadcast.
 import { randomBytes } from 'node:crypto';
 import { closeSync, constants, lstatSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
@@ -155,8 +157,17 @@ function feeAndEditsProblem(content, from, op) {
   return JSON.stringify(content.gcr_edits) === JSON.stringify(edits) ? null : 'does not carry the execution edits the SDK signs, so the node cannot execute it';
 }
 // True when the CREATE's delivery binding is not exactly the input's: a Deliverable names its fulfilment, evidence names none.
-const bindingProblem = (metadata, input) => ('deliveryBinding' in metadata ? input.deliveryBinding === undefined || canonicalize(metadata.deliveryBinding) !== canonicalize(input.deliveryBinding)
-  : input.deliveryBinding !== undefined);
+// A signed binding with no canonical form is not the input's either.
+function bindingProblem(metadata, input) {
+  if (!('deliveryBinding' in metadata)) return input.deliveryBinding !== undefined;
+  try { return input.deliveryBinding === undefined || canonicalize(metadata.deliveryBinding) !== canonicalize(input.deliveryBinding); } catch { return true; }
+}
+// A guarded call's authorization, asked synchronously: only `true` permits the next wallet effect.
+function permitted(authorize) {
+  let answer;
+  try { answer = authorize(); } catch (error) { answer = error; }
+  if (answer !== true) throw Object.assign(new Error(`the wallet effect is no longer authorized${answer instanceof Error ? `: ${reason(answer)}` : ''}`), { code: 'wallet_not_authorized' });
+}
 function signedCreateProblem(answer, input) {
   let signed;
   try { signed = JSON.parse(answer.signedTransaction); } catch { return 'is not JSON'; }
@@ -206,8 +217,9 @@ function assertPrivateDirectory(directory) {
  * made of (createPaymentEvidenceWalletJournal, createDeliverableWalletJournal):
  * the options the header describes, and `table`, the one SQLite table of its
  * kind (a file made for another kind is refused). Returns { anchor, reconcile,
- * readSignedProjection, journalId, close }, which the two kinds name for their
- * artifact. Throws TypeError for an unusable option, path or file.
+ * ensureEvidence } for evidence and { guardedCreate } for any other kind, with
+ * readSignedProjection, journalId and close. Throws TypeError for an unusable
+ * option, path or file.
  */
 export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000 } = {}) {
   if (!TABLE_NAME.test(table)) throw new TypeError('the wallet journal table must be named for its kind of artifact');
@@ -307,7 +319,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       return value === null ? { cause: 'answered no valid value' } : { value };
     } catch (error) { return { cause: reason(error) }; }
   };
-  const sendSigned = ({ signedTransaction, txHash }) => withDeadline((signal) => broadcast({ signedTransaction, txHash }, { signal }),
+  // permit() runs in the same synchronous step as the wallet call it guards.
+  const allow = () => {};
+  const sendSigned = ({ signedTransaction, txHash }, permit = allow) => withDeadline((signal) => { permit(); return broadcast({ signedTransaction, txHash }, { signal }); },
     () => Object.assign(new Error(`broadcasting the kept signed CREATE ${txHash} did not settle in ${readTimeoutMs} ms; its fate is not known`), { code: 'wallet_broadcast_timeout' }));
   // Read the nonce snapshot before the transaction index. The latter must
   // have indexed at least that snapshot, closing the nonce-before-tx-row race.
@@ -342,17 +356,10 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return { live: null, highestNonce, superseded: { txHash: live.txHash, reason: checked.reason } };
   }
 
-  async function permitWrite(authorize) {
-    if (authorize === undefined) return;
-    if (typeof authorize !== 'function') throw new TypeError('wallet authorization must be a function');
-    if (await authorize() !== true) throw Object.assign(new Error('wallet authorization was withdrawn'), { code: 'wallet_not_authorized' });
-  }
-
-  async function prepareAnchor(input, authorize) {
+  async function prepareAnchor(input, permit = allow) {
     let { live: signed, highestNonce, applied } = await liveFor(input);
     if (!signed) {
-      await permitWrite(authorize);
-      const answer = await withDeadline((signal) => signCreate(structuredClone(input), { signal }),
+      const answer = await withDeadline((signal) => { permit(); return signCreate(structuredClone(input), { signal }); },
         () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
           || typeof answer.txHash !== 'string' || !TX_HASH.test(answer.txHash) || nonceOf(answer.nonce, 1) === null) throw Object.assign(new Error('signCreate answered no signed transaction, hash and nonce'), { code: 'wallet_sign_invalid' });
@@ -367,9 +374,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     }
     return { ...signed, applied };
   }
-  async function anchorCreate(input, authorize) {
-    const signed = await locked(() => prepareAnchor(input, authorize));
-    if (!signed.applied) { await permitWrite(authorize); await sendSigned(signed); }
+  async function anchorCreate(input) {
+    const signed = await locked(() => prepareAnchor(input));
+    if (!signed.applied) await sendSigned(signed);
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
   }
 
@@ -403,11 +410,14 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   // crashed caller's unnamed attempt cannot override this journal's facts.
   // expectedJournalId must be the immutable checkpoint owner; generic
   // reconciliation still refuses unnamed ambiguous and unkept attempts.
+  const assertOwner = (expectedJournalId) => {
+    if (expectedJournalId !== journalId) throw Object.assign(new Error('the original wallet journal is required'), { code: 'wallet_journal_changed' });
+  };
   async function ensureEvidence({expectedJournalId,attempt,authorize,...input}) {
     if(authorize!==undefined&&typeof authorize!=='function')throw new TypeError('evidence authorization must be a function');
     const permitted=async()=>{if(authorize&&await authorize()!==true)throw Object.assign(new Error('evidence authorization was withdrawn'),{code:'wallet_not_authorized'});};
     const signed=await locked(async()=>{
-      if(expectedJournalId!==journalId)throw Object.assign(new Error('the original wallet journal is required'),{code:'wallet_journal_changed'});
+      assertOwner(expectedJournalId);
       await permitted();
       const key=`ensure:${input.logicalAddress}`,binding=JSON.stringify([input.receiptContentHash,attempt?.answer?.txHash??null]);
       const accepted=db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(key);
@@ -421,15 +431,20 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
   }
 
-  async function reconcileCreate(input, authorize) {
+  async function reconcileCreate(input) {
     // An attempt whose answer names a transaction this journal never kept was
     // anchored through another journal (a lost or replaced file): its fate is
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
     const attempt = input?.attempt, named = attempt?.answer?.txHash;
-    const { live: signed, superseded, applied, reason: unread } = await locked(async () => {
+    const kept = await locked(async () => {
       inspectAttempt(input,attempt);
       return liveFor(input);
     });
+    return answerFor(input, named, kept);
+  }
+  // The answer for what liveFor found: nothing live is `unsigned`, an applied
+  // CREATE is not sent, and a live one is broadcast again as the kept bytes.
+  async function answerFor(input, named, { live: signed, superseded, applied, reason: unread }, permit = allow) {
     if (!signed) {
       // Replay the transaction-bound decision after a crash between this
       // journal's supersession and the agent's checkpoint of that answer.
@@ -437,9 +452,31 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       return { status: 'unsigned', ...(prior ? { txHash: typeof named === 'string' ? named : prior.tx_hash } : {}), reason: superseded?.reason ?? 'the wallet journal keeps no live signed CREATE for this address' };
     }
     if (applied) return { status: 'applied', txHash: signed.txHash };
-    try { await permitWrite(authorize); await sendSigned(signed); }
-    catch (error) { return { status: 'pending', txHash: signed.txHash, reason: `the same signed CREATE was not broadcast again: ${reason(error)}` }; }
+    try { await sendSigned(signed, permit); }
+    catch (error) {
+      if (error?.code === 'wallet_not_authorized') throw error;
+      return { status: 'pending', txHash: signed.txHash, reason: `the same signed CREATE was not broadcast again: ${reason(error)}` };
+    }
     return { status: 'rebroadcast', txHash: signed.txHash, ...(unread ? { reason: unread } : {}) };
+  }
+
+  // The only wallet operation of a non-evidence (Deliverable) journal. The
+  // caller names this journal (else wallet_journal_changed) and authorize()
+  // must answer true, synchronously, under the lease and right before
+  // signCreate and each broadcast, with no await in between (else
+  // wallet_not_authorized; a kept row stays). `resume` never signs and answers
+  // as reconcileCreate; otherwise it answers { status: 'submitted' | 'applied', txHash }.
+  async function guardedCreate({ expectedJournalId, authorize, ...input }, { resume }) {
+    if (typeof authorize !== 'function') throw new TypeError('a guarded wallet journal call needs its authorization callback');
+    const permit = () => permitted(authorize);
+    const kept = await locked(async () => {
+      assertOwner(expectedJournalId);
+      permit();
+      return resume ? liveFor(input) : prepareAnchor(input, permit);
+    });
+    if (resume) return answerFor(input, undefined, kept, permit);
+    if (!kept.applied) await sendSigned(kept, permit);
+    return { status: kept.applied ? 'applied' : 'submitted', txHash: kept.txHash };
   }
 
   // Read only: the live kept CREATE's public signed projection, as signCreate gave it.
@@ -449,7 +486,8 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return live ? JSON.parse(live.signed_transaction) : null;
   }
 
-  return Object.freeze({ anchor: anchorCreate, reconcile: reconcileCreate, ...(table===EVIDENCE_TABLE?{ensureEvidence}:{}), readSignedProjection, journalId, close: () => db.close() });
+  const operations = table === EVIDENCE_TABLE ? { anchor: anchorCreate, reconcile: reconcileCreate, ensureEvidence } : { guardedCreate };
+  return Object.freeze({ ...operations, readSignedProjection, journalId, close: () => db.close() });
 }
 
 export function createPaymentEvidenceWalletJournal(options) {
