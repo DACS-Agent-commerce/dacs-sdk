@@ -169,6 +169,17 @@ WebSocket transport — an app already running a full chain stack with these dep
   closed as unavailable. It never falls back to the retired quick audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability (as above), not
   blocked on severity alone; the assessment is recorded here.
+- **Registry/container consumer acceptance** audits the generated consumer's
+  current production dependencies (`npm audit --omit=dev`) by advisory ID against
+  `scripts/registry-container-audit-baseline.json`. On pull requests, unlisted
+  IDs warn and are recorded in the step summary; manual runs fail on unlisted
+  IDs. Direct high or critical advisories always block, including listed or
+  assessed IDs; transitive assessments follow the reachability policy above.
+  CI waives exit 4 only when this run's summary independently classifies as 4
+  under the same caller policy. Missing, interrupted or inconsistent evidence,
+  failed generated tests and independent policy failures remain blocking.
+  Acceptance records evidence and replay fixtures after failures; it does not
+  publish packages.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.

@@ -1,0 +1,86 @@
+name: Registry-shaped Linux and Docker acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/registry-container-acceptance.yml"
+      - "LICENSE"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/**"
+      - "src/**"
+      - "packages/dacs-node/**"
+      - "packages/create-dacs-agent/**"
+      - "test/scripts/**"
+      - "tsconfig*.json"
+      - "vitest.config.ts"
+
+permissions:
+  contents: read
+
+jobs:
+  registry-container-consumer:
+    name: clean registry consumer (Node 20 / Docker)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20.19.1"
+
+      - name: Pin acceptance npm client
+        run: |
+          source scripts/bounded-transport.sh
+          run_bounded node scripts/acceptance-bootstrap.mjs
+
+      - name: Install exact source lock
+        run: |
+          source scripts/bounded-transport.sh
+          run_bounded npm ci --no-audit
+
+      - name: Run registry-shaped Linux and Docker acceptance
+        # Only pull requests warn on unlisted advisories. Exit 4 is waived
+        # after independent classification of this run's summary under the same policy.
+        run: |
+          bash scripts/acceptance-ci.sh acceptance
+
+      - name: Publish acceptance summary
+        if: always()
+        run: |
+          bash scripts/acceptance-ci.sh summary
+
+      - name: Upload bootstrap diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dacs-acceptance-bootstrap-${{ github.sha }}
+          path: ${{ runner.temp }}/dacs-acceptance-npm-*/bootstrap.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload registry/container evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dacs-registry-container-${{ github.sha }}
+          path: registry-container-artifacts/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Assemble disposition fixtures
+        # Copy the closed policy evidence set after the producer has exited.
+        if: always()
+        run: |
+          node scripts/acceptance-fixtures.mjs registry-container-artifacts "registry-container-fixtures/registry-container-${GITHUB_SHA::7}"
+
+      - name: Upload disposition fixtures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dacs-registry-container-fixtures-${{ github.sha }}
+          path: registry-container-fixtures/
+          if-no-files-found: warn
+          retention-days: 30

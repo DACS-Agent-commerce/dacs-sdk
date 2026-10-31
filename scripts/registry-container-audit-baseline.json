@@ -20,6 +20,7 @@
     "GHSA-44g4-m2mj-wpvx",
     "GHSA-4hqw-qxg8-jxx2",
     "GHSA-4mjr-xmp4-gh2g",
+    "GHSA-4qx8-w7c3-pj3p",
     "GHSA-528h-pc64-c93x",
     "GHSA-542g-h47m-68v8",
     "GHSA-584q-6j8j-r5pm",
@@ -46,13 +47,16 @@
     "GHSA-8x88-c5mf-7j5w",
     "GHSA-96hv-2xvq-fx4p",
     "GHSA-9fr6-4gfg-395g",
+    "GHSA-9j65-hcg3-gc64",
     "GHSA-9ppj-qmqm-q256",
+    "GHSA-9qmh-m7c6-f92p",
     "GHSA-c29m-xwm3-cm6r",
     "GHSA-f38q-mgvj-vph7",
     "GHSA-f5x3-32g6-xq36",
     "GHSA-fjxv-7rqg-78g4",
     "GHSA-fvcv-3m26-pcqx",
     "GHSA-fx83-v9x8-x52w",
+    "GHSA-gcqx-w48m-w2h4",
     "GHSA-gvwx-54wh-qm9j",
     "GHSA-hfxv-24rg-xrqf",
     "GHSA-hhf6-3xpg-pggx",
@@ -68,6 +72,7 @@
     "GHSA-mghh-pgcx-3jjj",
     "GHSA-mjw6-4jj6-33hc",
     "GHSA-mmx7-hfxf-jppx",
+    "GHSA-mrhx-c7xc-m3w5",
     "GHSA-p8p7-x288-28g6",
     "GHSA-p92q-9vqr-4j8v",
     "GHSA-pf86-5x62-jrwf",
@@ -76,6 +81,7 @@
     "GHSA-q6x5-8v7m-xcrf",
     "GHSA-qffp-2rhf-9h96",
     "GHSA-qpx9-hpmf-5gmw",
+    "GHSA-qr28-fpjm-wq7f",
     "GHSA-r292-9mhp-454m",
     "GHSA-r4gj-5m52-g5wh",
     "GHSA-r6q2-hw4h-h46w",
@@ -242,6 +248,22 @@
         "required": {
           "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
         }
+      },
+      {
+        "package": "@tufjs/models@5.0.1",
+        "location": "node_modules/@tufjs/models",
+        "integrity": "sha512-wacy5twbJk36R0dTcGE3qmPNNH095bFselAYNrVCzf0Byd0t3+Qzk3+3gn/rHGP10FuHBVk4swg4aczr1c2z/g==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
+      },
+      {
+        "package": "tuf-js@6.0.1",
+        "location": "node_modules/tuf-js",
+        "integrity": "sha512-o59N1PU8xk0bBV3HpJ4jjwldIeze17yXW1XTv02CEEKdC3E/tnJDU3CPWDNT4IZpkx9Srv9v1DJZ+JTdo46THg==",
+        "required": {
+          "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+        }
       }
     ],
     "lockSbomProblems": [
@@ -286,6 +308,68 @@
             "finding": "invalid: bip39@3.1.2, 3.1.0 required by @multiversx/sdk-core@13.17.2",
             "disposition": "Retain as a #191 upstream optional-dependency SBOM defect; production publication remains blocked.",
             "reason": "demosdk@4.0.16 requires bip39 ^3.1.0 and @multiversx/sdk-core ^13.17.2. The latter optionally requires exactly bip39 3.1.0. The lock has a nested optional 3.1.0 copy; --omit=optional removes it and npm sbom sees top-level 3.1.2 instead. Resolve that upstream dependency constraint before removing this finding."
+          }
+        ]
+      },
+      {
+        "commit": "90f844315851f49d8e01964ea8d11d02be2345f5",
+        "job": "clean registry consumer (Node 20 / Docker)",
+        "evidence": "Exact-head CI gate output; independently resolved fresh lock for the packed SDK and Node host with the generated consumer dependency versions.",
+        "dispositions": [
+          {
+            "check": "engineStrict",
+            "finding": "@tufjs/models@5.0.1 at node_modules/@tufjs/models",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The packed consumer selects demosdk 4.0.16 -> sigstore ^5.0.0 -> @sigstore/tuf ^5.0.0 -> tuf-js ^6.0.0 -> @tufjs/models 5.0.1. Both published models 5.x versions require Node 22.22.2 or newer supported majors; pinning 5.0.0 does not restore Node 20 support. A compatible parent-major change belongs in a separate consumer dependency change."
+          },
+          {
+            "check": "engineStrict",
+            "finding": "tuf-js@6.0.1 at node_modules/tuf-js",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The packed consumer selects demosdk 4.0.16 -> sigstore ^5.0.0 -> @sigstore/tuf ^5.0.0 -> tuf-js ^6.0.0. Both published tuf-js 6.x versions require Node 22.22.2 or newer supported majors; pinning 6.0.0 does not restore Node 20 support. A compatible parent-major change belongs in a separate consumer dependency change."
+          },
+          {
+            "check": "audit",
+            "finding": "GHSA-4qx8-w7c3-pj3p",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The transitive path is demosdk 4.0.16 -> @coral-xyz/anchor 0.32.1 -> toml ^3.0.0 (3.0.0). Many array-of-tables headers cause quadratic parsing work. The corrected toml 5.0.1 is outside the selected parent range; the parent must change before this entry can be removed."
+          },
+          {
+            "check": "audit",
+            "finding": "GHSA-9j65-hcg3-gc64",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The same transitive Anchor/toml 3.0.0 path permits quadratic parsing work on long dotted keys or table paths. The corrected toml 5.0.1 is outside Anchor's ^3.0.0 range; retain the notice until the parent changes."
+          },
+          {
+            "check": "audit",
+            "finding": "GHSA-9qmh-m7c6-f92p",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The same transitive Anchor/toml 3.0.0 path permits excessive CPU use for long integer literals. The corrected toml 5.0.1 is outside Anchor's ^3.0.0 range; retain the notice until the parent changes."
+          },
+          {
+            "check": "audit",
+            "finding": "GHSA-mrhx-c7xc-m3w5",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The transitive path is @x402/core 2.15.0 -> zod ^3.24.2 (3.25.76). Oversized constrained collections can exhaust memory. The corrected zod 4.6.6 is outside the selected parent range; a compatible x402 parent update is required. Direct high/critical results remain blocking."
+          }
+        ]
+      },
+      {
+        "commit": "442164bcc70f66c348fb6eae2bd77bcba2ccc601",
+        "job": "fresh packed consumer dependency check",
+        "evidence": "Independent fresh lock and audit with Node 20.19.1 / npm 11.19.0 using the packed SDK and Node host. The virtual lock tree is audited with CLI omit=dev, replacing the container omit=optional default; these optional-chain notices remain in that evidence.",
+        "dispositions": [
+          {
+            "check": "audit",
+            "finding": "GHSA-gcqx-w48m-w2h4",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The optional path is demosdk 4.0.16 -> rubic-sdk 5.57.4 -> @tonconnect/ui 2.4.4 -> deepmerge ^4.3.1 (4.3.1). The returned-object prototype-poisoning notice has no corrected release in this range; 4.3.1 is the latest published version. Retain it until the parent/module is corrected."
+          },
+          {
+            "check": "audit",
+            "finding": "GHSA-qr28-fpjm-wq7f",
+            "disposition": "Retain as a #191 transitive dependency finding; production publication remains blocked.",
+            "reason": "The optional path is demosdk 4.0.16 -> rubic-sdk 5.57.4 -> web3 1.10.4 -> web3-bzz 1.10.4 -> swarm-js 0.1.42 -> xhr-request 1.1.0 -> query-string 5.1.1 -> decode-uri-component ^0.2.0 (0.2.2). The percent-encoded-run CPU correction is 0.5.1, outside the selected range; a compatible parent dependency update is required."
           }
         ]
       }

@@ -3,19 +3,18 @@ import { projectTemplates } from "../../packages/create-dacs-agent/src/templates
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
 import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { RELEASE_VERSION, classifyAcceptanceFailure, classifyPolicyChecks, classifyRegistryAudit, extractPolicyFindings, failureSummary, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines, unlistedPolicyFindings } = await import(dispositionModulePath);
+const { registryContainerDisposition, registryAuditDriftDisposition, classifyRegistryAudit, extractPolicyFindings, classifyPolicyChecks, classifyAcceptanceFailure, failureSummary, satisfiesEngineRange, scanLockEngines, registryDependencyViolations, runtimeImageInventoryFindings, RELEASE_VERSION } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const archiveModulePath = "../../scripts/installation-closure.mjs";
@@ -54,6 +53,42 @@ function baselineOnlySummary() {
   };
 }
 
+// The lines of one workflow step, from its `- name:` line to the next step.
+function workflowStepLines(stepName: string, path = workflowPath) {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = lines.findIndex((line) => line.trim() === `- name: ${stepName}`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const stepIndent = (lines[start] ?? "").indexOf("-");
+  let end = start + 1;
+  while (end < lines.length && ((lines[end] ?? "").trim() === "" || (lines[end] ?? "").search(/\S/) > stepIndent)) end += 1;
+  return { lines, start, end, stepIndent };
+}
+
+// A step's own `if:` condition; Actions' default is success().
+function workflowStepCondition(stepName: string): string | undefined {
+  const { lines, start, end, stepIndent } = workflowStepLines(stepName);
+  const keyIndent = " ".repeat(stepIndent + 2);
+  return lines.slice(start + 1, end).find((line) => line.startsWith(`${keyIndent}if:`))?.slice(keyIndent.length + 3).trim();
+}
+
+// Extracts the literal `run: |` block of one workflow step without a YAML dependency.
+function workflowStepScript(stepName: string, path = workflowPath): string {
+  const { lines, start, stepIndent } = workflowStepLines(stepName, path);
+  let index = start + 1;
+  while (index < lines.length && !/^\s+run:/.test(lines[index] ?? "")) index += 1;
+  const runLine = lines[index] ?? "";
+  const inline = runLine.replace(/^\s+run:\s*/, "");
+  if (inline !== "|") return inline;
+  const body: string[] = [];
+  const blockIndent = runLine.indexOf("run:") + 2;
+  for (index += 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.trim() !== "" && line.search(/\S/) <= stepIndent) break;
+    body.push(line.slice(blockIndent));
+  }
+  return body.join("\n");
+}
+
 const scratch: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -77,6 +112,46 @@ function runBash(args: string[], options: { cwd: string; env: Record<string, str
     env: { HOME: options.cwd, ...options.env } });
 }
 
+// Runs a workflow step in a scratch checkout holding the real disposition
+// script. The npm stub writes `summary` (if given) where acceptance would, then
+// exits with the acceptance status. `event` is the run's GITHUB_EVENT_NAME;
+// `stepSummary` is GITHUB_STEP_SUMMARY's contents afterwards.
+function runWorkflowStep(acceptanceExitCode: number, summary?: unknown, strictAudit = false,
+  stepName = "Run registry-shaped Linux and Docker acceptance", event = "pull_request", priorSummary?: unknown) {
+  const directory = mkdtempSync(join(tmpdir(), "dacs-registry-step-"));
+  scratch.push(directory);
+  const checkout = join(directory, "checkout");
+  // Keep static imports, transitive imports, workers and baseline data together.
+  cpSync(join(repoRoot, "scripts"), join(checkout, "scripts"), { recursive: true });
+  // The disposition reads the release version from the checkout's manifest.
+  writeFileSync(join(checkout, "package.json"), readFileSync(join(repoRoot, "package.json")));
+  if (priorSummary !== undefined) {
+    mkdirSync(join(checkout, "registry-container-artifacts"));
+    writeFileSync(join(checkout, "registry-container-artifacts/acceptance-summary.json"), JSON.stringify(priorSummary));
+  }
+  const write = summary === undefined ? "" : [
+    "mkdir -p registry-container-artifacts",
+    `cat > registry-container-artifacts/acceptance-summary.json <<'JSON'\n${typeof summary === "string" ? summary : JSON.stringify(summary)}\nJSON`,
+  ].join("\n");
+  const PATH = stubBin(directory, { npm: `${write}\nexit ${acceptanceExitCode}` });
+  // The drift step runs after acceptance has (or has not) written the summary.
+  if (stepName !== "Run registry-shaped Linux and Docker acceptance") {
+    runBash(["-e", "-c", "npm || true"], { cwd: checkout, env: { PATH } });
+  }
+  const GITHUB_STEP_SUMMARY = join(directory, "step-summary.md");
+  writeFileSync(GITHUB_STEP_SUMMARY, "");
+  const result = runBash(["-e", "-c", workflowStepScript(stepName)], {
+    cwd: checkout, env: { ENFORCE_AUDIT_DRIFT: String(strictAudit), GITHUB_EVENT_NAME: event, GITHUB_STEP_SUMMARY, PATH },
+  });
+  return { ...result, checkout, stepSummary: readFileSync(GITHUB_STEP_SUMMARY, "utf8") };
+}
+
+function dependencyPolicyFailureSummary() {
+  const summary = baselineOnlySummary();
+  summary.securityGate.findings.gitDependencies = [{ name: "unrecorded", location: "node_modules/unrecorded",
+    version: "1.0.0", integrity: null, field: "dependencies.git", value: "github:owner/repo" }];
+  return summary;
+}
 
 describe("registry/container acceptance disposition", () => {
   it("passes only when both the rehearsal and the release security gate pass", () => {
@@ -175,6 +250,101 @@ describe("registry/container acceptance disposition", () => {
       message: expect.stringContaining("does not match baseline") });
     expect(registryAuditDriftDisposition(summary).exitCode).toBe(3);
   });
+});
+
+describe("registry/container pull_request job", () => {
+  it("does not fail a pull request for audit findings within the recorded #191 baseline", () => {
+    const result = runWorkflowStep(4, baselineOnlySummary());
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("::warning title=Registry/container policy warning::");
+  });
+
+  it("fails an early exit 4 that wrote no acceptance summary", () => {
+    const result = runWorkflowStep(4);
+    expect(result.status).toBe(4);
+    expect(result.stdout).not.toContain("::warning title=Registry/container policy warning::");
+    expect(result.stdout).toContain("::error title=Registry/container acceptance failed::");
+  });
+
+  it.each([
+    ["an unexpected schema", { ...baselineOnlySummary(), schema: "other/v1" }],
+    ["a functional failure", { ...baselineOnlySummary(), functionalPassed: false }],
+    ["failed generated tests", { ...baselineOnlySummary(), generatedTestsPassed: false }],
+    ["a dependency policy violation", dependencyPolicyFailureSummary()],
+  ])("fails exit 4 when the summary records %s", (_label, summary) => {
+    const result = runWorkflowStep(4, summary);
+    expect(result.status).toBe(4);
+    expect(result.stdout).not.toContain("::warning title=Registry/container policy warning::");
+  });
+
+  it.each([1, 2, 3])("still fails the job on acceptance exit %i", (code) => {
+    expect(runWorkflowStep(code).status).toBe(code);
+  });
+
+  it("passes when acceptance passes", () => {
+    const summary = baselineOnlySummary();
+    summary.securityGate.passed = true;
+    Object.assign(summary.audit, { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 });
+    summary.audit.observedAdvisories = [];
+    summary.securityGate.auditExitCode = 0;
+    expect(runWorkflowStep(0, summary).status).toBe(0);
+  });
+
+  it("refuses existing evidence before producer launch and preserves its contents", () => {
+    const summary = baselineOnlySummary();
+    const result = runWorkflowStep(4, undefined, false, undefined, "pull_request", summary);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("Existing evidence requires a fresh checkout");
+    expect(JSON.parse(readFileSync(join(result.checkout, "registry-container-artifacts/acceptance-summary.json"), "utf8"))).toEqual(summary);
+  });
+  it.each([
+    ["missing", undefined], ["malformed JSON", "{"], ["empty", ""],
+    ["oversized", "x".repeat(16 * 1024 * 1024 + 1)],
+    ["wrong version", { ...baselineOnlySummary(), packageVersion: "0.0.0" }],
+    ["interrupted", { ...baselineOnlySummary(), complete: false }],
+  ])("blocks successful producer status with %s evidence", (_name, summary) => {
+    expect(runWorkflowStep(0, summary).status).not.toBe(0);
+    expect(runWorkflowStep(4, summary).status).toBe(4);
+  });
+  it("publishes the summary and uploads evidence even after acceptance fails", () => {
+    // Without always(), Actions' default success() would skip reporting whenever
+    // acceptance exits 3.
+    for (const step of ["Publish acceptance summary", "Upload registry/container evidence"]) {
+      expect(workflowStepCondition(step)).toBe("always()");
+    }
+    expect(workflowStepCondition("Run registry-shaped Linux and Docker acceptance")).toBeUndefined();
+  });
+});
+
+describe("registry/container workflow wiring", () => {
+  const acceptance = readFileSync(workflowPath, "utf8");
+
+  it("runs pull-request acceptance when either workflow or the gate's scripts change", () => {
+    const paths = /\n  pull_request:\n    paths:\n((?: {6}- .+\n)+)/.exec(acceptance)?.[1]?.split("\n")
+      .map((line) => line.trim().replace(/^- "(.*)"$/, "$1")).filter(Boolean) ?? [];
+    const changedInputs = [".github/workflows/registry-container-acceptance.yml",
+      "LICENSE", "package.json", "package-lock.json",
+      "scripts/check-npm-advisories.mjs", "scripts/installation-closure.mjs", "scripts/installation-archive-worker.mjs",
+      "scripts/reference-installation.mjs", "scripts/acceptance-directory.mjs", "scripts/acceptance-seal.mjs",
+      "scripts/registry-container-registry.sh", "scripts/sync-vectors.mjs", "src/index.ts", "packages/dacs-node/src/index.ts",
+      "packages/create-dacs-agent/src/index.ts", "test/scripts/registry-container-disposition.test.ts",
+      "tsconfig.json", "tsconfig.build.json", "vitest.config.ts"];
+    const matches = (path: string, pattern: string) => new RegExp("^" + pattern.split("*")
+      .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$").test(path);
+    for (const input of changedInputs) expect(paths.some(pattern => matches(input, pattern)), input).toBe(true);
+    for (const input of ["README.md", "packageXjson", "tsconfig-buildXjson"]) {
+      expect(paths.some(pattern => matches(input, pattern)), input).toBe(false);
+    }
+    // Review rvd-r15 D-1: a PR deleting root LICENSE skipped acceptance although
+    // the release-set verifier requires it. Every non-built required file triggers.
+    const verifier = readFileSync(join(repoRoot, "scripts/verify-release-set.mjs"), "utf8");
+    const required = [...verifier.matchAll(/requiredFiles: \[([^\]]*)\]/g)]
+      .flatMap((match) => [...(match[1] ?? "").matchAll(/"([^"]+)"/g)].map((file) => file[1] ?? ""))
+      .filter((file) => !file.startsWith("dist/"));
+    expect(required).toContain("LICENSE");
+    for (const file of required) expect(paths.some(pattern => matches(file, pattern)), file).toBe(true);
+  });
+
 });
 
 // Runs the acceptance script up to its first npm command, with stubs that
@@ -1078,14 +1248,16 @@ describe("registry/container evidence", () => {
   });
 
   it.each(["dacs", "dacs-node"])("rejects a %s lock entry with different tarball bytes and reports both digests", name => {
-    const { packages, lockPackage, run } = dependencyPolicyHarness();
+    const { contents, packages, lockPackage, run } = dependencyPolicyHarness();
     const location = `node_modules/@kynesyslabs/${name}`;
     const expected = packages[location]?.integrity;
-    const other = lockPackage(location, { "package.json": packageJson(`@kynesyslabs/${name}`, CANDIDATE_VERSION), "index.js": "old" });
+    // Keep the reference replayable so this reaches candidate authentication.
+    lockPackage(location, { ...contents[location], "index.js": "module.exports = 'substituted';" });
+    const observed = packages[location]?.integrity;
     const result = run();
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(`candidate package integrity does not match the packed tarball: ${location} ` +
-      `(expected ${String(expected)}, observed ${sri(other)})`);
+      `(expected ${String(expected)}, observed ${String(observed)})`);
   });
 
   it("rejects a candidate lock entry naming another package", () => {
@@ -1168,6 +1340,7 @@ describe("registry/container evidence", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(`lock version does not match the release: ${location} ` +
       `(expected ${CANDIDATE_VERSION}, observed ${String(version)})`);
+    expect(result.report).toBeNull();
   });
 
   it.each(releaseCopies.flatMap(([name, nested]) => ([[name, "0.0.0-wrong"], ["@kynesyslabs/other", CANDIDATE_VERSION]] as const)
@@ -1396,6 +1569,142 @@ describe("registry dependency allowlist", () => {
 
 describe("advisory-ID baseline", () => {
   const baseline = JSON.parse(readFileSync(join(repoRoot, "scripts/registry-container-audit-baseline.json"), "utf8"));
+  const unknown = "GHSA-2222-3333-4444";
+  // Outside pull requests an unlisted ID fails closed: exit 3, and a claimed
+  // exit 4 is refused by the step's re-check. On pull_request it only warns.
+  const expectUnlisted = (summary: ReturnType<typeof baselineOnlySummary>, unlisted: string[]) => {
+    const result = registryContainerDisposition(summary);
+    expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", unlistedAdvisories: unlisted,
+      checks: { audit: "blocked" } });
+    expect(result.message).toContain(`advisory IDs not in the #191 baseline: ${unlisted.join(", ")}`);
+    expect(result.message).toContain("registry-container-audit-baseline.json and .md in a PR under CODEOWNERS review");
+    expect(registryAuditDriftDisposition(summary)).toMatchObject({ exitCode: 3, unlistedAdvisories: unlisted });
+    for (const event of ["schedule", "workflow_dispatch", "push"]) {
+      expect(runWorkflowStep(3, summary, false, undefined, event).status).toBe(3);
+      const claimed = runWorkflowStep(4, summary, false, undefined, event);
+      expect(claimed.status).toBe(4);
+      expect(claimed.stdout).toContain(`::error title=Registry/container acceptance policy failure::`);
+      expect(claimed.stdout).toContain(unlisted[0]);
+      expect(claimed.stdout).not.toContain("::warning title=Registry/container policy warning::");
+    }
+    const warned = registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" });
+    expect(warned).toMatchObject({ exitCode: 4, failureClass: "policy", unlistedAdvisories: unlisted,
+      checks: { audit: "unlisted" } });
+    expect(warned.message).toContain(`advisory IDs not in the #191 baseline (a pull-request warning; the scheduled ` +
+      `drift job and release paths fail on them): ${unlisted.join(", ")}`);
+    const pullRequest = runWorkflowStep(4, summary);
+    expect(pullRequest.status).toBe(0);
+    expect(pullRequest.stdout).toContain(`::warning title=Advisory IDs outside the #191 baseline::${unlisted.join(", ")}. ` +
+      "Pull requests only warn; the scheduled drift job and release paths fail");
+    expect(pullRequest.stdout).toContain("::warning title=Registry/container policy warning::");
+    // A baseline-only disposition (exit 4) is no error annotation.
+    expect(pullRequest.stdout).not.toContain("::error title=Registry/container acceptance");
+    expect(pullRequest.stepSummary).toBe("- Advisory IDs outside the #191 baseline (warning on this pull request; the " +
+      `scheduled drift job and release paths fail on them): ${unlisted.join(", ")}\n`);
+  };
+  it("warns a pull request on an appended unlisted advisory and fails closed everywhere else", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    expectUnlisted(summary, [unknown]);
+  });
+  it("treats a same-count substitution the same way", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories = [unknown];
+    summary.audit.unlistedAdvisories = [unknown];
+    expectUnlisted(summary, [unknown]);
+    const full = baselineOnlySummary();
+    full.audit.observedAdvisories = [...baseline.advisoryIds.slice(1), unknown];
+    full.audit.unlistedAdvisories = [unknown];
+    expect(full.audit.observedAdvisories).toHaveLength(baseline.advisoryIds.length);
+    expectUnlisted(full, [unknown]);
+  });
+  it("records the policy the script's --record call used, and fails closed without one", () => {
+    const directory = mkdtempSync(join(tmpdir(), "dacs-registry-policy-"));
+    scratch.push(directory);
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    const record = (policy?: string) => {
+      const path = join(directory, "acceptance-summary.json");
+      writeFileSync(path, JSON.stringify(summary));
+      const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--record", path], {
+        cwd: repoRoot, encoding: "utf8", env: policy === undefined ? {} : { DACS_UNLISTED_ADVISORIES: policy } });
+      return { status: result.status, recorded: JSON.parse(readFileSync(path, "utf8")) };
+    };
+    expect(record("warn")).toMatchObject({ status: 4, recorded: { disposition: { exitCode: 4, unlistedAdvisories: "warn" } } });
+    expect(record()).toMatchObject({ status: 3, recorded: { disposition: { exitCode: 3, unlistedAdvisories: "fail" } } });
+    expect(record("fail").status).toBe(3);
+    expect(record("ignore").status).not.toBe(0);
+    expect(record("ignore").status).not.toBe(4);
+  });
+  it("lets a pull request pass an unlisted ID only when nothing else is blocked", () => {
+    const summary = dependencyPolicyFailureSummary();
+    summary.audit.observedAdvisories.push(unknown);
+    summary.audit.unlistedAdvisories.push(unknown);
+    expect(registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" })).toMatchObject({ exitCode: 3,
+      checks: { audit: "unlisted", registryDependency: "blocked" } });
+    expect(runWorkflowStep(4, summary).status).toBe(4);
+  });
+  // Code r9 P3-2: SECURITY.md says CI fails on any direct high/critical
+  // advisory, but pull requests only warned on an unlisted direct one.
+  it("fails a pull request on an unlisted advisory that is high or critical on a direct dependency", () => {
+    const summary: ReturnType<typeof baselineOnlySummary> & { audit: { directAdvisories?: string[] } } =
+      baselineOnlySummary();
+    summary.audit.observedAdvisories.push(unknown, "GHSA-3333-4444-5555");
+    summary.audit.unlistedAdvisories.push(unknown, "GHSA-3333-4444-5555");
+    summary.audit.directAdvisories = [unknown];
+    for (const policy of ["warn", "fail"]) {
+      const result = registryContainerDisposition(summary, undefined, { unlistedAdvisories: policy });
+      expect(result).toMatchObject({ exitCode: 3, failureClass: "policy", checks: { audit: "blocked" } });
+      expect(result.message).toContain(`of those, high or critical on a direct dependency, which fail pull requests ` +
+        `too: ${unknown}`);
+    }
+    const pullRequest = runWorkflowStep(4, summary);
+    expect(pullRequest.status).toBe(4);
+    expect(pullRequest.stdout).toContain("::error title=Registry/container acceptance policy failure::");
+    expect(runWorkflowStep(3, summary).status).toBe(3);
+    // The same IDs, neither of them direct, only warn.
+    summary.audit.directAdvisories = [];
+    expect(registryContainerDisposition(summary, undefined, { unlistedAdvisories: "warn" }))
+      .toMatchObject({ exitCode: 4, checks: { audit: "unlisted" } });
+    expect(runWorkflowStep(4, summary).status).toBe(0);
+  });
+  // Code r10 P3-2: a baseline-only exit 4 lets a prerelease publish, so the
+  // #191 baseline may waive transitive findings only.
+  it("keeps a subset of the baseline advisories baseline-only (exit 4)", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.observedAdvisories = baseline.advisoryIds.slice(10);
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 4, unlistedAdvisories: [],
+      checks: { audit: "baseline" } });
+    const result = runWorkflowStep(4, summary);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("::warning title=Registry/container policy warning::");
+    expect(result.stdout).not.toContain("::warning title=Advisory IDs outside the #191 baseline::");
+    expect(result.stepSummary).toBe("");
+    expect(runWorkflowStep(4, summary, false, undefined, "schedule").status).toBe(0);
+  });
+  it("passes the scheduled classification for listed advisories with consistent changed counts", () => {
+    const summary = baselineOnlySummary();
+    summary.audit.total = 145; summary.audit.critical = 5; summary.audit.low = 97;
+    expect(registryAuditDriftDisposition(summary).exitCode).toBe(0);
+    expect(registryContainerDisposition(summary).exitCode).toBe(4);
+  });
+  it("rejects advisory IDs behind contradictory zero totals", () => {
+    const summary = baselineOnlySummary();
+    Object.assign(summary.audit, { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 });
+    expect(registryContainerDisposition(summary).exitCode).toBe(3);
+    expect(registryAuditDriftDisposition(summary).exitCode).toBe(3);
+  });
+  it.each([{}, { ...baseline, advisoryIds: ["bogus"] }, { ...baseline, source: {} },
+    { ...baseline, assessedAdvisories: [{ id: "GHSA-23hp-3jrh-7fpw", assessment: "SECURITY.md" }] },
+    { ...baseline, assessedAdvisories: [{ id: "bogus", assessment: "SECURITY.md" }] },
+    { ...baseline, assessedAdvisories: [{ id: "GHSA-2222-3333-4444", assessment: " " }] },
+    { ...baseline, assessedAdvisories: "GHSA-2222-3333-4444" }])("fails closed for a malformed baseline %j", (bad) => {
+    expect(() => classifyRegistryAudit([], bad)).toThrow();
+    expect(registryContainerDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
+    expect(registryAuditDriftDisposition(baselineOnlySummary(), bad).exitCode).toBe(3);
+  });
   it("accepts an empty #191 list, in which every observed ID is unlisted", () => {
     expect(classifyRegistryAudit(["GHSA-23hp-3jrh-7fpw"], { ...baseline, advisoryIds: [] }))
       .toMatchObject({ unlistedAdvisories: ["GHSA-23hp-3jrh-7fpw"], assessedAdvisories: [] });
@@ -1548,6 +1857,55 @@ describe("runtime-image package inventory", () => {
       ["node_modules/a", "node_modules/@s/b", "node_modules/a/node_modules/c", "node_modules/alias"]);
   });
 
+  // The workflow step that assembles regenerated #191 fixtures from a run's
+  // evidence carries the inventory, and the fixture replays here.
+  it("assembles disposition fixtures with the inventory from a run's evidence", () => {
+    const checkout = mkdtempSync(join(tmpdir(), "dacs-registry-fixtures-"));
+    scratch.push(checkout);
+    cpSync(join(repoRoot, "scripts"), join(checkout, "scripts"), { recursive: true });
+    writeFileSync(join(checkout, "package.json"), readFileSync(join(repoRoot, "package.json")));
+    const evidence = join(checkout, "registry-container-artifacts");
+    mkdirSync(evidence);
+    for (const name of readdirSync(b7b180f)) {
+      writeFileSync(join(evidence, name === "engine-strict.log.txt" ? "engine-strict.log" : name),
+        readFileSync(join(b7b180f, name)));
+    }
+    // A synthetic observation for this assembly test, independent of the lock.
+    writeFileSync(join(evidence, "runtime-image-inventory.json"), JSON.stringify({
+      schema: "dacs-runtime-image-inventory/v1", packages: [
+        { location: "node_modules/vitest", name: "vitest", version: "3.2.4" },
+      ],
+    }));
+    writeFileSync(join(evidence, "docker-build.log"), "not a fixture\n");
+    const result = runBash(["-e", "-c", workflowStepScript("Assemble disposition fixtures")], {
+      cwd: checkout, env: { GITHUB_SHA: "0123456789abcdef", PATH: stubBin(checkout) },
+    });
+    expect(result.status).toBe(0);
+    const fixtures = join(checkout, "registry-container-fixtures/registry-container-0123456");
+    expect(readdirSync(fixtures).sort()).toEqual([
+      "acceptance-summary.json", "consumer-lock-sbom.err", "consumer-lock-sbom.exit-code",
+      "consumer-physical-sbom.err", "consumer-physical-sbom.exit-code", "dependency-policy.json",
+      "engine-strict.exit-code", "engine-strict.log.txt", "engine-versions.json", "generated-package-lock.json",
+      "runtime-image-inventory.json", "runtime-image-policy.json",
+    ]);
+    const read = (name: string) => {
+      const file = join(fixtures, name === "engine-strict.log" ? "engine-strict.log.txt" : name);
+      return existsSync(file) ? readFileSync(file, "utf8") : undefined;
+    };
+    const summary = JSON.parse(readFileSync(join(fixtures, "acceptance-summary.json"), "utf8"));
+    summary.securityGate.findings = extractPolicyFindings(read);
+    expect(summary.securityGate.findings.productionImageDependencies)
+      .toContainEqual({ name: "vitest", location: "node_modules/vitest", version: "3.2.4", integrity: null });
+    // This offline replay supplies the historical run's absent completion and directness metadata.
+    expect(registryContainerDisposition({ ...summary, complete: true, audit: { ...summary.audit, directAdvisories: [] } },
+      undefined, { packageVersion: summary.packageVersion }))
+      .toMatchObject({ exitCode: 3, checks: { productionImage: "blocked" } });
+    expect(workflowStepCondition("Assemble disposition fixtures")).toBe("always()");
+    expect(workflowStepCondition("Upload disposition fixtures")).toBe("always()");
+    expect(workflowStepLines("Upload disposition fixtures").lines.slice(
+      workflowStepLines("Upload disposition fixtures").start, workflowStepLines("Upload disposition fixtures").end).join("\n"))
+      .toContain("path: registry-container-fixtures/");
+  });
 });
 
 // The 206adc1 run stopped here: `npm ci --no-engine-strict` printed every
@@ -2993,6 +3351,29 @@ describe("acceptance failure class", () => {
       failureClass: "functional" });
     expect(result.stdout).toContain(
       "::error title=Registry/container acceptance functional failure::stopped at stage release-set with exit 17");
+  });
+
+  it("reports an audit outage as a network stop through the script's CLI", () => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-outage-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "npm-audit.json"), npmOutput("npm-audit-endpoint-errors", "503.json"));
+    const result = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--failure-summary", stage,
+      "audit-policy", "1"], { cwd: repoRoot, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const summary = JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"));
+    expect(summary).toMatchObject({ complete: false, failedStage: "audit-policy", failureClass: "network",
+      failureEvidence: [expect.any(String)] });
+    const evidence = summary.failureEvidence[0];
+    expect(JSON.parse(evidence)).toMatchObject({
+      statusCode: 503, message: expect.stringContaining("503 Service Unavailable - POST "),
+    });
+    expect(result.stdout).toContain("::error title=Registry/container acceptance network failure::stopped at stage " +
+      `audit-policy with exit 1; ${evidence}`);
+  });
+
+  it("does not let an early failure summary pass the exit-4 waiver", () => {
+    const summary = failureSummary({ stage: "consumer", exitCode: 4, read: () => undefined });
+    expect(runWorkflowStep(4, summary).status).toBe(4);
   });
 
 });
