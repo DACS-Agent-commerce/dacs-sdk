@@ -47,9 +47,18 @@ describe("acceptance evidence entrypoints", () => {
     writeFileSync(join(root, "registry-container-artifacts/acceptance-summary.json"), '{"complete":false}');
     expect(run().status).toBe(0); expect(readFileSync(output, "utf8")).toContain('{"complete":false}');
   });
+  it.each(["pull_request", "workflow_dispatch", "schedule", "workflow_call"])("keeps absent drift unevaluated and fails enforcing event %s", event => {
+    const root = checkout();
+    for (const enforced of [false, true]) {
+      const result = spawnSync("bash", ["scripts/acceptance-ci.sh", "drift"], { cwd: root, encoding: "utf8",
+        env: { ...process.env, GITHUB_EVENT_NAME: event, ENFORCE_AUDIT_DRIFT: String(enforced) } });
+      expect(result.stdout).toContain("was not evaluated");
+      expect(result.status).toBe(event === "pull_request" && !enforced ? 0 : 1);
+    }
+  });
   it("keeps reporting and both upload actions independently always enabled", () => {
     const workflow = readFileSync(resolve(".github/workflows/registry-container-acceptance.yml"), "utf8");
-    for (const name of ["Publish acceptance summary", "Upload bootstrap diagnostics", "Upload registry/container evidence",
+    for (const name of ["Check advisory-ID drift", "Publish acceptance summary", "Upload bootstrap diagnostics", "Upload registry/container evidence",
       "Assemble disposition fixtures", "Upload disposition fixtures"]) {
       const step = workflow.split(`      - name: ${name}\n`)[1]?.split("\n      - ")[0];
       expect(step, name).toContain("        if: always()");
