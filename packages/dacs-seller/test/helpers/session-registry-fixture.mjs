@@ -2,16 +2,16 @@ import * as core from '@kynesyslabs/dacs';
 import { seller, NOW } from './protocol-fixture.mjs';
 
 // Authenticate a real signed registry and pin it under an in-memory lease.
-export async function sessionRegistrySnapshot(jobId, tag = 'default', entries) {
-  return (await sessionRegistryFixture(jobId, tag, entries)).sessionSnapshot;
+export async function sessionRegistrySnapshot(jobId, tag = 'default', entries, steward = seller) {
+  return (await sessionRegistryFixture(jobId, tag, entries, steward)).sessionSnapshot;
 }
 
-export async function sessionRegistryFixture(jobId, tag = 'default', entries) {
+export async function sessionRegistryFixture(jobId, tag = 'default', entries, steward = seller) {
   const recipes = entries ?? [await core.signComponentArtifact({ recipeVersion: 1, scheme: 'domain',
     defaultMethod: { kind: 'consensus-backed-proxy', endpoint: { method: 'GET', urlTemplate: 'https://authority.example/{identifier}' } },
     defaultMaxAgeSec: 3600, parserRules: { format: 'json', successJsonPath: '$.active' }, retryClass: 'permanent', availability: 'live',
-    governance: { proposedBy: seller.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' },
-  }, 'dacs-recipe:v1:', { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes })];
+    governance: { proposedBy: steward.claim, acceptedAt: NOW - 1000, anchoring: 'single-signer' },
+  }, 'dacs-recipe:v1:', { algorithm: 'ed25519', signer: steward.claim, sign: steward.signBytes })];
   const recipeRefs = recipes.map((recipe, i) => ({ anchor: { kind: 'storage-program', locator: `TEST-recipe:${tag}:${i}` }, contentHash: core.contentHash(recipe) }));
   const documents = new Map(recipeRefs.map((ref, i) => [ref.anchor.locator, recipes[i]]));
   const index = { registryId: core.RECIPE_REGISTRY_INDEX_ADDRESS, entries: recipeRefs };
@@ -20,15 +20,15 @@ export async function sessionRegistryFixture(jobId, tag = 'default', entries) {
     receiptVersion: '1', substrate: 'TEST', finalityProfile: 'instant-test-finality',
     logicalAddress: core.RECIPE_REGISTRY_INDEX_ADDRESS, nativeAddress: indexRef.anchor.locator,
     contentHash: indexRef.contentHash, transactionRef: { kind: 'memory-tx', value: `TEST-tx:${tag}` },
-    writer: seller.claim, state: 'finalized', observationDisposition: 'established', observedAt: NOW,
+    writer: steward.claim, state: 'finalized', observationDisposition: 'established', observedAt: NOW,
     blockRef: { id: `TEST-block:${tag}`, height: '1', timestamp: NOW }, evidence: { kind: 'memory-proof', value: `TEST-proof:${tag}` },
   };
   const provider = {
     resolveCurrentIndex: async () => ({ registryVersion: 1, indexRef: structuredClone(indexRef), receipt: structuredClone(receipt) }),
     authenticateCurrentIndex: () => 'valid',
     readAnchoredJson: async ref => structuredClone(ref.anchor.locator === indexRef.anchor.locator ? index : documents.get(ref.anchor.locator)),
-    stewardWriter: seller.claim, stewardSigner: seller.claim,
-    stewardPublicKey: Uint8Array.from(core.rawPublicKey(core.publicKeyFromSeed(new Uint8Array(32).fill(17)))),
+    stewardWriter: steward.claim, stewardSigner: steward.claim,
+    stewardPublicKey: core.canonicalDemosAgentPublicKey(steward.claim),
     verify: (bytes, signature, key) => core.ed25519Verify(bytes, signature, core.publicKeyFromRaw(key)),
   };
   const store = core.createInMemoryFencedSessionStore();

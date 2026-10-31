@@ -42,15 +42,15 @@
 //    must be live, bound or unused (DACS-2 §7.4.3).
 //    Missing or disallowed family entries refuse replay; a result outside an
 //    implicit member's selected version cannot satisfy it, bound or projected.
-//    With a durable job snapshot, its entries supply every recipe and head;
-//    otherwise `resolveLatestRecipe` supplies the head version and pin.
+//    Unpinned verified members require a durable job snapshot, whose entries
+//    supply every recipe and head. Plain operator head assertions are refused.
 //    Both records share one registry authority.
 //    Presence-only claims instead replay over the exact authenticated bundle,
 //    without a synthetic VerifyResult. Direct helper replay requires a runtime-
 //    authenticated job-bound registry snapshot; the seller agent has no such
 //    snapshot and refuses presence-only requirements before signing.
 //    Direct helper replay uses optional `evidence`, independent of agent config:
-//    `evidence = { resolveContent, resolveRecipe, resolveLatestRecipe?,
+//    `evidence = { resolveContent, resolveRecipe,
 //    isRecipeSignerAuthorized, isVerifyResultSignerAuthorized,
 //    verifyAuthorityAttestation }`, read with the admission readers' limits
 //    (see vetRecordProblem).
@@ -220,11 +220,11 @@ export async function readAdmissionCapability(admission,method,input,parentSigna
   }finally{clearTimeout(timer);if(rejectAborted)parentSignal.removeEventListener('abort',rejectAborted);parentSignal?.removeEventListener('abort',forwardAbort);controller.abort();}
 }
 
+const requirementClaims = (requirement) => [...(Array.isArray(requirement?.required) ? requirement.required : []), ...(Array.isArray(requirement?.oneOf) ? requirement.oneOf.flat() : [])];
 // Whether a BundleRequirement names a presence-only claim, which its Vet record
 // replays over the exact bundle (PCR-6) instead of through a VerifyResult.
 export function hasPresenceOnlyClaim(requirement) {
-  const claims = [...(Array.isArray(requirement?.required) ? requirement.required : []), ...(Array.isArray(requirement?.oneOf) ? requirement.oneOf.flat() : [])];
-  return claims.some((claim) => claim?.verificationRequired === false);
+  return requirementClaims(requirement).some((claim) => claim?.verificationRequired === false);
 }
 
 export async function listingRevocationProblem(admission, input) {
@@ -282,9 +282,8 @@ export function vetAnchorReceiptProblem(receipt, { ref, jobId, party }) {
 }
 
 // The direct replay helper reads authenticated operator evidence for a record
-// whose requirement names verified claims. The optional
-// `resolveLatestRecipe` answers DACS-2 §7.4.3 for an unpinned claim.
-const SHA256_HEX = /^[0-9a-f]{64}$/;
+// whose requirement names verified claims. Unpinned versions require the
+// runtime-authenticated job snapshot selected at session start (DACS-2 §7.4.3).
 // One strict replay reads its evidence within this time in total, on top of
 // each read's own byte, value and deadline limits.
 const VET_EVIDENCE_REPLAY_TIMEOUT_MS = 30_000;
@@ -309,7 +308,7 @@ function requirementParametersMatch({ result, expected }) {
 // Result projection and aggregation remain the core verifier's decisions.
 function recipeFamilies(invocation) {
   const requirement=invocation.requirement, families=new Map();
-  const members=[...(Array.isArray(requirement?.required)?requirement.required:[]),...(Array.isArray(requirement?.oneOf)?requirement.oneOf.flatMap(group=>Array.isArray(group)?group:[]):[])];
+  const members=requirementClaims(requirement);
   const results=[...(Array.isArray(invocation.freshness)?invocation.freshness:[]),...(Array.isArray(invocation.dealSpecific)?invocation.dealSpecific:[])];
   for(const member of members){
     if(member?.verificationRequired!==true)continue;
@@ -331,35 +330,6 @@ async function pinnedSessionRecipeProblem(read,selector,permitted=['live','opera
       verify:(bytes,signature,publicKey)=>ed25519Verify(bytes,signature,publicKeyFromRaw(publicKey))});
   } catch { return 'the Vet pinned recipe shape, method or signature does not authenticate'; }
   return null;
-}
-
-// DACS-2 §7.4.3: qualify each actual implicit result/member projection
-// against the authenticated registry's latest live version. A stale member
-// fails only that member; unavailable/non-live or malformed selection evidence refuses replay.
-// Successful selections across both party records must share one snapshot.
-async function latestSessionRecipeProblem(read, { scheme, method, recipeVersion }, pins) {
-  return read('resolveLatestRecipe', { scheme, method, required: true }, selection=>{
-    if (selection === null) return 'the Vet session registry has no recipe version for the unpinned claim';
-    if (!object(selection) || !exactKeys(selection, ['sessionRecipeRegistrySnapshotHash', 'recipeVersion', 'availability'])) throw malformedEvidence('the Vet session registry selection is malformed');
-    const pin = selection.sessionRecipeRegistrySnapshotHash;
-    if (typeof pin !== 'string' || !SHA256_HEX.test(pin)) throw malformedEvidence('the Vet session registry pin is malformed');
-    if (pins.length > 0 && pins[0] !== pin) throw malformedEvidence('the Vet session registry resolved another session registry snapshot');
-    if (!Number.isSafeInteger(selection.recipeVersion) || selection.recipeVersion < 1) throw malformedEvidence('the Vet session registry recipe version is malformed');
-    if (!['live','operator_gated','closed_data','bilateral','mocked','disabled','failed'].includes(selection.availability)) throw malformedEvidence('the Vet session registry availability is malformed');
-    if (selection.availability !== 'live') return 'the Vet session registry latest recipe version is not live';
-    if (recipeVersion !== undefined && selection.recipeVersion !== recipeVersion) return 'the Vet result is not the latest live recipe version in the authenticated session registry';
-    if(pins.length===0)pins.push(pin);
-    return null;
-  });
-}
-
-// The selection names a family's head; the steward-signed descriptor at that
-// version decides whether it is live.
-async function implicitHeadProblem(read,{scheme,method},pins) {
-  const problem=await latestSessionRecipeProblem(read,{scheme,method},pins);
-  if(problem)return problem;
-  const {recipeVersion}=await read('resolveLatestRecipe',{scheme,method,required:true});
-  return await pinnedSessionRecipeProblem(read,{scheme,method,recipeVersion},['live'])&&'the Vet session registry latest recipe version is not live or does not authenticate';
 }
 
 function snapshotRecipe(snapshot, selector) {
@@ -397,7 +367,7 @@ function vetEvidenceReads(evidence, scope) {
   const read = async (method, input, decode = (reply) => reply) => {
     try {
       if (expired) throw vetEvidenceTimeout();
-      const key=['resolveLatestRecipe','resolveRecipe'].includes(method)?canonicalize([method,input.scheme,input.method,input.recipeVersion??null]):null;
+      const key=method==='resolveRecipe'?canonicalize([method,input.scheme,input.method,input.recipeVersion??null]):null;
       if(key!==null&&!selections.has(key))selections.set(key,readAdmissionCapability(evidence,method,{...scope,...input},controller.signal));
       const pending=key===null?readAdmissionCapability(evidence,method,{...scope,...input},controller.signal):selections.get(key);
       const reply = await Promise.race([pending, deadline]);
@@ -474,7 +444,7 @@ const vetEvidenceDeps = (read) => ({
 // bind `sourceJobId` and the locator with
 // `isSellerFulfilmentVetInvocationMismatch`; this helper does not.
 const expectedResults = (results) => results.map(({ ref, scheme, identifier, method, requirement }) => ({ ref, scheme, identifier, method, requirement }));
-// Explicit verified-only replays need no string pin, but their completed
+// Explicit verified-only replays need no snapshot, but their completed
 // operator selections cannot later be relabelled as durable snapshot evidence.
 const operatorRecipeJobs = new WeakSet();
 
@@ -486,12 +456,12 @@ const operatorRecipeJobs = new WeakSet();
 // strict verifier. The VerifyResults, recipes and authority proofs that replay
 // needs come from this direct helper's operator `evidence`, read for this
 // `role`'s record, except that a durable job snapshot supplies every recipe and
-// family head when present. A claim without `recipeVersion` is compared
-// with that snapshot's head, or the operator's head in verified-only jobs. A member
+// family head when present. A claim without `recipeVersion` requires
+// `sessionSnapshot` and is compared with that snapshot's head. A member
 // whose result differs from its selected live version is unsatisfied; another
 // pinned alternative may pass, whether the implicit result is bound or projected.
 // Every verified member, bound or unused, preflights every method family.
-// The selection names the implicit head; its steward-authorized signed recipe
+// The snapshot selects the implicit head; its steward-authorized signed recipe
 // must be live, bound or unused. Exact pins must be steward-authorized and not
 // mocked, disabled or failed. Missing or disallowed entries refuse replay.
 // Without evidence, a required verified member cannot be satisfied. Throws the
@@ -501,13 +471,14 @@ const operatorRecipeJobs = new WeakSet();
 // A presence-only claim needs no VerifyResult (DACS-2 forbids a synthetic
 // result): its record is replayed over the exact `presence.bundle`, whose
 // per-claim presentation is verified (BP-4), against a runtime-authenticated,
-// job-bound `presence.sessionSnapshot` (DurableSessionRecipeRegistrySnapshot,
-// PCR-6, CRQ-1). Bare hashes and copies without runtime provenance are refused.
+// job-bound `sessionSnapshot` (DurableSessionRecipeRegistrySnapshot, PCR-6,
+// CRQ-1). `presence.sessionSnapshot` remains accepted for presence callers.
+// Bare hashes and copies without runtime provenance are refused.
 // `sessionRegistryPins` is one array shared by the record checks of one job:
-// the authenticated snapshot object or verified-only evidence seeds the pin;
+// the authenticated snapshot object seeds the pin;
 // later records must use that same authority. String pins cannot establish
 // durable snapshot authority. Recovered snapshots match by authenticated hash.
-export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, presence, sessionRegistryPins }) {
+export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, presence, sessionSnapshot, sessionRegistryPins }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
@@ -517,10 +488,15 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
   const presenceOnly = hasPresenceOnlyClaim(invocation.requirement);
   const pins = sessionRegistryPins ?? [];
-  let sessionSnapshot = presence?.sessionSnapshot;
+  if (sessionSnapshot !== undefined && presence?.sessionSnapshot !== undefined
+      && (!isDurableSessionRecipeRegistrySnapshot(presence.sessionSnapshot) || presence.sessionSnapshot.jobId !== jobId || presence.sessionSnapshot.snapshotHash !== sessionSnapshot?.snapshotHash))
+    return 'the Vet session registry resolved another session registry snapshot';
+  if (sessionSnapshot === undefined) sessionSnapshot = presence?.sessionSnapshot;
   if (sessionSnapshot === undefined && isDurableSessionRecipeRegistrySnapshot(pins[0])) sessionSnapshot = pins[0];
-  if ((presenceOnly || sessionSnapshot !== undefined) && (!isDurableSessionRecipeRegistrySnapshot(sessionSnapshot) || sessionSnapshot.jobId !== jobId))
-    return 'the Vet requirement names a presence-only claim and no runtime-authenticated job registry snapshot was supplied';
+  const implicitVerified = requirementClaims(invocation.requirement).some(claim => claim?.verificationRequired === true && claim.recipeVersion === undefined);
+  if ((presenceOnly || implicitVerified || sessionSnapshot !== undefined) && (!isDurableSessionRecipeRegistrySnapshot(sessionSnapshot) || sessionSnapshot.jobId !== jobId))
+    return presenceOnly ? 'the Vet requirement names a presence-only claim and no runtime-authenticated job registry snapshot was supplied'
+      : 'the Vet requirement has no runtime-authenticated job registry snapshot';
   const registryPin = sessionSnapshot?.snapshotHash;
   if (presenceOnly) {
     // Retained sessions must replay after ordinary claim expiry, without
@@ -545,11 +521,9 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
   try {
     for(const family of recipeFamilies(invocation)){
       if (!sessionSnapshot) usedOperatorRecipes = true;
-      problem=sessionSnapshot
-        ?!reads?'the Vet pinned recipe evidence is unavailable':await snapshotRecipeProblem(sessionSnapshot,reads.read,family)
-        :family.recipeVersion!==undefined
-        ?!reads?'the Vet pinned recipe evidence is unavailable':await pinnedSessionRecipeProblem(reads.read,family)
-        :!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim':await implicitHeadProblem(reads.read,family,pins);
+      problem=!reads?'the Vet pinned recipe evidence is unavailable':sessionSnapshot
+        ?await snapshotRecipeProblem(sessionSnapshot,reads.read,family)
+        :await pinnedSessionRecipeProblem(reads.read,family);
       if(problem)break;
     }
     if(!problem)strict = await verifyCompositeVerificationRecord(record,
@@ -561,13 +535,8 @@ export async function vetRecordProblem(record, { ref, jobId, role, party, bundle
         isSessionRecipeRegistrySnapshotAuthenticated: (snapshotHash) => snapshotHash === registryPin,
         verifyIdentityPresentation: (presented) => identityPresentationValid(presented.bundle, presented.bundleHash),
         isImplicitRecipeVersionSelected:async({expected})=>{
-          if (sessionSnapshot) {
-            const recipe = snapshotRecipe(sessionSnapshot, { scheme: expected.scheme, method: expected.method });
-            const issue = recipe?.recipeVersion === expected.ref.recipeVersion ? null : 'the Vet result is not the latest live recipe version in the authenticated session registry';
-            problem??=issue;return issue===null;
-          }
-          const issue=!reads||typeof evidence.resolveLatestRecipe!=='function'?'the Vet requirement does not pin a recipe version for a verified claim'
-            :await latestSessionRecipeProblem(reads.read,{scheme:expected.scheme,method:expected.method,recipeVersion:expected.ref.recipeVersion},pins);
+          const recipe = sessionSnapshot ? snapshotRecipe(sessionSnapshot, { scheme: expected.scheme, method: expected.method }) : null;
+          const issue = recipe?.recipeVersion === expected.ref.recipeVersion ? null : 'the Vet result is not the latest live recipe version in the authenticated session registry';
           problem??=issue;return issue===null;
         } });
   } catch (error) { thrown = error; } finally { reads?.close(); }
