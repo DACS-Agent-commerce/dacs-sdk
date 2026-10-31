@@ -207,6 +207,7 @@ for (const [label, make] of [
   assert.throws(() => buildStorageProgramCreatePayload(createInput(make())));
 });
 
+// The seller runner enables the VM isolation API (anchor-isolated-fixture.mjs) on both supported Node versions.
 test('CI runs the seller Node regression files', () => {
   const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
   assert.match(workflow, /run: node --test --test-concurrency=1 packages\/dacs-seller\/test\/\*\.test\.mjs/);

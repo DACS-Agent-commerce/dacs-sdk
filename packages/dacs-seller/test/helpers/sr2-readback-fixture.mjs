@@ -4,19 +4,23 @@ import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../../sr
 import { seller, NOW, JOB } from './protocol-fixture.mjs';
 
 export function readbackFixture(options = {}) {
-  const logicalAddress = options.logicalAddress ?? `dacs4:deliverable:${JOB}`, artifact = options.artifact ?? { report: 'TEST storage readback' };
+  const observedAt=options.observedAt??NOW;
+  const logicalAddress = options.logicalAddress??options.signedTransaction?.content?.data?.[1]?.metadata?.logicalAddress??`dacs4:deliverable:${JOB}`;
+  const artifact = options.artifact??options.signedTransaction?.content?.data?.[1]?.data??{ report: 'TEST storage readback' };
   const programName = logicalToStorageProgramName(logicalAddress);
-  const nativeAddress = deriveStorageAddress(seller.address, programName, 1);
-  const signed = buildStorageProgramCreatePayload({ from: seller.address, storageAddress: nativeAddress, programName, logicalAddress, signedListing: artifact, nonce: 1, timestamp: NOW });
+  const nativeAddress = options.signedTransaction?.content?.to??deriveStorageAddress(seller.address, programName, 1);
+  const signed = options.signedTransaction ? structuredClone(options.signedTransaction) : buildStorageProgramCreatePayload({ from: seller.address, storageAddress: nativeAddress, programName, logicalAddress, signedListing: artifact, nonce: 1, timestamp: observedAt });
+  if(!options.signedTransaction){
   signed.content.from_ed25519_address = seller.address;
-  signed.content.data[1].metadata = { logicalAddress, artifactKind: 'Deliverable', contentHash: contentHash(artifact), envelopeHash: sha256Hex(canonicalize(artifact)) };
+  signed.content.data[1].metadata = { logicalAddress, artifactKind: options.artifactKind??'Deliverable', contentHash: contentHash(artifact), envelopeHash: sha256Hex(canonicalize(artifact)) };
   Object.assign(signed.content.data[1].metadata, options.metadata);
   if (signed.content.data[1].metadata.artifactKind === undefined) delete signed.content.data[1].metadata.artifactKind;
   signed.hash = sha256Hex(JSON.stringify(signed.content));
   signed.signature = { type: 'ed25519', data: `0x${seller.signBytes(Buffer.from(signed.hash)).toString('hex')}` };
+  }
   const tx = { ...structuredClone(signed), status: 'confirmed', blockNumber: 1 };
   const native = { success: true, storageAddress: nativeAddress, owner: seller.address, programName, data: structuredClone(artifact), metadata: structuredClone(signed.content.data[1].metadata), createdByTx: signed.hash, interactionTxs: [signed.hash] };
-  const block = { number: 1, status: 'confirmed', hash: sha256Hex('TEST SR2 block'), content: { timestamp: NOW / 1000, ordered_transactions: [signed.hash] }, validation_data: { simulated: true, chainIdentity: identity } };
+  const block = { number: 1, status: 'confirmed', hash: sha256Hex('TEST SR2 block'), content: { timestamp: observedAt / 1000, ordered_transactions: [signed.hash] }, validation_data: { simulated: true, chainIdentity: identity } };
   const state = { signed, tx, native, block, rows: [{ programName, storageAddress: nativeAddress }], calls: [] };
   const fetchImpl = async (url, init) => {
     const path = new URL(url).pathname;
@@ -32,6 +36,6 @@ export function readbackFixture(options = {}) {
     return new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json', 'x-dacs-simulation': 'fixture' } });
   };
   const journal = options.journal ?? createInMemoryDemosSr2Journal();
-  const adapter = createDemosSr2Adapter({ rpcUrl: 'http://127.0.0.1:9922/', journal, fetchImpl, now: () => NOW, ...options.adapter });
+  const adapter = createDemosSr2Adapter({ rpcUrl: 'http://127.0.0.1:9922/', journal, fetchImpl, now: () => observedAt, ...options.adapter });
   return { ...state, state, adapter, journal, fetchImpl, logicalAddress, artifact, expectedWriter: seller.claim };
 }

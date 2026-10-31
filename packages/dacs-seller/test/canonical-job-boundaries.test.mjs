@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {contentHash} from '@kynesyslabs/dacs';
 import {createDevnetPurchasedReportProducer,isDevnetPurchasedReport} from '../src/devnet-demo/deliverable.mjs';
 const {createDevnetDemoDeliveryCapability,readDevnetDeliveryEvidence,readDevnetPurchasedReport}=await import('../src/devnet-demo/native-delivery.mjs');
+import {anchorFixture} from './helpers/anchor-isolated-fixture.mjs';
 import {submitNativeDemDelivery,readNativeDemDelivery,verifyNativeDemDeliveryReceipt} from '../src/dacs/native-dem-delivery-consumer.mjs';
 const JOB='01ARZ3NDEKTSV4RRFFQ69G5FAW';
 const invalid=[undefined,null,7,{},'job-0',JOB.toLowerCase(),JOB.replace('0','O'),JOB.slice(1),'8'+JOB.slice(1)];
@@ -35,4 +36,26 @@ test('native delivery readers and publication callbacks refuse malformed jobs be
  }
  assert.equal(calls,0);
  assert.equal((await readDevnetDeliveryEvidence(capability,{jobId:JOB,seller})).status,'absent');assert.equal(calls,1);
+});
+
+test('native artifact publication, read and receipt verification refuse malformed jobs before journaling',async()=>{
+ const w=await anchorFixture(),anchor=w.open();
+ for(const jobId of invalid){
+  const input={logicalAddress:'unused',artifact:{jobId,signature:{signer:w.seller}},artifactKind:'FinalityCommitmentRecord'};
+  await assert.rejects(anchor.publish(input),{code:'invalid'});
+  assert.equal((await anchor.read(input)).status,'rejected');
+  assert.equal(await anchor.verifyReceipt({...input,receipt:{transactionRef:{value:'a'.repeat(64)}}}),'invalid');
+ }
+ assert.equal(w.captured.length,0);assert.equal(w.journal.rows.size,0);
+});
+
+test('address-only native intent and retained reads reject malformed embedded jobs before hashing or journal reads',async()=>{
+ const w=await anchorFixture(),anchor=w.open();
+ w.journal.get=()=>assert.fail('malformed address reached journal');
+ for(const jobId of invalid)for(const prefix of ['dacs2:composite:','dacs3:commit:','dacs4:deliverable:','dacs4:evidence:']){
+  const logicalAddress=prefix+String(jobId);
+  await assert.rejects(anchor.hasIntent(logicalAddress),{code:'invalid'});
+  await assert.rejects(anchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord'}),{code:'invalid'});
+  await assert.rejects(anchor.retainedSignedCreate({logicalAddress,artifactKind:'FinalityCommitmentRecord'}),{code:'invalid'});
+ }
 });
