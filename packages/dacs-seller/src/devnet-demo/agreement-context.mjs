@@ -286,7 +286,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const proof=kept.bundle.presentation;
     if(proof.kind!=='per-claim'||proof.signatures?.length!==1||proof.signatures[0]?.ref!==wallet.claim
       ||(signing&&(signing.state!=='complete'||signing.signature!==proof.signatures[0].signature)))presentationUnknown('the retained seller presentation outcome is inconsistent');
-    return verifiedPresentation(kept,proof.signatures[0].signature);
+    // Verification re-encodes the signature; an older row may keep the wallet's
+    // own encoding, and the retained bundle is what later steps compare against.
+    verifiedPresentation(kept,proof.signatures[0].signature);
+    return clone(kept.bundle);
   }
   async function signPresentation(job,kept) {
     const completed=retainedPresentation(kept);if(completed)return completed;
