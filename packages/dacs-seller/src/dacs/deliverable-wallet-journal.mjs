@@ -14,48 +14,56 @@
 // 'Deliverable', jobId, receiptContentHash, deliveryBinding }. The CREATE it
 // answers is checked as that journal checks one, and its metadata must carry
 // exactly that deliveryBinding.
-// Returns { submit, reconcile, readSignedProjection, journalId, close }:
-//  - submit(input) is the `submit` of createNativeDemDeliveryCapability: it signs
-//    once, keeps and broadcasts, or broadcasts the kept CREATE again, and answers
-//    { status: 'accepted', reconciliationId: txHash }. It throws when the wallet
-//    fails (the kept CREATE stays live for reconcile);
-//  - reconcile(input) is the host's reconcileDeliverableCreate: { status:
+// Returns { submitAuthorized, resume, readSignedProjection, journalId, close }.
+// Both wallet operations take (input, authorize) and are guarded: input names
+// the journal the seller recorded for the order before anything could be signed
+// (expectedJournalId; another is wallet_journal_changed), and authorize() must
+// answer true, synchronously, under the journal's lease and again right before
+// each signature and each broadcast (else wallet_not_authorized: nothing more
+// is signed or sent, and a kept CREATE stays kept). There is no unguarded one.
+//  - submitAuthorized is both the `submitAuthorized` and the `submit` of
+//    createNativeDemDeliveryCapability: it signs once, keeps and broadcasts, or
+//    broadcasts the kept CREATE again, and answers { status: 'accepted',
+//    reconciliationId: txHash }. It throws when the wallet fails (the kept
+//    CREATE stays live for resume);
+//  - resume is the host's resumeDeliverableCreate and never signs: { status:
 //    'unsigned' } when no signed CREATE can still land (the only answer that
-//    lets submit sign anew), otherwise { status: 'rebroadcast' | 'pending' |
-//    'applied', txHash } for the one kept CREATE, broadcast again unchanged
-//    unless it is applied;
+//    lets submitAuthorized sign anew), otherwise { status: 'rebroadcast' |
+//    'pending' | 'applied', txHash } for the one kept CREATE, broadcast again
+//    unchanged unless it is applied;
 //  - readSignedProjection({ logicalAddress }) is the kept CREATE's public projection.
 // input is { logicalAddress, report, writer, jobId, receiptContentHash,
-// deliveryBinding }, where writer names an account, receiptContentHash is the
+// deliveryBinding, expectedJournalId }, where writer names an account, receiptContentHash is the
 // SHA-256 of the canonical report, the report, the binding and logicalAddress
 // (the Deliverable address) must all name jobId, and the binding (version 1,
 // with its fulfilmentId) commits to the report as its payloadHash; anything else
 // is refused (TypeError) before the wallet is asked.
-// startSellerHost and createSellerAgent take the pair only from one journal
-// (deliverableJournalFor) with the capability whose submit it is.
 import { canonicalize, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { addressForClaim } from './demos-claims.mjs';
-import { nativeDemDeliverySubmitOf } from './native-dem-delivery-consumer.mjs';
+import { nativeDemDeliverySubmitsOf } from './native-dem-delivery-consumer.mjs';
 import { createSignedCreateJournal } from './payment-evidence-wallet-journal.mjs';
 import { deliverableAddress } from './purchase-protocol.mjs';
 
 const DELIVERABLE_TABLE = 'deliverable_creates';
 const DELIVERABLE_KIND = 'Deliverable';
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-// Each journal's own submit and reconcile, mapped to it.
+// Each journal's own submitAuthorized and resume, mapped to it.
 const journals = new WeakMap();
 
 /**
- * The journal a seller takes its Deliverable question from: null when there is
- * no `reconcile`, otherwise the journal whose `submit` is the delivery
- * capability's and whose `reconcile` this is. Throws TypeError for any other
- * pair: a wrapper, two journals, a scripted question or an evidence journal.
+ * The journal a seller takes its Deliverable recovery from: null when there is
+ * no `resume` and the delivery capability is no journal's, otherwise the
+ * journal whose submitAuthorized is both the capability's submitAuthorized and
+ * its submit, and whose `resume` this is. Throws TypeError for any other pair:
+ * an unguarded capability, a wrapper, two journals, a scripted resume, an
+ * evidence journal, or a journal's capability without its resume.
  */
-export function deliverableJournalFor(nativeDemDelivery, reconcile) {
-  if (reconcile === null) return null;
-  const submit = nativeDemDeliverySubmitOf(nativeDemDelivery), journal = typeof submit === 'function' ? journals.get(submit) : undefined;
-  if (journal === undefined || journal.submit !== submit || journal.reconcile !== reconcile) {
-    throw new TypeError('reconcileDeliverableCreate must be the reconcile of the createDeliverableWalletJournal whose submit is the nativeDemDelivery capability\'s submit, or null');
+export function deliverableJournalFor(nativeDemDelivery, resume) {
+  const submits = nativeDemDeliverySubmitsOf(nativeDemDelivery) ?? {};
+  const journal = journals.get(submits.submitAuthorized) ?? journals.get(submits.submit);
+  if (resume === null && journal === undefined) return null;
+  if (journal?.resume !== resume || submits.submitAuthorized !== journal.submitAuthorized || submits.submit !== journal.submitAuthorized) {
+    throw new TypeError('resumeDeliverableCreate must be the resume of the createDeliverableWalletJournal whose submitAuthorized is the nativeDemDelivery capability\'s submitAuthorized and submit, or null');
   }
   return journal;
 }
@@ -95,10 +103,11 @@ function createInput({ logicalAddress, report, writer, jobId, receiptContentHash
 /** Opens the seller's Deliverable journal (see above). Throws TypeError for an unusable option, path or file. */
 export function createDeliverableWalletJournal(options) {
   const core = createSignedCreateJournal({ ...options, table: DELIVERABLE_TABLE });
-  const submit = async (input) => ({ status: 'accepted', reconciliationId: (await core.anchor(createInput(input))).txHash });
-  const reconcile = async (input) => core.reconcile(createInput(input));
-  const journal = Object.freeze({ submit, reconcile, readSignedProjection: core.readSignedProjection, journalId: core.journalId, close: core.close });
-  journals.set(submit, journal);
-  journals.set(reconcile, journal);
+  const guarded = (input, authorize, resume) => core.guardedCreate({ ...createInput(input), expectedJournalId: input.expectedJournalId, authorize }, { resume });
+  const submitAuthorized = async (input, authorize) => ({ status: 'accepted', reconciliationId: (await guarded(input, authorize, false)).txHash });
+  const resume = async (input, authorize) => guarded(input, authorize, true);
+  const journal = Object.freeze({ submitAuthorized, resume, readSignedProjection: core.readSignedProjection, journalId: core.journalId, close: core.close });
+  journals.set(submitAuthorized, journal);
+  journals.set(resume, journal);
   return journal;
 }

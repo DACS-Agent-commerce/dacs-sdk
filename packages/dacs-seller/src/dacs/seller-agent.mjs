@@ -167,7 +167,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
 const MAX_CHALLENGES_PER_JOB=16;
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, reconcileDeliverableCreate = null, simulatedFixture = false }) {
+export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
   if (typeof simulatedFixture !== 'boolean') throw new TypeError('simulatedFixture must be true or false');
@@ -210,11 +210,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (reconcilePaymentEvidence !== null && (typeof reconcilePaymentEvidence !== 'function' || !nativeEvidence)) throw new TypeError('reconcilePaymentEvidence must be the seller wallet\'s journal question for the native evidence anchor, or null');
   if (deliveryContext && (!nativeEvidence || !durableDirectory)) throw new TypeError('DEM delivery context requires the durable native evidence profile');
   if (nativeDelivery && !deliveryContext) throw new TypeError('native DEM delivery requires the authenticated DEM delivery context');
-  // CORE §5.1: the question that lets a plain absence of a submitted
+  // CORE §5.1: the resume that lets a plain absence of a submitted
   // Deliverable send its kept CREATE again (and answers `unsigned` for a new
-  // signature) comes only from the createDeliverableWalletJournal whose submit
-  // is the capability's, so that every signed Deliverable CREATE is kept.
-  const deliverableJournal = deliverableJournalFor(nativeDelivery, reconcileDeliverableCreate);
+  // signature) comes only from the createDeliverableWalletJournal whose guarded
+  // submit is the capability's, so that every signed Deliverable CREATE is kept.
+  const deliverableJournal = deliverableJournalFor(nativeDelivery, resumeDeliverableCreate);
   if(typeof deliveryEvidenceEnabled!=='boolean'||(deliveryEvidenceEnabled&&(!nativeArtifactAnchor||!nativeDelivery)))throw new TypeError('delivery evidence publication requires the explicit native demo delivery profile');
   const nativeProfile = agreementAnchor !== null || nativeArtifactAnchor !== null || nativeEvidence !== null || deliveryContext !== null || nativeDelivery !== null;
   if (nativeProfile && (agreementAnchor === null || nativeArtifactAnchor === null)) throw new TypeError('the native seller profile needs both agreementAnchor and nativeArtifactAnchor; it never falls back to the fixture substrate');
@@ -1332,22 +1332,23 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   // A plain absence of a submitted Deliverable may hide a CREATE the wallet
   // signed and kept (a lost answer, a dropped broadcast): only the wallet
-  // journal that kept this submission can tell. It sends the kept bytes again,
-  // unchanged, and answers `unsigned` only when nothing it signed can still land,
-  // so that alone lets a new submission be asked. Returns { status: 'unsigned' },
-  // or { status: 'held', reason } with the journal's cause; throws when the job
-  // lock is lost. A journal that is not the one recorded with the submission (a
-  // lost or replaced file, or none recorded) is not asked.
-  async function askDeliverableJournal(session, work, fulfilmentId) {
+  // journal that kept this submission can tell. Its guarded resume never signs:
+  // it sends the kept bytes again, unchanged, only while this job's fence and
+  // settlement credit still hold (checked by the journal right before the
+  // broadcast), and answers `unsigned` only when nothing it signed can still
+  // land, so that alone lets a new submission be asked. Returns { status:
+  // 'unsigned' }, or { status: 'held', reason } with the journal's cause (a
+  // withdrawn authorization included). A journal that is not the one recorded
+  // for the order (a lost or replaced file, or none recorded) is not asked.
+  async function resumeDeliverableJournal(session, work, fulfilmentId) {
     if (session.deliveryWalletJournal !== deliverableJournal.journalId) {
       return { status: 'held', reason: 'wallet_journal_changed: the wallet journal that kept this Deliverable submission is not the configured one; restore its file to resolve it' };
     }
-    heldFor(session.jobId)();
     const report = deliveryReport(session, work.intake.settlementId);
     let answer;
     try {
-      answer = await reconcileDeliverableCreate({ logicalAddress: deliverableAddress(session.jobId), report, writer: claim, jobId: session.jobId,
-        receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: nativeDeliveryBinding(session, work, fulfilmentId) });
+      answer = await resumeDeliverableCreate({ logicalAddress: deliverableAddress(session.jobId), report, writer: claim, jobId: session.jobId, expectedJournalId: session.deliveryWalletJournal,
+        receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: nativeDeliveryBinding(session, work, fulfilmentId) }, heldFor(session.jobId));
     } catch (error) { return { status: 'held', reason: `${error?.code ?? 'wallet_journal_error'}: ${String(error?.message ?? error).slice(0, 180)}` }; }
     // The journal's bounded cause is kept with the held outcome: a refused or
     // timed-out broadcast, or a supersession, is told apart from a lost answer.
@@ -1410,7 +1411,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
     if (isProvenUnsignedAbsence(read)) return { status: 'askable' };
     if (read?.status === 'absent' && deliverableJournal) {
-      const asked = await askDeliverableJournal(session, work, result.fulfilmentId);
+      const asked = await resumeDeliverableJournal(session, work, result.fulfilmentId);
       return asked.status === 'unsigned' ? { status: 'askable' } : { status: 'held', reason: asked.reason };
     }
     if (read?.status !== 'present') return { status: 'held', reason: read?.reason ?? 'original native Deliverable CREATE is not authenticated on fresh readback' };
@@ -1507,10 +1508,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           const binding=deliveryBinding(input.fulfilmentId);
           session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,substrate:'source-native-delivery'};
-          // The journal this submission goes through: only it may later answer for it.
-          if(deliverableJournal)session.deliveryWalletJournal=deliverableJournal.journalId;
           persist(session);
-          const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding,writer:claim},heldFor(session.jobId));
+          // With the journal, only the one recorded for this order (runSdkDeliveryReady) may sign; the journal refuses any other.
+          const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding,writer:claim,
+            ...(deliverableJournal?{expectedJournalId:session.deliveryWalletJournal}:{})},heldFor(session.jobId));
           if(answer.status!=='accepted')return answer;
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,reconciliationId:answer.reconciliationId,substrate:'source-native-delivery'};
           persist(session);return answer;
@@ -1531,7 +1532,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           // This seller submitted it and its CREATE is not on the chain: the wallet journal sends the kept bytes again,
           // and only its `unsigned` leaves the absence to the SDK (which then submits, through the same journal).
           if(answer.status==='absent'&&deliverableJournal&&(session.deliverySubmitted??[]).includes(input.fulfilmentId)){
-            const asked=await askDeliverableJournal(session,work,input.fulfilmentId);
+            const asked=await resumeDeliverableJournal(session,work,input.fulfilmentId);
             if(asked.status!=='unsigned')return{status:'pending',reason:asked.reason};
             // The journal proved why nothing it signed can still land (superseded
             // under the nonce rule): keep that cause in the held outcome, while
@@ -1633,7 +1634,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           }
           if (isProvenUnsignedAbsence(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved the Deliverable CREATE was never signed' };
           if (read?.status === 'absent' && deliverableJournal) {
-            const asked = await askDeliverableJournal(session, work, input.fulfilmentId);
+            const asked = await resumeDeliverableJournal(session, work, input.fulfilmentId);
             return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason ?? 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
           }
           if (read?.status !== 'present') return { status: 'indeterminate', reason: `a submitted Deliverable CREATE did not read back: ${read?.reason ?? read?.status ?? 'missing'}` };
@@ -1659,6 +1660,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       publishFinalSessionReceipt: async () => ({ status: 'indeterminate', reason: 'explicit SDK finaliser is not invoked by the delivery-ready endpoint' }),
       reconcileFinalSessionReceipt: async () => ({ status: 'absent', reason: 'current fence registered final-receipt absence' }),
     };
+    // The order's Deliverable journal, recorded once before the runner can submit and never overwritten;
+    // an order already submitted with none recorded is not this journal's (held).
+    if (deliverableJournal && session.deliveryWalletJournal === undefined && !session.deliverySubmitted?.length) {
+      session.deliveryWalletJournal = deliverableJournal.journalId;
+      persist(session);
+    }
     const ready = await runDurableFulfilmentToDeliveryReady(request, deps, durability);
     if (ready.status !== 'delivery-ready') return { status: 'not-ready', reason: `${ready.result.decision}:${ready.result.code ?? 'unknown'}:${ready.result.reasons?.join('; ') ?? 'SDK delivery is not ready'}`, result: ready.result };
     return { status: 'delivery-ready', ready, auditSource, request };

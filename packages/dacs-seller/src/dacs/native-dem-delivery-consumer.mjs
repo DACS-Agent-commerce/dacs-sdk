@@ -21,9 +21,10 @@ export function nativeDemDeliveryConfig(value) {
   return value;
 }
 
-/** The `submit` a capability was made with, or undefined for anything that is not a capability. */
-export function nativeDemDeliverySubmitOf(value) {
-  return capabilities.get(value)?.submit;
+/** The { submit, submitAuthorized } a capability was made with, or undefined for anything that is not a capability. */
+export function nativeDemDeliverySubmitsOf(value) {
+  const registered = capabilities.get(value);
+  return registered && { submit: registered.submit, submitAuthorized: registered.submitAuthorized };
 }
 
 function operations(value) {
