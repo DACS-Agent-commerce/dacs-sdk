@@ -5,7 +5,7 @@ import { truncateSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline/promises';
 import { stopRequested, stopSignal } from './stop-request.mjs';
-import { admitRawJson, canonicalDemosAgentPublicKey, canonicalize, compositeVerificationAddress, contentHash, finalityCommitmentAddress, isCanonicalJobId, isCompositeVerificationRecord, isFinalityCommitmentRecord, isSettlementEvidence, paymentEvidenceAddress, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalDemosAgentPublicKey, canonicalize, compositeVerificationAddress, contentHash, finalityCommitmentAddress, isCanonicalJobId, isCompositeVerificationRecord, isFinalityCommitmentRecord, isSettlementEvidence, paymentEvidenceAddress, sameCanonicalClaimIdentity, validateSettlementEvidenceStructure } from '@kynesyslabs/dacs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
 import { isPaymentTxRef } from './seller-purchase-source.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
@@ -774,6 +774,21 @@ function requestShapeValid(request,policy){
     &&c.network===policy.sourceBinding.network&&c.chainIdentity===policy.sourceBinding.chainIdentity&&same(c.networkBinding,policy.sourceBinding);
 }
 
+// The SDK (or, for the Deliverable, seller) structure validator of each kind the
+// policy writes. Structure only: no signature, anchor or purchase context is
+// verified here; the producers verify what they sign.
+const ARTIFACT_STRUCTURE_VALIDATORS={
+  CompositeVerificationRecord:isCompositeVerificationRecord,
+  FinalityCommitmentRecord:isFinalityCommitmentRecord,
+  SettlementEvidence:async(artifact)=>(await validateSettlementEvidenceStructure(artifact)).decision==='valid',
+  Deliverable:isDevnetPurchasedReport,
+};
+
+// True when the artifact is valid for its (policy-written) kind.
+async function artifactStructureValid(artifactKind,artifact){
+  return (await ARTIFACT_STRUCTURE_VALIDATORS[artifactKind](artifact))===true;
+}
+
 // The declared debit in OS, [storage fee, SDK gas, network fee, RPC fee], or
 // null unless exact: canonical DEM strings, no seller amount or additional fee,
 // the SDK's fixed gas, and both totals the sum of the parts.
@@ -868,7 +883,9 @@ export async function policyRefusal(request,policy,limits,{held=false}={}){
   const row=writeKind(c,artifact);
   if(row?.kind!==c.kind)return 'request-shape';
   if(!createMatches(row,c,artifact,policy)||fees[0]!==BigInt(Math.max(1,Math.ceil(c.storageBytes/STORAGE_CHUNK_BYTES)))*OS_PER_DEM)return 'create-bytes';
-  if(artifact.jobId!==c.jobId||!row.artifact(artifact,c,policy))return 'artifact';
+  if(artifact.jobId!==c.jobId)return 'artifact';
+  if(!await artifactStructureValid(c.artifactKind,artifact))return 'artifact-structure';
+  if(!row.artifact(artifact,c,policy))return 'artifact';
   if(c.logicalAddress!==row.address(c,artifact,policy))return 'logical-address';
   return purchaseRefusal(row,c,artifact,policy,held===true);
 }

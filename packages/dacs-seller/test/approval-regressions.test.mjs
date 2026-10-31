@@ -185,6 +185,13 @@ test('an exact request is sign-authorized again once its earlier sign authority 
  assert.equal(await f.p.prepare(structuredClone(r)),true);assert.equal((await f.read()).rows.filter(row=>row.signAuthorized&&row.outcome===null).length,1);
 });
 
+test('a policy approval of an artifact that is not valid for its kind is rejected as artifact-structure with no sign authority',async t=>{
+ const f=await fixture(t,purchase),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem',artifact:{evidenceVersion:'invalid',outcome:'invalid'}});
+ assert.equal(await f.p.prepare(r),false);
+ assert.equal((await lastLine(f)).decision,'rejected');assert.equal((await lastLine(f)).policyReason,'artifact-structure');
+ assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+});
+
 // The rebuilt lifecycle: fixed policy outcomes, one closed manual table, one sign gate (rvd-sdk-365-21c-r4).
 const payDem=()=>requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem'});
 const ledgerLines=async(f)=>(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
@@ -425,3 +432,11 @@ for(const [label,end] of [['decided again',(f,r)=>f.p.decide(r)],['released',(f,
   const{f,r}=await unsyncedSignLine(t);await end(f,r);
   assert.equal((await openSignRows(f)).length,1);assert.equal((await f.policyFor().reconcile()).held.length,1);
  });
+
+test('exact manual approval still authorizes the exact bytes the operator saw, whatever their structure',async t=>{
+ const f=await fixture(t),r=requestFor({artifactKind:'SettlementEvidence',phase:'pay-dem',artifact:{evidenceVersion:'invalid'}});
+ const manual=createExactOperatorApproval({...f.settings,authorize:()=>true});
+ assert.equal(await manual(r),true);
+ const rows=(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
+ assert.equal(rows.at(-1).requestBytes,JSON.stringify(r));
+});
