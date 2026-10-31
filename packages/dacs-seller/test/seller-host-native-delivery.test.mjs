@@ -400,9 +400,10 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // The seller's Deliverable CREATE and its public readback.
   const deliverable = async (input) => readBack(input.logicalAddress, 'Deliverable', input.deliveryBinding);
   // The seller wallet's Deliverable journal (`deliveryJournal: true`), over the
-  // same scripted node. Its `submit` is the capability's, its `reconcile` the
-  // host's `reconcileDeliverableCreate`; the capability's reader then returns no
+  // same scripted node. Its `submitAuthorized` is the capability's, its `resume`
+  // the host's `resumeDeliverableCreate`; the capability's reader then returns no
   // proof of its own, so only the journal's answer can authorize a new signature.
+  // `faults.beforeDeliveryNonce` runs while the journal reads the account nonce.
   // `faults.deliverySignCreate`: 'throw' before signing; `faults.deliveryBroadcast`:
   // 'throw' (after signing, nothing broadcast), 'drop' (the node never applies it)
   // or 'lost' (applied, then the answer is lost); `faults.deliveryRead`: 'throw'
@@ -417,7 +418,10 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       signedCreates.set(logicalAddress, signed); written.set(logicalAddress, clone(artifact)); effects.deliverySigned.push(signed.hash);
       return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
     },
-    readAccountNonce: async () => ({ nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() }),
+    readAccountNonce: async () => {
+      await faults.beforeDeliveryNonce?.();
+      return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
+    },
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
     broadcast: async ({ signedTransaction, txHash }) => {
       effects.deliveryBroadcast.push(signedTransaction);
@@ -429,7 +433,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   let deliveryJournalWallet = deliveryJournal ? openDeliveryJournal() : null;
   const replaceDeliveryWallet = (file) => { deliveryJournalWallet.close(); deliveryJournalWallet = openDeliveryJournal(file); };
   // A new capability each time, over the wallet's current journal (the host
-  // takes the journal's `submit` and `reconcile` as a pair).
+  // takes the journal's `submitAuthorized` and `resume` as a pair).
   const submitDelivery = async (input, authorize) => {
       await faults.beforeDeliverySubmit?.();
       if (authorize && authorize() !== true) throw new Error('TEST delivery authorization refused');
@@ -443,8 +447,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       return { status: 'accepted', reconciliationId: signedCreates.get(input.logicalAddress).hash };
     };
   const deliveryCapability = () => createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
-    submit: deliveryJournalWallet ? deliveryJournalWallet.submit : submitDelivery,
-    ...(!deliveryJournalWallet && guardedDelivery ? { submitAuthorized: submitDelivery } : {}),
+    ...(deliveryJournalWallet ? { submitAuthorized: deliveryJournalWallet.submitAuthorized }
+      : { submit: submitDelivery, ...(guardedDelivery ? { submitAuthorized: submitDelivery } : {}) }),
     reconcile: async (input) => {
       await faults.beforeDeliveryReconcile();
       if (Array.isArray(faults.deliveryReconcile)) {
@@ -488,7 +492,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery: deliveryCapability(), railAuthority: rails.authority,
     sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}),
-    ...(deliveryJournalWallet ? { reconcileDeliverableCreate: deliveryJournalWallet.reconcile } : {}) });
+    ...(deliveryJournalWallet ? { resumeDeliverableCreate: deliveryJournalWallet.resume } : {}) });
   const start = async () => {
     const host = await startHost({ ...capabilities(), dataDirectory, artifactAnchor });
     hosts.push(host);
@@ -1464,11 +1468,45 @@ test('a Deliverable submission that failed before signing is signed once by the 
   w.faults.deliverySignCreate.push('throw');
   assert.equal((await p.claim(tx)).error, 'seller_unavailable');
   assert.equal(w.createsAt(deliverable), 0, 'nothing was signed');
+  assert.equal((await w.retainedSession(p.jobId)).deliveryWalletJournal, w.deliveryWallet().journalId, 'the journal was recorded for the order before anything was signed');
+  await w.restart();
   const answer = await p.claim(tx);
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
   assert.equal(w.effects.deliverySigned.length, 1);
   assert.equal(w.createsAt(deliverable), 1);
 });
+
+// The journal checks the job's fence and settlement credit itself, right
+// before it sends the kept CREATE again, after its chain reads: another job's
+// claim on the same transfer, or a lost job fence, while the journal reads the
+// account nonce stops the broadcast. 'throw': the recovery of a failed
+// submission; 'drop': the reconciliation of an accepted one.
+for (const [label, fault] of [['a failed submission', 'throw'], ['an accepted submission the node dropped', 'drop']]) {
+  for (const withdrawal of ['another job\'s claim on the transfer', 'a lost job fence']) {
+    test(`${withdrawal} while the Deliverable journal reads the nonce for ${label} sends nothing more and delivers nothing`, async (t) => {
+      const w = await world(t, { deliveryJournal: true }), a = await w.purchase(), b = await w.purchase(), tx = a.pay(), deliverable = `dacs4:deliverable:${a.jobId}`;
+      w.faults.deliveryBroadcast.push(fault);
+      let contested;
+      const withdraw = async () => {
+        if (contested !== undefined) return;
+        contested = withdrawal.startsWith('another') ? await b.claim(tx) : (w.loseJobLock(a.jobId), null);
+      };
+      if (fault === 'drop') w.faults.beforeDeliveryNonce = withdraw;
+      const first = await a.claim(tx);
+      assert.notEqual(first.delivery?.status, 'delivery-ready', shown(first));
+      if (fault === 'throw') { w.faults.beforeDeliveryNonce = withdraw; await a.claim(tx); }
+      assert.notEqual(contested, undefined, 'the authorization was withdrawn during the journal\'s nonce read');
+      if (contested) assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' });
+      assert.equal(w.effects.deliveryBroadcast.length, 1, 'the kept CREATE is not sent again');
+      assert.equal(w.effects.deliverySigned.length, 1, 'nor signed again');
+      assert.equal(w.createsAt(deliverable), 0, 'no Deliverable is applied');
+      if (contested) {
+        assert.notEqual((await a.claim(tx)).delivery?.status, 'delivery-ready');
+        assert.equal(w.effects.deliveryBroadcast.length, 1, 'nor on a later claim');
+      }
+    });
+  }
+}
 
 test('a kept Deliverable CREATE another write of the wallet overtook is signed anew once, and the overtaken one never lands', async (t) => {
   const w = await world(t, { deliveryJournal: true });
@@ -1549,15 +1587,21 @@ test('a Deliverable wallet journal that fails when asked keeps the order held wi
   assert.deepEqual(w.effects.deliverySignCreate, [deliverable]);
 });
 
-test('the host takes the Deliverable question only from the journal whose submit the capability is: a scripted answer, another journal or the evidence journal is refused', async (t) => {
+test('the host takes the Deliverable resume only from the journal whose guarded submit the capability is: a scripted answer, another journal, the evidence journal or an unguarded capability is refused', async (t) => {
   const w = await world(t, { deliveryJournal: true }), plain = await world(t);
   const other = w.openDeliveryJournal('other-delivery-journal.sqlite');
   t.after(() => other.close());
-  for (const [label, changes] of [['a scripted question', { reconcileDeliverableCreate: async () => ({ status: 'unsigned' }) }],
-    ['another journal\'s question', { reconcileDeliverableCreate: other.reconcile }],
-    ['the evidence journal\'s question', { reconcileDeliverableCreate: w.walletJournal().reconcilePaymentEvidence }],
-    ['the journal\'s question over a capability that is not its submit', { nativeDemDelivery: plain.capabilities().nativeDemDelivery }]]) {
-    await assert.rejects(w.startShipped(changes), { name: 'TypeError', message: /reconcileDeliverableCreate/ }, label);
+  const journal = w.deliveryWallet(), capability = (operations) => createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
+    reconcile: async () => ({}), read: async () => ({}), verifyReceipt: async () => 'valid', ...operations });
+  for (const [label, changes] of [['a scripted resume', { resumeDeliverableCreate: async () => ({ status: 'unsigned' }) }],
+    ['another journal\'s resume', { resumeDeliverableCreate: other.resume }],
+    ['the evidence journal\'s question', { resumeDeliverableCreate: w.walletJournal().reconcilePaymentEvidence }],
+    ['the journal\'s resume over a capability that is not its submit', { nativeDemDelivery: plain.capabilities().nativeDemDelivery }],
+    ['the journal\'s capability without its resume', { resumeDeliverableCreate: undefined }],
+    ['a capability whose submitAuthorized is a wrapper', { nativeDemDelivery: capability({ submit: journal.submitAuthorized, submitAuthorized: (input, authorize) => journal.submitAuthorized(input, authorize) }) }],
+    ['a capability with no guarded submit', { nativeDemDelivery: capability({ submit: journal.submitAuthorized }) }],
+    ['a capability whose submit is not the guarded one', { nativeDemDelivery: capability({ submitAuthorized: journal.submitAuthorized, submit: async () => ({ status: 'accepted', reconciliationId: 'TEST' }) }) }]]) {
+    await assert.rejects(w.startShipped(changes), { name: 'TypeError', message: /resumeDeliverableCreate/ }, label);
   }
 });
 

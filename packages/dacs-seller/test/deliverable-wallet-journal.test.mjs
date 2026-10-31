@@ -1,8 +1,10 @@
 // The seller wallet's Deliverable journal on its own: what the agent relies on
-// from `submit` and `reconcile` (the payment-evidence journal's retry rule,
-// DACS-4 PC-7(b), applied to the Deliverable; CORE §5.1): the exact signed
+// from `submitAuthorized` and `resume` (the payment-evidence journal's retry
+// rule, DACS-4 PC-7(b), applied to the Deliverable; CORE §5.1): the exact signed
 // CREATE is kept before it is broadcast, sent again as the same bytes while it
-// can still land, and only an address with no live CREATE is signed anew.
+// can still land, and only an address with no live CREATE is signed anew; and
+// nothing is signed or sent unless the order's journal is named and authorize()
+// answers true right before the signature or broadcast.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -13,20 +15,28 @@ import DatabaseSync from 'better-sqlite3';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { createDeliverableWalletJournal, createPaymentEvidenceWalletJournal } from '../src/index.mjs';
 import { deliverableJournalFor } from '../src/dacs/deliverable-wallet-journal.mjs';
-import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
+import { createNativeDemDeliveryCapability, submitNativeDemDelivery } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { deliverableInput, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
+
+// The journal's two operations as the agent calls them: for the journal it
+// recorded for the order, with an authorization (by default, one that holds).
+const allow = () => true;
+const submit = (journal, input, authorize = allow) => journal.submitAuthorized({ ...input, expectedJournalId: journal.journalId }, authorize);
+const resume = (journal, input, authorize = allow) => journal.resume({ ...input, expectedJournalId: journal.journalId }, authorize);
 
 // A wallet over one account on a chain with the node's nonce rule. `calls.sign`
 // counts signatures, `calls.broadcast` lists the bytes of each broadcast. The
 // next sign or broadcast fails as `faults` say: 'throw', and 'drop' (the node
-// never applies it) or 'hang' (never answers) for a broadcast.
+// never applies it) or 'hang' (never answers) for a broadcast. `hooks.duringSign`
+// and `hooks.duringNonce` run inside signCreate and the account nonce read.
 function wallet(t) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'deliverable-journal-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const node = walletChain(), path = join(dir, 'journal.sqlite'), calls = { sign: 0, broadcast: [] }, faults = { sign: [], broadcast: [] };
+  const node = walletChain(), path = join(dir, 'journal.sqlite'), calls = { sign: 0, broadcast: [] }, faults = { sign: [], broadcast: [] }, hooks = {};
   const open = (file = path, make = createDeliverableWalletJournal) => make({ path: file, readTimeoutMs: 200,
     signCreate: async (asked, change = {}) => {
       calls.sign++;
+      hooks.duringSign?.();
       if (faults.sign.shift() === 'throw') throw new Error('TEST wallet failed before signing');
       return node.signCreate(asked, change);
     },
@@ -37,24 +47,24 @@ function wallet(t) {
       if (fault === 'hang') return new Promise(() => {});
       if (fault !== 'drop') node.land(txHash);
     },
-    readAccountNonce: async () => ({ nonce: node.accountNonce(), blockHeight: node.accountNonce() }),
+    readAccountNonce: async () => { hooks.duringNonce?.(); return { nonce: node.accountNonce(), blockHeight: node.accountNonce() }; },
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.accountNonce() }) });
-  return { dir, path, node, calls, faults, open, input: (extra) => deliverableInput(node.claim, extra) };
+  return { dir, path, node, calls, faults, hooks, open, input: (extra) => deliverableInput(node.claim, extra) };
 }
 
 test('a Deliverable is signed once: the kept CREATE is broadcast again as the same bytes, also after the journal is reopened', async (t) => {
   const w = wallet(t);
   let journal = w.open();
-  assert.deepEqual(await journal.reconcile(w.input()), { status: 'unsigned', reason: 'the wallet journal keeps no live signed CREATE for this address' });
+  assert.deepEqual(await resume(journal, w.input()), { status: 'unsigned', reason: 'the wallet journal keeps no live signed CREATE for this address' });
   w.faults.broadcast.push('throw');
-  await assert.rejects(journal.submit(w.input()), /TEST node unreachable/, 'a broadcast that fails after signing throws');
+  await assert.rejects(submit(journal, w.input()), /TEST node unreachable/, 'a broadcast that fails after signing throws');
   journal.close();
   journal = w.open();
   t.after(() => journal.close());
   const kept = await journal.readSignedProjection(w.input());
   assert.equal(JSON.stringify(kept), w.calls.broadcast[0], 'the kept bytes are the bytes that were sent');
-  assert.deepEqual(await journal.reconcile(w.input()), { status: 'rebroadcast', txHash: kept.hash }, 'kept and not overtaken: broadcast again, never unsigned');
-  assert.deepEqual(await journal.submit(w.input()), { status: 'accepted', reconciliationId: kept.hash }, 'a repeated submit reports the retained CREATE');
+  assert.deepEqual(await resume(journal, w.input()), { status: 'rebroadcast', txHash: kept.hash }, 'kept and not overtaken: broadcast again, never unsigned');
+  assert.deepEqual(await submit(journal, w.input()), { status: 'accepted', reconciliationId: kept.hash }, 'a repeated submit reports the retained CREATE');
   assert.equal(w.calls.sign, 1, 'signed once');
   assert.equal(new Set(w.calls.broadcast).size, 1, 'every broadcast is the same signed bytes');
 });
@@ -63,8 +73,8 @@ test('a CREATE the node applied is not broadcast again', async (t) => {
   const w = wallet(t);
   const journal = w.open();
   t.after(() => journal.close());
-  const { reconciliationId } = await journal.submit(w.input());
-  const answer = await journal.reconcile(w.input());
+  const { reconciliationId } = await submit(journal, w.input());
+  const answer = await resume(journal, w.input());
   assert.deepEqual([answer.status, answer.txHash], ['applied', reconciliationId]);
   assert.equal(w.calls.broadcast.length, 1, 'nothing is sent for an applied CREATE');
 });
@@ -74,9 +84,9 @@ test('a broadcast that never answers leaves the CREATE live: reconcile answers p
   const journal = w.open();
   t.after(() => journal.close());
   w.faults.broadcast.push('hang');
-  await assert.rejects(journal.submit(w.input()), { code: 'wallet_broadcast_timeout' });
+  await assert.rejects(submit(journal, w.input()), { code: 'wallet_broadcast_timeout' });
   w.faults.broadcast.push('hang');
-  const answer = await journal.reconcile(w.input());
+  const answer = await resume(journal, w.input());
   assert.equal(answer.status, 'pending');
   assert.match(answer.reason, /not broadcast again/);
   assert.equal(w.calls.sign, 1);
@@ -87,11 +97,14 @@ test('a CREATE another write of the account overtook is superseded: the address 
   const journal = w.open();
   t.after(() => journal.close());
   w.faults.broadcast.push('drop');
-  const { reconciliationId: first } = await journal.submit(w.input());
+  const { reconciliationId: first } = await submit(journal, w.input());
   w.node.other();
-  const answer = await journal.reconcile(w.input());
+  const answer = await resume(journal, w.input());
   assert.deepEqual([answer.status, answer.txHash], ['unsigned', first], 'it can no longer be executed');
-  const { reconciliationId: second } = await journal.submit(w.input());
+  const replayed = await resume(journal, w.input());
+  assert.deepEqual([replayed.status, replayed.txHash], ['unsigned', first], 'the supersession is replayed, naming the same CREATE');
+  assert.equal(w.calls.broadcast.length, 1, 'the superseded CREATE is never sent again');
+  const { reconciliationId: second } = await submit(journal, w.input());
   assert.notEqual(second, first);
   assert.equal(w.calls.sign, 2, 'one new signature');
   assert.equal(w.node.transactionState(second), 'applied');
@@ -106,7 +119,7 @@ test('a signed CREATE that is not this Deliverable is refused and nothing is kep
     ['no delivery binding', { prepare: (content) => { delete content.data[1].metadata.deliveryBinding; } }],
     ['another artifact', { artifact: { ...w.input().report, body: ['TEST another report'] } }]]) {
     const refusing = w.open(join(w.dir, `${label}.sqlite`), (options) => createDeliverableWalletJournal({ ...options, signCreate: (asked) => w.node.signCreate(asked, change) }));
-    await assert.rejects(refusing.submit(w.input()), { code: 'wallet_sign_invalid' }, label);
+    await assert.rejects(submit(refusing, w.input()), { code: 'wallet_sign_invalid' }, label);
     assert.equal(await refusing.readSignedProjection(w.input()), null, `${label}: nothing is kept`);
     refusing.close();
   }
@@ -119,8 +132,8 @@ test('a report that is not hashed as its receiptContentHash, or no report, is re
   t.after(() => journal.close());
   for (const [label, extra] of [['a wrong hash', { receiptContentHash: 'c0'.repeat(32) }], ['no report', { report: undefined }], ['a list as report', { report: [] }],
     ['no delivery binding', { deliveryBinding: undefined }], ['no writer', { writer: undefined }]]) {
-    await assert.rejects(journal.submit(w.input(extra)), TypeError, label);
-    await assert.rejects(journal.reconcile(w.input(extra)), TypeError, label);
+    await assert.rejects(submit(journal, w.input(extra)), TypeError, label);
+    await assert.rejects(resume(journal, w.input(extra)), TypeError, label);
   }
   assert.equal(w.calls.sign, 0);
 });
@@ -133,8 +146,8 @@ test('a job id that is not a canonical ULID is refused before the wallet is aske
   // alternate spelling is not silently accepted as another idempotency key.
   for (const jobId of ['TEST-job', '01j8n4yv7yvyq4db7m8t4c7w0a', '01J8N4YV7YVYQ4DB7M8T4C7W0', '01J8N4YV7YVYQ4DB7M8T4C7W0AA',
     '01J8N4YV7YVYQ4DB7M8T4C7W0I', '81J8N4YV7YVYQ4DB7M8T4C7W0A', 42]) {
-    await assert.rejects(journal.submit(w.input({ jobId })), TypeError, String(jobId));
-    await assert.rejects(journal.reconcile(w.input({ jobId })), TypeError, String(jobId));
+    await assert.rejects(submit(journal, w.input({ jobId })), TypeError, String(jobId));
+    await assert.rejects(resume(journal, w.input({ jobId })), TypeError, String(jobId));
   }
   assert.equal(w.calls.sign, 0, 'no signature is asked for a malformed job');
   assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
@@ -151,8 +164,8 @@ test('a job id that differs from the report, the delivery binding or the Deliver
   // before the wallet can sign a CREATE under a mismatched label.
   for (const [label, extra] of [['the report', { report, receiptContentHash: sha256Hex(canonicalize(report)) }],
     ['the delivery binding', { deliveryBinding: { ...binding, jobId: other } }], ['the Deliverable address', { logicalAddress: `dacs4:deliverable:${other}` }]]) {
-    await assert.rejects(journal.submit(w.input(extra)), TypeError, label);
-    await assert.rejects(journal.reconcile(w.input(extra)), TypeError, label);
+    await assert.rejects(submit(journal, w.input(extra)), TypeError, label);
+    await assert.rejects(resume(journal, w.input(extra)), TypeError, label);
   }
   assert.equal(w.calls.sign, 0, 'no signature is asked about another job');
   assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
@@ -164,8 +177,8 @@ test('a writer that is not a nonempty claim, or a delivery binding that is not a
   t.after(() => journal.close());
   for (const [label, extra] of [['an empty writer', { writer: '' }], ['a Date as the delivery binding', { deliveryBinding: new Date(0) }],
     ['a nested Date in the delivery binding', { deliveryBinding: { ...binding, at: new Date(0) } }]]) {
-    await assert.rejects(journal.submit(w.input(extra)), TypeError, label);
-    await assert.rejects(journal.reconcile(w.input(extra)), TypeError, label);
+    await assert.rejects(submit(journal, w.input(extra)), TypeError, label);
+    await assert.rejects(resume(journal, w.input(extra)), TypeError, label);
   }
   assert.equal(w.calls.sign, 0, 'nothing is signed for an unusable input');
   assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
@@ -176,8 +189,8 @@ test('a writer that names no account is refused before the wallet is asked', asy
   const journal = w.open();
   t.after(() => journal.close());
   for (const writer of ['not-a-claim', 'did:demos:agent:zz', 42]) {
-    await assert.rejects(journal.submit(w.input({ writer })), TypeError, String(writer));
-    await assert.rejects(journal.reconcile(w.input({ writer })), TypeError, String(writer));
+    await assert.rejects(submit(journal, w.input({ writer })), TypeError, String(writer));
+    await assert.rejects(resume(journal, w.input({ writer })), TypeError, String(writer));
   }
   assert.equal(w.calls.sign, 0, 'nothing is signed for a writer with no address');
   assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
@@ -190,37 +203,128 @@ test('a delivery binding that is incomplete or commits to other bytes than the r
   const { fulfilmentId, ...noFulfilment } = binding, { payloadHash, ...noPayload } = binding;
   for (const [label, deliveryBinding] of [['only a job id', { jobId: binding.jobId }], ['no fulfilment id', noFulfilment], ['no payload hash', noPayload],
     ['another payload hash', { ...binding, payloadHash: '00'.repeat(32) }], ['another version', { ...binding, version: '2' }]]) {
-    await assert.rejects(journal.submit(w.input({ deliveryBinding })), TypeError, label);
-    await assert.rejects(journal.reconcile(w.input({ deliveryBinding })), TypeError, label);
+    await assert.rejects(submit(journal, w.input({ deliveryBinding })), TypeError, label);
+    await assert.rejects(resume(journal, w.input({ deliveryBinding })), TypeError, label);
   }
   assert.equal(w.calls.sign, 0, 'nothing is signed for a binding that does not fit the report');
   assert.equal(w.calls.broadcast.length, 0, 'nor is anything sent');
 });
 
 test('a signed CREATE whose binding has no canonical form is refused as a wallet_sign_invalid answer, never a bare TypeError', async (t) => {
-  const w = wallet(t);
-  const journal = w.open(join(w.dir, 'infinity.sqlite'), (options) => createDeliverableWalletJournal({ ...options, signCreate: async (asked) => {
-    const answer = await w.node.signCreate(asked);
-    return { ...answer, signedTransaction: answer.signedTransaction.replace(/"deliveryBinding":\{[^}]*\}/, '"deliveryBinding":{"x":1e999}') };
-  } }));
+  const w = wallet(t), binding = w.input().deliveryBinding;
+  // Signed as it stands, so its hash and signature are self-consistent: only the binding check can refuse it.
+  const change = { prepare: (content) => { content.data[1].metadata.deliveryBinding = { ...binding, x: 1e21 }; } };
+  const journal = w.open(join(w.dir, 'unrepresentable.sqlite'), (options) => createDeliverableWalletJournal({ ...options, signCreate: (asked) => w.node.signCreate(asked, change) }));
   t.after(() => journal.close());
-  await assert.rejects(journal.submit(w.input()), { code: 'wallet_sign_invalid' });
+  await assert.rejects(submit(journal, w.input()), { code: 'wallet_sign_invalid', message: /is not this Deliverable's storage CREATE/ });
   assert.equal(await journal.readSignedProjection(w.input()), null, 'nothing is kept');
   assert.equal(w.calls.broadcast.length, 0, 'nothing is sent');
 });
 
-test('the question belongs to the capability only when both are one journal\'s: a wrapper, two journals, an evidence journal or a scripted question is refused', async (t) => {
+test('resume belongs to the capability only when its guarded submit is the same journal\'s: an unguarded capability, a wrapper, two journals, an evidence journal or a scripted resume is refused', async (t) => {
   const w = wallet(t);
   const journal = w.open(), other = w.open(join(w.dir, 'other.sqlite')), evidence = w.open(join(w.dir, 'evidence.sqlite'), createPaymentEvidenceWalletJournal);
   t.after(() => { journal.close(); other.close(); evidence.close(); });
-  const capability = (submit) => createNativeDemDeliveryCapability({ authority: 'TEST-journal', submit, reconcile: async () => ({}), read: async () => ({}), verifyReceipt: async () => 'valid' });
-  assert.equal(deliverableJournalFor(capability(journal.submit), journal.reconcile), journal);
-  assert.equal(deliverableJournalFor(capability(journal.submit), null), null, 'no question, no journal');
-  for (const [label, delivery, reconcile] of [['two journals', capability(journal.submit), other.reconcile], ['a wrapper', capability((input) => journal.submit(input)), journal.reconcile],
-    ['a scripted question', capability(journal.submit), async () => ({ status: 'unsigned' })], ['an evidence journal', capability(evidence.anchorEvidence), evidence.reconcilePaymentEvidence],
-    ['no capability', null, journal.reconcile], ['a copy of a capability', { ...capability(journal.submit) }, journal.reconcile]]) {
-    assert.throws(() => deliverableJournalFor(delivery, reconcile), { name: 'TypeError', message: /reconcileDeliverableCreate/ }, label);
+  const capability = (operations) => createNativeDemDeliveryCapability({ authority: 'TEST-journal', reconcile: async () => ({}), read: async () => ({}), verifyReceipt: async () => 'valid', ...operations });
+  const guarded = capability({ submitAuthorized: journal.submitAuthorized });
+  assert.equal(deliverableJournalFor(guarded, journal.resume), journal);
+  assert.equal(deliverableJournalFor(capability({ submit: async () => ({}) }), null), null, 'no journal, no resume');
+  for (const [label, delivery, resumeOf] of [['two journals', guarded, other.resume],
+    ['the guarded submit as a plain submit only', capability({ submit: journal.submitAuthorized }), journal.resume],
+    ['a wrapper of the guarded submit', capability({ submitAuthorized: (input, authorize) => journal.submitAuthorized(input, authorize) }), journal.resume],
+    ['an unguarded submit beside the guarded one', capability({ submitAuthorized: journal.submitAuthorized, submit: async () => ({ status: 'accepted' }) }), journal.resume],
+    ['the resume as the submit', capability({ submitAuthorized: journal.resume }), journal.resume],
+    ['the journal\'s capability with no resume', guarded, null], ['a scripted resume', guarded, async () => ({ status: 'unsigned' })],
+    ['an evidence journal', capability({ submitAuthorized: evidence.anchorEvidence }), evidence.reconcilePaymentEvidence],
+    ['no capability', null, journal.resume], ['a copy of a capability', { ...guarded }, journal.resume]]) {
+    assert.throws(() => deliverableJournalFor(delivery, resumeOf), { name: 'TypeError', message: /resumeDeliverableCreate/ }, label);
   }
+});
+
+test('the journal\'s capability called with an authorization that answers false signs and sends nothing', async (t) => {
+  const w = wallet(t);
+  const journal = w.open();
+  t.after(() => journal.close());
+  const capability = createNativeDemDeliveryCapability({ authority: 'TEST-journal', submitAuthorized: journal.submitAuthorized, reconcile: async () => ({}), read: async () => ({}), verifyReceipt: async () => 'valid' });
+  for (const [label, authorize] of [['false', () => false], ['a throw', () => { throw new Error('TEST credit withdrawn'); }], ['a promise of true', async () => true], ['a truthy value', () => 1]]) {
+    await assert.rejects(submitNativeDemDelivery(capability, { ...w.input(), expectedJournalId: journal.journalId }, authorize), { code: 'wallet_not_authorized' }, label);
+  }
+  // Without an authorization the capability's own submit is the guarded one too.
+  await assert.rejects(submitNativeDemDelivery(capability, { ...w.input(), expectedJournalId: journal.journalId }), TypeError, 'no authorization');
+  await assert.rejects(journal.resume({ ...w.input(), expectedJournalId: journal.journalId }), TypeError, 'resume needs it too');
+  assert.equal(w.calls.sign, 0, 'nothing is signed');
+  assert.equal(w.calls.broadcast.length, 0, 'nothing is sent');
+});
+
+test('a call that does not name this journal is refused before anything is read, signed or sent', async (t) => {
+  const w = wallet(t);
+  const journal = w.open(), other = w.open(join(w.dir, 'other.sqlite'));
+  t.after(() => { journal.close(); other.close(); });
+  w.faults.broadcast.push('throw');
+  await assert.rejects(submit(journal, w.input()), /TEST node unreachable/);
+  let reads = 0;
+  w.hooks.duringNonce = () => { reads++; };
+  for (const [label, expectedJournalId] of [['none', undefined], ['another journal', other.journalId]]) {
+    await assert.rejects(journal.submitAuthorized({ ...w.input(), expectedJournalId }, allow), { code: 'wallet_journal_changed' }, label);
+    await assert.rejects(journal.resume({ ...w.input(), expectedJournalId }, allow), { code: 'wallet_journal_changed' }, label);
+  }
+  assert.equal(reads, 0, 'the chain is not read');
+  assert.equal(w.calls.sign, 1, 'signed only by the first, named call');
+  assert.equal(w.calls.broadcast.length, 1, 'nothing more is sent');
+});
+
+// Authorization is asked under the lease, again after the chain reads right
+// before signCreate, and again right before each broadcast: withdrawn at any
+// of those points, nothing later is signed or sent, and a kept CREATE stays kept.
+test('an authorization withdrawn while queued, during the nonce read, during signing or before the broadcast stops every later signature and broadcast', async (t) => {
+  const w = wallet(t);
+  const journal = w.open();
+  t.after(() => journal.close());
+  let allowed = true;
+  const authorize = () => allowed;
+  // Queued behind another call: refused once its turn comes.
+  w.hooks.duringSign = () => { allowed = false; };
+  const [first, queued] = await Promise.allSettled([submit(journal, w.input(), authorize), submit(journal, w.input(), authorize)]);
+  assert.equal(first.reason?.code, 'wallet_not_authorized', 'withdrawn during signing: the signed CREATE is kept, not sent');
+  assert.equal(queued.reason?.code, 'wallet_not_authorized', 'withdrawn while queued');
+  assert.equal(w.calls.sign, 1);
+  assert.equal(w.calls.broadcast.length, 0);
+  const kept = await journal.readSignedProjection(w.input());
+  assert.notEqual(kept, null, 'the signed CREATE is kept');
+  // Withdrawn while the kept CREATE's fate is read: neither resume nor submit sends it.
+  w.hooks.duringSign = undefined;
+  for (const call of [resume, submit]) {
+    allowed = true;
+    w.hooks.duringNonce = () => { allowed = false; };
+    await assert.rejects(call(journal, w.input(), authorize), { code: 'wallet_not_authorized' }, call.name);
+  }
+  assert.equal(w.calls.broadcast.length, 0, 'nothing is sent after the authorization is withdrawn');
+  // Authorized again: the same bytes, never a second signature.
+  w.hooks.duringNonce = undefined; allowed = true;
+  assert.deepEqual(await resume(journal, w.input(), authorize), { status: 'rebroadcast', txHash: kept.hash });
+  assert.deepEqual(w.calls.broadcast, [JSON.stringify(kept)], 'the kept bytes, exactly');
+  assert.equal(w.calls.sign, 1, 'signed once');
+});
+
+test('resume never signs: an empty journal answers unsigned and only the guarded submit signs, once', async (t) => {
+  const w = wallet(t);
+  const journal = w.open();
+  t.after(() => journal.close());
+  assert.equal((await resume(journal, w.input())).status, 'unsigned');
+  assert.equal(w.calls.sign, 0);
+  const { reconciliationId } = await submit(journal, w.input());
+  assert.deepEqual(await resume(journal, w.input()), { status: 'applied', txHash: reconciliationId });
+  assert.equal(w.calls.sign, 1);
+});
+
+test('two handles on one journal file submitting at once keep one live CREATE, signed once', async (t) => {
+  const w = wallet(t);
+  const one = w.open(), two = w.open();
+  t.after(() => { one.close(); two.close(); });
+  const answers = await Promise.all([submit(one, w.input()), submit(two, w.input())]);
+  assert.equal(w.calls.sign, 1, 'signed once');
+  assert.equal(answers[0].reconciliationId, answers[1].reconciliationId, 'both answer the one kept CREATE');
+  assert.equal(w.node.transactionState(answers[0].reconciliationId), 'applied');
 });
 
 test('a journal file made for the other kind is refused, so evidence and Deliverable rows are never mixed', async (t) => {
