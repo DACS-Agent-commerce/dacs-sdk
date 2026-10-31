@@ -183,16 +183,18 @@ test('read-only commitment authentication with no retained CREATE never signs or
 });
 
 function agentHttp(agent,request,store,options={}){return createSellerHttpHandler(agent,{...options,authentication:{seller:agent.claim,listingPin:agent.listingPin,store,readRequest:()=>request,validate(){},responseHeader:async()=> 'TEST-header'}});}
-function commitmentRequest(agent,agreementHash,jobId=JOB){return{method:'POST',path:'/dacs/v1/commitments',jobId,seller:seller.claim,buyer:buyer.claim,listingPin:agent.listingPin,agreementHash};}
-function uncertainStore(){const reconciles=[];return{reconciles,reserve:()=>({disposition:'uncertain',effectKey:'TEST-effect',owner:'TEST-owner'}),reconcile(...args){reconciles.push(args);}};}
+function commitmentRequest(agent,agreementHash,jobId=JOB){return{method:'POST',path:'/dacs/v1/commitments',jobId,seller:seller.claim,buyer:buyer.claim,listingPin:agent.listingPin,agreementHash,bodyHash:core.sha256Hex(JSON.stringify({jobId}))};}
+function uncertainStore(){const reconciles=[],claims=[];return{reconciles,claims,reserve:()=>({disposition:'uncertain',effectKey:'TEST-effect',owner:'TEST-owner'}),claim(reservation){const claimed={...reservation,owner:'TEST-claimed'};claims.push(claimed);return claimed;},reconcile(...args){reconciles.push(args);}};}
 function performStore(){const finishes=[];return{finishes,reserve:()=>({disposition:'perform',effectKey:'TEST-effect',owner:'TEST-owner'}),finish(...args){finishes.push(args);}};}
 
 for(const restart of[false,true])test(`uncertain commitment ${restart?'after restart':'replay'} completes from the retained finalized receipt`,async t=>{
  const f=await commitmentFixture(t),{agent}=await f.prepare();assert.equal((await agent.commit({jobId:JOB})).status,'committed');
  const writes=f.local.writes.length;if(restart)agent.close();const live=restart?await f.open():agent;
  const store=uncertainStore(),request=commitmentRequest(live,core.contentHash(f.controls.agreement.artifact));
+ const read=f.native.readRetained;f.native.readRetained=async input=>{assert.equal(store.claims.length,1,'native read follows the transport claim');return read(input);};
  const res=await exchange(agentHttp(live,request,store),{url:'/dacs/v1/commitments',text:JSON.stringify({jobId:JOB})});
  assert.equal(res.status,200);assert.equal(JSON.parse(res.text).status,'committed');
+ assert.equal(store.reconciles[0][0],store.claims[0],'settlement uses the same claim');
  assert.equal(store.reconciles.length,1);assert.equal(store.reconciles[0][2],200);assert.equal(f.local.writes.length,writes);
 });
 
@@ -210,6 +212,16 @@ test('uncertain commitment with proven unsigned absence runs the authenticated r
  const request=commitmentRequest(agent,core.contentHash(f.controls.agreement.artifact)),rawBody=Buffer.from(JSON.stringify({jobId:JOB}));
  const answer=await agent.reconcileTransport({request,body:{jobId:JOB},rawBody});
  assert.equal(answer.disposition,'present');assert.equal(answer.value.status,'committed');assert.equal(f.local.writes.length,1);
+});
+
+for(const name of ['TimeoutError','Error'])test(`native commitment recovery retains the ${name} cause under its claim`,async t=>{
+ const f=await commitmentFixture(t),{agent}=await f.prepare(),cause=Object.assign(new Error('TEST Agreement reader failed'),{name});
+ let claimed=false,settled=false;
+ f.controls.read=()=>{assert.equal(claimed,true,'claim precedes the native reader');throw cause;};
+ const request=commitmentRequest(agent,core.contentHash(f.controls.agreement.artifact)),body={jobId:JOB},rawBody=Buffer.from(JSON.stringify(body));
+ const out=await agent.reconcileTransport({request,body,rawBody,readOnly:true,transport:{claim(){claimed=true;},settle(){settled=true;}}});
+ assert.equal(out.disposition,'indeterminate');assert.equal(out.reason,'substrate_unavailable');assert.equal(out.causeCode,name==='TimeoutError'?'timeout':'reader');
+ assert.equal(out.cause.cause,cause);assert.equal(settled,false);assert.equal(f.local.writes.length,0);
 });
 
 test('an uncertain signature commitment without an Agreement never takes the ordinary path',async t=>{

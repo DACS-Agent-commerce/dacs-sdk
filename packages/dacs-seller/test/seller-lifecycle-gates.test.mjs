@@ -42,12 +42,84 @@ const payment=w=>({jobId,txHash:HASH,payerPayingKey:w.buyer.claim});
 const NO_ST11={code:'bundle_finalization_unavailable',status:503};
 // DACS-5 ST-11 / CORE SR2-9: the seller signs no completed bundle while the
 // finalizer that resolves and finalizes every required record is not wired.
+test('seller caller commits, accepts verified payment and delivers, but signs no completed bundle, before or after a restart',async()=>{
+ const w=await agentFixture({lifecycle:true});
+ try{
+  assert.equal((await w.agent.commit({jobId})).status,'committed');
+  assert.equal(w.store.loadSession(jobId).commitment.committedAt,NOW+2000,'CA-8 uses receipt block time, not record/local time');
+  assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');
+  const writes=w.anchors.writes.length;
+  const unsigned=()=>{const session=w.store.loadSession(jobId);assert.equal(session.finalisedAt,undefined);assert.equal(session.bundleHash,undefined);assert.equal(session.sellerBundleSignature,undefined);assert.equal(session.sellerCopy,undefined);};
+  for(let round=0;round<2;round++){
+   await assert.rejects(w.agent.bundleRequest({jobId}),NO_ST11);
+   await assert.rejects(w.agent.countersign({jobId,buyerSignature:'fixture'}),NO_ST11);
+   await assert.rejects(w.agent.confirmBuyerCopy({jobId}),{code:'no_seller_copy'});
+   const agreementHash=w.store.loadSession(jobId).agreementHash;
+   for(const path of ['/dacs/v1/bundles/request','/dacs/v1/bundles/countersignature']){
+    const body=path.endsWith('request')?{jobId}:{jobId,buyerSignature:'fixture'},rawBody=Buffer.from(JSON.stringify(body));
+    const request={method:'POST',path,jobId,buyer:w.buyer.claim,seller:w.seller.claim,listingPin:w.pin,agreementHash,bodyHash:core.sha256Hex(rawBody)};
+    const held=await w.agent.reconcileTransport({request,body,rawBody});
+    assert.deepEqual([held.disposition,held.reason,held.status,held.settle],['indeterminate','bundle_finalization_unavailable',503,false],path);
+   }
+   unsigned();assert.equal(w.anchors.writes.length,writes,'no bundle copy is anchored');
+   await w.reopen();
+   assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');assert.equal(w.anchors.writes.length,writes);
+  }
+ }finally{w.close();}
+});
+for(const [name,change] of [
+ ['wrong transfer hash',o=>({...o,txHash:'b'.repeat(64)})],
+ ['wrong amount',o=>({...o,amountOs:'2499999999'})],
+ ['wrong payee',o=>({...o,payee:'c'.repeat(64)})],
+ ['wrong payer',o=>({...o,payer:'c'.repeat(64)})],
+ ['pending receipt',()=>({status:'pending'})],
+ ['unavailable receipt',()=>({status:'unavailable',reason:'RPC unavailable'})],
+])test(`seller caller refuses ${name} before payment evidence or delivery`,async()=>{
+ const w=await agentFixture({lifecycle:true});
+ try{await w.agent.commit({jobId});const writes=w.anchors.writes.length;
+  w.controls.observation=change({status:'included',txHash:HASH,payer:w.buyer.claim.slice(16),payee:w.seller.claim.slice(16),amountOs:'2500000000',blockNumber:8,includedAt:1800000002000});
+  const out=await w.agent.submitPayment(payment(w));assert.ok(['rejected','indeterminate'].includes(out.status),JSON.stringify(out));
+  assert.equal(w.anchors.writes.length,writes);assert.equal(w.store.loadSession(jobId).payment,undefined);
+ }finally{w.close();}
+});
 test('seller caller requires a finalized valid commitment receipt and its authoritative time',async()=>{
  for(const state of ['accepted','unknown']){
   const w=await agentFixture({lifecycle:true});try{w.anchors.controls.state=state;await assert.rejects(w.agent.commit({jobId}),{code:'commitment_failed'});assert.equal(w.store.loadSession(jobId).commitment,undefined);await assert.rejects(w.agent.submitPayment(payment(w)),{code:'not_committed'});}finally{w.close();}
  }
  const w=await agentFixture({lifecycle:true});try{w.anchors.controls.timestamp=NOW-70000;await assert.rejects(w.agent.commit({jobId}),{code:'commitment_failed'});}finally{w.close();}
 });
+test('retained payment response requires exact evidence address, reference and delivery hash readback',async()=>{
+ const w=await agentFixture({lifecycle:true});
+ try{
+  await w.agent.commit({jobId});await w.agent.submitPayment(payment(w));
+  const body=payment(w),rawBody=Buffer.from(JSON.stringify(body)),agreementHash=w.store.loadSession(jobId).agreementHash;
+  const request={method:'POST',path:'/dacs/v1/payments',jobId,buyer:w.buyer.claim,seller:w.seller.claim,listingPin:w.pin,agreementHash,bodyHash:core.sha256Hex(rawBody)};
+  const read=()=>w.agent.reconcileTransport({request,body,rawBody});
+  const good=await read();assert.equal(good.disposition,'present',JSON.stringify(good));
+  const paymentAddress=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2),deliverableAddress=w.protocol.deliverableAddress(jobId),deliveryAddress=w.protocol.deliveryEvidenceAddress(jobId);
+  for(const [target,change] of [
+   [paymentAddress,row=>({...row,receipt:{...row.receipt,logicalAddress:'wrong-address'}})],
+   [paymentAddress,row=>({...row,receipt:{...row.receipt,contentHash:'f'.repeat(64)}})],
+   [deliverableAddress,row=>({...row,artifact:{...row.artifact,body:['changed bytes']}})],
+   [deliveryAddress,row=>({...row,artifact:{...row.artifact,deliverableContentHash:'f'.repeat(64)}})],
+  ]){
+   const writes=w.anchors.writes.length;w.anchors.controls.read=(row,address)=>address===target?change(row):row;
+   assert.equal((await read()).disposition,'indeterminate');assert.equal(w.anchors.writes.length,writes);
+  }
+  w.anchors.controls.read=row=>row;assert.equal((await read()).disposition,'present');
+ }finally{w.close();}
+});
+test('lost evidence write answer recovers from exact retained bytes without signing or writing again',async()=>{
+ const w=await agentFixture({lifecycle:true});
+ try{
+  await w.agent.commit({jobId});w.anchors.controls.failAfterWrite=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);
+  await assert.rejects(w.agent.submitPayment(payment(w)),{code:'seller_anchor_reconciliation_required'});
+  const address=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2),original=structuredClone(w.anchors.rows.get(address));
+  await w.reopen();assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');
+  assert.deepEqual(w.anchors.rows.get(address),original);assert.equal(w.anchors.writes.filter(a=>a===address).length,1);
+ }finally{w.close();}
+});
+
 test('real seller proposal responder advances a negotiated Agreement through commitment and delivery',async()=>{
  const w=await agentFixture({lifecycle:true}),next='01ARZ3NDEKTSV4RRFFQ69G5FAY';
  try{

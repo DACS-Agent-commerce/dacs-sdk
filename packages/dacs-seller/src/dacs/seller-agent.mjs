@@ -3,7 +3,7 @@ import { admitSessionChallenge } from './session-challenge-limits.mjs';
 import { operatorBuyerAccessConfig } from '../devnet-demo/buyer-access.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreateAuthorization } from './commit-on-signature.mjs';
-import { canonicalize, commitFixedPriceAgreement, contentHash, isListing, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, ARTIFACT_SEPARATORS, compositeVerificationAddress } from '@kynesyslabs/dacs';
+import { canonicalize, commitFixedPriceAgreement, contentHash, isListing, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, ARTIFACT_SEPARATORS, compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { randomBytes } from 'node:crypto';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, validateSellerListing } from './rail-authority.mjs';
@@ -24,6 +24,42 @@ export class SellerAgentError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+// The seller agent's profile gates, each thrown only before any read, write,
+// signature or send of its operation. They are definite refusals that keep no
+// effect in the journal, so a request refused while the operator's
+// configuration was incomplete runs once it is complete. A new gate goes here.
+export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required', 'session_admission_required', 'settlement_profile_unavailable', 'rail_unavailable', 'native_evidence_required', 'bundle_finalization_unavailable']);
+// These seller-agent errors occur before an external effect. Any other error
+// may follow an effect and stays uncertain; in particular, commitment_failed
+// is deliberately absent: a write may have happened. A session the seller's
+// admission did not admit (or could not answer for) kept nothing either.
+// A payment claim other than the one whose work the agent retains
+// (seller_native_evidence_conflict) is refused before anything of it runs.
+const NO_EFFECT_ERRORS = new Set(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', ...SELLER_PRE_EFFECT_REFUSALS]);
+const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
+const paymentPending = (answer) => answer?.status === 'held' || (answer?.status === 'payment-evidenced' &&
+  (!['delivered', 'delivery-ready'].includes(answer.delivery?.status) || answer.delivery?.evidencePublication === 'held-readback-only'));
+/** The one classification of an authenticated seller command's result
+ * ({answer}, {error} or {held}), for its first run (HTTP finish) and for its
+ * recovery (reconcileTransport). Only a refusal from the no-effect list keeps
+ * its status; any other failure is uncertain. A release needs `retained:
+ * false`, proof that no work of exactly this command is kept. A recovery
+ * settles only what the store accepts (completion, or a proposal/payment retry
+ * or release), and under an expired delegation only completion. */
+export function transportOutcome(path, { answer, error, held, cause = error, causeCode } = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
+  const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
+  const refusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
+  const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
+  if (held !== undefined || (error && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false, ...(cause ? { cause, ...(causeCode ? { causeCode } : {}) } : {}) };
+  const noEffect = rejected && !resumed && !retained;
+  const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
+  const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
+  if (recovering && !(readOnly ? !retry && !noEffect && !rejected : retry || noEffect ? proposal || payment : !rejected)) {
+    return { disposition: 'indeterminate', reason: String(refusal ? error.code : answer?.reason ?? 'seller_transport_work_retained').slice(0, 240), status: 503, value: UNCERTAIN, settle: false, retry: false, noEffect: false };
+  }
+  return { disposition: noEffect ? 'no-effect' : retry ? 'retry' : 'present', status: refusal ? error.status : 200,
+    value: refusal ? { error: error.code, message: error.message } : answer, settle: true, retry, noEffect };
 }
 import { proposalTimeProblem } from './seller-proposal-time.mjs';
 // A claimed pay-dem transaction hash as core payment intake reads it
@@ -64,7 +100,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // Internal seller proposal, commitment and fixture payment profile.
 // Native payment remains gated until its handler is present.
 const MAX_CHALLENGES_PER_JOB=16;
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
+export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, simulatedFixture = false }) {
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
   if (typeof simulatedFixture !== 'boolean') throw new TypeError('simulatedFixture must be true or false');
@@ -90,6 +126,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
     try{if(proposal)access.assertWallet(addressForClaim(buyer));else access.assertSellerWallet(addressForClaim(buyer),jobId);}
     catch(error){if(error.code==='buyer_access_closed')throw new SellerAgentError(error.code,error.message,409);throw error;}
+  };
+  // Recovery uses the same job-scoped paid-order authority as ordinary work.
+  // Only unpaid outsiders fall back to inspecting issued unknown writes.
+  const buyerAccessClosed=(session,jobId)=>{
+    try{assertBuyer(session.buyerBundle.presentedBy,jobId);return false;}
+    catch(error){if(error.code==='buyer_access_closed')return true;throw error;}
   };
   const claim = signer.claim;
   const nativeEvidence = nativePaymentEvidenceConfig(nativePaymentEvidence);
@@ -381,15 +423,21 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
   }
   for (const session of durable?.sessions() ?? []) await restore(session);
-  const recoveryCall = (fn) => durable ? (input, {transport}={}) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
+  // An authenticated transport command hands in its reservation's checks: it
+  // is checked inside the job fence before restore or work, and its outcome
+  // is settled there, before the fence is released.
+  const recoveryCall = (fn, before) => durable ? (input, { transport } = {}) => durable.withJob(input?.transportIdentity?.jobId ?? input?.jobId, async (session) => {
     transport?.check();
     const jobId = input?.transportIdentity?.jobId ?? input?.jobId;
+    const early=before?await before(session,jobId):undefined;if(early!==undefined)return early;
     sessions.delete(jobId);
     await restore(session);
-    transport?.check();
-    const answer=await fn(input,{transport});
-    transport?.check();
-    return answer;
+    if (!transport) return fn(input);
+    let result;
+    try { transport.check();const answer=await fn(input,{transport});transport.check();result={answer}; } catch (error) { result = { error }; }
+    transport.settle(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
+    if (result.error) throw result.error;
+    return result.answer;
   }).catch((error) => {
     if (error.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
     // The store's fence rejects a non-canonical job before the operation's own
@@ -994,7 +1042,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   };
   async function reconcileCommitmentTransport({ request, body, readOnly = false } = {}) {
     if (!COMMITMENT_PATHS.has(request?.path)) return undefined;
-    const held = (reason) => ({ disposition: 'indeterminate', reason: String(reason).slice(0, 240) });
+    const held = (reason, cause) => {
+      const out = { disposition: 'indeterminate', reason: String(reason).slice(0, 240) };
+      if (cause) { out.causeCode = cause?.cause?.name === 'TimeoutError' ? 'timeout' : 'reader'; Object.defineProperty(out, 'cause', { value: cause }); }
+      return out;
+    };
     const bound = () => {
       try {
         return request.method === 'POST' && isCanonicalJobId(request.jobId) && Boolean(body) && typeof body === 'object' && !Array.isArray(body) &&
@@ -1010,14 +1062,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // fall through to the ordinary commitment path: a body without one was
     // never a signature commitment request.
     if (early && (!body.agreement || typeof body.agreement !== 'object' || Array.isArray(body.agreement))) return held('the signature commitment request has no Agreement');
+    // Recovery never starts an early attempt or reserves its buyer slot.
+    if (early && !session.signatureCommitmentAttempt) return held('seller_signature_attempt_absent');
     const input = { jobId: request.jobId, signedProjection: body.signedProjection };
     const options = { readbackOnly: true, adopt: !early, ...(early ? { signatureAgreement: body.agreement } : {}) };
     let answer;
     try { answer = await commit(input, options); }
     catch (error) {
-      if (readOnly || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return held(error?.message ?? error);
+      if (readOnly || early || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return held(error?.code ?? error?.message ?? error, error);
       try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
-      catch (retryError) { return held(retryError?.message ?? retryError); }
+      catch (retryError) { return held(retryError?.code ?? retryError?.message ?? retryError, retryError); }
     }
     return answer?.status === 'committed' || answer?.status === 'commitment-held' ? { disposition: 'present', value: answer } : held('commitment readback did not establish a retained outcome');
   }
@@ -1066,6 +1120,69 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     refuseBundleFinalization();
   }
 
+  // ---- One fenced recovery of an uncertain authenticated transport command ----
+  // Runs under the job fence, after the transport store's claim and the
+  // authenticated restore (reconcileTransport). The exact request is checked
+  // again against the restored session, then one closed table runs it: live,
+  // through the command's own durable reducer, whose journals replay what was
+  // signed or sent; under an expired delegation, read back only.
+  const proposalWork = (jobId) => { const s = durable?.loadSession(jobId) ?? sessions.get(jobId); return Boolean(s?.agreementSignatureKey || s?.sellerContribution || s?.commitment); };
+  // Work of exactly this command that forbids releasing its effect.
+  const retainedWork = (path, jobId, body) => path === '/dacs/v1/agreements/proposals' ? proposalWork(jobId) : path === '/dacs/v1/payments' && api.retainsPaymentClaim(jobId, body);
+  async function recoverTransport({ request, body, rawBody, readOnly, transport }) {
+    const same = (a, b) => canonicalize(a) === canonicalize(b);
+    const proposal = request.path === '/dacs/v1/agreements/proposals', session = sessions.get(request.jobId) ?? null;
+    const identity = proposal ? body.transportIdentity : session?.transportIdentity;
+    let decoded; try { decoded = JSON.parse(Buffer.from(rawBody).toString('utf8')); } catch { /* differs below */ }
+    if (request.method !== 'POST' || request.seller !== claim || !same(request.listingPin, pin) || sha256Hex(rawBody) !== request.bodyHash || decoded === undefined || !same(decoded, body) ||
+        request.jobId !== (body.transportIdentity?.jobId ?? body.jobId) || identity?.seller !== claim || request.buyer !== identity?.buyer || request.agreementHash !== identity?.agreementHash ||
+        (proposal ? request.buyer !== body.buyerIdentityBundle?.presentedBy : request.agreementHash !== session?.agreementHash)) return { held: 'seller_transport_context_mismatch' };
+    try {
+      switch (request.path) {
+        case '/dacs/v1/agreements/proposals': {
+          if (!readOnly) { const answer=await receiveProposal(body,{transport});transport?.check();return {answer}; }
+          // Read only, a proposal completes from its durable final checkpoint
+          // alone, never from a contribution saved without it.
+          if (!session?.proposal || !session.sellerContribution || !same(body.proposal, session.proposal) || !same(body.transportIdentity, session.transportIdentity) ||
+              session.agreementHash !== request.agreementHash || session.sellerContributionProposalHash !== body.proposal.proposalHash ||
+              session.buyerBundleHash !== identityBundleHash(body.buyerIdentityBundle)) return { held: 'seller_proposal_state_incomplete' };
+          assertVetContext(); assertSessionAdmission(); assertRailPin(session.railPin, 'in-flight');
+          assertBuyer(request.buyer, request.jobId, { proposal: true });
+          const agreement = await finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], contributionVerifier);
+          return contentHash(agreement) === request.agreementHash ? { answer: { disposition: 'complete', contribution: structuredClone(session.sellerContribution) } } : { held: 'seller_proposal_state_incomplete' };
+        }
+        case '/dacs/v1/agreements/state': return { answer: agreementState(body.transportIdentity) };
+        case '/dacs/v1/commitments': case '/dacs/v1/commitments/signature': {
+          const proof = await reconcileCommitmentTransport({ request, body, readOnly });
+          return proof?.disposition === 'present' ? { answer: proof.value } : { held: proof?.reason ?? 'seller_commitment_readback_indeterminate', cause: proof?.cause, causeCode: proof?.causeCode };
+        }
+        case '/dacs/v1/payments': {
+          const work = session?.nativeEvidenceWork ?? session?.paymentWork;
+          if (work && (work.txHash !== paymentTxHash(body.txHash) || work.payerPayingKey !== body.payerPayingKey)) return { held: 'seller_payment_context_mismatch' };
+          return readOnly ? { held: 'seller_payment_readback_unavailable' } : { answer: await submitPayment(body) };
+        }
+        case '/dacs/v1/bundles/request': case '/dacs/v1/bundles/countersignature': case '/dacs/v1/bundles/buyer-copy': return { held: 'bundle_finalization_unavailable' };
+        default: return { held: 'seller_transport_reconciliation_unsupported' };
+      }
+    } catch (error) { return { error }; }
+  }
+
+  // Seller-owned recovery seam, deliberately not an HTTP route. It resumes
+  // only retained, previously verified work after every unknown anchor has
+  // authenticated exact readback. Absence never authorizes resubmission.
+  async function resume({ jobId }) {
+    const session = sessionFor(jobId);
+    assertBuyer(session.buyerBundle.presentedBy,jobId);
+    const reconciliation = await durable.reconcileJob(jobId, anchors);
+    if (reconciliation.status === 'held') throw new SellerAgentError('seller_reconciliation_required', 'an anchor outcome remains unknown', 503);
+    if (session.countersignatureWork && !session.sellerCopy) return countersign({ jobId, buyerSignature: session.countersignatureWork.buyerSignature });
+    if (session.paymentWork && !session.payment) return submitPayment({ jobId, txHash: session.paymentWork.txHash, payerPayingKey: session.paymentWork.payerPayingKey });
+    if (session.nativeEvidenceWork && (!session.deliveryReady || deliveryEvidenceEnabled)) return submitPayment({ jobId, txHash: session.nativeEvidenceWork.txHash,
+      payerPayingKey: session.nativeEvidenceWork.payerPayingKey, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+    if (session.commitCreatedAt && !session.commitment) return commit({ jobId });
+    return { status: 'retained', stage: session.stage };
+  }
+
   const api = {
     assertAuthenticatedPayment:()=>{throw new SellerAgentError('settlement_profile_unavailable','authenticated payment recovery is not assembled',503);},
     assertSettlementCredit,
@@ -1077,18 +1194,24 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     commit: recoveryCall(commit),
     // Reauthenticates cached transport answers without authorizing a new CREATE.
     readCommitment: recoveryCall(({jobId,signedProjection,signatureAgreement}) => commit({jobId,signedProjection}, {readbackOnly:true,signatureAgreement})),
-    // Read-only reduction of an uncertain commitment HTTP reservation. Other
-    // routes keep their own (or no) reconciliation.
-    reconcileTransport: durable ? async (input) => {
-      const jobId = input?.request?.jobId;
-      if (!COMMITMENT_PATHS.has(input?.request?.path) || !isCanonicalJobId(jobId)) return undefined;
-      try {
-        return await durable.withJob(jobId, async (session) => { sessions.delete(jobId); await restore(session); return reconcileCommitmentTransport(input); });
-      } catch (error) {
-        if (error?.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
-        throw error;
-      }
-    } : reconcileCommitmentTransport,
+    // The one recovery of an uncertain authenticated command. The HTTP
+    // transport hands in its store capabilities: claim, inside the job fence
+    // before anything is restored or run, and settle, before the fence is
+    // released. A trusted direct caller without them only gets the outcome.
+    reconcileTransport: durable ? ({ transport, ...input } = {}) => durable.withJob(input.request?.jobId, async (session) => {
+      const claimed=transport?.claim();
+      const { path, jobId } = input.request, readOnly = input.readOnly === true || claimed?.live===false;
+      let result;
+      // An unpaid outside buyer only has issued unknown writes inspected:
+      // nothing is restored or run. Live and read-only proposal replay each
+      // apply the proposal wallet and profile gates themselves.
+      if (path !== '/dacs/v1/agreements/proposals' && access && session && buyerAccessClosed(session, jobId)) {
+        result = { held: await readIssued?.(jobId, { unknownOnly: true }) ? 'buyer_access_closed; issued unknown writes inspected read-only; retained outcome unchanged' : 'buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged' };
+      } else { sessions.delete(jobId); await restore(session); result = await recoverTransport({ ...input, readOnly, transport:typeof claimed?.check==='function'?claimed:undefined }); }
+      const outcome = transportOutcome(path, result, { retained: retainedWork(path, jobId, input.body), recovering: true, readOnly });
+      if (outcome.settle) transport?.settle(outcome);
+      return outcome;
+    }) : undefined,
     commitOnSignature: recoveryCall((input) => {
       if (!input || canonicalize(Object.keys(input).sort()) !== canonicalize(['agreement', 'jobId', 'signedProjection']) || !input.agreement || typeof input.agreement !== 'object') throw new SellerAgentError('signature_agreement_invalid', 'expected exactly jobId, Agreement and signedProjection');
       return commit({ jobId: input.jobId, signedProjection: input.signedProjection }, { signatureAgreement: input.agreement });
@@ -1123,7 +1246,28 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const work = session?.nativeEvidenceWork ?? session?.paymentWork;
       return Boolean(work) && work.txHash === paymentTxHash(txHash) && work.payerPayingKey === payerPayingKey;
     },
+    // Whether this seller retains proposal work for the job (a signature
+    // intent, a contribution or a commitment): the transport then never
+    // releases its proposal effect. Synchronous and read only.
+    retainsProposalWork: (jobId) => proposalWork(jobId),
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
+    reconcile: durable ? async({ jobId }) => {
+      const session=durable.loadSession(jobId);
+      // An unpaid outside buyer may only read back an issued unknown CREATE.
+      if(access&&session&&buyerAccessClosed(session,jobId)){
+        const unknown=await readIssued?.(jobId,{unknownOnly:true});
+        if(unknown)return unknown;
+        throw new SellerAgentError('buyer_access_closed','this operator accepts only its configured custody buyer while openBuyerAccess is off; no unknown issued write remains to read back',409);
+      }
+      return durable.reconcileJob(jobId, anchors);
+    } : undefined,
+    resume: durable ? recoveryCall(resume,async(session,jobId)=>{
+      if(access&&session?.buyerBundle&&buyerAccessClosed(session,jobId)){
+        const unknown=await readIssued?.(jobId,{unknownOnly:true});if(unknown)return unknown;
+        throw new SellerAgentError('buyer_access_closed','this operator accepts only its configured custody buyer while openBuyerAccess is off; no unknown issued write remains to read back',409);
+      }
+    }) : undefined,
+
     close: () => {if(!closed){durable?.close();closed=true;}},
     // Test/ops visibility only: never a signing capability.
     finalityCommitmentAddress,
