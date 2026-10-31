@@ -192,7 +192,7 @@ export function parsePolicyLedger(text){
 // hold line opens one, a release line ends it (a repeated release changes
 // nothing), a refusal line is the decision log only. A hold enters the rows
 // as {contextHold, jobId, effect, writes, totalOs, recordedAt, released,
-// originLine}; contextHoldRows turns it into outstanding writes.
+// releasedLine (the first release line), originLine}; contextHoldRows turns it into outstanding writes.
 function contextLedgerLine(row,rows,malformed,lineNumber){
   if(row.event==='refused'){
     if(!exact(row,['format','event','jobId','buyer','reason','recordedAt'])||typeof row.reason!=='string'||!Number.isSafeInteger(row.recordedAt))malformed();
@@ -207,7 +207,7 @@ function contextLedgerLine(row,rows,malformed,lineNumber){
   }
   const hold=rows.find(entry=>entry.contextHold===row.holdId);
   if(row.event!=='release'||!exact(row,['format','event','holdId','jobId','recordedAt'])||!hold||hold.jobId!==row.jobId||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0||row.recordedAt<hold.recordedAt)malformed();
-  hold.released=true;
+  hold.released=true;hold.releasedLine??=lineNumber;
 }
 
 // Each open context hold counts its unconverted writes as outstanding policy
@@ -216,22 +216,31 @@ function contextLedgerLine(row,rows,malformed,lineNumber){
 // line than the hold (originLine): every ledger line is appended under the
 // policy lock, so line order is the order admission saw, and approving,
 // signing or completing an attempt never moves it. Clocks play no part. A row
-// without an originLine converts nothing. `converting` is the write being
-// decided, which has no line yet: it takes one of its job's held writes
-// instead of adding a new one.
+// without an originLine converts nothing. Writes are taken in line order, not
+// in the order the rows are listed (an open attempt is listed last). A write
+// that started while a released hold was open may have been that hold's, so it
+// takes the hold that ends first and an open hold keeps its slot counted.
+// `converting` is the write being decided, which has no line yet: it takes one
+// of its job's held writes instead of adding a new one.
 function contextHoldRows(ledger,converting=null){
   const vet=(row,jobId)=>row.decision==='approved'&&row.policy&&row.outcome!=='released'&&row.jobId===jobId&&row.artifactKind==='CompositeVerificationRecord';
   let taken=converting?.artifactKind!=='CompositeVerificationRecord';
-  const rows=[],converted=new Set();
-  for(const hold of ledger.filter(row=>row.contextHold&&!row.released)){
-    let remaining=hold.writes;
-    // One write consumes one slot across all holds, in ledger order, including
-    // holds retained across a shutdown and a replacement hold for the same job.
-    for(const row of ledger){
-      if(remaining>0&&!converted.has(row)&&vet(row,hold.jobId)&&row.originLine>hold.originLine){remaining--;converted.add(row);}
+  const holds=ledger.filter(row=>row.contextHold).map(hold=>({hold,remaining:hold.writes,end:hold.released?hold.releasedLine??Infinity:Infinity}));
+  const writes=ledger.filter(row=>!row.contextHold&&Number.isSafeInteger(row.originLine)).sort((a,b)=>a.originLine-b.originLine);
+  // One write consumes one slot across all holds, including holds retained
+  // across a shutdown and a replacement hold for the same job.
+  for(const row of writes){
+    let chosen=null;
+    for(const slot of holds){
+      if(slot.remaining>0&&vet(row,slot.hold.jobId)&&row.originLine>slot.hold.originLine&&row.originLine<slot.end&&(!chosen||slot.end<chosen.end))chosen=slot;
     }
-    if(!taken&&converting.jobId===hold.jobId&&remaining>0){remaining-=1;taken=true;}
-    for(let index=0;index<remaining;index++)rows.push({decision:'approved',policy:true,outcome:null,jobId:hold.jobId,totalOs:hold.totalOs,contextSlot:hold.contextHold});
+    if(chosen)chosen.remaining--;
+  }
+  const rows=[];
+  for(const{hold,remaining}of holds.filter(slot=>!slot.hold.released)){
+    let open=remaining;
+    if(!taken&&converting.jobId===hold.jobId&&open>0){open-=1;taken=true;}
+    for(let index=0;index<open;index++)rows.push({decision:'approved',policy:true,outcome:null,jobId:hold.jobId,totalOs:hold.totalOs,contextSlot:hold.contextHold});
   }
   return rows;
 }
