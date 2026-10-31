@@ -631,14 +631,18 @@ function classifyBoundedFailure({ stage, read }) {
     if (isAuditReport(report)) return { failureClass: "policy", evidence: [] };
   }
   const evidence = [];
+  let terminal = null;
   for (const [name, relevant] of packageCodeRan[stage]?.(read) ? [] : stageEvidence[stage] ?? []) {
     for (const line of evidenceLines(read(name))) {
       if (packageCodeStep.test(line)) break;
+      if (!relevant(line)) continue;
+      terminal = terminalCause(line) ?? terminal;
       const entry = `${name}: ${line.trim()}`;
-      if (evidence.length < 5 && relevant(line) && retryableFailureEvidence(entry)) evidence.push(entry);
+      if (evidence.length < 5 && retryableFailureEvidence(entry)) evidence.push(entry);
     }
   }
-  if (evidence.length > 0) return { failureClass: "network", evidence: evidence.slice(0, 5) };
+  // A transport error the run recovered from is not why it stopped.
+  if (evidence.length > 0 && terminal !== "other") return { failureClass: "network", evidence: evidence.slice(0, 5) };
   // Verdaccio never answered its ping: the registry endpoint was unreachable.
   if (stage === "registry-ready") return { failureClass: "network", evidence: ["registry ping did not succeed within 30 attempts"] };
   return { failureClass: policyStages.has(stage) ? "policy" : "functional", evidence: [] };
@@ -651,6 +655,19 @@ export function failureSummary({ stage, exitCode, read }) {
 }
 
 const firstNpmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
+const networkErrorCode = code => code === "FETCH_ERROR" || networkSignature.test(code);
+
+// The lines that name the cause a command stopped on: npm's error code, a curl
+// exit line and a bare `Error:`, with BuildKit's step prefix. Warnings and
+// retries of recovered failures never match, so the last such line in a log
+// is the cause the stage ended on: "network" when it is a transport failure,
+// "other" when not, null for a line that names no cause.
+const terminalCauseLine = /^(?:#\d+ (?:\d+(?:\.\d+)? )?)?(?:npm error code (\S+)$|curl: \(\d+\)|Error: )/;
+function terminalCause(line) {
+  const match = terminalCauseLine.exec(line.trim());
+  if (!match) return null;
+  return (match[1] === undefined ? networkSignature.test(line) : networkErrorCode(match[1])) ? "network" : "other";
+}
 // Fields of an audit report; npm's audit error object has none of them.
 const AUDIT_REPORT_FIELDS = ["auditReportVersion", "vulnerabilities", "metadata"];
 const retryableStatus = status => status === 408 || status === 429 || (status >= 500 && status <= 599);
@@ -662,7 +679,7 @@ function retryableFailureEvidence(text) {
   let endpoint;
   try { endpoint = JSON.parse(text); } catch {
     const code = firstNpmErrorCode(text);
-    return (code === null || code === "FETCH_ERROR" || networkSignature.test(code)) && networkSignature.test(text);
+    return (code === null || networkErrorCode(code)) && networkSignature.test(text);
   }
   if (typeof endpoint?.message !== "string" || AUDIT_REPORT_FIELDS.some(key => Object.hasOwn(endpoint, key))) return false;
   if (endpoint.statusCode === undefined) return networkSignature.test(endpoint.message);
