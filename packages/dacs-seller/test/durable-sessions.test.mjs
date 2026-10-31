@@ -39,6 +39,21 @@ test('failed lock release is retried before reacquisition and close', async t =>
   blocker.exec('ROLLBACK'); f.store.close(); blocker.close();
   const reopened = await f.reopen(); assert.equal(reopened.inspectLocks().length, 0); reopened.close();
 });
+for (const actionFails of [false, true]) test(`a task started by a job whose lock release failed is fenced (action ${actionFails ? 'throws' : 'returns'})`, async t => {
+  const f = await durableFixture(t), blocker = connect(f.path); let open; const gate = new Promise(resolve => { open = resolve; });
+  let save, assertHeld;
+  await assert.rejects(f.store.withJob(JOB, () => {
+    save = gate.then(() => f.store.saveSession({ jobId: JOB, TEST: 'after the job ended' }));
+    assertHeld = gate.then(() => f.store.assertHeld(JOB));
+    blocker.exec('BEGIN IMMEDIATE'); if (actionFails) throw new Error('TEST action failed');
+  }), actionFails ? /TEST action failed/ : /locked/);
+  blocker.exec('ROLLBACK'); open();
+  await assert.rejects(save, e => e.code === 'seller_state_fenced'); await assert.rejects(assertHeld, e => e.code === 'seller_state_fenced');
+  assert.equal(f.store.loadSession(JOB), null);
+  await f.store.withJob(JOB, () => f.store.saveSession({ jobId: JOB, TEST: 'next acquisition' }));
+  assert.equal(f.store.loadSession(JOB).TEST, 'next acquisition'); assert.equal(f.store.inspectLocks().length, 0);
+  blocker.close(); f.store.close();
+});
 test('cleanup contention preserves the original action error', async t => {
   const f = await durableFixture(t), blocker = connect(f.path), cause = new Error('TEST action failed');
   await assert.rejects(f.store.withJob(JOB, () => { blocker.exec('BEGIN IMMEDIATE'); throw cause; }), error => error === cause);
