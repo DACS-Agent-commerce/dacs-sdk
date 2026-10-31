@@ -9,7 +9,7 @@ import { collectAuditVersions } from "./check-npm-advisories.mjs";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
 import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
-import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence } from "./acceptance-evidence-io.mjs";
+import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence, readRequiredEvidence } from "./acceptance-evidence-io.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
 export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
@@ -1410,7 +1410,7 @@ if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.u
       throw new Error("usage: --audit-policy <npm-audit.json> <generated-package-lock.json> <output>");
     }
     invalidateReport(output, [auditPath, lockPath]);
-    const audit = JSON.parse(readEvidence(auditPath));
+    const audit = JSON.parse(readRequiredEvidence(auditPath));
     let lock = null;
     try { lock = JSON.parse(readEvidence(lockPath)); } catch { /* missing or unreadable: applicability is unevaluated */ }
     const policy = registryAuditPolicy(audit, lock, JSON.parse(readFileSync(baselinePath, "utf8")));
@@ -1445,7 +1445,7 @@ if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.u
     const record = mode === "--record";
     const summaryPath = drift || record ? process.argv[3] : mode;
     if (!summaryPath) throw new Error(`usage: ${mode} <acceptance-summary.json>`);
-    const summary = JSON.parse(readEvidence(summaryPath));
+    const summary = JSON.parse(readRequiredEvidence(summaryPath));
     // Unset means fail closed; only the pull_request acceptance job sets warn.
     const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
     const result = drift ? registryAuditDriftDisposition(summary)
