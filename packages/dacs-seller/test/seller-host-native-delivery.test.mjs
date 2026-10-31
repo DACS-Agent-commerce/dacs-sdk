@@ -198,7 +198,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast.
-async function world(t, { deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
+async function world(t, { guardedDelivery = true, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
   const sellerKey = key(17), buyerKey = key(12), now = NOW, steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -374,8 +374,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
     } });
   // The seller's Deliverable CREATE and its public readback.
   const deliverable = async (input) => readBack(input.logicalAddress, 'Deliverable', input.deliveryBinding);
-  const nativeDemDelivery = createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
-    submit: async (input) => {
+  const submitDelivery = async (input, authorize) => {
+      await faults.beforeDeliverySubmit?.();
+      if (authorize && authorize() !== true) throw new Error('TEST delivery authorization refused');
       effects.deliverySubmit.push(input.logicalAddress);
       const fault = faults.deliverySubmit.shift();
       if (fault === 'fail') throw new Error('TEST delivery wallet refused before signing');
@@ -384,7 +385,9 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
       writeOnce(input.logicalAddress, input.report, 'Deliverable', input.deliveryBinding);
       if (fault === 'land-lose-lock') loseJobLock(input.logicalAddress.slice('dacs4:deliverable:'.length));
       return { status: 'accepted', reconciliationId: signedCreates.get(input.logicalAddress).hash };
-    },
+    };
+  const nativeDemDelivery = createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
+    submit: submitDelivery, ...(guardedDelivery ? { submitAuthorized: submitDelivery } : {}),
     reconcile: async (input) => {
       await faults.beforeDeliveryReconcile();
       const read = await deliverable(input);
@@ -496,7 +499,7 @@ async function world(t, { deliverableProducer = null, schemaUrl = true, reconcil
   const signedCreate = (logicalAddress) => clone(signedCreates.get(logicalAddress));
   const writtenAt = (logicalAddress) => clone(written.get(logicalAddress));
   return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
-    host: () => host, capabilities, dataDirectory, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession };
+    host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
@@ -1071,6 +1074,42 @@ test('settlement credit is checked again before the Deliverable is sent: a claim
   const retained = await w.retainedSession(a.jobId);
   assert.equal(retained.settlementCredit, 'indeterminate');
   assert.deepEqual([retained.deliveryHold?.result?.decision, retained.deliveryHold?.result?.code], ['rejected', 'payment-permit-invalid'], shown(retained.deliveryHold));
+});
+
+for (const restart of [false, true]) test(`settlement credit contested during native submission prevents a CREATE, including restart=${restart}`, async (t) => {
+  const w = await world(t), a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+  if (restart) await w.restart();
+  let contested;
+  w.faults.beforeDeliverySubmit = async () => { contested = await b.claim(tx); };
+  assert.equal((await a.claim(tx)).error, 'seller_unavailable');
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' });
+  assert.equal(w.createsAt(`dacs4:deliverable:${a.jobId}`), 0);
+  assert.deepEqual(w.effects.deliverySubmit, [], 'authorization runs before native signing');
+});
+
+test('a native capability without guarded submission keeps paid delivery held without invoking submit', async (t) => {
+  const w = await world(t, { guardedDelivery: false }), p = await w.purchase(), tx = p.pay();
+  const answer = await p.claim(tx);
+  assert.notEqual(answer.delivery?.status, 'delivery-ready');
+  assert.equal(answer.error, 'seller_unavailable', shown(answer));
+  await w.restart();
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  assert.deepEqual(w.effects.deliverySubmit, []);
+  assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 0);
+});
+
+test('a job fence lost during native submission prevents signing and recovers once after restart', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay(), address = `dacs4:deliverable:${p.jobId}`;
+  w.faults.beforeDeliverySubmit = async () => { w.loseJobLock(p.jobId); };
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  assert.equal(w.createsAt(address), 0);
+  assert.deepEqual(w.effects.deliverySubmit, []);
+  w.faults.beforeDeliverySubmit = null;
+  await w.restart();
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.equal(w.createsAt(address), 1);
 });
 
 // A crash during a first claim that is not a valid payment (a transfer the
