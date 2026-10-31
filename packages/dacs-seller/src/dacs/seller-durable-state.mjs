@@ -8,13 +8,21 @@ import { closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, lin
 import { isAbsolute, join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { isMainThread } from 'node:worker_threads';
-import { canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
-import { verifyFixtureRecord } from './fixture-anchors.mjs';
+import { admitRawJson, canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { anchorWriteMessage, canonicalSignature, verifyFixtureRecord } from './fixture-anchors.mjs';
 
 const DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const same = (a, b) => canonicalize(a) === canonicalize(b);
-const fail = (code) => { throw new SellerRecoveryError(code); };
+const droppedByJson = (v) => v === undefined || typeof v === 'function' || typeof v === 'symbol';
+// A challenge attempt as it is kept: its JSON form when that is an object with
+// a lowercase hex presentation hash, else null (a malformed attempt).
+function keptAttempt(attempt) {
+  let kept;
+  try { kept = clone(attempt); } catch { return null; }
+  return kept && typeof kept === 'object' && !Array.isArray(kept) && typeof kept.presentationHash === 'string' && /^[0-9a-f]{64}$/.test(kept.presentationHash) ? kept : null;
+}
+const fail = (code, cause) => { throw new SellerRecoveryError(code, { cause }); };
 // A job lock row's owner is `<pid>:<process>:<acquired ms>:<acquisition>`,
 // then `:<namespace>` where this host names this process's boot and start.
 // `<process>` is made once per realm and shared by every copy of this module
@@ -191,10 +199,19 @@ let identityWarned = false;
 const running = new AsyncLocalStorage();
 
 export class SellerRecoveryError extends Error {
-  constructor(code) { super(code); this.code = code; this.status = 503; }
+  constructor(code, options) { super(code, options); this.code = code; this.status = 503; }
 }
 
 export const DEFAULT_SELLER_MAX_JOBS = 10000;
+
+// Callback adapters must enforce maxBytes before decoding their wire reply.
+const ANCHOR_REPLY_BYTES = 1024 * 1024, ANCHOR_TIMEOUT_MS = 10000;
+// Room left in one anchor reply for the fixture receipt and the
+// {status, artifact, receipt} wrapper around the artifact.
+const ANCHOR_RECEIPT_RESERVE_BYTES = 16 * 1024;
+/** Largest artifact anchor() accepts, in canonical JSON bytes, so its whole readback fits one anchor reply. */
+export const SELLER_ANCHOR_ARTIFACT_BYTES = ANCHOR_REPLY_BYTES - ANCHOR_RECEIPT_RESERVE_BYTES;
+const MAX_ANCHOR_ADDRESS_LENGTH = 512, MAX_BUYER_LENGTH = 512;
 
 export async function createSellerDurableState({ dir, signer, listingPin, maxJobs = DEFAULT_SELLER_MAX_JOBS }) {
   if (typeof dir !== 'string' || !isAbsolute(dir) || !/^did:demos:agent:[0-9a-f]{64}$/.test(signer?.claim) || typeof signer.sign !== 'function' || !Number.isSafeInteger(maxJobs) || maxJobs < 1) fail('seller_state_configuration_invalid');
@@ -205,11 +222,20 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || realpathSync(dir) !== dir) fail('seller_state_directory_unsafe');
   const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(signer.claim.slice(16), 'hex')]), format: 'der', type: 'spki' });
   const pin = clone(listingPin);
-  const schema = [
+  // A store with only the session tables is upgraded once on open (below). The
+  // upgrade is one way: an earlier build refuses the upgraded store as corrupt.
+  const effectsSchema = [
+    'CREATE TABLE seller_effects (id TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    'CREATE TABLE seller_settlements (id TEXT PRIMARY KEY, job TEXT NOT NULL, value TEXT NOT NULL)',
+    'CREATE TABLE seller_anchors (address TEXT PRIMARY KEY, job TEXT NOT NULL, value TEXT NOT NULL)',
+    'CREATE INDEX seller_anchors_job ON seller_anchors (job)',
+  ];
+  const sessionSchema = [
     'CREATE TABLE seller_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
     'CREATE TABLE seller_jobs (job TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL)',
     'CREATE TABLE seller_locks (job TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL)',
   ];
+  const schema = [...sessionSchema, ...effectsSchema];
   const path = join(dir, 'seller-state.sqlite');
   try {
     lstatSync(path);
@@ -246,9 +272,13 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   const db = new DatabaseSync(path);
   const owned = new Map(); // jobId -> { owner, revision } for this store's held locks
   db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000');
+  // The known schema the store has, from one read: 'effects', 'sessions' or null.
+  function storedSchema() {
+    const stored = db.prepare("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").all().map(row => row.sql).sort();
+    return same(stored, [...schema].sort()) ? 'effects' : same(stored, [...sessionSchema].sort()) ? 'sessions' : null;
+  }
   try {
-    const actual = db.prepare("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.sql);
-    if (!same(actual, [...schema].sort((a,b) => a.split(' ')[2].localeCompare(b.split(' ')[2])))) fail('seller_state_corrupt');
+    if (storedSchema() === null) fail('seller_state_corrupt');
   } catch (error) { db.close(); throw error; }
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
@@ -277,6 +307,12 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
     const config = get('SELECT value FROM seller_meta WHERE key=?', 'context');
     if (!config) fail('seller_state_corrupt');
     verified(config.value, 'context', 'context');
+    // Decided again under the write lock: another opener may have upgraded it.
+    if (storedSchema() !== 'effects') transaction(() => {
+      const found = storedSchema();
+      if (found === 'sessions') db.exec(effectsSchema.join(';'));
+      else if (found === null) fail('seller_state_corrupt');
+    });
     const fencedStore = await createFsFencedSessionStore({ dir: join(dir, 'sdk-agreements') });
     const receiptStore = await createFsSellerReceiptStore({ dir: join(dir, 'sdk-receipts') });
     function load(jobId) {
@@ -286,6 +322,14 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       if (stored.revision !== row.revision || stored.session.jobId !== jobId || !isCanonicalJobId(jobId)) fail('seller_state_corrupt');
       return stored;
     }
+    function effect(id) {
+      const row = get('SELECT value FROM seller_effects WHERE id=?', id);
+      return row ? verified(row.value, 'effect', id) : null;
+    }
+    function putEffect(id, value) { run('INSERT INTO seller_effects VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value', id, authenticated('effect', id, value)); }
+    const buyerCommitment = (buyer) => typeof buyer === 'string' && buyer.length >= 1 && buyer.length <= MAX_BUYER_LENGTH
+      ? `signature-buyer:${buyer}` : fail('seller_state_binding_invalid');
+    const scopedJob = () => { const scope = running.getStore(); return scope?.api === api ? scope.jobId : fail('seller_state_fenced'); };
     // Called inside each job-scoped write transaction (an effect's intent and
     // its completion record alike) and as the last check before each effect:
     // the caller must be running this store's acquisition of `jobId`, and the
@@ -330,6 +374,74 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           } catch { /* held, unreadable or gone: kept */ } finally { try { probe?.close(); } catch { /* removed or kept either way */ } }
         }
       });
+    }
+    async function anchorRequest(operation, invoke) {
+      const controller = new AbortController();
+      let timer;
+      const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
+        const cause = new DOMException(`anchor ${operation} timed out`, 'TimeoutError'); controller.abort(cause); reject(cause);
+      }, ANCHOR_TIMEOUT_MS); });
+      try {
+        return await Promise.race([Promise.resolve().then(() => invoke({ signal: controller.signal, maxBytes: ANCHOR_REPLY_BYTES, timeoutMs: ANCHOR_TIMEOUT_MS })), deadline]);
+      } finally { clearTimeout(timer); controller.abort(); }
+    }
+    async function readAnchorRecord(anchors, address) {
+      const raw = await anchorRequest('read', options => anchors.read(address, options));
+      let budget = ANCHOR_REPLY_BYTES;
+      // Charges at most what JSON.stringify writes, so the exact byte check
+      // decides: an array element writes its comma but not its index, and an
+      // object member JSON drops writes nothing.
+      const text = raw instanceof Uint8Array ? raw : JSON.stringify(raw, function (key, value) {
+        budget -= (Array.isArray(this) ? 1 : droppedByJson(value) ? 0 : key.length + 1) + (typeof value === 'string' ? value.length : 0);
+        if (budget < 0) throw new Error('anchor read exceeds decoded budget');
+        return value;
+      });
+      if (typeof text === 'string' && Buffer.byteLength(text) > ANCHOR_REPLY_BYTES) throw new Error('anchor read exceeds byte limit');
+      const record = admitRawJson(text instanceof Uint8Array ? text : Buffer.from(text), { maxBytes: ANCHOR_REPLY_BYTES });
+      if (!record || typeof record !== 'object' || Array.isArray(record) || typeof record.status !== 'string') throw new Error('malformed anchor read');
+      return record;
+    }
+    function anchorRow(address) {
+      const row = typeof address === 'string' ? get('SELECT job,value FROM seller_anchors WHERE address=?', address) : null;
+      if (!row) return null;
+      const retained = verified(row.value, 'anchor', address);
+      if (retained.jobId !== row.job || retained.logicalAddress !== address) fail('seller_state_corrupt');
+      return retained;
+    }
+    const putAnchor = (value) => run('INSERT INTO seller_anchors VALUES (?,?,?) ON CONFLICT(address) DO UPDATE SET value=excluded.value',
+      value.logicalAddress, value.jobId, authenticated('anchor', value.logicalAddress, value));
+    // The exact artifact an anchor keeps, sends and compares, and its hash:
+    // taken once from the caller's value, and refused before anything is kept
+    // when it is not a JSON object or its readback could not fit one reply.
+    function anchorArtifact(artifact) {
+      let bytes, snapshot, hash;
+      try { bytes = canonicalize(artifact); snapshot = JSON.parse(bytes); hash = contentHash(snapshot); } catch (error) { fail('seller_anchor_artifact_invalid', error); }
+      if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) fail('seller_anchor_artifact_invalid');
+      if (Buffer.byteLength(bytes) > SELLER_ANCHOR_ARTIFACT_BYTES) fail('seller_anchor_artifact_too_large');
+      return { snapshot, hash };
+    }
+    // The writer authorization, checked before anything is kept: a throw, a
+    // malformed value or a signature over another address or hash leaves no
+    // intent and sends nothing. Returns its canonical base64url form.
+    function authorizedWrite(logicalAddress, hash, authorize) {
+      let value;
+      try { value = canonicalSignature(authorize()); } catch (error) { fail('seller_anchor_authorization_invalid', error); }
+      if (!verify(null, Buffer.from(anchorWriteMessage(logicalAddress, hash), 'utf8'), key, Buffer.from(value, 'base64url'))) fail('seller_anchor_authorization_invalid');
+      return value;
+    }
+    // The one exit of an anchor readback: the receipt for exactly the retained
+    // artifact, or a coded error that keeps its cause. A reply that could not
+    // be read, or says anything but present, is held for reconciliation; a
+    // present reply that is malformed or differs is invalid.
+    async function authenticatedReadback(anchors, intent) {
+      let record;
+      try { record = await readAnchorRecord(anchors, intent.logicalAddress); } catch (error) { fail('seller_anchor_reconciliation_required', error); }
+      if (record.status !== 'present') fail('seller_anchor_reconciliation_required', new Error(`anchor readback is ${record.status.slice(0, 64)}`));
+      try {
+        if (!Object.hasOwn(record, 'artifact') || !same(record.artifact, intent.artifact)) throw new Error('anchor readback differs from the retained artifact');
+        if (verifyFixtureRecord(record, { logicalAddress: intent.logicalAddress, expectedWriter: signer.claim }) !== 'valid') throw new Error('anchor receipt does not authenticate the retained artifact');
+      } catch (error) { fail('seller_anchor_reconciliation_invalid', error); }
+      return record.receipt;
     }
     const pendingReleases = new Map();
     function release(jobId, owner) {
@@ -458,6 +570,194 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           run('DELETE FROM seller_locks WHERE job=? AND owner=?', job, owner);
           return { released: true, recordsChanged: 0 };
         });
+      },
+      reserveSignatureCommitment(buyer, jobId) {
+        const id = buyerCommitment(buyer);
+        return transaction(() => {
+          fence(jobId);
+          const prior = effect(id);
+          if (prior?.pending && prior.jobId !== jobId) fail('seller_signature_buyer_unresolved');
+          putEffect(id, { kind: 'signature-buyer', pending: true, jobId });
+        });
+      },
+      releaseSignatureCommitment(buyer, jobId) {
+        const id = buyerCommitment(buyer);
+        transaction(() => {
+          fence(jobId);
+          const prior = effect(id);
+          if (prior?.pending && prior.jobId === jobId) putEffect(id, { ...prior, pending: false });
+        });
+      },
+      bindSettlement(settlementId, jobId, claim = null) {
+        if (typeof settlementId !== 'string' || settlementId.length < 1 || settlementId.length > 512 || !isCanonicalJobId(jobId)) fail('seller_state_binding_invalid');
+        return transaction(() => {
+          fence(jobId);
+          const row = get('SELECT * FROM seller_settlements WHERE id=?', settlementId);
+          const previous = row ? verified(row.value, 'settlement', settlementId) : null;
+          if (previous && row.job !== previous.job) fail('seller_state_corrupt');
+          const claims = previous?.claims ?? [], contested = previous?.contested === true;
+          const credited = () => !contested && claims.length === 1 && claims[0].jobId === jobId && Number.isSafeInteger(claims[0].phaseIndex);
+          if (claim === null) return credited();
+          if (!claim || typeof claim !== 'object' || Array.isArray(claim) || !Number.isSafeInteger(claim.phaseIndex) || claim.phaseIndex < 0) fail('seller_state_binding_invalid');
+          // A repeat of a kept job and phase keeps its first claim: an SB-2
+          // retry may move the observation time, and the receipt store decides.
+          const body = clone(claim);
+          if (claims.some(c => c.jobId === jobId && c.phaseIndex === body.phaseIndex)) return credited();
+          // A contested id keeps its first two claims as witnesses and grows no
+          // further: no claimant is credited, however many more arrive.
+          if (contested) return false;
+          claims.push({ jobId, phaseIndex: body.phaseIndex, claim: body });
+          const value = { job: previous?.job ?? jobId, claims, ...(claims.length > 1 ? { contested: true } : {}) };
+          run('INSERT OR REPLACE INTO seller_settlements VALUES (?,?,?)', settlementId, value.job, authenticated('settlement', settlementId, value));
+          return claims.length === 1;
+        });
+      },
+      settlementJob(settlementId) {
+        const row = get('SELECT * FROM seller_settlements WHERE id=?', settlementId);
+        if (!row) return null;
+        const retained = verified(row.value, 'settlement', settlementId);
+        if (row.job !== retained.job) fail('seller_state_corrupt');
+        return retained.contested !== true && retained.claims?.length === 1 && Number.isSafeInteger(retained.claims[0].phaseIndex) ? retained.job : null;
+      },
+      // CORE SN-1..SN-4: the seller's own challenge ledger. An issued nonce is
+      // kept with its job, buyer and lifetime before any presentation exists;
+      // the first attempt that carries it is kept in the same transaction
+      // that reads it, so it is consumed before the attempt is validated.
+      issueChallenge(nonce, value) {
+        transaction(() => {
+          if (effect(`session-challenge:${nonce}`)) fail('seller_challenge_taken');
+          putEffect(`session-challenge:${nonce}`, { kind: 'session-challenge', ...clone(value), attempt: null });
+        });
+      },
+      // The challenge as it was before this attempt (null when never issued);
+      // the attempt is kept only when it is the first. A malformed first
+      // attempt consumes the nonce too, kept with no presentation hash so no
+      // admission matches it, and is then refused (seller_challenge_attempt_invalid).
+      attemptChallenge(nonce, attempt) {
+        const kept = keptAttempt(attempt);
+        const prior = transaction(() => {
+          const prior = effect(`session-challenge:${nonce}`);
+          if (prior?.kind !== 'session-challenge') return null;
+          if (prior.attempt === null) putEffect(`session-challenge:${nonce}`, { ...prior, attempt: kept ?? { presentationHash: null } });
+          return prior;
+        });
+        if (!kept) fail('seller_challenge_attempt_invalid');
+        return prior;
+      },
+      admitChallenge(nonce, presentationHash) {
+        transaction(() => {
+          const prior = effect(`session-challenge:${nonce}`);
+          if (prior?.kind !== 'session-challenge' || typeof presentationHash !== 'string' || prior.attempt?.presentationHash !== presentationHash) fail('seller_state_corrupt');
+          putEffect(`session-challenge:${nonce}`, { ...prior, attempt: { ...prior.attempt, admitted: true } });
+        });
+      },
+      // A signature leaves signOnce only after its completion record, written
+      // under the job fence. So a retained intent for the same bytes is a
+      // signing that released nothing (its signer threw, or its holder died or
+      // lost the job before the record): the current holder signs it again,
+      // under the same fence. Without that, one signer failure would refuse
+      // these bytes for good, a paid order's evidence included.
+      signOnce(id, bytes) {
+        const bytesHash = sha256Hex(bytes), jobId = scopedJob();
+        return transaction(() => {
+          fence(jobId);
+          const prior = effect(id);
+          if (prior) {
+            if (prior.kind !== 'signature' || prior.bytesHash !== bytesHash) fail('seller_effect_conflict');
+            if (prior.state === 'intent') return null;
+            if (prior.state !== 'complete') fail('seller_signature_reconciliation_required');
+            const signature = Buffer.from(prior.signature, 'base64url');
+            if (!verify(null, Buffer.from(bytes), key, signature)) fail('seller_state_corrupt');
+            return signature;
+          }
+          // Retain the intent in a separate durable transaction before signing.
+          return null;
+        }) ?? (() => {
+          transaction(() => {
+            fence(jobId);
+            const prior = effect(id);
+            if (prior && !(prior.kind === 'signature' && prior.bytesHash === bytesHash && prior.state === 'intent')) fail('seller_state_busy');
+            if (!prior) putEffect(id, { kind: 'signature', bytesHash, state: 'intent' });
+          });
+          const signature = Buffer.from(signer.sign(Buffer.from(bytes)));
+          if (signature.length !== 64 || !verify(null, Buffer.from(bytes), key, signature)) fail('seller_state_signer_invalid');
+          // Fenced like the intent: a holder that lost its row while the
+          // signer ran keeps neither the signature nor a completion record, and
+          // its retained intent leaves the outcome to the next holder's readback.
+          transaction(() => {
+            fence(jobId);
+            putEffect(id, { kind: 'signature', bytesHash, state: 'complete', signature: signature.toString('base64url') });
+          });
+          return signature;
+        })();
+      },
+      signature(id) {
+        const prior = effect(id);
+        if (!prior) return { disposition: 'absent', reason: 'no retained signing intent' };
+        if (prior.kind !== 'signature' || prior.state !== 'complete') return { disposition: 'indeterminate', reason: 'retained signer outcome is unknown' };
+        return { disposition: 'present', value: prior.signature };
+      },
+      // Every check comes before anything is kept or sent: the job fence, the
+      // address, the artifact size and the writer authorization. A kept intent
+      // is never sent again: after it, any failure (a write refused before it
+      // left this process included) holds the anchor, and recovery only reads.
+      async anchor({ jobId, logicalAddress, artifact, anchors, authorize }) {
+        if (!isCanonicalJobId(jobId) || typeof logicalAddress !== 'string' || logicalAddress.length < 1 || logicalAddress.length > MAX_ANCHOR_ADDRESS_LENGTH) fail('seller_state_binding_invalid');
+        const id = `anchor:${logicalAddress}`;
+        const prior = transaction(() => { fence(jobId); return anchorRow(logicalAddress); });
+        const { snapshot, hash } = anchorArtifact(artifact);
+        if (prior) {
+          if (prior.jobId !== jobId || prior.hash !== hash || !same(prior.artifact, snapshot)) fail('seller_effect_conflict');
+          return api.reconcileAnchor(id, anchors);
+        }
+        const writerSignature = authorizedWrite(logicalAddress, hash, authorize);
+        transaction(() => {
+          fence(jobId);
+          if (anchorRow(logicalAddress)) fail('seller_state_busy');
+          putAnchor({ jobId, logicalAddress, artifact: snapshot, hash, writer: signer.claim, writerSignature, state: 'intent' });
+        });
+        try { await anchorRequest('write', options => {
+          fence(jobId);
+          return anchors.write({ logicalAddress, artifact: clone(snapshot), writer: signer.claim, writerSignature, ...options });
+        }); }
+        catch (error) { fail('seller_anchor_reconciliation_required', error); }
+        // A write answer is not anchor proof: the anchor is read back and authenticated.
+        return api.reconcileAnchor(id, anchors);
+      },
+      // Read back and authenticate the anchor `anchor:<address>` again, completed
+      // or not, and record its receipt. Returns the receipt; throws a coded
+      // SellerRecoveryError (seller_effect_missing, or the readback's code).
+      async reconcileAnchor(id, anchors) {
+        const prior = typeof id === 'string' && id.startsWith('anchor:') ? anchorRow(id.slice('anchor:'.length)) : null;
+        if (!prior) fail('seller_effect_missing');
+        const scoped = running.getStore()?.api === api;
+        if (scoped) transaction(() => fence(prior.jobId));
+        const receipt = await authenticatedReadback(anchors, prior);
+        // Inside an acquisition the update is fenced like every job-scoped
+        // write. Unscoped (the lock-free reconcile) it only records an
+        // authenticated readback of a retained intent, as before.
+        transaction(() => {
+          if (scoped) fence(prior.jobId);
+          putAnchor({ ...prior, state: 'complete', receipt });
+        });
+        return receipt;
+      },
+      hasAnchor: (logicalAddress) => anchorRow(logicalAddress) !== null,
+      async readAnchor({ jobId, logicalAddress, anchors }) {
+        const prior = anchorRow(logicalAddress);
+        if (!prior || prior.jobId !== jobId) fail('seller_anchor_intent_missing');
+        const receipt = await api.reconcileAnchor(`anchor:${logicalAddress}`, anchors);
+        return { status: 'present', artifact: clone(prior.artifact), receipt };
+      },
+      // Reads back this job's anchors only. The answer is recovery status; it
+      // grants no payment or delivery authority.
+      async reconcileJob(jobId, anchors) {
+        const outcomes = [];
+        for (const { address } of db.prepare('SELECT address FROM seller_anchors WHERE job=? ORDER BY address').all(jobId)) {
+          try { await api.reconcileAnchor(`anchor:${address}`, anchors); outcomes.push({ address, status: 'present-authenticated' }); }
+          catch (error) { outcomes.push({ address, status: 'held', reason: error.code }); }
+        }
+        return { status: outcomes.some((v) => v.status === 'held') ? 'held' : 'reconciled', outcomes };
       },
       close: () => { releasePending(); if (owned.size) fail('seller_state_busy'); db.close(); },
     };
