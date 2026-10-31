@@ -4,7 +4,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { createPublicKey, randomUUID, verify } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { isMainThread } from 'node:worker_threads';
@@ -196,3 +196,276 @@ export class SellerRecoveryError extends Error {
 
 export const DEFAULT_SELLER_MAX_JOBS = 10000;
 
+export async function createSellerDurableState({ dir, signer, listingPin, maxJobs = DEFAULT_SELLER_MAX_JOBS }) {
+  if (typeof dir !== 'string' || !isAbsolute(dir) || !/^did:demos:agent:[0-9a-f]{64}$/.test(signer?.claim) || typeof signer.sign !== 'function' || !Number.isSafeInteger(maxJobs) || maxJobs < 1) fail('seller_state_configuration_invalid');
+  // A worker shares the process's leases but not its realm: keep seller state on the main thread.
+  if (!isMainThread) fail('seller_state_main_thread_required');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || realpathSync(dir) !== dir) fail('seller_state_directory_unsafe');
+  const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(signer.claim.slice(16), 'hex')]), format: 'der', type: 'spki' });
+  const pin = clone(listingPin);
+  const schema = [
+    'CREATE TABLE seller_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+    'CREATE TABLE seller_jobs (job TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL)',
+    'CREATE TABLE seller_locks (job TEXT PRIMARY KEY, owner TEXT NOT NULL, pid INTEGER NOT NULL)',
+  ];
+  const path = join(dir, 'seller-state.sqlite');
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    // Only unfinished initializers may precede the final database. Recheck
+    // the path because another process may have published while we listed.
+    if (readdirSync(dir).some(name => !/^seller-state-[0-9a-f-]{36}\.init(?:-journal)?$/.test(name)) && !existsSync(path)) fail('seller_state_missing_database');
+    if (!existsSync(path)) {
+      const pending = join(dir, `seller-state-${randomUUID()}.init`);
+      const fd = openSync(pending, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      let initial;
+      try {
+        closeSync(fd);
+        initial = new DatabaseSync(pending);
+        initial.exec('PRAGMA synchronous=FULL; BEGIN IMMEDIATE');
+        initial.exec(schema.join(';'));
+        initial.prepare('INSERT INTO seller_meta VALUES (?,?)').run('context', authenticated('context', 'context', null));
+        initial.exec('COMMIT');
+        initial.close(); initial = null;
+        // Publish only a complete, authenticated database, without replacing
+        // the winner of a concurrent initialization. No SQLite handle to the
+        // temporary path remains open when the final path becomes visible.
+        try { linkSync(pending, path); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+        const directory = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY);
+        try { fsyncSync(directory); } finally { closeSync(directory); }
+      } finally { try { initial?.close(); } finally { unlinkSync(pending); } }
+    }
+  }
+  const file = lstatSync(path);
+  if (!file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid?.() || (file.mode & 0o077)) fail('seller_state_file_unsafe');
+  if (file.size === 0) fail('seller_state_corrupt');
+  takeLease(dir);
+  const db = new DatabaseSync(path);
+  const owned = new Map(); // jobId -> { owner, revision } for this store's held locks
+  db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA busy_timeout=1000');
+  try {
+    const actual = db.prepare("SELECT sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all().map(row => row.sql);
+    if (!same(actual, [...schema].sort((a,b) => a.split(' ')[2].localeCompare(b.split(' ')[2])))) fail('seller_state_corrupt');
+  } catch (error) { db.close(); throw error; }
+  const get = (sql, ...args) => db.prepare(sql).get(...args);
+  const run = (sql, ...args) => db.prepare(sql).run(...args);
+  function transaction(fn) {
+    db.exec('BEGIN IMMEDIATE');
+    try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  function authenticated(kind, id, body) {
+    const payload = { version: '1', kind, id, seller: signer.claim, listingPin: pin, body: clone(body) };
+    const bytes = Buffer.from(`${DOMAIN}${canonicalize(payload)}`);
+    const signature = Buffer.from(signer.sign(bytes));
+    if (signature.length !== 64 || !verify(null, bytes, key, signature)) fail('seller_state_signer_invalid');
+    return JSON.stringify({ payload, signature: signature.toString('base64url') });
+  }
+  function verified(value, kind, id) {
+    try {
+      const envelope = JSON.parse(value);
+      const { payload: p, signature } = envelope;
+      if (Object.keys(envelope).sort().join(',') !== 'payload,signature' || Object.keys(p).sort().join(',') !== 'body,id,kind,listingPin,seller,version' || p.version !== '1' || p.kind !== kind || p.id !== id || p.seller !== signer.claim || !same(p.listingPin, pin) || typeof signature !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(signature)) fail('seller_state_corrupt');
+      const sig = Buffer.from(signature, 'base64url');
+      if (sig.toString('base64url') !== signature || !verify(null, Buffer.from(`${DOMAIN}${canonicalize(p)}`), key, sig)) fail('seller_state_corrupt');
+      return clone(p.body);
+    } catch { fail('seller_state_corrupt'); }
+  }
+  try {
+    const config = get('SELECT value FROM seller_meta WHERE key=?', 'context');
+    if (!config) fail('seller_state_corrupt');
+    verified(config.value, 'context', 'context');
+    const fencedStore = await createFsFencedSessionStore({ dir: join(dir, 'sdk-agreements') });
+    const receiptStore = await createFsSellerReceiptStore({ dir: join(dir, 'sdk-receipts') });
+    function load(jobId) {
+      const row = get('SELECT * FROM seller_jobs WHERE job=?', jobId);
+      if (!row) return null;
+      const stored = verified(row.value, 'session', jobId);
+      if (stored.revision !== row.revision || stored.session.jobId !== jobId || !isCanonicalJobId(jobId)) fail('seller_state_corrupt');
+      return stored;
+    }
+    // Called inside each job-scoped write transaction (an effect's intent and
+    // its completion record alike) and as the last check before each effect:
+    // the caller must be running this store's acquisition of `jobId`, and the
+    // row must still be that acquisition's. A released or reclaimed holder is
+    // fenced.
+    function fence(jobId) {
+      const held = owned.get(jobId), scope = running.getStore();
+      if (held === undefined || held.finished || scope?.api !== api || scope.jobId !== jobId || scope.owner !== held.owner) fail('seller_state_fenced');
+      if (get('SELECT owner FROM seller_locks WHERE job=?', jobId)?.owner !== held.owner) fail('seller_state_fenced');
+      return held;
+    }
+    // One line per row and interval when withJob() stays busy on a row that
+    // nothing here proves alive or gone; it names the job and the reason only.
+    const noticed = new Map(); // `<job> <owner>` -> last notice (ms)
+    function notice(jobId, owner, reason) {
+      const key = `${jobId} ${owner}`, at = Date.now();
+      if (at - (noticed.get(key) ?? -Infinity) < NOTICE_INTERVAL_MS) return;
+      noticed.delete(key);
+      if (noticed.size >= 1024) noticed.delete(noticed.keys().next().value);
+      noticed.set(key, at);
+      process.stderr.write(`seller-state: job ${jobId} stays busy: its lock row (${reason}) names no holder this process can prove exited; see inspectLocks() and releaseAbandonedLock()\n`);
+    }
+    // Removes the lease files of processes that have exited, that no row names
+    // and that are older than this process by a margin (so none of its own, and
+    // none still being created). It runs under the database write lock, so no
+    // row can name one meanwhile, and removes each while holding its lock: a
+    // process stalled between creating and locking its lease fails to open
+    // instead (takeLease checks its file).
+    function pruneLeases() {
+      transaction(() => {
+        const named = new Set(db.prepare('SELECT owner FROM seller_locks').all().map((row) => row.owner.split(':')[1]));
+        for (const name of readdirSync(join(dir, 'holders'))) {
+          const id = /^([0-9a-f-]{36})\.sqlite$/.exec(name)?.[1];
+          if (!id || id === PROCESS || named.has(id)) continue;
+          let probe;
+          try {
+            const stat = lstatSync(holderFile(dir, id));
+            if (!privateEntry(stat, 'isFile') || stat.mtimeMs >= performance.timeOrigin - PRUNE_MIN_AGE_MS) continue;
+            probe = new DatabaseSync(holderFile(dir, id), { readonly: true });
+            probe.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN EXCLUSIVE');
+            unlinkSync(holderFile(dir, id));
+          } catch { /* held, unreadable or gone: kept */ } finally { try { probe?.close(); } catch { /* removed or kept either way */ } }
+        }
+      });
+    }
+    const pendingReleases = new Map();
+    function release(jobId, owner) {
+      run('DELETE FROM seller_locks WHERE job=? AND owner=?', jobId, owner);
+      if (owned.get(jobId)?.owner === owner) owned.delete(jobId);
+      pendingReleases.delete(jobId);
+    }
+    function releasePending() {
+      for (const [jobId, owner] of pendingReleases) release(jobId, owner);
+    }
+    const api = {
+      fencedStore,
+      receiptStore,
+      // The fence as a check, for a seller effect that leaves through another
+      // journal (a native publication or wallet call): true while the caller
+      // runs this store's acquisition of `jobId` and still holds its row,
+      // otherwise seller_state_fenced. Call it with nothing awaited between
+      // it and the effect (for example as that journal's authorize hook).
+      assertHeld(jobId) { fence(jobId); return true; },
+      context: () => {
+        const row = get('SELECT value FROM seller_meta WHERE key=?', 'context');
+        return row ? verified(row.value, 'context', 'context') : null;
+      },
+      retainContext(context) {
+        transaction(() => {
+          const row = get('SELECT value FROM seller_meta WHERE key=?', 'context');
+          if (!row) fail('seller_state_corrupt');
+          const previous = verified(row.value, 'context', 'context');
+          if (previous === null) run('UPDATE seller_meta SET value=? WHERE key=?', authenticated('context', 'context', context), 'context');
+          else if (!same(previous, context)) fail('seller_state_context_conflict');
+        });
+      },
+      sessions: () => db.prepare('SELECT job FROM seller_jobs ORDER BY job').all().map(({ job }) => load(job).session),
+      loadSession: (jobId) => load(jobId)?.session ?? null,
+      saveSession(session) {
+        const jobId = session.jobId;
+        const committed = transaction(() => {
+          const held = fence(jobId);
+          const previous = load(jobId);
+          if ((previous?.revision ?? 0) !== held.revision) fail('seller_state_fenced');
+          if (!previous && get('SELECT COUNT(*) AS n FROM seller_jobs').n >= maxJobs) fail('seller_state_capacity');
+          const revision = held.revision + 1;
+          const value = authenticated('session', jobId, { revision, session });
+          run('INSERT INTO seller_jobs VALUES (?,?,?) ON CONFLICT(job) DO UPDATE SET revision=excluded.revision,value=excluded.value', jobId, revision, value);
+          return { held, revision };
+        });
+        committed.held.revision = committed.revision;
+      },
+      async withJob(jobId, action) {
+        if (!isCanonicalJobId(jobId)) fail('seller_state_job_invalid');
+        releasePending();
+        // One acquisition per job per store, even after its row was released.
+        if (owned.has(jobId)) fail('seller_state_busy');
+        const owner = `${process.pid}:${PROCESS}:${Date.now()}:${randomUUID()}${NAMESPACE ? `:${NAMESPACE.ns}.${NAMESPACE.boot}.${NAMESPACE.start}` : ''}`;
+        const { reclaimed, revision } = transaction(() => {
+          const lock = get('SELECT * FROM seller_locks WHERE job=?', jobId);
+          // Never reclaim by age, and never by PID alone. A row naming a
+          // process is taken over only once that process has exited. A row
+          // naming none (the earlier format) is never taken over: its PID may
+          // be a live holder in another PID namespace. Only the release frees it.
+          const state = lock ? holderState(dir, lock, lockHolder(lock)) : null;
+          if (lock && state !== 'exited') {
+            if (!PROVEN_LIVE.has(state)) notice(jobId, lock.owner, state);
+            fail('seller_state_busy');
+          }
+          if (lock) run('DELETE FROM seller_locks WHERE job=? AND owner=?', jobId, lock.owner);
+          // Reserve capacity atomically with the job lock, before admission.
+          // Concurrent new jobs count as reservations until their lock releases.
+          if (!load(jobId)) {
+            // A process can exit before saving a session. Its reservation must
+            // not occupy capacity forever just because this is a different job.
+            // Use the same positive exit proof as takeover, under this write
+            // transaction; live/unproven holders and saved sessions stay counted.
+            for (const reservation of db.prepare('SELECT * FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)').all()) {
+              if (holderState(dir, reservation, lockHolder(reservation)) === 'exited') {
+                run('DELETE FROM seller_locks WHERE job=? AND owner=?', reservation.job, reservation.owner);
+              }
+            }
+            if (get(`SELECT
+            (SELECT COUNT(*) FROM seller_jobs) +
+            (SELECT COUNT(*) FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)) AS n`).n >= maxJobs) fail('seller_state_capacity');
+          }
+          run('INSERT INTO seller_locks VALUES (?,?,?)', jobId, owner, process.pid);
+          return { reclaimed: Boolean(lock), revision: load(jobId)?.revision ?? 0 };
+        });
+        owned.set(jobId, { owner, revision });
+        if (reclaimed) process.stderr.write(`seller-state: reclaimed the lock on job ${jobId} left by a process that has exited\n`);
+        let actionFailed = false;
+        try { return await running.run({ api, jobId, owner }, () => action(load(jobId)?.session ?? null)); }
+        catch (error) { actionFailed = true; throw error; }
+        finally {
+          // The action is over: nothing it started may write under this row,
+          // whether or not the delete lands now. A failed delete keeps the entry
+          // (close and the retry need it) but fenced.
+          const held = owned.get(jobId);
+          if (held?.owner === owner) held.finished = true;
+          try { release(jobId, owner); }
+          catch (error) { pendingReleases.set(jobId, owner); if (!actionFailed) throw error; }
+        }
+      },
+      inspectLocks: () => db.prepare('SELECT job,owner,pid FROM seller_locks ORDER BY job').all().map((row) => {
+        const held = lockHolder(row), reason = holderState(dir, row, held);
+        return { job: row.job, owner: row.owner, pid: row.pid, process: held?.process ?? null, acquiredAt: held ? new Date(held.acquiredAt).toISOString() : null,
+          boot: held?.namespace && NAMESPACE ? (sameBoot(held) ? 'this' : 'other') : null,
+          pidNamespace: held?.namespace && NAMESPACE && sameBoot(held) ? (sameNamespace(held) ? 'this' : 'other') : null,
+          holderExited: held ? reason === 'exited' : null, reason, thisProcess: thisProcessLock(row), thisInstance: owned.get(row.job)?.owner === row.owner };
+      }),
+      // Explicit operator action. It removes only that exact row: retained
+      // sessions, effects and settlements are untouched. A live holder (this
+      // process, a held lease, or its PID here still running it) is never
+      // released (seller_state_lock_live), nor a holder on this boot whose
+      // lease can't be checked (seller_state_lock_unproven). A row whose holder
+      // has exited is released. A row of another boot, or naming no identity
+      // or no process (the earlier format), is released on the operator's
+      // word: only after every process that could hold it has stopped (for the
+      // earlier format, every process of the earlier version that can open
+      // this directory, in every container and PID namespace).
+      releaseAbandonedLock({ job, owner } = {}) {
+        if (!isCanonicalJobId(job) || typeof owner !== 'string') fail('seller_state_lock_invalid');
+        return transaction(() => {
+          const row = get('SELECT * FROM seller_locks WHERE job=? AND owner=?', job, owner);
+          if (!row) fail('seller_state_lock_mismatch');
+          const state = holderState(dir, row, lockHolder(row));
+          if (PROVEN_LIVE.has(state)) fail('seller_state_lock_live');
+          if (!RELEASABLE.has(state)) fail('seller_state_lock_unproven');
+          run('DELETE FROM seller_locks WHERE job=? AND owner=?', job, owner);
+          return { released: true, recordsChanged: 0 };
+        });
+      },
+      close: () => { releasePending(); if (owned.size) fail('seller_state_busy'); db.close(); },
+    };
+    try { pruneLeases(); } catch { /* the database is busy: a later open prunes */ }
+    if (!NAMESPACE && !identityWarned) {
+      identityWarned = true;
+      process.stderr.write('seller-state: this host gives no boot and process start identity (no /proc, or kern.boottime and ps): a job lock left by a killed process is never reclaimed automatically; see inspectLocks() and releaseAbandonedLock()\n');
+    }
+    return api;
+  } catch (error) { db.close(); throw error; }
+}
