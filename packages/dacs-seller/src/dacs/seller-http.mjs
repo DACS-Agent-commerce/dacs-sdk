@@ -35,6 +35,9 @@ export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
 const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
+const reportsDeliveryReady = (text) => {
+  try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && answer.delivery?.status === 'delivery-ready'; } catch { return false; }
+};
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
 const retainedBy = (agent, path, jobId, body) => path === PAYMENT_PATH ? retainsClaim(agent, jobId, body) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
@@ -155,6 +158,12 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
             signatureAgreement:req.url==='/dacs/v1/commitments/signature'?body.agreement:undefined});
           if (!['committed','commitment-held'].includes(answer?.status)) throw new SellerTransportError('commitment_readback_required',503);
           return await send(res,200,answer,request,{text:await pointed(200,JSON.stringify(answer),request.jobId,req.url)});
+        }
+        if (reservation.disposition === 'cached' && req.url === PAYMENT_PATH && reportsDeliveryReady(reservation.text)) {
+          // A cached delivery-ready answer is only a record of it: the agent authenticates the payment
+          // evidence and reads the Deliverable again, and what it answers now is sent, never the saved success.
+          const answer = await route(agent, body), text = JSON.stringify(answer);
+          return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }
         if (reservation.disposition === 'cached') return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
         if (reservation.disposition === 'uncertain') {
