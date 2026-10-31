@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,6 +144,8 @@ const DUAL_RAIL_DEPENDENCIES = [...CANDIDATE_NAMES, "@kynesyslabs/demosdk", "@x4
 // npm runs these when it installs a package. A candidate declaring one would
 // run its own code before this check, so it is refused.
 const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall"];
+// require() loads a module root that is a file with one of these extensions.
+const MODULE_FILE_EXTENSIONS = [".js", ".json", ".node"];
 const MAX_LISTED_DIFFERENCES = 20;
 
 // The release candidates in `releaseSet`, as `{ name, integrity, version,
@@ -178,6 +180,147 @@ function declaredInstallScripts(files) {
     ...(files.has("binding.gyp") ? ["binding.gyp"] : [])];
 }
 
+// The candidates `owner` (a manifest or lock entry) declares under another
+// name, as `{ specifier, name }` for each `npm:` alias of one.
+function candidateAliases(owner, candidates) {
+  const aliases = [];
+  for (const field of specFields) {
+    for (const [specifier, spec] of Object.entries(isPlainObject(owner?.[field]) ? owner[field] : {})) {
+      const name = typeof spec === "string" && /^npm:/i.test(spec) && registrySourceSpec(spec)
+        ? npmPackageArg.resolve(specifier, spec).subSpec?.name : specifier;
+      if (name !== specifier && candidates.some(candidate => candidate.name === name)) aliases.push({ specifier, name });
+    }
+  }
+  return aliases;
+}
+
+// Whether the top-level object of `text`, which JSON.parse accepted, repeats a
+// key once escapes are decoded. JSON.parse keeps the last `name`, while some
+// supported Node versions use the first for package scope identity. Refuse
+// repeated keys regardless of which value the runtime selects.
+function repeatsTopLevelKey(text) {
+  const keys = new Set();
+  let depth = 0;
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === '"') {
+      let end = index + 1;
+      while (text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      const afterString = /\s*:/y;
+      afterString.lastIndex = end + 1;
+      if (depth === 1 && afterString.test(text)) {
+        const key = JSON.parse(text.slice(index, end + 1));
+        if (keys.has(key)) return true;
+        keys.add(key);
+      }
+      index = end;
+    } else if (text[index] === "{" || text[index] === "[") depth++;
+    else if (text[index] === "}" || text[index] === "]") depth--;
+  }
+  return false;
+}
+
+// Whether a package scope or module named `name` is how require() reaches the
+// candidate `candidateName`. Node matches a scope by prefix, so a scope named
+// for the candidate's own scope or a subpath of it captures the candidate too.
+function namesCandidate(name, candidateName) {
+  return typeof name === "string" &&
+    (name === candidateName || candidateName.startsWith(name + "/") || name.startsWith(candidateName + "/"));
+}
+
+// The name require() reaches the entry `item` of `directory` by, or null when
+// it is no module root: a scope folder, or a path inside a package.
+function moduleRootName(directory, item) {
+  const parent = posix.basename(directory);
+  if (parent === "node_modules") return item.startsWith("@") ? null : item;
+  return parent.startsWith("@") && posix.basename(posix.dirname(directory)) === "node_modules" ? `${parent}/${item}` : null;
+}
+
+// Called only after the entire installed namespace matches its archive closure,
+// so this reads every module root and package.json scope there is. The closure
+// admits npm-generated command links to archive files only: a link named
+// package.json is a scope, and no link is a module root.
+function installedCandidateModules(project, closure) {
+  const modules = new Map();
+  const visit = (directory, owner) => {
+    for (const item of readdirSync(join(project, directory), { withFileTypes: true })) {
+      const path = `${directory}/${item.name}`;
+      const record = closure.entries.get(path);
+      const archiveOwner = record ? record.bundledBy ?? path : owner;
+      const name = moduleRootName(directory, item.name);
+      if (name) modules.set(path, { owner: archiveOwner, name });
+      if (item.isDirectory()) visit(path, archiveOwner);
+      else if (item.name === "package.json") {
+        const scope = { ...modules.get(directory), owner, generated: item.isSymbolicLink() };
+        try {
+          const text = readFileSync(join(project, path), "utf8");
+          scope.manifest = JSON.parse(text);
+          scope.unreadable = !isPlainObject(scope.manifest) || repeatsTopLevelKey(text);
+        } catch { scope.unreadable = true; }
+        modules.set(directory, scope);
+      }
+    }
+  };
+  visit("node_modules", "npm");
+  return modules;
+}
+
+// A closed inventory of physical module roots and EVERY package.json scope,
+// including scopes outside module roots. Only the verified final namespace
+// contributes manifests; opaque registry entries cannot pass.
+// Hoisted, nested and shallow installs use lock locations as installed paths.
+function candidateInventory(closure, installed, registry) {
+  const modules = new Map();
+  const errors = [];
+  const { origin, path } = consumerRegistry(registry);
+  for (const [location, record] of closure.entries) {
+    if (!record.present) continue;
+    modules.set(location, { owner: record.bundledBy ?? location, entry: record.entry,
+      name: location.replace(/^.*node_modules\//, ""), manifest: record.manifest });
+    if (record.unverified || (record.files === null && record.entry.inBundle !== true)) {
+      let url;
+      try { url = new URL(record.entry.resolved); } catch { /* source policy refuses non-registry entries */ }
+      if (url?.origin === origin && url.pathname.startsWith(path)) {
+        errors.push("cannot authenticate an unverified registry archive: " + location);
+      }
+    }
+  }
+  for (const [location, module] of installed) modules.set(location, { ...modules.get(location), ...module });
+  return { modules, errors };
+}
+
+// A candidate is declared under its own name only, by the project, every
+// installed lock entry and every scope in the inventory. Node then reaches it
+// only through a module root or scope of that name, all of which the inventory
+// holds, so no other name needs following through Node's resolver.
+function candidateAliasErrors(manifest, lock, inventory, candidates) {
+  const owners = [["", manifest], ["", lock?.packages?.[""]]];
+  for (const [location, module] of inventory.modules) {
+    owners.push([location, module.entry], [location, module.manifest]);
+  }
+  const errors = new Set();
+  for (const [location, owner] of owners) {
+    for (const field of specFields) {
+      // npm accepts legacy declaration forms that an object-only alias scan misses.
+      if (owner?.[field] !== undefined && !isPlainObject(owner[field])) {
+        errors.add(`${location || "the project"} has a non-object ${field} declaration`);
+      }
+    }
+    for (const { specifier, name } of candidateAliases(owner, candidates)) {
+      errors.add(`${location || "the project"} declares ${name} under another name: ${specifier}`);
+    }
+  }
+  return [...errors];
+}
+
+// Node resolves a package's own name to its own folder before any
+// node_modules, so the project's package.json is a scope like an installed
+// one: it may not name a candidate, nor repeat a key a runtime may read instead.
+function projectScopeErrors(manifestText, manifest, candidates) {
+  if (repeatsTopLevelKey(manifestText)) return ["cannot read the project package.json: it repeats a top-level key"];
+  return candidates.filter(({ name }) => namesCandidate(manifest.name, name))
+    .map(({ name }) => "the project is named for candidate package " + name);
+}
+
 // Certify a location from its independently verified closure archive, never
 // from lock claims alone. Bundles and opaque entries have no such files.
 function releaseCopyErrors(location, record, { name, integrity, version }, registry) {
@@ -202,61 +345,67 @@ function releaseCopyErrors(location, record, { name, integrity, version }, regis
   return errors;
 }
 
-// Hoisted, nested and shallow installs use lock locations as installed paths.
-// The tree matched npm's own install of the lock before this is trusted.
-function candidateInventory(closure) {
-  const modules = new Map();
-  for (const [location, record] of closure.entries) {
-    if (!record.present) continue;
-    modules.set(location, { entry: record.entry, name: location.replace(/^.*node_modules\//, "") });
-  }
-  return { modules };
-}
-
-// Every installed lock location named for a candidate, top-level or nested,
-// must be an independently locked release archive of that candidate.
+// Every module root and package scope in the closed inventory that names a
+// candidate, by its location, lock entry or package.json, must be an
+// independently locked release archive at the candidate's own name. Nested
+// scopes, carried modules and file shadows have no such archive.
 function authenticateCandidateInventory(closure, inventory, candidates, registry) {
-  const errors = [];
+  const errors = [...inventory.errors];
   for (const candidate of candidates) {
     if (!closure.entries.get("node_modules/" + candidate.name)?.present) {
       errors.push("candidate package is not installed at the top level: " + candidate.name);
     }
   }
   for (const [location, module] of inventory.modules) {
-    for (const candidate of candidates.filter(({ name }) => name === module.name)) {
-      errors.push(...releaseCopyErrors(location, closure.entries.get(location), candidate, registry));
+    const names = [module.name, module.entry?.name, module.manifest?.name,
+      ...MODULE_FILE_EXTENSIONS.filter(extension => module.name?.endsWith(extension))
+        .map(extension => module.name.slice(0, -extension.length))];
+    const identities = candidates.filter(candidate => names.some(name => namesCandidate(name, candidate.name)));
+    if (!module.entry && (identities.length || module.unreadable)) {
+      errors.push(module.generated ? `cannot authenticate an npm-generated package scope: ${location}`
+        : `cannot authenticate a candidate copy carried in the archive of ${module.owner}: ${location}`);
+    } else {
+      if (module.unreadable) errors.push("cannot read an archive package scope: " + location);
+      for (const candidate of identities) {
+        errors.push(...module.name === candidate.name
+          ? releaseCopyErrors(location, closure.entries.get(location), candidate, registry)
+          : [`candidate package ${candidate.name} is installed under another name: ${location}`]);
+      }
     }
   }
   return errors;
 }
 
 // What keeps the installation from holding only release copies of
-// `candidates`, given its closure: candidates that run install code, and lock
-// locations named for a candidate that are not its release.
-function candidateIntegrityErrors({ registry, candidates, closure }) {
-  const inventory = candidateInventory(closure);
+// `candidates`, given its closure: candidates that run install code, candidate
+// identities anywhere in it that are not the release at its own name, and
+// candidates declared under another name or by the project's own name.
+function candidateIntegrityErrors({ manifestText, manifest, lock, registry, candidates, closure, installed }) {
+  const inventory = candidateInventory(closure, installed, registry);
   return [
+    ...projectScopeErrors(manifestText, manifest, candidates),
     ...candidates.flatMap(({ name, files }) => {
       const scripts = declaredInstallScripts(files);
       return scripts.length ? [`candidate package runs code when installed (${scripts.join(", ")}): ${name}`] : [];
     }),
     ...authenticateCandidateInventory(closure, inventory, candidates, registry),
+    ...candidateAliasErrors(manifest, lock, inventory, candidates),
   ];
 }
 
 // Checks the consumer at `projectPath`, installed by npm ci --ignore-scripts
 // and unused by any package code so far (such code could change the tree
 // after extraction), and writes its registry dependency report. Every
-// installed path must be the one npm installs from the same lock and archives,
-// and every lock location named for a candidate the release in `releaseSet`;
-// otherwise it throws listing each difference.
+// installed path must be its locked archive's and every candidate copy the
+// release in `releaseSet`; otherwise it throws listing each difference.
 function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet, version }) {
   const project = realpathSync(projectPath);
   // npm reads both files as UTF-8 text and ignores a leading byte-order mark.
-  const npmJson = bytes => JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, ""));
+  const npmText = bytes => bytes.toString("utf8").replace(/^\uFEFF/, "");
   const manifestBytes = readFileSync(join(project, "package.json"));
-  const manifest = npmJson(manifestBytes);
-  const lock = npmJson(readFileSync(join(project, "package-lock.json")));
+  const manifestText = npmText(manifestBytes);
+  const manifest = JSON.parse(manifestText);
+  const lock = JSON.parse(npmText(readFileSync(join(project, "package-lock.json"))));
   const missing = DUAL_RAIL_DEPENDENCIES.filter(name => typeof manifest.dependencies?.[name] !== "string");
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
   const candidates = releaseCandidates(releaseSet, version);
@@ -270,9 +419,12 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
   // A failed replay publishes no entries or inventory, so no candidate rule can be judged.
   if (closure.errors.length) throw new Error(closure.errors.join("\n"));
   const differences = installationDifferences(project, closure).map(line => "installed tree is not the locked archives: " + line);
+  const installed = differences.length === 0 &&
+    [...closure.entries.values()].every(record => !record.present || !record.unverified)
+    ? installedCandidateModules(project, closure) : new Map();
   const errors = [...differences.slice(0, MAX_LISTED_DIFFERENCES),
     ...(differences.length > MAX_LISTED_DIFFERENCES ? [`and ${differences.length - MAX_LISTED_DIFFERENCES} more differences`] : []),
-    ...candidateIntegrityErrors({ registry, candidates, closure })];
+    ...candidateIntegrityErrors({ manifestText, manifest, lock, registry, candidates, closure, installed })];
   if (errors.length) throw new Error(errors.join("\n"));
   const violations = registryDependencyViolations({ manifest, lock, registry });
   writeFileSync(report, JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed: violations.length === 0,
