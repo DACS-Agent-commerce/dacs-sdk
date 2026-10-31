@@ -37,9 +37,9 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
   });
   const valid: [SellerFulfilmentVetRequirementInvocation, SellerFulfilmentVetRequirementInvocation] =
     [invocation(buyer, sellerClaim), invocation(seller, buyerClaim)];
-  const check = (vetRequirements: unknown, requirement: unknown = buyerRequirement) =>
+  const check = (vetRequirements: unknown, requirement: unknown = buyerRequirement, acceptsPresenceOnly?: true) =>
     sellerFulfilmentVetRequirementsViolation(vetRequirements, {
-      jobId, buyer, seller, buyerRequirement: requirement,
+      jobId, buyer, seller, buyerRequirement: requirement, acceptsPresenceOnly,
     });
   const expectedResult = (
     requirement: ClaimRequirement,
@@ -248,6 +248,90 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     expect(check([entry, valid[1]], requirement)).toMatch(/differs from its party/);
     entry.freshness = [expectedResult(requiredClaim)];
     expect(check([entry, valid[1]], requirement)).toBeNull();
+  });
+
+  // DACS-2 v0.6 forbids a synthetic VerifyResult for a presence-only claim: the
+  // strict replay counts it in the authenticated bundle, so the invocation
+  // carries no result for it.
+  describe("presence-only claims", () => {
+    const presenceClaim: ClaimRequirement = { scheme: "key", verificationRequired: false };
+    const otherPresenceClaim: ClaimRequirement = { scheme: "did", verificationRequired: false };
+
+    test.each(["buyer", "seller"] as const)("default check refuses every %s presence placement, including an unused alternative", (party) => {
+      for (const requirement of [
+        { ...buyerRequirement, required: [presenceClaim] },
+        { ...buyerRequirement, oneOf: [[presenceClaim]] },
+        { ...buyerRequirement, required: [presenceClaim, requiredClaim] },
+        { ...buyerRequirement, oneOf: [[presenceClaim, requiredClaim]] },
+      ]) {
+        const entry = invocation(party === "buyer" ? buyer : seller, party === "buyer" ? sellerClaim : buyerClaim, requirement);
+        if (requirement.required.some(member => member.verificationRequired) ||
+            requirement.oneOf?.flat().some(member => member.verificationRequired)) entry.freshness = [expectedResult(requiredClaim)];
+        const entries = party === "buyer" ? [entry, valid[1]] : [valid[0], entry];
+        const listingRequirement = party === "buyer" ? requirement : buyerRequirement;
+        expect(check(entries, listingRequirement)).toMatch(/presence-only/);
+        expect(check(entries, listingRequirement, true)).toBeNull();
+      }
+    });
+
+    test("accepts a presence-only required claim that no result covers", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim] };
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true)).toBeNull();
+    });
+
+    test("accepts a oneOf group whose alternative is presence-only", () => {
+      const requirement = { ...buyerRequirement, oneOf: [[presenceClaim, otherPresenceClaim]] };
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true)).toBeNull();
+      const mixed = { ...buyerRequirement, oneOf: [[requiredClaim, presenceClaim]] };
+      expect(check([invocation(buyer, sellerClaim, mixed), valid[1]], mixed, true)).toBeNull();
+    });
+
+    test("accepts a presence-only claim next to a verified claim that its result covers", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim, requiredClaim] };
+      const entry = invocation(buyer, sellerClaim, requirement);
+      entry.freshness = [expectedResult(requiredClaim)];
+      expect(check([entry, valid[1]], requirement, true)).toBeNull();
+    });
+
+    test("still refuses an uncovered verified required claim next to a presence-only claim", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim, requiredClaim] };
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true))
+        .toMatch(/differs from its party/);
+    });
+
+    test("still refuses a oneOf group of only uncovered verified alternatives", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim], oneOf: [[requiredClaim]] };
+      expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true))
+        .toMatch(/differs from its party/);
+    });
+
+    test("refuses a synthetic result bound to a presence-only claim", () => {
+      const requirement = { ...buyerRequirement, required: [presenceClaim] };
+      const entry = invocation(buyer, sellerClaim, requirement);
+      entry.freshness = [expectedResult(presenceClaim)];
+      expect(check([entry, valid[1]], requirement, true)).toMatch(/differs from its party/);
+      entry.freshness = [];
+      entry.dealSpecific = [expectedResult(presenceClaim)];
+      expect(check([entry, valid[1]], requirement, true)).toMatch(/differs from its party/);
+    });
+
+    // DACS-1 PCR-1/PCR-2: a presence-only member names a registered scheme and
+    // selects no freshness or recipe field. Counting coverage without that
+    // preflight would let an invalid requirement reach delivery.
+    test.each([
+      ["an unregistered scheme", { scheme: "bogus", verificationRequired: false }],
+      ["a freshness selection", { scheme: "did", verificationRequired: false, maxAge: 30 }],
+      ["a recipe selection", { scheme: "did", verificationRequired: false, recipeVersion: 1 }],
+    ])("refuses a presence-only claim with %s in required and oneOf", (_label, invalid) => {
+      for (const requirement of [
+        { ...buyerRequirement, required: [invalid] },
+        { ...buyerRequirement, required: [], oneOf: [[invalid]] },
+        { ...buyerRequirement, required: [presenceClaim], oneOf: [[invalid]] },
+      ]) {
+        expect(check([invocation(buyer, sellerClaim, requirement), valid[1]], requirement, true))
+          .toMatch(/differs from its party/);
+      }
+    });
   });
 
   test("binds the evaluated party to its authenticated claim even with a consistent locator", () => {

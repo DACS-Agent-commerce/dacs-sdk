@@ -58,9 +58,10 @@ const host = await startSellerHost({
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
   sessionAdmission,      // { admit, resolveVetRecord, readVetAnchorReceipt, verifyVetAnchorReceipt,
-                         // readRevocationSurfaces, readRevocationMarker }: the seller-owned session
-                         // admission, Vet record reader, receipt reader and receipt verifier, revocation readers
-                         // (src/dacs/session-admission.mjs); admit must name both participants on the exact
+                         // readRevocationSurfaces, readRevocationMarker }: the
+                         // seller-owned session admission, Vet record reader, receipt reader and receipt
+                         // verifier and revocation readers (src/dacs/session-admission.mjs);
+                         // admit must name both participants on the exact
                          // [PROFILE.json](PROFILE.json) profile: standardRevision
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
@@ -433,17 +434,53 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `presentedAt` and `sessionNonce`, as the package's Vet provider presents it
   to the buyer's challenge) whose presentation the seller signed; the seller's
   record must be of that bundle. The context's Vet requirement invocations go into the delivery
-  audit source, so the agent checks them with the SDK delivery runner's own
+  audit source, so the agent checks them with the shared SDK invocation
   check (`sellerFulfilmentVetRequirementsViolation`) before it signs: exactly
   one per record, evaluating its party, naming that counterparty as
   verifier, the Listing's `buyerRequirement` for the buyer's record, and
-  every required claim covered by a result for this job. Each record must
+  every required claim covered by a result for this job, except a
+  presence-only claim (`verificationRequired: false`), which has no result
+  (DACS-2 forbids a synthetic one). The seller agent refuses requirements
+  containing any presence-only member before record reads or Agreement signing:
+  it cannot yet pin and recover an authenticated job registry snapshot.
+  Direct `runFulfilmentCore` and durable wrapper callers also refuse them by
+  default, as does the exported invocation check.
+  `acceptsPresenceOnlyVetRequirements: true` is only for callers that perform
+  strict replay with authenticated job-bound authority and need no completed
+  bundle. ST-11 completed-bundle finalization and
+  `projectDurableSellerAuditPending` refuse presence sessions because they lack
+  those companion inputs.
+  A presence-only member must name a
+  registered claim scheme and select no `maxAge` or `recipeVersion`
+  (DACS-1 PCR-1/PCR-2); one that does is refused like any other invocation
+  mismatch. A presence-only requirement whose `primaryClaimSelector` names
+  a claim without a passing verified result is also refused: the SDK's
+  exact selector replay requires one, so the refusal reports
+  `(invalid: aggregation-mismatch)`, not a presence success.
+  Each record must
   also pass the SDK's strict CompositeVerificationRecord check against its
   invocation: its `requirementHash` is the hash of that exact requirement
   and its decision replays from the invocation's results (DACS-2 §7.7.1).
-  The agent currently restores only empty result invocations and refuses
-  evidence-bearing invocations before replay. Supplying `sessionAdmission.vetEvidence`
-  is rejected explicitly; it does not enable verified-claim proposals.
+  The direct `vetRecordProblem` helper counts presence in the party's exact
+  bundle with a verified per-claim presentation and a runtime-authenticated,
+  job-bound `presence.sessionSnapshot` (`DurableSessionRecipeRegistrySnapshot`).
+  Bare hashes, copied snapshots and snapshots for another job are refused.
+  When a job uses this snapshot, every verified recipe and implicit family head,
+  including those in sibling records and unused alternatives, comes from its
+  authenticated entries. Operator recipe readers cannot replace them. Recovered
+  snapshots with the same authenticated hash retain this authority; an earlier
+  operator-supplied string pin cannot establish it. Completed operator recipe
+  replays also prevent a later switch to snapshot authority for that job.
+  `sessionAdmission.readSessionRecipeRegistryPin` is unsupported and rejected
+  at configuration: a hash reader cannot supply authenticated registry authority.
+  The direct helper requires every claim in a bundle used for presence-only
+  Vet to omit `expiresAt`, so advancing the clock cannot invalidate retained
+  presence replay. Core presence evaluation is unchanged.
+  The agent restores only empty result invocations and refuses evidence-bearing
+  invocations before replay. Supplying `sessionAdmission.vetEvidence` is rejected
+  explicitly. Presence-only alternatives in mixed groups are refused too.
+  The direct helper still checks verified alternatives with derivable methods
+  against the snapshot's recipe entries, even when a presence alternative is satisfied.
 
   The direct `vetRecordProblem` helper separately accepts `evidence` for strict
   replay preparation: `resolveContent`, `resolveRecipe`,

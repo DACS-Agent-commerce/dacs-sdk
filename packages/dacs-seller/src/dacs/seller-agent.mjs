@@ -416,6 +416,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       ['buyer', session.buyerBundle.presentedBy, checkpoint.buyer, identityBundleHash(session.buyerBundle), claim, listing.buyerRequirement],
       ['seller', claim, checkpoint.seller, identityBundleHash(sellerBundle), session.buyerBundle.presentedBy, SELLER_REQUIREMENT],
     ];
+    const sessionRegistryPins = [];
     for (const [role, party, ref, bundleHash, verifier, requirement] of parties) {
       let record, receipt, verdict;
       try { record = await readAdmissionCapability(admission, 'resolveVetRecord', { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(`the ${role} Vet record cannot be resolved (${error?.code ?? 'error'})`, error); }
@@ -423,7 +424,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       // against the exact requirement this profile invoked, binding its signed
       // requirementHash and result references; shape and signer alone would
       // accept a record the counterparty signed for another requirement.
-      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now });
+      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, role, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now, sessionRegistryPins, presence: { bundle: role === 'buyer' ? session.buyerBundle : sellerBundle } });
       if (recordProblem) return `the ${role} ${recordProblem}`;
       try { receipt = await readAdmissionCapability(admission, 'readVetAnchorReceipt', { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(error?.code === 'ENOENT' ? `the ${role} Vet record has no SR-2 receipt` : `the ${role} Vet record SR-2 receipt cannot be read (${error?.code ?? 'error'})`, error); }
       // DACS-2 VPC-3: a record is relied on only at `accepted` or later.
@@ -748,13 +749,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             if (['buyer', 'seller'].some((role) => resolved.input[role].vetRecordRef.contentHash === notPerformed[role].vetRecordRef.contentHash)) {
               return { disposition: 'rejected', reason: 'the Vet context names the not-performed Vet references' };
             }
-            // The delivery audit source carries these invocations. The core
-            // delivery runner's own predicate refuses here, before signing,
-            // what it would refuse at delivery after payment: one invocation
-            // per party record, that party, its counterparty verifier, the
-            // Listing's buyer requirement and every required claim covered.
-            // A retained context is checked again, here and against its
-            // records below: it may have been kept under an earlier, weaker check.
+            // This agent cannot pin and recover authenticated job registry
+            // snapshots, so refuse presence-only requirements before signing.
             const invocationProblem = sellerFulfilmentVetRequirementsViolation(resolved.vetRequirements, { jobId, buyerRequirement: listing.buyerRequirement,
               buyer: { primaryClaim: session.buyerBundle.presentedBy, vetRecordRef: resolved.input.buyer.vetRecordRef },
               seller: { primaryClaim: claim, vetRecordRef: resolved.input.seller.vetRecordRef } });
@@ -768,23 +764,29 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             const presentationProblem = sellerSessionPresentationProblem(sessionSeller, sellerBundle);
             if (presentationProblem) return { disposition: 'rejected', reason: `seller identity differs: ${presentationProblem}` };
             const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sessionSeller, session.buyerBundle.presentedBy]];
-            for (const [role, party, bundle, verifier] of parties) {
-              const ref = resolved.input[role].vetRecordRef;
-              const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
+            for (const [role] of parties) {
               // Restore replays each record against this profile's fixed
               // requirement and no freshness/deal-specific results. Sign only
               // the declaration restore can reproduce, so no persisted session
               // is refused by the next start of this seller.
+              const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(resolved.input[role].vetRecordRef));
               const expectedRequirement = role === 'seller' ? SELLER_REQUIREMENT : listing.buyerRequirement;
               if (!invocation || invocation.freshness.length !== 0 || invocation.dealSpecific.length !== 0 ||
                   canonicalize(invocation.requirement) !== canonicalize(expectedRequirement)) {
                 return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: the Vet requirement invocation differs from the requirement this profile restores` };
               }
+            }
+            const sessionRegistryPins = [];
+            for (const [role, party, bundle, verifier] of parties) {
+              const ref = resolved.input[role].vetRecordRef;
+              const invocation = resolved.vetRequirements.find((entry) => canonicalize(entry.vetRecordRef) === canonicalize(ref));
               let record;
               try { record = await readAdmissionCapability(admission,'resolveVetRecord',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
               if (record === null) return unavailable(new Error('Vet record is absent'),`the ${role} Vet record is absent`);
-              const problem = await vetRecordProblem(record, { ref, jobId, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now });
+              let problem;
+              try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now, sessionRegistryPins, presence: { bundle } }); }
+              catch (cause) { return unavailable(cause,`the ${role} Vet evidence is unavailable`); }
               if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
               // DACS-2 VPC-3: a signed record is no admitted one. It is relied on
               // only with its SR-2 receipt at `accepted` or later, before any signature.

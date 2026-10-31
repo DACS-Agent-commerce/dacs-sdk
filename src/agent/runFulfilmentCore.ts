@@ -46,6 +46,7 @@ import {
   SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
   isSellerFulfilmentAuditSource,
   isSellerFulfilmentVetInvocationMismatch,
+  sellerFulfilmentVetRequirementMembers,
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
   type SellerFulfilmentSessionRecord,
@@ -445,6 +446,8 @@ interface SellerFulfilmentDepsBase {
 /** V2-only fulfilment dependencies with one atomic authenticated audit source. */
 export interface SellerFulfilmentDeps extends SellerFulfilmentDepsBase {
   auditSourceProfile: "v2";
+  /** Opt in only after strict presence replay; completed-bundle finalization is unsupported. */
+  acceptsPresenceOnlyVetRequirements?: true;
   resolveAuditSource: SellerFulfilmentAuditSourceResolver;
 }
 
@@ -469,6 +472,7 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const resolveListingSource = source.resolveListing;
     const resolveAuditSourceSource = source.resolveAuditSource;
     const auditSourceProfile = source.auditSourceProfile;
+    const acceptsPresenceOnlyVetRequirements = source.acceptsPresenceOnlyVetRequirements === true ? true : undefined;
     const prepareDeliverySource = source.prepareDelivery;
     const submitDeliverySource = source.submitDelivery;
     const reconcileDeliverySource = source.reconcileDelivery;
@@ -575,6 +579,7 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const captured = Object.freeze({
       receiptStore,
       auditSourceProfile,
+      acceptsPresenceOnlyVetRequirements,
       resolveAgreement: bindCaptured(resolveAgreementSource, source),
       resolveListing: bindCaptured(resolveListingSource, source),
       resolveAuditSource: bindCaptured(resolveAuditSourceSource, source),
@@ -1455,6 +1460,7 @@ function auditSourceViolation(
   request: SellerFulfilmentRequest,
   deliveryPhaseIndex: number,
   expectedCommitmentAddress: string,
+  acceptsPresenceOnly?: true,
 ): string | null {
   if (!isSellerFulfilmentAuditSource(source)) {
     return "audit source is not the strict versioned operational provenance shape";
@@ -1532,7 +1538,12 @@ function auditSourceViolation(
     sellerClaim: sellerParty.primaryClaim,
     buyerRequirement: listing.buyerRequirement,
     bindings: uniquePartyVetBindings,
+    acceptsPresenceOnly,
   };
+  if (acceptsPresenceOnly !== true && source.artifacts.vetRequirements.some((invocation) =>
+    sellerFulfilmentVetRequirementMembers(invocation.requirement).some((member) => !member.verificationRequired))) {
+    return "core delivery cannot finalize presence-only Vet requirements";
+  }
   if (source.artifacts.vetRequirements.some((invocation) =>
     isSellerFulfilmentVetInvocationMismatch(invocation, invocationContext))) {
     return "audit source Vet provenance differs from the authenticated party/orchestrator bindings";
@@ -3437,6 +3448,7 @@ async function runFulfilmentCoreInner(
     request,
     request.deliveryPhaseIndex,
     expectedCommitmentAddress,
+    deps.acceptsPresenceOnlyVetRequirements,
   );
   if (auditViolation) return rejected("audit-source-mismatch", auditViolation);
   const derivedHash = sellerFulfilmentAuditSourceHash(auditSource);

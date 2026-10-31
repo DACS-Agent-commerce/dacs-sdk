@@ -39,7 +39,7 @@ const presentWithout = (party, presentedAt) => {
   return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 
-async function world(t, { listingChanges = () => {} } = {}) {
+async function world(t, { listingChanges = () => {}, sellerRequirement = null } = {}) {
   const sellerKey = key(), buyerKey = key(), now = 1780000000000, reached = [], steward = railSteward();
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
@@ -82,15 +82,15 @@ async function world(t, { listingChanges = () => {} } = {}) {
   // composite addresses.
   const synthetic = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
   const vetted = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
-    seller: { ...synthetic.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: listing.buyerRequirement }) } };
+    seller: { ...synthetic.seller, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, listing.seller.identity, { requirement: sellerRequirement ?? listing.buyerRequirement }) } };
   // The not-performed references with each counterparty verifier named, as a context could return them.
   const signedSynthetic = { ...synthetic, buyer: { ...synthetic.buyer, vetRecordRef: { ...synthetic.buyer.vetRecordRef, signer: sellerKey.claim } },
     seller: { ...synthetic.seller, vetRecordRef: { ...synthetic.seller.vetRecordRef, signer: buyerKey.claim } } };
   // The delivery runner's Vet requirement invocations for a context input: one
   // per party record, evaluating that party, naming its counterparty verifier
-  // and the requirement the record hashes (the Listing's buyer requirement).
+  // and the corresponding requirement the record hashes.
   const invocationsFor = (input) => [['buyer', buyerKey.claim, sellerKey.claim], ['seller', sellerKey.claim, buyerKey.claim]].map(([role, evaluatedParty, verifier]) => ({
-    vetRecordRef: structuredClone(input[role].vetRecordRef), evaluatedParty, requirement: structuredClone(listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] }));
+    vetRecordRef: structuredClone(input[role].vetRecordRef), evaluatedParty, requirement: structuredClone(role === 'seller' ? sellerRequirement ?? listing.buyerRequirement : listing.buyerRequirement), verifier, freshness: [], dealSpecific: [] }));
   // The seller wallet's journal over wallet primitives that refuse: the native
   // settlement chain takes the evidence anchor and its reconciliation only from
   // one createPaymentEvidenceWalletJournal (`journal()`), in the agent as in the host.
@@ -637,6 +637,28 @@ test('a passing, counterparty-signed Vet record over another requirement is not 
     assert.equal(answer.reason, `VET_RECORD_UNVERIFIED: ${role}: the Vet record does not verify against its requirement (invalid: requirement-hash-mismatch)`, label);
   }
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+// This agent has no authenticated job registry snapshot to replay presence.
+for (const placement of ['required', 'oneOf']) test(`presence-only ${placement} is refused before record reads or Agreement signatures`, async t => {
+  const member = { scheme: 'did', verificationRequired: false };
+  const requirement = { requirementVersion: '1', required: placement === 'required' ? [member] : [],
+    ...(placement === 'oneOf' ? { oneOf: [[member]] } : {}), preferredPresentation: 'any' };
+  const w = await world(t, { listingChanges: draft => { draft.buyerRequirement = requirement; } });
+  const config = complete(w, { durableDirectory: w.dir(), demDeliveryContext: w.chain.demDeliveryContext() }), signed = [];
+  const agent = await w.agent({ ...config, signer: { ...config.signer, sign: bytes => { signed.push(Buffer.from(bytes).toString()); return config.signer.sign(bytes); } } });
+  try {
+    const request = await w.proposalFor(w.vetted);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const answer = await agent.receiveProposal(request);
+      assert.equal(answer.disposition, 'rejected');
+      assert.equal(answer.contribution, undefined);
+      assert.match(answer.reason, /presence-only/);
+    }
+    assert.equal(signed.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
+    assert.equal(w.admission.calls.filter(([call]) => call === 'resolveVetRecord').length, 0);
+    assert.deepEqual(w.reached.filter(name => name !== 'resolveSeller'), []);
+  } finally { agent.close(); }
 });
 
 // A retained Vet context may have been kept under an earlier, weaker check, so

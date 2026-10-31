@@ -39,6 +39,7 @@ import {
 import {
   isSellerFulfilmentAuditSource,
   sellerFulfilmentAuditSourceHash,
+  sellerFulfilmentVetRequirementsViolation,
   type SellerFulfilmentAuditSourceV1,
 } from "../../src/seller/fulfilmentAuditSource.js";
 
@@ -1340,6 +1341,105 @@ describe("runFulfilmentCore", () => {
     expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
   });
 
+  test.each([
+    ["buyer", "required"],
+    ["seller", "required"],
+    ["buyer", "oneOf"],
+    ["seller", "oneOf"],
+    ["buyer", "mixed required"],
+    ["buyer", "mixed oneOf"],
+  ] as const)("requires explicit presence opt-in for %s %s before delivery on every attempt", async (party, placement) => {
+    const f = fixture();
+    f.deps.prepareDelivery = vi.fn(f.deps.prepareDelivery);
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    const invocation = f.auditSource.artifacts.vetRequirements[party === "buyer" ? 0 : 1]!;
+    const presence = { scheme: "did", verificationRequired: false };
+    if (placement === "mixed required") {
+      invocation.requirement.required.push(presence);
+    } else if (placement === "mixed oneOf") {
+      // The verified alternative is covered; the finalizer still needs
+      // presence authority for the other alternative, which core cannot supply.
+      invocation.requirement.oneOf = [[...structuredClone(invocation.requirement.required), presence]];
+    } else {
+      invocation.requirement = placement === "required"
+        ? { requirementVersion: "1", required: [presence] }
+        : { requirementVersion: "1", required: [], oneOf: [[presence]] };
+      invocation.freshness = [];
+    }
+    if (party === "buyer") f.listing.buyerRequirement = structuredClone(invocation.requirement);
+    expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+    const [buyerVet, sellerVet] = f.auditSource.artifacts.vetRequirements;
+    if (!buyerVet || !sellerVet) throw new Error("party invocations missing");
+    const admissionInput = {
+      jobId: f.auditSource.session.jobId,
+      buyer: { primaryClaim: buyerVet.evaluatedParty, vetRecordRef: buyerVet.vetRecordRef },
+      seller: { primaryClaim: sellerVet.evaluatedParty, vetRecordRef: sellerVet.vetRecordRef },
+      buyerRequirement: f.listing.buyerRequirement,
+    };
+    expect(sellerFulfilmentVetRequirementsViolation(f.auditSource.artifacts.vetRequirements, admissionInput)).toMatch(/presence-only/);
+    expect(sellerFulfilmentVetRequirementsViolation(f.auditSource.artifacts.vetRequirements, {
+      ...admissionInput, acceptsPresenceOnly: true,
+    })).toBeNull();
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+        reasons: [expect.stringContaining("presence-only")],
+      });
+      expect(f.store.consumed).toBe(false);
+    }
+    expect(f.deps.prepareDelivery).not.toHaveBeenCalled();
+    expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    f.deps.acceptsPresenceOnlyVetRequirements = true;
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({ decision: "completed" });
+    expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  test("refuses delivery when a synthetic result covers a presence-only requirement", async () => {
+    const f = fixture();
+    f.deps.acceptsPresenceOnlyVetRequirements = true;
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+    invocation.requirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "did", verificationRequired: false }],
+    };
+    invocation.freshness[0]!.requirement = structuredClone(invocation.requirement.required[0]!);
+    f.listing.buyerRequirement = structuredClone(invocation.requirement);
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["an unregistered scheme", { scheme: "bogus", verificationRequired: false }],
+    ["a freshness selection", { scheme: "did", verificationRequired: false, maxAge: 30 }],
+    ["a recipe selection", { scheme: "did", verificationRequired: false, recipeVersion: 1 }],
+  ])("refuses delivery for a presence-only member with %s", async (_label, member) => {
+    for (const placement of ["required", "oneOf"] as const) {
+      const f = fixture();
+      f.deps.acceptsPresenceOnlyVetRequirements = true;
+      f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+      const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+      invocation.requirement = placement === "required"
+        ? { requirementVersion: "1", required: [structuredClone(member)] }
+        : { requirementVersion: "1", required: [], oneOf: [[structuredClone(member)]] };
+      invocation.freshness = [];
+      f.listing.buyerRequirement = structuredClone(invocation.requirement);
+      expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+      });
+      expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    }
+  });
+
   test("requires the authenticated orchestrator as the Vet verifier authority", async () => {
     const distinctVetter = fixture();
     distinctVetter.auditSource.artifacts.vetRequirements[0]!.verifier =
@@ -1369,7 +1469,7 @@ describe("runFulfilmentCore", () => {
     const uncoveredOneOf = fixture();
     uncoveredOneOf.auditSource.artifacts.vetRequirements[0]!.requirement.oneOf = [[{
       scheme: "domain",
-      verificationRequired: false,
+      verificationRequired: true,
     }]];
     uncoveredOneOf.listing.buyerRequirement = structuredClone(
       uncoveredOneOf.auditSource.artifacts.vetRequirements[0]!.requirement,

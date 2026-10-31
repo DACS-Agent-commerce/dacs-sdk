@@ -369,6 +369,7 @@ export {
   pinSessionRecipeSelection,
   recoverSessionRecipePin,
   isDurableSessionRecipeRegistrySnapshot,
+  selectDurableSessionRecipe,
   isDurableSessionRecipePin,
   type DurableRecipePartyIdentity,
   type DurableRecipeRequirementPath,

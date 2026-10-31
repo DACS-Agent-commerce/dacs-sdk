@@ -28,6 +28,8 @@ import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
+import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
+import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 
 // A paid order that has healed reaches delivery: the seller prepares and sends
@@ -198,7 +200,14 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast.
-async function world(t, { guardedDelivery = true, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
+async function world(t, { guardedDelivery = true, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
+  let startHost = seller.startSellerHost;
+  if (agentTransform) {
+    const agentUrl = await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform);
+    const host = await privateModule(new URL('../src/host.mjs', import.meta.url), [], source =>
+      source.replace("from './dacs/seller-agent.mjs'", `from '${agentUrl}'`));
+    startHost = host.startSellerHost;
+  }
   const sellerKey = key(17), buyerKey = key(12), now = NOW, steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -208,6 +217,7 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid/agent',
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
     category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
+  if (buyerRequirement) draft.buyerRequirement = clone(buyerRequirement);
   if (!schemaUrl) delete draft.offering.deliverable.schemaUrl;
   // All binding strings have fixed canonical lengths. Declare the exact
   // output size for this test producer unless exercising the unsupported path.
@@ -254,7 +264,7 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
       const buyerBundle = await buyerBundleFor(jobId), input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
       const sellerBundle = sellerPresentation ? sessionSeller(sellerPresentation === 'forged' ? buyerKey : sellerKey) : listing.seller.identity;
       inputs.set(jobId, { ...input, buyer: { ...input.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
-        seller: { identityBundle: sellerBundle, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, sellerBundle, { requirement: listing.buyerRequirement }) } });
+        seller: { identityBundle: sellerBundle, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, sellerBundle, { requirement: SELLER_REQUIREMENT }) } });
     }
     return clone(inputs.get(jobId));
   };
@@ -383,7 +393,7 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
       const input = await vettedInput(jobId);
       // One requirement invocation per Vet record the Agreement references,
       // each naming the evaluated party's counterparty as verifier.
-      const invocation = (party, claim, verifier) => ({ vetRecordRef: input[party].vetRecordRef, evaluatedParty: claim, requirement: clone(listing.buyerRequirement),
+      const invocation = (party, claim, verifier) => ({ vetRecordRef: input[party].vetRecordRef, evaluatedParty: claim, requirement: clone(party === 'buyer' ? listing.buyerRequirement : SELLER_REQUIREMENT),
         verifier, freshness: [], dealSpecific: [] });
       return { disposition: 'present', value: { input, vetRequirements: [invocation('buyer', buyerKey.claim, sellerKey.claim), invocation('seller', sellerKey.claim, buyerKey.claim)] } };
     } });
@@ -434,7 +444,7 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: rails.authority,
     sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}) });
   const start = async () => {
-    const host = await seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor });
+    const host = await startHost({ ...capabilities(), dataDirectory, artifactAnchor });
     hosts.push(host);
     return host;
   };
@@ -519,6 +529,27 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
 const shown = (answer) => JSON.stringify(answer);
+
+// A host must refuse presence before any Agreement signature or payment effect.
+for (const placement of ['required', 'oneOf']) {
+  const member = { scheme: 'did', verificationRequired: false };
+  const buyerRequirement = { requirementVersion: '1', required: placement === 'required' ? [member] : [],
+    ...(placement === 'oneOf' ? { oneOf: [[member]] } : {}), preferredPresentation: 'any' };
+  for (const deliveryEvidenceEnabled of [false, true]) test(`presence-only ${placement} purchase is refused before and after restart with evidence ${deliveryEvidenceEnabled}`, async t => {
+    const w = await world(t, { buyerRequirement, deliveryEvidenceEnabled });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const answer = await w.purchase({ expectSigned: false });
+      assert.equal(answer.disposition, 'rejected');
+      assert.equal(answer.contribution, undefined);
+      assert.match(answer.reason, /core delivery cannot finalize presence-only/);
+      assert.equal(w.effects.componentSigns.filter(bytes => bytes.startsWith('dacs-payee-bound-agreement:v1:')).length, 0);
+      assert.equal(w.effects.deliverySubmit.length, 0);
+      assert.equal(w.effects.published.length, 0);
+      assert.equal(w.effects.broadcast.length, 0);
+      await w.restart();
+    }
+  });
+}
 
 test('the host takes a native payment to anchored, read-back payment evidence and hands the order to delivery; the confirmed anchor is never sent again', async (t) => {
   const w = await world(t);
