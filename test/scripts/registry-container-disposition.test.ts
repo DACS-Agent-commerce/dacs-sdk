@@ -11,7 +11,7 @@ import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { classifyRegistryAudit, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
+const { classifyPolicyChecks, classifyRegistryAudit, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const archiveModulePath = "../../scripts/installation-closure.mjs";
@@ -20,6 +20,10 @@ const { npmToolchain, runNpmNode } = await import(archiveModulePath);
 vi.setConfig({ testTimeout: 60_000 });
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
+
+// A runtime-image inventory that matches the lock's production closure.
+const completeInventory = { scanComplete: true, errors: [], missing: [] };
+
 const scratch: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -978,6 +982,17 @@ describe("lock engine scan", () => {
 
 });
 
+it("pins the recorded pqcrypto image version while accepting its recorded metadata spelling", () => {
+  const known = { name: "pqcrypto", location: "node_modules/pqcrypto", version: "1.0.01" };
+  const baseline = { policyFindings: { productionImageDependencies: [known] } };
+  const summary = (version: string) => ({ docker: { policy: { typescriptPresent: false, rubicSdkPresent: false, productionDependencyPolicyPassed: false } }, securityGate: {
+    productionImageDependencyPolicyPassed: false, engineStrictExitCode: 0,
+    lockSbomExitCode: 0, physicalSbomExitCode: 0,
+    findings: { productionImageDependencies: [{ ...known, version }], productionImageInventory: completeInventory },
+  } });
+  expect(classifyPolicyChecks(summary("1.0.01"), baseline).productionImage).toBe("baseline");
+  expect(classifyPolicyChecks(summary("9.0.0"), baseline).productionImage).toBe("blocked");
+});
 
 // A candidate is declared and installed under its own name only, so an alias
 // is refused wherever it is declared, whatever npm installed for it.
