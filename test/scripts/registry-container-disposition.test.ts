@@ -2587,7 +2587,18 @@ describe("acceptance failure class", () => {
     ["publish", 1, { "registry.log": "FetchError: request to http://127.0.0.1:4873/x failed, reason: connect ECONNREFUSED 127.0.0.1:4873" }, "network"],
     ["publish", 1, { "registry.log": "Error: candidate integrity mismatch" }, "functional"],
     ["image-build", 1, { "docker-build.log": "#14 2.0 error TS2307: Cannot find module" }, "functional"],
-    ["release-set", 1, { "release-set.log": "npm error code ETIMEDOUT" }, "functional"],
+    // The release-set stage runs npm and, for the vector sync, Git: each one's own final cause decides.
+    ["release-set", 1, { "release-set.log": "npm error code ETIMEDOUT" }, "network"],
+    ["release-set", 1, { "release-set.log": "npm error code EINTEGRITY" }, "functional"],
+    ["release-set", 128, { "release-set.log": "fatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com" }, "network"],
+    ["release-set", 128, { "release-set.log": "fatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 503" }, "network"],
+    ["release-set", 128, { "release-set.log": "fatal: unable to access 'https://github.com/o/r/': The requested URL returned error: 403" }, "functional"],
+    ["release-set", 128, { "release-set.log": "fatal: not a git repository (or any of the parent directories): .git" }, "functional"],
+    ["release-set", 1, { "release-set.log": "fatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com\nnpm error code EINTEGRITY" }, "functional"],
+    ["release-set", 1, { "release-set.log": "npm error code EINTEGRITY\nfatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com" }, "network"],
+    ["release-set", 1, { "release-set.log": "Error: Command failed: git clone https://github.com/o/r.git\nfatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com\nError: Command failed: git clone" }, "network"],
+    ["release-set", 1, { "release-set.log": "Error: connect ECONNREFUSED 127.0.0.1:4873" }, "functional"],
+    ["release-set", 1, {}, "functional"],
     // A retryable HTTP status as curl --fail and the Docker registry client spell it.
     ["registry-auth", 22, { "registry.log": "curl: (22) The requested URL returned error: 503" }, "network"],
     ["registry-auth", 22, { "registry.log": "curl: (22) The requested URL returned error: 429 Too Many Requests" }, "network"],
@@ -2760,7 +2771,7 @@ describe("acceptance failure class", () => {
   });
 
   // Review D-11 and cold F4: only stages with their own classifier, by own key.
-  it.each(["constructor", "__proto__", "hasOwnProperty", "toString", "release-set", "image-policy", ""])(
+  it.each(["constructor", "__proto__", "hasOwnProperty", "toString", "image-policy", ""])(
     "classifies stage %j, which has no classifier of its own, as functional", stage => {
       expect(classifyAcceptanceFailure({ stage, exitCode: 1, read: reader({ "registry.log": "npm error code ECONNRESET" }) }))
         .toEqual({ failureClass: "functional", evidence: [] });
