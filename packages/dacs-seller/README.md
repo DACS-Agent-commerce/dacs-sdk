@@ -465,6 +465,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   bundle with a verified per-claim presentation and a runtime-authenticated,
   job-bound `presence.sessionSnapshot` (`DurableSessionRecipeRegistrySnapshot`).
   Bare hashes, copied snapshots and snapshots for another job are refused.
+  When a job uses this snapshot, every verified recipe and implicit family head,
+  including those in sibling records and unused alternatives, comes from its
+  authenticated entries. Operator recipe readers cannot replace them. Recovered
+  snapshots with the same authenticated hash retain this authority; an earlier
+  operator-supplied string pin cannot establish it. Completed operator recipe
+  replays also prevent a later switch to snapshot authority for that job.
   `sessionAdmission.readSessionRecipeRegistryPin` is unsupported and rejected
   at configuration: a hash reader cannot supply authenticated registry authority.
   The direct helper requires every claim in a bundle used for presence-only
@@ -474,7 +480,7 @@ per-client limiter so one client cannot exhaust the shared request budget.
   invocations before replay. Supplying `sessionAdmission.vetEvidence` is rejected
   explicitly. Presence-only alternatives in mixed groups are refused too.
   The direct helper still checks verified alternatives with derivable methods
-  against their recipe evidence, even when a presence alternative is satisfied.
+  against the snapshot's recipe entries, even when a presence alternative is satisfied.
 
   The direct `vetRecordProblem` helper separately accepts `evidence` for strict
   replay preparation: `resolveContent`, `resolveRecipe`,

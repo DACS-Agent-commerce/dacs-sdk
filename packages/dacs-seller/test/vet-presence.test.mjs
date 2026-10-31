@@ -137,7 +137,7 @@ for (const placement of ['required', 'oneOf']) {
 test('presence-only replay keeps one authenticated registry snapshot across job records', async () => {
   const f = await fixture(presence('did')), pins = [];
   assert.equal(await f.problem({ sessionRegistryPins: pins }), null);
-  assert.deepEqual(pins, [f.sessionSnapshot.snapshotHash]);
+  assert.deepEqual(pins, [f.sessionSnapshot]);
   const other = await sessionRegistrySnapshot(f.jobId, 'another-snapshot');
   assert.notEqual(other.snapshotHash, f.sessionSnapshot.snapshotHash);
   assert.match(await f.problem({ sessionRegistryPins: pins, sessionSnapshot: other }), /another session registry snapshot/);
