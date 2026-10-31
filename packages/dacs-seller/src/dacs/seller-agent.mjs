@@ -1299,6 +1299,25 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     return canonicalize(value) === canonicalize(deliveryReport(session, settlementId));
   }
 
+  // Why one storage CREATE cannot carry this report, or null; checked before the permit is spent.
+  function reportProblem(report) {
+    const size = Buffer.byteLength(canonicalize(report));
+    const expected = listing.offering.deliverable.expectedSizeBytes;
+    if (size > MAX_STORAGE_ARTIFACT_BYTES || (expected !== undefined && size !== expected)) {
+      return `inline delivery size ${size} differs from supported expectedSizeBytes ${expected ?? 'undeclared'} (maximum ${MAX_STORAGE_ARTIFACT_BYTES})`;
+    }
+    try { assertStorageJsonDepth(report); } catch { return 'the report nests deeper than one storage CREATE can carry'; }
+    return null;
+  }
+
+  // After a restart the SDK hands back a consumed permit's retained candidate without preparing again;
+  // the producer may no longer answer it, so it must be bound to this job, Agreement and settlement and
+  // fit one CREATE. A report prepared in this run or already retained as sent is the exact current answer.
+  function candidateMatches(value, session, settlementId, preparedInRun) {
+    if (preparedInRun || session.deliverySentReport?.settlementId === settlementId) return reportMatches(value, session, settlementId);
+    return value?.jobId === session.jobId && value.agreementHash === contentHash(session.agreement) && value.settlementId === settlementId && reportProblem(value) === null;
+  }
+
   async function validCurrentFulfilmentFence(fence, jobId) {
     const loaded = await fulfilmentStore.load(jobId);
     return loaded.status === 'ok' && loaded.record.lease?.owner === fence.owner && loaded.record.lease?.generation === fence.generation && loaded.record.lease.expiresAt > now();
@@ -1457,7 +1476,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (record.status === 'absent') return null;
       return {status:'indeterminate',reason:String(record.reason ?? 'the delivery address returned no verdict').slice(0,180)};
     };
-    let verifiedSchemaPayload;
+    let verifiedSchemaPayload, preparedInRun = false;
     const deps = {
       auditSourceProfile: 'v2',
       receiptStore,
@@ -1469,14 +1488,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           return { status: 'rejected', reason: 'delivery preparation scope differs' };
         }
         const report = deliveryReport(session, work.intake.settlementId);
-        const size = Buffer.byteLength(canonicalize(report));
-        const expected = listing.offering.deliverable.expectedSizeBytes;
+        preparedInRun = true;
         // A producer can be corrected after payment; a size disagreement must not become the core's permanent preparation-failed handoff.
-        if (size > MAX_STORAGE_ARTIFACT_BYTES || (expected !== undefined && size !== expected)) {
-          return { status: 'indeterminate', reason: `inline delivery size ${size} differs from supported expectedSizeBytes ${expected ?? 'undeclared'} (maximum ${MAX_STORAGE_ARTIFACT_BYTES})` };
-        }
-        // The CREATE writer refuses JSON past its depth bound before it builds a transaction; a throw after the permit is spent would keep a prepared handoff no correction replaces.
-        try { assertStorageJsonDepth(report); } catch { return { status: 'indeterminate', reason: 'the report nests deeper than one storage CREATE can carry' }; }
+        const problem = reportProblem(report);
+        if (problem) return { status: 'indeterminate', reason: problem };
         if (schemaUrl !== undefined) {
           const verdict = await deps.verifyDeliverySchema({ schemaUrl, cleartextPayload: report });
           if (verdict?.disposition !== 'valid') return { status: 'indeterminate', reason: verdict?.reason || 'report schema validation is not valid' };
@@ -1485,15 +1500,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       },
       submitDelivery: async (input) => {
         if (!await validCurrentFulfilmentFence(input.fence, session.jobId)) return { status: 'rejected', reason: 'delivery effect fence is not current' };
-        if (input.logicalAddress !== deliverableAddress(session.jobId) || !reportMatches(input.artifact.anchoredValue, session, work.intake.settlementId) ||
+        if (input.logicalAddress !== deliverableAddress(session.jobId) || !candidateMatches(input.artifact.anchoredValue, session, work.intake.settlementId, preparedInRun) ||
             canonicalize(input.artifact.cleartextPayload) !== canonicalize(input.artifact.anchoredValue)) return { status: 'rejected', reason: 'delivery candidate differs from the exact report' };
         if(nativeDelivery){
-          const report=structuredClone(input.artifact.anchoredValue),binding=deliveryBinding(input.fulfilmentId);
+          const report=structuredClone(input.artifact.anchoredValue);
           // Check now and through the publisher's authorization hook before signing. A throw keeps the SDK
           // intent pending; authoritative unsigned absence permits one retry.
           heldFor(session.jobId)?.();
           // Retain before submission: only authenticated readback or proven unsigned absence settles this intent.
           session.deliverySentReport={settlementId:work.intake.settlementId,canonical:canonicalize(report)};
+          const binding=deliveryBinding(input.fulfilmentId);
           session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];
           session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,substrate:'source-native-delivery'};
           // The journal this submission goes through: only it may later answer for it.
@@ -1576,7 +1592,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         return { disposition: valid ? 'valid' : 'invalid', ...(valid ? {} : { reason: 'fixture receipt authentication failed' }) };
       },
       verifyDeliverySchema: async ({ schemaUrl, cleartextPayload }) => {
-        if (schemaUrl !== listing.offering.deliverable.schemaUrl || !reportMatches(cleartextPayload, session, work.intake.settlementId)) {
+        if (schemaUrl !== listing.offering.deliverable.schemaUrl || !candidateMatches(cleartextPayload, session, work.intake.settlementId, preparedInRun)) {
           return { disposition: 'invalid', reason: 'report schema/bindings differ' };
         }
         if (verifiedSchemaPayload === canonicalize(cleartextPayload)) return { disposition: 'valid' };
