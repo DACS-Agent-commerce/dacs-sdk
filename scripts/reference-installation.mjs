@@ -323,6 +323,20 @@ export function referenceInstallation({ manifest: manifestBytes, lock, readArchi
           throw error;
         }
       };
+      const options = requireNpm('@npmcli/config/lib/definitions').flatten(config);
+      if (options.omit.includes('optional')) {
+        const validator = requireNpm.resolve('../lib/utils/validate-lockfile.js');
+        const validate = require(validator);
+        // npm 11 retains failed optional lookups as inert, versionless nodes.
+        // They cannot install under omit=optional. Keep npm's original trees,
+        // metadata and reifier; exclude only those failures from lock validation.
+        require.cache[validator].exports = (virtual, ideal) => {
+          const checked = new Map([...ideal].filter(([location, node]) => virtual.has(location) ||
+            !(node.optional && node.inert && !node.version && node.errors.some(error => error.code === 'ENOTCACHED'))));
+          // The root declarations were already compared with the lock before replay.
+          return validate(virtual, checked);
+        };
+      }
       require(process.argv[1]);`;
       runNpmNode(installer.toolchain, ["-e", command, configFile, ...args], { cwd: project, env });
       let failures;
