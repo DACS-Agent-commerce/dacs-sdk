@@ -1680,8 +1680,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
   }
 
+  // The option only gates new publication; retained work is always read back.
+  const drivesDeliveryEvidence=(session)=>deliveryEvidenceEnabled||Boolean(session.deliveryEvidenceWork);
+
   async function finishDeliveryEvidence(session, work, pointer) {
-    if(!deliveryEvidenceEnabled&&!session.deliveryEvidenceWork)return nativeEvidenceResponse(work,pointer);
+    if(!drivesDeliveryEvidence(session))return nativeEvidenceResponse(work,pointer);
     const ready=session.deliveryReady,report=deliveryReport(session,work.intake.settlementId),address=deliveryEvidenceAddress(session.jobId),evidence=ready.evidence;
     const held=(reason)=>nativeEvidenceResponse(work,{...pointer,evidencePublication:'held-readback-only',reason});
     if(!isNativeDeliveryEvidence(evidence,claim,address)||contentHash(evidence)!==ready.evidenceHash||evidence.deliverableContentHash!==sha256Hex(canonicalize(report)))return held('retained delivery evidence differs from the verified Deliverable');
@@ -1935,7 +1938,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (reconciliation.status === 'held') throw new SellerAgentError('seller_reconciliation_required', 'an anchor outcome remains unknown', 503);
     if (session.countersignatureWork && !session.sellerCopy) return countersign({ jobId, buyerSignature: session.countersignatureWork.buyerSignature });
     if (session.paymentWork && !session.payment) return submitPayment({ jobId, txHash: session.paymentWork.txHash, payerPayingKey: session.paymentWork.payerPayingKey });
-    if (session.nativeEvidenceWork && (!session.deliveryReady || deliveryEvidenceEnabled)) return submitPayment({ jobId, txHash: session.nativeEvidenceWork.txHash,
+    if (session.nativeEvidenceWork && (!session.deliveryReady || drivesDeliveryEvidence(session))) return submitPayment({ jobId, txHash: session.nativeEvidenceWork.txHash,
       payerPayingKey: session.nativeEvidenceWork.payerPayingKey, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
     if (session.commitCreatedAt && !session.commitment) return commit({ jobId });
     return { status: 'retained', stage: session.stage };
