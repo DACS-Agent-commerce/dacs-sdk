@@ -31,8 +31,8 @@ function attempt(index, released = false) {
   return rows;
 }
 // The lines of one held Vet attempt in the order the approval path writes them.
-function vetAttempt([opened, manual, signed, confirmed, spent]) {
-  const attemptId = id(2, 0), reservationId = id(3, 0), requestBytes = requestOf('CompositeVerificationRecord'), approvalHash = sha256Hex(requestBytes);
+function vetAttempt([opened, manual, signed, confirmed, spent], index = 0) {
+  const attemptId = id(2, index), reservationId = id(3, index), requestBytes = requestOf('CompositeVerificationRecord'), approvalHash = sha256Hex(requestBytes);
   return [
     ['opened', { format: EVIDENCE, decision: 'rejected', approvalMode: 'policy', policyReason: 'seller-record-missing', attemptId, requestBytes, approvalHash, recordedAt: opened }],
     ['manual', { format: EVIDENCE, decision: 'approved', attemptId, requestBytes, approvalHash, recordedAt: manual }],
@@ -178,7 +178,7 @@ for (const released of ['TEST first', 'TEST second']) test(`two open holds of on
   await appendFile(f.evidencePath, encode([vetWrite(0, 299)]));
   assert.deepEqual(await budget(f), { writes: 4, totalOs: 16n });
   await f.admission.release({ jobId: JOB, hold: released });
-  assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n });
+  assert.deepEqual(await budget(f), { writes: 3, totalOs: 12n });
 });
 test('two open holds of one job still exhaust its six-write cap', async t => {
   const f = await fixture(t);
@@ -186,6 +186,54 @@ test('two open holds of one job still exhaust its six-write cap', async t => {
   assert.equal(await f.admission.reserve({ ...f.reserve, writes: 3, hold: 'TEST second' }), null);
   await appendFile(f.evidencePath, encode([vetWrite(0, 299)]));
   assert.equal(await f.admission.reserve({ ...f.reserve, hold: 'TEST third' }), 'job-write-limit');
+});
+
+// Writes are assigned to holds by the line they started on, whatever order the
+// parsed rows are listed in (an open attempt is listed last).
+const hold = (f, writes, name) => f.admission.reserve({ ...f.reserve, writes, hold: name });
+const append = (f, ...rows) => appendFile(f.evidencePath, encode(rows));
+const strict = (f, maxWritesPerHour) => createSellerContextAdmission({ ...f.config, sellerApproval: { ...f.config.sellerApproval, maxWritesPerHour } });
+const otherJobHold = { jobId: otherJob, effect, writes: 1, hold: 'TEST other job' };
+test('a write after two holds takes the earlier slot, not the one an attempt opened between them is owed', async t => {
+  const f = await fixture(t, { maxWritesPerHour: 3 }), [[, opened]] = vetAttempt(clocks.forward);
+  await hold(f, 1, 'TEST first'); await append(f, opened); await hold(f, 1, 'TEST second'); await append(f, vetWrite(0, 299));
+  assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n });
+  assert.equal(await createSellerContextAdmission(f.config).reserve(otherJobHold), null);
+});
+test('an attempt opened between two holds and signed after a later write still converts one slot', async t => {
+  const f = await fixture(t), [[, opened], [, manual], [, signed]] = vetAttempt(clocks.forward);
+  await hold(f, 1, 'TEST first'); await append(f, opened, manual); await hold(f, 1, 'TEST second'); await append(f, vetWrite(0, 299), signed);
+  assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n });
+});
+test('an earlier build\'s held confirmation between two holds and a later write still converts one slot', async t => {
+  const f = await fixture(t), [[, opened], , , [, linked]] = vetAttempt(clocks.forward);
+  await hold(f, 1, 'TEST first'); await append(f, opened); await hold(f, 1, 'TEST second'); await append(f, vetWrite(0, 299), { ...linked, reservationId: id(5, 0) });
+  assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n });
+});
+test('writes and attempts spread over two holds never count more than the job\'s six writes', async t => {
+  const f = await fixture(t), [first, second, fourth] = [0, 1, 2].map(index => vetAttempt(clocks.forward, index)[0][1]);
+  await hold(f, 3, 'TEST first'); await append(f, first, second); await hold(f, 3, 'TEST second');
+  await append(f, vetWrite(0, 299), vetWrite(1, 299), vetWrite(2, 299), fourth);
+  assert.deepEqual(await budget(f), { writes: 6, totalOs: 24n });
+});
+test('releasing the hold a write may have used keeps the other hold\'s slot counted', async t => {
+  const f = await fixture(t);
+  await hold(f, 2, 'TEST first'); await hold(f, 1, 'TEST second'); await append(f, vetWrite(0, 299));
+  await f.admission.release({ jobId: JOB, hold: 'TEST first' });
+  assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n });
+  assert.equal(await strict(f, 2).reserve(otherJobHold), 'hourly-write-limit');
+});
+test('releasing a later hold keeps the earlier hold\'s slot counted behind a write', async t => {
+  const f = await fixture(t);
+  await hold(f, 1, 'TEST first'); await hold(f, 1, 'TEST second'); await append(f, vetWrite(0, 299));
+  await f.admission.release({ jobId: JOB, hold: 'TEST second' });
+  assert.deepEqual(await budget(f), { writes: 2, totalOs: 8n });
+  assert.equal(await strict(f, 2).reserve(otherJobHold), 'hourly-write-limit');
+});
+test('a write that starts after a hold was released never uses that hold', async t => {
+  const f = await fixture(t);
+  await hold(f, 1, 'TEST first'); await f.admission.release({ jobId: JOB, hold: 'TEST first' }); await hold(f, 1, 'TEST second'); await append(f, vetWrite(0, 299));
+  assert.deepEqual(await budget(f), { writes: 1, totalOs: 4n });
 });
 
 for (const operation of ['distinct hold', 'identical hold', 'context release']) test(`a second process cannot perform ${operation} while a ledger transaction is reading`, { timeout: 15_000 }, async t => {
