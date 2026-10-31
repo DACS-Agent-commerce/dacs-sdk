@@ -35,6 +35,11 @@ function pidMappingKnown(){
     return ids?.length===1&&ids[0]===String(process.pid);
   }catch{return false;}
 }
+// True only when the kernel itself says no process has this PID (ESRCH). A PID
+// that exists, or that this user may not signal (EPERM), is not absent.
+function pidAbsent(pid){
+  try{process.kill(pid,0);return false;}catch(error){return error?.code==='ESRCH';}
+}
 export function currentSellerStateHolder(at=Date.now()){
   return{format:FORMAT,host:hostname(),machineId:readOptional(()=>readFileSync('/etc/machine-id','utf8')),bootId:readOptional(()=>readFileSync('/proc/sys/kernel/random/boot_id','utf8')),
     pidNamespace:readOptional(()=>readlinkSync('/proc/self/ns/pid')),pid:process.pid,processStart:readOptional(()=>processStart('self')),acquiredAt:at};
@@ -46,7 +51,7 @@ const exactHolder=(value)=>value&&typeof value==='object'&&!Array.isArray(value)
 
 // 'gone' only on proof; a live holder (this process included) is 'live';
 // anything that cannot be decided is 'doubt'.
-export function sellerStateHolderState(holder,self=currentSellerStateHolder(),{readStart=processStart,readPidMapping=pidMappingKnown}={}){
+export function sellerStateHolderState(holder,self=currentSellerStateHolder(),{readStart=processStart,readPidMapping=pidMappingKnown,isPidAbsent=pidAbsent}={}){
   if(!exactHolder(holder))return 'doubt';
   // Proof needs the same machine: its name and identity, both known.
   if(!holder.machineId||holder.machineId!==self.machineId||holder.host!==self.host)return 'doubt';
@@ -57,7 +62,9 @@ export function sellerStateHolderState(holder,self=currentSellerStateHolder(),{r
   let start;
   try{if(readPidMapping()!==true)return 'doubt';}catch{return 'doubt';}
   try{start=readStart(holder.pid);}
-  catch(error){return error?.code==='ENOENT'?'gone':'doubt';}
+  // procfs mounted with hidepid hides another user's live process as ENOENT:
+  // a missing entry is exit evidence only when the kernel agrees (ESRCH).
+  catch(error){return error?.code==='ENOENT'&&isPidAbsent(holder.pid)?'gone':'doubt';}
   if(typeof start!=='string'||!/^\d{1,20}$/.test(start))return 'doubt';
   // The pid now names a later process: the holder is gone.
   return start===holder.processStart?'live':'gone';
