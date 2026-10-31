@@ -549,9 +549,9 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // startSellerHost over these capabilities with `changes` (for refusals).
   const startShipped = (changes) => seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor, ...changes });
   // The host stopped and its agent composed over the same state (the caller closes it).
-  const agentFor = async ({ stopHost = true, readIssued = null } = {}) => {
+  const agentFor = async ({ stopHost = true, readIssued = null, ...changes } = {}) => {
     if (stopHost) { await host.close(); hosts.splice(hosts.indexOf(host), 1); }
-    return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, readIssued });
+    return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, readIssued, ...changes });
   };
   // Model an authenticated checkpoint written by an older agent before its
   // adapter recovery fix, using the store's own fenced save and signature.
@@ -2333,6 +2333,81 @@ test('a delivery evidence publication that never reached the wallet is published
   assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(publishedEvidence(w), 1);
   assert.equal(w.createsAt(address), 1);
+});
+
+// resume() under publication switched off: the option gates new effects only,
+// so retained evidence work is still read back and authenticated.
+const evidencePublishes = (w, p) => w.effects.publishCalls.filter((call) => call.logicalAddress === evidenceAddress(p) && call.artifactKind === 'SettlementEvidence').length;
+
+test('resume with publication off reads back an evidence CREATE whose answer was lost: delivered, with one CREATE', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), address = evidenceAddress(p);
+  w.faults.artifactPublish.push('SettlementEvidence:land-throw');
+  const lost = await p.claim(p.pay());
+  assert.equal(lost.delivery?.evidencePublication, 'held-readback-only', shown(lost));
+  assert.equal(w.createsAt(address), 1);
+  const done = await resumed(w, p, { deliveryEvidenceEnabled: false });
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(done.delivery.evidencePublication, 'native-read-back');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(evidencePublishes(w, p), 1);
+});
+
+test('resume with publication off answers a delivered order with its first evidence receipt', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), address = evidenceAddress(p);
+  const first = await p.claim(p.pay());
+  assert.equal(first.delivery?.status, 'delivered', shown(first));
+  const again = await resumed(w, p, { deliveryEvidenceEnabled: false });
+  assert.equal(again.delivery?.status, 'delivered', shown(again));
+  assert.deepEqual(again.delivery.evidenceReceipt, first.delivery.evidenceReceipt);
+  assert.deepEqual(again.delivery.evidenceRef, first.delivery.evidenceRef);
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(evidencePublishes(w, p), 1);
+});
+
+test('resume with publication off never publishes evidence that never reached the wallet; turning it on does, once', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), address = evidenceAddress(p);
+  w.faults.artifactPublish.push('SettlementEvidence');
+  const held = await p.claim(p.pay());
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
+  assert.equal(w.createsAt(address), 0);
+  const asked = evidencePublishes(w, p);
+  const off = await resumed(w, p, { deliveryEvidenceEnabled: false });
+  assert.equal(off.delivery?.evidencePublication, 'held-readback-only', shown(off));
+  assert.equal(w.createsAt(address), 0, 'publication off sends nothing');
+  assert.equal(evidencePublishes(w, p), asked);
+  const on = await resumed(w, p, { stopHost: false, deliveryEvidenceEnabled: true });
+  assert.equal(on.delivery?.status, 'delivered', shown(on));
+  assert.equal(w.createsAt(address), 1);
+});
+
+test('resume with publication off holds while the evidence readback is unknown, then delivers with one CREATE', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), address = evidenceAddress(p);
+  w.faults.artifactPublish.push('SettlementEvidence:land-throw');
+  await p.claim(p.pay());
+  assert.equal(w.createsAt(address), 1);
+  const evidenceCreate = w.signedCreate(address).hash;
+  w.node.faults.transactionDown = (hash) => hash === evidenceCreate;
+  const unknown = await resumed(w, p, { deliveryEvidenceEnabled: false });
+  assert.equal(unknown.delivery?.evidencePublication, 'held-readback-only', shown(unknown));
+  assert.equal(w.createsAt(address), 1);
+  w.node.faults.transactionDown = () => false;
+  const done = await resumed(w, p, { stopHost: false, deliveryEvidenceEnabled: false });
+  assert.equal(done.delivery?.status, 'delivered', shown(done));
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(evidencePublishes(w, p), 1);
+});
+
+test('resume with publication never on keeps a delivery-ready order retained and sends no evidence', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), address = evidenceAddress(p);
+  assert.equal((await p.claim(p.pay())).delivery?.status, 'delivery-ready');
+  const answer = await resumed(w, p, { deliveryEvidenceEnabled: false });
+  assert.equal(answer.status, 'retained', shown(answer));
+  assert.equal(w.createsAt(address), 0);
 });
 
 for (const absence of ['absent', 'unbranded']) test(`an evidence readback that cannot prove nothing was signed (${absence}) is held, never published twice`, async (t) => {
