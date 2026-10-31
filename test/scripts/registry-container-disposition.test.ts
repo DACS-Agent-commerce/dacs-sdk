@@ -1207,6 +1207,62 @@ describe("declared candidate aliases", () => {
   const declares = (declarer: string, specifier: string, name = "dacs") =>
     `${declarer} declares @kynesyslabs/${name} under another name: ${specifier}`;
 
+  const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies", "devDependencies"];
+  const nonObjectDeclarations: [string, unknown][] = [
+    ["array", [`candidate-alias@${aliasOf("dacs")}`]],
+    ["string", `candidate-alias@${aliasOf("dacs-node")}`],
+    ["empty array", []], ["empty string", ""], ["null", null], ["boolean", true], ["number", 1],
+  ];
+  it.each(dependencyFields.flatMap(field => nonObjectDeclarations.map(([form, value]) => ({ field, form, value }))))(
+    "rejects non-object installed dependency declarations: $field as $form", ({ field, value }) => {
+      const fixture = dependencyPolicyHarness();
+      fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0", { [field]: value }),
+        "index.js": "module.exports = require('candidate-alias');" },
+      { dependencies: { "candidate-alias": CANDIDATE_VERSION } });
+      fixture.lockPackage("node_modules/candidate-alias", { ...other, "index.js": "module.exports = 'unreleased-copy';" });
+      const result = fixture.run(project => {
+        expect(createRequire(join(project, "index.cjs"))("plugin")).toBe("unreleased-copy");
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`node_modules/plugin has a non-object ${field} declaration`);
+      expect(existsSync(fixture.report)).toBe(false);
+    });
+
+  it.each(["nested package", "archive scope", "generated scope"].flatMap(scope =>
+    nonObjectDeclarations.slice(0, 2).map(([form, value]) => ({ scope, form, value }))))(
+    "rejects non-object installed dependency declarations in a $scope as $form", ({ scope, value }) => {
+      const fixture = dependencyPolicyHarness();
+      const fields = Object.fromEntries(dependencyFields.map(field => [field, value]));
+      const location = scope === "nested package" ? "node_modules/plugin/node_modules/inner"
+        : scope === "archive scope" ? "node_modules/plugin/dist" : "node_modules/.bin";
+      if (scope === "nested package") {
+        fixture.lockPackage(location, { "package.json": packageJson("inner", "1.0.0", fields) });
+      } else {
+        fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0",
+          scope === "generated scope" ? { bin: { "package.json": "scope.json" } } : {}),
+        [scope === "archive scope" ? "dist/package.json" : "scope.json"]: packageJson("inner", "1.0.0", fields) },
+        scope === "generated scope" ? { bin: { "package.json": "scope.json" } } : {});
+      }
+      const result = fixture.run(project => {
+        if (scope === "generated scope") {
+          mkdirSync(join(project, location), { recursive: true });
+          symlinkSync("../plugin/scope.json", join(project, location, "package.json"));
+        }
+      });
+      expect(result.status).not.toBe(0);
+      for (const field of dependencyFields) expect(result.stderr).toContain(`${location} has a non-object ${field} declaration`);
+      expect(existsSync(fixture.report)).toBe(false);
+    });
+
+  it.each(["absent", "empty object"])("accepts %s installed dependency maps", form => {
+    const fixture = dependencyPolicyHarness();
+    fixture.lockPackage("node_modules/plugin", { "package.json": packageJson("plugin", "1.0.0",
+      form === "absent" ? {} : Object.fromEntries(dependencyFields.map(field => [field, {}]))) });
+    const result = fixture.run();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.report.passed).toBe(true);
+  });
+
   it.each(["dacs", "dacs-node"])("rejects a same-version replacement for a declared %s alias", name => {
     const fixture = dependencyPolicyHarness();
     fixture.manifest.dependencies = { ...fixture.manifest.dependencies as object, "candidate-alias": aliasOf(name) };
