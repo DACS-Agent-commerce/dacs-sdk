@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { collectAuditVersions } from "./check-npm-advisories.mjs";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
 import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
+import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence, readRequiredEvidence } from "./acceptance-evidence-io.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
 export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
@@ -560,13 +561,171 @@ const NETWORK_FAILURE_SIGNATURES = [
   /Connection (?:timed out|refused)/,
   /connect: (?:connection refused|network is unreachable)/,
   /\b(?:408|429|5\d\d) [^\r\n]+ - (?:GET|POST) https?:\/\//,
+  // A retryable HTTP status as curl --fail and Git, and as Docker's registry client, report it.
+  /The requested URL returned error: (?:408|429|5\d\d)\b/,
+  /(?:received unexpected HTTP status|unexpected status from [A-Z]+ request to \S+): (?:408|429|5\d\d)\b/,
+  /Client network socket disconnected before secure TLS connection was established/,
   /invalid json response body at /,
   /Invalid response body while trying to fetch /,
   // The whole entry the acceptance script records when Verdaccio never answers.
   /^registry ping did not succeed within 30 attempts$/,
 ];
 const networkSignature = new RegExp(NETWORK_FAILURE_SIGNATURES.map(signature => signature.source).join("|"));
+
+const parsedJson = text => { try { return JSON.parse(text ?? ""); } catch { return undefined; } };
+
+// When the audit endpoint fails, `npm audit --json` writes npm's audit error
+// object (lib/utils/audit-error.js) instead of a report: a string `message`,
+// with the HTTP answer's `statusCode` or, for a fetch error, no status. Such an
+// object is an endpoint error, never a policy result. Returns it as the one
+// evidence entry a summary keeps, JSON of its status (null when that is not an
+// integer) and bounded message, which the summary's readers classify; or null
+// for anything else, a report included.
+function auditEndpointEvidence(value) {
+  if (typeof value !== "object" || value === null || typeof value.message !== "string" ||
+      AUDIT_REPORT_FIELDS.some(key => Object.hasOwn(value, key))) return null;
+  const statusCode = value.statusCode === undefined || Number.isInteger(value.statusCode) ? value.statusCode : null;
+  return JSON.stringify({ statusCode, message: value.message.replace(/\s+/g, " ").slice(0, 300) });
+}
+
+// A stage stopped on one cause: the last line of its own log that names one in
+// the grammar of a program the stage runs. Warnings, retries, progress and any
+// other output name no cause, so a failure the run recovered from, or text
+// another program printed, never decides the class.
+const CAUSE_LINES = {
+  // The code of npm's error block; its message follows in the block.
+  npm: /^npm error code (\S+)$/,
+  curl: /^curl: \((\d+)\) /,
+  docker: /^(?:docker: |Error response from daemon: )/,
+  // An uncaught JavaScript error.
+  thrown: /^(?:[A-Z][A-Za-z]*)?Error: /,
+};
+// npm prints a cause's errno and syscall before its message.
+const NPM_CAUSE_BLOCK_LINES = 8;
+
+// The last of `entries` ({ line, text }, `text` being the program's own
+// output) that names a cause for one of `programs`, with its npm error block.
+function finalCause(entries, programs) {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const program = programs.find(name => CAUSE_LINES[name].test(entries[index].text));
+    if (program === undefined) continue;
+    const block = [entries[index]];
+    for (const next of entries.slice(index + 1, index + NPM_CAUSE_BLOCK_LINES)) {
+      if (program !== "npm" || !next.text.startsWith("npm error ")) break;
+      block.push(next);
+    }
+    return { program, match: CAUSE_LINES[program].exec(entries[index].text), block };
+  }
+  return null;
+}
+
+const failure = (failureClass, evidence = []) => ({ failureClass, evidence });
+
+// Network with the cause's one evidence entry, else functional. npm's code must
+// be a transport one and curl's status the stage's exit status; the entry must
+// be one the summary's readers accept as retryable (retryableFailureEvidence),
+// so the class written is the class they read back.
+function causeFailure(name, entries, programs, exitCode) {
+  const cause = finalCause(entries, programs);
+  if (cause === null || (cause.program === "npm" && !networkErrorCode(cause.match[1])) ||
+      (cause.program === "curl" && Number(cause.match[1]) !== exitCode)) return failure("functional");
+  const evidence = cause.block.map(({ line }) => `${name}: ${line}`);
+  const retryable = evidence.find(retryableFailureEvidence);
+  return retryable === undefined ? failure("functional") : failure("network", [retryable]);
+}
+
+const logLines = text => Array.from(evidenceLines(text), line => line.trim());
+// A stage whose cause is in its own log, for the programs it runs.
+const logFailure = (name, programs) => ({ read, exitCode }) =>
+  causeFailure(name, logLines(read(name)).map(line => ({ line, text: line })), programs, exitCode);
+
+// BuildKit's plain progress: step headers, timed output and step errors.
+const BUILDKIT_HEADER = /^#(\d+) (\[[^\]]+\] .+)$/;
+const BUILDKIT_OUTPUT = /^#(\d+) \d+(?:\.\d+)? (.*)$/;
+const BUILDKIT_ERROR = /^#(\d+) ERROR: /;
+// The steps that run no package code: resolving and pulling the base image,
+// whose error line names the cause, and the generator's script-free installs,
+// whose npm output does (their error line reports only the command's exit).
+const BASE_IMAGE_STEP = /^\[(?:internal\] load metadata for|[^\]]+\] FROM) \S+$/;
+const SCRIPT_FREE_INSTALL_STEP =
+  /^\[[^\]]+\] RUN npm (?:ci --ignore-scripts(?: --omit=optional)?|prune --omit=dev(?: --omit=optional)? --ignore-scripts)$/;
+
+// The one step with an error line decides; only its own lines count. Any other
+// step, several failed steps, or a log with none (the legacy builder) is functional.
+function imageBuildFailure({ read, exitCode }) {
+  const lines = logLines(read("docker-build.log"));
+  const errors = lines.filter(line => BUILDKIT_ERROR.test(line));
+  const failedSteps = new Set(errors.map(line => BUILDKIT_ERROR.exec(line)[1]));
+  if (failedSteps.size !== 1) return failure("functional");
+  const [step] = failedSteps;
+  const ofStep = pattern => lines.map(line => pattern.exec(line)).filter(match => match?.[1] === step);
+  const headers = new Set(ofStep(BUILDKIT_HEADER).map(match => match[2]));
+  const [header] = headers;
+  if (headers.size !== 1) return failure("functional");
+  if (BASE_IMAGE_STEP.test(header)) {
+    const evidence = `docker-build.log: ${errors.at(-1)}`;
+    return retryableFailureEvidence(evidence) ? failure("network", [evidence]) : failure("functional");
+  }
+  if (!SCRIPT_FREE_INSTALL_STEP.test(header)) return failure("functional");
+  const output = ofStep(BUILDKIT_OUTPUT).map(([line, , text]) => ({ line, text }));
+  return causeFailure("docker-build.log", output, ["npm"], exitCode);
+}
+
+// The audit policy records its verdict, a rejection included, and exits 0, so a
+// stop at this stage means it could not evaluate: network or functional by npm's
+// audit endpoint error, otherwise functional. Never policy, whatever the document.
+function auditPolicyFailure({ read }) {
+  const endpoint = auditEndpointEvidence(parsedJson(read("npm-audit.json")));
+  if (endpoint) return failure(retryableFailureEvidence(endpoint) ? "network" : "functional", [endpoint]);
+  return failure("functional");
+}
+
+// Only the dependency policy's own closed report, rejecting, is a policy result.
+function dependencyPolicyFailure({ read }) {
+  const report = parsedJson(read("dependency-policy.json"));
+  return failure(closedDependencyPolicy(report) && report.passed === false ? "policy" : "functional");
+}
+
+// Code from downloaded packages or the generated project can print any line.
+// The consumer stage writes its dependency policy report just before it runs
+// that code, so from then on its log is not evidence; before, only npm and
+// Docker run there (the generator's own output is not theirs).
+const consumerLogFailure = logFailure("generation.log", ["npm", "docker"]);
+const consumerFailure = input => input.read("dependency-policy.json") === undefined ? consumerLogFailure(input) : failure("functional");
+
+// Every stage that can stop on something other than a functional failure.
+const STAGE_FAILURES = {
+  "registry-start": logFailure("registry.log", ["docker"]),
+  "registry-ready": logFailure("registry.log", ["curl"]),
+  "registry-auth": logFailure("registry.log", ["curl"]),
+  publish: logFailure("registry.log", ["npm", "thrown"]),
+  consumer: consumerFailure,
+  "dependency-policy": dependencyPolicyFailure,
+  "audit-policy": auditPolicyFailure,
+  "image-build": imageBuildFailure,
+};
+
+/** Classifies why an acceptance run stopped at `stage`, from that stage's own
+ * evidence (read by name through `read`, undefined for a missing file) and the
+ * run's exit status. Returns `{ failureClass, evidence }`: network with the one
+ * retryable cause line, policy, or functional for anything else, including an
+ * unknown stage and evidence that cannot be read within its bounds. Never throws. */
+export function classifyAcceptanceFailure({ stage, exitCode, read }) {
+  if (!Object.hasOwn(STAGE_FAILURES, stage)) return failure("functional");
+  try { return STAGE_FAILURES[stage]({ exitCode, read: name => boundedEvidenceText(read(name)) }); }
+  catch (error) { return failure("functional", ["evidence classification failed: " + String(error?.message).slice(0, 300)]); }
+}
+
+/** The summary of a run that stopped at `stage` with `exitCode` before writing
+ * its own: incomplete, with the class and evidence classifyAcceptanceFailure gives. */
+export function failureSummary({ stage, exitCode, read }) {
+  const { failureClass, evidence } = classifyAcceptanceFailure({ stage, exitCode, read });
+  return { schema: ACCEPTANCE_SUMMARY_SCHEMA, complete: false, failedStage: stage, exitCode, failureClass,
+    failureEvidence: evidence, functionalPassed: false, generatedTestsPassed: false };
+}
+
 const firstNpmErrorCode = text => /^npm error code (\S+)$/m.exec(text ?? "")?.[1] ?? null;
+const networkErrorCode = code => code === "FETCH_ERROR" || networkSignature.test(code);
 // Fields of an audit report; npm's audit error object has none of them.
 const AUDIT_REPORT_FIELDS = ["auditReportVersion", "vulnerabilities", "metadata"];
 const retryableStatus = status => status === 408 || status === 429 || (status >= 500 && status <= 599);
@@ -578,7 +737,7 @@ function retryableFailureEvidence(text) {
   let endpoint;
   try { endpoint = JSON.parse(text); } catch {
     const code = firstNpmErrorCode(text);
-    return (code === null || code === "FETCH_ERROR" || networkSignature.test(code)) && networkSignature.test(text);
+    return (code === null || networkErrorCode(code)) && networkSignature.test(text);
   }
   if (typeof endpoint?.message !== "string" || AUDIT_REPORT_FIELDS.some(key => Object.hasOwn(endpoint, key))) return false;
   if (endpoint.statusCode === undefined) return networkSignature.test(endpoint.message);
@@ -1054,16 +1213,21 @@ const prohibitedLocation = (location, name) => typeof location === "string" &&
  * read by name through `read` (undefined for a missing source), for the
  * baseline rules below. A gate with a missing, unparsable or wrong-schema
  * source records `{ incomplete: [sources] }` in place of its findings. */
-export function extractPolicyFindings(read) {
-  const source = policySourceReader(read);
+export function extractPolicyFindings(readInput) {
+  const source = policySourceReader(name => boundedEvidenceText(readInput(name)));
+  // Diagnostic logs are read through the line bounds; a missing one stays missing.
+  const logText = name => {
+    const text = source.text(name);
+    return text === undefined ? undefined : [...evidenceLines(text)].join("\n");
+  };
   const lock = source.json("generated-package-lock.json", generatedLock);
   const packages = lock?.packages ?? {};
   const identity = location => ({ version: packages[location]?.version ?? null, integrity: packages[location]?.integrity ?? null });
   const dependencyPolicy = source.json("dependency-policy.json", closedDependencyPolicy);
-  const strictLog = source.text("engine-strict.log");
+  const strictLog = logText("engine-strict.log");
   const { scanComplete, violations, ...scan } = scanLockEngines(lock, source.json("engine-versions.json"));
   const sbom = name => {
-    const errors = source.text(`${name}.err`);
+    const errors = logText(`${name}.err`);
     return { exitCode: source.exitCode(`${name}.exit-code`), code: npmErrorCode(errors), problems: sbomProblems(errors) };
   };
   source.json("runtime-image-policy.json", policy => policy?.schema === RUNTIME_IMAGE_POLICY_SCHEMA);
@@ -1283,15 +1447,6 @@ function invalidateReport(output, inputs) {
   rmSync(output, { force: true });
 }
 
-// Replaces a JSON result by sibling rename, removing the temporary file even on failure.
-function atomicWriteJson(path, value) {
-  const temporary = `${path}.tmp-${randomUUID()}`;
-  try {
-    writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
-    renameSync(temporary, path);
-  } finally { rmSync(temporary, { force: true }); }
-}
-
 function annotate(result) {
   if (result.exitCode !== 0 && result.exitCode !== 4) {
     process.stdout.write(`::error title=Registry/container acceptance ${result.failureClass} failure::${result.message}\n`);
@@ -1313,11 +1468,11 @@ if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.u
       throw new Error("usage: --audit-policy <npm-audit.json> <generated-package-lock.json> <output>");
     }
     invalidateReport(output, [auditPath, lockPath]);
-    const audit = JSON.parse(readFileSync(auditPath, "utf8"));
+    const audit = JSON.parse(readRequiredEvidence(auditPath));
     let lock = null;
-    try { lock = JSON.parse(readFileSync(lockPath, "utf8")); } catch { /* unreadable: applicability is unevaluated */ }
+    try { lock = JSON.parse(readEvidence(lockPath)); } catch { /* missing or unreadable: applicability is unevaluated */ }
     const policy = registryAuditPolicy(audit, lock, JSON.parse(readFileSync(baselinePath, "utf8")));
-    writeFileSync(output, JSON.stringify(policy, null, 2) + "\n");
+    atomicWriteJson(output, policy);
     process.stdout.write(JSON.stringify(policy.observed) + "\n");
   } else if (mode === "--dependency-policy") {
     const [projectPath, registry, report, releaseSet, version] = process.argv.slice(3);
@@ -1330,14 +1485,28 @@ if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.u
     const [input, output] = process.argv.slice(3);
     if (!input || !output) throw new Error("usage: --policy-findings <evidence-directory> <output>");
     invalidateReport(output, [input, ...POLICY_SOURCES.map(name => join(input, name))]);
-    const read = name => existsSync(join(input, name)) ? readFileSync(join(input, name), "utf8") : undefined;
-    writeFileSync(output, JSON.stringify(extractPolicyFindings(read), null, 2) + "\n");
+    const read = name => readEvidence(join(input, name));
+    atomicWriteJson(output, extractPolicyFindings(read));
+  } else if (mode === "--failure-summary") {
+    // The run stopped before its summary, with a failed shell exit status. The
+    // arguments are checked before an earlier summary is removed.
+    const [stageDirectory, stage, exitCode] = process.argv.slice(3);
+    if (!stageDirectory || !stage || !/^[1-9]\d{0,2}$/.test(exitCode ?? "") || Number(exitCode) > 255) {
+      throw new Error("usage: --failure-summary <stage-directory> <stage> <exit-code 1-255>");
+    }
+    rmSync(join(stageDirectory, "acceptance-summary.json"), { force: true });
+    const read = name => readEvidence(join(stageDirectory, name));
+    const summary = failureSummary({ stage, exitCode: Number(exitCode), read });
+    atomicWriteJson(join(stageDirectory, "acceptance-summary.json"), summary);
+    const evidence = summary.failureEvidence.length ? `; ${summary.failureEvidence[0]}` : "";
+    annotate({ exitCode: summary.exitCode, failureClass: summary.failureClass,
+      message: `stopped at stage ${stage} with exit ${exitCode}${evidence}`.replace(/[\r\n%]/g, " ") });
   } else if (typeof mode === "string" && (SUMMARY_MODES.includes(mode) || !mode.startsWith("--"))) {
     const drift = mode === "--audit-drift";
     const record = mode === "--record";
     const summaryPath = drift || record ? process.argv[3] : mode;
     if (!summaryPath) throw new Error(`usage: ${mode} <acceptance-summary.json>`);
-    const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+    const summary = JSON.parse(readRequiredEvidence(summaryPath));
     // Unset means fail closed; only the pull_request acceptance job sets warn.
     const unlistedAdvisories = process.env.DACS_UNLISTED_ADVISORIES || "fail";
     const result = drift ? registryAuditDriftDisposition(summary)

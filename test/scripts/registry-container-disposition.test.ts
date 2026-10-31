@@ -11,7 +11,7 @@ import { auditLock, auditReport } from "./npm-audit-fixtures.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
-const { RELEASE_VERSION, classifyPolicyChecks, classifyRegistryAudit, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
+const { RELEASE_VERSION, classifyAcceptanceFailure, failureSummary, classifyPolicyChecks, classifyRegistryAudit, registryAuditDriftDisposition, registryContainerDisposition, registryDependencyViolations, runtimeImageInventoryFindings, satisfiesEngineRange, scanLockEngines } = await import(dispositionModulePath);
 const inventoryModulePath = "../../scripts/runtime-image-inventory.mjs";
 const { runtimeImageInventory } = await import(inventoryModulePath);
 const archiveModulePath = "../../scripts/installation-closure.mjs";
@@ -2039,4 +2039,431 @@ describe("dependency policy over npm ci installations", () => {
     expect(policy.status).not.toBe(0);
     expect(policy.stderr).toContain("the project declares @kynesyslabs/dacs under another name: candidate-alias");
   }, 60_000);
+});
+
+describe("acceptance failure class", () => {
+  const reader = (files: Record<string, string>) => (name: string) => files[name];
+  // A summary's class as every reader derives it: the disposition, the drift
+  // check, and both again after --record adds the disposition to the summary.
+  const readBackClasses = (summary: Record<string, unknown>) => {
+    const disposition = registryContainerDisposition(summary);
+    const recorded = { ...summary, failureClass: disposition.failureClass,
+      disposition: { exitCode: disposition.exitCode, failureClass: disposition.failureClass, message: disposition.message } };
+    return [disposition.failureClass, registryAuditDriftDisposition(summary).failureClass,
+      registryContainerDisposition(recorded).failureClass, registryAuditDriftDisposition(recorded).failureClass];
+  };
+  const expectClass = (stage: string, exitCode: number, files: Record<string, string>, failureClass: string) => {
+    const written = classifyAcceptanceFailure({ stage, exitCode, read: reader(files) });
+    expect(written.failureClass).toBe(failureClass);
+    if (failureClass === "network") expect(written.evidence).toHaveLength(1);
+    const summary = failureSummary({ stage, exitCode, read: reader(files) });
+    expect(summary).toMatchObject({ complete: false, failedStage: stage, exitCode, failureClass });
+    expect(readBackClasses(summary)).toEqual([failureClass, failureClass, failureClass, failureClass]);
+  };
+  const runExit = (step: string) => `#7 ERROR: process "/bin/sh -c ${step}" did not complete successfully: exit code: 1`;
+  const buildStep = (step: string, ...output: string[]) =>
+    [`#7 [build 3/8] RUN ${step}`, ...output.map((line, index) => `#7 9.${index} ${line}`), runExit(step)].join("\n");
+  const metadata = (status: string) => "#3 ERROR: failed to resolve source metadata for docker.io/library/node:20: unexpected " +
+    `status from HEAD request to https://registry-1.docker.io/v2/library/node/manifests/20: ${status}`;
+  const metadataHeader = "#3 [internal] load metadata for docker.io/library/node:20";
+
+  it.each([
+    ["consumer", 1, { "generation.log": "npm error code ETIMEDOUT\nnpm error network request failed" }, "network"],
+    ["consumer", 1, { "generation.log": "npm error code E503\nnpm error 503 Service Unavailable" }, "network"],
+    ["consumer", 1, { "generation.log": "not ok 3 - doctor rejects ECONNREFUSED port\nnpm error code 1" }, "functional"],
+    ["registry-start", 1, { "registry.log": "Error response from daemon: Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout" }, "network"],
+    ["registry-start", 125, { "registry.log": "docker: Error response from daemon: received unexpected HTTP status: 503 Service Unavailable." }, "network"],
+    ["registry-ready", 7, { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 32768" }, "network"],
+    ["registry-auth", 7, { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 32768" }, "network"],
+    ["publish", 1, { "registry.log": "npm error code ECONNRESET" }, "network"],
+    ["publish", 1, { "registry.log": "FetchError: request to http://127.0.0.1:4873/x failed, reason: connect ECONNREFUSED 127.0.0.1:4873" }, "network"],
+    ["publish", 1, { "registry.log": "Error: candidate integrity mismatch" }, "functional"],
+    ["image-build", 1, { "docker-build.log": "#14 2.0 error TS2307: Cannot find module" }, "functional"],
+    ["release-set", 1, { "release-set.log": "npm error code ETIMEDOUT" }, "functional"],
+    // A retryable HTTP status as curl --fail and the Docker registry client spell it.
+    ["registry-auth", 22, { "registry.log": "curl: (22) The requested URL returned error: 503" }, "network"],
+    ["registry-auth", 22, { "registry.log": "curl: (22) The requested URL returned error: 429 Too Many Requests" }, "network"],
+    ["registry-auth", 22, { "registry.log": "curl: (22) The requested URL returned error: 408" }, "network"],
+    ["registry-auth", 22, { "registry.log": "curl: (22) The requested URL returned error: 403" }, "functional"],
+    // npm reports a Git dependency's failure under its own error code.
+    ["consumer", 1, { "generation.log": "npm error code 128\nnpm error fatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 502" }, "functional"],
+    // Verdaccio's own log says nothing about why its ping failed.
+    ["registry-ready", 1, { "registry.log": "warn --- socket hang up" }, "functional"],
+    // Retry exhaustion names no cause: only a curl status the stage exited with does.
+    ["registry-ready", 1, { "registry.log": "registry ping did not succeed within 30 attempts" }, "functional"],
+    ["registry-ready", 1, {}, "functional"],
+    // Base image steps: the step's error line names the cause.
+    ["image-build", 1, { "docker-build.log": `${metadataHeader}\n${metadata("503 Service Unavailable")}` }, "network"],
+    ["image-build", 1, { "docker-build.log": `${metadataHeader}\n${metadata("401 Unauthorized")}` }, "functional"],
+    ["image-build", 1, { "docker-build.log": "#5 [build 1/8] FROM docker.io/library/node:20@sha256:83e5\n#5 ERROR: failed to do request: " +
+      "Head \"https://registry-1.docker.io/v2/library/node/manifests/20\": dial tcp: lookup registry-1.docker.io: no such host" }, "network"],
+  ])("classifies a %s failure with exit %i and %j as %s", (stage, exitCode, files, failureClass) => {
+    expectClass(stage, exitCode, files, failureClass);
+  });
+
+  // Cold review F1: a retried 503 and then BuildKit's final 401 was recorded as network.
+  it.each([
+    ["a recovered 503 before the final 401", [metadataHeader, metadata("503 Service Unavailable"), metadata("401 Unauthorized"),
+      "ERROR: failed to solve: docker.io/library/node:20: 401 Unauthorized"], "functional"],
+    ["a 401 before the final 503", [metadataHeader, metadata("401 Unauthorized"), metadata("503 Service Unavailable")], "network"],
+    ["another step's 503 beside the failed step's 401", [metadataHeader, "#7 [build 3/8] RUN npm ci --ignore-scripts",
+      "#7 1.0 npm error code E503", metadata("401 Unauthorized")], "functional"],
+    ["another step's reset beside the failed install's integrity error", ["#7 [build 3/8] RUN npm ci --ignore-scripts",
+      "#9 [deps 2/3] RUN npm ci --ignore-scripts", "#9 2.0 npm error code ECONNRESET", "#7 2.1 npm error code EINTEGRITY",
+      runExit("npm ci --ignore-scripts")], "functional"],
+    ["two failed steps", [metadataHeader, "#7 [build 3/8] RUN npm ci --ignore-scripts", "#7 1.0 npm error code ECONNRESET",
+      runExit("npm ci --ignore-scripts"), metadata("503 Service Unavailable")], "functional"],
+  ])("classifies an image build with %s by the failed step's own final cause", (_label, lines, failureClass) => {
+    expectClass("image-build", 1, { "docker-build.log": lines.join("\n") }, failureClass);
+  });
+
+  // Review D-9 and the f518c57 check: a final cause that is not a transport
+  // failure decides, whatever transport errors the run recovered from before it.
+  it.each([
+    ["consumer", 1, { "generation.log": "npm warn retry ECONNRESET\nnpm error code E403\nnpm error 403 Forbidden - GET http://127.0.0.1:4873/left-pad - network timeout at: 30000ms" }],
+    ["publish", 1, { "registry.log": "npm warn retry ECONNRESET\nnpm error code EINTEGRITY" }],
+    ["publish", 1, { "registry.log": "npm warn retry ECONNRESET\nnpm error code E409" }],
+    ["publish", 1, { "registry.log": "npm error code ECONNRESET\nTypeError: Cannot read properties of undefined (reading 'version')" }],
+    ["image-build", 1, { "docker-build.log": buildStep("npm ci --ignore-scripts", "npm warn retry ECONNRESET", "npm error code EINTEGRITY") }],
+    ["registry-auth", 22, { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 4873\ncurl: (22) The requested URL returned error: 403" }],
+    ["registry-start", 125, { "registry.log": "Error response from daemon: Get \"https://registry-1.docker.io/v2/\": net/http: TLS handshake timeout\n" +
+      "docker: Error response from daemon: driver failed programming external connectivity: Bind for 0.0.0.0:4873 failed: port is already allocated." }],
+    ["consumer", 125, { "generation.log": "npm error code ECONNRESET\ndocker: Error response from daemon: failed to create task for container: " +
+      "OCI runtime create failed: unable to start container process: exec: \"sh\": executable file not found in $PATH: unknown." }],
+    ["registry-ready", 22, { "registry.log": "registry ping did not succeed within 30 attempts\ncurl: (22) The requested URL returned error: 403" }],
+    // Retry exhaustion after the last attempt's own cause is no cause, whatever that attempt saw.
+    ["registry-ready", 22, { "registry.log": "curl: (22) The requested URL returned error: 403\nregistry ping did not succeed within 30 attempts" }],
+    ["registry-ready", 22, { "registry.log": "curl: (22) The requested URL returned error: 404\nregistry ping did not succeed within 30 attempts" }],
+    ["registry-ready", 60, { "registry.log": "curl: (60) SSL certificate problem: self-signed certificate\nregistry ping did not succeed within 30 attempts" }],
+    ["registry-ready", 1, { "registry.log": "fatal--- cannot parse the configuration\nregistry ping did not succeed within 30 attempts" }],
+    ["registry-ready", 1, { "registry.log": "curl: (7) Failed to connect to 127.0.0.1 port 4873\nregistry ping did not succeed within 30 attempts" }],
+    // A final error no grammar names leaves no cause, so earlier transport text cannot stand in for one.
+    ["publish", 1, { "registry.log": "npm warn retry ECONNRESET\nnpm error 403 Forbidden - PUT http://127.0.0.1:4873/x" }],
+    ["registry-start", 1, { "registry.log": "dial tcp: lookup registry-1.docker.io: no such host\nfailed to create builder" }],
+  ])("classifies a %s failure with exit %i whose final cause is not transport, %j, as functional", (stage, exitCode, files) => {
+    expectClass(stage, exitCode, files, "functional");
+  });
+
+  // ...and a nonretryable error before the transport failure that ended the run stays network.
+  it.each([
+    ["publish", 1, { "registry.log": "npm error code E403\nnpm warn retry ECONNRESET\nnpm error code ECONNRESET" }],
+    ["registry-auth", 7, { "registry.log": "curl: (22) The requested URL returned error: 403\ncurl: (7) Failed to connect to 127.0.0.1 port 4873" }],
+    ["publish", 1, { "registry.log": "npm warn retry ECONNRESET\nnpm error code ETIMEDOUT" }],
+  ])("classifies a %s failure with exit %i ending on a transport cause, %j, as network", (stage, exitCode, files) => {
+    expectClass(stage, exitCode, files, "network");
+  });
+
+  // Curl's own status is the stage's exit status: a curl line the stage did not stop on is no cause.
+  // The retry-exhaustion line is plain text after it and never changes that.
+  it.each([[7, "network"], [1, "functional"], [28, "functional"]])("counts curl: (7) only with exit status 7: exit %i is %s", (exitCode, failureClass) => {
+    const curl = "curl: (7) Failed to connect to 127.0.0.1 port 4873";
+    expectClass("registry-auth", exitCode, { "registry.log": curl }, failureClass);
+    expectClass("registry-ready", exitCode, { "registry.log": curl }, failureClass);
+    expectClass("registry-ready", exitCode, { "registry.log": `${curl}\nregistry ping did not succeed within 30 attempts` }, failureClass);
+  });
+
+  // Reviews C-4/D-3, cold F1 and F5: output of package code can print any npm line.
+  it.each([
+    "npm ci --ignore-scripts --omit=optional",
+    "npm ci --ignore-scripts",
+    "npm prune --omit=dev --ignore-scripts",
+    "npm prune --omit=dev --omit=optional --ignore-scripts",
+  ])("classifies a script-free install step RUN %s ending on a transport cause as network", step => {
+    expectClass("image-build", 1, { "docker-build.log": buildStep(step, "npm warn retry ECONNRESET", "npm error code ECONNRESET") }, "network");
+  });
+  it.each([
+    "--mount=type=cache,target=/root/.npm npm ci --ignore-scripts",
+    "cd /app && npm run build",
+    "set -eux; npm rebuild better-sqlite3",
+    "corepack enable && npm test",
+    "[\"node\", \"build.js\"]",
+    "npm rebuild better-sqlite3",
+    "npm run build",
+    "npm ci",
+    "npm ci --ignore-scripts && npm rebuild",
+  ])("classifies a step that can run package code, RUN %s, as functional even when it ends on a transport cause", step => {
+    expectClass("image-build", 1, { "docker-build.log": buildStep(step, "npm error code ECONNRESET") }, "functional");
+  });
+  it("classifies the legacy builder's log, which names no failed step, as functional", () => {
+    expectClass("image-build", 1, { "docker-build.log": "Step 3/14 : RUN npm ci --ignore-scripts\n ---> Running in 0a1b\nnpm error code ECONNRESET" }, "functional");
+  });
+  it.each<Record<string, string>>([
+    { "generation.log": "npm warn deprecated left-pad@1.0.0: fixes ECONNRESET and socket hang up" },
+    { "generation.log": "Error response from the seller test: ECONNRESET\nnot ok 1 - socket hang up" },
+    // Once the consumer stage has written its dependency policy, package code runs and its log is not evidence.
+    { "dependency-policy.json": "{}", "generation.log": "not ok 1 - seller test failed\nnpm error code ECONNRESET" },
+    { "dependency-policy.json": "{}", "generation.log": "npm error command sh -c prebuild-install\nnpm error code ECONNRESET" },
+  ])("classifies consumer output %j that names no transport cause of npm or Docker as functional", files => {
+    expectClass("consumer", 1, files, "functional");
+  });
+
+  // Inserting lines that are not the final cause never changes the class: a
+  // seeded generator places transport causes before the final cause, and
+  // transport text that names no cause anywhere.
+  describe("final cause property", () => {
+    // Stage, exit status, log name, log, the index of its final cause line, and transport causes of the stage's programs.
+    const bases: [string, number, string, string, number, string[]][] = [
+      ["consumer", 1, "generation.log", "npm error code E403\nnpm error 403 Forbidden - GET http://r/x", 0, ["npm error code ECONNRESET",
+        "docker: Error response from daemon: Get \"https://r/v2/\": net/http: TLS handshake timeout"]],
+      ["consumer", 1, "generation.log", "npm error code ECONNRESET", 0, []],
+      ["registry-auth", 22, "registry.log", "curl: (22) The requested URL returned error: 403", 0, ["curl: (7) Failed to connect to r port 1"]],
+      ["registry-auth", 22, "registry.log", "curl: (22) The requested URL returned error: 503", 0, []],
+      ["registry-ready", 7, "registry.log", "curl: (7) Failed to connect to r port 1", 0, []],
+      ["registry-ready", 22, "registry.log", "curl: (22) The requested URL returned error: 403", 0, ["curl: (7) Failed to connect to r port 1"]],
+      ["publish", 1, "registry.log", "Error: candidate integrity mismatch", 0, ["npm error code ECONNRESET", "Error: connect ECONNREFUSED 127.0.0.1:4873"]],
+      ["publish", 1, "registry.log", "npm error code ETIMEDOUT", 0, []],
+      ["image-build", 1, "docker-build.log", buildStep("npm ci --ignore-scripts", "npm error code EINTEGRITY"), 1, ["#7 9.0 npm error code ECONNRESET"]],
+      ["image-build", 1, "docker-build.log", buildStep("npm ci --ignore-scripts", "npm error code ECONNRESET"), 1, []],
+    ];
+    const noise = ["npm warn retry ECONNRESET", "npm http fetch GET 503 http://127.0.0.1:4873/left-pad 30ms (cache skip)",
+      "Warning: Problem : timeout. Will retry in 1 seconds. 3 retries left.", "dial tcp: lookup registry-1.docker.io: no such host",
+      "socket hang up", "#12 [deps 1/2] RUN npm ci --ignore-scripts", "#12 1.5 npm error code ECONNRESET", "  ETIMEDOUT at Socket",
+      "warn --- uplink npmjs: ECONNRESET", "ERROR: failed to solve: 503 Service Unavailable", "not ok 4 - ECONNREFUSED",
+      "registry ping did not succeed within 30 attempts"];
+    let seed = 228;
+    const next = (bound: number) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % bound; };
+    it.each(bases)("keeps the class of a %s failure with exit %i in %s whatever comes before its final cause", (stage, exitCode, name, log, cause, causes) => {
+      const expected = classifyAcceptanceFailure({ stage, exitCode, read: reader({ [name]: log }) }).failureClass;
+      const lines = log.split("\n");
+      let finalCause = cause;
+      for (let round = 0; round < 200; round++) {
+        const candidates = [...noise, ...causes];
+        const line = candidates[next(candidates.length)];
+        if (line === undefined) throw new Error("no candidate line");
+        // A transport cause goes before the final cause; other text anywhere.
+        const position = next((causes.includes(line) ? finalCause : lines.length) + 1);
+        lines.splice(position, 0, line);
+        if (position <= finalCause) finalCause++;
+        expect(classifyAcceptanceFailure({ stage, exitCode, read: reader({ [name]: lines.join("\n") }) }).failureClass,
+          lines.join("\n")).toBe(expected);
+      }
+    });
+  });
+
+  // Cold review O1: the largest admitted log classifies from its final cause alone.
+  it.each([
+    ["consumer", "generation.log", "npm error code ECONNRESET", "network"],
+    ["image-build", "docker-build.log", buildStep("npm ci --ignore-scripts", "npm error code EINTEGRITY"), "functional"],
+  ])("classifies a maximum-size hostile %s log from its final cause", (stage, name, tail, failureClass) => {
+    const line = "#7 1.0 npm warn retry dial tcp: lookup " + "a: ".repeat(1340) + "\n";
+    const log = line.repeat(Math.floor((16 * 1024 * 1024 - tail.length) / line.length)) + tail;
+    expect(Buffer.byteLength(log)).toBeLessThanOrEqual(16 * 1024 * 1024);
+    expect(classifyAcceptanceFailure({ stage, exitCode: 1, read: reader({ [name]: log }) }).failureClass).toBe(failureClass);
+  });
+
+  // Review D-11 and cold F4: only stages with their own classifier, by own key.
+  it.each(["constructor", "__proto__", "hasOwnProperty", "toString", "release-set", "image-policy", ""])(
+    "classifies stage %j, which has no classifier of its own, as functional", stage => {
+      expect(classifyAcceptanceFailure({ stage, exitCode: 1, read: reader({ "registry.log": "npm error code ECONNRESET" }) }))
+        .toEqual({ failureClass: "functional", evidence: [] });
+    });
+
+  // Captured from real npm 10.9.9 against a loopback server: `npm audit --json`
+  // stdout when the audit endpoint fails (npm's lib/utils/audit-error.js
+  // shape), and `npm install`'s error lines when the registry fails.
+  const npmOutput = (kind: string, name: string) => readFileSync(join(repoRoot, "test/scripts/fixtures", kind, name), "utf8");
+  // invalid-json-body.json is a 200 answer with an HTML page (a captive proxy's
+  // or CDN's error page); aborted-body.json is a connection dropped mid-body.
+  it.each(["503.json", "502.json", "500.json", "504.json", "429.json", "timeout.json", "econnreset.json",
+    "econnrefused.json", "socket-hang-up.json", "invalid-json-body.json", "aborted-body.json",
+  ])("classifies npm's audit endpoint error %s as network, never policy", (name) => {
+    const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
+    const summary = failureSummary({ stage: "audit-policy", exitCode: 1, read });
+    expect(summary).toMatchObject({ failureClass: "network", failureEvidence: [expect.any(String)] });
+    // The saved evidence keeps the status npm recorded, or none.
+    expect(JSON.parse(summary.failureEvidence[0])).toEqual({ message: expect.any(String),
+      statusCode: JSON.parse(npmOutput("npm-audit-endpoint-errors", name)).statusCode });
+    expect(registryContainerDisposition(summary)).toMatchObject({ exitCode: 1, failureClass: "network",
+      message: "registry/container acceptance stopped at stage audit-policy (network failure)" });
+    expect(readBackClasses(summary)).toEqual(["network", "network", "network", "network"]);
+    // The scheduled drift check reports the stopped stage, not a malformed baseline.
+    const drift = registryAuditDriftDisposition(summary);
+    expect(drift).toMatchObject({ exitCode: 1, evaluated: false, failureClass: "network" });
+    expect(drift.message).toBe("Advisory-ID drift was not evaluated: acceptance stopped at stage audit-policy " +
+      "(network failure; rerun the workflow)");
+  });
+
+  it.each(["403.json", "404.json"])("classifies npm's non-transient audit endpoint answer %s as functional, not policy", (name) => {
+    const read = reader({ "npm-audit.json": npmOutput("npm-audit-endpoint-errors", name) });
+    expect(classifyAcceptanceFailure({ stage: "audit-policy", exitCode: 1, read })).toMatchObject({ failureClass: "functional",
+      evidence: [expect.stringContaining(`${name.slice(0, 3)} `)] });
+  });
+
+  // The class written for an audit endpoint error is the one every reader of
+  // the saved summary derives from its evidence: its status, or with none, its
+  // message's transport signature.
+  it.each([
+    ["a retryable status with a message no signature knows", { statusCode: 503, message: "upstream unavailable" }, "network"],
+    ["a 502 reason phrase", { statusCode: 502, message: "Bad Gateway" }, "network"],
+    ["a 429 reason phrase", { statusCode: 429, message: "Too Many Requests" }, "network"],
+    ["a retryable status whose message is cut", { statusCode: 503,
+      message: "503 UpstreamUnavailable" + "x".repeat(350) + " - POST https://registry.npmjs.org/-/npm/v1/security/audits/quick" }, "network"],
+    ["a fetch error with a transport signature", { message: "request to https://r/ failed, reason: socket hang up" }, "network"],
+    ["a TLS connection dropped before the handshake", { message: "request to https://r/ failed, reason: Client network " +
+      "socket disconnected before secure TLS connection was established" }, "network"],
+    ["a fetch error with no transport signature", { message: "request aborted by an unknown cause" }, "functional"],
+    ["a certificate the client refused", { message: "request to https://r/ failed, reason: self-signed certificate in " +
+      "certificate chain" }, "functional"],
+    ["a transient fetch message beside a status npm does not retry", { message: "invalid json response body at http://r/ " +
+      "reason: x", statusCode: 200 }, "functional"],
+    ["a status answer npm does not retry", { message: "418 I'm a teapot - POST http://r/", statusCode: 418 }, "functional"],
+    ["a status that is not an integer", { message: "ETIMEDOUT", statusCode: "503" }, "functional"],
+  ])("classifies an npm audit-error object with %s as its summary's readers do", (_label, error: { message: string;
+    statusCode?: unknown }, failureClass) => {
+    const read = reader({ "npm-audit.json": JSON.stringify({ ...error, error: { summary: "", detail: "" } }) });
+    const { failureClass: written, evidence } = classifyAcceptanceFailure({ stage: "audit-policy", exitCode: 1, read });
+    expect(written).toBe(failureClass);
+    expect(JSON.parse(evidence[0])).toEqual({ statusCode: Number.isInteger(error.statusCode) ? error.statusCode
+      : "statusCode" in error ? null : undefined, message: error.message.slice(0, 300) });
+    expect(readBackClasses(failureSummary({ stage: "audit-policy", exitCode: 1, read }))).toEqual([failureClass, failureClass,
+      failureClass, failureClass]);
+  });
+
+  // The audit policy exits 0 on a verdict, a rejection included, so a stop at
+  // its stage is never a policy result, whatever document the audit left.
+  const rejectedReport = { auditReportVersion: 2,
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 1, critical: 0, total: 1 } },
+    vulnerabilities: { x: { name: "x", severity: "high", isDirect: true,
+      via: [{ title: "socket hang up denial of service", severity: "high" }] } } };
+  const edge = { name: "x", url: "https://github.com/advisories/GHSA-23hp-3jrh-7fpw", severity: "high", range: "*" };
+  const validRejection = { x: { severity: "high", isDirect: true, via: [edge] } };
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+    ["truncated", '{"auditReportVer'],
+    ["plain transport text", "socket hang up\n"],
+    ["a report whose advisory is incomplete", JSON.stringify(rejectedReport)],
+    ["only a report version", '{"auditReportVersion":2}'],
+    ["only metadata", '{"metadata":{}}'],
+    ["only an empty vulnerabilities list", '{"vulnerabilities":[]}'],
+    ["a report whose counts disagree with its graph", JSON.stringify({ ...auditReport(validRejection),
+      metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } } })],
+    ["report fields beside a transport message", '{"auditReportVersion":2,"message":"ETIMEDOUT"}'],
+    ["a valid empty report", JSON.stringify(auditReport({}))],
+    ["a valid report the policy rejects", JSON.stringify(auditReport(validRejection))],
+  ])("classifies a stop with %s audit output as functional", (_label, audit) => {
+    expectClass("audit-policy", 1, audit === undefined ? {} : { "npm-audit.json": audit }, "functional");
+  });
+  const dependencyReport = (passed: boolean) => JSON.stringify({ schema: "dacs-registry-dependency-policy/v1", passed,
+    violations: passed ? [] : ["candidate package did not resolve through the isolated registry: node_modules/x"] });
+  it.each([
+    ["no report", "functional", {}],
+    ["an unparsable report", "functional", { "dependency-policy.json": "{" }],
+    ["a report of another schema", "functional", { "dependency-policy.json": JSON.stringify({ schema: "x", passed: false, violations: ["v"] }) }],
+    ["a report whose verdict contradicts its violations", "functional", { "dependency-policy.json": JSON.stringify({
+      schema: "dacs-registry-dependency-policy/v1", passed: false, violations: [] }) }],
+    ["a passing report", "functional", { "dependency-policy.json": dependencyReport(true) }],
+    ["a rejecting report", "policy", { "dependency-policy.json": dependencyReport(false) }],
+  ])("classifies a dependency-policy stop with %s as %s", (_label, failureClass, files) => {
+    expectClass("dependency-policy", 1, files, failureClass);
+  });
+
+  const failureSummaryCli = (...args: string[]) => spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs",
+    "--failure-summary", ...args], { cwd: repoRoot, encoding: "utf8" });
+  it.each([
+    [{ statusCode: 503, message: "upstream unavailable" }, "network"],
+    [{ message: "request aborted by an unknown cause" }, "functional"],
+  ])("reports audit endpoint error %j as %s when written and when read back by the CLI", (error, failureClass) => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-audit-endpoint-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(error));
+    const run = (...args: string[]) => spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", ...args],
+      { cwd: repoRoot, encoding: "utf8" });
+    const annotation = `::error title=Registry/container acceptance ${failureClass} failure::`;
+    expect(failureSummaryCli(stage, "audit-policy", "1").stdout).toContain(annotation);
+    const summaryPath = join(stage, "acceptance-summary.json");
+    const read = run(summaryPath);
+    expect(read.status).toBe(1);
+    expect(read.stdout).toContain(annotation);
+    expect(read.stderr).toContain(`(${failureClass} failure)`);
+  });
+
+  it.each([
+    ["consumer", "1", "generation.log", "npm-install-network-errors/reset.txt"],
+    ["registry-start", "1", "registry.log", "acceptance-transport/docker-refused.txt"],
+  ])("records a %s network stop that --record and --audit-drift read back as network", (stageName, exitCode, name, source) => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-record-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, name), readFileSync(join(repoRoot, "test/scripts/fixtures", source)));
+    expect(failureSummaryCli(stage, stageName, exitCode).status).toBe(0);
+    const summaryPath = join(stage, "acceptance-summary.json");
+    const run = (...args: string[]) => spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", ...args],
+      { cwd: repoRoot, encoding: "utf8" });
+    expect(run("--record", summaryPath).stderr).toContain("(network failure)");
+    expect(JSON.parse(readFileSync(summaryPath, "utf8"))).toMatchObject({ failureClass: "network",
+      disposition: { failureClass: "network" } });
+    expect(run("--audit-drift", summaryPath).stdout).toContain("(network failure; rerun the workflow)");
+    expect(run("--record", summaryPath).stderr).toContain("(network failure)");
+  });
+
+  // Review D-11 and cold F4: an exit status that is not a failed shell status is refused before anything is removed.
+  it.each([["0"], ["256"], ["1.5"], ["abc"], [""], ["01"], ["-1"], []])("refuses exit status %j and keeps the earlier summary", (...exit) => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-exit-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "acceptance-summary.json"), "earlier");
+    const result = failureSummaryCli(stage, "consumer", ...exit);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("usage: --failure-summary <stage-directory> <stage> <exit-code 1-255>");
+    expect(readFileSync(join(stage, "acceptance-summary.json"), "utf8")).toBe("earlier");
+  });
+  it("replaces an earlier summary with a failed classification for undecodable evidence", () => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-undecodable-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "acceptance-summary.json"), JSON.stringify({ complete: true }));
+    writeFileSync(join(stage, "registry.log"), Buffer.from([0x63, 0x75, 0x72, 0x6c, 0xff]));
+    expect(failureSummaryCli(stage, "registry-auth", "7").status).toBe(0);
+    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: false,
+      failureClass: "functional", exitCode: 7, failureEvidence: ["evidence classification failed: evidence is not valid UTF-8"] });
+  });
+
+  // The audit stage is the --audit-policy command alone. Run it on `audit` and
+  // `lock`, then write the failure summary for the status it stopped with.
+  const auditStage = (audit: unknown, lock: unknown) => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-audit-stage-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "npm-audit.json"), JSON.stringify(audit, null, 2));
+    writeFileSync(join(stage, "generated-package-lock.json"), JSON.stringify(lock));
+    const policy = spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", "--audit-policy",
+      join(stage, "npm-audit.json"), join(stage, "generated-package-lock.json"), join(stage, "audit-policy.json")],
+      { cwd: repoRoot, encoding: "utf8" });
+    return { stage, policy };
+  };
+
+  // Daybreak r9 P3: a report whose advisory title carries a network phrase was
+  // classed network and invited a pointless rerun; it is not a policy result either.
+  it("classifies a stop on an incomplete report as functional, whatever text its advisories carry", () => {
+    const { stage, policy } = auditStage(rejectedReport, auditLock({}));
+    expect(policy.status).not.toBe(0);
+    expect(policy.stderr).toContain("incomplete npm audit advisory for x");
+    const result = failureSummaryCli(stage, "audit-policy", String(policy.status));
+    expect(result.stdout).toContain("::error title=Registry/container acceptance functional failure::stopped at stage audit-policy");
+    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      failedStage: "audit-policy", failureClass: "functional", failureEvidence: [] });
+  });
+
+  // The premise of the class: a valid report the policy rejects is recorded and the command succeeds.
+  it("records a valid rejecting report as not passed and exits 0", () => {
+    const { stage, policy } = auditStage(auditReport(validRejection), auditLock(validRejection));
+    expect(policy.status).toBe(0);
+    expect(JSON.parse(readFileSync(join(stage, "audit-policy.json"), "utf8"))).toMatchObject({ passed: false });
+  });
+
+  // A valid report the policy cannot evaluate (no workspaces or links in a lock it
+  // applies to) stops the command: a functional stop, whatever the report holds.
+  it("classifies a stop on a valid report with an unevaluable lock as functional", () => {
+    const { stage, policy } = auditStage(auditReport(validRejection), { ...auditLock(validRejection), packages: {
+      ...auditLock(validRejection).packages, "node_modules/x": { version: "1.0.0", link: true } } });
+    expect(policy.status).toBe(1);
+    expect(policy.stderr).toContain("advisory applicability unevaluated");
+    const result = failureSummaryCli(stage, "audit-policy", String(policy.status));
+    expect(result.stdout).toContain("::error title=Registry/container acceptance functional failure::stopped at stage audit-policy");
+    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({
+      failedStage: "audit-policy", failureClass: "functional" });
+  });
+
+  it.each(["timeout.txt", "503.txt", "429.txt", "reset.txt", "refused.txt"])(
+    "classifies npm install's registry error %s in the consumer stage as network", (name) => {
+      expectClass("consumer", 1, { "generation.log": npmOutput("npm-install-network-errors", name) }, "network");
+    });
+
 });
