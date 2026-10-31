@@ -17,10 +17,10 @@ test('equal-time approvals before a context hold cannot consume its slots', () =
   const first = parse([signRow, hold]), after = parse([hold, signRow]);
   assert.deepEqual(budget(first.rows), { writes: 3, totalOs: 12n }); assert.deepEqual(budget(after.rows), { writes: 2, totalOs: 8n });
 });
-for (const recordedAt of [99, 100, 101]) for (const order of ['before', 'after']) test(`projected attempt at ${recordedAt} ${order} a context hold cannot use synthetic equal-time order`, () => {
+for (const recordedAt of [99, 100, 101]) for (const order of ['before', 'after']) test(`projected attempt at ${recordedAt} ${order} a context hold converts by ledger order, not by its clock`, () => {
   const attempt = { format: EVIDENCE, decision: 'rejected', approvalMode: 'policy', policyReason: 'seller-record-missing', attemptId, approvalHash, requestBytes, recordedAt };
   const rows = parse(order === 'before' ? [attempt, hold] : [hold, attempt]).rows;
-  assert.deepEqual(budget(rows), recordedAt > hold.recordedAt ? { writes: 2, totalOs: 8n } : { writes: 3, totalOs: 12n });
+  assert.deepEqual(budget(rows), order === 'after' ? { writes: 2, totalOs: 8n } : { writes: 3, totalOs: 12n });
 });
 for (const totalOs of [4, [4], null, 9007199254740993]) for (const kind of ['context', 'sign', 'confirmation']) test(`${kind} amount refuses non-string ${JSON.stringify(totalOs)}`, () => {
   const rows = kind === 'context' ? [{ ...hold, totalOs }] : kind === 'sign' ? [{ ...signRow, totalOs }] : [signRow, { ...confirmation, totalOs }];
