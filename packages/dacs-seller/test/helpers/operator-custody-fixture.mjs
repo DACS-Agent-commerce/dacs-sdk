@@ -41,11 +41,12 @@ const state = globalThis[${JSON.stringify(key)}];
 const record = (...parts) => state.events.push(parts.join(' '));
 export async function open(path, ...rest) {
   record('open', path, rest[0]);
+  if (state.failOpen?.(path)) throw state.filesystemError;
   const handle = await real.open(path, ...rest);
   return new Proxy(handle, { get(target, property) {
     if (property === 'sync') return async () => {
       record('sync', path);
-      if (state.failSync?.(path)) throw new Error('TEST sync failed');
+      if (state.failSync?.(path)) throw state.filesystemError ?? new Error('TEST sync failed');
       return target.sync();
     };
     if (property === 'close') return async () => { record('close', path); return target.close(); };
@@ -58,6 +59,14 @@ export async function open(path, ...rest) {
     return typeof value === 'function' ? value.bind(target) : value;
   } });
 }
+export async function mkdir(path, ...rest) {
+  record('mkdir', path);
+  await state.beforeMkdir?.(path);
+  const created = await real.mkdir(path, ...rest);
+  state.mkdirCreated.push(created);
+  return created;
+}
+export async function readFile(path, ...rest) { record('readFile', path); return real.readFile(path, ...rest); }
 export async function link(temporary, path) { record('link', temporary, path); await state.beforePublish?.(path); return real.link(temporary, path); }
 export async function lstat(path, ...rest) {
   const info = await real.lstat(path, ...rest);
@@ -76,14 +85,17 @@ export async function writeFile(path, data, ...rest) {
 /**
  * Loads the real custody source with stubbed imports.
  * Returns the custody exports, the load's `state` (record of file operations in
- * `events`, hooks `failWrite(path)`, `failSync(path)`, `afterLstat(path, info)`, `beforeUnlink(path)`,
- * `beforePublish(path)`, validation/connection errors and key-generation counters)
+ * `events`, and the hooks `failWrite(path)`, `beforePublish(path)`, `beforeMkdir(path)`,
+ * `failOpen(path)`, `failSync(path)`, the injected `filesystemError`, the mkdir
+ * results in `mkdirCreated`, `afterLstat(path, info)`, `beforeUnlink(path)`,
+ * validation/connection errors and key-generation counters)
  * and `normalized(directory)`, which
  * returns the events with the directory and the temporary-file suffix masked.
  */
 export async function loadCustody() {
   const key = `TEST_CUSTODY_FIXTURE_${(loads += 1)}`;
-  const state = { events: [], generated: 0, disconnected: 0, failGenerationAt: null, failWrite: null, beforePublish: null, beforeUnlink: null, afterLstat: null, failSync: null };
+  const state = { events: [], generated: 0, disconnected: 0, failGenerationAt: null, failWrite: null, beforePublish: null,
+    beforeUnlink: null, afterLstat: null, beforeMkdir: null, mkdirCreated: [], failOpen: null, failSync: null, filesystemError: null };
   globalThis[key] = state;
   const fileSystem = dataUrl(filesystemStub(key));
   const swap = (source, replacements) => replacements.reduce((text, [from, to]) => text.split(from).join(to), source);

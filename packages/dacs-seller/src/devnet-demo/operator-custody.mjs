@@ -77,6 +77,16 @@ async function privateDirectory(path){
     if(ancestorOrSelf(real,path)&&!created.includes(real))created.push(real);
   }
   await syncCreatedDirectoryNames(path,created);
+  // Resync the private chain on reuse too: an interrupted caller may have
+  // created it before recording its marker. Newly created parents were already
+  // required to sync above. An established unreadable ancestor cannot be a
+  // mode-0700 directory created by this mkdir, so keep it as a boundary.
+  for(let parent=dirname(path);;parent=dirname(parent)){
+    const parentInfo=await lstat(parent);
+    if((parentInfo.mode&0o400)===0)break;
+    await syncDirectory(parent);
+    if((parentInfo.mode&0o077)!==0||dirname(parent)===parent)break;
+  }
   return path;
 }
 async function exactPrivateFile(path){const info=await lstat(path);if(!info.isFile()||info.isSymbolicLink()||(info.mode&0o077)!==0||(process.getuid&&info.uid!==process.getuid())||(await realpath(path))!==path)throw new Error('operator wallet files must be private real mode-0600 files owned by this process user');return info;}
