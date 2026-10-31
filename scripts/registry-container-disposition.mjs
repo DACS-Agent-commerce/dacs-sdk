@@ -299,6 +299,12 @@ function candidateAliasErrors(manifest, lock, inventory, candidates) {
   }
   const errors = new Set();
   for (const [location, owner] of owners) {
+    for (const field of specFields) {
+      // npm accepts legacy declaration forms that an object-only alias scan misses.
+      if (owner?.[field] !== undefined && !isPlainObject(owner[field])) {
+        errors.add(`${location || "the project"} has a non-object ${field} declaration`);
+      }
+    }
     for (const { specifier, name } of candidateAliases(owner, candidates)) {
       errors.add(`${location || "the project"} declares ${name} under another name: ${specifier}`);
     }
