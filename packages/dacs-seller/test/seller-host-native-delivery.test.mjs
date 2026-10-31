@@ -1630,6 +1630,48 @@ test('a delivery evidence capability that rejects without an Error leaves a held
   assert.equal(w.createsAt(address), 1);
 });
 
+// A claim that dies after the permit was consumed and before the seller kept
+// what it would send: the seller's own record holds no report, and the SDK
+// hands back the candidate it prepared and retained at consumption. The
+// producer may answer differently by then; the retained candidate is what is
+// delivered, bound to this job, Agreement and settlement, and checked against
+// the schema again.
+for (const schemaUrl of [true, false]) test(`a paid order is delivered with the candidate retained at permit consumption, whatever the producer answers after the restart (schema ${schemaUrl})`, async (t) => {
+  let body = 'TEST report body old';
+  const w = await world(t, { schemaUrl, deliverableProducer: (input) => report({ body: [body] })(input) });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.beforeDeliverySubmit = async () => { w.loseJobLock(p.jobId); };
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable', 'the claim died before it sent anything');
+  assert.deepEqual(w.effects.deliverySubmit, []);
+  w.faults.beforeDeliverySubmit = null;
+  // The process died before the seller kept what it was about to send.
+  await w.editRetainedSession(p.jobId, (session) => { delete session.deliverySentReport; delete session.deliverySubmitted; delete session.deliveryAdapter; });
+  body = 'TEST report body new';
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
+  assert.equal(w.createsAt(deliverable), 1);
+  assert.deepEqual(w.writtenAt(deliverable).body, ['TEST report body old'], 'the candidate retained at consumption is sent');
+  assert.equal(core.sha256Hex(core.canonicalize(w.writtenAt(deliverable))), answer.delivery.contentHash);
+});
+
+test('a delivery the SDK finished before the seller kept its delivery-ready checkpoint is read back from the bytes that were sent, whatever the producer answers after the restart', async (t) => {
+  let body = 'TEST report body old';
+  const w = await world(t, { deliverableProducer: (input) => report({ body: [body] })(input) });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  const first = await p.claim(tx);
+  assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
+  await w.editRetainedSession(p.jobId, (session) => { delete session.deliveryReady; session.stage = 'native-payment-evidenced'; });
+  body = 'TEST report body new';
+  await w.restart();
+  const again = await p.claim(tx);
+  assert.equal(again.delivery?.status, 'delivery-ready', shown(again));
+  assert.equal(again.delivery.contentHash, first.delivery.contentHash, 'the original bytes are verified');
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is submitted once');
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
 test('deterministic fixture job IDs stay distinct across independent worlds', async t=>{
   const first=await world(t),second=await world(t);
   assert.notEqual((await first.purchase()).jobId,(await second.purchase()).jobId);
