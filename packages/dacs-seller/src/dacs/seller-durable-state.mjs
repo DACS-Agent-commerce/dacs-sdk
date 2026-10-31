@@ -293,7 +293,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
     // fenced.
     function fence(jobId) {
       const held = owned.get(jobId), scope = running.getStore();
-      if (held === undefined || scope?.api !== api || scope.jobId !== jobId || scope.owner !== held.owner) fail('seller_state_fenced');
+      if (held === undefined || held.finished || scope?.api !== api || scope.jobId !== jobId || scope.owner !== held.owner) fail('seller_state_fenced');
       if (get('SELECT owner FROM seller_locks WHERE job=?', jobId)?.owner !== held.owner) fail('seller_state_fenced');
       return held;
     }
@@ -421,6 +421,11 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         try { return await running.run({ api, jobId, owner }, () => action(load(jobId)?.session ?? null)); }
         catch (error) { actionFailed = true; throw error; }
         finally {
+          // The action is over: nothing it started may write under this row,
+          // whether or not the delete lands now. A failed delete keeps the entry
+          // (close and the retry need it) but fenced.
+          const held = owned.get(jobId);
+          if (held?.owner === owner) held.finished = true;
           try { release(jobId, owner); }
           catch (error) { pendingReleases.set(jobId, owner); if (!actionFailed) throw error; }
         }
