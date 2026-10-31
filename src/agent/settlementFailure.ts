@@ -4,16 +4,15 @@ import { demosAddressFromClaim, normalizeDemosNativeAddress } from "../rails/dem
 /**
  * A rail's projection of a terminal failed Demos record. The rail must build it
  * from the node's `getTxByHash` record only after matching the signed
- * hash/nonce, inclusion block and native body; nothing in this package builds
- * one yet. It describes failure of this attempt; it never authorizes a
- * replacement debit.
+ * hash/nonce, inclusion block and native body. It describes failure of this
+ * attempt; it never authorizes a replacement debit.
  *
  * Fields are projections of the node's `getTxByHash` record, in canonical form:
  * `txHash`, `payer` and `payee` are 64 lower-case hex without `0x` (the node
  * serves `0x`-prefixed keys); `nonce` is the record's decimal nonce string
- * converted to a safe integer; `amountOs` is the decimal OS amount. Internal:
- * it is not exported from the package roots, no `SettleResult` carries it and
- * no module in `src` imports it.
+ * converted to a safe integer; `amountOs` is the decimal OS amount. The public
+ * result carries this projection; the SDK rail authenticates fresh results
+ * with a separate private record verdict.
  */
 export interface DemosFailedRecordProof {
   kind: "demos-failed-record";

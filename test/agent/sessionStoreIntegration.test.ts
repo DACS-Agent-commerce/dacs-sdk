@@ -141,6 +141,63 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
   return { deps, listingRef, kv, settleCalls };
 }
 
+test.each(["fresh", "recovered"].flatMap((mode) =>
+  [false, true].map((anchorCommitted) => ({ mode, anchorCommitted })),
+))("preserves a $mode factory-shaped permanent failure across an anchor crash committed=$anchorCommitted", async ({ mode, anchorCommitted }) => {
+  const store = createInMemorySessionStore();
+  const kv = new Map<string, Record<string, unknown>>();
+  kv.set("stor:listing", await buildSignedArtifact({ ...listing,
+    supportedPaymentRails: ["pay-dem"] }, ARTIFACT_SEPARATORS.Listing, sign) as Record<string, unknown>);
+  const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+  const payer = "ab".repeat(32);
+  const payee = sellerDid.slice("did:demos:agent:".length);
+  const txHash = "cd".repeat(32);
+  const failure: SettleResult = {
+    ok: false, txHash, chainId: "demos", payer, payee: sellerDid,
+    blockNumber: 42, txRefKind: "demos", errorClass: "permanent",
+    failureProof: { kind: "demos-failed-record", txHash, payer, payee,
+      nonce: 9, blockNumber: 42, amountOs: "1000000000" },
+  };
+  let submissions = 0;
+  const first = await makeDeps(store, { kv,
+    settle: async () => {
+      submissions += 1;
+      if (mode === "recovered") throw new Error("response lost");
+      return failure;
+    },
+    resumeSettlement: async () => failure,
+    anchor: async (name, value) => {
+      const ref = `stor:${name}`;
+      if (name === sessionAnchorName.evidence("job-1")) {
+        if (anchorCommitted) kv.set(ref, value as Record<string, unknown>);
+        throw new Error("evidence storage unavailable");
+      }
+      kv.set(ref, value as Record<string, unknown>);
+      return ref;
+    },
+  });
+  await expect(runSessionCore(first.listingRef, demTerms, first.deps))
+    .rejects.toThrow(mode === "fresh" ? /evidence storage unavailable/ : /response lost/);
+  if (mode === "recovered") {
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps, "job-1"))
+      .rejects.toThrow(/evidence storage unavailable/);
+  }
+  const loaded = await store.load("job-1");
+  if (loaded.status !== "ok") throw new Error("missing session");
+  const checkpoint = loaded.record.checkpoints.find((cp) => cp.key === "settle:0" && cp.stage === "outcome");
+  expect(checkpoint?.data).toMatchObject({ ok: false, errorClass: "permanent",
+    failureProofJson: JSON.stringify(failure.failureProof, Object.keys(failure.failureProof ?? {}).sort()) });
+  const resumed = await makeDeps(store, { kv,
+    settle: async () => { throw new Error("must not resubmit"); },
+    resumeSettlement: async () => { throw new Error("must not reconcile a terminal failure"); },
+  });
+  await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+    .resolves.toMatchObject({ outcome: "failed" });
+  await expect(runSessionCore(resumed.listingRef, demTerms, resumed.deps, "job-1"))
+    .resolves.toMatchObject({ outcome: "failed" });
+  expect(submissions).toBe(1);
+});
+
 describe("runSessionCore records to the durable SessionStore (#55 integration)", () => {
   test("a completed session is recorded with receipts, status, and an anti-replay binding", async () => {
     const store = createInMemorySessionStore();
