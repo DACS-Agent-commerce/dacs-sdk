@@ -335,17 +335,20 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
 }
 
 const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePath,{format:CONTEXT_FORMAT,...line});
-// A crash in appendContextLine can leave its line torn: the ledger's last
-// line, unterminated, not complete JSON, and starting as a context line does.
-// That append never returned, so it reserved or released nothing; under the
-// policy lock it is cut (by bytes) and synced, and the retry appends it whole.
-// Any other unterminated or malformed line is left for the parser to refuse.
+// A failed append undoes itself (appendApprovalLedgerLine), but a crash or a
+// failed undo can still leave its line torn: the ledger's last line,
+// unterminated, not complete JSON, and as far as it goes the start of a context
+// line, however short. That append never returned, so it reserved or released
+// nothing; under the policy lock it is cut (by bytes) and synced, and the retry
+// appends it whole. Any other unterminated or malformed line is left for the
+// parser to refuse.
 const TORN_CONTEXT_PREFIX=Buffer.from(`{"format":${JSON.stringify(CONTEXT_FORMAT)},`);
 async function cutTornContextLine(evidencePath){
   let bytes;
   try{bytes=await readFile(evidencePath);}catch(error){if(error.code==='ENOENT')return;throw error;}
   const start=bytes.lastIndexOf(0x0a)+1,tail=bytes.subarray(start);
-  if(!tail.subarray(0,TORN_CONTEXT_PREFIX.length).equals(TORN_CONTEXT_PREFIX))return;
+  const shared=Math.min(tail.length,TORN_CONTEXT_PREFIX.length);
+  if(!shared||!tail.subarray(0,shared).equals(TORN_CONTEXT_PREFIX.subarray(0,shared)))return;
   try{JSON.parse(tail.toString('utf8'));return;}catch{/* torn: cut below */}
   truncateSync(evidencePath,start);
   syncContextLedger(evidencePath);
