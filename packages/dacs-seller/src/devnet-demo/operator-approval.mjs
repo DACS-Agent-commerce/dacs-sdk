@@ -704,7 +704,7 @@ async function cutTornContextLine(evidencePath){
   syncContextLedger(evidencePath);
 }
 
-// Ends a job's open context holds (only holdId when given) with one synced
+// Ends a job's open context holds (only holdId, or the holds of the effect holdId names, when given) with one synced
 // release line each, under the policy lock, and resolves the released hold
 // ids. A ledger it cannot read, or a clock before a hold it would end, is
 // refused before anything is written. With nothing open it syncs the job's
@@ -714,7 +714,7 @@ export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Dat
     const at=now(),released=[];
     await cutTornContextLine(evidencePath);
     const rows=(await readPolicyLedger(evidencePath)).rows;
-    const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId||row.contextHold.startsWith(holdId+':')));
+    const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId||row.effect===holdId));
     if(!Number.isSafeInteger(at)||at<0||openHolds.some(row=>at<row.recordedAt))throw new RangeError('context release cannot predate its hold');
     if(!openHolds.length&&rows.some(row=>row.contextHold&&row.jobId===jobId))syncContextLedger(evidencePath);
     for(const open of openHolds){
