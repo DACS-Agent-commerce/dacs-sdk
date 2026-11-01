@@ -31,6 +31,7 @@ export class SellerAgentError extends Error {
 // What the native profile reads and writes instead of a fixture substrate.
 const fixtureDisabled = async () => { throw new SellerAgentError('fixture_substrate_disabled', 'the native seller profile has no fixture substrate', 503); };
 const NATIVE_PROFILE_FIXTURE = Object.freeze({ read: fixtureDisabled, write: fixtureDisabled });
+const DELIVERY_SCHEMA_DEADLINE_MS = 10_000;
 // The seller agent's profile gates, each thrown only before any read, write,
 // signature or send of its operation. They are definite refusals that keep no
 // effect in the journal, so a request refused while the operator's
@@ -228,6 +229,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       (deliverySchemaVerifier?.schemaUrl !== schemaUrl || typeof verifySchema !== 'function')) {
     throw new TypeError('unsupported delivery schema: supply deliverySchemaVerifier { schemaUrl, verify } for the Listing before accepting agreements');
   }
+  // The verifier is the application's: its answer is awaited only until a deadline, before the permit is spent.
+  // A late, thrown or missing answer is indeterminate (held, permit unspent), and the abandoned call is aborted.
+  const schemaDeadlineMs = deliverySchemaVerifier?.timeoutMs ?? DELIVERY_SCHEMA_DEADLINE_MS;
+  if (!Number.isSafeInteger(schemaDeadlineMs) || schemaDeadlineMs < 1 || schemaDeadlineMs > DELIVERY_SCHEMA_DEADLINE_MS) throw new TypeError(`deliverySchemaVerifier.timeoutMs must be an integer from 1 to ${DELIVERY_SCHEMA_DEADLINE_MS}`);
+  const boundedSchemaVerdict = async (input) => {
+    const controller = new AbortController(); let timer;
+    const late = new Promise((resolve) => { timer = setTimeout(() => { controller.abort(); resolve({ disposition: 'indeterminate', reason: `schema verifier gave no answer within ${schemaDeadlineMs} ms` }); }, schemaDeadlineMs); });
+    try { return await Promise.race([Promise.resolve().then(() => verifySchema(input, { signal: controller.signal })), late]); }
+    catch (error) { return { disposition: 'indeterminate', reason: `schema verifier failed: ${String(error?.message ?? error).slice(0, 160)}` }; }
+    finally { clearTimeout(timer); }
+  };
   const pin = listingPin(listing);
   const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin, maxJobs }) : null;
   let closed=false;
@@ -1386,7 +1398,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           return { disposition: 'invalid', reason: 'report schema/bindings differ' };
         }
         if (verifiedSchemaPayload === canonicalize(cleartextPayload)) return { disposition: 'valid' };
-        const verdict = verifySchema ? await verifySchema({ schemaUrl, cleartextPayload: structuredClone(cleartextPayload) }) : { disposition: 'invalid' };
+        const verdict = verifySchema ? await boundedSchemaVerdict({ schemaUrl, cleartextPayload: structuredClone(cleartextPayload) }) : { disposition: 'invalid' };
         if (verdict?.disposition === 'valid' && canonicalize(Object.keys(verdict).sort()) !== canonicalize(['disposition'])) return { disposition: 'indeterminate', reason: 'schema verifier returned a malformed disposition' };
         if (verdict?.disposition === 'valid') verifiedSchemaPayload = canonicalize(cleartextPayload);
         // Preserve unavailable/malformed verifier answers for the core's

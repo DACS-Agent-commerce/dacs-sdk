@@ -1288,6 +1288,38 @@ test('an unavailable schema verifier preserves the permit and recovers on retry,
   }
 });
 
+// The application's schema verifier is awaited only until its deadline. A
+// verifier that never answers, answers late, throws, or answers malformed or
+// invalid holds the paid order before the permit is spent; the request (and
+// so host.close) is not kept waiting, a late answer changes nothing, and the
+// fixed verifier delivers the same order once.
+for (const kind of ['never-settles', 'late', 'throws', 'malformed', 'invalid']) test(`a schema verifier that ${kind} holds the paid order with its permit unspent, and the fixed verifier delivers it once`, async (t) => {
+  const schemaUrl = `urn:TEST:verifier-${kind}`;
+  let fixed = false, aborted = 0;
+  const broken = { 'never-settles': (_input, { signal }) => { signal.addEventListener('abort', () => aborted++); return new Promise(() => {}); },
+    late: () => new Promise((resolve) => setTimeout(() => resolve({ disposition: 'valid' }), 400)),
+    throws: () => { throw new Error('TEST verifier crashed'); },
+    malformed: () => ({ disposition: 'valid', extra: true }),
+    invalid: () => ({ disposition: 'invalid', reason: 'TEST not conforming' }) }[kind];
+  const w = await world(t, { deliverableExtension: { schemaUrl }, deliverySchemaVerifier: { schemaUrl, timeoutMs: 200,
+    verify: (input, options) => fixed ? { disposition: 'valid' } : broken(input, options) } });
+  const p = await w.purchase(), tx = p.pay(), started = Date.now();
+  const held = await p.claim(tx);
+  assert.equal(held.delivery?.status, 'held', shown(held));
+  assert.ok(Date.now() - started < 10_000, 'the claim is answered at the verifier deadline');
+  if (kind === 'never-settles') assert.equal(aborted, 1, 'the abandoned verifier call is aborted');
+  if (kind === 'late') await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(w.effects.deliverySubmit.length, 0);
+  // retainedSession closes the host (it does not wait for the abandoned verifier); the restart opens it again.
+  assert.equal((await w.retainedSession(p.jobId)).deliveryHold?.result?.code, 'delivery-preparation-indeterminate');
+  await w.restart();
+  fixed = true;
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+  assert.equal(w.effects.deliverySubmit.length, 1);
+  assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 1);
+});
+
 test('an unspecified-size Listing with oversized actual output is refused before any Agreement', async (t) => {
   const producer = (input) => {
     const payload = report({ body: [''] })(input);
