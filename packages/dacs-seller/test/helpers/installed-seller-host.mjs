@@ -36,7 +36,7 @@ if (second === null) {
   out.exports = Object.keys(seller).sort();
   out.subpath = {
     artifactAnchor: typeof (await import('@kynesyslabs/dacs-seller/src/devnet-demo/artifact-anchor.mjs')).createDevnetDemoArtifactAnchor,
-    contextRoute: typeof (await import('@kynesyslabs/dacs-seller/src/dacs/seller-context-route.mjs')).createSellerContextRoute,
+    contextRoute: typeof seller.createSellerContextRoute,
   };
 }
 
@@ -142,7 +142,7 @@ const capabilities = () => ({
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence,
   demDeliveryContext: createDemDeliveryContext({ authority: 'TEST-installed-package', resolveBuyer: refuse('demDeliveryContext.resolveBuyer'),
     resolveSeller: async ({ jobId }) => { vetContextCalls.push(jobId); const input = fabricatedJobs.has(jobId) ? fabricatedInput(jobId) : await vettedInput(jobId); return { disposition: 'present', value: { input, vetRequirements: invocationsFor(input) } }; } }),
-  nativeDemDelivery: createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', submit: refuse('nativeDemDelivery.submit'), reconcile: refuse('nativeDemDelivery.reconcile'),
+  nativeDemDelivery: createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', submitAuthorized: refuse('nativeDemDelivery.submit'), reconcile: refuse('nativeDemDelivery.reconcile'),
     read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt') }),
   buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: id => ownBundles.has(id) ? buyerKey.address : null }),
   agreementAnchor: { source: 'installed-package/agreement-readback', readAgreement: refuse('agreementAnchor.readAgreement') },
