@@ -57,3 +57,19 @@ test('a process killed while the wallet was asked: proven absence only while no 
  w.source.binding=async()=>({disposition:'pending'});
  assert.equal(isProvenUnsignedAbsence(await readNativeDemDelivery(capability(w.open()),input).catch(()=>null)),false);
 });
+
+for (const restart of [false, true]) for (const lostFence of [false, true]) test(`native delivery rechecks authorization after nonce RPC, restart=${restart}, lostFence=${lostFence}`, async () => {
+ const {w,anchor,input,capability}=await composed();
+ let prepared=false,checks=0;
+ w.source.readRpc=async()=>{prepared=true;return {result:200,response:0,require_reply:false,extra:null};};
+ const failure=new Error('TEST job fence lost during preparation');
+ const authorize=()=>{checks++;assert.equal(prepared,true,'guard runs after asynchronous nonce preparation');if(lostFence)throw failure;return false;};
+ await assert.rejects(submitNativeDemDelivery(capability(),input,authorize),lostFence?error=>error===failure:error=>error.code==='not-authorized');
+ assert.equal(checks,1);
+ assert.equal(w.captured.length,0,'no wallet signature requested');
+ const opened=restart?w.open():anchor;
+ assert.equal(isProvenUnsignedAbsence(await readNativeDemDelivery(capability(opened),input)),true);
+ const retry=await submitNativeDemDelivery(capability(opened),input,()=>true);
+ assert.equal(retry.status,'indeterminate');
+ assert.equal(w.captured.length,1,'unsigned refusal remains askable after reopen');
+});
