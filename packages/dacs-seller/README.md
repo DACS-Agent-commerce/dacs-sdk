@@ -146,7 +146,12 @@ artifactKind })` must authenticate the exact retained artifact, receipt, native
 transaction reference and signed projection when returning `status: 'present'`;
 `verifyReceipt` independently checks those bindings. Retain one logical record
 per address; an uncertain send is reconciled from its original transaction.
-The agent durably records `commitmentPublishAsked` before calling `publish`.
+`readRetained` takes an optional second argument `{ resend }` (default `true`).
+The seller passes `{ resend: false }` when the read gives it no authority to
+write (delivery evidence publication off, a readback-only commitment, transport
+reconciliation, a buyer-facing or verification-only read); the capability must
+then only read back, and never send the retained transaction again. A `resend`
+that is not a boolean is refused. The agent durably records `commitmentPublishAsked` before calling `publish`.
 After that, a plain `absent` or `indeterminate` read holds the commitment. Only
 the actual object returned by `provenUnsignedAbsence(reason)` (from
 `src/dacs/native-dem-delivery-consumer.mjs`) authorizes another call to publish:

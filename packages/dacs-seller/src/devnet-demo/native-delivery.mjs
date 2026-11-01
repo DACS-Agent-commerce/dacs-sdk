@@ -1,5 +1,5 @@
 import { canonicalize, contentHash, isCanonicalJobId } from '@kynesyslabs/dacs';
-import { createNativeDemDeliveryCapability } from '../dacs/native-dem-delivery-consumer.mjs';
+import { createNativeDemDeliveryCapability, PASSIVE_RETAINED_READ } from '../dacs/native-dem-delivery-consumer.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 
 const purchasedReaders=new WeakMap(),evidenceReaders=new WeakMap();
@@ -75,7 +75,7 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
         input.receiptContentHash!==input.deliveryBinding?.payloadHash || !DIGEST.test(input.agreementHash) || input.deliveryBinding?.agreementHash!==input.agreementHash ||
         canonicalize(input.deliveryBinding?.listing)!==canonicalize(input.listing) || !nonEmptyString(input.fulfilmentId) || input.deliveryBinding?.fulfilmentId!==input.fulfilmentId ||
         input.seller!==anchor.writer) return {status:'rejected',reason:'native purchased-report reader scope differs'};
-    const value=await anchor.readRetained({logicalAddress:input.logicalAddress,artifactKind:'Deliverable'});
+    const value=await anchor.readRetained({logicalAddress:input.logicalAddress,artifactKind:'Deliverable'},PASSIVE_RETAINED_READ);
     if(value.status!=='present')return value;
     const retainedBinding=value.deliveryBinding??value.artifact?.deliveryBinding??value.signedProjection?.content?.data?.[1]?.metadata?.deliveryBinding;
     if(!retainedBinding || canonicalize(retainedBinding)!==canonicalize(input.deliveryBinding)) return {status:'rejected',reason:'native purchased-report fulfilment binding differs'};
@@ -86,7 +86,7 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
   });
   if(deliveryEvidenceEnabled)evidenceReaders.set(capability,({jobId,seller})=>{
     requireJobId(jobId);
-    return seller===anchor.writer?anchor.readRetained({logicalAddress:`dacs4:evidence:${jobId}`,artifactKind:'SettlementEvidence'}):{status:'rejected',reason:'delivery evidence writer differs'};
+    return seller===anchor.writer?anchor.readRetained({logicalAddress:`dacs4:evidence:${jobId}`,artifactKind:'SettlementEvidence'},PASSIVE_RETAINED_READ):{status:'rejected',reason:'delivery evidence writer differs'};
   });
   return capability;
 }

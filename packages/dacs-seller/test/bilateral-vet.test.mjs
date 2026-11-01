@@ -257,3 +257,19 @@ test('cached producer revalidation refuses publication after another provider de
  assert.ok((await held) instanceof Error);assert.equal(w.local.writes.length,2);assert.equal(w.controls.signs,2);
  await w.provider().sweep(()=>true);
 });
+
+// Reads that only verify what is retained hold no authority to send its CREATE again.
+const recordRetainedReads=w=>{const reads=[],read=w.anchor.readRetained;w.anchor.readRetained=async(input,options)=>{reads.push({logicalAddress:input.logicalAddress,options});return read(input,options);};return reads;};
+for(const method of ['recoverBuyer','resumableBuyer','resolveSeller'])test(`${method} reads the retained Vet records back passively: no resend`,async t=>{
+ const w=fixture(),p=w.provider(),input=w.input();t.after(()=>w.store.close());await p.resolveBuyer(input);
+ const reads=recordRetainedReads(w);
+ await p[method](method==='resolveSeller'?request(w,input):input);
+ assert.ok(reads.length>0,'the retained records are read back');
+ assert.deepEqual(reads.filter(read=>read.options?.resend!==false),[]);
+});
+test('a repeated request for a finished job rechecks the buyer Vet receipt passively: no resend',async t=>{
+ const w=fixture(),p=w.provider(),input=w.input();t.after(()=>w.store.close());await p.resolveBuyer(input);
+ const reads=recordRetainedReads(w);
+ await p.resolveBuyer(input);
+ assert.deepEqual(reads[0]?.options,{resend:false},'the buyer Vet recheck is the first read');
+});

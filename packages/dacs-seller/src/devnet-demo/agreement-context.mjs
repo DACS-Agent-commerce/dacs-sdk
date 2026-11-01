@@ -1,4 +1,4 @@
-import { isProvenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mjs';
+import { isProvenUnsignedAbsence, PASSIVE_RETAINED_READ } from '../dacs/native-dem-delivery-consumer.mjs';
 import { listingPin, protocolSupport } from '../dacs/purchase-protocol.mjs';
 import { attachIdentityPresentation, DEM_RAIL, purchaseSupport, verifyComponent } from '../dacs/listing.mjs';
 import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore, identityBundleHash, partyVetCore, verifyCompositeVerificationRecord, vetPhaseFailureClass } from '@kynesyslabs/dacs';
@@ -411,7 +411,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   }
   // A buyer Vet kept in memory for a retry is read back from the anchor again before it is reused.
   async function buyerVetAnchored({recordRef}) {
-    const logicalAddress=recordRef.anchor.locator,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
+    const logicalAddress=recordRef.anchor.locator,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ);
     return read.status==='present'&&contentHash(read.artifact)===recordRef.contentHash&&await validReceipt(read,logicalAddress,read.artifact,wallet.claim);
   }
   // Another provider instance may consume the one-use challenge first. After a
@@ -758,7 +758,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const records=[],requirements=[];
     for(const [role,bundle,authority,requirement] of [['buyer',buyerIdentityBundle,wallet.claim,listing.buyerRequirement],['seller',expected.sellerBundle,buyerIdentityBundle.presentedBy,SELLER_REQUIREMENT]]){
       const logicalAddress=compositeVerificationAddress(row.jobId,bundle.presentedBy);
-      const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
+      const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ);
       if(read?.status!=='present'||!same(read.artifact,expected[role]))return null;
       const strict=await strictRecord(read.artifact,{jobId:row.jobId,bundle,requirement,authority});
       if(strict.status!=='valid'||!sameCanonicalClaimIdentity(read.artifact.signature?.signer,authority)
@@ -850,7 +850,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     for(const party of [buyerIdentityBundle.presentedBy,wallet.claim]){
       const logicalAddress=compositeVerificationAddress(scope.jobId,party);
       if(!(await anchor.hasIntent(logicalAddress))){writes++;continue;}
-      const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
+      const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ);
       if(isProvenUnsignedAbsence(read)){writes++;cut=true;continue;}
       if(read?.status!=='present')return null;
       const seller=party===wallet.claim,bundle=seller?row.presentation?.bundle:buyerIdentityBundle;

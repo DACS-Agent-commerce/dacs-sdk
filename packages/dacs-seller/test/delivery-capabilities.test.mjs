@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { canonicalize, contentHash, sha256Hex, logicalToStorageProgramName, createFixedPriceAgreementSigningPlan, createFixedPriceAgreementSignatureContribution, signComponentArtifact, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { createDevnetPurchasedReportProducer, isDevnetPurchasedReport } from '../src/devnet-demo/deliverable.mjs';
-import { createDevnetDemoDeliveryCapability, readDevnetPurchasedReport } from '../src/devnet-demo/native-delivery.mjs';
+import { createDevnetDemoDeliveryCapability, readDevnetDeliveryEvidence, readDevnetPurchasedReport } from '../src/devnet-demo/native-delivery.mjs';
 import { submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { verifyAgreementCreateAuthorization, verifySignatureAgreement, signatureCommitmentAnchor } from '../src/dacs/commit-on-signature.mjs';
 import { contributionVerifier } from '../src/dacs/purchase-protocol.mjs';
@@ -198,6 +198,20 @@ test('native delivery maps successful publish, reconcile and retained readback a
   assert.equal((await readDevnetPurchasedReport(capability, scope)).status, 'rejected');
   retained = { status: 'absent' };
   assert.equal((await readDevnetPurchasedReport(capability, scope)).status, 'absent');
+});
+
+test('the purchased-report and delivery-evidence readers read the anchor passively: no resend', async () => {
+  const f = await reportFixture(), receiptHash = contentHash(f.report);
+  const deliveryBinding = { jobId: JOB, payloadHash: receiptHash, agreementHash: f.report.agreementHash, listing: f.report.listing, fulfilmentId: 'TEST-fulfilment' };
+  const scope = { jobId: JOB, seller: seller.claim, logicalAddress: `dacs4:deliverable:${JOB}`, receiptContentHash: receiptHash,
+    settlementId: f.report.settlementId, listing: f.report.listing, fulfilmentId: 'TEST-fulfilment', agreementHash: f.report.agreementHash, deliveryBinding };
+  const reads = [];
+  const anchor = { authority: 'TEST-native', writer: seller.claim, publish: async () => ({ status: 'indeterminate' }), read: async () => ({ status: 'absent' }),
+    readRetained: async (input, options) => { reads.push({ artifactKind: input.artifactKind, options }); return { status: 'absent' }; }, verifyReceipt: async () => 'valid' };
+  const capability = createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor, deliveryEvidenceEnabled: true });
+  await readDevnetPurchasedReport(capability, scope);
+  await readDevnetDeliveryEvidence(capability, { jobId: JOB, seller: seller.claim });
+  assert.deepEqual(reads, [{ artifactKind: 'Deliverable', options: { resend: false } }, { artifactKind: 'SettlementEvidence', options: { resend: false } }]);
 });
 
 test('purchased-report reader answers an incomplete scope without throwing or reading the anchor', async () => {
