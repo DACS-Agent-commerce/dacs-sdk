@@ -47,6 +47,13 @@ test('report refuses a mismatched or malformed Listing', async () => {
     assert.throws(() => buildReport({ ...input, listing }), { code: 'listing_invalid' });
   }
 });
+test('report refuses an Agreement whose Listing pin names another ID or version', async () => {
+  const input = await protocolFixture();
+  for (const change of [{ listingId: 'other-offering' }, { version: 999 }, { listingId: undefined }, { version: String(input.agreement.listingRef.version) }]) {
+    const agreement = { ...input.agreement, listingRef: { ...input.agreement.listingRef, ...change } };
+    assert.throws(() => buildReport({ ...input, agreement }), { code: 'listing_invalid' });
+  }
+});
 test('contract re-exports preserve module identity', () => {
   assert.equal(canonicalSignature, anchorSignature);
   assert.equal(proposalTimeProblem, timeProblem);
