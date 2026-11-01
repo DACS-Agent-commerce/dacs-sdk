@@ -3,7 +3,6 @@ import { admitSessionChallenge } from './session-challenge-limits.mjs';
 // seller-authenticated application context beside the pinned SDK stores. It
 // never obtains a buyer key or reconstructs facts from a cached HTTP answer.
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { execFileSync } from 'node:child_process';
 import { createPublicKey, randomUUID, verify } from 'node:crypto';
 import { closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -11,6 +10,7 @@ import DatabaseSync from 'better-sqlite3';
 import { isMainThread } from 'node:worker_threads';
 import { admitRawJson, canonicalize, contentHash, createFsFencedSessionStore, createFsSellerReceiptStore, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { anchorWriteMessage, canonicalSignature, verifyFixtureRecord } from './fixture-anchors.mjs';
+import { leaseFile, leaseHolderState, PROCESS_LEASE_ID as PROCESS, PROCESS_NAMESPACE as NAMESPACE, ProcessLeaseError, takeLease as takeProcessLease } from './process-lease.mjs';
 
 const CHALLENGE_PAGE_SIZE=128;
 const DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
@@ -46,43 +46,6 @@ const fail = (code, cause) => { throw new SellerRecoveryError(code, { cause }); 
 // process in another PID namespace), so they stay busy until the operator's
 // exact-row release. The acquisition time is shown to the operator only;
 // nothing is reclaimed by age.
-const REALM_KEY = Symbol.for('dacs.sellerState.process');
-// Field 22 of /proc/<pid>/stat (start time in clock ticks since boot).
-const startTicks = (stat) => { const field = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]; return /^\d{1,20}$/.test(field ?? '') ? field : null; };
-// The BSD tools, with a fixed PATH, locale and time zone.
-const tool = (file, args) => execFileSync(file, args, { encoding: 'utf8', env: { PATH: '/bin:/usr/bin:/sbin:/usr/sbin', LC_ALL: 'C', TZ: 'UTC0' }, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 });
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-// A running process's start time in whole seconds (UTC), as `ps` lists it, or null.
-function psStart(pid) {
-  try {
-    const match = /^\s*[A-Z][a-z]{2} +([A-Z][a-z]{2}) +(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})\s*$/.exec(tool('ps', ['-o', 'lstart=', '-p', String(pid)]));
-    const month = match ? MONTHS.indexOf(match[1]) : -1;
-    return month < 0 ? null : String(Date.UTC(Number(match[6]), month, Number(match[2]), Number(match[3]), Number(match[4]), Number(match[5])) / 1000);
-  } catch { return null; }
-}
-// This process's PID namespace, boot and start time, or null where the host
-// does not give all three. `pids` is how a PID here is looked up: 'proc' when
-// /proc/<pid> names PIDs of this namespace (not when /proc was mounted for an
-// ancestor namespace), 'ps' without /proc, or null.
-function namespaceIdentity() {
-  try {
-    const ns = statSync('/proc/self/ns/pid', { bigint: true }).ino.toString();
-    const boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
-    const start = startTicks(readFileSync('/proc/self/stat', 'utf8'));
-    const nspid = /^NSpid:\s*(.*)$/m.exec(readFileSync('/proc/self/status', 'utf8'))?.[1].trim().split(/\s+/);
-    if (!/^\d{1,20}$/.test(ns) || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(boot) || start === null) return null;
-    return Object.freeze({ ns, boot, start, pids: nspid?.length === 1 && nspid[0] === String(process.pid) ? 'proc' : null });
-  } catch { /* no /proc: as on macOS and the BSDs */ }
-  try {
-    // Whole seconds only: they differ across reboots, and small adjustments
-    // to the microseconds can't make a holder of this boot look like another's.
-    const boot = /\bsec = (\d{1,20}),/.exec(tool('sysctl', ['-n', 'kern.boottime']));
-    const start = psStart(process.pid);
-    return boot && start ? Object.freeze({ ns: '0', boot: `bt${boot[1]}`, start, pids: 'ps' }) : null;
-  } catch { return null; }
-}
-if (!globalThis[REALM_KEY]) Object.defineProperty(globalThis, REALM_KEY, { value: Object.freeze({ process: randomUUID(), leases: new Map(), namespace: namespaceIdentity() }) });
-const { process: PROCESS, leases: LEASES, namespace: NAMESPACE = null } = globalThis[REALM_KEY];
 const OWNER = /^(\d+):([0-9a-f-]{36}):(\d{1,15}):[0-9a-f-]{36}(?::(\d{1,20})\.([0-9a-f-]{36}|bt\d{1,20})\.(\d{1,20}))?$/;
 const LEGACY_OWNER = /^\d+:[0-9a-f-]{36}$/;
 function lockHolder(row) {
@@ -93,76 +56,12 @@ function lockHolder(row) {
 const thisProcessLock = (row) => lockHolder(row)?.process === PROCESS;
 const sameBoot = (holder) => Boolean(NAMESPACE && holder.namespace && holder.namespace.boot === NAMESPACE.boot);
 const sameNamespace = (holder) => sameBoot(holder) && holder.namespace.ns === NAMESPACE.ns;
-const holderFile = (dir, holder) => join(dir, 'holders', `${holder}.sqlite`);
+const holderFile = leaseFile;
 const privateEntry = (stat, kind) => stat[kind]() && !stat.isSymbolicLink() && stat.uid === process.getuid?.() && !(stat.mode & 0o077);
-// Takes this process's lifetime lease on `dir` once; it is never released
-// before exit. Nothing else in this process may open the file: closing any
-// other descriptor for it would drop the POSIX lock. So the file is always new
-// (an existing one can only be this lease reached by another path), and it is
-// made 0600 whatever the umask: opened read-only, SQLite would take only a
-// shared lock, and others would see the lease free. The descriptor that
-// created it stays open, and is never closed, for the same reason.
+// Takes this process's lifetime lease on `dir` (process-lease.mjs), refusing as
+// a recovery error when it can't be taken.
 function takeLease(dir) {
-  if (LEASES.has(dir)) return;
-  const holders = join(dir, 'holders');
-  try { mkdirSync(holders, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
-  if (!privateEntry(lstatSync(holders), 'isDirectory')) fail('seller_state_directory_unsafe');
-  const file = holderFile(dir, PROCESS);
-  let fd;
-  try { fd = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600); } catch (error) { if (error.code === 'EEXIST') fail('seller_state_lease_unavailable'); throw error; }
-  let lease;
-  try {
-    fchmodSync(fd, 0o600);
-    const stat = lstatSync(file);
-    if (!privateEntry(stat, 'isFile') || (stat.mode & 0o777) !== 0o600) fail('seller_state_file_unsafe');
-    lease = new DatabaseSync(file);
-    try { lease.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN EXCLUSIVE'); } catch { fail('seller_state_lease_unavailable'); }
-    // A pruner (below) may have removed the file before the lock was taken:
-    // hold only the file this process created, still at its path. The open
-    // descriptor keeps its inode from being reused meanwhile.
-    let locked = null;
-    try { locked = lstatSync(file); } catch { /* removed */ }
-    const created = fstatSync(fd);
-    if (locked?.ino !== created.ino || locked.dev !== created.dev) fail('seller_state_lease_unavailable');
-  } catch (error) { lease?.close(); closeSync(fd); throw error; }
-  LEASES.set(dir, { lease, fd });
-}
-const START_UNREADABLE = Symbol('start-unreadable');
-const procStat = (pid) => readFileSync(`/proc/${pid}/stat`, 'utf8');
-// The start time of the process a PID names here now; null only when the kernel
-// says no process has that PID (ESRCH); START_UNREADABLE when one may run but
-// its start can't be read (procfs mounted with hidepid shows another user's
-// live process as missing, EPERM, a failed or malformed read).
-function runningStart(pid, readStat = procStat) {
-  if (!Number.isSafeInteger(pid) || pid < 1) return null;
-  let signalled = true;
-  try { process.kill(pid, 0); } catch (error) { signalled = error.code !== 'ESRCH'; }
-  if (!signalled) return null;
-  if (NAMESPACE.pids === 'proc') { try { return startTicks(readStat(pid)) ?? START_UNREADABLE; } catch { return START_UNREADABLE; } }
-  return psStart(pid) ?? START_UNREADABLE;
-}
-// True when the row's holder ran in this PID namespace on this boot and its
-// PID still runs the process that took the row (same start time), or runs a
-// process whose start can't be read: that holder is alive whatever its lease
-// shows. Otherwise the lease alone decides.
-function holderRunsHere(row, holder, readStat) {
-  if (!NAMESPACE?.pids || !sameNamespace(holder)) return false;
-  const start = runningStart(row.pid, readStat);
-  return start !== null && (start === START_UNREADABLE || start === holder.namespace.start);
-}
-// The state of process `id`'s lease: 'held' (another process holds it), 'free'
-// (it can be taken), or 'unchecked' (missing, not a private regular file,
-// unreadable, or any other error).
-function leaseState(dir, id) {
-  let probe;
-  try {
-    if (!privateEntry(lstatSync(holderFile(dir, id)), 'isFile')) return 'unchecked';
-    probe = new DatabaseSync(holderFile(dir, id), { readonly: true });
-    probe.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY');
-    probe.exec('BEGIN EXCLUSIVE');
-    probe.exec('ROLLBACK');
-    return 'free';
-  } catch (error) { return error?.errcode === 5 || error?.code === 'SQLITE_BUSY' ? 'held' : 'unchecked'; } finally { try { probe?.close(); } catch { /* the answer stands */ } }
+  try { takeProcessLease(dir); } catch (error) { if (error instanceof ProcessLeaseError) fail(error.code); throw error; }
 }
 // Why a row is, or is not, reclaimable. Only 'exited' is: its holder ran on
 // this boot of this kernel, so its lease is in this kernel's lock table, that
@@ -176,13 +75,7 @@ function leaseState(dir, id) {
 // - 'legacy-format' (`<pid>:<uuid>`) or 'unrecognised': it names no process.
 function holderState(dir, row, holder) {
   if (!holder) return LEGACY_OWNER.test(row.owner) ? 'legacy-format' : 'unrecognised';
-  if (holder.process === PROCESS) return 'this-process';
-  const lease = leaseState(dir, holder.process);
-  if (lease === 'held') return 'live';
-  if (!NAMESPACE || !holder.namespace) return 'no-identity';
-  if (!sameBoot(holder)) return 'other-boot';
-  if (holderRunsHere(row, holder)) return 'live';
-  return lease === 'free' ? 'exited' : 'lease-unproven';
+  return leaseHolderState(dir, { process: holder.process, pid: row.pid, namespace: holder.namespace });
 }
 const PROVEN_LIVE = new Set(['this-process', 'live']);
 // Rows the operator can release: an exited holder, or one nothing here can
