@@ -427,8 +427,8 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     if(snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.request?.content?.wallet===c.wallet&&row.request.content.nonce===c.nonce))return 'sign-authorization-open';
     return (waiver!=='write-fee-cap'&&total>BigInt(settings.maxWriteTotalOs)?'write-fee-cap':budgetRefusal({jobId:c.jobId,totalOs:total,at:clock(),limits:settings,writes:1,snapshot,converting:c,waived:waiver}))??reason;
   };
-  // Policy ledger lines need a nonnegative integer time; a clock without one decides nothing.
-  const clock=()=>{const at=now();if(!Number.isSafeInteger(at)||at<0)throw new RangeError('seller policy time must be a nonnegative safe integer');return at;};
+  // Ledger lines need a nonnegative integer time; a clock without one decides nothing.
+  const clock=()=>{const at=now();if(!Number.isSafeInteger(at)||at<0)throw new RangeError('seller approval time must be a nonnegative safe integer');return at;};
   // The end of the sign gate: purchase authority reread after the last ledger await, and the request still the
   // exact bytes checked. Resolves null when the write may be signed, else the refusal.
   const reread=async(request,record)=>{
@@ -554,8 +554,9 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     if(closeSignal.aborted)throw closingError();
     accepted&&=JSON.stringify(request)===requestBytes;
     const record=()=>{
+      const recordedAt=clock();
       if(accepted)freezeRequest(request);
-      appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:copy.method,address:copy.address??null,totalOs:declared.toString(),decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),recordedAt:now()});
+      appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:copy.method,address:copy.address??null,totalOs:declared.toString(),decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),recordedAt});
       return accepted;
     };
     // A held attempt's answer is recorded only while this ledger still has that attempt open and unsigned for

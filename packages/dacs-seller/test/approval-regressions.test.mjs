@@ -492,3 +492,14 @@ test('stop ends a restart reconcile whose issuance never settles',async t=>{
  const pending=p.reconcile();await entered;await p.stop();
  assert.deepEqual((await pending).held.map(row=>row.state),['issuance-unknown']);
 });
+
+// The manual line's time is checked as every policy line's is (rvd D-4, dspre F5).
+for(const at of [-1,1.5,Number.MAX_SAFE_INTEGER+1,'1'])test(`a manual answer at clock ${String(at)} rejects and writes no line`,async t=>{
+ const f=await fixture(t),a=createExactOperatorApproval({...f.settings,now:()=>at,authorize:()=>true});
+ await assert.rejects(a(requestFor()),RangeError);await assert.rejects(readFile(f.evidencePath),{code:'ENOENT'});
+});
+test('policy mode without its purchase and source context is refused',async t=>{
+ const f=await fixture(t);
+ assert.throws(()=>createExactOperatorApproval({...f.settings,sellerApproval:{mode:'policy'}}),TypeError);
+});
+
