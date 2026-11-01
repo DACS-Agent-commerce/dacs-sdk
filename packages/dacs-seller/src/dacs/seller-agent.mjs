@@ -310,6 +310,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     }
     for (const id of ids) if (!hasSettlementCredit(id, jobId)) throw new SellerAgentError('settlement_collision', 'competing admissible settlement claims require binding authority', 503);
   };
+  // A Deliverable past its final signing check holds its settlement until its submission returns: another
+  // job's claim binds that settlement only afterwards, so credit cannot be contested between check and broadcast.
+  const signingGates = new Map(); // settlement id -> promise settled when that submission returns
+  const afterSigning = async (id) => { while (signingGates.has(id)) await signingGates.get(id); };
   // The SDK calls claim only after authenticating the complete payment tuple.
   // Keep that tuple before the primitive's provisional election, including a loser.
   // The delivery runner inspects and consumes the permit before it prepares or sends the Deliverable.
@@ -317,7 +321,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // never a thrown store failure (which the runner would hold as an ambiguous, retryable read).
   const permitCredit = (permit) => !['available', 'already-consumed'].includes(permit?.status) || !permit.claim || hasSettlementCredit(permit.claim.settlementId, permit.claim.jobId);
   const receiptStore = {
-    claim: async candidate => { bindSettlement(candidate.settlementId, candidate.jobId, structuredClone(candidate)); return rawReceiptStore.claim(candidate); },
+    claim: async candidate => { await afterSigning(candidate.settlementId); bindSettlement(candidate.settlementId, candidate.jobId, structuredClone(candidate)); return rawReceiptStore.claim(candidate); },
     inspectPermit: async permitId => { const permit = await rawReceiptStore.inspectPermit(permitId); return permitCredit(permit) ? permit : { status: 'invalid' }; },
     consumePermit: async (permitId, handoff) => permitCredit(await rawReceiptStore.inspectPermit(permitId)) ? rawReceiptStore.consumePermit(permitId, handoff) : { status: 'invalid' },
   };
@@ -1352,7 +1356,15 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         session.deliverySubmitted=[...new Set([...(session.deliverySubmitted??[]),input.fulfilmentId])];
         session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,substrate:'source-native-delivery'};
         persist(session);
-        const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding},heldFor(session.jobId));
+        // authorize('signing') is the capability's last check before it signs; passing it holds the settlement gate until the submission returns.
+        let release=null,answer;
+        const authorize=(stage)=>{
+          const allowed=heldFor(session.jobId)();
+          if(allowed===true&&stage==='signing'&&!release){let open;signingGates.set(work.intake.settlementId,new Promise((resolve)=>{open=resolve;}));release=()=>{signingGates.delete(work.intake.settlementId);open();};}
+          return allowed;
+        };
+        try{answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding},authorize);}
+        finally{release?.();}
         if(answer.status==='rejected')return {status:'indeterminate',reason:`native delivery refused: ${String(answer.reason ?? 'no reason').slice(0,160)}`};
         if(answer.status!=='accepted')return answer;
         session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,reconciliationId:answer.reconciliationId,substrate:'source-native-delivery'};
@@ -1589,6 +1601,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (intake.disposition !== 'verified' || !['claim', 'already-claimed'].includes(intake.fulfilment)) return { answer: { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason } };
       paymentVerified = true;
       step = 'settlement-binding';
+      await afterSigning(intake.settlementId);
       if (!bindSettlement(intake.settlementId, jobId)) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
       step = 'evidence-signing';
       const evidence = await signEvidence(structuredClone(intake.evidenceInput));

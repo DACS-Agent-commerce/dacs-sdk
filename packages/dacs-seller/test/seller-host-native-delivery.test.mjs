@@ -375,11 +375,13 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
   // The seller's Deliverable CREATE and its public readback.
   const deliverable = async (input) => readBack(input.logicalAddress, 'Deliverable', input.deliveryBinding);
   const submitDelivery = async (input, authorize) => {
-      // As the shipped capability: checked before the intent, and again after the approval wait right before signing.
+      // As the shipped capability: checked before the intent, again after the approval wait right before
+      // signing (which holds the settlement until this returns), then signed.
       await faults.beforeDeliverySubmit?.();
       if (authorize && authorize('intent') !== true) throw new Error('TEST delivery authorization refused');
       await faults.deliveryApproval?.();
       if (authorize && authorize('signing') !== true) throw new Error('TEST delivery authorization refused at signing');
+      await faults.afterSigningCheck?.();
       effects.deliverySubmit.push(input.logicalAddress);
       const fault = faults.deliverySubmit.shift();
       if (fault === 'fail') throw new Error('TEST delivery wallet refused before signing');
@@ -1127,6 +1129,23 @@ for (const restart of [false, true]) test(`settlement credit contested while the
   assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' });
   assert.equal(w.createsAt(`dacs4:deliverable:${a.jobId}`), 0);
   assert.deepEqual(w.effects.deliverySubmit, [], 'nothing is signed after the contest');
+});
+
+// Past that check the settlement is held until the submission returns: a claim
+// on another job waits, then binds and is refused; one CREATE was made.
+test('a claim on another job made after the signing check binds only once the submission has returned', async (t) => {
+  const w = await world(t), a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+  let contested = null, during = null;
+  w.faults.afterSigningCheck = async () => {
+    contested = b.claim(tx);
+    // Ungated, B's claim binds and is answered well within this window.
+    during = await Promise.race([contested.then(() => 'answered'), new Promise((resolve) => setTimeout(() => resolve('waiting'), 3000))]);
+  };
+  await a.claim(tx);
+  assert.equal(during, 'waiting', 'the other job\'s claim waits while this one is past its signing check');
+  assert.deepEqual(await contested, { status: 'indeterminate', reason: 'settlement-collision' });
+  assert.equal(w.createsAt(`dacs4:deliverable:${a.jobId}`), 1);
+  assert.equal(w.createsAt(`dacs4:deliverable:${b.jobId}`), 0);
 });
 
 test('a native capability without guarded submission keeps paid delivery held before the permit is spent, without invoking submit', async (t) => {
