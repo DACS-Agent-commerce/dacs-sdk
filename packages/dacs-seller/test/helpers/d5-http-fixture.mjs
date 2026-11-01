@@ -12,9 +12,10 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PassThrough} from 'node:stream';
 import {canonicalize,identityBundleHash,sha256Hex} from '@kynesyslabs/dacs';
-const {createSellerHttpHandler}=await import('../../src/dacs/seller-http.mjs');
-const {createSellerContextRoute,SELLER_CONTEXT_LIMITS}=await import('../../src/dacs/seller-context-route.mjs');
-const {createSellerTransportStore,createSellerTransportServerAuth,createSellerTransportClientAuth,SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../../src/dacs/seller-transport-auth.mjs');
+// The handler, the context route and the transport come only from the package root, as a host composes them.
+const {createSellerHttpHandler,createSellerContextRoute,createSellerTransportStore,createSellerTransportServerAuth,createSellerTransportClientAuth}=await import('../../src/index.mjs');
+const {SELLER_CONTEXT_LIMITS}=await import('../../src/dacs/seller-context-route.mjs');
+const {SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../../src/dacs/seller-transport-auth.mjs');
 const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX','01ARZ3NDEKTSV4RRFFQ69G5FAY','01ARZ3NDEKTSV4RRFFQ69G5FAZ'];
 const T=1800000000000;
 function bundleFor(buyer){const b={bundleVersion:'1',presentedBy:buyer.claim,presentedAt:T,sessionNonce:'a'.repeat(64),claims:[{ref:buyer.claim}]};return {...b,presentation:{kind:'per-claim',signatures:[{ref:buyer.claim,signature:buyer.sign(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(b))).toString('base64url')}]}};}
