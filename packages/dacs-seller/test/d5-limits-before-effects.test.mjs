@@ -208,7 +208,7 @@ test('B43 the context client preserves a signed canonical-job refusal as a defin
  const {createSellerContextClient,sellerContextRequestUnknown}=await import('../src/dacs/seller-context-route.mjs');
  const {SellerRefusedError}=await import('../src/dacs/seller-http.mjs');
  const client=createSellerContextClient({clientFor:()=>({agreementContext:async()=>{throw new SellerRefusedError('peer_job_invalid','invalid job',409)}})});
- const answer=await client.resolveBuyer(body,{operation:{state:{protocol:{sellerContextRequest:{generatedAt:body.scope.generatedAt,buyerBundle:body.buyerIdentityBundle}}}}});
+ const answer=await client.resolveBuyer(body,{operation:{state:{protocol:{sellerContextRequest:{scope:body.scope,buyerBundle:body.buyerIdentityBundle}}}}});
  assert.equal(answer.disposition,'rejected');assert.equal(answer.written,false);assert.equal(sellerContextRequestUnknown(answer.reason),true);
 });
 
@@ -336,7 +336,7 @@ test('B31 the context client preserves a definite non-pass decision and attribut
  const {createSellerContextClient}=await import('../src/dacs/seller-context-route.mjs');
  const buyer=key(),bundle=bundleFor(buyer),scope={source:'d5-test-context/v1',wallet:'0x'+buyer.claim.slice(16),jobId:JOBS[0],buyer:buyer.claim,buyerBundleHash:identityBundleHash(bundle),seller:key().claim,listingPin:{listingId:'D5',version:1,contentHash:'b'.repeat(64)},rail:{railId:'demos-native:DEM',railVersion:1},payee:'fixture',price:{amount:'1',currency:'DEM'},generatedAt:T};
  const client=createSellerContextClient({clientFor:()=>({agreementContext:async()=>({disposition:'rejected',code:'party_vet_non_pass',errorClass:'counterparty',reason:'seller Vet decision: fail'})})});
- const answer=await client.resolveBuyer({scope,buyerIdentityBundle:bundle},{operation:{state:{protocol:{sellerContextRequest:{generatedAt:T,buyerBundle:bundle}}}}});assert.equal(answer.disposition,'rejected');assert.equal(answer.code,'party_vet_non_pass');assert.equal(answer.errorClass,'counterparty');assert.match(answer.reason,/seller Vet decision: fail/);
+ const answer=await client.resolveBuyer({scope,buyerIdentityBundle:bundle},{operation:{state:{protocol:{sellerContextRequest:{scope,buyerBundle:bundle}}}}});assert.equal(answer.disposition,'rejected');assert.equal(answer.code,'party_vet_non_pass');assert.equal(answer.errorClass,'counterparty');assert.match(answer.reason,/seller Vet decision: fail/);
 });
 
 test('B32 another buyer consumes the issued challenge before mismatch refusal',async t=>{
@@ -363,7 +363,7 @@ test('B35 HTTP and retained recovery preserve every Vet fault class; malformed c
   const w=await world(t,{perform:async()=>{if(recovery)throw new Error('lost answer');return answer},recover:async()=>answer}),input=await w.wire();
   const first=await exchange(w.handler,input);assert.equal(first.status,recovery?503:200);
   const retained=await exchange(w.handler,input);assert.equal(retained.status,200);assert.deepEqual(JSON.parse(retained.text),answer);
-  const body=JSON.parse(input.text),operation={state:{protocol:{sellerContextRequest:{generatedAt:body.scope.generatedAt,buyerBundle:body.buyerIdentityBundle}}}};
+  const body=JSON.parse(input.text),operation={state:{protocol:{sellerContextRequest:{scope:body.scope,buyerBundle:body.buyerIdentityBundle}}}};
   const consume=async response=>createSellerContextClient({clientFor:()=>({agreementContext:async()=>response})}).resolveBuyer(body,{operation});
   const consumed=await consume(JSON.parse(retained.text));assert.equal(consumed.disposition,'rejected');assert.equal(consumed.errorClass,errorClass);
   for(const errorClass of [undefined,'transient','unknown',null]){
