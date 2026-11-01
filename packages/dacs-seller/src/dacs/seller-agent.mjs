@@ -113,7 +113,10 @@ const vetUnverified = (reason, cause) => new SellerAgentError('seller_state_unve
  * Throws SellerAgentError for a malformed job or mismatched Listing. */
 export function buildReport({ agreement, listing, settlementId }) {
   if (!isCanonicalJobId(agreement?.jobId)) throw new SellerAgentError('job_invalid', 'jobId is not canonical');
-  if (!isListing(listing) || contentHash(listing) !== agreement.listingRef?.contentHash) {
+  // The Agreement's pin names the Listing three ways; the report prints its ID and version, so all must match.
+  const pinned = agreement.listingRef;
+  if (!isListing(listing) || contentHash(listing) !== pinned?.contentHash
+    || listing.listingId !== pinned.listingId || listing.listingVersion !== pinned.version) {
     throw new SellerAgentError('listing_invalid', 'Listing does not match the Agreement');
   }
   const terms = agreementTerms(agreement);

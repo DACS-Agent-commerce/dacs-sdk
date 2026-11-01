@@ -338,11 +338,19 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       const current=await accountNonce();
       // Retained signed or reserved bytes fence this nonce even after inclusion.
       // Wait for the RPC to catch up instead of preparing a duplicate CREATE.
+      // A refused signed CREATE keeps its nonce unless every signed CREATE it
+      // stands for reads back absent now; one with no signed bytes reserves nothing.
       const prior=await snapshot();
-      const retainedNonces=prior.live([...prior.sourceRows,...prior.walletRows]).filter(([,row])=>!prior.rejected(row)).flatMap(([,row])=>[row?.transaction,row?.signedTransaction])
-        .filter(tx=>tx?.content?.from===owner).map(tx=>tx.content.nonce);
-      if(retainedNonces.some(n=>!Number.isSafeInteger(n)||n<0)) fail('indeterminate','retained seller nonce is invalid');
-      if(current===Number.MAX_SAFE_INTEGER||retainedNonces.some(n=>n>current)) fail('indeterminate','seller nonce RPC has not caught up with retained CREATEs');
+      const owned=prior.live([...prior.sourceRows,...prior.walletRows]).map(([,row])=>[row,[row?.transaction,row?.signedTransaction].filter(tx=>tx?.content?.from===owner).map(tx=>tx.content.nonce)]);
+      if(owned.some(([,nonces])=>nonces.some(n=>!Number.isSafeInteger(n)||n<0))) fail('indeterminate','retained seller nonce is invalid');
+      const ahead=owned.filter(([,nonces])=>nonces.some(n=>n>current)).map(([row])=>row);
+      if(current===Number.MAX_SAFE_INTEGER||ahead.some(row=>!prior.rejected(row))) fail('indeterminate','seller nonce RPC has not caught up with retained CREATEs');
+      const refused=new Set(ahead.flatMap(row=>[row.hash,...(prior.addressHashes.get((row.signedTransaction ?? row.transaction)?.content?.data?.[1]?.metadata?.logicalAddress) ?? [])]).filter(hash=>typeof hash==='string'&&hash));
+      for(const hash of refused) {
+        const {disposition}=await observeSource(hash,prior.projection(hash),undefined,{resend:false});
+        if(disposition==='included') fail('indeterminate','seller nonce RPC has not caught up with retained CREATEs');
+        if(disposition!=='absent') fail('indeterminate',`a refused seller CREATE requires readback (${disposition})`);
+      }
       const nonce=current+1, programName=logicalToStorageProgramName(logicalAddress), storageAddress=deriveStorageAddress(owner,programName,nonce,'');
       const transaction=buildStorageProgramCreatePayload({from:owner,storageAddress,programName,logicalAddress,signedListing:value,nonce,timestamp:now()});
       transaction.content.from_ed25519_address=owner;
