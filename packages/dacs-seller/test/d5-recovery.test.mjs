@@ -71,7 +71,9 @@ test('cached present start authenticates retained records before replay',async t
 test('journal reservation precedes every durable write hold',async t=>{
  const {exchange}=await import('./helpers/d5-http-fixture.mjs');let w;
  w=await world(t,{admitWrites:async input=>{
-  assert.equal(w.store.contextAdmission(input.jobId)?.effect,input.hold);
+  // One hold per journal owner: the id is the effect and the owner's token.
+  assert.match(input.hold,new RegExp(`^${input.effect}:[0-9a-f]{48}$`));
+  assert.equal(w.store.contextAdmission(input.jobId)?.effect,input.effect);
   return null;
  }});
  assert.equal((await exchange(w.handler,await w.wire())).status,200);
@@ -117,7 +119,7 @@ test('context client sends the same canonical bytes for reordered scope and bund
  const {canonicalize}=await import('@kynesyslabs/dacs');
  const w=await world(t),body=JSON.parse((await w.wire()).text),sent=[];
  const client=createSellerContextClient({clientFor:()=>({agreementContext:async value=>{sent.push(JSON.stringify(value));return {disposition:'indeterminate'};}})});
- const operation={state:{protocol:{sellerContextRequest:{generatedAt:body.scope.generatedAt,buyerBundle:body.buyerIdentityBundle}}}};
+ const operation={state:{protocol:{sellerContextRequest:{scope:body.scope,buyerBundle:body.buyerIdentityBundle}}}};
  await client.resolveBuyer(body,{operation});
  const reverse=value=>Object.fromEntries(Object.entries(value).reverse());
  await client.resolveBuyer({scope:reverse(body.scope),buyerIdentityBundle:reverse(body.buyerIdentityBundle)},{operation});
@@ -134,4 +136,38 @@ test('proved resume transfers unused budget after the journal assigns a new owne
  const first=await route.reserve(request,body,w.store);w.store.finish(first,503,'{}');
  const uncertain=w.store.reserve(request,body),resumed=await route.resume(uncertain,request,w.store,{writes:1});
  assert.equal(resumed.disposition,'perform');assert.match(resumed.contextHold.hold,new RegExp('^'+first.effectKey+':'));
+});
+
+// Only the request saved on the purchase is ever sent: the saved scope must be the
+// exact scope the caller passes, whichever seller scope field differs.
+const driftedScope = (w, body) => ({source: 'other-source/v1', wallet: '0x' + 'e'.repeat(64), jobId: JOBS[1], buyer: w.other.claim, buyerBundleHash: 'f'.repeat(64), seller: w.other.claim,
+ listingPin: {...body.scope.listingPin, version: body.scope.listingPin.version + 1}, rail: {railId: 'other:RAIL', railVersion: 1}, payee: 'someone-else',
+ price: {...body.scope.price, amount: '999'}, generatedAt: body.scope.generatedAt + 1});
+for (const key of ['source', 'wallet', 'jobId', 'buyer', 'buyerBundleHash', 'seller', 'listingPin', 'rail', 'payee', 'price', 'generatedAt']) test(`context client sends nothing when the ${key} differs from the saved request`, async t => {
+ const {createSellerContextClient} = await import('../src/dacs/seller-context-route.mjs');
+ const w = await world(t), body = JSON.parse((await w.wire()).text); let built = 0, sent = 0;
+ const client = createSellerContextClient({clientFor: () => { built++; return {agreementContext: async () => { sent++; return {disposition: 'indeterminate'}; }}; }});
+ const operation = {state: {protocol: {sellerContextRequest: {scope: body.scope, buyerBundle: body.buyerIdentityBundle}}}};
+ await assert.rejects(client.resolveBuyer({scope: {...body.scope, [key]: driftedScope(w, body)[key]}, buyerIdentityBundle: body.buyerIdentityBundle}, {operation}), /nothing was sent/);
+ assert.equal(built + sent, 0);
+});
+test('context client refuses a saved request without its scope and sends nothing', async t => {
+ const {createSellerContextClient} = await import('../src/dacs/seller-context-route.mjs');
+ const w = await world(t), body = JSON.parse((await w.wire()).text); let sent = 0;
+ const client = createSellerContextClient({clientFor: () => ({agreementContext: async () => { sent++; return {disposition: 'indeterminate'}; }})});
+ const operation = {state: {protocol: {sellerContextRequest: {generatedAt: body.scope.generatedAt, buyerBundle: body.buyerIdentityBundle}}}};
+ await assert.rejects(client.resolveBuyer(body, {operation}), /nothing was sent/);
+ assert.equal(sent, 0);
+});
+test('context client keeps sending the saved bytes after an uncertain send and refuses a drifted retry', async t => {
+ const {createSellerContextClient} = await import('../src/dacs/seller-context-route.mjs');
+ const w = await world(t), body = JSON.parse((await w.wire()).text), sent = [], hashes = [];
+ const client = createSellerContextClient({clientFor: (operation, hash) => { hashes.push(hash); return {agreementContext: async value => { sent.push(JSON.stringify(value)); throw new Error('TEST lost answer'); }}; }});
+ const operation = {state: {protocol: {sellerContextRequest: {scope: body.scope, buyerBundle: body.buyerIdentityBundle}}}};
+ assert.equal((await client.resolveBuyer(body, {operation})).disposition, 'indeterminate');
+ await assert.rejects(client.resolveBuyer({scope: {...body.scope, payee: 'someone-else'}, buyerIdentityBundle: body.buyerIdentityBundle}, {operation}), /nothing was sent/);
+ const reversed = Object.fromEntries(Object.entries(body.scope).reverse());
+ assert.equal((await client.resolveBuyer({scope: reversed, buyerIdentityBundle: body.buyerIdentityBundle}, {operation})).disposition, 'indeterminate');
+ assert.equal(sent.length, 2); assert.equal(sent[0], sent[1]);
+ assert.deepEqual(hashes, [sellerContextScopeHash(body.scope), sellerContextScopeHash(body.scope)]);
 });
