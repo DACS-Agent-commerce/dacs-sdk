@@ -114,7 +114,8 @@ Run the seller checks from the repository root after building the core:
 
 ```sh
 npm run build
-npm run seller:prepare
+export DACS_SELLER_SMOKE_DIR=/tmp/dacs-seller-consumer   # a new directory; an existing path is refused
+npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
 node --experimental-vm-modules --test --test-concurrency=1 packages/dacs-seller/test/*.test.mjs
 ```
 
