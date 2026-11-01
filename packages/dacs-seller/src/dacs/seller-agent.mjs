@@ -214,6 +214,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (reconcilePaymentEvidence !== null && (typeof reconcilePaymentEvidence !== 'function' || !nativeEvidence)) throw new TypeError('reconcilePaymentEvidence must be the seller wallet\'s journal question for the native evidence anchor, or null');
   if (deliveryContext && (!nativeEvidence || !durableDirectory)) throw new TypeError('DEM delivery context requires the durable native evidence profile');
   if (nativeDelivery && !deliveryContext) throw new TypeError('native DEM delivery requires the authenticated DEM delivery context');
+  if (nativeDelivery && !hasGuardedNativeDemDelivery(nativeDelivery)) throw new TypeError('native DEM delivery requires guarded submission (submitAuthorized); it is refused before any Agreement is signed');
   // CORE §5.1: the resume that lets a plain absence of a submitted
   // Deliverable send its kept CREATE again (and answers `unsigned` for a new
   // signature) comes only from the createDeliverableWalletJournal whose guarded
@@ -1495,7 +1496,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         if (jobId !== session.jobId || phaseIndex !== protocolSupport(listing).phases.delivery || phase !== 'deliver-storage-program' || logicalAddress !== deliverableAddress(session.jobId)) {
           return { status: 'rejected', reason: 'delivery preparation scope differs' };
         }
-        if (!hasGuardedNativeDemDelivery(nativeDelivery)) return { status: 'indeterminate', reason: 'native delivery requires guarded submission' };
         const report = deliveryReport(session, work.intake.settlementId);
         preparedCanonical = canonicalize(report);
         // A producer can be corrected after payment; a size disagreement must not become the core's permanent preparation-failed handoff.
