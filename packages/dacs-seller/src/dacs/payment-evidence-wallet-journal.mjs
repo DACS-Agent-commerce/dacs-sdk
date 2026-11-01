@@ -425,7 +425,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       // a lost broadcast answer cannot leave the caller naming a stale row.
       inspectAttempt(input,attempt,true,accepted?.value===binding);
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
-      return prepareAnchor(input);
+      return prepareAnchor(input,permitted);
     });
     if(!signed.applied){await permitted();await sendSigned(signed);}
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};

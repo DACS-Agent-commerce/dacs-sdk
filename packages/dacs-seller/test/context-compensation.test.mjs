@@ -135,3 +135,69 @@ test('an exceptional resumed provider releases its fresh unused hold', async t =
  assert.equal(w.effects().releases, 3, 'old hold and both finished attempts are released');
  assert.equal(rows(w, 'peer_effects')[0].state, 'uncertain');
 });
+
+// A hold belongs to one journal owner. An attempt that ended 503 finishes its journal
+// step and releases its hold as two steps, so a resume can start between them: the
+// ended attempt must never free the hold of the attempt that resumed it.
+async function ownedHoldWorld(t, options = {}, maxWritesPerHour = 2) {
+ const w = await world(t, {limits, ...options}), input = await w.wire(), request = w.auth.readRequest(input.header), body = JSON.parse(input.text);
+ const evidencePath = join(dirname(w.path), 'approval.jsonl');
+ const admission = createSellerContextAdmission({evidencePath, sellerApproval: {mode: 'policy', maxWriteTotalOs: '4', maxWritesPerHour, maxTotalOsPerHour: String(4 * maxWritesPerHour)}, now: w.now});
+ const open = async () => parsePolicyLedger(await readFile(evidencePath, 'utf8')).rows.filter(row => row.contextHold && !row.released).map(row => row.contextHold);
+ const otherJob = {jobId: JOBS[1], effect: 'b'.repeat(64), hold: 'TEST other job', writes: 2};
+ return {w, input, request, body, admission, open, otherJob};
+}
+const policyRoute = (s, releaseWrites = s.admission.release) => createSellerContextRoute({listing: s.w.listing, resolveBuyer: presentContext, assertBuyerAccess: () => {}, knownJob: () => true, writable: () => true,
+ now: s.w.now, limits, recover: async () => null, admitWrites: s.admission.reserve, releaseWrites, log: () => {}});
+test('a fresh attempt takes the hold of its own journal owner', async t => {
+ const w = await world(t, {limits, admitWrites: input => { assert.equal(input.hold, `${input.effect}:${rows(w, 'peer_effects')[0].owner}`); return null; }});
+ assert.equal((await exchange(w.handler, await w.wire())).status, 200);
+ assert.equal(w.effects().holds, 1);
+});
+test('a late settle of an ended attempt leaves the hold of the attempt that resumed it open, through a chain of resumes', async t => {
+ const s = await ownedHoldWorld(t), route = policyRoute(s), {store} = s.w;
+ const first = await route.reserve(s.request, s.body, store); store.finish(first, 503, '{}');
+ const second = await route.resume(store.reserve(s.request, s.body), s.request, store, {writes: 2});
+ await route.settled(first.contextHold);
+ assert.deepEqual(await s.open(), [second.contextHold.hold]);
+ assert.equal(await s.admission.reserve(s.otherJob), 'hourly-write-limit');
+ store.finish(second, 503, '{}');
+ const third = await route.resume(store.reserve(s.request, s.body), s.request, store, {writes: 2});
+ await route.settled(first.contextHold); await route.settled(second.contextHold);
+ assert.deepEqual(await s.open(), [third.contextHold.hold]);
+ assert.equal(await s.admission.reserve(s.otherJob), 'hourly-write-limit');
+ await route.settled(third.contextHold);
+ assert.deepEqual(await s.open(), []);
+ assert.equal(await s.admission.reserve(s.otherJob), null);
+});
+test('a failed release of an ended attempt is retried by the resume for that attempt only', async t => {
+ let fail = true;
+ const s = await ownedHoldWorld(t, {}, 4), route = policyRoute(s, async input => { if (fail) throw new Error('TEST release unavailable'); await s.admission.release(input); }), {store} = s.w;
+ assert.equal(await s.admission.reserve({...s.otherJob, writes: 1}), null);
+ const first = await route.reserve(s.request, s.body, store); store.finish(first, 503, '{}');
+ await route.settled(first.contextHold);
+ assert.deepEqual(await s.open(), [s.otherJob.hold, first.contextHold.hold]);
+ fail = false;
+ const second = await route.resume(store.reserve(s.request, s.body), s.request, store, {writes: 1});
+ assert.deepEqual(await s.open(), [s.otherJob.hold, second.contextHold.hold]);
+});
+test('over HTTP a late release of an ended attempt does not free the live hold of its resume', async t => {
+ let entered, finish, performing, finishResume, first = true, performs = 0;
+ const lateRelease = new Promise(resolve => entered = resolve), gate = new Promise(resolve => finish = resolve);
+ const resumeStarted = new Promise(resolve => performing = resolve), resumeGate = new Promise(resolve => finishResume = resolve);
+ let s;
+ s = await ownedHoldWorld(t, {resumable: async () => ({writes: 2}), recover: async () => null,
+  perform: async body => { if (++performs === 1) throw new Error('TEST provider stopped'); performing(); await resumeGate; return presentContext(body); },
+  releaseWrites: async input => { if (first) { first = false; entered(); await gate; } return s.admission.release(input); },
+  admitWrites: input => s.admission.reserve(input)});
+ t.after(() => { finish(); finishResume(); });
+ const ended = exchange(s.w.handler, s.input);
+ await lateRelease;
+ const resumed = exchange(s.w.handler, await s.w.wire());
+ await resumeStarted;
+ finish(); assert.equal((await ended).status, 503);
+ assert.equal((await s.open()).length, 1);
+ assert.equal(await s.admission.reserve(s.otherJob), 'hourly-write-limit');
+ finishResume(); assert.equal((await resumed).status, 200);
+ assert.deepEqual(await s.open(), []);
+});
