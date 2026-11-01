@@ -110,10 +110,15 @@ export function createOperatorApprovalAttempt(approve){
       let accepted;
       try{accepted=await approve(request);}
       catch(error){if(error?.code===OPERATOR_CLOSING){const attempt=scope.getStore();if(attempt)attempt.closing=true;}throw error;}
-      if(accepted&&approve.settle)scope.getStore()?.requests.push(request);return accepted;
+      if(accepted&&approve.settle)scope.getStore()?.requests.push(request);
+      // The request's own check runs after the operator's answer, before anything is signed (a throw is the
+      // wallet's unsigned internal_error). The settled approval above is released, as for any unsent request.
+      const authorize=scope.getStore()?.authorize;
+      if(accepted===true&&authorize){let allowed;try{allowed=authorize();}catch(error){allowed=error;}if(allowed!==true)throw Object.assign(new Error('the write was withdrawn after its approval; nothing was signed'),{code:'not-authorized'});}
+      return accepted;
     }:approve,
     issuing(value){if(value?.stage==='broadcast-started'){const attempt=scope.getStore();if(attempt)attempt.sent=true;}},
-    run(work){return scope.run({sent:false,closing:false,requests:[]},async()=>{
+    run(work,authorize){return scope.run({sent:false,closing:false,requests:[],authorize},async()=>{
       const attempt=scope.getStore();let result;
       try{
         result=await work();
@@ -253,8 +258,9 @@ export async function openTestWalletCustody({directory,role,publicOrigin,transac
     const facade=(selectedJournal)=>Object.freeze({
       getPublicAccount:()=>session.getPublicAccount(),
       getWriteProfile:()=>session.getWriteProfile(),
-      request:(input)=>{
-        const run=requestTail.then(()=>journalRoute.run(selectedJournal,()=>routed(()=>approvalAttempt.run(()=>session.request(input)))));
+      guardsSigning:true,
+      request:(input,{authorize}={})=>{
+        const run=requestTail.then(()=>journalRoute.run(selectedJournal,()=>routed(()=>approvalAttempt.run(()=>session.request(input),authorize))));
         requestTail=run.then(()=>undefined,()=>undefined);return run;
       },
       lock:()=>session.lock(),

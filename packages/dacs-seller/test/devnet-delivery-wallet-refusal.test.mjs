@@ -10,9 +10,13 @@ import * as core from '@kynesyslabs/dacs';
 import {fixtureListing} from './fixtures/listings.mjs';
 import {seller} from './helpers/protocol-fixture.mjs';
 import {anchorFixture} from './helpers/anchor-isolated-fixture.mjs';
+import {privateModule} from './helpers/private-module.mjs';
 import {createDevnetPurchasedReportProducer} from '../src/devnet-demo/deliverable.mjs';
 import {createDevnetDemoDeliveryCapability} from '../src/devnet-demo/native-delivery.mjs';
 import {isProvenUnsignedAbsence,readNativeDemDelivery,submitNativeDemDelivery} from '../src/dacs/native-dem-delivery-consumer.mjs';
+// The custody module's wallet runtime imports are not part of this package; the approval attempt does not use them.
+const {createOperatorApprovalAttempt}=await privateModule(new URL('../src/devnet-demo/operator-custody.mjs',import.meta.url),['createOperatorApprovalAttempt'],
+ (source)=>source.replace(/^import .*(sdk-provider|demos-signature)\.mjs';$/gm,'').replace('export function createOperatorApprovalAttempt','function createOperatorApprovalAttempt'));
 
 const JOB='01ARZ3NDEKTSV4RRFFQ69G5FAW';
 async function composed(){
@@ -72,4 +76,45 @@ for (const restart of [false, true]) for (const lostFence of [false, true]) test
  const retry=await submitNativeDemDelivery(capability(opened),input,()=>true);
  assert.equal(retry.status,'indeterminate');
  assert.equal(w.captured.length,1,'unsigned refusal remains askable after reopen');
+});
+
+// The wallet's approval can wait on the operator: the write's authority is
+// checked again after that answer, right before anything is signed.
+for (const restart of [false, true]) test(`a settlement contested while the wallet waits for approval signs nothing, and the proven absence keeps it askable (restart=${restart})`, async () => {
+ const {w,anchor,input,capability}=await composed();
+ let contested=false;const stages=[];
+ w.controls.approval=async()=>{contested=true;};
+ w.controls.request=async()=>{throw new Error('TEST signed after the contest');};
+ const authorize=(stage)=>{stages.push(stage);return stage==='signing'&&contested?'TEST settlement contested':true;};
+ const answer=await submitNativeDemDelivery(capability(),input,authorize);
+ assert.equal(answer.status,'indeterminate');
+ assert.deepEqual(stages,['intent','signing']);
+ assert.equal(w.captured.length,1,'the wallet was asked once and signed nothing');
+ const opened=restart?w.open():anchor;
+ assert.equal(isProvenUnsignedAbsence(await readNativeDemDelivery(capability(opened),input)),true);
+});
+
+test('a guarded Deliverable is not published through a wallet that cannot check it right before signing', async () => {
+ const {w,input,capability}=await composed();
+ w.controls.guardsSigning=false;
+ const opened=w.open();
+ await assert.rejects(submitNativeDemDelivery(capability(opened),input,()=>true),error=>error.code==='not-authorized');
+ assert.equal(w.captured.length,0);
+ assert.equal(isProvenUnsignedAbsence(await readNativeDemDelivery(capability(opened),input)),true);
+});
+
+test('the operator custody wallet checks a guarded write after the operator approves it and before it signs', async () => {
+ for (const contested of [false, true]) {
+  const settled=[];let signed=false;
+  const approve=Object.assign(async()=>true,{settle:async(_request,outcome)=>{settled.push(outcome);}});
+  const attempt=createOperatorApprovalAttempt(approve);
+  // As the packaged wallet: a thrown approval is answered internal_error, and nothing is signed.
+  const result=await attempt.run(async()=>{
+   try{await attempt.approve({method:'sendTransaction'});}catch{return {success:false,error:{code:'internal_error'}};}
+   signed=true;return {success:true};
+  },()=>contested?'TEST settlement contested':true);
+  assert.equal(signed,!contested,`contested ${contested}`);
+  assert.equal(result.success,!contested);
+  assert.deepEqual(settled,['released'],'the operator approval is released: nothing was sent');
+ }
 });
