@@ -186,17 +186,32 @@ test('releasing two holds keeps the first release when the second append tears, 
   assert.deepEqual(await heldIds(f), [['TEST first', true], ['TEST second', false]]);
   assert.deepEqual(await releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 300 }), ['TEST second']);
 });
-test('a file sync that fails after a complete line is undone and the retry reserves once', async t => {
-  const f = await fixture(t), original = fs.fsyncSync, originalWrite = fs.writeSync, cause = eio(); let written = false, failed = false;
+// The first file sync after a complete context line fails. Whether that line is durable is
+// unknown, so it stays on the ledger and an exact retry syncs it instead of appending it twice.
+async function withFailedLineSync(operation) {
+  const original = fs.fsyncSync, originalWrite = fs.writeSync, cause = eio(); let written = false, failed = false;
   try {
     fs.writeSync = (...args) => { const count = originalWrite(...args); if (Buffer.from(args[1]).includes('dacs-node2-seller-context-admission')) written = true; return count; };
     fs.fsyncSync = fd => { if (written && !failed) { failed = true; throw cause; } return original(fd); };
     syncBuiltinESMExports();
-    await assert.rejects(f.admission.reserve(f.reserve), error => error === cause);
+    await assert.rejects(operation(), error => error === cause);
   } finally { fs.fsyncSync = original; fs.writeSync = originalWrite; syncBuiltinESMExports(); }
-  assert.equal(failed, true); assert.equal(await text(f), '');
+  assert.equal(failed, true);
+}
+test('a file sync that fails after a complete hold line keeps the line and the retry reserves once', async t => {
+  const f = await fixture(t);
+  await withFailedLineSync(() => f.admission.reserve(f.reserve));
+  assert.deepEqual(await heldIds(f), [['TEST hold', false]]);
   assert.equal(await f.admission.reserve(f.reserve), null);
   assert.deepEqual(await heldIds(f), [['TEST hold', false]]);
+});
+test('a file sync that fails after a complete release line keeps the line and the retry does not release twice', async t => {
+  const f = await fixture(t); await f.admission.reserve(f.reserve);
+  await withFailedLineSync(() => f.admission.release({ jobId: JOB, hold: f.reserve.hold }));
+  assert.deepEqual(await heldIds(f), [['TEST hold', true]]);
+  await f.admission.release({ jobId: JOB, hold: f.reserve.hold });
+  assert.deepEqual(await heldIds(f), [['TEST hold', true]]);
+  assert.equal((await text(f)).trim().split('\n').length, 2);
 });
 test('a failed undo reports the append error and the torn tail is cut by the next transaction', async t => {
   const f = await fixture(t), originalTruncate = fs.ftruncateSync, undoFailure = new Error('TEST undo failed');
