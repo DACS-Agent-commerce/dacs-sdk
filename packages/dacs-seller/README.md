@@ -107,6 +107,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `buildListingDraft`, `listingSigningMessage`, `attachListingSignature`,
 `validateListing`, `agreementInput`, `listingPin`, `contributionVerifier`,
 `SellerAgentError`, `createPaymentEvidenceWalletJournal`,
+`createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createSellerContextClient`,
 `createSellerTransportStore`, `createSellerTransportServerAuth` and
@@ -289,7 +290,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
     through the journal, which signs one new CREATE;
   - a throw (a withdrawn authorization included), another answer, or a journal
     that is not the one recorded for the order (a lost or replaced file, or none
-    recorded: `wallet_journal_changed`) keeps the delivery held with its cause.
+    recorded: `wallet_journal_changed`) keeps the delivery held with its cause;
+    an order recorded for a journal is signed only through it (held without one).
   A submission the SDK recorded as accepted and whose CREATE can no longer land
   (superseded) is not signed again: it stays held with that cause.
 - Payment evidence is anchored through `nativePaymentEvidence`'s
