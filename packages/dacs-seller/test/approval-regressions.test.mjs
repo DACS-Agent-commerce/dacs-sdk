@@ -417,15 +417,17 @@ async function unsyncedSignLine(t){
   fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');return fsyncSync(fd);};
   fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&++appends===2)throw new Error('TEST append failed');return openSync(path,flags,...rest);};
   syncBuiltinESMExports();
-  assert.equal(await f.p.authorizeHeld(r,true),'unsigned');
+  // Not 'unsigned': its sign line is still open on the ledger (cold F2).
+  await assert.rejects(f.p.authorizeHeld(r,true),{message:'TEST sync failed'});
  }finally{fs.fsyncSync=fsyncSync;fs.openSync=openSync;syncBuiltinESMExports();}
  assert.equal((await openSignRows(f)).length,1);
  return{f,r};
 }
-for(const [label,end] of [['decided again',(f,r)=>f.p.decide(r)],['released',(f,r)=>f.p.releaseHeld(r,'operator-released')],['settled as released',(f,r)=>f.p.settle(r,'released')]])
+for(const [label,end,stillOpen] of [['decided again',(f,r)=>assert.rejects(f.p.decide(r),{code:'seller_approval_pending'}),1],
+ ['released',(f,r)=>f.p.releaseHeld(r,'operator-released'),0],['settled as released',(f,r)=>f.p.settle(r,'released'),0]])
  test(`a request whose sign line failed to sync and clean up stays readable when it is ${label}`,async t=>{
   const{f,r}=await unsyncedSignLine(t);await end(f,r);
-  assert.equal((await openSignRows(f)).length,1);assert.equal((await f.policyFor().reconcile()).held.length,1);
+  assert.equal((await openSignRows(f)).length,stillOpen);assert.equal((await f.policyFor().reconcile()).held.length,stillOpen);
  });
 
 // A manual yes after payment waives exactly the cap or limit its attempt recorded; the others still refuse.
@@ -503,7 +505,14 @@ test('policy mode without its purchase and source context is refused',async t=>{
  assert.throws(()=>createExactOperatorApproval({...f.settings,sellerApproval:{mode:'policy'}}),TypeError);
 });
 
-
+// What a request holds is forgotten only once the ledger shows it ended (cold2 F1, cold2 F2, cold F2, rvd D-3).
+// failingAppends(t, n, skip): after `skip` more ledger append opens, the next n fail with EIO; returns the restore.
+function failingAppends(t,count,skip=0){
+ const{openSync}=fs;let left=count;
+ fs.openSync=(path,flags,...rest)=>{if(flags==='a'&&skip-->0)return openSync(path,flags,...rest);if(flags==='a'&&left>0){left--;throw Object.assign(new Error('TEST append failed'),{code:'EIO'});}return openSync(path,flags,...rest);};
+ syncBuiltinESMExports();
+ const restore=()=>{fs.openSync=openSync;syncBuiltinESMExports();};t.after(restore);return restore;
+}
 test('cold2 F1 a confirmation whose purchase reread failed is confirmed when retried',async t=>{
  let reads=0,failAt=null;const f=await fixture(t,async()=>{if(++reads===failAt)throw timeout();return null;});
  const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>true}),r=vetRequest();
@@ -517,9 +526,61 @@ test('rvc C-5 a confirmation without a node answer is false, writes nothing and 
  assert.equal(await a.confirm(undefined),false);assert.equal((await ledgerLines(f)).length,lines);
  assert.equal(await a.confirm(confirmationFor(r)),true);
 });
-
+for(const [label,release,reason] of [['settled as released',(f,r)=>f.p.settle(r,'released'),'wallet-released'],['released',(f,r)=>f.p.releaseHeld(r,'operator-released'),'operator-released']])
+ test(`cold2 F2 a decline whose release append failed is ended when later ${label}, and frees the budget`,async t=>{
+  const f=await fixture(t,()=>null,{limits:{maxWritesPerHour:1}}),r=vetRequest();
+  assert.equal((await f.p.decide(r)).outcome,'held');
+  const restore=failingAppends(t,1);await assert.rejects(f.p.authorizeHeld(r,false),{code:'EIO'});restore();
+  await release(f,r);
+  assert.deepEqual(await attemptReasons(f),[reason]);assert.equal(heldPolicyBudget((await f.read()).rows,T0+WEEK_MS).writes,0);
+  assert.equal(await composeSellerApproval({mode:'policy',policy:f.p,manual:()=>true})(vetRequest()),true);
+ });
+test('cold2 F2 a composer whose decline could not be released at once releases it as declined before it rejects',async t=>{
+ const f=await fixture(t,()=>null,{limits:{maxWritesPerHour:1}});let restore;
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{restore=failingAppends(t,1);return false;}});
+ await assert.rejects(a(vetRequest()),{code:'EIO'});restore();
+ assert.deepEqual(await attemptReasons(f),['manual-declined']);
+});
+test('a held sign line that could not be appended, nor released, is pending until released, then decided again',async t=>{
+ const f=await fixture(t),r=vetRequest();
+ assert.equal((await f.p.decide(r)).outcome,'held');
+ const restore=failingAppends(t,2);await assert.rejects(f.p.authorizeHeld(r,true),{code:'EIO'});restore();
+ await assert.rejects(f.p.decide(r),{code:'seller_approval_pending'});
+ await f.p.releaseHeld(r,'sign-authorization-failed');assert.deepEqual(await attemptReasons(f),['sign-authorization-failed']);
+ assert.equal((await f.p.decide(r)).outcome,'held');
+});
+test('an automatic sign line written but not synced, whose release failed, is pending until settled as released',async t=>{
+ const f=await fixture(t,purchase),r=payDem(),{fsyncSync}=fs;let syncs=0;
+ fs.fsyncSync=fd=>{if(fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath&&++syncs===1)throw new Error('TEST sync failed');return fsyncSync(fd);};
+ t.after(()=>{fs.fsyncSync=fsyncSync;syncBuiltinESMExports();});
+ const restore=failingAppends(t,1,1);await assert.rejects(f.p.prepare(r),{message:'TEST sync failed'});restore();fs.fsyncSync=fsyncSync;syncBuiltinESMExports();
+ assert.equal((await openSignRows(f)).length,1);await assert.rejects(f.p.prepare(r),{code:'seller_approval_pending'});
+ await f.p.settle(r,'released');assert.equal((await openSignRows(f)).length,0);assert.equal(await f.p.prepare(r),true);
+});
+test('cold F2 a Vet whose sign line failed to sync, and whose release failed, is not refused: the composer releases it and rejects, and a retry is approved',async t=>{
+ const f=await fixture(t,()=>null,{ledgerRetryMs:1}),r=vetRequest(),{fsyncSync}=fs;let armed=false,prompts=0,restore;
+ fs.fsyncSync=fd=>{if(armed&&fs.realpathSync(`/proc/self/fd/${fd}`)===f.evidencePath){armed=false;throw new Error('TEST sync failed');}return fsyncSync(fd);};
+ t.after(()=>{fs.fsyncSync=fsyncSync;syncBuiltinESMExports();});syncBuiltinESMExports();
+ // The first manual yes: its sign line is written but its sync fails, and the release of that line fails once.
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{if(++prompts===1){armed=true;restore=failingAppends(t,1,1);}return true;}});
+ await assert.rejects(a(r),{message:'TEST sync failed'});restore();
+ assert.equal((await openSignRows(f)).length,0);assert.deepEqual(await attemptReasons(f),['sign-authorization-failed']);
+ assert.equal(await a(r),true);
+});
+test('rvd D-3 stop resolves only after the held attempt a shutdown left unanswered is released',async t=>{
+ const f=await fixture(t),controller=new AbortController();let asked;const prompted=new Promise(done=>{asked=done;});
+ const manual=createExactOperatorApproval({...f.settings,signal:controller.signal,authorize:()=>{asked();return new Promise(()=>{});}});
+ const closing=assert.rejects(composeSellerApproval({mode:'policy',policy:f.p,manual})(vetRequest()),{code:'operator_closing'});
+ await prompted;controller.abort();await f.p.stop();
+ assert.deepEqual(await attemptReasons(f),['operator-released']);
+ await closing;assert.deepEqual(await attemptReasons(f),['operator-released']);
+});
 test('cold F3 a decision that finds a torn context line cuts it and decides, with no stop needed',async t=>{
  const f=await fixture(t,purchase,{ledgerRetryMs:1});t.after(()=>f.p.stop());
  await writeFile(f.evidencePath,'{"format":"dacs-node2-seller-context-admission/v1","event":"ho');
  assert.equal(await Promise.race([f.p.prepare(payDem()),new Promise(done=>setTimeout(done,2_000,'still waiting'))]),true);
+});
+test('cold F4 a release reason outside the ledger format is written as wallet-released',async t=>{
+ const f=await fixture(t),r=vetRequest();assert.equal((await f.p.decide(r)).outcome,'held');
+ await f.p.releaseHeld(r,'TEST not a reason');assert.deepEqual(await attemptReasons(f),['wallet-released']);
 });
