@@ -343,7 +343,9 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
       return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
     },
     readAccountNonce: async () => {
-      if (faults.readAccountNonce.shift() === 'throw') throw new Error('TEST account nonce read failed');
+      const fault = faults.readAccountNonce.shift();
+      if (typeof fault === 'function') await fault();
+      if (fault === 'throw') throw new Error('TEST account nonce read failed');
       return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
     },
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
@@ -930,6 +932,25 @@ test('a journal that cannot read a kept CREATE\'s fate signs nothing anew: the c
   assert.equal(work.journalVersion, 1, 'the owning journal decides supersession under its lock');
   assert.equal(work.anchorAnswer.txHash, w.signedCreate(address).hash);
   assert.equal(work.anchorOutcome, 'sent', 'the one new signature was sent');
+});
+
+// The kept CREATE's fate is read before a successor is signed. Credit lost to another job's
+// claim of the same transfer during that read signs nothing and broadcasts nothing.
+test('settlement credit lost while the wallet reads the account nonce signs no successor and keeps the claim held', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), other = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  assert.ok(w.signedCreate(address));
+  await w.purchase();
+  let contested = null;
+  w.faults.readAccountNonce.push(async () => { contested = await other.claim(tx); });
+  const answer = await p.claim(tx);
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' }, 'another job claimed the transfer during the nonce read');
+  assert.notEqual(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(w.effects.signed.length, 1, 'no successor is signed once the credit is contested');
+  assert.equal(new Set(w.effects.broadcast).size, 1, 'only the kept bytes were ever broadcast');
+  assert.equal(w.createsAt(address), 0);
 });
 
 // Settlement credit (SB-2): one transfer claimed by two jobs gives neither

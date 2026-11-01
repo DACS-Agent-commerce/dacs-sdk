@@ -94,7 +94,7 @@ test('six live distinct writes enforce the job cap', async t => {
   assert.equal(await f.admission.reserve(f.reserve), 'job-write-limit');
 });
 test('bad clocks and unreadable ledgers fail before appending with their cause', async t => {
-  const f = await fixture(t); await writeFile(f.evidencePath, '{'); const before = await text(f);
+  const f = await fixture(t); await writeFile(f.evidencePath, '{\n'); const before = await text(f);
   await assert.rejects(f.admission.reserve(f.reserve), error => error.code === 'seller_context_ledger_unreadable' && error.cause instanceof SyntaxError); assert.equal(await text(f), before);
   await writeFile(f.evidencePath, ''); const bad = createSellerContextAdmission({ ...f.config, now: () => -1 }); await assert.rejects(bad.reserve(f.reserve)); assert.equal(await text(f), '');
 });
@@ -128,11 +128,87 @@ test('a release line torn by a crash does not block a reserve for another job an
   assert.equal(await f.admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), null);
   assert.deepEqual(parsePolicyLedger(await text(f)).rows.map(row => [row.contextHold, row.released]), [['TEST hold', false], ['TEST second', false]]);
 });
-for (const [label, value] of [['a complete malformed context line', `${tornHold}\n`], ['an unterminated line not shown to be a context line', '{"format":"dacs-node2-se']]) test(`${label} is still refused and kept`, async t => {
+const CONTEXT_PREFIX = '{"format":"dacs-node2-seller-context-admission/v1",';
+for (const [label, value] of [['a complete malformed context line', `${tornHold}\n`], ['an unterminated line that has left the context prefix', '{"format":"dacs-node2-operator-appr'],
+  ['an unterminated line that leaves the context prefix at its last byte', `${CONTEXT_PREFIX.slice(0, -1)};`]]) test(`${label} is still refused and kept`, async t => {
   const f = await fixture(t); await writeFile(f.evidencePath, value);
   await assert.rejects(f.admission.reserve(f.reserve), error => error.code === 'seller_context_ledger_unreadable');
   await assert.rejects(f.admission.release({ jobId: JOB, hold: f.reserve.hold }));
   assert.equal(await text(f), value);
+});
+
+// A failed append must not leave a torn line behind, and a line a crash did tear,
+// however short, is cut by the next transaction.
+const tearAt = [1, 5, 30, 59, 60, 70];
+const contextLine = row => JSON.stringify({ format: 'dacs-node2-seller-context-admission/v1', ...row });
+const holdLine = contextLine({ event: 'hold', holdId: 'TEST hold', jobId: JOB, effect, writes: 1, totalOs: '4', recordedAt: 300 });
+const releaseLine = contextLine({ event: 'release', holdId: 'TEST hold', jobId: JOB, recordedAt: 300 });
+const heldIds = async f => parsePolicyLedger(await text(f)).rows.map(row => [row.contextHold, row.released]);
+for (const length of tearAt) test(`a hold line torn at ${length} bytes by a crash is cut and the reserve retry reserves once`, async t => {
+  const f = await fixture(t); await writeFile(f.evidencePath, holdLine.slice(0, length));
+  assert.equal(await f.admission.reserve(f.reserve), null);
+  assert.deepEqual(await heldIds(f), [['TEST hold', false]]);
+});
+for (const length of tearAt) test(`a release line torn at ${length} bytes by a crash is cut and the release retry ends the hold`, async t => {
+  const f = await fixture(t); await f.admission.reserve(f.reserve); await appendFile(f.evidencePath, releaseLine.slice(0, length));
+  assert.deepEqual(await releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 300 }), ['TEST hold']);
+  assert.deepEqual(await heldIds(f), [['TEST hold', true]]);
+});
+const eio = () => Object.assign(new Error('TEST append failed'), { code: 'EIO' });
+// Tears the nth context line written: only `length` bytes reach the file, then EIO.
+async function withTornAppend(length, work, nth = 1) {
+  const original = fs.writeSync, cause = eio(); let seen = 0;
+  fs.writeSync = (fd, buffer, offset, count, position) => {
+    if (!Buffer.from(buffer).includes('dacs-node2-seller-context-admission') || ++seen !== nth) return original(fd, buffer, offset, count, position);
+    original(fd, buffer, offset, Math.min(length, count)); throw cause;
+  };
+  syncBuiltinESMExports();
+  try { return await work(cause); } finally { fs.writeSync = original; syncBuiltinESMExports(); }
+}
+for (const length of tearAt) test(`a reserve whose append tears at ${length} bytes leaves the ledger unchanged and the retry reserves once`, async t => {
+  const f = await fixture(t);
+  await withTornAppend(length, cause => assert.rejects(f.admission.reserve(f.reserve), error => error === cause));
+  assert.equal(await text(f).catch(() => ''), '');
+  assert.equal(await f.admission.reserve(f.reserve), null);
+  assert.deepEqual(await heldIds(f), [['TEST hold', false]]);
+});
+test('a release whose append tears leaves the hold open and the retry releases it', async t => {
+  const f = await fixture(t); await f.admission.reserve(f.reserve); const before = await text(f);
+  await withTornAppend(5, cause => assert.rejects(f.admission.release({ jobId: JOB, hold: f.reserve.hold }), error => error === cause));
+  assert.equal(await text(f), before);
+  assert.deepEqual(await releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 300 }), ['TEST hold']);
+  assert.equal(await f.admission.reserve({ ...f.reserve, jobId: otherJob, hold: 'TEST second' }), null);
+});
+test('releasing two holds keeps the first release when the second append tears, and the retry ends the second', async t => {
+  const f = await fixture(t);
+  await f.admission.reserve({ ...f.reserve, hold: 'TEST first' }); await f.admission.reserve({ ...f.reserve, hold: 'TEST second' });
+  await withTornAppend(5, cause => assert.rejects(releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 300 }), error => error === cause), 2);
+  assert.deepEqual(await heldIds(f), [['TEST first', true], ['TEST second', false]]);
+  assert.deepEqual(await releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 300 }), ['TEST second']);
+});
+test('a file sync that fails after a complete line is undone and the retry reserves once', async t => {
+  const f = await fixture(t), original = fs.fsyncSync, originalWrite = fs.writeSync, cause = eio(); let written = false, failed = false;
+  try {
+    fs.writeSync = (...args) => { const count = originalWrite(...args); if (Buffer.from(args[1]).includes('dacs-node2-seller-context-admission')) written = true; return count; };
+    fs.fsyncSync = fd => { if (written && !failed) { failed = true; throw cause; } return original(fd); };
+    syncBuiltinESMExports();
+    await assert.rejects(f.admission.reserve(f.reserve), error => error === cause);
+  } finally { fs.fsyncSync = original; fs.writeSync = originalWrite; syncBuiltinESMExports(); }
+  assert.equal(failed, true); assert.equal(await text(f), '');
+  assert.equal(await f.admission.reserve(f.reserve), null);
+  assert.deepEqual(await heldIds(f), [['TEST hold', false]]);
+});
+test('a failed undo reports the append error and the torn tail is cut by the next transaction', async t => {
+  const f = await fixture(t), originalTruncate = fs.ftruncateSync, undoFailure = new Error('TEST undo failed');
+  try {
+    fs.ftruncateSync = () => { throw undoFailure; }; syncBuiltinESMExports();
+    await withTornAppend(5, cause => assert.rejects(f.admission.reserve(f.reserve), error => error === cause && error.rollbackError === undoFailure));
+  } finally { fs.ftruncateSync = originalTruncate; syncBuiltinESMExports(); }
+  assert.equal(await text(f), '{"for');
+  assert.equal(await f.admission.reserve(f.reserve), null);
+  assert.deepEqual(await heldIds(f), [['TEST hold', false]]);
+  await appendFile(f.evidencePath, '{"for');
+  assert.deepEqual(await releaseSellerContextHolds({ evidencePath: f.evidencePath, jobId: JOB, now: () => 300 }), ['TEST hold']);
 });
 
 // The hold is taken at 300. Each clock gives the attempt's five lines their times.
@@ -264,12 +340,14 @@ test('transaction locking preserves one-leaf parent creation and refuses two mis
   await assert.rejects(createSellerContextAdmission({ ...f.config, evidencePath: missing }).reserve(f.reserve), error => error.code === 'ENOENT');
 });
 
-test('final effect release covers only that effect and its resume owners',async t=>{
- const f=await fixture(t),base={...f.reserve,hold:effect};
- for(const hold of [effect,`${effect}:owner`,`${'b'.repeat(64)}:other`])assert.equal(await f.admission.reserve({...base,hold}),null);
+// A hold id ends exactly that hold. The id of an effect ends every hold taken
+// for that effect, whatever the holds are called, and no other effect's.
+test('releasing a hold id ends only that hold, and releasing an effect ends only that effect\'s holds',async t=>{
+ const f=await fixture(t),other='b'.repeat(64);
+ for(const [hold,holdEffect] of [[`${effect}:o1`,effect],[`${effect}:o2`,effect],[`${effect}:x`,other]])assert.equal(await f.admission.reserve({...f.reserve,effect:holdEffect,hold}),null);
+ const open=async()=>parsePolicyLedger(await text(f)).rows.filter(row=>row.contextHold&&!row.released).map(row=>row.contextHold);
+ await f.admission.release({jobId:JOB,hold:`${effect}:o1`});
+ assert.deepEqual(await open(),[`${effect}:o2`,`${effect}:x`]);
  await f.admission.release({jobId:JOB,hold:effect});
- const rows=parsePolicyLedger(await text(f)).rows.filter(row=>row.contextHold);
- assert.equal(rows.find(row=>row.contextHold===effect).released,true);
- assert.equal(rows.find(row=>row.contextHold===`${effect}:owner`).released,true);
- assert.equal(rows.find(row=>row.contextHold===`${'b'.repeat(64)}:other`).released,false);
+ assert.deepEqual(await open(),[`${effect}:x`]);
 });
