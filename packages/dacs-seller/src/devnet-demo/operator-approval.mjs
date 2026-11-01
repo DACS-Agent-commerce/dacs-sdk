@@ -686,23 +686,25 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
 }
 
 const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePath,{format:CONTEXT_FORMAT,...line});
-// A crash in appendContextLine can leave its line torn: the ledger's last
-// line, unterminated, not complete JSON, and starting as a context line does.
-// That append never returned, so it reserved or released nothing; under the
-// policy lock it is cut (by bytes) and synced, and the retry appends it whole.
-// Any other unterminated or malformed line is left for the parser to refuse.
+// A failed append undoes itself (appendContextLine), but a crash or a failed
+// undo can still leave its line torn: the ledger's last line, unterminated, not
+// complete JSON, and as far as it goes the start of a context line, however
+// short. That append never returned, so it reserved or released nothing; under
+// the policy lock it is cut (by bytes) and synced, and the retry appends it
+// whole. Any other unterminated or malformed line is left for the parser to refuse.
 const TORN_CONTEXT_PREFIX=Buffer.from(`{"format":${JSON.stringify(CONTEXT_FORMAT)},`);
 async function cutTornContextLine(evidencePath){
   let bytes;
   try{bytes=await readFile(evidencePath);}catch(error){if(error.code==='ENOENT')return;throw error;}
   const start=bytes.lastIndexOf(0x0a)+1,tail=bytes.subarray(start);
-  if(!tail.subarray(0,TORN_CONTEXT_PREFIX.length).equals(TORN_CONTEXT_PREFIX))return;
+  const shared=Math.min(tail.length,TORN_CONTEXT_PREFIX.length);
+  if(!shared||!tail.subarray(0,shared).equals(TORN_CONTEXT_PREFIX.subarray(0,shared)))return;
   try{JSON.parse(tail.toString('utf8'));return;}catch{/* torn: cut below */}
   truncateSync(evidencePath,start);
   syncContextLedger(evidencePath);
 }
 
-// Ends a job's open context holds (only holdId when given) with one synced
+// Ends a job's open context holds (only holdId, or the holds of the effect holdId names, when given) with one synced
 // release line each, under the policy lock, and resolves the released hold
 // ids. A ledger it cannot read, or a clock before a hold it would end, is
 // refused before anything is written. With nothing open it syncs the job's
@@ -712,7 +714,7 @@ export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Dat
     const at=now(),released=[];
     await cutTornContextLine(evidencePath);
     const rows=(await readPolicyLedger(evidencePath)).rows;
-    const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId||row.contextHold.startsWith(holdId+':')));
+    const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId||row.effect===holdId));
     if(!Number.isSafeInteger(at)||at<0||openHolds.some(row=>at<row.recordedAt))throw new RangeError('context release cannot predate its hold');
     if(!openHolds.length&&rows.some(row=>row.contextHold&&row.jobId===jobId))syncContextLedger(evidencePath);
     for(const open of openHolds){
