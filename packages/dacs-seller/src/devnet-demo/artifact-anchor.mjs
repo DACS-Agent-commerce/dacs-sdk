@@ -291,13 +291,17 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // authorize (optional): the caller's own check, called under this address's
   // lock and awaited immediately before storing the intent. Anything but true refuses:
   // no intent is stored and nothing is sent. Without it, publish is unchanged.
+  // authorizeSigning (optional): the caller's check that the wallet runs after
+  // its approval answer, right before it signs. It needs a wallet that says it
+  // runs it (guardsSigning); with any other wallet nothing is stored or sent.
   // reaskDenied (optional, a Listing only): a retained intent the packaged
   // wallet refused at its approval (denied: user_rejected, before it signed
   // anything) is replaced under this lock by a fresh intent and asked again.
   // Every other retained intent is only read back, as without it, apart from
   // a 'closing' one (a shutdown ended its approval), which is always asked again.
-  async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,reaskDenied=false}) {
+  async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false}) {
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
+    if(authorizeSigning!==undefined&&(typeof authorizeSigning!=='function'||wallet.guardsSigning!==true)) fail('not-authorized','the wallet cannot check this write right before it signs; no intent was stored and nothing was sent');
     if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,writer,verifier)) fail('invalid','demo artifact kind, producer, or signed shape differs');
     if(artifactKind==='SettlementEvidence'&&logicalAddress!==`dacs4:evidence:${artifact.jobId}`)fail('invalid','delivery evidence address differs from its job');
     const value=clone(artifact), jobId=value.jobId ?? `listing:${value.listingId}`, receiptContentHash=contentHash(value);
@@ -379,7 +383,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         fail('indeterminate','source wallet nonce lane changed during CREATE reservation');
       }
       const answer=await wallet.request({method:'sendTransaction',params:[{kind:DEVNET_DEMO_ARTIFACT_KIND,profile:DEVNET_AGREEMENT_PROFILE,network,owner:writer,artifactKind,jobId,
-        logicalAddress,contentHash:receiptContentHash,envelopeHash:exactHash(value),transaction}]});
+        logicalAddress,contentHash:receiptContentHash,envelopeHash:exactHash(value),transaction}]},...(authorizeSigning?[{authorize:authorizeSigning}]:[]));
       if(answer?.error?.code===OPERATOR_CLOSING) {
         // Not a decision: the custody reports it only when the approval was
         // cut before signing. The intent stays askable (never denied).
