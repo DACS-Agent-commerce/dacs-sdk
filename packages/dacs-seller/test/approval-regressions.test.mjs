@@ -503,3 +503,17 @@ test('policy mode without its purchase and source context is refused',async t=>{
  assert.throws(()=>createExactOperatorApproval({...f.settings,sellerApproval:{mode:'policy'}}),TypeError);
 });
 
+
+test('cold2 F1 a confirmation whose purchase reread failed is confirmed when retried',async t=>{
+ let reads=0,failAt=null;const f=await fixture(t,async()=>{if(++reads===failAt)throw timeout();return null;});
+ const a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>true}),r=vetRequest();
+ assert.equal(await a(r),true);failAt=reads+1;
+ await assert.rejects(a.confirm(confirmationFor(r)),{code:'ETIMEDOUT'});
+ assert.equal(await a.confirm(confirmationFor(r)),true);assert.equal((await f.read()).rows.find(row=>row.signAuthorized).confirmed,'approved');
+});
+test('rvc C-5 a confirmation without a node answer is false, writes nothing and leaves the write confirmable',async t=>{
+ const f=await fixture(t,purchase),a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>assert.fail('no prompt')}),r=payDem();
+ assert.equal(await a(r),true);const lines=(await ledgerLines(f)).length;
+ assert.equal(await a.confirm(undefined),false);assert.equal((await ledgerLines(f)).length,lines);
+ assert.equal(await a.confirm(confirmationFor(r)),true);
+});

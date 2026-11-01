@@ -340,7 +340,15 @@ export function composeSellerApproval({mode,policy,manual}){
     if(answer==='signed')prepared=request;
     return answer==='signed';
   };
-  approve.confirm=async(validity)=>{const current=prepared;prepared=null;return current?policy(current,validity):false;};
+  // The write stays prepared until its confirmation gate answers: a gate that rejects (a purchase read that
+  // failed, a stop) decided nothing, and the same confirmation may be retried.
+  approve.confirm=async(validity)=>{
+    const current=prepared;
+    if(!current||validity===undefined)return false;
+    const confirmed=await policy(current,validity);
+    if(prepared===current)prepared=null;
+    return confirmed;
+  };
   approve.settle=(request,outcome)=>{if(outcome==='released'&&prepared===request)prepared=null;return policy.settle(request,outcome);};
   return approve;
 }
