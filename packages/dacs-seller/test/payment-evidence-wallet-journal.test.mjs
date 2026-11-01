@@ -21,6 +21,7 @@ const CRASH_CHILD = fileURLToPath(new URL('./helpers/payment-evidence-wallet-cra
 // `calls.signed` lists the hash of each signature signCreate answered, in
 // order, and `calls.signedContents` its signed content. `file: true` keeps the
 // chain in a file; `reload()` reads it again after another process changed it.
+// A fault that is a function runs when that wallet call is made, before it answers.
 function wallet(t, { file = false } = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wallet-journal-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -34,6 +35,7 @@ function wallet(t, { file = false } = {}) {
     signCreate: async (asked) => {
       calls.sign++;
       const fault = faults.sign.shift();
+      if (typeof fault === 'function') fault();
       if (fault === 'throw') throw new Error('TEST wallet failed before signing');
       if (fault === 'malformed') return { signedTransaction: '', txHash: 'not-a-hash' };
       if (fault === 'no-nonce') { const { nonce: _nonce, ...answer } = await node.signCreate(asked); return answer; }
@@ -51,6 +53,7 @@ function wallet(t, { file = false } = {}) {
     readAccountNonce: async () => {
       calls.reads.push('nonce');
       const fault = faults.nonce.shift();
+      if (typeof fault === 'function') fault();
       if (fault === 'throw') throw new Error('TEST nonce read failed');
       if (fault === 'hang') return new Promise(() => {});
       if (fault === 'malformed') return '7';
@@ -59,6 +62,7 @@ function wallet(t, { file = false } = {}) {
     readTransactionState: async ({ txHash: hash }) => {
       calls.reads.push('state');
       const fault = faults.state.shift();
+      if (typeof fault === 'function') fault();
       if (fault === 'throw') throw new Error('TEST state read failed');
       if (fault === 'malformed') return 'unknown';
       return { state: node.transactionState(hash), checkedThroughBlock: node.accountNonce() };
@@ -748,15 +752,45 @@ for(const expected of [undefined,'TEST-other-owner'])test(`owner-checked evidenc
  assert.equal(w.calls.sign,0);assert.equal(w.calls.broadcast.length,0);
 });
 
-test('owner-checked preparation rechecks the job authorization before signing and broadcasting',async t=>{
+test('owner-checked preparation rechecks the job authorization right before signing, and again before broadcasting',async t=>{
  const w=wallet(t),journal=w.open();t.after(()=>journal.close());
  await assert.rejects(journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,authorize:async()=>false}),{code:'wallet_not_authorized'});
  assert.equal(w.calls.sign,0);
  let checks=0;
  await assert.rejects(journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,authorize:()=>++checks===1}),{code:'wallet_not_authorized'});
- const kept=await journal.readSignedProjection(w.input());assert.ok(kept);assert.equal(w.calls.broadcast.length,0);
+ assert.equal(w.calls.sign,0,'withdrawn after entry: nothing is signed');assert.equal(await journal.readSignedProjection(w.input()),null);
  await journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,authorize:()=>true});
  assert.equal(w.calls.signed.length,1);assert.equal(w.calls.broadcast.length,1);assert.equal(w.chain.applied.length,1);
+});
+
+test('authorization withdrawn while the wallet signs keeps that one signature and broadcasts nothing until it is back',async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ let allowed=true;const input={...w.input(),expectedJournalId:journal.journalId,authorize:()=>allowed};
+ w.faults.sign.push(()=>{allowed=false;});
+ await assert.rejects(journal.ensureEvidence(input),{code:'wallet_not_authorized'});
+ assert.equal(w.calls.sign,1);assert.equal(w.calls.broadcast.length,0);assert.ok(await journal.readSignedProjection(w.input()));
+ allowed=true;await journal.ensureEvidence(input);
+ assert.equal(w.calls.signed.length,1);assert.equal(w.calls.broadcast.length,1);assert.equal(w.chain.applied.length,1);
+});
+
+// The kept CREATE's fate is read before a successor is signed, and those reads take time.
+// Authorization lost during either read, as a refusal or as a thrown fence error, signs
+// nothing, leaves the dead CREATE live (the supersession is part of the refused step), and
+// once authorization is back exactly one successor is signed and applied.
+for(const [read,lost] of [['nonce','withdrawn'],['state','withdrawn'],['nonce','fenced'],['state','fenced']])test(`authorization ${lost} during the kept CREATE's ${read} read signs no successor`,async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ w.faults.broadcast.push('drop');const first=await journal.anchorEvidence(w.input());w.other();w.other();
+ let gone=false;
+ const authorize=()=>{if(gone&&lost==='fenced')throw Object.assign(new Error('TEST job fence lost'),{code:'seller_state_fenced'});return !gone;};
+ const input={...w.input(),expectedJournalId:journal.journalId,attempt:{outcome:'sent',answer:first},authorize};
+ w.faults[read].push(()=>{gone=true;});
+ await assert.rejects(journal.ensureEvidence(input),{code:lost==='fenced'?'seller_state_fenced':'wallet_not_authorized'});
+ assert.equal(w.calls.sign,1,'no successor is signed');assert.equal(w.calls.broadcast.length,1);
+ assert.equal((await journal.readSignedProjection(w.input())).hash,first.txHash,'the dead CREATE stays the live row');
+ const db=new DatabaseSync(w.path,{readonly:true});
+ try{assert.equal(db.prepare('SELECT COUNT(*) AS n FROM evidence_creates WHERE superseded_at IS NOT NULL').get().n,0);}finally{db.close();}
+ gone=false;const retried=await journal.ensureEvidence(input);
+ assert.equal(w.calls.sign,2,'one successor once authorization is back');assert.notEqual(retried.txHash,first.txHash);assert.equal(w.chain.applied.length,1);
 });
 
 test('an accepted legacy name survives a lost successor broadcast answer',async t=>{
