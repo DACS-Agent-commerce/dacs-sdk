@@ -315,9 +315,12 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
     return { live: null, highestNonce, superseded: { txHash: live.txHash, reason: checked.reason } };
   }
 
-  async function prepareAnchor(input) {
+  // beforeSign runs after the kept CREATE's fate is read and just before signCreate: those reads
+  // take time, and a caller's authorization must hold at the signature, not only on entry.
+  async function prepareAnchor(input, beforeSign = async () => {}) {
     let { live: signed, highestNonce, applied } = await liveFor(input);
     if (!signed) {
+      await beforeSign();
       const answer = await withDeadline((signal) => signCreate(structuredClone(input), { signal }),
         () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
@@ -381,7 +384,7 @@ export function createPaymentEvidenceWalletJournal({ path, signCreate, broadcast
       // a lost broadcast answer cannot leave the caller naming a stale row.
       inspectAttempt(input,attempt,true,accepted?.value===binding);
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
-      return prepareAnchor(input);
+      return prepareAnchor(input,permitted);
     });
     if(!signed.applied){await permitted();await sendSigned(signed);}
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
