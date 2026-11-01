@@ -82,14 +82,26 @@ seller issued. `createPaymentEvidenceWalletJournal` composes the payment
 evidence anchor and `reconcilePaymentEvidence` from the operator's wallet
 (below).
 `validateListing` reads a Listing through the core SDK and resolves its rail
-from a `railAuthority` (or, for tests only, `simulatedFixture: true`). The other root
-exports are the parts the host composes, for operators who compose their own:
+from a `railAuthority` (or, for tests only, `simulatedFixture: true`).
+`agreementInput`, `listingPin` and `contributionVerifier` are the Agreement
+derivation both sides perform, the Listing pin an Agreement names and the
+check of a party's Agreement contribution; `SellerAgentError` is the seller's
+refusal with its stable code and HTTP status. The other root exports are the
+parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerTransportServerAuth` and the buyer side `createSellerAgentClient`
 and `createSellerTransportClientAuth`. The incomplete `createSellerAgent` constructor
 stays outside the root API, as required by [PROFILE.json](PROFILE.json).
-The kit's other modules are reachable
-by path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
+
+The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
+`buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
+`buildListingDraft`, `listingSigningMessage`, `attachListingSignature`,
+`validateListing`, `agreementInput`, `listingPin`, `contributionVerifier`,
+`SellerAgentError`, `createPaymentEvidenceWalletJournal`,
+`createSellerHttpHandler`, `createSellerAgentClient`,
+`createSellerTransportStore`, `createSellerTransportServerAuth` and
+`createSellerTransportClientAuth`. The kit's other modules are reachable by
+path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
 recovery. It must synchronously return identical JSON for the same Agreement,
@@ -564,19 +576,23 @@ status) is a simulation contract, not the pinned node's genesis RPC shape.
 
 ## Package checks
 
-From the repository root, build and provision the locked smoke consumer before testing:
+From the repository root, build the core, prepare a locked smoke consumer in a
+new directory outside the checkout, then test against it:
 
 ```sh
 npm run build
-npm run seller:prepare
+export DACS_SELLER_SMOKE_DIR=/tmp/dacs-seller-consumer   # must not exist yet
+npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
 npm run seller:test
 ```
 
-Setup derives the consumer graph from `package-lock.json`, packs this checkout,
-and installs the native SQLite binding. Tests use that prepared environment
-offline and run every executable seller file once. Root `npm test` runs the
-separate TypeScript suite. Existing unresolved stack failures still block a
-complete seller-suite pass. For another setup, pass a directory to
-`seller:prepare -- <path>` and set `DACS_SELLER_SMOKE_DIR` to it for tests: a
-completed setup is reused, an interrupted or outdated one is rebuilt, and a
-directory that is not a seller consumer setup is never replaced.
+Setup creates that directory, packs this checkout's core and seller into it,
+derives the consumer lock from `package-lock.json` (every JavaScript tarball
+pinned by integrity) and runs `npm ci`, whose `better-sqlite3` install script
+fetches or builds the native binding. It writes `prepared.json` last. It
+refuses a path that already exists and leaves it untouched; a failed setup
+removes only the directory it created. Without a directory it creates a fresh
+temporary one and prints its path. Tests run every executable seller file once
+and use the prepared consumer offline; they fail with "prepare a fresh
+directory" when `prepared.json` does not match this checkout's packed files,
+lock or Node runtime. Root `npm test` runs the separate TypeScript suite.
