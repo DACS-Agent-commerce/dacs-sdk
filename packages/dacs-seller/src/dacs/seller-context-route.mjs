@@ -10,9 +10,6 @@ import { listingPin } from './purchase-protocol.mjs';
 import { SellerRefusedError, sellerFailureAttempt } from './seller-http.mjs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_CONTEXT_SCOPE_KEYS, SellerTransportError, sellerContextScopeHash, sellerTransportEffect } from './seller-transport-auth.mjs';
 
-// The same bound as the other authenticated seller calls: the seller waits
-// for both Vet CREATEs inside this one call.
-export const SELLER_CONTEXT_TIMEOUT_MS = 240000;
 // Per buyer: five accepted starts per rolling hour.
 // Overall, 12 starts of two Vet CREATEs fill the default 24 policy writes an
 // hour (operator-approval.mjs SELLER_POLICY_DEFAULTS). Counted from the
@@ -72,7 +69,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
   };
   async function admitOwned(reservation,request,store,writes) {
     const {jobId}=request,effect=reservation.effectKey,resumed=reservation.resumed===true;
-    const hold=resumed?`${effect}:${reservation.owner}`:effect;
+    const hold=`${effect}:${reservation.owner}`;
     let problem,failure;
     try { problem=await admitWrites({jobId,effect,writes,hold}); }
     catch(cause) { failure={cause};problem='operation_uncertain'; }
@@ -153,12 +150,12 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       requireJobId(body?.scope?.jobId);
       return resolveBuyer(structuredClone(body), { writable: () => writable(body.scope.jobId, body.scope.buyer) });
     },
-    // Every finished attempt releases its unused holds; an uncertain effect
-    // stays fenced and an authenticated resume reserves fresh capacity.
+    // A finished attempt releases only its own hold (one per journal owner); an
+    // uncertain effect stays fenced and an authenticated resume reserves fresh capacity.
     settled: (contextHold)=>{
       if(!contextHold?.hold)return;
       requireJobId(contextHold.jobId);
-      return release(contextHold.jobId,contextHold.hold.split(':')[0]);
+      return release(contextHold.jobId,contextHold.hold);
     },
     // An uncertain step is answered from both Vet records read back and
     // verified; nothing is written or run again. Failing that, a step a
@@ -174,7 +171,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       try { cut = await resumable(structuredClone(body)); } catch { return null; }
       return Number.isSafeInteger(cut?.writes) && cut.writes > 0 && cut.writes <= VET_WRITES ? { disposition: 'resume', writes: cut.writes } : null;
     },
-    // Reserve the new journal owner before taking its hold. A budget refusal
+    // Reserve the new journal owner before taking its hold, then release the previous owner's exact hold.
     resume: async(reservation,request,store,{writes})=>{
       requireJobId(request?.jobId);
       if(typeof store?.resume!=='function')return null;
@@ -182,7 +179,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       if(knownJob!==null && await knownJob(request.jobId,request.buyer)!==true)return null;
       let resumed;
       try { resumed=store.resume(reservation,request); } catch { return null; }
-      await release(request.jobId,resumed.effectKey);
+      await release(request.jobId,`${reservation.effectKey}:${reservation.owner}`);
       return admitOwned(resumed,request,store,writes);
     },
   });
@@ -244,8 +241,8 @@ function checkedAnswer(answer, { scope, sellerScope }) {
 // (seller-http.mjs) for this purchase, signing with the custody buyer or the
 // purchase's delegated session key. The plugin's account and operation ids
 // stay out of the request. Only the request saved on the purchase before its
-// first send (protocol-purchases.mjs sellerContextRequest) is ever sent, so a
-// retry sends exactly the same bytes.
+// first send, `{ scope, buyerBundle }` with the exact seller scope, is ever
+// sent, so a retry sends exactly the same bytes.
 export function createSellerContextClient({ clientFor }) {
   if (typeof clientFor !== 'function') throw new TypeError('the seller context client needs an authenticated seller client per purchase');
   return Object.freeze({
@@ -253,9 +250,9 @@ export function createSellerContextClient({ clientFor }) {
       requireJobId(scope?.jobId);
       const { account, operation: operationId, ...sellerScope } = scope;
       if (!keys(sellerScope, SELLER_CONTEXT_SCOPE_KEYS)) throw new TypeError('the Agreement-context scope differs from the seller context request');
-      const client = clientFor(operation, sellerContextScopeHash(sellerScope));
       const saved = operation?.state?.protocol?.sellerContextRequest;
-      if (!record(saved) || saved.generatedAt !== sellerScope.generatedAt || !same(saved.buyerBundle, buyerIdentityBundle)) throw new TypeError('the context request differs from the one saved on the purchase; nothing was sent');
+      if (!record(saved) || !same(saved.scope, sellerScope) || !same(saved.buyerBundle, buyerIdentityBundle)) throw new TypeError('the context request differs from the one saved on the purchase; nothing was sent');
+      const client = clientFor(operation, sellerContextScopeHash(sellerScope));
       let answer;
       try { answer = await client.agreementContext(JSON.parse(canonicalize({ scope: sellerScope, buyerIdentityBundle: saved.buyerBundle }))); }
       catch (error) {
