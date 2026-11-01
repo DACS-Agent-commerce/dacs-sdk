@@ -9,8 +9,9 @@ qualified live deployment; unsupported qualification stays blocked.
 The kit has one purchase source: the seller agent's durable sessions. It has
 one Vet/context mode: the authenticated context route. There is no app database
 resolver or context switch. The standalone host (README.md) does not mount the
-context route; a host that mounts it must wire these modules as described here,
-including the open items below.
+context route; a host that mounts it passes `createSellerContextRoute` (a root
+export) as the `context` of `createSellerHttpHandler`, with
+`createSellerTransportServerAuth` as its `authentication`, as described here.
 
 A signed context request proves who asked and binds the job, Listing, bundle,
 terms and request bytes. It does not prove that a buyer has not cancelled its
