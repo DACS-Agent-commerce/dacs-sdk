@@ -595,6 +595,19 @@ test('cold F3 a decision that finds a torn context line cuts it and decides, wit
  await writeFile(f.evidencePath,'{"format":"dacs-node2-seller-context-admission/v1","event":"ho');
  assert.equal(await Promise.race([f.p.prepare(payDem()),new Promise(done=>setTimeout(done,2_000,'still waiting'))]),true);
 });
+// Only `{"format":"dacs-node2-seller-` is shared with the attempt and sign lines; one byte more is a context line.
+const SHARED_WITH_ATTEMPT='{"format":"dacs-node2-seller-';
+test('a decision leaves a torn tail that also starts an attempt line, held and unprompted until it is repaired',async t=>{
+ const f=await fixture(t,purchase,{...OVER_CAP,ledgerRetryMs:1});let prompts=0;await writeFile(f.evidencePath,SHARED_WITH_ATTEMPT);
+ const waiting=ledgerWait(t),a=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{prompts++;return true;}}),pending=a(payDem());
+ await waiting;assert.equal(prompts,0);assert.equal(await readFile(f.evidencePath,'utf8'),SHARED_WITH_ATTEMPT);
+ await f.p.stop();await assert.rejects(pending,{code:'seller_approval_stopped'});
+});
+test('a decision cuts a torn tail that only a context line starts and decides, with no stop needed',async t=>{
+ const f=await fixture(t,purchase,{ledgerRetryMs:1});t.after(()=>f.p.stop());
+ await writeFile(f.evidencePath,`${SHARED_WITH_ATTEMPT}c`);
+ assert.equal(await Promise.race([f.p.prepare(payDem()),new Promise(done=>setTimeout(done,2_000,'still waiting'))]),true);
+});
 test('cold F4 a release reason outside the ledger format is written as wallet-released',async t=>{
  const f=await fixture(t),r=vetRequest();assert.equal((await f.p.decide(r)).outcome,'held');
  await f.p.releaseHeld(r,'TEST not a reason');assert.deepEqual(await attemptReasons(f),['wallet-released']);
