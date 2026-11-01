@@ -12,9 +12,10 @@ import {agreementInput,contributionVerifier,listingPin} from '../../src/dacs/pur
 import {createSellerDurableState} from '../../src/dacs/seller-durable-state.mjs';
 import {createSellerAgent,buildReport} from '../../src/dacs/seller-agent.mjs';
 import {buildStorageProgramCreatePayload,deriveStorageAddress} from '../../src/dacs/wallet-transactions.mjs';
-export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false}={}){
+// memory: an agent with no durable directory (no job fence, no store), kept open; it cannot be reopened.
+export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false,memory=false}={}){
  const seller={...sellerKey,sign:sellerKey.signBytes},buyer={...buyerKey,sign:buyerKey.signBytes},dir=mkdtempSync(join(tmpdir(),'TEST-fixture-payment-')),listing=fixtureListing(sellerKey,{now:NOW}),pin=listingPin(listing),anchors=localAnchor({now:()=>NOW+2000}),agreements=new Map(),controls={observation:null};
- const config={signer:seller,listing,anchors,durableDirectory:dir,commitOnSignature:early,now:()=>NOW+2000,simulatedFixture:true,observeDemosTransfer:async hash=>controls.observation??{status:'included',txHash:hash,payer:buyer.address,payee:seller.address,amountOs:'2500000000',blockNumber:8,includedAt:NOW+3000}};
+ const config={signer:seller,listing,anchors,...(memory?{}:{durableDirectory:dir}),commitOnSignature:early,now:()=>NOW+2000,simulatedFixture:true,observeDemosTransfer:async hash=>controls.observation??{status:'included',txHash:hash,payer:buyer.address,payee:seller.address,amountOs:'2500000000',blockNumber:8,includedAt:NOW+3000}};
  let agent,store;const create=()=>createSellerAgent(config);
  const openStore=()=>createSellerDurableState({dir,signer:seller,listingPin:pin});
  const negotiate=async(jobId,{anchor=true,claims=[]}={})=>{
@@ -30,6 +31,7 @@ export async function agentFixture({paid=false,collision=false,lifecycle=false,e
   return{jobId,agreement,signedProjection};
  };
  agent=await create();for(const jobId of JOBS)await negotiate(jobId);
+ if(memory)return{config,agent,negotiate,seller,buyer,pin,listing,anchors,agreements,controls,close:()=>{agent.close();rmSync(dir,{recursive:true,force:true});}};
  agent.close();store=await openStore();
  if(paid){for(const jobId of JOBS)await store.withJob(jobId,session=>{session.payment={settlementId:'demos:one',txHash:'a'.repeat(64),deliveredAt:NOW};session.stage='delivered';store.saveSession(session);});await store.withJob(JOBS[0],()=>store.bindSettlement('demos:one',JOBS[0],{jobId:JOBS[0],phaseIndex:2}));if(collision)await store.withJob(JOBS[1],()=>store.bindSettlement('demos:one',JOBS[1],{jobId:JOBS[1],phaseIndex:2}));}
  store.close();agent=await create();store=await openStore();
