@@ -92,16 +92,24 @@ check of a party's Agreement contribution; `SellerAgentError` is the seller's
 refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
-`createSellerTransportServerAuth` and the buyer side `createSellerAgentClient`
-and `createSellerTransportClientAuth`. The incomplete `createSellerAgent` constructor
-stays outside the root API, as required by [PROFILE.json](PROFILE.json).
+`createSellerTransportServerAuth`, `createSellerContextRoute` and the buyer
+side `createSellerAgentClient`, `createSellerContextClient` and
+`createSellerTransportClientAuth`. A host mounts the Vet and Agreement context
+route by passing `createSellerContextRoute({ ... })` as the `context` option of
+`createSellerHttpHandler(agent, { authentication, context })`. The handler's
+`agent` comes only from `createSellerAgent`
+(`@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs`), the incomplete
+constructor that stays outside the root API, as required by
+[PROFILE.json](PROFILE.json), and is not a stable API.
 
 The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage`, `attachListingSignature`,
 `validateListing`, `agreementInput`, `listingPin`, `contributionVerifier`,
 `SellerAgentError`, `createPaymentEvidenceWalletJournal`,
+`createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
+`createSellerContextRoute`, `createSellerContextClient`,
 `createSellerTransportStore`, `createSellerTransportServerAuth` and
 `createSellerTransportClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
@@ -285,7 +293,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
     through the journal, which signs one new CREATE;
   - a throw (a withdrawn authorization included), another answer, or a journal
     that is not the one recorded for the order (a lost or replaced file, or none
-    recorded: `wallet_journal_changed`) keeps the delivery held with its cause.
+    recorded: `wallet_journal_changed`) keeps the delivery held with its cause;
+    an order recorded for a journal is signed only through it (held without one).
   A submission the SDK recorded as accepted and whose CREATE can no longer land
   (superseded) is not signed again: it stays held with that cause.
 - Payment evidence is anchored through `nativePaymentEvidence`'s
@@ -613,7 +622,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   check): the ST-11 finalizer, which needs finalized and independently
   resolved Vet, commitment, settlement and bundle records, is not part of this
   package. The session ends at delivery.
-- It does not mount the Vet and Agreement context route itself: the challenge
+- It does not mount the Vet and Agreement context route (`createSellerContextRoute`,
+  see the root exports above) itself: the challenge
   a session needs is the one `host.issueSessionChallenge` issued, which the
   operator delivers to the buyer. The host keeps every issued challenge
   with its seller state. Expired unattempted challenges may be reclaimed;
