@@ -340,12 +340,14 @@ test('transaction locking preserves one-leaf parent creation and refuses two mis
   await assert.rejects(createSellerContextAdmission({ ...f.config, evidencePath: missing }).reserve(f.reserve), error => error.code === 'ENOENT');
 });
 
-test('final effect release covers only that effect and its resume owners',async t=>{
- const f=await fixture(t),base={...f.reserve,hold:effect};
- for(const hold of [effect,`${effect}:owner`,`${'b'.repeat(64)}:other`])assert.equal(await f.admission.reserve({...base,hold}),null);
+// A hold id ends exactly that hold. The id of an effect ends every hold taken
+// for that effect, whatever the holds are called, and no other effect's.
+test('releasing a hold id ends only that hold, and releasing an effect ends only that effect\'s holds',async t=>{
+ const f=await fixture(t),other='b'.repeat(64);
+ for(const [hold,holdEffect] of [[`${effect}:o1`,effect],[`${effect}:o2`,effect],[`${effect}:x`,other]])assert.equal(await f.admission.reserve({...f.reserve,effect:holdEffect,hold}),null);
+ const open=async()=>parsePolicyLedger(await text(f)).rows.filter(row=>row.contextHold&&!row.released).map(row=>row.contextHold);
+ await f.admission.release({jobId:JOB,hold:`${effect}:o1`});
+ assert.deepEqual(await open(),[`${effect}:o2`,`${effect}:x`]);
  await f.admission.release({jobId:JOB,hold:effect});
- const rows=parsePolicyLedger(await text(f)).rows.filter(row=>row.contextHold);
- assert.equal(rows.find(row=>row.contextHold===effect).released,true);
- assert.equal(rows.find(row=>row.contextHold===`${effect}:owner`).released,true);
- assert.equal(rows.find(row=>row.contextHold===`${'b'.repeat(64)}:other`).released,false);
+ assert.deepEqual(await open(),[`${effect}:x`]);
 });
