@@ -375,8 +375,11 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
   // The seller's Deliverable CREATE and its public readback.
   const deliverable = async (input) => readBack(input.logicalAddress, 'Deliverable', input.deliveryBinding);
   const submitDelivery = async (input, authorize) => {
+      // As the shipped capability: checked before the intent, and again after the approval wait right before signing.
       await faults.beforeDeliverySubmit?.();
-      if (authorize && authorize() !== true) throw new Error('TEST delivery authorization refused');
+      if (authorize && authorize('intent') !== true) throw new Error('TEST delivery authorization refused');
+      await faults.deliveryApproval?.();
+      if (authorize && authorize('signing') !== true) throw new Error('TEST delivery authorization refused at signing');
       effects.deliverySubmit.push(input.logicalAddress);
       const fault = faults.deliverySubmit.shift();
       if (fault === 'fail') throw new Error('TEST delivery wallet refused before signing');
@@ -1111,6 +1114,19 @@ for (const restart of [false, true]) test(`settlement credit contested during na
   assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' });
   assert.equal(w.createsAt(`dacs4:deliverable:${a.jobId}`), 0);
   assert.deepEqual(w.effects.deliverySubmit, [], 'authorization runs before native signing');
+});
+
+// The capability's last check is after the wallet's approval wait: a claim on
+// another job made during that wait leaves no Deliverable, also after a restart.
+for (const restart of [false, true]) test(`settlement credit contested while the wallet waits for approval prevents a CREATE, including restart=${restart}`, async (t) => {
+  const w = await world(t), a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+  if (restart) await w.restart();
+  let contested;
+  w.faults.deliveryApproval = async () => { contested = await b.claim(tx); };
+  assert.equal((await a.claim(tx)).error, 'seller_unavailable');
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' });
+  assert.equal(w.createsAt(`dacs4:deliverable:${a.jobId}`), 0);
+  assert.deepEqual(w.effects.deliverySubmit, [], 'nothing is signed after the contest');
 });
 
 test('a native capability without guarded submission keeps paid delivery held before the permit is spent, without invoking submit', async (t) => {
