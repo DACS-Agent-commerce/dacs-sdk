@@ -144,8 +144,9 @@ const unevaluated = reason => new Error("advisory applicability unevaluated: " +
 
 // The exact versions each package name is installed at as a direct dependency
 // of the lock root, aliases resolved to the installed name, as the CI audit
-// gate collects them. Every root field npm can audit counts. Only a single
-// registry project is read: workspaces and links have other direct copies.
+// gate collects them. Every root field npm can audit counts, except an
+// optional or optional-peer name npm left uninstalled. Only a single registry
+// project is read: workspaces and links have other direct copies.
 function directVersions(lock) {
   const root = lock?.packages?.[""];
   if (!isPlainObject(root)) throw unevaluated("the lock has no root package");
@@ -157,6 +158,19 @@ function directVersions(lock) {
   const fields = ROOT_FIELDS_AUDITED_AS_DIRECT.filter(field => root[field] !== undefined);
   if (fields.some(field => !isPlainObject(root[field]))) throw unevaluated("a root dependency map is not an object");
   const dependencies = Object.assign({}, ...fields.map(field => root[field]));
+  // npm may leave an `optional` or `peerOptional` root edge uninstalled, and
+  // npm audit does not audit it, so a name absent from the lock is dropped when
+  // that is its effective edge. As in arborist's Node#_loadDeps, a name in
+  // several fields takes the type of the one loaded last: peers, then
+  // dependencies, optionalDependencies, devDependencies.
+  const meta = root.peerDependenciesMeta ?? {};
+  if (!isPlainObject(meta)) throw unevaluated("a root dependency map is not an object");
+  const declares = (field, name) => isPlainObject(root[field]) && Object.hasOwn(root[field], name);
+  const mayBeAbsent = name => !declares("devDependencies", name) && (declares("optionalDependencies", name) ||
+    !declares("dependencies", name) && Object.hasOwn(meta, name) && !!meta[name]?.optional);
+  for (const name of Object.keys(dependencies)) {
+    if (mayBeAbsent(name) && !Object.hasOwn(lock.packages, "node_modules/" + name)) delete dependencies[name];
+  }
   let versions;
   try {
     versions = collectAuditVersions({ packages: { ...lock.packages, "": { dependencies } } }, { scope: "direct" });
