@@ -213,6 +213,53 @@ test('purchased-report reader answers an incomplete scope without throwing or re
   assert.equal(calls, 0);
 });
 
+// Publish, read, reconcile and receipt verification share one guard, so a binding
+// that contradicts the report (or is missing) is refused before the anchor is
+// reached, exactly as the purchased-report reader would refuse it afterwards.
+test('native delivery refuses a missing or contradictory fulfilment binding before reaching the anchor', async () => {
+  const f = await reportFixture(), receiptHash = contentHash(f.report); let calls = 0;
+  const anchor = { authority: 'TEST-native', writer: seller.claim, publish: async () => { calls++; return { status: 'present', receipt: { transactionRef: { value: 'TEST-write' } } }; },
+    read: async () => { calls++; return { status: 'absent' }; }, readRetained: async () => { calls++; return { status: 'absent' }; }, verifyReceipt: async () => { calls++; return 'valid'; } };
+  const capability = createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor });
+  const binding = { jobId: JOB, payloadHash: receiptHash, agreementHash: f.report.agreementHash, listing: f.report.listing, fulfilmentId: 'TEST-fulfilment' };
+  const input = deliveryBinding => ({ jobId: JOB, report: f.report, logicalAddress: `dacs4:deliverable:${JOB}`, receiptContentHash: receiptHash, deliveryBinding });
+  assert.equal((await submitNativeDemDelivery(capability, input(binding))).status, 'accepted');
+  assert.equal(await verifyNativeDemDeliveryReceipt(capability, input(binding)), 'valid');
+  assert.equal((await readNativeDemDelivery(capability, input(binding))).status, 'absent');
+  calls = 0;
+  for (const [label, change] of [['no binding', undefined], ['null binding', null], ['other job', { ...binding, jobId: '01J8N4YV7YVYQ4DB7M8T4C7W0B' }],
+    ['other payload hash', { ...binding, payloadHash: 'b'.repeat(64) }], ['other Listing version', { ...binding, listing: { ...f.report.listing, version: f.report.listing.version + 1 } }],
+    ['other Listing hash', { ...binding, listing: { ...f.report.listing, contentHash: 'c'.repeat(64) } }], ['no Listing', { ...binding, listing: undefined }],
+    ['other Agreement', { ...binding, agreementHash: 'd'.repeat(64) }], ['no Agreement', { ...binding, agreementHash: undefined }],
+    ['no fulfilment id', { ...binding, fulfilmentId: undefined }], ['empty fulfilment id', { ...binding, fulfilmentId: '' }],
+    ['lone surrogate Listing', { ...binding, listing: { ...f.report.listing, listingId: '\ud800' } }]]) {
+    assert.equal((await submitNativeDemDelivery(capability, input(change))).status, 'rejected', label);
+    assert.equal((await readNativeDemDelivery(capability, input(change))).status, 'rejected', label);
+    assert.equal((await reconcileNativeDemDelivery(capability, input(change))).status, 'indeterminate', label);
+    assert.equal(await verifyNativeDemDeliveryReceipt(capability, input(change)), 'invalid', label);
+  }
+  assert.equal(calls, 0);
+});
+
+test('purchased-report reader refuses a scope that omits the Agreement hash or fulfilment id', async () => {
+  const f = await reportFixture(), receiptHash = contentHash(f.report); let calls = 0;
+  const deliveryBinding = { jobId: JOB, payloadHash: receiptHash, listing: f.report.listing };
+  const anchor = { authority: 'TEST-native', writer: seller.claim, publish: async () => { calls++; }, read: async () => { calls++; },
+    readRetained: async () => { calls++; return { status: 'present', artifact: f.report, deliveryBinding, receipt: { writer: seller.claim, transactionRef: { value: 'TEST-write' }, blockRef: { timestamp: NOW } } }; },
+    verifyReceipt: async () => { calls++; } };
+  const capability = createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor });
+  const scope = { jobId: JOB, seller: seller.claim, logicalAddress: `dacs4:deliverable:${JOB}`, receiptContentHash: receiptHash, settlementId: f.report.settlementId, listing: f.report.listing, deliveryBinding };
+  assert.equal((await readDevnetPurchasedReport(capability, scope)).status, 'rejected');
+  const complete = { ...scope, agreementHash: f.report.agreementHash, fulfilmentId: 'TEST-fulfilment' };
+  complete.deliveryBinding = { ...deliveryBinding, agreementHash: f.report.agreementHash, fulfilmentId: 'TEST-fulfilment' };
+  for (const change of [{ agreementHash: undefined, deliveryBinding: { ...complete.deliveryBinding, agreementHash: undefined } },
+    { fulfilmentId: undefined, deliveryBinding: { ...complete.deliveryBinding, fulfilmentId: undefined } },
+    { fulfilmentId: '', deliveryBinding: { ...complete.deliveryBinding, fulfilmentId: '' } }]) {
+    assert.equal((await readDevnetPurchasedReport(capability, { ...complete, ...change })).status, 'rejected');
+  }
+  assert.equal(calls, 0);
+});
+
 test('delivery evidence binds the signature and exact canonical job addresses', async () => {
   const unsigned = { evidenceVersion: '1', jobId: JOB, phase: 'deliver-storage-program', outcome: 'success', observedAt: NOW,
     dacsSdkAuditSourceHash: 'a'.repeat(64), deliverableContentHash: 'b'.repeat(64), deliverableAnchor: { kind: 'storage-program', locator: `dacs4:deliverable:${JOB}` } };
