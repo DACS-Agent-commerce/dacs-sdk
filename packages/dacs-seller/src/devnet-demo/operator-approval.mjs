@@ -335,7 +335,7 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,now=()
 }
 
 const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePath,{format:CONTEXT_FORMAT,...line});
-// A failed append undoes itself (appendApprovalLedgerLine), but a crash or a
+// A failed write undoes itself (appendApprovalLedgerLine), but a crash or a
 // failed undo can still leave its line torn: the ledger's last line,
 // unterminated, not complete JSON, and as far as it goes the start of a context
 // line, however short. That append never returned, so it reserved or released
