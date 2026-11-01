@@ -342,22 +342,24 @@ const appendContextLine=async(evidencePath,line)=>{
   const bytes=Buffer.from(`${text.length&&!text.endsWith('\n')?'\n':''}${JSON.stringify({format:CONTEXT_FORMAT,...line})}\n`);
   const handle=openSync(evidencePath,'a',0o600);
   try{
-    // Under the policy lock nothing else appends, so a failed write or file sync
-    // is undone to the size it started at: the caller then sees the original
-    // error and the ledger holds no partial line. Should the undo itself fail,
-    // the original error carries it and the restart cut (cutTornContextLine) recovers.
+    // Under the policy lock nothing else appends, so a failed write is undone to
+    // the size it started at: the caller then sees the original error and the
+    // ledger holds no partial line. Should the undo itself fail, the original
+    // error carries it and the restart cut (cutTornContextLine) recovers. A
+    // complete line whose file sync fails is kept, not undone: whether it is
+    // durable is unknown, and an exact retry finds it and syncs it.
     const size=fstatSync(handle).size;
     try{
       for(let done=0;done<bytes.length;){const written=writeSync(handle,bytes,done,bytes.length-done);if(!(written>0))throw new Error('context line was not written');done+=written;}
-      fsyncSync(handle);
     }catch(error){
       try{ftruncateSync(handle,size);fsyncSync(handle);}catch(rollbackError){if(error!==null&&typeof error==='object')error.rollbackError=rollbackError;}
       throw error;
     }
+    fsyncSync(handle);
   }finally{closeSync(handle);}
   syncContextLedger(evidencePath);
 };
-// A failed append undoes itself (appendContextLine), but a crash or a failed
+// A failed write undoes itself (appendContextLine), but a crash or a failed
 // undo can still leave its line torn: the ledger's last line, unterminated, not
 // complete JSON, and as far as it goes the start of a context line, however
 // short. That append never returned, so it reserved or released nothing; under
