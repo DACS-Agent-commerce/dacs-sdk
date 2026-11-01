@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 const syncPath=(path)=>{
@@ -13,7 +13,8 @@ export function syncApprovalLedger(evidencePath){
 }
 /** Append one JSON record synchronously, preserving its boundary and syncing its publication.
  * Creates at most the ledger's own private directory; a missing parent throws ENOENT before anything is created.
- * The caller serializes ledger transactions. Throws on read, write or sync failure. */
+ * The caller serializes ledger transactions. A failed write or file sync is undone before it throws;
+ * a failed directory sync leaves the complete, file-synced line for an exact retry to sync. */
 export function appendApprovalLedgerLine(evidencePath,row){
   const path=resolve(evidencePath);
   try{mkdirSync(dirname(path),{mode:0o700});}catch(error){if(error.code!=='EEXIST')throw error;}
@@ -22,12 +23,22 @@ export function appendApprovalLedgerLine(evidencePath,row){
   const bytes=Buffer.from(`${text.length&&!text.endsWith('\n')?'\n':''}${JSON.stringify(row)}\n`);
   const descriptor=openSync(path,'a',0o600);
   try{
-    for(let done=0;done<bytes.length;){
-      const written=writeSync(descriptor,bytes,done,bytes.length-done);
-      if(!(written>0))throw new Error('approval ledger line was not written');
-      done+=written;
+    // The caller serializes ledger transactions, so a failed write or file sync is
+    // undone to the size it started at: the caller sees the original error and the
+    // ledger holds no partial line. Should the undo itself fail, the original error
+    // carries it and the caller's torn-tail recovery cuts what is left.
+    const size=fstatSync(descriptor).size;
+    try{
+      for(let done=0;done<bytes.length;){
+        const written=writeSync(descriptor,bytes,done,bytes.length-done);
+        if(!(written>0))throw new Error('approval ledger line was not written');
+        done+=written;
+      }
+      fsyncSync(descriptor);
+    }catch(error){
+      try{ftruncateSync(descriptor,size);fsyncSync(descriptor);}catch(rollbackError){if(error!==null&&typeof error==='object')error.rollbackError=rollbackError;}
+      throw error;
     }
-    fsyncSync(descriptor);
   }finally{closeSync(descriptor);}
   syncApprovalLedger(path);
 }
