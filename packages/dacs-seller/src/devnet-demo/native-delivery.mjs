@@ -40,12 +40,14 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
     const value=await anchor.read({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding});
     return value.status==='present' ? {...value,status:'present'} : value;
   };
-  const capability=createNativeDemDeliveryCapability({authority,
-    submitAuthorized:async(input,authorize)=>{
-      if(!expected(input)) return {status:'rejected',reason:'native purchased report scope differs'};
-      const value=await anchor.publish({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding,authorize});
-      return value.status==='present' ? {status:'accepted',reconciliationId:value.receipt.transactionRef.value} : {status:value.status==='rejected'?'rejected':'indeterminate',reason:value.reason};
-    },
+  // Guarded: authorize is asked before the intent is stored, and by the wallet after its approval, right before it signs.
+  const submit=async(input,authorize)=>{
+    if(!expected(input)) return {status:'rejected',reason:'native purchased report scope differs'};
+    const value=await anchor.publish({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding,
+      ...(authorize?{authorize:()=>authorize('intent'),authorizeSigning:()=>authorize('signing')}:{})});
+    return value.status==='present' ? {status:'accepted',reconciliationId:value.receipt.transactionRef.value} : {status:value.status==='rejected'?'rejected':'indeterminate',reason:value.reason};
+  };
+  const capability=createNativeDemDeliveryCapability({authority,submit:(input)=>submit(input),submitAuthorized:submit,
     reconcile:async(input)=>{
       const value=await read(input);
       return value.status==='present' ? {status:'complete',reconciliationId:value.receipt.transactionRef.value,observedAt:value.receipt.blockRef.timestamp} : {status:value.status==='absent'?'absent':'indeterminate',reason:value.reason};
