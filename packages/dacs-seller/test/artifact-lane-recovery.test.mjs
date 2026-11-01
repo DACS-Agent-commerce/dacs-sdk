@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as core from '@kynesyslabs/dacs';
 import {anchorFixture,signSdkCreate} from './helpers/anchor-isolated-fixture.mjs';
 const jobs=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX'];
 async function world({sourceCopy=false,refused=false}={}){
@@ -133,6 +134,51 @@ test('wallet reconciliation does not rewrite a verified intent',async()=>{
  await w.publish(w.open(),jobs[1]);
  assert.equal(rewrites,0);assert.deepEqual(await w.journal.get(key),retained);
  assert.equal(w.resends.length,0);
+});
+// Every CREATE is signed and refused; each signed hash then reads back as `dispositions` says (absent by default).
+const refusedJobs=[...jobs,'01ARZ3NDEKTSV4RRFFQ69G5FAY','01ARZ3NDEKTSV4RRFFQ69G5FAZ'];
+async function refusalWorld({sourceCopy=false}={}){
+ const w=await world({sourceCopy,refused:true}),dispositions=new Map(),signed=new Map();
+ w.source.binding=async({hash})=>({disposition:dispositions.get(hash)??'absent'});
+ const request=w.controls.request;
+ w.controls.request=async input=>{const answer=await request(input);signed.set(input.jobId,(await w.journal.get('demo/wallet/lane')).hash);return answer;};
+ return {...w,signed,settle:(job,disposition)=>dispositions.set(signed.get(job),disposition),nonces:()=>w.captured.map(r=>r.transaction.content.nonce)};
+}
+const [A,B,C,D]=refusedJobs;
+for(const sourceCopy of [false,true])test(`a refused CREATE included after the wallet lane moved on keeps its nonce until the RPC catches up, across restart (${sourceCopy?'source and wallet':'wallet-only'})`,async()=>{
+ const w=await refusalWorld({sourceCopy});
+ for(const job of [A,B])await w.publish(w.open(),job);
+ w.settle(A,'included');
+ for(let restart=0;restart<2;restart++)await assert.rejects(w.publish(w.open(),C),/nonce RPC has not caught up/);
+ assert.deepEqual(w.nonces(),[1,1]);
+ w.controls.nonce=1;await w.publish(w.open(),C);
+ assert.deepEqual(w.nonces(),[1,1,2]);assert.equal(w.resends.length,0);
+});
+test('a refused CREATE that is neither the first nor the live row keeps its nonce once included',async()=>{
+ const w=await refusalWorld();
+ for(const job of [A,B,C])await w.publish(w.open(),job);
+ w.settle(B,'included');
+ await assert.rejects(w.publish(w.open(),D),/nonce RPC has not caught up/);
+ assert.deepEqual(w.nonces(),[1,1,1]);
+});
+test('a refused CREATE read back absent before an unauthorized publish keeps its nonce once included',async()=>{
+ const w=await refusalWorld();await w.publish(w.open(),A);
+ const anchor=w.open();
+ await assert.rejects(anchor.publish({logicalAddress:core.finalityCommitmentAddress(B),artifact:await w.artifact(B),artifactKind:'FinalityCommitmentRecord',authorize:()=>false}),{code:'not-authorized'});
+ assert.equal((await w.journal.get('demo/wallet/lane')).stage,'broadcast-accepted');
+ w.settle(A,'included');
+ await assert.rejects(w.publish(w.open(),C),/nonce RPC has not caught up/);
+ assert.deepEqual(w.nonces(),[1]);
+});
+test('a refused CREATE whose readback is uncertain keeps its nonce',async()=>{
+ const w=await refusalWorld();for(const job of [A,B])await w.publish(w.open(),job);
+ w.settle(A,'pending');
+ await assert.rejects(w.publish(w.open(),C),{code:'indeterminate',message:/refused seller CREATE requires readback \(pending\)/});
+ assert.deepEqual(w.nonces(),[1,1]);assert.equal(w.resends.length,0);
+});
+test('refused CREATEs that stay absent never fence the lane and are never resent',async()=>{
+ const w=await refusalWorld();for(const job of [A,B,C])await w.publish(w.open(),job);
+ assert.deepEqual(w.nonces(),[1,1,1]);assert.equal(w.resends.length,0);
 });
 test('a conflicting retained hash refuses wallet lane reuse without another signature',async()=>{
  const w=await acceptedWorld(['crash']);await assert.rejects(w.publish(w.open(),jobs[0]),/TEST/);
