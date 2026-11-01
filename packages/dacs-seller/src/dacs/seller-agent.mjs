@@ -1241,9 +1241,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
 
   // After a restart the SDK hands back a consumed permit's retained candidate without preparing again;
   // the producer may no longer answer it, so it must be bound to this job, Agreement and settlement and
-  // fit one CREATE. A report prepared in this run or already retained as sent is the exact current answer.
-  function candidateMatches(value, session, settlementId, preparedInRun) {
-    if (preparedInRun || session.deliverySentReport?.settlementId === settlementId) return reportMatches(value, session, settlementId);
+  // fit one CREATE. A report prepared in this run or already retained as sent must be exactly those bytes:
+  // the producer is never asked again here.
+  function candidateMatches(value, session, settlementId, preparedCanonical) {
+    if (preparedCanonical !== null) return canonicalize(value) === preparedCanonical;
+    if (session.deliverySentReport?.settlementId === settlementId) return canonicalize(value) === session.deliverySentReport.canonical;
     return value?.jobId === session.jobId && value.agreementHash === contentHash(session.agreement) && value.settlementId === settlementId && reportProblem(value) === null;
   }
 
@@ -1298,7 +1300,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if(result.status==='absent')return null;
       return {status:'indeterminate',reason:String(result.reason ?? `native delivery read is ${result.status ?? 'unclassified'}`).slice(0,180)};
     };
-    let verifiedSchemaPayload, preparedInRun = false;
+    // The one report this attempt prepared (canonical); submission compares the SDK's candidate with it, never with a new producer answer.
+    let verifiedSchemaPayload, preparedCanonical = null;
     const deps = {
       auditSourceProfile: 'v2',
       receiptStore,
@@ -1310,7 +1313,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           return { status: 'rejected', reason: 'delivery preparation scope differs' };
         }
         const report = deliveryReport(session, work.intake.settlementId);
-        preparedInRun = true;
+        preparedCanonical = canonicalize(report);
         // A producer can be corrected after payment; a size disagreement must not become the core's permanent preparation-failed handoff.
         const problem = reportProblem(report);
         if (problem) return { status: 'indeterminate', reason: problem };
@@ -1321,11 +1324,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         return { status: 'prepared', delivery: { artifact: { kind: phase, cleartextPayload: report, anchoredValue: report, access: { model: 'public' } } } };
       },
       submitDelivery: async (input) => {
-        if (!await validCurrentFulfilmentFence(input.fence, session.jobId)) return { status: 'rejected', reason: 'delivery effect fence is not current' };
-        if (input.logicalAddress !== deliverableAddress(session.jobId) || !candidateMatches(input.artifact.anchoredValue, session, work.intake.settlementId, preparedInRun) ||
-            canonicalize(input.artifact.cleartextPayload) !== canonicalize(input.artifact.anchoredValue)) return { status: 'rejected', reason: 'delivery candidate differs from the exact report' };
+        // Past the permit nothing answers 'rejected': the SDK would keep it as a final outcome. An
+        // indeterminate answer keeps the intent, and the next holder reconciles it from the retained candidate.
+        if (!await validCurrentFulfilmentFence(input.fence, session.jobId)) return { status: 'indeterminate', reason: 'delivery effect fence is not current' };
+        if (input.logicalAddress !== deliverableAddress(session.jobId) || !candidateMatches(input.artifact.anchoredValue, session, work.intake.settlementId, preparedCanonical) ||
+            canonicalize(input.artifact.cleartextPayload) !== canonicalize(input.artifact.anchoredValue)) return { status: 'indeterminate', reason: 'delivery candidate differs from the exact report' };
         const report=structuredClone(input.artifact.anchoredValue);
-        // Check now and through the publisher's authorization hook before signing. A throw keeps the SDK
+        // Check now and through the capability's guarded submission right before signing. A throw keeps the SDK
         // intent pending; authoritative unsigned absence permits one retry.
         heldFor(session.jobId)?.();
         // Retain before submission: only authenticated readback or proven unsigned absence settles this intent.
@@ -1335,6 +1340,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,substrate:'source-native-delivery'};
         persist(session);
         const answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding},heldFor(session.jobId));
+        if(answer.status==='rejected')return {status:'indeterminate',reason:`native delivery refused: ${String(answer.reason ?? 'no reason').slice(0,160)}`};
         if(answer.status!=='accepted')return answer;
         session.deliveryAdapter={fulfilmentId:input.fulfilmentId,artifactHash:input.artifactHash,deliveryBinding:binding,reconciliationId:answer.reconciliationId,substrate:'source-native-delivery'};
         persist(session);return answer;
@@ -1376,7 +1382,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         return{disposition:verdict==='valid'?'valid':verdict==='indeterminate'?'indeterminate':'invalid',...(verdict==='valid'?{}:{reason:'native delivery receipt authentication failed'})};
       },
       verifyDeliverySchema: async ({ schemaUrl, cleartextPayload }) => {
-        if (schemaUrl !== listing.offering.deliverable.schemaUrl || !candidateMatches(cleartextPayload, session, work.intake.settlementId, preparedInRun)) {
+        if (schemaUrl !== listing.offering.deliverable.schemaUrl || !candidateMatches(cleartextPayload, session, work.intake.settlementId, preparedCanonical)) {
           return { disposition: 'invalid', reason: 'report schema/bindings differ' };
         }
         if (verifiedSchemaPayload === canonicalize(cleartextPayload)) return { disposition: 'valid' };

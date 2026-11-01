@@ -380,6 +380,7 @@ async function world(t, { guardedDelivery = true, deliverableProducer = null, sc
       effects.deliverySubmit.push(input.logicalAddress);
       const fault = faults.deliverySubmit.shift();
       if (fault === 'fail') throw new Error('TEST delivery wallet refused before signing');
+      if (fault === 'refuse') return { status: 'rejected', reason: 'TEST capability refused before signing' };
       // Signed and kept, then the answer is lost before anything is broadcast.
       if (fault === 'sign-then-lose') { signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact: input.report, artifactKind: 'Deliverable', deliveryBinding: input.deliveryBinding }, { land: false })); throw new Error('TEST delivery wallet failed after signing'); }
       writeOnce(input.logicalAddress, input.report, 'Deliverable', input.deliveryBinding);
@@ -1024,18 +1025,43 @@ test('a Deliverable the producer does not bind to this job, Agreement and settle
 // still the exact report the producer answers for this job and settlement.
 // With a schema the SDK's schema verifier compares it too; without one, the
 // seller's check at submission is the only one.
-test('a delivery candidate that is not the exact report is not sent: the producer answered differently at submission', async (t) => {
-  for (const schemaUrl of [true, false]) {
+// The producer is asked once per preparation: the bytes it answered then are
+// the ones delivered, whatever it answers later, with one CREATE (the order is
+// never stranded at delivery-rejection-unreconciled).
+test('a producer that answers differently on every call is delivered once with the bytes it prepared, also after a restart', async (t) => {
+  for (const schemaUrl of [true, false]) for (const restart of [false, true]) {
     let answers = 0;
     const w = await world(t, { schemaUrl, deliverableProducer: (input) => report({ body: [`TEST report, answer ${String(++answers).padStart(8, '0')}`] })(input) });
-    assert.equal('schemaUrl' in w.listing.offering.deliverable, schemaUrl);
-    const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`, label = schemaUrl ? 'with a schema' : 'without a schema';
-    const answer = await p.claim(tx);
-    assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
-    assert.equal(answer.delivery?.status, 'held', `${label}: ${shown(answer.delivery)}`);
-    assert.deepEqual(w.effects.deliverySubmit, [], `${label}: nothing is sent`);
-    assert.equal(w.createsAt(deliverable), 0, label);
+    const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`, label = `schema ${schemaUrl}, restart ${restart}`;
+    const done = await p.claim(tx);
+    assert.equal(done.delivery?.status, 'delivery-ready', `${label}: ${shown(done)}`);
+    assert.equal(core.sha256Hex(core.canonicalize(w.writtenAt(deliverable))), done.delivery.contentHash, label);
+    if (restart) await w.restart();
+    const again = await p.claim(tx);
+    assert.equal(again.delivery?.status, 'delivery-ready', `${label}: ${shown(again)}`);
+    assert.equal(again.delivery.contentHash, done.delivery.contentHash, label);
+    assert.equal(w.createsAt(deliverable), 1, label);
+    assert.equal(w.effects.deliverySubmit.length, 1, label);
   }
+});
+
+for (const restart of [false, true]) test(`a capability refusal after the permit is spent is not final: the same candidate is delivered once on the next claim (restart=${restart})`, async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('refuse');
+  const refused = await p.claim(tx);
+  assert.notEqual(refused.delivery?.status, 'delivery-ready', shown(refused));
+  if (restart) {
+    // retainedSession closes the host; the restart below opens it again.
+    const held = await w.retainedSession(p.jobId);
+    assert.equal(held.deliveryHold?.result?.decision, 'indeterminate', shown(held.deliveryHold));
+    assert.notEqual(held.deliveryHold?.result?.code, 'delivery-rejection-unreconciled', shown(held.deliveryHold));
+    await w.restart();
+  }
+  const done = await p.claim(tx);
+  assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
+  assert.equal(core.sha256Hex(core.canonicalize(w.writtenAt(deliverable))), done.delivery.contentHash);
+  assert.equal(w.createsAt(deliverable), 1);
+  assert.equal(w.effects.deliverySubmit.length, 2, 'asked again once, after the read proved nothing was signed');
 });
 
 test('without a schema in the Listing, a native payment is delivered', async (t) => {
