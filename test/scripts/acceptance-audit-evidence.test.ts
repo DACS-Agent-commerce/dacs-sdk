@@ -133,6 +133,80 @@ describe("advisory applicability from the lock", () => {
     expect(registryAuditPolicy(loose, lock, baseline).directAdvisories).toEqual([firstId]);
   });
 
+  // A lock whose root declares `root` and installs `installed` (location -> version).
+  type Installed = Record<string, string | undefined>;
+  const rootLock = (root: Record<string, unknown>, installed: Installed = {}) => ({
+    lockfileVersion: 3,
+    packages: { "": { name: "app", version: "1.0.0", ...root },
+      ...Object.fromEntries(Object.entries(installed).map(([location, version]) => [location, { version }])) },
+  });
+  const optionalPeer = (name = "p") => ({ peerDependencies: { [name]: "^1.0.0" }, peerDependenciesMeta: { [name]: { optional: true } } });
+  const nestedOnly: Installed = { "node_modules/mid": "1.0.0", "node_modules/mid/node_modules/p": "1.0.0" };
+  const highOnP = auditReport({ p: { severity: "high", isDirect: false, via: [advisory("p", "high")] } });
+
+  // npm leaves an optional or optional-peer root edge uninstalled; npm audit does not audit it.
+  it.each([
+    ["an optional peer", optionalPeer(), {}],
+    ["an optional peer named constructor", optionalPeer("constructor"), {}],
+    ["an optional dependency npm pruned", { optionalDependencies: { p: "^1.0.0" } }, {}],
+    ["a name in dependencies and optionalDependencies", { dependencies: { p: "^1.0.0" }, optionalDependencies: { p: "^1.0.0" } }, {}],
+    ["an optional peer that only a nested copy satisfies", { dependencies: { mid: "1.0.0" }, ...optionalPeer() }, nestedOnly],
+  ] as const)("accepts a lock that leaves %s uninstalled", (_label, root, installed) => {
+    const lock = rootLock(root, installed);
+    expect(registryAuditPolicy(auditReport({}), lock, baseline)).toMatchObject({ directAdvisories: [], passed: true });
+    const { result, output } = auditPolicyRun(auditReport({}), lock);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(output, "utf8")).passed).toBe(true);
+  });
+
+  it("does not treat the nested copy of an uninstalled optional peer as direct", () => {
+    const lock = rootLock({ dependencies: { mid: "1.0.0" }, ...optionalPeer() }, nestedOnly);
+    expect(registryAuditPolicy(highOnP, lock, baseline)).toMatchObject({ observedAdvisories: [firstId], directAdvisories: [] });
+  });
+
+  it("evaluates a report beside an uninstalled optional peer as without it", () => {
+    const { audit, lock } = captured("nested-only");
+    const expected = registryAuditPolicy(audit, lock, baseline);
+    Object.assign(lock.packages[""], optionalPeer());
+    expect(registryAuditPolicy(audit, lock, baseline)).toEqual(expected);
+    const { result, output } = auditPolicyRun(audit, lock);
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(output, "utf8")).directAdvisories).toEqual([]);
+  });
+
+  it.each([
+    ["a required peer", { peerDependencies: { p: "^1.0.0" } }],
+    ["a peer marked optional: false", { peerDependencies: { p: "^1.0.0" }, peerDependenciesMeta: { p: { optional: false } } }],
+    ["an optional peer also in devDependencies", { ...optionalPeer(), devDependencies: { p: "^1.0.0" } }],
+    ["an optional peer also in dependencies", { ...optionalPeer(), dependencies: { p: "^1.0.0" } }],
+    ["an optional dependency also in devDependencies", { optionalDependencies: { p: "^1.0.0" }, devDependencies: { p: "^1.0.0" } }],
+    ["a required toString beside empty optionalDependencies", { dependencies: { toString: "1.0.0" }, optionalDependencies: {} }],
+    ["a required constructor peer beside empty peerDependenciesMeta", { peerDependencies: { constructor: "1.0.0" }, peerDependenciesMeta: {} }],
+    ["peerDependenciesMeta that is not an object", { peerDependencies: { p: "^1.0.0" }, peerDependenciesMeta: [] }],
+  ] as const)("refuses a lock that leaves %s uninstalled", (_label, root) => {
+    const lock = rootLock(root);
+    expect(() => registryAuditPolicy(auditReport({}), lock, baseline)).toThrow("advisory applicability unevaluated");
+    const { result, output } = auditPolicyRun(auditReport({}), lock);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("advisory applicability unevaluated");
+    expect(existsSync(output)).toBe(false);
+  });
+
+  it.each([
+    ["an optional peer", optionalPeer(), "not-a-version"],
+    ["an optional peer", optionalPeer(), undefined],
+    ["an optional dependency", { optionalDependencies: { p: "^1.0.0" } }, "not-a-version"],
+  ] as const)("still reads the version of an installed %s (%s)", (_label, root, version) => {
+    const lock = rootLock(root, { "node_modules/p": version });
+    expect(() => registryAuditPolicy(auditReport({}), lock, baseline)).toThrow("advisory applicability unevaluated");
+  });
+
+  it("still applies an advisory to an installed optional peer", () => {
+    const lock = rootLock(optionalPeer(), { "node_modules/p": "1.0.0" });
+    const report = auditReport({ p: { severity: "high", isDirect: true, via: [advisory("p", "high", firstId, "<2.0.0")] } });
+    expect(registryAuditPolicy(report, lock, baseline).directAdvisories).toEqual([firstId]);
+  });
+
   it.each(["constructor", "toString", "hasOwnProperty"])("evaluates an advisory for a package named %s", name => {
     const { lock } = captured("nested-only");
     const report = auditReport({ [name]: { severity: "high", isDirect: false, via: [advisory(name, "high")] } });
