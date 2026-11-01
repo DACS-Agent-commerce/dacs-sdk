@@ -677,7 +677,7 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,transp
     ready,
     reserve:({jobId,effect,writes,hold})=>afterStartup(()=>!policyMode?Promise.resolve(null):serializedPolicy(evidencePath,async()=>{
       if(!isCanonicalJobId(jobId)||typeof effect!=='string'||!HASH.test(effect)||!Number.isSafeInteger(writes)||writes<1||writes>SELLER_POLICY_MAX_WRITES||typeof hold!=='string'||!hold)return 'request-shape';
-      await cutTornContextLine(evidencePath);
+      await cutTornContextLine(evidencePath,{atAnyLength:true});
       let snapshot;
       try{snapshot=await readPolicyLedger(evidencePath);}
       catch(cause){throw Object.assign(new Error('seller context approval ledger cannot be read',{cause}),{code:'seller_context_ledger_unreadable'});}
@@ -699,19 +699,27 @@ export function createSellerContextAdmission({evidencePath,sellerApproval,transp
 }
 
 const appendContextLine=(evidencePath,line)=>appendApprovalLedgerLine(evidencePath,{format:CONTEXT_FORMAT,...line});
-// A failed append undoes itself (appendContextLine), but a crash or a failed
-// undo can still leave its line torn: the ledger's last line, unterminated, not
-// complete JSON, and as far as it goes the start of a context line, however
-// short. That append never returned, so it reserved or released nothing; under
+// A failed write undoes itself (appendApprovalLedgerLine), but a crash or a
+// failed undo can still leave its line torn: the ledger's last line,
+// unterminated, not complete JSON, and as far as it goes the start of a context
+// line. That append never returned, so it reserved or released nothing; under
 // the policy lock it is cut (by bytes) and synced, and the retry appends it
-// whole. Any other unterminated or malformed line is left for the parser to refuse.
-const TORN_CONTEXT_PREFIX=Buffer.from(`{"format":${JSON.stringify(CONTEXT_FORMAT)},`);
-async function cutTornContextLine(evidencePath){
+// whole. Any other unterminated or malformed line is left for the parser to
+// refuse. A tail short enough to start an attempt, sign, evidence or header line
+// as well is not known to be a context line: only the context transactions, which
+// write nothing but context lines, cut it (atAnyLength); the approval decision
+// leaves it, unread, until the ledger is repaired.
+const lineStart=(format)=>Buffer.from(`{"format":${JSON.stringify(format)},`);
+const TORN_CONTEXT_PREFIX=lineStart(CONTEXT_FORMAT);
+const commonBytes=(a,b)=>{let count=0;while(count<a.length&&count<b.length&&a[count]===b[count])count++;return count;};
+const AMBIGUOUS_TAIL_BYTES=Math.max(...[EVIDENCE_FORMAT,ATTEMPT_FORMAT,SIGN_FORMAT,SELLER_LEDGER_HEADER_FORMAT].map(format=>commonBytes(TORN_CONTEXT_PREFIX,lineStart(format))));
+async function cutTornContextLine(evidencePath,{atAnyLength=false}={}){
   let bytes;
   try{bytes=await readFile(evidencePath);}catch(error){if(error.code==='ENOENT')return;throw error;}
   const start=bytes.lastIndexOf(0x0a)+1,tail=bytes.subarray(start);
   const shared=Math.min(tail.length,TORN_CONTEXT_PREFIX.length);
   if(!shared||!tail.subarray(0,shared).equals(TORN_CONTEXT_PREFIX.subarray(0,shared)))return;
+  if(!atAnyLength&&tail.length<=AMBIGUOUS_TAIL_BYTES)return;
   try{JSON.parse(tail.toString('utf8'));return;}catch{/* torn: cut below */}
   truncateSync(evidencePath,start);
   syncContextLedger(evidencePath);
@@ -724,7 +732,7 @@ async function cutTornContextLine(evidencePath){
 // retained lines and resolves [].
 export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Date.now()}){
   return serializedPolicy(evidencePath,async()=>{
-    await cutTornContextLine(evidencePath);
+    await cutTornContextLine(evidencePath,{atAnyLength:true});
     const rows=(await readPolicyLedger(evidencePath)).rows;
     const openHolds=rows.filter(row=>row.contextHold&&!row.released&&row.jobId===jobId&&(holdId===undefined||row.contextHold===holdId||row.effect===holdId));
     return releaseContextRows({evidencePath,rows:rows.filter(row=>row.jobId===jobId),openHolds,now});
@@ -733,7 +741,7 @@ export function releaseSellerContextHolds({evidencePath,jobId,holdId,now=()=>Dat
 
 function reconcileContextHolds({evidencePath,store,now}){
   return serializedPolicy(evidencePath,async()=>{
-    await cutTornContextLine(evidencePath);
+    await cutTornContextLine(evidencePath,{atAnyLength:true});
     const rows=(await readPolicyLedger(evidencePath)).rows,openHolds=[];
     for(const row of rows.filter(row=>row.contextHold&&!row.released)){
       const state=store.contextHoldState({jobId:row.jobId,effect:row.effect});
