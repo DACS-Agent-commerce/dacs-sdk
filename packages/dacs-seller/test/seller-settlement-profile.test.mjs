@@ -109,7 +109,7 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
     get reconcilePaymentEvidence() { return journal().reconcilePaymentEvidence; },
     demDeliveryContext: (input = vetted, vetRequirements = invocationsFor(input)) => createDemDeliveryContext({ authority: 'TEST-settlement-profile', resolveBuyer: refuse('resolveBuyer'),
       resolveSeller: async () => { reached.push('resolveSeller'); return { disposition: 'present', value: { input: structuredClone(input), vetRequirements: structuredClone(vetRequirements) } }; } }),
-    nativeDemDelivery: () => createNativeDemDeliveryCapability({ authority: 'TEST-settlement-profile', submit: refuse('submit'), reconcile: refuse('reconcile'), read: refuse('read'), verifyReceipt: refuse('deliveryVerifyReceipt') }),
+    nativeDemDelivery: (submission = { submitAuthorized: refuse('submit') }) => createNativeDemDeliveryCapability({ authority: 'TEST-settlement-profile', ...submission, reconcile: refuse('reconcile'), read: refuse('read'), verifyReceipt: refuse('deliveryVerifyReceipt') }),
   };
   const proposalFor = async (input, proposalJobId = jobId) => {
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(input));
@@ -160,6 +160,15 @@ test('the complete native profile takes payment only as native payment evidence,
   assert.equal((await agent.receiveProposal(await w.proposalFor(w.vetted))).disposition, 'complete');
   assert.deepEqual(await refused(() => agent.submitPayment(w.payment)), { code: 'native_evidence_required', status: 409 });
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
+});
+
+test('an agent is not built over a native delivery capability that cannot recheck authority before it signs', async (t) => {
+  const w = await world(t), submit = async () => ({ status: 'rejected', reason: 'TEST not reached' });
+  for (const submission of [{ submit }, { submit, submitAuthorized: true }]) {
+    await assert.rejects(w.agent({ ...w.capabilities, durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence(), reconcilePaymentEvidence: w.chain.reconcilePaymentEvidence,
+      demDeliveryContext: w.chain.demDeliveryContext(), nativeDemDelivery: w.chain.nativeDemDelivery(submission) }), { name: 'TypeError', message: /requires guarded submission/ });
+  }
+  assert.deepEqual(w.reached, []);
 });
 
 test('a Vet context that names the not-performed Vet references is not signed', async (t) => {
