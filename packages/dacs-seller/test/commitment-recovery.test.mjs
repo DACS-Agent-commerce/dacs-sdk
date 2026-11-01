@@ -14,6 +14,7 @@ import {fixtureListing,fixtureIdentityBundle}from'./fixtures/listings.mjs';
 import {createSellerHttpHandler}from'../src/dacs/seller-http.mjs';
 import {provenUnsignedAbsence}from'../src/dacs/native-dem-delivery-consumer.mjs';
 import {exchange}from'./helpers/d5-http-fixture.mjs';
+import {createOperatorBuyerAccess}from'../src/devnet-demo/buyer-access.mjs';
 
 const JOB2='01J8N4YV7YVYQ4DB7M8T4C7W0B';
 async function secondEarlyRequest(f,agent){
@@ -287,4 +288,20 @@ test('fixture read-only commitment without a retained CREATE has zero effects',a
  const f=await fixtureProfile(t),writes=f.anchors.writes.length;
  await assert.rejects(f.agent.readCommitment({jobId:JOB}),{code:'commitment_readback_required'});
  assert.equal(f.anchors.writes.length,writes);
+});
+
+// The cached branch only replays an anchored commitment. When its readback is refused for a
+// reason that says nothing about the commitment, the buyer gets a retryable 503, never a signed
+// definite refusal. The fixture agent is a private module copy with its own error class, so
+// the replay runs through the real module's agent over the same durable state.
+for(const [label,early,undo]of[['closed buyer access',false,()=>{}],['an Agreement that is not readable now',false,f=>{f.controls.agreement=null;}],['closed buyer access on the signature route',true,()=>{}]])test(`a cached commitment replay with ${label} answers 503 readback required`,async t=>{
+ const f=await commitmentFixture(t,{early}),{agent,agreement}=await f.prepare();
+ const body=early?{jobId:JOB,agreement,signedProjection:projection(agreement)}:{jobId:JOB};
+ const cached=await(early?agent.commitOnSignature(body):agent.commit(body));agent.close();undo(f);
+ const real=await createSellerAgent({...f.config,buyerAccess:createOperatorBuyerAccess({openBuyerAccess:true,buyerForJob:()=>buyer.address,buyerLookupReady:()=>!label.startsWith('closed')})});t.after(()=>real.close());
+ const store={reserve:()=>({disposition:'cached',status:200,text:JSON.stringify(cached)})};
+ const authentication={seller:real.claim,listingPin:real.listingPin,store,readRequest:()=>({jobId:JOB}),validate(){},responseHeader:async()=> 'TEST-header'};
+ const handler=createSellerHttpHandler(real,{authentication,commitOnSignature:early});
+ const response=await exchange(handler,{url:early?'/dacs/v1/commitments/signature':'/dacs/v1/commitments',text:JSON.stringify(body)});
+ assert.equal(response.status,503);assert.equal(JSON.parse(response.text).error,'commitment_readback_required');
 });

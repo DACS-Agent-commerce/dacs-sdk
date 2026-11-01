@@ -12,7 +12,7 @@ import test from 'node:test';
 import http from 'node:http';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, realpathSync, rmSync,readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync,readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
@@ -368,7 +368,9 @@ async function world(t, { guardedDelivery = true, buyerRequirement = null, agent
       return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
     },
     readAccountNonce: async () => {
-      if (faults.readAccountNonce.shift() === 'throw') throw new Error('TEST account nonce read failed');
+      const fault = faults.readAccountNonce.shift();
+      if (typeof fault === 'function') await fault();
+      if (fault === 'throw') throw new Error('TEST account nonce read failed');
       return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
     },
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
@@ -417,8 +419,8 @@ async function world(t, { guardedDelivery = true, buyerRequirement = null, agent
       if (fault === 'land-lose-lock') loseJobLock(input.logicalAddress.slice('dacs4:deliverable:'.length));
       return { status: 'accepted', reconciliationId: signedCreates.get(input.logicalAddress).hash };
     };
-  const nativeDemDelivery = createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
-    submit: submitDelivery, ...(guardedDelivery ? { submitAuthorized: submitDelivery } : {}),
+  const deliveryCapability = (guarded) => createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
+    ...(guarded ? { submitAuthorized: submitDelivery } : { submit: submitDelivery }),
     reconcile: async (input) => {
       await faults.beforeDeliveryReconcile();
       const read = await deliverable(input);
@@ -435,6 +437,9 @@ async function world(t, { guardedDelivery = true, buyerRequirement = null, agent
     verifyReceipt: async ({ logicalAddress, report, receipt, receiptContentHash, deliveryBinding, signedProjection }) => node.reader.verifyReceipt({ receipt, logicalAddress, artifact: report,
       expectedWriter: sellerKey.claim, artifactKind: 'Deliverable', deliveryBinding, receiptContentHash, signedProjection: signedProjection ?? clone(signedCreates.get(logicalAddress)) }),
   });
+  // The host starts with the capability chosen by `useGuardedDelivery`; a restart may change it.
+  const guardedCapability = deliveryCapability(true), unguardedCapability = deliveryCapability(false);
+  let guardedStart = guardedDelivery;
   const producer = deliverableProducer ?? report();
 
   const dataDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-native-')));
@@ -447,7 +452,7 @@ async function world(t, { guardedDelivery = true, buyerRequirement = null, agent
     buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: jobId => buyerBundles.has(jobId) ? buyerKey.address : null, ...buyerAccessOptions }), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
-    nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery, railAuthority: rails.authority,
+    nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery: guardedStart ? guardedCapability : unguardedCapability, railAuthority: rails.authority,
     sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}) });
   const start = async () => {
     const host = await startHost({ ...capabilities(), dataDirectory, artifactAnchor });
@@ -530,7 +535,7 @@ async function world(t, { guardedDelivery = true, buyerRequirement = null, agent
   const signedCreate = (logicalAddress) => clone(signedCreates.get(logicalAddress));
   const writtenAt = (logicalAddress) => clone(written.get(logicalAddress));
   return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
-    host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession };
+    host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession, unguardedCapability, useGuardedDelivery: (guarded) => { guardedStart = guarded; } };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
@@ -980,6 +985,25 @@ test('a journal that cannot read a kept CREATE\'s fate signs nothing anew: the c
   assert.equal(work.anchorOutcome, 'sent', 'the one new signature was sent');
 });
 
+// The kept CREATE's fate is read before a successor is signed. Credit lost to another job's
+// claim of the same transfer during that read signs nothing and broadcasts nothing.
+test('settlement credit lost while the wallet reads the account nonce signs no successor and keeps the claim held', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), other = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  assert.ok(w.signedCreate(address));
+  await w.purchase();
+  let contested = null;
+  w.faults.readAccountNonce.push(async () => { contested = await other.claim(tx); });
+  const answer = await p.claim(tx);
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' }, 'another job claimed the transfer during the nonce read');
+  assert.notEqual(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(w.effects.signed.length, 1, 'no successor is signed once the credit is contested');
+  assert.equal(new Set(w.effects.broadcast).size, 1, 'only the kept bytes were ever broadcast');
+  assert.equal(w.createsAt(address), 0);
+});
+
 // Settlement credit (SB-2): one transfer claimed by two jobs gives neither
 // job credit. Job A's failed anchor leaves its checkpoint bound to the
 // transfer; once job B claims it too, job A reads nothing back, sends nothing
@@ -1199,18 +1223,31 @@ test('a claim on another job made after the signing check binds only once the su
   assert.equal(w.createsAt(`dacs4:deliverable:${b.jobId}`), 0);
 });
 
-test('a native capability without guarded submission keeps paid delivery held before the permit is spent, without invoking submit', async (t) => {
-  const w = await world(t, { guardedDelivery: false }), p = await w.purchase(), tx = p.pay();
-  for (let i = 0; i < 2; i++) {
-    const answer = await p.claim(tx);
-    assert.equal(answer.delivery?.status, 'held', shown(answer));
-    assert.match(answer.delivery.reason, /requires guarded submission/);
-    // retainedSession closes the host; the restart opens it again for the next claim.
-    assert.equal((await w.retainedSession(p.jobId)).deliveryHold?.result?.code, 'delivery-preparation-indeterminate');
-    await w.restart();
-  }
-  assert.deepEqual(w.effects.deliverySubmit, []);
+test('a native capability without guarded submission is refused when the host starts, before any Agreement is signed', async (t) => {
+  await assert.rejects(world(t, { guardedDelivery: false }), { name: 'TypeError', message: /requires guarded submission/ });
+});
+
+test('a refused unguarded start opens no seller state and releases the lock for a guarded start', async (t) => {
+  const w = await world(t), dataDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-refused-')));
+  t.after(() => rmSync(dataDirectory, { recursive: true, force: true }));
+  await assert.rejects(w.startShipped({ dataDirectory, nativeDemDelivery: w.unguardedCapability }), { name: 'TypeError', message: /requires guarded submission/ });
+  assert.equal(existsSync(join(dataDirectory, 'seller', 'seller-state.sqlite')), false);
+  await (await w.startShipped({ dataDirectory })).close();
+});
+
+test('a restart with an unguarded capability is refused while a paid order is undelivered, and a guarded restart delivers it once', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  w.faults.deliverySubmit.push('fail');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
   assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 0);
+  w.useGuardedDelivery(false);
+  await assert.rejects(w.restart(), { name: 'TypeError', message: /requires guarded submission/ });
+  w.useGuardedDelivery(true);
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 1);
+  assert.equal(w.effects.deliverySubmit.length, 2, 'the refused attempt and the delivering one');
 });
 
 test('a job fence lost during native submission prevents signing and recovers once after restart', async (t) => {
