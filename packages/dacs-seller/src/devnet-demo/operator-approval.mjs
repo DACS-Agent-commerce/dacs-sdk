@@ -412,7 +412,8 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   const readableLedger=async(request)=>{
     for(let waited=0;;waited++){
       live();
-      try{const snapshot=await readPolicyLedger(evidencePath);live();return snapshot;}
+      // A context line a crash tore is cut here too, under the same lock its own repair needs (cold F3).
+      try{await cutTornContextLine(evidencePath);const snapshot=await readPolicyLedger(evidencePath);live();return snapshot;}
       catch(error){
         if(stopped)throw stoppedError(LEDGER_STOPPED);
         if(waited%Math.max(1,Math.ceil(60_000/ledgerRetryMs))===0)process.stderr.write(`seller-policy-ledger unreadable: ${resolve(evidencePath)}${Number.isSafeInteger(error?.ledgerLine)?` line ${error.ledgerLine}`:''} (${String(error?.code??error?.message).slice(0,120)}); the ${request?.content?.artifactKind} write for job ${request?.content?.jobId} waits, unsigned and not refused, and is decided again once the ledger reads\n`);

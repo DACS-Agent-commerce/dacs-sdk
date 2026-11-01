@@ -517,3 +517,9 @@ test('rvc C-5 a confirmation without a node answer is false, writes nothing and 
  assert.equal(await a.confirm(undefined),false);assert.equal((await ledgerLines(f)).length,lines);
  assert.equal(await a.confirm(confirmationFor(r)),true);
 });
+
+test('cold F3 a decision that finds a torn context line cuts it and decides, with no stop needed',async t=>{
+ const f=await fixture(t,purchase,{ledgerRetryMs:1});t.after(()=>f.p.stop());
+ await writeFile(f.evidencePath,'{"format":"dacs-node2-seller-context-admission/v1","event":"ho');
+ assert.equal(await Promise.race([f.p.prepare(payDem()),new Promise(done=>setTimeout(done,2_000,'still waiting'))]),true);
+});
