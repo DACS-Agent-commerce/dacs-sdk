@@ -36,7 +36,8 @@ export const DEMOS_SR2_FIXTURE_CHAIN_IDENTITY = sha256Hex('dacs-chatgpt-plugin/d
 /** Byte cap on one node reply; callers also bound their own inputs by it. */
 export const DEMOS_SR2_REPLY_BYTES = 1024 * 1024;
 const NATIVE_ADDRESS = /^stor-[0-9a-f]{40}$/;
-const MAX_NATIVE_CANDIDATES = 32;
+/** Cap on same-name programs read from the name index, whoever owns them. */
+const MAX_FOREIGN_NATIVE_READS = 32;
 const HASH = /^[0-9a-f]{64}$/;
 const LITERAL_LOOPBACK = new Set(['127.0.0.1', '[::1]']);
 const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -201,32 +202,12 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     return value;
   }
 
-  // Do not guess a nonce-derived physical address for another writer. Search
-  // all bounded pages, then authenticate EACH native candidate and its owner.
-  // A supplied native address is one more candidate, never a skipped search.
-  async function resolve(logicalAddress, expectedWriter, nativeAddress) {
-    const owner = addressForClaim(expectedWriter);
-    const programName = logicalToStorageProgramName(logicalAddress);
-    await chainIdentity();
-    const candidates = new Map();
-    let complete = false;
-    if (nativeAddress !== undefined) { if (!NATIVE_ADDRESS.test(nativeAddress)) reject('invalid', 'malformed supplied native address'); candidates.set(nativeAddress, { programName }); }
-    for (let page = 0; page < 8 && !complete; page += 1) {
-      const rows = await nodeCall('searchStoragePrograms', { query: programName, options: { exactMatch: true, limit: 50, offset: page * 50 } });
-      if (!Array.isArray(rows) || rows.length > 50) reject('indeterminate', 'malformed name-index page');
-      for (const row of rows) {
-        if (!object(row) || !NATIVE_ADDRESS.test(row.storageAddress) || typeof row.programName !== 'string') reject('indeterminate', 'malformed name-index candidate');
-        if (row.programName === programName) candidates.set(row.storageAddress, row);
-        if (candidates.size > MAX_NATIVE_CANDIDATES) reject('indeterminate', 'native candidate budget exceeded');
-      }
-      if (rows.length < 50) { complete = true; break; }
-    }
-    if (!complete) reject('indeterminate', 'name index exceeds the bounded pagination limit');
-    const saved = await retained(logicalAddress, expectedWriter);
-    if (saved) candidates.set(saved.nativeAddress, { programName });
-    if (candidates.size > MAX_NATIVE_CANDIDATES) reject('indeterminate', 'native candidate budget exceeded');
+  // The programs at these addresses that belong to the writer, each read and
+  // authenticated (owner, program name, payload, logical address). A program of
+  // another owner is skipped after its owner check and its payload is not read.
+  async function readOwnedPrograms(addresses, owner, programName, logicalAddress) {
     const owned = [];
-    for (const [address] of candidates) {
+    for (const address of addresses) {
       const native = await nativeRead(address);
       if (native.programName !== programName) reject('invalid', 'name index and native program name differ');
       if (native.owner !== owner) continue;
@@ -234,6 +215,60 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       if (native.metadata.logicalAddress !== logicalAddress) reject('invalid', 'native metadata names another logical address');
       owned.push(native);
     }
+    return owned;
+  }
+
+  // The same for the supplied and retained addresses, where a 404 is not
+  // fatal yet: it is returned as `miss`, to be thrown if no program is found
+  // at all, so an unreadable name index never reads as an absent program.
+  async function readKnownPrograms(addresses, owner, programName, logicalAddress) {
+    const owned = [];
+    let miss = null;
+    for (const address of addresses) {
+      try { owned.push(...await readOwnedPrograms([address], owner, programName, logicalAddress)); } catch (error) {
+        if (error?.observation !== 'native-address-miss') throw error;
+        miss ??= error;
+      }
+    }
+    return { owned, miss };
+  }
+
+  // The same-name addresses from the bounded name-index pages. Paging stops
+  // once there are more than MAX_FOREIGN_NATIVE_READS: they are not read.
+  async function searchNameIndex(programName) {
+    const candidates = new Set();
+    for (let page = 0; page < 8; page += 1) {
+      const rows = await nodeCall('searchStoragePrograms', { query: programName, options: { exactMatch: true, limit: 50, offset: page * 50 } });
+      if (!Array.isArray(rows) || rows.length > 50) reject('indeterminate', 'malformed name-index page');
+      for (const row of rows) {
+        if (!object(row) || !NATIVE_ADDRESS.test(row.storageAddress) || typeof row.programName !== 'string') reject('indeterminate', 'malformed name-index candidate');
+        if (row.programName === programName) candidates.add(row.storageAddress);
+      }
+      if (candidates.size > MAX_FOREIGN_NATIVE_READS || rows.length < 50) return [...candidates];
+    }
+    reject('indeterminate', 'name index exceeds the bounded pagination limit');
+  }
+
+  // Do not guess a nonce-derived physical address for another writer. The
+  // supplied and retained native addresses are authenticated first (owner,
+  // name, logical address). The other same-name programs are read, for the
+  // owner check that finds a second program of this writer, only while there
+  // are at most MAX_FOREIGN_NATIVE_READS of them. Past that cap a program that
+  // authenticated is still the answer, and without one the read is
+  // indeterminate: foreign programs cannot exhaust the readback budget.
+  async function resolve(logicalAddress, expectedWriter, nativeAddress) {
+    const owner = addressForClaim(expectedWriter);
+    const programName = logicalToStorageProgramName(logicalAddress);
+    await chainIdentity();
+    if (nativeAddress !== undefined && !NATIVE_ADDRESS.test(nativeAddress)) reject('invalid', 'malformed supplied native address');
+    const saved = await retained(logicalAddress, expectedWriter);
+    const known = [...new Set([nativeAddress, saved?.nativeAddress].filter((address) => address !== undefined))];
+    const indexed = (await searchNameIndex(programName)).filter((address) => !known.includes(address));
+    const found = await readKnownPrograms(known, owner, programName, logicalAddress);
+    let owned = found.owned;
+    if (indexed.length <= MAX_FOREIGN_NATIVE_READS) owned = [...owned, ...await readOwnedPrograms(indexed, owner, programName, logicalAddress)];
+    else if (owned.length === 0) reject('indeterminate', 'native candidate budget exceeded');
+    if (owned.length === 0 && found.miss) throw found.miss;
     if (owned.length > 1) reject('indeterminate', 'multiple programs belong to this logical address and writer');
     if (owned.length === 0 && saved) reject('indeterminate', 'retained handoff has no authenticated native readback');
     return owned[0] ?? null;
