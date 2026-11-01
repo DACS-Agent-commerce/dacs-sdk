@@ -165,3 +165,46 @@ for (const alias of [false, true]) test(`an unsigned extra buyer claim cannot au
   assert.equal((await w.agent.submitPayment({jobId: next, txHash: HASH, payerPayingKey: w.buyer.claim + (alias ? '?source=fixture' : '')})).status, 'delivered');
  } finally {w.close();}
 });
+
+// Holds every anchor write for `job` until open(); reached resolves at the first one held.
+function gateWrites(w,job=jobId){
+ const write=w.anchors.write.bind(w.anchors);let reach,open;const reached=new Promise(done=>{reach=done;}),opened=new Promise(done=>{open=done;});
+ w.anchors.write=async input=>{if(input.logicalAddress.includes(job)){reach();await opened;}return write(input);};
+ return {reached,open};
+}
+const OTHER_TX='b'.repeat(64);
+for(const memory of [true,false])test(`a second payment for a job in progress is refused as busy and the first still replays (${memory?'memory':'durable'})`,async()=>{
+ const w=await agentFixture({memory});try{await w.agent.commit({jobId});const gate=gateWrites(w);
+  const first=w.agent.submitPayment(payment(w));await gate.reached;
+  await assert.rejects(w.agent.submitPayment({...payment(w),txHash:OTHER_TX}),{code:'seller_state_busy',status:503});
+  gate.open();const answer=await first;assert.equal(answer.status,'delivered');
+  assert.deepEqual(await w.agent.submitPayment(payment(w)),answer);
+  await assert.rejects(w.agent.submitPayment({...payment(w),txHash:OTHER_TX}),{code:'payment_already_recorded',status:409});
+  if(!memory)assert.equal(w.agent.durableSessionOf(jobId).paymentWork.txHash,HASH);
+ }finally{w.close();}
+});
+test('in memory mode a concurrent retry of the same payment is refused as busy and writes nothing more',async()=>{
+ const w=await agentFixture({memory:true});try{await w.agent.commit({jobId});const before=w.anchors.writes.length,gate=gateWrites(w);
+  const first=w.agent.submitPayment(payment(w));await gate.reached;
+  await assert.rejects(w.agent.submitPayment({...payment(w),txHash:'0x'+HASH}),{code:'seller_state_busy',status:503});
+  gate.open();const answer=await first;
+  assert.deepEqual(await w.agent.submitPayment({...payment(w),txHash:'0x'+HASH}),answer);assert.equal(w.anchors.writes.length,before+3);
+ }finally{w.close();}
+});
+test('in memory mode a payment that ends unverified or throws frees its job',async()=>{
+ const w=await agentFixture({memory:true});try{await w.agent.commit({jobId});
+  w.controls.observation={status:'unavailable',reason:'TEST observer unavailable'};
+  const unverified=await w.agent.submitPayment(payment(w)).catch(error=>error);assert.notEqual(unverified?.code,'seller_state_busy');assert.notEqual(unverified?.status,'delivered');
+  w.controls.observation=null;const read=w.anchors.read.bind(w.anchors);let failed=false;
+  w.anchors.read=async(...args)=>{if(!failed){failed=true;throw new Error('TEST anchor read failed');}return read(...args);};
+  await assert.rejects(w.agent.submitPayment(payment(w)),error=>error.code!=='seller_state_busy');
+  assert.equal((await w.agent.submitPayment(payment(w))).status,'delivered');
+ }finally{w.close();}
+});
+test('in memory mode a payment in progress on one job does not hold another job',async()=>{
+ const w=await agentFixture({memory:true});try{for(const job of [jobId,JOBS[1]])await w.agent.commit({jobId:job});const gate=gateWrites(w);
+  const first=w.agent.submitPayment(payment(w));await gate.reached;
+  assert.equal((await w.agent.submitPayment({jobId:JOBS[1],txHash:'c'.repeat(64),payerPayingKey:w.buyer.claim})).status,'delivered');
+  gate.open();assert.equal((await first).status,'delivered');
+ }finally{w.close();}
+});

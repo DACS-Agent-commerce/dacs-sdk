@@ -9,7 +9,7 @@ const same = (left, right) => canonicalize(left) === canonicalize(right);
 export function createFixtureSettlement({ listing, validation, sellerBundle, claim, anchors, observer, receiptStore, sessionFor, commit, sign, signEvidence, reportFor, persist, durable, bindSettlement, assertCredit, heldFor, now, error }) {
     if (observer !== undefined && typeof observer !== 'function')
         throw new TypeError('observeDemosTransfer must be a function');
-    const intents = new Set(), pin = { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) };
+    const intents = new Set(), paying = new Set(), pin ={ listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) };
     const read = address => readAdmissionCapability(anchors, 'read', address);
     const deps = session => ({
         resolveCommittedAgreement: async () => ({ disposition: 'verified', agreement: structuredClone(session.agreement), agreementHash: session.commitment.agreementHash,
@@ -89,7 +89,15 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
         guard(session.jobId);
     }
     const answer = session => ({ status: 'delivered', settlementId: session.payment.settlementId, evidenceAddress: session.payment.ref.anchor.locator, deliverableAddress: session.payment.deliverableRef.anchor.locator, deliveryEvidenceAddress: session.payment.deliveryRef.anchor.locator });
-    async function submitPayment({ jobId, txHash, payerPayingKey }) {
+    // The durable job fence refuses a second holder; memory mode has none, so a
+    // job's payment is refused, before any await, while another is in progress.
+    async function submitPayment(input) {
+        if (paying.has(input?.jobId))
+            error('seller_state_busy', 'another payment for this job is in progress');
+        paying.add(input?.jobId);
+        try { return await pay(input); } finally { paying.delete(input?.jobId); }
+    }
+    async function pay({ jobId, txHash, payerPayingKey }) {
         const session = sessionFor(jobId), normalizedTx = normalized(txHash), work = session.paymentWork;
         if (session.payment && normalized(session.payment.txHash) !== normalizedTx)
             error('payment_already_recorded', 'this job already has a verified payment', 409);
