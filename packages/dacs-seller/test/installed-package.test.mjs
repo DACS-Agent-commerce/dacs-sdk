@@ -2,25 +2,43 @@
 // install both tarballs into a temporary application outside this repository,
 // then import and host it from a clean `node` process with no test hooks.
 import test from 'node:test';
-import {createHash}from'node:crypto';
-import {defaultSellerConsumer,sellerSourceFingerprint}from'../../../scripts/prepare-seller-consumer.mjs';
+import {sellerPackFiles,staleSetupReason}from'../../../scripts/prepare-seller-consumer.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
-import { fileURLToPath,pathToFileURL } from 'node:url';
+import { dirname, isAbsolute, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const packageDirectory = join(root, 'packages', 'dacs-seller');
 // Entry modules that could not be imported without test hooks before the run-time port.
 const ENTRY_MODULES = ['src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-context-route.mjs', 'src/dacs/seller-http.mjs', 'src/dacs/seller-agent.mjs',
   'src/dacs/seller-durable-state.mjs', 'src/devnet-demo/artifact-anchor.mjs', 'src/dacs/commit-on-signature.mjs'];
+// Shared helpers lower parts added after the package was first cut; each once went unshipped.
+const ADDED_HELPERS = ['src/dacs/process-lease.mjs', 'src/devnet-demo/approval-ledger-append.mjs', 'src/util/bounded-resolution.mjs', 'src/dacs/fixture-settlement.mjs'];
 // Operator-side sources that need the operator's wallet, journal or custody.
-const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs', 'src/devnet-demo/seller-write-batch.mjs'];
+const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
+const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
   'createSellerTransportServerAuth', 'createSellerTransportStore', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
+const INSTALLED_RUN_TIMEOUT_MS = 120000;
+const INSTALLED_TEST_TIMEOUT_MS = 600000;
+
+// Every source module in the checkout, package-relative.
+function sourceModules() {
+  const found = [];
+  const walk = (dir) => { for (const entry of readdirSync(join(packageDirectory, dir), { withFileTypes: true })) { const path = dir + '/' + entry.name; if (entry.isDirectory()) walk(path); else if (path.endsWith('.mjs')) found.push(path); } };
+  walk('src');
+  return found.sort();
+}
+const shippedModules = () => sourceModules().filter((file) => !NOT_SHIPPED.includes(file));
+// Relative specifiers a module loads: static, side-effect, re-export and literal dynamic imports.
+function relativeImports(file, source = readFileSync(join(packageDirectory, file), 'utf8')) {
+  const patterns = [/\bfrom\s*['"](\.{1,2}\/[^'"]+)['"]/g, /\bimport\s*['"](\.{1,2}\/[^'"]+)['"]/g, /\bimport\s*\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g];
+  return patterns.flatMap((pattern) => [...source.matchAll(pattern)].map((match) => join(dirname(file), match[1])));
+}
 
 test('every executable seller test has one complete CLI and CI entry',()=>{
  const actual=readdirSync(join(packageDirectory,'test')).filter(name=>name.endsWith('.test.mjs')).sort();
@@ -30,14 +48,33 @@ test('every executable seller test has one complete CLI and CI entry',()=>{
  const ci=readFileSync(join(root,'.github/workflows/ci.yml'),'utf8');assert.equal((ci.match(/run: npm run seller:test/g)??[]).length,1);assert.doesNotMatch(ci,/run: node[^\n]+packages\/dacs-seller\/test\/\*/);
  assert.equal(existsSync(join(root,'test/seller/standalone.test.ts')),false);
 });
-test('seller manifest declares its pinned native dependency and all local runtime imports',()=>{
- const manifest=JSON.parse(readFileSync(join(packageDirectory,'package.json'),'utf8')),lock=JSON.parse(readFileSync(join(root,'package-lock.json'),'utf8'));
- assert.equal(manifest.dependencies?.['better-sqlite3'],lock.packages['node_modules/better-sqlite3'].version);
- assert.equal(lock.packages['packages/dacs-seller'].dependencies?.['better-sqlite3'],manifest.dependencies['better-sqlite3']);
- for(const file of manifest.files.filter(name=>name.endsWith('.mjs'))){const source=readFileSync(join(packageDirectory,file),'utf8');for(const match of source.matchAll(/from ['"](\.[^'"]+\.mjs)['"]/g)){const local=new URL(match[1],pathToFileURL(join(packageDirectory,file)));assert.ok(manifest.files.includes(relative(packageDirectory,fileURLToPath(local))),`${file} dependency ${match[1]} ships`);}}
+
+test('seller manifest declares its pinned native dependency', () => {
+  const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8')), lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  assert.equal(manifest.dependencies?.['better-sqlite3'], lock.packages['node_modules/better-sqlite3'].version);
+  assert.equal(lock.packages['packages/dacs-seller'].dependencies?.['better-sqlite3'], manifest.dependencies['better-sqlite3']);
 });
 
-test('the packed seller installs outside the repository and serves one Listing without test hooks', { timeout: 600000 }, async (t) => {
+test('the seller pack ships every source module but the operator ones, and everything each shipped module imports', () => {
+  const packed = sellerPackFiles().sort();
+  assert.deepEqual(packed, [...shippedModules(), ...DOCUMENTS].sort());
+  for (const file of ADDED_HELPERS) assert.ok(packed.includes(file), `${file} ships`);
+  for (const file of NOT_SHIPPED) assert.ok(!packed.includes(file), `${file} is not part of the package`);
+  for (const path of packed) assert.doesNotMatch(path, /(?:^|\/)(?:wallet|embedded-wallet|test|port-sources)\/|operator-custody|seller-issuance/, `${path} is a run-time seller module`);
+  for (const file of packed.filter((path) => path.endsWith('.mjs'))) {
+    for (const target of relativeImports(file)) {
+      assert.ok(existsSync(join(packageDirectory, target)), `${file} imports ${target}, which exists`);
+      assert.ok(packed.includes(target), `${file} imports ${target}, which ships`);
+    }
+  }
+});
+
+test('the import scan sees static, side-effect, re-export and literal dynamic imports', () => {
+  const probe = "import { a } from './dacs/a.mjs';\nimport './dacs/b.mjs';\nexport { c } from \"../c.mjs\";\nconst d = await import('./util/d.mjs');\n";
+  assert.deepEqual(relativeImports('src/probe.mjs', probe).sort(), ['c.mjs', 'src/dacs/a.mjs', 'src/dacs/b.mjs', 'src/util/d.mjs']);
+});
+
+test('the packed seller installs outside the repository and serves one Listing without test hooks', { timeout: INSTALLED_TEST_TIMEOUT_MS }, async (t) => {
   const manifestPath = join(packageDirectory, 'package.json');
   assert.ok(existsSync(manifestPath), 'packages/dacs-seller/package.json is the package manifest');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -49,43 +86,34 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.deepEqual(manifest.exports, { '.': './src/index.mjs', './src/*': './src/*', './package.json': './package.json', './PROFILE.json': './PROFILE.json' });
   assert.equal(manifest.engines.node,core.engines.node);
   assert.equal(manifest.peerDependencies['@kynesyslabs/dacs'], core.version);
-  assert.ok(Array.isArray(manifest.files) && manifest.files.every((file) => !file.includes('*')), 'files is an explicit list');
-  for (const file of NOT_SHIPPED) assert.ok(!manifest.files.includes(file), `${file} is not part of the package`);
   assert.ok(existsSync(join(root, 'dist', 'index.js')), 'the core is built (npm run build) before it is packed');
 
   const work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-installed-')));
   t.after(() => rmSync(work, { recursive: true, force: true }));
-  assert.ok(relative(root, work).startsWith('..') && isAbsolute(work), 'the application is outside the repository');
-  const preparedPath=process.env.DACS_SELLER_SMOKE_DIR??defaultSellerConsumer;
-  assert.ok(existsSync(join(preparedPath,'prepared.json')),'run npm run seller:prepare before the smoke');
-  const app=realpathSync(preparedPath);
-  assert.ok(relative(root,app).startsWith('..'),'prepared consumer is outside the repository');
-  assert.ok(existsSync(join(app,'prepared.json')),'run npm run seller:prepare before the smoke');
-  const prepared=JSON.parse(readFileSync(join(app,'prepared.json'),'utf8'));
-  assert.equal(prepared.sourceFingerprint,sellerSourceFingerprint(),'setup must provision these exact sources');
-  assert.equal(prepared.lockDigest,createHash('sha256').update(readFileSync(join(app,'package-lock.json'))).digest('hex'));
-  const {sellerPack}=prepared;
-  // The governing profile, admission guidance and source references ship with the source.
-  for (const file of ['PROFILE.json', 'ADMISSION.md', 'SOURCES.md']) assert.ok(manifest.files.includes(file));
+  const preparedPath = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(preparedPath, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
+  const app = realpathSync(preparedPath);
+  assert.ok(relative(root, app).startsWith('..') && isAbsolute(app), 'prepared consumer is outside the repository');
+  assert.equal(staleSetupReason(app), null, 'setup must provision these exact sources, lock and runtime');
+  const { sellerPack } = JSON.parse(readFileSync(join(app, 'prepared.json'), 'utf8'));
   assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
 
-  // Exactly the manifest's files, its manifest, README and LICENSE.
+  // Exactly the shipped modules, the governing documents, the manifest, README and LICENSE.
   const packed = sellerPack.files.map((entry) => entry.path).sort();
-  assert.deepEqual(packed, [...manifest.files, 'LICENSE', 'README.md', 'package.json'].sort());
-  for (const path of packed) assert.doesNotMatch(path, /(?:^|\/)(?:wallet|embedded-wallet|test|port-sources)\/|operator-custody|seller-issuance|seller-write-batch/, `${path} is a run-time seller module`);
+  assert.deepEqual(packed, [...shippedModules(), ...DOCUMENTS].sort());
   for (const file of ENTRY_MODULES) assert.ok(packed.includes(file), `${file} is shipped`);
 
   assert.ok(!existsSync(join(app,'node_modules','@kynesyslabs','dacs-seller','test')),'test files are not shipped');
   // A clean child: no inherited flags, loaders, hooks or NODE_OPTIONS.
   const env={PATH:process.env.PATH,TMPDIR:work,NPM_CONFIG_OFFLINE:'true',NPM_CONFIG_CACHE:join(work,'empty-npm-cache')};mkdirSync(env.NPM_CONFIG_CACHE);
-  const child = spawnSync(process.execPath, ['run.mjs'], { cwd: app, env, encoding: 'utf8', timeout: 120000, maxBuffer: 8 * 1024 * 1024 });
+  const child = spawnSync(process.execPath, ['run.mjs'], { cwd: app, env, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
   assert.equal(child.status, 0, `installed seller run failed\n${child.stdout}\n${child.stderr}`);
   const out = JSON.parse(child.stdout.trim().split('\n').at(-1));
 
   assert.deepEqual(out.environment, { execArgv: [], nodeOptions: null });
   assert.equal(out.packageRoot, join('node_modules', '@kynesyslabs', 'dacs-seller'));
   assert.deepEqual(out.imports.filter((entry) => !entry.loaded), [], 'every installed module imports');
-  assert.deepEqual(out.imports.map((entry) => entry.file).sort(), manifest.files.filter((file) => file.endsWith('.mjs')).sort());
+  assert.deepEqual(out.imports.map((entry) => entry.file).sort(), shippedModules());
   for (const file of ENTRY_MODULES) assert.ok(out.imports.some((entry) => entry.file === file && entry.loaded), `${file} loads`);
   assert.deepEqual(out.exports, PUBLIC_API);
   assert.deepEqual(out.subpath, { artifactAnchor: 'function', contextRoute: 'function' }, 'kit modules resolve by package subpath');
