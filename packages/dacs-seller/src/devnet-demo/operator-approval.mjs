@@ -278,8 +278,9 @@ export function heldPolicyBudget(ledger,at){
 
 // Whether `writes` more writes of jobId, `totalOs` in total, fit the limits on
 // a parsed ledger snapshot: null when they do, else the limit they exceed
-// ('job-write-limit', 'hourly-write-limit' or 'hourly-dem-limit').
-function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}){
+// ('job-write-limit', 'hourly-write-limit' or 'hourly-dem-limit'). waived: the
+// one limit a manual yes waives; every other limit is still checked.
+function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null,waived=null}){
   const{rows:ledger,attempts}=snapshot;
   // A released attempt counts towards neither limit.
   const live=withContextHolds(ledger,converting).filter(row=>row.decision==='approved'&&row.outcome!=='released'&&attempts.get(row.attemptId)?.outcome!=='released');
@@ -288,11 +289,11 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null}
   // bytes are one write.
   const manualLines=new Set(live.filter(row=>!row.policy&&!row.attemptId).map(row=>row.approvalHash));
   const jobRows=live.filter(row=>row.jobId===jobId&&!(row.held&&!row.attemptId&&manualLines.has(row.approvalHash)));
-  if(jobRows.filter(row=>!row.attemptId).length+new Set(jobRows.map(row=>row.attemptId).filter(Boolean)).size+writes>SELLER_POLICY_MAX_WRITES)return 'job-write-limit';
+  if(waived!=='job-write-limit'&&jobRows.filter(row=>!row.attemptId).length+new Set(jobRows.map(row=>row.attemptId).filter(Boolean)).size+writes>SELLER_POLICY_MAX_WRITES)return 'job-write-limit';
   // Old approvals lack completion proof and remain held, as do unknown outcomes.
   const recent=heldPolicyBudget(live,at);
-  if(recent.writes+writes>limits.maxWritesPerHour)return 'hourly-write-limit';
-  if(recent.totalOs+BigInt(totalOs)>BigInt(limits.maxTotalOsPerHour))return 'hourly-dem-limit';
+  if(waived!=='hourly-write-limit'&&recent.writes+writes>limits.maxWritesPerHour)return 'hourly-write-limit';
+  if(waived!=='hourly-dem-limit'&&recent.totalOs+BigInt(totalOs)>BigInt(limits.maxTotalOsPerHour))return 'hourly-dem-limit';
   return null;
 }
 
@@ -363,8 +364,8 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
  * resolves its approval as a boolean and opens no attempt (a hold is logged as a refusal); authorizeHeld(request,
  * accepted) ends a held attempt at the sign gate ('signed', 'refused', or 'unsigned' when its sign line could not be
  * retained); releaseHeld ends it unanswered, also after stop(); approve(request, validity) is the confirmation gate;
- * settle(request, outcome) completes a reservation; reconcile() labels unresolved ones; stop() ends waits and
- * pending manual answers. A manual answer for a held attempt is recorded only while that attempt is open and unsigned
+ * settle(request, outcome) completes a reservation; reconcile() labels unresolved ones; stop() ends waits, pending
+ * manual answers and purchase resolver and issuance waits, with nothing decided or written. A manual answer for a held attempt is recorded only while that attempt is open and unsigned
  * in its ledger, for the same bytes; otherwise it is false and writes nothing. Purchase resolver and policy input
  * errors reject with nothing decided or written; an unreadable ledger is waited for until stop(). */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
@@ -385,6 +386,14 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     flights.add(flight);flight.then(forget,forget);
     return flight;
   };
+  // Injected code awaited inside a flight (the purchase resolver, issuance) ends when stop() aborts: its wait
+  // rejects with nothing decided or written, so stop() never waits on it.
+  const untilStopped=(work)=>new Promise((done,fail)=>{
+    if(halt.signal.aborted)return fail(stoppedError(APPROVAL_STOPPED));
+    const stop=()=>fail(stoppedError(APPROVAL_STOPPED));halt.signal.addEventListener('abort',stop,{once:true});
+    Promise.resolve().then(work).then(done,fail).finally(()=>halt.signal.removeEventListener('abort',stop));
+  });
+  const checked=policyMode?Object.create(policy,{resolvePurchase:{value:(jobId)=>untilStopped(()=>policy.resolvePurchase(jobId))}}):policy;
   const track=(work)=>stopped?Promise.reject(stoppedError(APPROVAL_STOPPED)):fly(work());
   const locked=(work)=>track(()=>serializedPolicy(evidencePath,async()=>{live();return work();}));
   const pause=()=>new Promise((done,fail)=>{
@@ -406,25 +415,24 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   const declaredOs=(request)=>{const total=request?.content?.debit?.totalOs;return typeof total==='string'&&OS.test(total)?BigInt(total):null;};
   // Every check before a sign line, on one ledger snapshot read under the policy lock: the operator maximum, the
   // policy (its fee cap at the declared total), no open sign authority for this wallet nonce, then the fee cap and
-  // the limits. waiver: the manually approved class of a held attempt ('before': the holds, 'after': the cap and
-  // limits). Resolves null when the write may be signed, else a reason; a manual-table reason only when nothing
-  // else refuses.
+  // the limits. waiver: the reason a held attempt recorded and its manual yes waives: before payment the
+  // seller-records holds, after payment exactly that one cap or limit. Resolves null when the write may be signed,
+  // else a reason; a manual-table reason only when nothing else refuses.
   const signRefusal=async(copy,snapshot,waiver=null)=>{
     const c=copy?.content,total=declaredOs(copy);
     if(total!==null&&total>BigInt(maxTotalOs))return 'operator-fee-budget';
-    const reason=await policyRefusal(copy,policy,total===null?settings:{...settings,maxWriteTotalOs:total.toString()},{held:waiver==='before'});
+    const reason=await policyRefusal(copy,checked,total===null?settings:{...settings,maxWriteTotalOs:total.toString()},{held:HOLD_REASONS.has(waiver)});
     live();
     if(reason&&!HOLD_REASONS.has(reason))return reason;
     if(snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.request?.content?.wallet===c.wallet&&row.request.content.nonce===c.nonce))return 'sign-authorization-open';
-    if(waiver==='after')return null;
-    return (total>BigInt(settings.maxWriteTotalOs)?'write-fee-cap':budgetRefusal({jobId:c.jobId,totalOs:total,at:clock(),limits:settings,writes:1,snapshot,converting:c}))??reason;
+    return (waiver!=='write-fee-cap'&&total>BigInt(settings.maxWriteTotalOs)?'write-fee-cap':budgetRefusal({jobId:c.jobId,totalOs:total,at:clock(),limits:settings,writes:1,snapshot,converting:c,waived:waiver}))??reason;
   };
   // Policy ledger lines need a nonnegative integer time; a clock without one decides nothing.
   const clock=()=>{const at=now();if(!Number.isSafeInteger(at)||at<0)throw new RangeError('seller policy time must be a nonnegative safe integer');return at;};
   // The end of the sign gate: purchase authority reread after the last ledger await, and the request still the
   // exact bytes checked. Resolves null when the write may be signed, else the refusal.
   const reread=async(request,record)=>{
-    const reason=await stillAuthorizedToSign(JSON.parse(record.bytes),policy,HOLD_REASONS.has(record.reason));
+    const reason=await stillAuthorizedToSign(JSON.parse(record.bytes),checked,HOLD_REASONS.has(record.reason));
     live();
     return reason??(JSON.stringify(request)===record.bytes?null:'request-changed');
   };
@@ -471,7 +479,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     if(attemptId){records.set(request,{...record,attemptId,reason});open.add(attemptId);}
     return attemptId?{outcome:'held',reason,attemptId,requestBytes:bytes}:{outcome:'refused',reason,attemptId};
   });
-  // The sign gate for a held attempt's manual answer: only its recorded class is waived; every other check runs
+  // The sign gate for a held attempt's manual answer: only its recorded reason is waived; every other check runs
   // again (the attempt's own hold no longer counts against its limits).
   const authorizeHeld=(request,accepted)=>locked(async()=>{
     const record=records.get(request);
@@ -480,7 +488,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const snapshot=await readableLedger(request),attempt=snapshot.attempts.get(record.attemptId);
     if(attempt?.outcome!==null||attempt.reservation){records.delete(request);open.delete(record.attemptId);return 'refused';}
     snapshot.rows=snapshot.rows.filter(row=>row.attemptId!==record.attemptId);
-    const copy=JSON.parse(record.bytes),reason=await signRefusal(copy,snapshot,paymentPhase(copy.content.artifactKind))??await reread(request,record);
+    const copy=JSON.parse(record.bytes),reason=await signRefusal(copy,snapshot,record.reason)??await reread(request,record);
     if(reason){await endAttempt(request,record,'confirmation-refused',snapshot);return 'refused';}
     try{await appendSign(request,record);}catch(error){if(stopped)throw error;return 'unsigned';}
     return 'signed';
@@ -493,7 +501,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const copy=JSON.parse(record.bytes),declared=declaredOs(copy),confirmed=confirmedWriteOs(validity,copy),counted=confirmed!==null&&confirmed>declared?confirmed:declared;
     const row=await openSignLine(record);
     if(row.confirmed!==null)return false;
-    const reason=confirmed===null?'confirmation-mismatch':counted>BigInt(maxTotalOs)?'operator-fee-budget':await stillAuthorizedToSign(copy,policy,HOLD_REASONS.has(record.reason));
+    const reason=confirmed===null?'confirmation-mismatch':counted>BigInt(maxTotalOs)?'operator-fee-budget':await stillAuthorizedToSign(copy,checked,HOLD_REASONS.has(record.reason));
     live();
     if(reason){completeReservation(request,record,row,'released',reason==='confirmation-mismatch'?reason:'confirmation-refused');return false;}
     // Retained: the executed transaction confirmedWriteOs checked member by member, not the rest of the node's answer.
@@ -591,7 +599,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       const ids={attemptId:row.attemptId,reservationId:row.reservationId??null,approvalHash:row.approvalHash};
       if(!decidedFromJournals(row)){held.push(describe(row,{...ids,state:'no-completion-record'}));continue;}
       let issuance='unknown';
-      try{if(typeof policy.issuance==='function')issuance=await policy.issuance(structuredClone(row.request),Object.freeze({reservationId:row.reservationId,approvalHash:row.approvalHash}));}catch{issuance='unknown';}
+      try{if(typeof policy.issuance==='function')issuance=await untilStopped(()=>policy.issuance(structuredClone(row.request),Object.freeze({reservationId:row.reservationId,approvalHash:row.approvalHash})));}catch{issuance='unknown';}
       held.push(describe(row,{...ids,state:issuance==='issued'?'issued-outcome-unknown':'issuance-unknown'}));
     }
     return{released:[],held};
