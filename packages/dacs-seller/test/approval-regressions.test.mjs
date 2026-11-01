@@ -425,3 +425,68 @@ for(const [label,end] of [['decided again',(f,r)=>f.p.decide(r)],['released',(f,
   const{f,r}=await unsyncedSignLine(t);await end(f,r);
   assert.equal((await openSignRows(f)).length,1);assert.equal((await f.policyFor().reconcile()).held.length,1);
  });
+
+// A manual yes after payment waives exactly the cap or limit its attempt recorded; the others still refuse.
+const policyWith=(f,limits,resolve=purchase)=>createExactOperatorApproval({...f.settings,sellerApproval:{mode:'policy',...limits},policy:policyInputs(resolve)});
+// `count` paid writes of one job, each signed and spent.
+async function spentWrites(f,count){for(let i=0;i<count;i++){const r=payDem();assert.equal(await f.p.prepare(r),true);await f.p.settle(r,'spent');}}
+const signLines=async(f)=>(await f.read()).rows.filter(row=>row.signAuthorized).length;
+const TOTAL_OS=BigInt(payDem().content.debit.totalOs);
+for(const [label,limits,hold,spent] of [
+ ['a fee-cap hold under a one-write hourly limit',{maxWritesPerHour:1,maxWriteTotalOs:'1000000000'},'write-fee-cap',1],
+ ['an hourly write-limit hold over the hourly DEM limit',{maxWritesPerHour:1,maxTotalOsPerHour:(TOTAL_OS+1n).toString()},'hourly-write-limit',1],
+ ['a job write-limit hold at the hourly write limit',{maxWritesPerHour:6},'job-write-limit',6]])
+ test(`a manual yes for ${label} is refused at the sign gate`,async t=>{
+  const f=await fixture(t,purchase);await spentWrites(f,spent);const signed=await signLines(f),p=policyWith(f,limits),r=payDem();
+  const decision=await p.decide(r);assert.equal(decision.outcome,'held');assert.equal(decision.reason,hold);
+  assert.equal(await p.authorizeHeld(r,true),'refused');
+  assert.equal(await signLines(f),signed);assert.equal((await f.read()).attempts.get(decision.attemptId).reason,'confirmation-refused');
+ });
+test('a composer asks once about a fee-cap hold over the hourly write limit and approves nothing',async t=>{
+ const f=await fixture(t,purchase);await spentWrites(f,1);let prompts=0;
+ assert.equal(await composeSellerApproval({mode:'policy',policy:policyWith(f,{maxWritesPerHour:1,maxWriteTotalOs:'1000000000'}),manual:()=>{prompts++;return true;}})(payDem()),false);
+ assert.equal(prompts,1);assert.equal((await openSignRows(f)).length,0);
+});
+test('a manual yes for a fee-cap hold with room under the hourly limit is signed',async t=>{
+ const f=await fixture(t,purchase);await spentWrites(f,1);const p=policyWith(f,{maxWritesPerHour:2,maxWriteTotalOs:'1000000000'}),r=payDem();
+ assert.equal((await p.decide(r)).reason,'write-fee-cap');assert.equal(await p.authorizeHeld(r,true),'signed');
+});
+
+// stop() ends every wait on injected code inside a policy operation, with nothing decided or written.
+function hangingResolver(answer=()=>null){
+ const state={hang:true,resolve:null};let mark;state.entered=new Promise(done=>{mark=done;});
+ state.resolver=async jobId=>{if(!state.hang)return answer(jobId);mark();return new Promise(done=>{state.resolve=()=>done(answer(jobId));});};
+ return state;
+}
+const ledgerBytes=f=>readFile(f.evidencePath,'utf8').catch(error=>error.code);
+test('stop ends a decision whose purchase resolver never settles, and a decision queued behind it',async t=>{
+ const h=hangingResolver(),f=await fixture(t,h.resolver),first=f.p.decide(vetRequest()),queued=f.p.decide(vetRequest());
+ await h.entered;await f.p.stop();
+ for(const pending of [first,queued])await assert.rejects(pending,{code:'seller_approval_stopped'});
+ assert.equal(await ledgerBytes(f),'ENOENT');
+});
+test('a purchase resolver that settles after stop writes no ledger line',async t=>{
+ const h=hangingResolver(),f=await fixture(t,h.resolver),pending=f.p.decide(vetRequest());
+ await h.entered;await f.p.stop();await assert.rejects(pending,{code:'seller_approval_stopped'});
+ h.resolve();await new Promise(done=>setImmediate(done));assert.equal(await ledgerBytes(f),'ENOENT');
+});
+test('stop ends a sign gate whose purchase resolver hangs after a manual yes, and releases the attempt',async t=>{
+ const h=hangingResolver();h.hang=false;const f=await fixture(t,h.resolver);
+ const pending=composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{h.hang=true;return true;}})(vetRequest());
+ await h.entered;await f.p.stop();await assert.rejects(pending,{code:'seller_approval_stopped'});
+ assert.deepEqual([...(await f.read()).attempts.values()].map(attempt=>[attempt.outcome,attempt.reason]),[['released','operator-released']]);
+ assert.equal((await f.read()).rows.some(row=>row.signAuthorized),false);
+});
+test('stop ends a confirmation whose purchase reread hangs, leaving its sign line open and unconfirmed',async t=>{
+ const h=hangingResolver(purchase);h.hang=false;const f=await fixture(t,h.resolver),r=payDem();
+ assert.equal(await f.p.prepare(r),true);h.hang=true;const pending=f.p(r,confirmationFor(r)),lines=(await ledgerLines(f)).length;
+ await h.entered;await f.p.stop();await assert.rejects(pending,{code:'seller_approval_stopped'});
+ assert.equal((await ledgerLines(f)).length,lines);assert.equal((await openSignRows(f)).length,1);
+});
+test('stop ends a restart reconcile whose issuance never settles',async t=>{
+ const f=await fixture(t,purchase),r=payDem();assert.equal(await f.p.prepare(r),true);assert.equal(await f.p(r,confirmationFor(r)),true);
+ let mark;const entered=new Promise(done=>{mark=done;});
+ const p=createExactOperatorApproval({...f.settings,sellerApproval:{mode:'policy'},policy:policyInputs(purchase,{issuance:()=>{mark();return new Promise(()=>{});}})});
+ const pending=p.reconcile();await entered;await p.stop();
+ assert.deepEqual((await pending).held.map(row=>row.state),['issuance-unknown']);
+});
