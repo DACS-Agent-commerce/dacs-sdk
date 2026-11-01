@@ -4,7 +4,7 @@ import { isDemDeliveryContextAuthority } from './dem-delivery-context-consumer.m
 export const NATIVE_DEM_DELIVERY_SOURCE = 'dacs-chatgpt-plugin/native-dem-delivery/v1';
 const capabilities = new WeakMap();
 
-/** Register native operations; optional submitAuthorized must enforce its callback under the publisher's lock. */
+/** Register native operations. submitAuthorized(input, authorize) calls authorize('signing') last before it signs; anything but true signs nothing. */
 export function createNativeDemDeliveryCapability({ authority, submitAuthorized, submit = submitAuthorized, reconcile, read, verifyReceipt }) {
   if (!isDemDeliveryContextAuthority(authority) || [submit, reconcile, read, verifyReceipt].some(fn => typeof fn !== 'function')) {
     throw new TypeError('native DEM delivery requires explicit TEST authority and complete seller/buyer operations');
@@ -13,6 +13,8 @@ export function createNativeDemDeliveryCapability({ authority, submitAuthorized,
   capabilities.set(capability, { submit, submitAuthorized, reconcile, read, verifyReceipt });
   return capability;
 }
+/** True when the capability rechecks authority right before it signs; a paid delivery is prepared only for one. */
+export const hasGuardedNativeDemDelivery = (capability) => typeof capabilities.get(capability)?.submitAuthorized === 'function';
 
 /** Admit a registered native capability or absence; throws for copied descriptors. */
 export function nativeDemDeliveryConfig(value) {

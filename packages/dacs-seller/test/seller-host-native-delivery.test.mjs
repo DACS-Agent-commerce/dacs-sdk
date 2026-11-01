@@ -1113,13 +1113,16 @@ for (const restart of [false, true]) test(`settlement credit contested during na
   assert.deepEqual(w.effects.deliverySubmit, [], 'authorization runs before native signing');
 });
 
-test('a native capability without guarded submission keeps paid delivery held without invoking submit', async (t) => {
+test('a native capability without guarded submission keeps paid delivery held before the permit is spent, without invoking submit', async (t) => {
   const w = await world(t, { guardedDelivery: false }), p = await w.purchase(), tx = p.pay();
-  const answer = await p.claim(tx);
-  assert.notEqual(answer.delivery?.status, 'delivery-ready');
-  assert.equal(answer.error, 'seller_unavailable', shown(answer));
-  await w.restart();
-  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  for (let i = 0; i < 2; i++) {
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'held', shown(answer));
+    assert.match(answer.delivery.reason, /requires guarded submission/);
+    // retainedSession closes the host; the restart opens it again for the next claim.
+    assert.equal((await w.retainedSession(p.jobId)).deliveryHold?.result?.code, 'delivery-preparation-indeterminate');
+    await w.restart();
+  }
   assert.deepEqual(w.effects.deliverySubmit, []);
   assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 0);
 });
