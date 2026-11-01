@@ -36,3 +36,21 @@ test('the README lists exactly the exports of the package root', async () => {
   const exported = Object.keys(await import(new URL('src/index.mjs', packageUrl))).sort();
   assert.deepEqual(listed, exported);
 });
+
+test('the package root exports the context route and its buyer-side client a host mounts and calls', async () => {
+  const exported = await import(new URL('src/index.mjs', packageUrl));
+  for (const name of ['createSellerContextRoute', 'createSellerContextClient']) assert.equal(typeof exported[name], 'function', `the root exports ${name}`);
+});
+
+test('the README names the module the handler agent comes from; it exports createSellerAgent and the root does not', async () => {
+  assert.ok(readme.includes(`\`${PACKAGE}/src/dacs/seller-agent.mjs\``), 'the README names the seller agent module path');
+  assert.equal(typeof (await import(moduleFor(`${PACKAGE}/src/dacs/seller-agent.mjs`))).createSellerAgent, 'function');
+  assert.equal('createSellerAgent' in (await import(new URL('src/index.mjs', packageUrl))), false);
+});
+
+test('the README and ADMISSION.md name the context route and how a host mounts it', () => {
+  const admission = readFileSync(new URL('ADMISSION.md', packageUrl), 'utf8');
+  assert.match(readme, /does not mount the Vet and Agreement context route \(`createSellerContextRoute`/);
+  assert.match(readme, /`context` option of\s+`createSellerHttpHandler\(agent, \{ authentication, context \}\)`/);
+  assert.match(admission, /passes `createSellerContextRoute` \(a root\s+export\) as the `context` of `createSellerHttpHandler`/);
+});

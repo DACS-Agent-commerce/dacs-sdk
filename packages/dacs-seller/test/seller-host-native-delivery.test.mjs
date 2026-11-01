@@ -12,7 +12,7 @@ import test from 'node:test';
 import http from 'node:http';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtempSync, realpathSync, rmSync,readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync,readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
@@ -368,7 +368,9 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       return { signedTransaction: JSON.stringify(signed), txHash: signed.hash, nonce: signed.content.nonce };
     },
     readAccountNonce: async () => {
-      if (faults.readAccountNonce.shift() === 'throw') throw new Error('TEST account nonce read failed');
+      const fault = faults.readAccountNonce.shift();
+      if (typeof fault === 'function') await fault();
+      if (fault === 'throw') throw new Error('TEST account nonce read failed');
       return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
     },
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
@@ -407,9 +409,9 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // `faults.deliverySignCreate`: 'throw' before signing; `faults.deliveryBroadcast`:
   // 'throw' (after signing, nothing broadcast), 'drop' (the node never applies it)
   // or 'lost' (applied, then the answer is lost); `faults.deliveryRead`: 'throw'
-  // (the read failed) or 'name-index-miss'/'native-address-miss' (the adapter's
+  // (the read failed), 'proven-unsigned' (the reader kept no CREATE) or 'name-index-miss'/'native-address-miss' (the adapter's
   // complete miss, thrown with its observation); `faults.deliveryReconcile`:
-  // the same values thrown by the capability's reconcile.
+  // the same values thrown by the capability's reconcile, or 'absent' (it finds no CREATE).
   const openDeliveryJournal = (file = 'delivery-wallet-journal.sqlite') => seller.createDeliverableWalletJournal({ path: join(walletDirectory, file),
     signCreate: async ({ logicalAddress, artifact, artifactKind, deliveryBinding }) => {
       effects.deliverySignCreate.push(logicalAddress);
@@ -431,6 +433,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       if (fault === 'lost') throw new Error('TEST delivery broadcast answer lost after the node applied it');
     } });
   let deliveryJournalWallet = deliveryJournal ? openDeliveryJournal() : null;
+  // The host composes the journal only while this is set; a restart may drop or restore it.
+  let journalInUse = deliveryJournalWallet !== null;
   const replaceDeliveryWallet = (file) => { deliveryJournalWallet.close(); deliveryJournalWallet = openDeliveryJournal(file); };
   // A new capability each time, over the wallet's current journal (the host
   // takes the journal's `submitAuthorized` and `resume` as a pair).
@@ -452,14 +456,17 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       if (fault === 'land-lose-lock') loseJobLock(input.logicalAddress.slice('dacs4:deliverable:'.length));
       return { status: 'accepted', reconciliationId: signedCreates.get(input.logicalAddress).hash };
     };
-  const deliveryCapability = () => createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
-    ...(deliveryJournalWallet ? { submitAuthorized: deliveryJournalWallet.submitAuthorized }
-      : { submit: submitDelivery, ...(guardedDelivery ? { submitAuthorized: submitDelivery } : {}) }),
+  // The host starts with the capability chosen by `useGuardedDelivery`; a restart may change it.
+  let guardedStart = guardedDelivery;
+  const deliveryCapability = (guarded = guardedStart) => createNativeDemDeliveryCapability({ authority: 'TEST-host-native-delivery',
+    ...(journalInUse ? { submitAuthorized: deliveryJournalWallet.submitAuthorized }
+      : guarded ? { submitAuthorized: submitDelivery } : { submit: submitDelivery }),
     reconcile: async (input) => {
       await faults.beforeDeliveryReconcile();
       if (Array.isArray(faults.deliveryReconcile)) {
         const fault = faults.deliveryReconcile.shift();
         if (fault === 'throw') throw new Error('TEST delivery reconcile unavailable');
+        if (fault === 'absent') return { status: 'absent', reason: 'TEST the capability finds no CREATE' };
         if (fault === 'name-index-miss' || fault === 'native-address-miss') throw Object.assign(new Error(`TEST delivery reconcile missed: ${fault}`), { observation: fault });
       }
       const read = await deliverable(input);
@@ -473,13 +480,15 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       if (Array.isArray(faults.deliveryRead)) {
         const fault = faults.deliveryRead.shift();
         if (fault === 'throw') throw new Error('TEST delivery node unreachable');
+        // A reader that claims it kept no CREATE for the address, whatever another wallet signed.
+        if (fault === 'proven-unsigned') return provenUnsignedAbsence('TEST the reader kept no CREATE');
         // The SR-2 adapter's complete miss: an error the node's name index or
         // native-address search reported, not a failure to ask (CORE §5.1).
         if (fault === 'name-index-miss' || fault === 'native-address-miss') throw Object.assign(new Error(`TEST delivery read missed: ${fault}`), { observation: fault });
       }
       const read = await deliverable(input);
       if(read.status==='present'&&typeof faults.deliveryRead==='function')return faults.deliveryRead(clone(read));
-      return read.status === 'absent' && !signedCreates.has(input.logicalAddress) && !deliveryJournalWallet ? provenUnsignedAbsence(read.reason) : read;
+      return read.status === 'absent' && !signedCreates.has(input.logicalAddress) && !journalInUse ? provenUnsignedAbsence(read.reason) : read;
     },
     verifyReceipt: async ({ logicalAddress, report, receipt, receiptContentHash, deliveryBinding, signedProjection }) => node.reader.verifyReceipt({ receipt, logicalAddress, artifact: report,
       expectedWriter: sellerKey.claim, artifactKind: 'Deliverable', deliveryBinding, receiptContentHash, signedProjection: signedProjection ?? clone(signedCreates.get(logicalAddress)) }),
@@ -498,7 +507,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery: deliveryCapability(), railAuthority: rails.authority,
     sessionAdmission: admission.sessionAdmission, now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}),
-    ...(deliveryJournalWallet ? { resumeDeliverableCreate: deliveryJournalWallet.resume } : {}) });
+    ...(journalInUse ? { resumeDeliverableCreate: deliveryJournalWallet.resume } : {}) });
   const start = async () => {
     const host = await startHost({ ...capabilities(), dataDirectory, artifactAnchor });
     hosts.push(host);
@@ -582,7 +591,9 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // Another write of the seller's account takes the nonce a kept CREATE signed.
   const overtakeWallet = () => node.create(sellerKey, { logicalAddress: 'dacs4:TEST-other-write', artifact: { TEST: 'another write of the seller wallet' }, artifactKind: 'TEST-other' });
   return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, replaceDeliveryWallet, openDeliveryJournal, overtakeWallet, deliveryWallet: () => deliveryJournalWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
-    host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession };
+    host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession,
+    unguardedCapability: () => deliveryCapability(false), useGuardedDelivery: (guarded) => { guardedStart = guarded; },
+    useDeliveryJournal: (on) => { journalInUse = on; } };
 }
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
@@ -1032,6 +1043,25 @@ test('a journal that cannot read a kept CREATE\'s fate signs nothing anew: the c
   assert.equal(work.anchorOutcome, 'sent', 'the one new signature was sent');
 });
 
+// The kept CREATE's fate is read before a successor is signed. Credit lost to another job's
+// claim of the same transfer during that read signs nothing and broadcasts nothing.
+test('settlement credit lost while the wallet reads the account nonce signs no successor and keeps the claim held', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), other = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
+  w.faults.broadcast.push('drop');
+  assert.equal((await p.claim(tx)).status, 'held');
+  assert.ok(w.signedCreate(address));
+  await w.purchase();
+  let contested = null;
+  w.faults.readAccountNonce.push(async () => { contested = await other.claim(tx); });
+  const answer = await p.claim(tx);
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' }, 'another job claimed the transfer during the nonce read');
+  assert.notEqual(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(w.effects.signed.length, 1, 'no successor is signed once the credit is contested');
+  assert.equal(new Set(w.effects.broadcast).size, 1, 'only the kept bytes were ever broadcast');
+  assert.equal(w.createsAt(address), 0);
+});
+
 // Settlement credit (SB-2): one transfer claimed by two jobs gives neither
 // job credit. Job A's failed anchor leaves its checkpoint bound to the
 // transfer; once job B claims it too, job A reads nothing back, sends nothing
@@ -1251,18 +1281,31 @@ test('a claim on another job made after the signing check binds only once the su
   assert.equal(w.createsAt(`dacs4:deliverable:${b.jobId}`), 0);
 });
 
-test('a native capability without guarded submission keeps paid delivery held before the permit is spent, without invoking submit', async (t) => {
-  const w = await world(t, { guardedDelivery: false }), p = await w.purchase(), tx = p.pay();
-  for (let i = 0; i < 2; i++) {
-    const answer = await p.claim(tx);
-    assert.equal(answer.delivery?.status, 'held', shown(answer));
-    assert.match(answer.delivery.reason, /requires guarded submission/);
-    // retainedSession closes the host; the restart opens it again for the next claim.
-    assert.equal((await w.retainedSession(p.jobId)).deliveryHold?.result?.code, 'delivery-preparation-indeterminate');
-    await w.restart();
-  }
-  assert.deepEqual(w.effects.deliverySubmit, []);
+test('a native capability without guarded submission is refused when the host starts, before any Agreement is signed', async (t) => {
+  await assert.rejects(world(t, { guardedDelivery: false }), { name: 'TypeError', message: /requires guarded submission/ });
+});
+
+test('a refused unguarded start opens no seller state and releases the lock for a guarded start', async (t) => {
+  const w = await world(t), dataDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'seller-host-refused-')));
+  t.after(() => rmSync(dataDirectory, { recursive: true, force: true }));
+  await assert.rejects(w.startShipped({ dataDirectory, nativeDemDelivery: w.unguardedCapability() }), { name: 'TypeError', message: /requires guarded submission/ });
+  assert.equal(existsSync(join(dataDirectory, 'seller', 'seller-state.sqlite')), false);
+  await (await w.startShipped({ dataDirectory })).close();
+});
+
+test('a restart with an unguarded capability is refused while a paid order is undelivered, and a guarded restart delivers it once', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  w.faults.deliverySubmit.push('fail');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
   assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 0);
+  w.useGuardedDelivery(false);
+  await assert.rejects(w.restart(), { name: 'TypeError', message: /requires guarded submission/ });
+  w.useGuardedDelivery(true);
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(w.createsAt(`dacs4:deliverable:${p.jobId}`), 1);
+  assert.equal(w.effects.deliverySubmit.length, 2, 'the refused attempt and the delivering one');
 });
 
 test('a job fence lost during native submission prevents signing and recovers once after restart', async (t) => {
@@ -1634,6 +1677,61 @@ test('a Deliverable submission recorded with no wallet journal is not asked of t
   assert.equal(held.delivery?.status, 'held', shown(held));
   assert.match(held.delivery.reason, /wallet_journal_changed/);
   assert.equal(w.effects.deliveryBroadcast.length, 1, 'the kept CREATE is not sent again');
+});
+
+// An order recorded for a journal is signed only through it: another capability
+// is never asked to sign it, so the journal's record of what it signed stays complete.
+const claimUntilReady = async (p, tx) => { let answer; for (let claim = 0; claim < 3 && answer?.delivery?.status !== 'delivery-ready'; claim++) answer = await p.claim(tx); return answer; };
+
+test('an order recorded for the Deliverable journal is held, and no other capability signs it, when the host restarts without the journal', async (t) => {
+  const w = await world(t, { deliveryJournal: true });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySignCreate.push('throw');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  w.useDeliveryJournal(false); await w.restart();
+  for (const claim of [1, 2]) {
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable', `claim ${claim}`);
+    assert.match((await w.retainedSession(p.jobId)).deliveryHold?.reason, /wallet_journal_changed/, `claim ${claim}: the hold names the journal`);
+    await w.restart();
+  }
+  assert.deepEqual(w.effects.deliverySubmit, [], 'the plain capability is never asked');
+  w.useDeliveryJournal(true); await w.restart();
+  const answer = await claimUntilReady(p, tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.equal(w.effects.deliverySigned.length, 1, 'the journal signs the order once');
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
+test('a Deliverable CREATE the journal kept is not signed again by a capability whose reader proves nothing was signed, once the host restarts without the journal', async (t) => {
+  const w = await world(t, { deliveryJournal: true });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliveryBroadcast.push('throw');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  w.useDeliveryJournal(false); await w.restart();
+  w.faults.deliveryReconcile.push('absent', 'absent');
+  w.faults.deliveryRead.push('proven-unsigned', 'proven-unsigned');
+  await p.claim(tx);
+  assert.deepEqual(w.effects.deliverySubmit, [], 'the plain capability signs no second CREATE');
+  w.faults.deliveryReconcile.length = 0; w.faults.deliveryRead.length = 0;
+  w.useDeliveryJournal(true); await w.restart();
+  const answer = await claimUntilReady(p, tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySignCreate, [deliverable], 'the kept CREATE is sent again; no second signature');
+  assert.equal(w.createsAt(deliverable), 1);
+});
+
+test('a fulfilment this seller never submitted is asked of the journal as unsigned when the journal is enabled after a failed submission by another capability', async (t) => {
+  const w = await world(t, { deliveryJournal: true });
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.useDeliveryJournal(false); await w.restart();
+  w.faults.deliverySubmit.push('fail');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  await w.editRetainedSession(p.jobId, (session) => { delete session.deliverySentReport; delete session.deliverySubmitted; delete session.deliveryAdapter; });
+  w.useDeliveryJournal(true); await w.restart();
+  const answer = await claimUntilReady(p, tx);
+  assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+  assert.deepEqual(w.effects.deliverySignCreate, [deliverable], 'the journal signs the order once');
+  assert.equal(w.createsAt(deliverable), 1);
 });
 
 test('a Deliverable wallet journal that fails when asked keeps the order held with its cause, and the order is delivered once it answers', async (t) => {
