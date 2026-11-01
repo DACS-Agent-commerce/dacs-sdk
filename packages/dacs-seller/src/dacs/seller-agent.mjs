@@ -2155,6 +2155,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // releases its proposal effect. Synchronous and read only.
     retainsProposalWork: (jobId) => proposalWork(jobId),
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
+    // For the host that holds the seller state lock: releases the job lock rows
+    // of holders that are gone and returns [{ job, owner, reason }]; undefined
+    // without durable state. See releaseStaleLocks in seller-durable-state.mjs.
+    releaseStaleLocks: durable ? () => durable.releaseStaleLocks() : undefined,
     reconcile: durable ? async({ jobId }) => {
       const session=durable.loadSession(jobId);
       // An unpaid outside buyer may only read back an issued unknown CREATE.
