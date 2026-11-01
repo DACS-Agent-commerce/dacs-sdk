@@ -3,6 +3,14 @@ import { createNativeDemDeliveryCapability } from '../dacs/native-dem-delivery-c
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 
 const purchasedReaders=new WeakMap(),evidenceReaders=new WeakMap();
+const DIGEST=/^[0-9a-f]{64}$/;
+const nonEmptyString=value=>typeof value==='string'&&value.length>0;
+const sameCanonical=(a,b)=>{try{return canonicalize(a)===canonicalize(b);}catch{return false;}};
+// The fulfilment binding must name exactly the report it travels with: its job,
+// Agreement, Listing and payload hash, plus a fulfilment id. A missing or partial
+// binding is refused, never matched through undefined values.
+const bindsReport=(binding,report,payloadHash)=>binding!==null&&typeof binding==='object'&&binding.jobId===report.jobId&&
+  binding.payloadHash===payloadHash&&binding.agreementHash===report.agreementHash&&nonEmptyString(binding.fulfilmentId)&&sameCanonical(binding.listing,report.listing);
 const requireJobId=jobId=>{if(!isCanonicalJobId(jobId))throw new TypeError('jobId must be a canonical uppercase ULID');};
 /** True when this capability was built with a delivery-evidence reader. */
 export const hasDevnetDeliveryEvidenceReader=(capability)=>evidenceReaders.has(capability);
@@ -34,7 +42,8 @@ export async function readDevnetPurchasedReport(capability,input){
 export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvidenceEnabled=false}) {
   if(anchor?.authority!==authority || typeof anchor.publish!=='function' || typeof anchor.read!=='function' || typeof anchor.readRetained!=='function' || typeof anchor.verifyReceipt!=='function') throw new TypeError('the exact seller native artifact anchor is required');
   const expected=(input)=>isDevnetPurchasedReport(input.report,{jobId:input.jobId ?? input.report?.jobId,agreementHash:input.deliveryBinding?.agreementHash,producer:anchor.writer})
-    && input.logicalAddress===`dacs4:deliverable:${input.report.jobId}` && input.receiptContentHash===contentHash(input.report);
+    && input.logicalAddress===`dacs4:deliverable:${input.report.jobId}` && input.receiptContentHash===contentHash(input.report)
+    && bindsReport(input.deliveryBinding,input.report,input.receiptContentHash);
   const read=async(input)=>{
     if(!expected(input)) return {status:'rejected',reason:'native purchased report scope differs'};
     const value=await anchor.read({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding});
@@ -61,8 +70,8 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
     // throws, so the binding and Listing must be present before hashing.
     if(!input || typeof input!=='object' || !input.deliveryBinding?.listing || !input.listing ||
         !isCanonicalJobId(input.jobId) || input.jobId!==input?.deliveryBinding?.jobId || input.logicalAddress!==`dacs4:deliverable:${input.jobId}` ||
-        input.receiptContentHash!==input.deliveryBinding?.payloadHash || input.deliveryBinding?.agreementHash!==input.agreementHash ||
-        canonicalize(input.deliveryBinding?.listing)!==canonicalize(input.listing) || input.deliveryBinding?.fulfilmentId!==input.fulfilmentId ||
+        input.receiptContentHash!==input.deliveryBinding?.payloadHash || !DIGEST.test(input.agreementHash) || input.deliveryBinding?.agreementHash!==input.agreementHash ||
+        canonicalize(input.deliveryBinding?.listing)!==canonicalize(input.listing) || !nonEmptyString(input.fulfilmentId) || input.deliveryBinding?.fulfilmentId!==input.fulfilmentId ||
         input.seller!==anchor.writer) return {status:'rejected',reason:'native purchased-report reader scope differs'};
     const value=await anchor.readRetained({logicalAddress:input.logicalAddress,artifactKind:'Deliverable'});
     if(value.status!=='present')return value;
