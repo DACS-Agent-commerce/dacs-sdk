@@ -260,10 +260,12 @@ test('a shutdown that ends a held manual answer releases the attempt and keeps t
  await assert.rejects(composeSellerApproval({mode:'policy',policy:f.p,manual:()=>{throw closing;}})(requestFor({artifactKind:'CompositeVerificationRecord'})),closing);
  assert.equal([...(await f.read()).attempts.values()][0].reason,'operator-released');
 });
-test('a confirmation retains the executed transaction it checked, not the rest of the node answer',async t=>{
- const f=await fixture(t,purchase),r=payDem(),v=confirmationFor(r);v.response.data.message='x'.repeat(2_000_000);
+for(const [label,change] of [['message',v=>{v.response.data.message='x'.repeat(2_000_000);}],['oversized hash',v=>{v.response.data.transaction.hash='x'.repeat(2_000_000);}],
+ ['object hash',v=>{v.response.data.transaction.hash={a:'y'.repeat(1_000_000)};}]])test(`a confirmation retains the executed transaction it checked, not the node's ${label} (rvc C-2, cold F1, rvd D-2)`,async t=>{
+ const f=await fixture(t,purchase),r=payDem(),v=confirmationFor(r);change(v);
  assert.equal(await f.p.prepare(r),true);assert.equal(await f.p(r,v),true);
  assert.ok((await readFile(f.evidencePath)).length<64*1024);
+ if(label!=='message')assert.equal((await ledgerLines(f)).at(-1).confirmation.hash,null);
 });
 
 // The closed manual table, for every write kind and every reason a policy can give.

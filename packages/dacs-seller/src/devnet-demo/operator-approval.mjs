@@ -507,7 +507,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     // Retained: the executed transaction confirmedWriteOs checked member by member, not the rest of the node's answer.
     const tx=validity.response.data.transaction;
     appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:ids.approvalHash,requestBytes:record.bytes,method:copy.method,address:copy.address,totalOs:counted.toString(),decision:'approved',approvalMode:'policy',policyReason:null,
-      reservationId:ids.reservationId,...(record.attemptId?{attemptId:record.attemptId,policyHold:record.reason}:{}),confirmation:{hash:tx.hash??null,content:tx.content},declaredTotalOs:declared.toString(),
+      reservationId:ids.reservationId,...(record.attemptId?{attemptId:record.attemptId,policyHold:record.reason}:{}),confirmation:{hash:typeof tx.hash==='string'&&HASH.test(tx.hash)?tx.hash:null,content:tx.content},declaredTotalOs:declared.toString(),
       confirmedRemovalsOs:confirmed.toString(),countedTotalOs:counted.toString(),recordedAt:clock()});
     return true;
   });
