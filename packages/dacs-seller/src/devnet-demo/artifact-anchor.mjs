@@ -55,6 +55,7 @@ const HASH=/^[0-9a-f]{64}$/;
 const NO_INTENT_ABSENT='no seller-owned demo CREATE intent';
 const UNSIGNED_ABSENT='the wallet never signed this CREATE (no signed transaction is retained for it); publishing it asks again';
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
+const RESEND_OPTION_REFUSED=Object.freeze({status:'rejected',reason:'the resend option must be a boolean'});
 // The nonce reply has a byte cap before decoding in the source, and a
 // deadline and strict decoded JSON budgets enforced at this boundary.
 const NONCE_READ_LIMITS=Object.freeze({maxBytes:4096,timeoutMs:10_000});
@@ -250,7 +251,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   async function publicProjection(hash) {
     return (await snapshot()).projection(hash);
   }
-  async function observe(input,retained,writeProof,{fresh=false}={}) {
+  async function observe(input,retained,writeProof,{fresh=false,resend=true}={}) {
     let hash=retained.hash;
     if(!hash) {
       const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
@@ -268,7 +269,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const cacheable=cachedKinds.has(input.artifactKind),cacheKey=cacheScope(input,projection,retained.receipt ?? null);
     const cached=cacheable&&!fresh?immutable.get(cacheKey):null;
     if(cached){await sourceCapability.observeBinding();return cached;}
-    const included=await observeSource(hash,projection,writeProof,{resend:!broadcastRejected(retained)});
+    const included=await observeSource(hash,projection,writeProof,{resend:resend&&!broadcastRejected(retained)});
     if(broadcastRejected(retained)&&included.disposition==='absent') return {status:'rejected',reason:'broadcast_rejected: the original demo CREATE is absent',noResend:true};
     if(included.disposition!=='included') return {status:'indeterminate',reason:`the original demo CREATE has no authenticated inclusion readback (${included.disposition}: ${included.reason ?? included.error ?? 'no reason'})`,noResend:true};
     const record=await reader.read(input.logicalAddress,{expectedWriter:claim,expectedArtifactKind:input.artifactKind,...(input.deliveryBinding?{expectedDeliveryBinding:input.deliveryBinding}:{}),signedProjection:projection});
@@ -413,7 +414,11 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       return observe(input,issued,answer.data.writeProof);
     })));
   }
-  async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false}) {
+  // options.resend (default true): false makes the read passive. It reads the
+  // chain back and never rebroadcasts the retained CREATE or records a resend;
+  // anything but a boolean is refused. Callers without write authority pass false.
+  async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false},{resend=true}={}) {
+    if(typeof resend!=='boolean') return RESEND_OPTION_REFUSED;
     if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier)) return {status:'rejected',reason:'demo read scope differs'};
     authorizeJob(artifactKind,artifact?.jobId);
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
@@ -424,7 +429,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       authorizeRetained(retained);
       if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
       if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
-      return observe(input,retained,undefined,{fresh});
+      return observe(input,retained,undefined,{fresh,resend});
     });
   }
   // publish stores its intent before it asks the wallet to sign anything, and
@@ -439,7 +444,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   async function hasIntent(logicalAddress) {
     return Boolean(await journal.get(keyFor(logicalAddress)));
   }
-  async function readRetained({logicalAddress,artifactKind,writer=claim,fresh=false,proofOfNoIntent=false}) {
+  // options.resend as for read: false is a passive readback, no rebroadcast.
+  async function readRetained({logicalAddress,artifactKind,writer=claim,fresh=false,proofOfNoIntent=false},{resend=true}={}) {
+    if(typeof resend!=='boolean') return RESEND_OPTION_REFUSED;
     if(writer!==claim || !kinds.has(artifactKind) || typeof proofOfNoIntent!=='boolean') return {status:'rejected',reason:'demo retained read scope differs'};
     authorizeJob(artifactKind,logicalAddress.split(':')[2]);
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
@@ -451,7 +458,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       // context route resumes a step a shutdown cut only from that proof).
       if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
       if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
-      return observe(clone(retained.input),retained,undefined,{fresh});
+      return observe(clone(retained.input),retained,undefined,{fresh,resend});
     });
   }
   // The original public signed CREATE of one of this seller's own verified
