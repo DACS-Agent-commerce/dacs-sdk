@@ -41,9 +41,9 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
     return value.status==='present' ? {...value,status:'present'} : value;
   };
   const capability=createNativeDemDeliveryCapability({authority,
-    submitAuthorized:async(input,authorize)=>{
+    submit:async(input)=>{
       if(!expected(input)) return {status:'rejected',reason:'native purchased report scope differs'};
-      const value=await anchor.publish({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding,authorize});
+      const value=await anchor.publish({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding});
       return value.status==='present' ? {status:'accepted',reconciliationId:value.receipt.transactionRef.value} : {status:value.status==='rejected'?'rejected':'indeterminate',reason:value.reason};
     },
     reconcile:async(input)=>{
