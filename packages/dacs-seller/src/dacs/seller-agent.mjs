@@ -214,6 +214,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (reconcilePaymentEvidence !== null && (typeof reconcilePaymentEvidence !== 'function' || !nativeEvidence)) throw new TypeError('reconcilePaymentEvidence must be the seller wallet\'s journal question for the native evidence anchor, or null');
   if (deliveryContext && (!nativeEvidence || !durableDirectory)) throw new TypeError('DEM delivery context requires the durable native evidence profile');
   if (nativeDelivery && !deliveryContext) throw new TypeError('native DEM delivery requires the authenticated DEM delivery context');
+  if (nativeDelivery && !hasGuardedNativeDemDelivery(nativeDelivery)) throw new TypeError('native DEM delivery requires guarded submission (submitAuthorized); it is refused before any Agreement is signed');
   // CORE §5.1: the resume that lets a plain absence of a submitted
   // Deliverable send its kept CREATE again (and answers `unsigned` for a new
   // signature) comes only from the createDeliverableWalletJournal whose guarded
@@ -1358,9 +1359,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // broadcast), and answers `unsigned` only when nothing it signed can still
   // land, so that alone lets a new submission be asked. Returns { status:
   // 'unsigned' }, or { status: 'held', reason } with the journal's cause (a
-  // withdrawn authorization included). A journal that is not the one recorded
-  // for the order (a lost or replaced file, or none recorded) is not asked.
+  // withdrawn authorization included). A fulfilment never submitted is `unsigned`; a
+  // journal that is not the one recorded for the order (lost, replaced, none) is not asked.
   async function resumeDeliverableJournal(session, work, fulfilmentId) {
+    if (!(session.deliverySubmitted ?? []).includes(fulfilmentId)) return { status: 'unsigned' };
     if (session.deliveryWalletJournal !== deliverableJournal.journalId) {
       return { status: 'held', reason: 'wallet_journal_changed: the wallet journal that kept this Deliverable submission is not the configured one; restore its file to resolve it' };
     }
@@ -1495,7 +1497,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         if (jobId !== session.jobId || phaseIndex !== protocolSupport(listing).phases.delivery || phase !== 'deliver-storage-program' || logicalAddress !== deliverableAddress(session.jobId)) {
           return { status: 'rejected', reason: 'delivery preparation scope differs' };
         }
-        if (!hasGuardedNativeDemDelivery(nativeDelivery)) return { status: 'indeterminate', reason: 'native delivery requires guarded submission' };
         const report = deliveryReport(session, work.intake.settlementId);
         preparedCanonical = canonicalize(report);
         // A producer can be corrected after payment; a size disagreement must not become the core's permanent preparation-failed handoff.
@@ -1517,6 +1518,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         // Check now and through the capability's guarded submission right before signing. A throw keeps the SDK
         // intent pending; authoritative unsigned absence permits one retry.
         heldFor(session.jobId)?.();
+        if (session.deliveryWalletJournal !== deliverableJournal?.journalId) return { status: 'indeterminate', reason: 'wallet_journal_changed: this order\'s Deliverable is signed only through the wallet journal recorded for it; restore it to resolve' };
         // Retain before submission: only authenticated readback or proven unsigned absence settles this intent.
         session.deliverySentReport={settlementId:work.intake.settlementId,canonical:canonicalize(report)};
         const binding=deliveryBinding(input.fulfilmentId);
@@ -1530,7 +1532,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if(allowed===true&&stage==='signing'&&!release){let open;signingGates.set(work.intake.settlementId,new Promise((resolve)=>{open=resolve;}));release=()=>{signingGates.delete(work.intake.settlementId);open();};}
           return allowed;
         };
-        // With the journal, only the one recorded for this order (runSdkDeliveryReady) may sign; the journal refuses any other.
+        // Only the journal recorded for this order (runSdkDeliveryReady) signs it, and the journal refuses any other id too.
         try{answer=await submitNativeDemDelivery(nativeDelivery,{...input,report,receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding,writer:claim,
           ...(deliverableJournal?{expectedJournalId:session.deliveryWalletJournal}:{})},authorize);}
         finally{release?.();}
@@ -1546,9 +1548,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         try{answer=await reconcileNativeDemDelivery(nativeDelivery,{...input,jobId:session.jobId,logicalAddress:deliverableAddress(session.jobId),report,
           receiptContentHash:sha256Hex(canonicalize(report)),deliveryBinding:binding});}
         catch(error){if(!isDeliverableMiss(error))throw error;answer={status:'absent',reason:String(error?.message??error).slice(0,180)};}
-        // This seller submitted it and its CREATE is not on the chain: the wallet journal sends the kept bytes again,
+        // A submitted CREATE is not on the chain: the wallet journal sends the kept bytes again,
         // and only its `unsigned` leaves the absence to the SDK (which then submits, through the same journal).
-        if(answer.status==='absent'&&deliverableJournal&&(session.deliverySubmitted??[]).includes(input.fulfilmentId)){
+        if(answer.status==='absent'&&deliverableJournal){
           const asked=await resumeDeliverableJournal(session,work,input.fulfilmentId);
           if(asked.status!=='unsigned')return{status:'pending',reason:asked.reason};
           // The journal proved why nothing it signed can still land (superseded
