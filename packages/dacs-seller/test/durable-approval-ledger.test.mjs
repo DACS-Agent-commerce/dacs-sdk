@@ -51,3 +51,15 @@ for(const stage of ['file','directory'])test(`ledger ${stage} sync failure is re
  assert(synced.includes(dir));
  assert.equal((await readFile(path,'utf8')).trim().split('\n').length,2);
 });
+
+test('a failed write is undone to the earlier size and the retry appends the line once',async t=>{
+ const path=join(await fixture(t),'ledger'),first=`${JSON.stringify({record:'first'})}\n`,original=fs.writeSync,cause=new Error('TEST write failure');
+ await writeFile(path,first);
+ try{
+  fs.writeSync=(descriptor,buffer,offset)=>{original(descriptor,buffer,offset,5);throw cause;};syncBuiltinESMExports();
+  assert.throws(()=>appendApprovalLedgerLine(path,{record:'second'}),error=>error===cause);
+ }finally{fs.writeSync=original;syncBuiltinESMExports();}
+ assert.equal(await readFile(path,'utf8'),first);
+ appendApprovalLedgerLine(path,{record:'second'});
+ assert.deepEqual((await readFile(path,'utf8')).trimEnd().split('\n').map(JSON.parse),[{record:'first'},{record:'second'}]);
+});
