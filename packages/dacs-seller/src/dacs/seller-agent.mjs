@@ -211,6 +211,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (reconcilePaymentEvidence !== null && (typeof reconcilePaymentEvidence !== 'function' || !nativeEvidence)) throw new TypeError('reconcilePaymentEvidence must be the seller wallet\'s journal question for the native evidence anchor, or null');
   if (deliveryContext && (!nativeEvidence || !durableDirectory)) throw new TypeError('DEM delivery context requires the durable native evidence profile');
   if (nativeDelivery && !deliveryContext) throw new TypeError('native DEM delivery requires the authenticated DEM delivery context');
+  if (nativeDelivery && !hasGuardedNativeDemDelivery(nativeDelivery)) throw new TypeError('native DEM delivery requires guarded submission (submitAuthorized); it is refused before any Agreement is signed');
   if(typeof deliveryEvidenceEnabled!=='boolean'||(deliveryEvidenceEnabled&&(!nativeArtifactAnchor||!nativeDelivery)))throw new TypeError('delivery evidence publication requires the explicit native demo delivery profile');
   const nativeProfile = agreementAnchor !== null || nativeArtifactAnchor !== null || nativeEvidence !== null || deliveryContext !== null || nativeDelivery !== null;
   if (nativeProfile && (agreementAnchor === null || nativeArtifactAnchor === null)) throw new TypeError('the native seller profile needs both agreementAnchor and nativeArtifactAnchor; it never falls back to the fixture substrate');
@@ -1435,7 +1436,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         if (jobId !== session.jobId || phaseIndex !== protocolSupport(listing).phases.delivery || phase !== 'deliver-storage-program' || logicalAddress !== deliverableAddress(session.jobId)) {
           return { status: 'rejected', reason: 'delivery preparation scope differs' };
         }
-        if (!hasGuardedNativeDemDelivery(nativeDelivery)) return { status: 'indeterminate', reason: 'native delivery requires guarded submission' };
         const report = deliveryReport(session, work.intake.settlementId);
         preparedCanonical = canonicalize(report);
         // A producer can be corrected after payment; a size disagreement must not become the core's permanent preparation-failed handoff.
