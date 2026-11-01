@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { closeSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 const syncPath=(path)=>{
@@ -22,12 +22,22 @@ export function appendApprovalLedgerLine(evidencePath,row){
   const bytes=Buffer.from(`${text.length&&!text.endsWith('\n')?'\n':''}${JSON.stringify(row)}\n`);
   const descriptor=openSync(path,'a',0o600);
   try{
-    for(let done=0;done<bytes.length;){
-      const written=writeSync(descriptor,bytes,done,bytes.length-done);
-      if(!(written>0))throw new Error('approval ledger line was not written');
-      done+=written;
+    // Nothing else appends under the caller's lock, so a failed write or file sync
+    // is undone to the size it started at: the caller sees the original error and
+    // the ledger holds no partial line. Should the undo itself fail, the original
+    // error carries it as rollbackError and a restart's torn-line cut recovers.
+    const size=fstatSync(descriptor).size;
+    try{
+      for(let done=0;done<bytes.length;){
+        const written=writeSync(descriptor,bytes,done,bytes.length-done);
+        if(!(written>0))throw new Error('approval ledger line was not written');
+        done+=written;
+      }
+      fsyncSync(descriptor);
+    }catch(error){
+      try{ftruncateSync(descriptor,size);fsyncSync(descriptor);}catch(rollbackError){if(error!==null&&typeof error==='object')error.rollbackError=rollbackError;}
+      throw error;
     }
-    fsyncSync(descriptor);
   }finally{closeSync(descriptor);}
   syncApprovalLedger(path);
 }
