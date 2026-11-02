@@ -1,2 +1,120 @@
-export * from "./routes.js";
-export * from "./validate.js";
+// @kynesyslabs/dacs/wire: the dacs-seller-http/v1 wire and testnet profile
+// TP-1. Definitions, signing bytes and validators, with no HTTP server or client;
+// the one store is the seller's request journal (journal.ts), a local
+// directory. See docs/dacs-seller-http-v1.md and docs/testnet-profile-tp1.md.
+export {
+  DACS_SELLER_HTTP_V1,
+  DACS_SELLER_HTTP_HEADER,
+  DACS_SELLER_DISCOVERY_PATH,
+  DACS_SELLER_HTTP_DOMAINS,
+  DACS_SELLER_HTTP_PATHS,
+  DACS_SELLER_HTTP_ROUTES,
+  DACS_SELLER_HTTP_LIMITS,
+  findDacsSellerHttpRoute,
+  isReadRoute,
+  type DacsSellerHttpPath,
+  type DacsSellerHttpRoute,
+} from "./routes.js";
+export {
+  TP1_PROFILE_ID,
+  TP1_PROFILE_REVISION,
+  TP1_PROFILE_REVISIONS,
+  TP1_BASE_REVISION,
+  TP1_DECLARATION,
+  TP1_CAPABILITIES,
+  TP1_IDENTITY_RECORD_FORMAT,
+  TP1_APPROVED_IDENTITY_RECORD,
+  TP1_APPROVED_IDENTITY_RECORD_DIGESTS,
+  TP1_REFUSED_CHAIN_IDENTITIES,
+  TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES,
+  TP1_WIRE_PROFILE_KEYS,
+  TESTNET_PROFILE_TP1,
+  bindTp1Profile,
+  assertTp1Binding,
+  assertTp1Authority,
+  assertPeerProfile,
+  assertPurchaseProfile,
+  isTp1WireProfile,
+  type BindTp1Options,
+  type LocalNetworkBinding,
+  type TestnetIdentityRecord,
+  type Tp1Binding,
+  type Tp1WireProfile,
+  type Tp1AuthorityScope,
+  type Tp1AuthorityDecision,
+  type Tp1AuthorityReader,
+} from "./profile.js";
+export {
+  isWirePayload,
+  wireEnvelopeSigningBytes,
+  wireRequestHash,
+  signWireEnvelope,
+  openWireEnvelope,
+  checkWireRequest,
+  wireOperationId,
+  admitWireRequestBody,
+  admitWireResponseBody,
+  type CheckedWireRequest,
+  type EnvelopeSigningContext,
+  type OpenedEnvelope,
+  type OpenEnvelopeOptions,
+  type RequestCheck,
+  type WireRetainedAgreement,
+  type SigningContext,
+  type WireKind,
+  type WirePayload,
+  type WireRequestPayload,
+  type WireResponsePayload,
+} from "./envelope.js";
+export {
+  sellerSessionDelegationSigningBytes,
+  signSellerSessionDelegation,
+  verifySellerSessionDelegation,
+  type DelegationScope,
+  type SellerSessionDelegation,
+  type SellerSessionDelegationPayload,
+} from "./delegation.js";
+export {
+  signWireResponse,
+  signWireRequest,
+  verifyWireResponse,
+  type ReceivedWireResponse,
+  type WireJobContext,
+  type WireRequestInput,
+  type WireResponseReceipt,
+} from "./response.js";
+export {
+  DACS_SELLER_DISCOVERY_FORMAT,
+  discoverySigningBytes,
+  signDiscoveryDocument,
+  verifyEndpointProof,
+  isPublicEndpoint,
+  type DiscoveryDocument,
+  type DiscoveryPayload,
+  type EndpointProof,
+  type VerifiedListingEndpoint,
+  type VerifiedListingEligibility,
+  type ListingEligibilityReader,
+} from "./discovery.js";
+export {
+  admitWireArtifact,
+  MAX_WIRE_ARTIFACT_BYTES,
+  TP1_COMMIT_PHASE,
+  type CommitmentReceiptReader,
+  type WireAnchoredCommitment,
+} from "./commitment.js";
+export {
+  MAX_EFFECT_ATTEMPTS,
+  openWireRequestJournal,
+  completeWireEffect,
+  type WireEffect,
+  type WireEffectOutcome,
+  type WireRequestJournal,
+  type WireRequestJournalOptions,
+} from "./journal.js";
+export {
+  WireError,
+  admitWireJson,
+  type ListingPin,
+  type WireSigner,
+} from "./validate.js";

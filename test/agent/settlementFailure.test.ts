@@ -1,6 +1,9 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import { createPayDemExecutionAuthority } from "../../src/rails/payDemExecutionAuthority.js";
+import { payDemSettle, payDemSettleCore } from "../../src/rails/payDem.js";
 
 import type { SettleResult } from "../../src/agent/runSessionCore.js";
 import {
@@ -190,16 +193,14 @@ describe("hasDefinitiveDemosFailure", () => {
     expect(hasDefinitiveDemosFailure(failedResult())).toBe(false);
   });
 
-  // Type-level only. runSession.test.ts pins the runtime rejection of a rail
-  // result carrying failureProof or errorClass at the session boundary.
-  it("is not a SettleResult field", () => {
+  // Type-level only. Session result validation is covered by runSession.test.ts.
+  it("carries a failure proof in the public result type", () => {
     const result: SettleResult = {
       ok: false,
       txHash: PROOF.txHash,
       chainId: NETWORK,
       payer: PROOF.payer,
       payee: PROOF.payee,
-      // @ts-expect-error runSessionCore's settle-result allow-list has no failureProof
       failureProof: PROOF,
     };
     expect(result.ok).toBe(false);
@@ -454,19 +455,48 @@ describe("hasDefinitiveDemosFailure", () => {
 });
 
 describe("hasDefinitiveDemosFailure contract limits", () => {
-  // It checks shape and bindings, not authenticity: a self-consistent proof that
-  // no node served still passes. Until a rail builds proofs from authenticated
-  // node records, no production module may consume the check.
-  it("accepts an invented, self-consistent proof, so it is not an authentication", () => {
+  // Shape and bindings remain insufficient authority for a native effect.
+  it("accepts an invented, self-consistent shape without authenticating it", () => {
     const invented = { ...PROOF, txHash: "ab".repeat(32), nonce: 1, blockNumber: 2 };
     expect(check({ txHash: invented.txHash, blockNumber: 2, failureProof: invented })).toBe(true);
   });
 
-  it("is imported by no module in src", () => {
-    const root = new URL("../../src/", import.meta.url);
-    const importers = (readdirSync(root, { recursive: true }) as string[])
-      .filter((file) => file.endsWith(".ts") && !file.endsWith("settlementFailure.ts"))
-      .filter((file) => /settlementFailure/.test(readFileSync(new URL(file, root), "utf8")));
-    expect(importers).toEqual([]);
+  it.each([true, false])("refuses a custom client before transfer (ok=%s)", async (ok) => {
+    const transfer = vi.fn(async () => ({ ok, hash: PROOF.txHash,
+      state: ok ? "included" : "failed", execution: "executed" as const,
+      blockNumber: PROOF.blockNumber, failureProof: PROOF }));
+    await expect(payDemSettleCore({ recipient: PROOF.payee, amount: AMOUNT },
+      { address: PROOF.payer, transfer })).rejects.toThrow(/SDK.*record-verifying/);
+    expect(transfer).not.toHaveBeenCalled();
+  });
+
+  it("refuses a verdict issued by a separate authority", async () => {
+    const authority = createPayDemExecutionAuthority();
+    const transfer = vi.fn(async () => authority.attest({ ok: false,
+      hash: PROOF.txHash, state: "failed", failureProof: PROOF,
+      blockNumber: PROOF.blockNumber }));
+    const client = authority.register({ address: PROOF.payer, transfer });
+    await expect(payDemSettleCore({ recipient: PROOF.payee, amount: AMOUNT }, client))
+      .rejects.toThrow(/SDK.*record-verifying/);
+    expect(transfer).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("refuses a custom rail before a settlement claim (ok=%s)", async (ok) => {
+    const settle = vi.fn(async () => ok
+      ? { ok: true as const, execution: "executed" as const, txHash: PROOF.txHash,
+          chainId: NETWORK, payer: PROOF.payer, payee: PROOF.payee }
+      : { ok: false as const, txHash: PROOF.txHash, chainId: NETWORK,
+          payer: PROOF.payer, payee: PROOF.payee, errorClass: "permanent" as const,
+          failureProof: PROOF, blockNumber: PROOF.blockNumber, txRefKind: "demos" as const });
+    const once = vi.fn(async () => ({ ok: false, txHash: PROOF.txHash,
+      chainId: NETWORK, payer: PROOF.payer, payee: PROOF.payee }));
+    const execute = payDemSettle({ address: PROOF.payer, settle },
+      { network: NETWORK }, { store: { once } });
+    await expect(execute({ rail: "pay-dem", phase: "pay-dem", amount: "1",
+      asset: "DEM", payee: `did:demos:agent:${PROOF.payee}`,
+      expectedPayee: PROOF.payee, jobId: "private-verdict", phaseIndex: 0,
+    })).rejects.toThrow(/SDK.*record-verifying/);
+    expect(once).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
   });
 });

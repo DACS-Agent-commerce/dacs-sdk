@@ -118,6 +118,7 @@ describe("native DEM seller payment evidence composition", () => {
   it("re-observes and binds the exact finalized Demos transfer", async () => {
     const observeDemosTransfer = vi.fn(async () => ({
       status: "included" as const,
+      execution: "executed" as const,
       txHash: TX_HASH,
       payer: BUYER_KEY,
       payee: SELLER_KEY,
@@ -166,6 +167,31 @@ describe("native DEM seller payment evidence composition", () => {
     expect(observeDemosTransfer).toHaveBeenCalledWith(TX_HASH);
   });
 
+  it.each([
+    ...[undefined, "confirmed", "failed", true, null].map((execution) => ({
+      status: "included", execution,
+    })),
+    { status: "pending", execution: "executed" },
+  ])("does not issue native proof with status $status and execution $execution", async ({ status, execution }) => {
+    const observation = { status, txHash: TX_HASH, payer: BUYER_KEY,
+      payee: SELLER_KEY, amountOs: "1250000000", blockNumber: 123, includedAt: 100,
+      ...(execution === undefined ? {} : { execution }) };
+    const composed = createDacsFixedPricePayDemSellerPaymentEvidenceV1({
+      context: { role: "seller", authority: SELLER, peerAuthority: BUYER,
+        demos: { adapter: {} } } as never,
+      observeDemosTransfer: async () => observation as never,
+    });
+    const resolved = await composed.settlement.resolvePublication({
+      operation: operation as never, retained: {} as never,
+    });
+    const result = await resolved.dependencies.resolveAuthenticatedNativeProof({
+      authorization: authorization as never,
+    });
+    expect(result).toMatchObject({ disposition: "indeterminate" });
+    expect(result).not.toHaveProperty("proof");
+    expect(result).not.toHaveProperty("binding");
+  });
+
   it("fails closed when the re-observed payer differs", async () => {
     const composed = createDacsFixedPricePayDemSellerPaymentEvidenceV1({
       context: {
@@ -174,6 +200,7 @@ describe("native DEM seller payment evidence composition", () => {
       } as never,
       observeDemosTransfer: async () => ({
         status: "included",
+        execution: "executed",
         txHash: TX_HASH,
         payer: "ff".repeat(32),
         payee: SELLER_KEY,

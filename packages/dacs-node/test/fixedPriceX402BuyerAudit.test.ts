@@ -10,6 +10,7 @@ import {
   isSettlementEvidence,
   prepareCompletedSellerBundleCounterSignatureRequest,
   verifyCompletedSellerBundleCounterSignatureRequest,
+  verifyFinalizedSessionSettlement,
   x402Eip3009Nonce,
 } from "@kynesyslabs/dacs";
 import type {
@@ -96,6 +97,9 @@ vi.mock("../src/x402SellerEvm.js", async (importOriginal) => ({
   }),
 }));
 
+import { createDacsBuyerBundleTransportRuntimeV1 } from "../src/bundleTransportRuntime.js";
+import type { DacsLiveRoleInboundOperationContextV1 } from "../src/roleRuntime.js";
+import type { DacsHttpAuthenticatedEnvelopeV1 } from "../src/transport/envelope.js";
 import { DACS_NODE_LIVE_PROFILE } from "../src/config.js";
 import {
   createDacsFixedPricePayDemBuyerAuditV1,
@@ -896,7 +900,12 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     })).toThrow(TypeError);
   });
 
-  it("independently re-observes native DEM before accepting the audit request", async () => {
+  it.each([
+    { stage: "valid", execution: "executed", status: "included" },
+    ...["initial", "revalidation"].flatMap((stage) =>
+      [undefined, "confirmed", "failed", true, null].map((execution) => ({ stage, execution, status: "included" }))),
+    ...["initial", "revalidation"].map((stage) => ({ stage, execution: "executed", status: "pending" })),
+  ])("requires executed native DEM at $stage with status $status and attestation $execution", async ({ stage, execution, status }) => {
     const f = await payDemFixture();
     const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-buyer-audit-"));
     roots.push(root);
@@ -957,6 +966,7 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     });
     const observation = {
       status: "included" as const,
+      execution: "executed" as const,
       txHash: f.event.txHash,
       blockNumber: f.event.blockNumber,
       payer: Buffer.from(BUYER_KEY).toString("hex"),
@@ -997,6 +1007,19 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
     const authenticated = {
       envelope: { sender: SELLER, audience: BUYER, jobId: JOB_ID },
     } as never;
+    const { execution: _execution, ...includedOnly } = observation;
+    const unexecuted = { ...includedOnly, status, ...(execution === undefined ? {} : { execution }) };
+    if (stage === "initial") {
+      observeDemosTransfer.mockResolvedValueOnce(unexecuted as never);
+      await expect(audit.bundleTransport.resolveVerification({
+        authenticated, request: f.preliminaryRequest as never,
+      })).rejects.toMatchObject({ reasonCode: execution === undefined
+        ? "buyer-audit-native-execution-pending" : "buyer-audit-native-finality-invalid" });
+      expect(adapter.sign).not.toHaveBeenCalled();
+      expect(context.demos.signComponent).not.toHaveBeenCalled();
+      expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
+      return;
+    }
     const preliminary = await audit.bundleTransport.resolveVerification({
       authenticated,
       request: f.preliminaryRequest as never,
@@ -1008,10 +1031,59 @@ describe("fixed-price x402 buyer audit reconstruction", () => {
         signer: async (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
       },
     });
+    if (stage === "valid") {
+      // main's generic transport still loads the x402 order store. Supply the
+      // native record here to isolate execution retry from that inherited gap.
+      const nativeStore = database.createPayDemCoordinatorStore("buyer");
+      const orderLoader = vi.spyOn(database, "createLiveCoordinatorStore")
+        .mockReturnValue(nativeStore as never);
+      const runtime = createDacsBuyerBundleTransportRuntimeV1({ context, ...audit.bundleTransport });
+      const payload = { ...exactRequest, signedBytes: Buffer.from(exactRequest.signedBytes).toString("base64url") };
+      const envelope = {
+        status: "authenticated", authenticationHash: "a".repeat(64), identityEvidenceHash: "b".repeat(64),
+        envelope: { type: "bundle-signature-request", sender: SELLER, audience: BUYER,
+          jobId: JOB_ID, payload },
+      } as unknown as DacsHttpAuthenticatedEnvelopeV1;
+      const inbound = { role: "buyer" } as DacsLiveRoleInboundOperationContextV1;
+      observeDemosTransfer.mockResolvedValueOnce(includedOnly as never);
+      await expect(runtime.handleMessage(envelope, inbound)).rejects.toMatchObject({
+        reasonCode: "buyer-audit-native-execution-pending",
+      });
+      expect(adapter.sign).not.toHaveBeenCalled();
+      expect(context.demos.signComponent).not.toHaveBeenCalled();
+      expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
+      try {
+        await expect(runtime.handleMessage(envelope, inbound)).resolves.toEqual({ disposition: "accepted" });
+      } finally { orderLoader.mockRestore(); }
+    }
     const exact = await audit.bundleTransport.resolveVerification({
       authenticated,
       request: exactRequest,
     });
+    if (stage === "revalidation") {
+      mocks.bundleRequest.mockResolvedValue(exactRequest);
+      const material = await audit.audit.resolveMaterial({
+        operation: { order: pair.buyer },
+        retained: { application: f.application },
+      } as never);
+      const provider = material.durability.settlementVerification;
+      await expect(verifyFinalizedSessionSettlement(
+        material.input.settlementContext, material.input.settlement, provider,
+      )).resolves.toMatchObject({ disposition: "verified" });
+      for (const mode of ["initial", "recovery"] as const) {
+        observeDemosTransfer.mockResolvedValueOnce(unexecuted as never);
+        const result = await verifyFinalizedSessionSettlement(
+          material.input.settlementContext, material.input.settlement, provider, mode,
+        );
+        expect(result).toEqual({ disposition: "indeterminate",
+          reason: "native settlement: buyer-audit-native-revalidation-unavailable" });
+        expect(result).not.toHaveProperty("value");
+      }
+      expect(adapter.sign).not.toHaveBeenCalled();
+      expect(context.demos.signComponent).not.toHaveBeenCalled();
+      expect(adapter.anchorWriteOnce).not.toHaveBeenCalled();
+      return;
+    }
     await expect(verifyCompletedSellerBundleCounterSignatureRequest(
       exact.input,
       exactRequest,

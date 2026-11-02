@@ -1,0 +1,44 @@
+{
+  "plannedVersion": "0.1.0-alpha.1",
+  "packages": [
+    {
+      "name": "@kynesyslabs/dacs", "directory": ".",
+      "requiredExports": [".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate"],
+      "allow": [
+        "package.json", "README.md", "LICENSE", "SECURITY.md",
+        "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map",
+        "docs/parser-engine.md", "docs/presence-conformance-adoption.md",
+        "docs/alternative-payment-projection.md", "docs/demos-cci-identities.md",
+        "docs/fixed-price-offline-coordinator.md", "docs/fixed-price-x402-coordinator.md",
+        "docs/settlement-verified-reputation.md", "docs/rfq-negotiation-core.md",
+        "docs/pay-solana-spl.md", "docs/pay-ap2.md", "docs/filesystem-store-safety.md",
+        "docs/x402-seller-paywall.md", "docs/wallet-spend-authority.md", "docs/raw-json-admission.md"
+      ]
+    },
+    {
+      "name": "@kynesyslabs/dacs-node", "directory": "packages/dacs-node",
+      "preparationBlockers": ["non-registry dependency in devDependencies: file:../.. (@kynesyslabs/dacs)"],
+      "requiredExports": [".", "./transport", "./sqlite", "./demos-loader", "./vectors/dacs-http-envelope-v1.json"],
+      "allow": ["package.json", "README.md", "LICENSE", "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map", "vectors/dacs-http-envelope-v1.json"]
+    },
+    {
+      "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
+      "preparationBlockers": ["private package is not releasable"],
+      "preparationManifestSha256": "5aab1364f6f126622d318d25efec0b38d80252f915ec7102c60328d4ca9b0b1e",
+      "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid"],
+      "requiredExports": [".", "./wallet/durable-journal"],
+      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
+    },
+    {
+      "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
+      "preparationBlockers": ["missing package manifest"],
+      "requiredExports": ["."],
+      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
+    },
+    {
+      "name": "create-dacs-agent", "directory": "packages/create-dacs-agent",
+      "requiredExports": ["."],
+      "allow": ["package.json", "README.md", "LICENSE", "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map"]
+    }
+  ]
+}

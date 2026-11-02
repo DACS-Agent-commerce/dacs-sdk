@@ -169,6 +169,22 @@ WebSocket transport — an app already running a full chain stack with these dep
   closed as unavailable. It never falls back to the retired quick audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability (as above), not
   blocked on severity alone; the assessment is recorded here.
+- **Registry/container consumer acceptance** audits the generated consumer's
+  current production dependencies (`npm audit --omit=dev`) by advisory ID against
+  `scripts/registry-container-audit-baseline.json`. On non-enforcing pull requests,
+  unlisted IDs warn and are recorded in the step summary. Scheduled drift checks,
+  manual runs and callers enforcing drift fail on unlisted IDs. Direct high or
+  critical advisories always block, including listed or assessed IDs; transitive
+  assessments follow the reachability policy above.
+  CI waives exit 4 only when this run's summary independently classifies as 4
+  under the same caller policy. Missing, interrupted or inconsistent evidence,
+  failed generated tests and independent policy failures remain blocking.
+  Acceptance records evidence and replay fixtures after failures; it does not
+  publish packages.
+  The gated prerelease workflow requires acceptance. A run within the #191
+  baseline (exit 4) passes that prerequisite, so baseline-only findings do not
+  stop a prerelease. A direct high or critical advisory always does, even when
+  the #191 baseline lists it.
 - **Refresh cadence:** re-run the snapshot command and update this file on a
   `@kynesyslabs/demosdk` bump **and** at least once per release cycle, since new
   advisories can land against an unchanged tree.
@@ -196,7 +212,7 @@ pure-surface install are:
    then has zero chain dependencies; adapter consumers install the substrate package
    explicitly.
 2. **Optional peer** — declare demosdk as
-   `peerDependencies: { "@kynesyslabs/demosdk": "^4" }` **plus**
+   `peerDependencies: { "@kynesyslabs/demosdk": "^4.0.16" }` **plus**
    `peerDependenciesMeta: { "@kynesyslabs/demosdk": { "optional": true } }` (npm does
    NOT auto-install an optional peer), guard the substrate subpath's runtime
    `import()` to throw a clear "install @kynesyslabs/demosdk" error when absent, and

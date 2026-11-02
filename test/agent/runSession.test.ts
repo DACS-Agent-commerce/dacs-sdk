@@ -519,7 +519,7 @@ describe("runSession orchestration (T4)", () => {
       },
     });
     await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(
-      /settlement rail returned a malformed result/,
+      /settlement rail returned a malformed (?:result|terminal-failure proof)/,
     );
     expect(anchored.some((name) => name.includes("evidence"))).toBe(false);
   });

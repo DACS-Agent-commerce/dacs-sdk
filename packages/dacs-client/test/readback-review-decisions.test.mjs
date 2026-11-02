@@ -1,33 +1,18 @@
 // Isolate the retained readers and coordinator from transport and handshake.
 // Fakes provide data at those boundaries; all decisions and durable writes are real.
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
+import { register } from 'node:module';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalize, contentHash, demosSignedTransactionProofHash, finalityCommitmentAddress, fixedPriceAgreementLogicalAddress, logicalToStorageProgramName, paymentEvidenceAddress, sha256Hex } from '@kynesyslabs/dacs';
-import { openDatabase } from './helpers/purchase-integrity-database.mjs';
+import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
+const store={transaction,isUniqueViolation},buyerAccess={assertWallet(){}};
 const state=globalThis[Symbol.for('d15.review.readers')]={};
-const moduleAt=name=>new URL('../src/'+name,import.meta.url).href;
-const fake=source=>({url:'data:text/javascript,'+encodeURIComponent(source),shortCircuit:true});
-registerHooks({resolve(specifier,context,next){
- // Exercise retained-state reducers behind the unconditional production action
- // hold. The separate sweep-contracts tests pin that real hold and zero effects.
- if(specifier.endsWith('/action-admission.mjs'))return fake('export const assertPurchaseActionsAdmitted=()=>{};');
-  if(specifier.endsWith('/seams/purchase-store-not-wired.mjs'))return {url:new URL('./helpers/purchase-integrity-database.mjs',import.meta.url).href,shortCircuit:true};
-  if(specifier.endsWith('/seams/buyer-access-not-wired.mjs'))return fake('export const operatorBuyerAccessConfig=()=>({assertWallet(){}});');
-  if(specifier.endsWith('/demos-sr2-adapter.mjs') && !context.parentURL?.endsWith('readback-review-decisions.test.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/demos-sr2-adapter.mjs')+'?actual')}; export const createDemosSr2Adapter=()=>globalThis[Symbol.for('d15.review.readers')].adapter;`);
-  if(specifier.endsWith('/seller-http.mjs') && context.parentURL===moduleAt('dacs/protocol-purchases.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/seller-http.mjs')+'?actual')}; export const createSellerAgentClient=()=>globalThis[Symbol.for('d15.review.readers')].seller;`);
-  if(specifier.endsWith('/purchase-protocol.mjs') && context.parentURL===moduleAt('dacs/protocol-purchases.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/purchase-protocol.mjs')+'?actual')}; export const exchangeAgreement=async()=>globalThis[Symbol.for('d15.review.readers')].anchored;`);
-  if(specifier.endsWith('/dacs/chain.mjs') && context.parentURL===moduleAt('wallet/devnet-native-transport.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/chain.mjs')+'?actual')}; export const createDemosChainReader=()=>({observeTransfer:async hash=>globalThis[Symbol.for('d15.review.readers')].observeTransfer(hash)});`);
-  if(specifier==='@kynesyslabs/dacs' && context.parentURL===moduleAt('dacs/native-payment-evidence-consumer.mjs')){
-    const real=next(specifier,context);
-    return fake(`export * from ${JSON.stringify(real.url)}; export const verifySettlementEvidence=async()=>({decision:'pass'});`);
-  }
-  return next(specifier,context);
-}});
+// Loader modules run in a separate thread; returned fakes execute in this test's realm.
+register(new URL('./helpers/readback-review-loader.mjs', import.meta.url), import.meta.url);
 const { DemosSr2Error, demosSr2Contradiction }=await import('../src/dacs/demos-sr2-adapter.mjs?actual');
 const { createBuyerChainReadback }=await import('../src/dacs/buyer-chain-readback.mjs');
 const { createSellerSr2AgreementAnchor }=await import('../src/dacs/seller-sr2-agreement-consumer.mjs');
@@ -103,9 +88,20 @@ function coordinator(t, { status='settled_verified', stage='delivered', retained
    ...(retainedDelivery?{delivery:{...delivery,report},nativeEvidence:{status:'verified'},paymentEvidence:{ref:{contentHash:'d'.repeat(64)}}}:{}),...protocolPatch};
  const op=ops.createIdempotent({accountId:'TEST-buyer',kind:'purchase',idempotencyKey:'TEST',request:{},status,terms,termsHash:CHAIN,state:{protocol},expiresAt:new Date(Date.now()+3600000).toISOString()}).operation;
  const nativeEvidence=createNativePaymentEvidenceConsumer({rpcUrl:sourceCapability.pins.endpoint,sourceCapability});
- const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'}});
+ const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
  return {op,ops,service};
 }
+test('host chain-readback bookkeeping keeps its source and records a repeated hold once', t => {
+ const {op,ops,service}=coordinator(t);
+ const held=service.holdChainReadback(op,'TEST-host-retired-key');
+ assert.equal(held.state.protocol.chainReadbackHeld.source,'host-supplied');
+ assert.equal(held.state.protocol.chainReadbackHeld.reason,'TEST-host-retired-key');
+ assert.equal(service.holdChainReadback(op,'TEST-repeat').state.protocol.chainReadbackHeld.reason,'TEST-host-retired-key');
+ const events=ops.history(op.id).filter(event=>event.type==='protocol_chain_readback_held');
+ assert.equal(events.length,1);
+ assert.equal(events[0].data.source,'host-supplied');
+ assert.equal(held.status,'settled_verified');
+});
 for(const [label,error] of errors)test(`delivered purchase recheck: ${label}`,async t=>{
  state.adapter={read:async()=>{throw error();},verifyReceipt:async()=> 'valid'};
  state.seller={origin:'https://seller.invalid'};

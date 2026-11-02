@@ -70,6 +70,10 @@
     "./substrate": {
       "types": "./dist/substrate/index.d.ts",
       "import": "./dist/substrate/index.js"
+    },
+    "./wire": {
+      "types": "./dist/wire/index.d.ts",
+      "import": "./dist/wire/index.js"
     }
   },
   "bin": {
@@ -90,10 +94,30 @@
     "docs/rfq-negotiation-core.md",
     "docs/pay-solana-spl.md",
     "docs/pay-ap2.md",
+    "docs/pay-dem-execution.md",
     "docs/filesystem-store-safety.md",
     "docs/x402-seller-paywall.md",
     "docs/wallet-spend-authority.md",
     "docs/raw-json-admission.md",
+    "docs/testnet-profile-tp1.md",
+    "docs/about-the-testnet-release.md",
+    "conformance/tp1-register.json",
+    "conformance/tp1-provenance-ids.json",
+    "conformance/tp1-node-observations/block0.json",
+    "conformance/tp1-node-observations/block1.json",
+    "conformance/tp1-node-observations/genesis-string-zero.json",
+    "conformance/tp1-node-observations/manifest.json",
+    "conformance/tp1-node-observations/missing-status.json",
+    "conformance/tp1-node-observations/missing-tx.json",
+    "conformance/tp1-node-observations/network.json",
+    "conformance/tp1-node-observations/block0-2026-10-20.json",
+    "conformance/tp1-node-observations/block1-2026-10-20.json",
+    "conformance/tp1-node-observations/genesis-string-zero-2026-10-20.json",
+    "conformance/tp1-node-observations/manifest-2026-10-20.json",
+    "conformance/tp1-node-observations/network-2026-10-20.json",
+    "vectors/dacs-seller-http-v1.json",
+    "docs/dacs-seller-http-v1.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "scripts": {
@@ -117,7 +141,12 @@
     "package:verify": "node scripts/verify-package.mjs",
     "package:lifecycle:verify": "node scripts/verify-package-lifecycle.mjs",
     "release:set:verify": "node scripts/verify-release-set.mjs",
+    "release:check": "node scripts/check-release-packages.mjs",
+    "release:dry-run": "node scripts/release-dry-run.mjs",
+    "release:test:native": "DACS_RELEASE_NATIVE_INTEGRATION=1 node --test --test-concurrency=1 --test-name-pattern=\"native sqlite integration\" test/scripts/release-checks.test.mjs",
+    "release:test": "node --test --test-concurrency=1 test/scripts/release-*.test.mjs && vitest run test/scripts/release-identity.test.ts",
     "release:set:publish": "node scripts/publish-release-set.mjs",
+    "acceptance:registry-container": "bash scripts/verify-registry-container-consumer.sh",
     "seller:test": "node scripts/run-seller-tests.mjs",
     "seller:prepare": "node scripts/prepare-seller-consumer.mjs"
   },
@@ -162,8 +191,11 @@
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
     "ganache": "7.9.2",
+    "npm-package-arg": "12.0.2",
+    "semver": "7.7.4",
     "typescript": "^5",
     "viem": "^2.55.19",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "yaml": "2.8.3"
   }
 }

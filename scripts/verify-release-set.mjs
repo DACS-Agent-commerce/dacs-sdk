@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateReleaseIdentity } from "./release-identity.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const packageDefinitions = Object.freeze([
@@ -113,13 +114,7 @@ async function inspectPackedManifest(definition, artifact, scratch) {
   run("tar", ["-xzf", artifact.path, "-C", extracted]);
   const packageRoot = join(extracted, "package");
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-  if (manifest.name !== definition.name || manifest.license !== "MIT" ||
-      manifest.repository?.url !==
-        "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git" ||
-      manifest.publishConfig?.access !== "public" ||
-      manifest.publishConfig?.provenance !== true) {
-    throw new Error(`${definition.label} release identity or publish policy is invalid`);
-  }
+  validateReleaseIdentity(manifest, definition.name);
   for (const file of definition.requiredFiles) {
     try {
       const observed = await stat(join(packageRoot, file));

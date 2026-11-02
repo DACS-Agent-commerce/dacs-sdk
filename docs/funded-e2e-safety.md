@@ -81,11 +81,21 @@ the prepared-transfer checkpoint. Operators must authenticate that complete
 tuple in the same durable authority as the settlement intent before using it for
 recovery. The reconciliation callback receives that immutable tuple and repeats
 the chain-observed OS amount in its result; a missing, non-final or contradictory
-observation must throw. After restart, even a cached success is reconciled before
-reuse. An authoritative `null` proves only that no transfer has landed yet; it
-cannot revoke a possibly-live old process or signed transaction and does not
-authorize a new native transfer. Non-observation, absence without an independent
-replay fence, or an ambiguous transaction must never cause an automatic broadcast.
+observation must throw. A successful result must carry `execution: "executed"`,
+set only after the node's transaction record for the hash reads `confirmed` at
+the inclusion block and its `gcr_edits` debit the payer and credit the payee the
+exact OS amount; a `confirmed` record with absent or empty edits moved no value.
+A bound `failed` record may instead return `ok: false`,
+`errorClass: "permanent"` and the exact `demos-failed-record` proof described in
+the execution guide; it must omit successful execution and finality.
+`payDemSettle` keeps an intent held unless reconciliation authenticates one of
+these definitive outcomes (see
+[the pay-dem execution gate](./pay-dem-execution.md)). After restart, even a
+cached success is reconciled before reuse. An authoritative `null` proves only
+that no transfer has landed yet; it cannot revoke a possibly-live old process
+or signed transaction and does not authorize a new native transfer.
+Non-observation, absence without an independent replay fence, or an ambiguous
+transaction must never cause an automatic broadcast.
 
 Hash-first observation has a finite wait even when demosdk's broadcast promise
 or a status call never settles. A pending JavaScript promise alone does not keep
