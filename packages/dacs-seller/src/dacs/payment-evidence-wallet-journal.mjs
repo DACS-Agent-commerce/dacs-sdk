@@ -166,6 +166,8 @@ function bindingProblem(metadata, input) {
 function permitted(authorize) {
   let answer;
   try { answer = authorize(); } catch (error) { answer = error; }
+  // A promise is never `true`; its own rejection must not outlive the refusal as an unhandled one.
+  if (typeof answer?.then === 'function') answer.then(undefined, () => {});
   if (answer !== true) throw Object.assign(new Error(`the wallet effect is no longer authorized${answer instanceof Error ? `: ${reason(answer)}` : ''}`), { code: 'wallet_not_authorized' });
 }
 function signedCreateProblem(answer, input) {
@@ -415,19 +417,21 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   };
   async function ensureEvidence({expectedJournalId,attempt,authorize,...input}) {
     if(authorize!==undefined&&typeof authorize!=='function')throw new TypeError('evidence authorization must be a function');
-    const permitted=async()=>{if(authorize&&await authorize()!==true)throw Object.assign(new Error('evidence authorization was withdrawn'),{code:'wallet_not_authorized'});};
+    // Asked synchronously with the wallet effect it guards. A refusal the caller throws (a lost job fence) keeps its own
+    // code; any other answer than `true` is wallet_not_authorized.
+    const permit=authorize?()=>{const answer=authorize();permitted(()=>answer);}:allow;
     const signed=await locked(async()=>{
       assertOwner(expectedJournalId);
-      await permitted();
+      permit();
       const key=`ensure:${input.logicalAddress}`,binding=JSON.stringify([input.receiptContentHash,attempt?.answer?.txHash??null]);
       const accepted=db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(key);
       // Remember an accepted legacy name in the same commit as its successor:
       // a lost broadcast answer cannot leave the caller naming a stale row.
       inspectAttempt(input,attempt,true,accepted?.value===binding);
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
-      return prepareAnchor(input,permitted);
+      return prepareAnchor(input,permit);
     });
-    if(!signed.applied){await permitted();await sendSigned(signed);}
+    if(!signed.applied)await sendSigned(signed,permit);
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
   }
 
