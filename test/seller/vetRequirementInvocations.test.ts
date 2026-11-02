@@ -5,7 +5,9 @@ import type { AttestationRef, BundleRequirement, ClaimRequirement } from "../../
 import { canonicalize, encodeAddressSegment, sha256Hex } from "../../src/canonical/index.js";
 import { generateCanonicalJobId } from "../../src/index.js";
 import {
+  SELLER_FULFILMENT_VET_MODES,
   isSellerFulfilmentVetInvocationMismatch,
+  sellerFulfilmentVetModeOf,
   sellerFulfilmentVetRequirementsViolation,
   type SellerFulfilmentExpectedVerifyResult,
   type SellerFulfilmentVetRequirementInvocation,
@@ -487,5 +489,153 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     expect(sellerFulfilmentVetRequirementsViolation([invocation(sharedParty, buyerClaim)], {
       jobId, buyer: sharedParty, seller: sharedParty, buyerRequirement,
     })).toBeNull();
+  });
+
+  describe("TP-1 G3 orchestrator Vet mode", () => {
+    const orchestrator = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
+    const counterparty = SELLER_FULFILMENT_VET_MODES.counterparty;
+    const sellerSigned = { primaryClaim: sellerClaim, vetRecordRef: recordRef(sellerClaim, sellerClaim) };
+    const sellerSignedPair: [SellerFulfilmentVetRequirementInvocation, SellerFulfilmentVetRequirementInvocation] =
+      [invocation(buyer, sellerClaim), invocation(sellerSigned, sellerClaim)];
+    const checkIn = (
+      vetRequirements: unknown,
+      vetMode: unknown,
+      parties: { buyer: typeof buyer; seller: typeof buyer } = { buyer, seller: sellerSigned },
+    ) => sellerFulfilmentVetRequirementsViolation(vetRequirements, {
+      jobId, ...parties, buyerRequirement, vetMode,
+    } as Parameters<typeof sellerFulfilmentVetRequirementsViolation>[1]);
+    const withoutSigner = (party: typeof buyer): typeof buyer => {
+      const { signer: _signer, ...ref } = party.vetRecordRef;
+      return { ...party, vetRecordRef: ref };
+    };
+
+    test("counterparty mode accepts the buyer as verifier of the seller's record (K3-V1)", () => {
+      expect(checkIn(valid, counterparty, { buyer, seller })).toBeNull();
+    });
+
+    test("counterparty mode refuses the seller as verifier of its own record (K3-V2)", () => {
+      expect(checkIn(sellerSignedPair, counterparty)).toMatch(/differs from its party/);
+    });
+
+    test("orchestrator mode accepts the seller as verifier of its own record (K3-V3)", () => {
+      expect(checkIn(sellerSignedPair, orchestrator)).toBeNull();
+    });
+
+    test("orchestrator mode refuses the buyer as verifier of the seller's record (K3-V4)", () => {
+      expect(checkIn(valid, orchestrator, { buyer, seller })).toMatch(/differs from its party/);
+    });
+
+    test("both modes accept the seller and refuse the buyer as verifier of the buyer's record (K3-V5)", () => {
+      const buyerSigned = { ...buyer, vetRecordRef: recordRef(buyerClaim, buyerClaim) };
+      for (const [mode, entries, parties] of [
+        [counterparty, valid, { buyer, seller }],
+        [orchestrator, sellerSignedPair, { buyer, seller: sellerSigned }],
+      ] as const) {
+        expect(checkIn(entries, mode, parties)).toBeNull();
+        expect(checkIn([invocation(buyerSigned, buyerClaim), entries[1]], mode, { ...parties, buyer: buyerSigned }))
+          .toMatch(/differs from its party/);
+      }
+    });
+
+    test("orchestrator mode requires the reference signer and refuses one that differs from the verifier", () => {
+      expect(checkIn(sellerSignedPair, orchestrator)).toBeNull();
+      const unsignedSeller = withoutSigner(sellerSigned);
+      const unsignedBuyer = withoutSigner(buyer);
+      expect(checkIn([invocation(buyer, sellerClaim), invocation(unsignedSeller, sellerClaim)], orchestrator,
+        { buyer, seller: unsignedSeller })).toMatch(/differs from its party/);
+      expect(checkIn([invocation(unsignedBuyer, sellerClaim), invocation(sellerSigned, sellerClaim)], orchestrator,
+        { buyer: unsignedBuyer, seller: sellerSigned })).toMatch(/differs from its party/);
+      const otherSigner = { ...sellerSigned, vetRecordRef: recordRef(sellerClaim, buyerClaim) };
+      expect(checkIn([invocation(buyer, sellerClaim), invocation(otherSigner, sellerClaim)], orchestrator,
+        { buyer, seller: otherSigner })).toMatch(/differs from its party/);
+      expect(checkIn([invocation(buyer, sellerClaim), invocation(unsignedSeller, buyerClaim)], counterparty,
+        { buyer, seller: unsignedSeller })).toBeNull();
+    });
+
+    test("an absent Vet mode answers exactly as the counterparty value on every fixture in this file", () => {
+      const scenarios: Array<[unknown, { buyer: typeof buyer; seller: typeof buyer }]> = [
+        [valid, { buyer, seller }],
+        [sellerSignedPair, { buyer, seller: sellerSigned }],
+        [[invocation(buyer, buyerClaim), valid[1]], { buyer, seller }],
+        [[valid[0]], { buyer, seller }],
+      ];
+      for (const [entries, parties] of scenarios) {
+        expect(checkIn(entries, undefined, parties)).toBe(checkIn(entries, counterparty, parties));
+        expect(sellerFulfilmentVetRequirementsViolation(entries, { jobId, ...parties, buyerRequirement }))
+          .toBe(checkIn(entries, counterparty, parties));
+      }
+    });
+
+    test("an unsupported Vet mode is refused, never read as a default (\"TP1-G3-ORCHESTRATOR\", \"tp1-g3\", \"\", 1, null, {})", () => {
+      const entry = valid[1];
+      for (const mode of ["TP1-G3-ORCHESTRATOR", "tp1-g3", "", 1, null, {}]) {
+        expect(checkIn(valid, mode, { buyer, seller })).toBe("the Vet mode is not a supported fulfilment Vet mode");
+        expect(isSellerFulfilmentVetInvocationMismatch(entry, {
+          jobId, buyerClaim, sellerClaim, buyerRequirement, vetMode: mode as never,
+          bindings: new Map([[canonicalize(entry.vetRecordRef), { primaryClaim: sellerClaim, roles: new Set(["seller"]) }]]),
+        })).toBe(true);
+      }
+    });
+
+    test("a vetMode member inside an invocation, reference or requirement never selects the orchestrator mode", () => {
+      for (const place of ["invocation", "vetRecordRef", "requirement"] as const) {
+        const entries = structuredClone(sellerSignedPair);
+        Object.assign(place === "invocation" ? entries[1] : entries[1][place], { vetMode: orchestrator });
+        expect(checkIn(entries, undefined)).not.toBeNull();
+        expect(checkIn(entries, counterparty)).not.toBeNull();
+        expect(isSellerFulfilmentVetInvocationMismatch(entries[1], {
+          jobId, buyerClaim, sellerClaim, buyerRequirement,
+          bindings: new Map([[canonicalize(entries[1].vetRecordRef), { primaryClaim: sellerClaim, roles: new Set(["seller"]) }]]),
+        })).toBe(true);
+      }
+    });
+
+    test("orchestrator mode keeps the shared-record, orchestrator-only and canonical-address rules (JOB2 locator refused)", () => {
+      const shared = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim), bundleHash: "b".repeat(64) };
+      expect(sellerFulfilmentVetRequirementsViolation([invocation(shared, buyerClaim)], {
+        jobId, buyer: shared, seller: shared, buyerRequirement, vetMode: orchestrator,
+      })).toBeNull();
+      expect(sellerFulfilmentVetRequirementsViolation([invocation(shared, buyerClaim)], {
+        jobId, buyer: shared, seller: shared,
+        buyerRequirement: { ...buyerRequirement, preferredPresentation: "per-claim" }, vetMode: orchestrator,
+      })).toMatch(/differs from its party/);
+
+      const entry = invocation(sellerSigned, sellerClaim);
+      const orchestratorOnly = {
+        jobId, buyerClaim, sellerClaim, buyerRequirement,
+        bindings: new Map([[canonicalize(entry.vetRecordRef), { primaryClaim: sellerClaim, roles: new Set(["orchestrator"]) }]]),
+        vetMode: orchestrator,
+      };
+      expect(isSellerFulfilmentVetInvocationMismatch(entry, orchestratorOnly)).toBe(true);
+
+      const otherJobId = generateCanonicalJobId({ timestamp: 1_780_000_000_001, entropy: new Uint8Array(10).fill(4) });
+      const foreign = structuredClone(sellerSigned);
+      foreign.vetRecordRef.anchor.locator =
+        `dacs2:composite:${otherJobId}:${encodeAddressSegment(sellerClaim)}`;
+      expect(checkIn([invocation(buyer, sellerClaim), invocation(foreign, sellerClaim)], orchestrator,
+        { buyer, seller: foreign })).toMatch(/differs from its party/);
+    });
+
+    test("documents both Vet modes and names the expected verifier in the refusal reason", () => {
+      const source = readFileSync(new URL("../../src/seller/fulfilmentAuditSource.ts", import.meta.url), "utf8");
+      const start = source.indexOf("export function isSellerFulfilmentVetInvocationMismatch(");
+      const doc = source.slice(source.lastIndexOf("/**", start), start);
+      expect(doc).toContain(orchestrator);
+      expect(doc).toContain(counterparty);
+      const reason = checkIn(valid, orchestrator, { buyer, seller });
+      expect(reason).toContain("expected verifier");
+      expect(reason).not.toContain("counterparty verifier");
+    });
+
+    test("exports frozen Vet mode names and resolves option values with sellerFulfilmentVetModeOf", () => {
+      expect(Object.isFrozen(SELLER_FULFILMENT_VET_MODES)).toBe(true);
+      expect(SELLER_FULFILMENT_VET_MODES).toEqual({ counterparty: "counterparty", tp1G3Orchestrator: "tp1-g3-orchestrator" });
+      expect(sellerFulfilmentVetModeOf(undefined)).toBe("counterparty");
+      expect(sellerFulfilmentVetModeOf("counterparty")).toBe("counterparty");
+      expect(sellerFulfilmentVetModeOf("tp1-g3-orchestrator")).toBe("tp1-g3-orchestrator");
+      for (const bad of ["TP1-G3-ORCHESTRATOR", "tp1-g3", "", 1, null, {}]) {
+        expect(sellerFulfilmentVetModeOf(bad)).toBeNull();
+      }
+    });
   });
 });

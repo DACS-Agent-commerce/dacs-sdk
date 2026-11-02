@@ -33,6 +33,7 @@ import {
   type SellerPayloadAttestationRecord,
   type SignedSellerDeliveryEvidence,
 } from "../../src/agent/runFulfilmentCore.js";
+import { signFulfilmentVetRecords } from "../fixtures/fulfilmentVetRecords.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import {
   advanceDeliveryFinalisation,
@@ -73,8 +74,10 @@ import type {
 } from "../../src/seller/paymentIntake.js";
 import { sellerFulfilmentCandidateHash } from "../../src/seller/paymentIntake.js";
 import {
+  SELLER_FULFILMENT_VET_MODES,
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
+  type SellerFulfilmentVetMode,
 } from "../../src/seller/fulfilmentAuditSource.js";
 
 const NOW = 1_780_000_000_000;
@@ -6102,3 +6105,189 @@ describe("runDurableFulfilmentCore on repaired #120", () => {
 function checkpointStateForTest(record: { checkpoints: Array<{ key: string; stage: string }> }, key: string) {
   return [...record.checkpoints].reverse().find((checkpoint) => checkpoint.key === key)?.stage;
 }
+
+describe("durable fulfilment TP-1 G3 orchestrator Vet mode", () => {
+  const modes = SELLER_FULFILMENT_VET_MODES;
+  const stages = [
+    "terminal replay",
+    "delivery-ready handle",
+    "pending evidence",
+    "pending final receipt",
+  ] as const;
+  type Stage = (typeof stages)[number];
+  const directions: ReadonlyArray<readonly [SellerFulfilmentVetMode, SellerFulfilmentVetMode]> = [
+    [modes.counterparty, modes.tp1G3Orchestrator],
+    [modes.tp1G3Orchestrator, modes.counterparty],
+  ];
+  const stageDirections = directions.flatMap(([retained, recovering]) =>
+    stages.map((stage) => [retained, recovering, stage] as const));
+  const sameModeStages = [modes.counterparty, modes.tp1G3Orchestrator].flatMap((mode) =>
+    stages.map((stage) => [mode, stage] as const));
+
+  const harnessIn = (vetMode: SellerFulfilmentVetMode): DurableHarness => {
+    const h = durableHarness();
+    if (vetMode === modes.tp1G3Orchestrator) {
+      signFulfilmentVetRecords(h.fixture, SELLER, SELLER);
+      h.deps.vetMode = vetMode;
+    }
+    return h;
+  };
+
+  /** Drive a harness under its own mode to `stage`; return a recovery under any deps. */
+  const reachStage = async (h: DurableHarness, stage: Stage) => {
+    const { request } = h.fixture;
+    if (stage === "delivery-ready handle") {
+      expect((await runDurableFulfilmentToDeliveryReady(request, h.deps, h.durability)).status)
+        .toBe("delivery-ready");
+    } else {
+      if (stage === "pending evidence") h.loseAfter.add("evidence");
+      if (stage === "pending final receipt") h.loseAfter.add("final");
+      await runDurableFulfilmentCore(request, h.deps, h.durability);
+    }
+    return (deps: DurableSellerFulfilmentDeps, durability: SellerFulfilmentDurability) =>
+      stage === "delivery-ready handle"
+        ? resumeDeliveryFinalisation(h.fixture.authorization.jobId, request, deps, durability)
+        : runDurableFulfilmentCore(request, deps, durability);
+  };
+
+  const watchEffects = (
+    h: DurableHarness,
+    deps: DurableSellerFulfilmentDeps,
+    durability: SellerFulfilmentDurability,
+  ) => Object.fromEntries(Object.entries({
+    claim: vi.spyOn(h.fixture.store, "claim"),
+    consumePermit: vi.spyOn(h.fixture.store, "consumePermit"),
+    resolveAgreement: vi.spyOn(deps, "resolveAgreement"),
+    resolveListing: vi.spyOn(deps, "resolveListing"),
+    resolveAuditSource: vi.spyOn(deps, "resolveAuditSource"),
+    prepareDelivery: vi.spyOn(deps, "prepareDelivery"),
+    submitDelivery: vi.spyOn(deps, "submitDelivery"),
+    reconcileDelivery: vi.spyOn(deps, "reconcileDelivery"),
+    resolveDelivery: vi.spyOn(deps, "resolveDelivery"),
+    anchorEvidence: vi.spyOn(deps, "anchorEvidence"),
+    resolveEvidence: vi.spyOn(deps, "resolveEvidence"),
+    sign: vi.spyOn(deps.evidenceSigner, "sign"),
+    reconcileDeliverySubmission: vi.spyOn(durability, "reconcileDeliverySubmission"),
+    reconcileEvidencePublication: vi.spyOn(durability, "reconcileEvidencePublication"),
+    publishFinalSessionReceipt: vi.spyOn(durability, "publishFinalSessionReceipt"),
+    reconcileFinalSessionReceipt: vi.spyOn(durability, "reconcileFinalSessionReceipt"),
+  }).map(([name, spy]) => [name, spy.mockClear()]));
+  const expectNoCalls = (calls: ReturnType<typeof watchEffects>): void => {
+    for (const [name, call] of Object.entries(calls)) expect(call, name).not.toHaveBeenCalled();
+  };
+
+  const snapshot = async (h: DurableHarness) => ({
+    record: await h.store.load(h.fixture.authorization.jobId),
+    handoff: structuredClone(h.fixture.store.handoffValue),
+    counts: { ...h.counts },
+  });
+
+  test("the durable runner reaches delivery-ready with seller-verified seller provenance under the captured orchestrator mode", async () => {
+    const h = harnessIn(modes.tp1G3Orchestrator);
+    const ready = await runDurableFulfilmentToDeliveryReady(h.fixture.request, h.deps, h.durability);
+    expect(ready.status).toBe("delivery-ready");
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 0, final: 0 });
+  });
+
+  test("a durable resume with fresh orchestrator-mode deps after a restart reaches the same decision with no second delivery submission", async () => {
+    const h = harnessIn(modes.tp1G3Orchestrator);
+    await reachStage(h, "delivery-ready handle");
+    const resumed = await resumeDeliveryFinalisation(
+      h.fixture.authorization.jobId,
+      h.fixture.request,
+      { ...h.deps },
+      { ...h.durability, workerId: "restarted-finaliser" },
+    );
+    expect(resumed.decision).toBe("completed");
+    expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
+    const uninterrupted = harnessIn(modes.tp1G3Orchestrator);
+    expect((await runDurableFulfilmentCore(
+      uninterrupted.fixture.request, uninterrupted.deps, uninterrupted.durability,
+    )).decision).toBe(resumed.decision);
+  });
+
+  test.each(["TP1-G3-ORCHESTRATOR", "tp1-g3", "", 1, null, {}])(
+    "an unsupported durable Vet mode keeps the result contract: runDurableFulfilmentCore, advanceDeliveryFinalisation and resumeDeliveryFinalisation return indeterminate durable-dependencies-invalid whose reason names the unsupported mode, runDurableFulfilmentToDeliveryReady returns not-ready holding that result, and store, resolver, signer and transport calls are 0 (%j)", async (vetMode) => {
+      const h = durableHarness();
+      const { request } = h.fixture;
+      const jobId = h.fixture.authorization.jobId;
+      const ready = await runDurableFulfilmentToDeliveryReady(request, h.deps, h.durability);
+      if (ready.status !== "delivery-ready") throw new Error("delivery was not ready");
+      const before = await snapshot(h);
+      const deps: DurableSellerFulfilmentDeps = { ...h.deps, vetMode: vetMode as never };
+      const durability = { ...h.durability, workerId: "unsupported-mode-worker" };
+      const calls = watchEffects(h, deps, durability);
+      const inspect = vi.spyOn(h.fixture.store, "inspectPermit");
+      const unsupported = {
+        decision: "indeterminate",
+        code: "durable-dependencies-invalid",
+        reasons: [expect.stringMatching(/Vet mode is unsupported/)],
+        safeToRetryDelivery: false,
+      };
+
+      expect(await runDurableFulfilmentCore(request, deps, durability)).toMatchObject(unsupported);
+      expect(await advanceDeliveryFinalisation(ready.finalisation, request, deps, durability))
+        .toMatchObject(unsupported);
+      expect(await resumeDeliveryFinalisation(jobId, request, deps, durability)).toMatchObject(unsupported);
+      expect(await runDurableFulfilmentToDeliveryReady(request, deps, durability))
+        .toMatchObject({ status: "not-ready", result: unsupported });
+      expectNoCalls(calls);
+      expect(inspect).not.toHaveBeenCalled();
+      expect(await snapshot(h)).toEqual(before);
+    });
+
+  test.each(stageDirections)(
+    "durable recovery under fresh deps and a reopened store refuses retained Vet provenance of the other mode with a reason containing vet_mode_mismatch:, before any replay, projection or effect: the store records are byte-equal before and after, and receipt, delivery, evidence, signer and transport calls are 0 (retained %s, recovering %s, stage: %s)", async (retained, recovering, stage) => {
+      const h = harnessIn(retained);
+      const recover = await reachStage(h, stage);
+      const before = await snapshot(h);
+      const deps: DurableSellerFulfilmentDeps = { ...h.deps, vetMode: recovering };
+      const durability = { ...h.durability, workerId: "mismatched-mode-worker" };
+      const calls = watchEffects(h, deps, durability);
+
+      const refused = await recover(deps, durability);
+
+      expect(refused).toMatchObject({
+        decision: "indeterminate",
+        code: "durable-permit-inspection-failed",
+        reasons: [expect.stringContaining("vet_mode_mismatch:")],
+        safeToRetryDelivery: false,
+      });
+      expectNoCalls(calls);
+      expect(await snapshot(h)).toEqual(before);
+    });
+
+  test("a handoff of the other Vet mode learned at permit consumption is refused before any effect", async () => {
+    const other = harnessIn(modes.counterparty);
+    await reachStage(other, "delivery-ready handle");
+    const retainedHandoff = other.fixture.store.handoffValue!;
+    const h = harnessIn(modes.tp1G3Orchestrator);
+    const { store } = h.fixture;
+    vi.spyOn(store, "consumePermit").mockImplementation(async () => {
+      store.consumed = true;
+      store.handoffValue = structuredClone(retainedHandoff);
+      return {
+        status: "already-consumed",
+        claim: structuredClone(store.claimValue),
+        handoff: structuredClone(retainedHandoff),
+      };
+    });
+
+    const refused = await runDurableFulfilmentCore(h.fixture.request, h.deps, h.durability);
+
+    expect(refused).toMatchObject({ decision: "indeterminate", safeToRetryDelivery: false });
+    expect(JSON.stringify(refused)).toContain("vet_mode_mismatch:");
+    expect(h.counts).toEqual({ payload: 0, delivery: 0, evidence: 0, final: 0 });
+  });
+
+  test.each(sameModeStages)(
+    "durable recovery under the same Vet mode replays, projects and resumes exactly as before for both modes (mode %s, stage: %s)", async (mode, stage) => {
+      const h = harnessIn(mode);
+      const recover = await reachStage(h, stage);
+
+      const recovered = await recover({ ...h.deps }, { ...h.durability, workerId: "same-mode-worker" });
+
+      expect(recovered.decision).toBe("completed");
+      expect(h.counts).toEqual({ payload: 0, delivery: 1, evidence: 1, final: 1 });
+    });
+});

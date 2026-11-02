@@ -44,12 +44,16 @@ import {
 } from "../seller/paymentIntake.js";
 import {
   SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+  SELLER_FULFILMENT_VET_MODES,
   isSellerFulfilmentAuditSource,
   isSellerFulfilmentVetInvocationMismatch,
+  sellerFulfilmentVetBindingsOf,
+  sellerFulfilmentVetModeOf,
   sellerFulfilmentVetRequirementMembers,
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
   type SellerFulfilmentSessionRecord,
+  type SellerFulfilmentVetMode,
   type SellerSessionPhaseEntry,
   type SellerSessionPhaseHandlerResult,
 } from "../seller/fulfilmentAuditSource.js";
@@ -448,6 +452,8 @@ export interface SellerFulfilmentDeps extends SellerFulfilmentDepsBase {
   auditSourceProfile: "v2";
   /** Opt in only after strict presence replay; completed-bundle finalization is unsupported. */
   acceptsPresenceOnlyVetRequirements?: true;
+  /** Set only by a trusted host; absent means `counterparty`, unsupported is refused. */
+  vetMode?: SellerFulfilmentVetMode;
   resolveAuditSource: SellerFulfilmentAuditSourceResolver;
 }
 
@@ -473,6 +479,7 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const resolveAuditSourceSource = source.resolveAuditSource;
     const auditSourceProfile = source.auditSourceProfile;
     const acceptsPresenceOnlyVetRequirements = source.acceptsPresenceOnlyVetRequirements === true ? true : undefined;
+    const vetMode = sellerFulfilmentVetModeOf(source.vetMode);
     const prepareDeliverySource = source.prepareDelivery;
     const submitDeliverySource = source.submitDelivery;
     const reconcileDeliverySource = source.reconcileDelivery;
@@ -497,6 +504,9 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
 
     if (auditSourceProfile !== "v2") {
       return { status: "invalid", reason: "fulfilment audit-source profile is unsupported" };
+    }
+    if (vetMode === null) {
+      return { status: "invalid", reason: "fulfilment Vet mode is unsupported" };
     }
 
     if (!receiptStoreSource || typeof receiptStoreSource !== "object" ||
@@ -580,6 +590,7 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
       receiptStore,
       auditSourceProfile,
       acceptsPresenceOnlyVetRequirements,
+      vetMode,
       resolveAgreement: bindCaptured(resolveAgreementSource, source),
       resolveListing: bindCaptured(resolveListingSource, source),
       resolveAuditSource: bindCaptured(resolveAuditSourceSource, source),
@@ -1460,6 +1471,7 @@ function auditSourceViolation(
   request: SellerFulfilmentRequest,
   deliveryPhaseIndex: number,
   expectedCommitmentAddress: string,
+  vetMode: SellerFulfilmentVetMode,
   acceptsPresenceOnly?: true,
 ): string | null {
   if (!isSellerFulfilmentAuditSource(source)) {
@@ -1494,30 +1506,9 @@ function auditSourceViolation(
       authorization.commitment.signer !== orchestrator.primaryClaim) {
     return "audit source does not bind the exact finalized AgreementCommitment";
   }
-  const partyVetBindings = session.parties.flatMap((party) =>
-    party.vetRecordRef === undefined
-      ? []
-      : [{ party, key: canonicalize(party.vetRecordRef) }]);
-  const uniquePartyVetBindings = new Map<
-    string,
-    { primaryClaim: string; bundleHash: string; roles: Set<string> }
-  >();
-  for (const binding of partyVetBindings) {
-    const existing = uniquePartyVetBindings.get(binding.key);
-    if (existing &&
-        (existing.primaryClaim !== binding.party.primaryClaim ||
-          existing.bundleHash !== binding.party.bundleHash)) {
-      return "one Vet record cannot represent different authenticated party identities";
-    }
-    if (existing) {
-      existing.roles.add(binding.party.role);
-    } else {
-      uniquePartyVetBindings.set(binding.key, {
-        primaryClaim: binding.party.primaryClaim,
-        bundleHash: binding.party.bundleHash,
-        roles: new Set([binding.party.role]),
-      });
-    }
+  const uniquePartyVetBindings = sellerFulfilmentVetBindingsOf(session.parties);
+  if (!uniquePartyVetBindings) {
+    return "one Vet record cannot represent different authenticated party identities";
   }
   const sessionVetRefs = [...uniquePartyVetBindings.keys()];
   const inventoryVetRefs = source.artifacts.vetRecords.map((ref) => canonicalize(ref));
@@ -1539,6 +1530,7 @@ function auditSourceViolation(
     buyerRequirement: listing.buyerRequirement,
     bindings: uniquePartyVetBindings,
     acceptsPresenceOnly,
+    vetMode,
   };
   if (acceptsPresenceOnly !== true && source.artifacts.vetRequirements.some((invocation) =>
     sellerFulfilmentVetRequirementMembers(invocation.requirement).some((member) => !member.verificationRequired))) {
@@ -1764,6 +1756,7 @@ export function sellerFulfilmentAuditSourceViolation(
     request,
     deliveryPhaseIndex,
     expectedCommitmentAddress,
+    SELLER_FULFILMENT_VET_MODES.counterparty,
   );
 }
 
@@ -3448,6 +3441,7 @@ async function runFulfilmentCoreInner(
     request,
     request.deliveryPhaseIndex,
     expectedCommitmentAddress,
+    deps.vetMode ?? SELLER_FULFILMENT_VET_MODES.counterparty,
     deps.acceptsPresenceOnlyVetRequirements,
   );
   if (auditViolation) return rejected("audit-source-mismatch", auditViolation);

@@ -14,6 +14,7 @@ import {
 } from "../../src/crypto/index.js";
 import {
   runFulfilmentCore,
+  sellerFulfilmentAuditSourceViolation,
   sellerFulfilmentId,
   type SellerDeliveredArtifact,
   type SellerDeliverableSpec,
@@ -25,6 +26,7 @@ import {
   type SellerPayloadAttestationRecord,
   type SignedSellerDeliveryEvidence,
 } from "../../src/agent/runFulfilmentCore.js";
+import { signFulfilmentVetRecords } from "../fixtures/fulfilmentVetRecords.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import {
   isSellerFulfilmentHandoff,
@@ -43,7 +45,10 @@ import {
   type SellerFulfilmentAuditSourceV1,
 } from "../../src/seller/fulfilmentAuditSource.js";
 
-import { isSellerFulfilmentVetInvocationMismatch } from "../../src/seller/index.js";
+import {
+  SELLER_FULFILMENT_VET_MODES,
+  isSellerFulfilmentVetInvocationMismatch,
+} from "../../src/seller/index.js";
 
 const NOW = 1_780_000_000_000;
 const SELLER = "did:demos:seller";
@@ -3799,5 +3804,101 @@ describe("runFulfilmentCore", () => {
       safeToRetryDelivery: false,
       evidence: { outcome: "success" },
     });
+  });
+});
+
+describe("runFulfilmentCore TP-1 G3 orchestrator Vet mode", () => {
+  const orchestrator = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
+
+  const sellerSigned = (): Fixture => {
+    const f = fixture();
+    signFulfilmentVetRecords(f, SELLER, SELLER);
+    return f;
+  };
+
+  test("delivers seller-verified seller Vet provenance when the deps select the orchestrator mode", async () => {
+    const f = sellerSigned();
+    f.deps.vetMode = orchestrator;
+    expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+  });
+
+  test("refuses seller-verified seller Vet provenance in the counterparty mode (audit-source-mismatch)", async () => {
+    for (const vetMode of [undefined, SELLER_FULFILMENT_VET_MODES.counterparty]) {
+      const f = sellerSigned();
+      if (vetMode) f.deps.vetMode = vetMode;
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+      });
+      expect(f.store.consumed).toBe(false);
+    }
+  });
+
+  test("refuses buyer-verified seller Vet provenance in the orchestrator mode (audit-source-mismatch)", async () => {
+    const f = fixture();
+    signFulfilmentVetRecords(f, SELLER, BUYER);
+    f.deps.vetMode = orchestrator;
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(f.store.consumed).toBe(false);
+  });
+
+  test("refuses deps with an unsupported Vet mode before any receipt, resolver or delivery call", async () => {
+    for (const vetMode of ["TP1-G3-ORCHESTRATOR", "tp1-g3", "", 1, null, {}]) {
+      const f = sellerSigned();
+      f.deps.vetMode = vetMode as never;
+      const calls = [
+        vi.spyOn(f.store, "claim"),
+        vi.spyOn(f.store, "consumePermit"),
+        vi.spyOn(f.deps, "resolveAgreement"),
+        vi.spyOn(f.deps, "resolveListing"),
+        vi.spyOn(f.deps, "resolveAuditSource"),
+        vi.spyOn(f.deps, "prepareDelivery"),
+        vi.spyOn(f.deps, "submitDelivery"),
+      ];
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "fulfilment-dependencies-invalid",
+        reasons: ["fulfilment Vet mode is unsupported"],
+      });
+      for (const call of calls) expect(call).not.toHaveBeenCalled();
+    }
+  });
+
+  test("a vetMode member in the request, Agreement, Listing or audit source never selects the orchestrator mode", async () => {
+    for (const carrier of ["request", "agreement", "listing", "auditSource"] as const) {
+      const f = sellerSigned();
+      Object.assign(f[carrier], { vetMode: orchestrator });
+      const submit = vi.spyOn(f.deps, "submitDelivery");
+      const result = await runFulfilmentCore(f.request, f.deps);
+      expect(result.decision, carrier).not.toBe("completed");
+      expect(submit, carrier).not.toHaveBeenCalled();
+    }
+  });
+
+  test("captures the Vet mode once: a getter that changes after capture does not change the decision", async () => {
+    const f = sellerSigned();
+    const modes = [orchestrator, SELLER_FULFILMENT_VET_MODES.counterparty];
+    let reads = 0;
+    Object.defineProperty(f.deps, "vetMode", { get: () => modes[Math.min(reads++, modes.length - 1)] });
+    expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+    expect(reads).toBe(1);
+  });
+
+  test("sellerFulfilmentAuditSourceViolation keeps the counterparty rule and takes no Vet mode", () => {
+    const check = (f: Fixture) => sellerFulfilmentAuditSourceViolation(
+      { ...structuredClone(f.auditSource), session: structuredClone(f.session) },
+      f.authorization,
+      f.agreement,
+      f.listing,
+      f.request,
+      f.request.deliveryPhaseIndex,
+      COMMITMENT_ADDRESS,
+    );
+    expect(sellerFulfilmentAuditSourceViolation).toHaveLength(7);
+    expect(check(fixture())).toBeNull();
+    expect(check(sellerSigned())).toMatch(/Vet provenance/);
   });
 });

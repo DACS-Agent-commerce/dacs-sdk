@@ -129,14 +129,17 @@ export {
 } from "./paymentIntake.js";
 export {
   SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+  SELLER_FULFILMENT_VET_MODES,
   isSellerFulfilmentAuditSource,
   isSellerFulfilmentSessionRecord,
   isSellerFulfilmentVetInvocationMismatch,
   sellerFulfilmentAuditSourceHash,
+  sellerFulfilmentVetModeOf,
   sellerFulfilmentVetRequirementsViolation,
   sellerFulfilmentVetRequirementMembers,
   type SellerFulfilmentAuditArtifactsV1,
   type SellerFulfilmentVetBinding,
+  type SellerFulfilmentVetMode,
   type SellerFulfilmentAuditSourceV1,
   type SellerFulfilmentExpectedVerifyResult,
   type SellerFulfilmentVetRequirementInvocation,
