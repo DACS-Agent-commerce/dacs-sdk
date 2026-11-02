@@ -19,7 +19,7 @@ async function resolve(answer, request) {
 for (const member of ['input', 'vetRequirements']) test(`rejects oversized ${member} strings before canonicalization`, async () => {
   const { answer, request } = await fixture();
   const oversized = '🙂'.repeat(LIMITS.maxBytes / 4);
-  if (member === 'input') answer.value.input.verifiedListing.listing.offering.title = oversized;
+  if (member === 'input') answer.value.input.selectedRail.extra = oversized;
   else answer.value.vetRequirements.push({ note: oversized });
   const result = await resolve(answer, request);
   assert.equal(result.disposition, 'indeterminate');

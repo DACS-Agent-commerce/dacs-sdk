@@ -182,6 +182,14 @@ per-client limiter so one client cannot exhaust the shared request budget.
   One live process owns a data directory (`seller-state.lock`): a second host,
   in this process or another, is refused; the lock of a process that is
   provably gone is taken over, and any doubt refuses until it is removed by hand.
+  Holding that lock, the host recovers what a holder that is gone left before it
+  serves: it releases every job lock row `releaseAbandonedLock` would release
+  (never a live holder, nor one on this boot whose lease cannot be checked),
+  logging one `seller-state: released the lock on job ...` line per row, and
+  marks each context step still pending in the transport journal as uncertain,
+  so the route's own reconciliation decides whether it runs again. Saved
+  sessions, effects and settlements are not changed. A lock row the host
+  cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
   and body, for this seller and Listing; unsigned or mismatched requests are
   refused before the agent runs. Effects are journaled before they run, so a

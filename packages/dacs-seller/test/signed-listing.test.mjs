@@ -102,6 +102,20 @@ test('purchase support requires the implemented delivery, phase order and exact 
   }
 });
 
+test('purchase support requires an offering title of 1 to 200 characters, as the purchased report does', () => {
+  const listing = fixtureListing(wallet, { now: NOW });
+  for (const title of ['x', 'x'.repeat(200)]) {
+    const accepted = structuredClone(listing); accepted.offering.title = title;
+    assert.equal(purchaseSupport(signListing(accepted)).supported, true, `title of ${title.length} characters`);
+  }
+  for (const title of ['', 'x'.repeat(201), null, 7]) {
+    const refused = structuredClone(listing); refused.offering.title = title;
+    const support = purchaseSupport(signListing(refused));
+    assert.equal(support.supported, false, `title ${JSON.stringify(title)?.slice(0, 12)}`);
+    assert.deepEqual(support.reasons, ['offering title is not 1 to 200 characters']);
+  }
+});
+
 test('builder and attachment sign the exact independent identity and Listing domain bytes', () => {
   const unsigned = buildUnsignedIdentityBundle({ address, presentedAt: NOW, sessionNonce: 'a'.repeat(64) });
   const identityBundle = attachIdentityPresentation(unsigned, '0x' + wallet.signBytes(Buffer.from(unsigned.message)).toString('hex'));
