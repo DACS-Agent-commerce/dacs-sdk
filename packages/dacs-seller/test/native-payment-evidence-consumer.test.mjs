@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ARTIFACT_SEPARATORS, paymentEvidenceAddress, signComponentArtifact } from '@kynesyslabs/dacs';
-import { createNativePaymentEvidenceConsumer, nativeEvidenceReadOutcome } from '../src/dacs/native-payment-evidence-consumer.mjs';
+import { checkNativePaymentEvidence, createNativePaymentEvidenceConsumer, nativeEvidenceReadOutcome } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { DEMOS_SR2_REPLY_BYTES } from '../src/dacs/demos-sr2-adapter.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
 import { FIXTURE_SIGNED_NONCE } from './helpers/confirmed-native-transfer-fixture.mjs';
@@ -114,4 +114,60 @@ test('matching signed evidence and observed transfer remain present', async () =
   const result = await f.consumer.readEvidence(f.input);
   assert.equal(result.disposition, 'present', JSON.stringify(result));
   assert.deepEqual(result.artifact, f.artifact); assert.deepEqual(result.signedProjection, f.signed);
+});
+
+const SCOPE_MISMATCH = { decision: 'fail', reasons: ['native-payment-evidence-scope-mismatch'] };
+const malformedPaymentTxRefs = [
+  ['a null entry', [null]], ['a number entry', [7]], ['a string entry', ['demos']], ['an array entry', [[]]],
+  ['a string of length one', 'a'], ['an object of length one', { length: 1 }], ['null', null],
+  ['no entries', []], ['two entries', f => [f.artifact.paymentTxRefs[0], f.artifact.paymentTxRefs[0]]],
+];
+
+test('a well-formed signed payment artifact passes the native evidence check', async () => {
+  const f = await consumerFixture();
+  const result = await checkNativePaymentEvidence({ artifact: f.artifact, ...f.input });
+  assert.equal(result.decision, 'pass', JSON.stringify(result));
+});
+
+for (const [label, value] of malformedPaymentTxRefs) test(`the native evidence check fails on scope when paymentTxRefs is ${label}`, async () => {
+  const f = await consumerFixture();
+  const paymentTxRefs = typeof value === 'function' ? value(f) : value;
+  assert.deepEqual(await checkNativePaymentEvidence({ artifact: { ...f.artifact, paymentTxRefs }, ...f.input }), SCOPE_MISMATCH);
+});
+
+test('the native evidence check fails on scope when paymentTxRefs is missing', async () => {
+  const f = await consumerFixture();
+  const { paymentTxRefs, ...withoutPaymentTxRefs } = f.artifact;
+  assert.deepEqual(await checkNativePaymentEvidence({ artifact: withoutPaymentTxRefs, ...f.input }), SCOPE_MISMATCH);
+});
+
+test('the native evidence check fails on scope when the artifact cannot be hashed', async () => {
+  const f = await consumerFixture();
+  assert.deepEqual(await checkNativePaymentEvidence({ artifact: { ...f.artifact, extra: undefined }, ...f.input }), SCOPE_MISMATCH);
+});
+
+for (const [label, artifact] of [['null', null], ['undefined', undefined], ['a string', 'TEST artifact'], ['an array', []]]) {
+  test(`the native evidence check fails on scope when the artifact is ${label}`, async () => {
+    const f = await consumerFixture();
+    assert.deepEqual(await checkNativePaymentEvidence({ artifact, ...f.input }), SCOPE_MISMATCH);
+  });
+}
+
+for (const field of ['paymentAmount', 'settlementFinality', 'signature']) for (const [label, value] of [['null', null], ['a string', 'TEST'], ['a number', 7]]) {
+  test(`the native evidence check fails on scope when ${field} is ${label}`, async () => {
+    const f = await consumerFixture();
+    assert.deepEqual(await checkNativePaymentEvidence({ artifact: { ...f.artifact, [field]: value }, ...f.input }), SCOPE_MISMATCH);
+  });
+}
+
+test('the native evidence check does not read the artifact fields of a writer that is not the seller', async () => {
+  const f = await consumerFixture();
+  assert.deepEqual(await checkNativePaymentEvidence({ artifact: { ...f.artifact, paymentTxRefs: [null] }, ...f.input, writer: buyer.claim }), SCOPE_MISMATCH);
+});
+
+for (const [label, value] of malformedPaymentTxRefs.slice(0, 6)) test(`a signed artifact whose paymentTxRefs is ${label} is rejected as an authenticated scope mismatch`, async () => {
+  const f = await consumerFixture({ evidence: { paymentTxRefs: value } });
+  const result = await f.consumer.readEvidence(f.input);
+  assert.equal(result.disposition, 'rejected', JSON.stringify(result)); assert.equal(result.authenticated, true);
+  assert.equal(result.reason, 'native-payment-evidence-scope-mismatch');
 });

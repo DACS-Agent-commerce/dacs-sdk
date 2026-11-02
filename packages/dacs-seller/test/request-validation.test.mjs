@@ -378,6 +378,9 @@ for(const [label,ref] of [['another transaction hash',{txHash:'f'.repeat(64)}],[
   const r=requestFor({...payment,artifact:{paymentTxRefs:[{...PAYMENT_TX_REF,...ref}]}}),p=approvable(false);
   assert.equal(await refusal(r,p),'payment-tx');assert.equal(await stillAuthorizedToSign(r,p),'payment-tx');
 });
+for(const [label,paymentTxRefs] of [['a null entry',[null]],['a number entry',[7]],['a string of length one','a'],['an object of length one',{length:1}],['no entries',[]]])test(`payment evidence whose paymentTxRefs is ${label} is refused as an artifact-structure fault without throwing`,async()=>{
+  assert.equal(await refusal(requestFor({...payment,artifact:{paymentTxRefs}}),approvable(false)),'artifact-structure');
+});
 test('payment evidence naming the verified transaction at block 0 is approved (D-3)',async()=>{
   const ref={...PAYMENT_TX_REF,blockNumber:0},r=requestFor({...payment,artifact:{paymentTxRefs:[ref]}}),p=policy(()=>paidProjection({paymentTxRef:ref}));
   assert.equal(await refusal(r,p),null);assert.equal(await stillAuthorizedToSign(r,p),null);
