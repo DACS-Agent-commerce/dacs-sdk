@@ -272,8 +272,8 @@ test('manual approval runs the same checks as policy approval, table {purchase c
  assert.equal(await approval.retained.confirm(bindingOf(prepared),executed(request)),true,'the overridden fee cap does not refuse the confirm');
  const mismatched=executed(request);mismatched.response.data.transaction.content.transaction_fee.network_fee='2000000000';
  assert.equal(await approval.retained.confirm(bindingOf(prepared),mismatched),false,'debit mismatch');
- for(const [name,changed] of [['purchase closes during the manual callback',false],['purchase becomes unpaid during the manual callback',unpaid()]]){
-  const other=secondEvidence();during=()=>{fixture.state.purchase=changed;};
+ for(const [index,[name,changed]] of [['purchase closes during the manual callback',false],['purchase becomes unpaid during the manual callback',unpaid()]].entries()){
+  const other=evidence({job:JOBS[1],nonce:2+index});during=()=>{fixture.state.purchase=changed;};
   const decision=await approval.retained.prepare(other);during=()=>{};
   assert.equal(await approval.retained.confirm(bindingOf(decision),executed(other)),false,name);
   fixture.state.purchase=purchase();assert.equal(await approval.retained.confirm(bindingOf(decision),executed(other)),true,`${name}: the decision was kept`);
@@ -428,4 +428,20 @@ test('the sign row a live session write of this process holds in the shared slot
  await rejectsWith(session.retained.settle({ledgerId:signed.reservationId,requestText:JSON.stringify(request)},'released'),'approval_reservation_unavailable');
  assert.equal(await text(fixture.evidencePath),before);
  assert.equal((await fixture.compose(fixture.restart()).retained.prepare(request)).ledgerId,signed.reservationId);
+});
+
+test('a manual authorization is not prepared again after it was settled, so a repeated settlement of the first binding cannot cancel a later one',async t=>{
+ const fixture=await ledgerFixture(t);let asked=0;
+ const approval=composeSellerApproval({mode:'manual',policy:fixture.restart(),manual:async()=>{asked++;return true;}}),request=evidence();
+ const first=await approval.retained.prepare(request);
+ await approval.retained.settle(first,'released');
+ await rejectsWith(approval.retained.prepare(request),'approval_refused');assert.equal(asked,1,'the operator is not asked again for settled bytes');
+ await approval.retained.settle(first,'released');
+ assert.equal(await approval.retained.open(first.requestText),null);
+ await rejectsWith(approval.retained.confirm(first,executed(request)),'approval_reservation_unavailable');
+ // A settlement that leaves the outcome open, or one for bytes never prepared, settles nothing.
+ const other=secondEvidence(),decision=await approval.retained.prepare(other);
+ await approval.retained.settle(decision,'unknown');await approval.retained.settle({ledgerId:null,requestText:JSON.stringify(evidence({nonce:7}))},'released');
+ assert.equal(await approval.retained.confirm(decision,executed(other)),true);
+ assert.equal((await approval.retained.prepare(evidence({nonce:7}))).ledgerId,null);
 });

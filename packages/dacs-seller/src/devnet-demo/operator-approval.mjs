@@ -320,7 +320,7 @@ const withinConfirmationBound=(validity)=>{try{return Buffer.byteLength(JSON.str
  * bytes the caller retains for replay. Its authorization is held, by ledger id, until settle(binding, outcome) ends it:
  * a replacement, a mismatched or refused confirmation, or another write never releases it, and it never enters the
  * shared prepared slot. A binding is {ledgerId, requestText}; ledgerId is null for an authorization the operator gave
- * alone, which lives in this process until it is settled. prepare resolves a binding, or rejects with invalid_params
+ * alone, which lives in this process until it is settled, and whose exact bytes are not prepared again afterwards. prepare resolves a binding, or rejects with invalid_params
  * (another kind), approval_refused (a final policy refusal or a declined manual answer, with its reason) or
  * operator_closing; confirm resolves false for a confirmation the current checks refuse, whatever an earlier one
  * was; reopen, confirm and settle reject with approval_reservation_unavailable for an unknown or settled id. */
@@ -376,9 +376,12 @@ export function composeSellerApproval({mode,policy,manual}){
 // The retained lifecycle of composeSellerApproval. It never touches the shared prepared slot, so no other approval
 // can release what it holds. Manual answers are kept by exact request text; policy authorizations are the ledger's.
 function composeRetainedApproval({mode,policy,manual}){
-  const manualDecisions=new Map();
+  const manualDecisions=new Map(),settledManualTexts=new Set();
   const approveManually=async(request)=>{
     const requestText=JSON.stringify(request);
+    // A manual binding is its request text alone, so the same bytes are never prepared again once settled: a repeat of
+    // the first settlement could not be told from the settlement of a later authorization and would cancel it.
+    if(settledManualTexts.has(requestText))throw approvalRefusal('manual-request-settled');
     if((await manual(JSON.parse(requestText)))!==true||JSON.stringify(request)!==requestText)throw approvalRefusal('manual-declined');
     freezeRequest(request);manualDecisions.set(requestText,request);
     return{ledgerId:null,requestText};
@@ -405,7 +408,7 @@ function composeRetainedApproval({mode,policy,manual}){
       const{ledgerId,requestText}=exactBinding(binding);
       if(ledgerId!==null)return policy.settleById(ledgerId,outcome,reason);
       assertSettlementOutcome(outcome);
-      if(outcome!=='unknown')manualDecisions.delete(requestText);
+      if(outcome!=='unknown'&&manualDecisions.delete(requestText))settledManualTexts.add(requestText);
     },
   });
 }
