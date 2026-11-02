@@ -248,7 +248,7 @@ test('the shared reader has no whole-observation deadline over slow healthy requ
     const { message } = JSON.parse(options.body).params[0];
     await new Promise(resolve => setTimeout(resolve, 600));
     if (message === 'getTransactionStatus') return json({ state: 'included', blockNumber: 7 });
-    if (message === 'getTxByHash') return json({ hash: HASH, status: 'confirmed', blockNumber: 7, content: { type: 'native', from: OTHER, to: PAYEE, amount: '1000000000', data: ['native', { nativeOperation: 'send', args: [PAYEE, '1000000000'] }] } });
+    if (message === 'getTxByHash') return json({ hash: HASH, status: 'confirmed', blockNumber: 7, content: { type: 'native', from: OTHER, nonce: 7, to: PAYEE, amount: '1000000000', data: ['native', { nativeOperation: 'send', args: [PAYEE, '1000000000'] }] } });
     return json({ number: 7, status: 'confirmed', content: { ordered_transactions: [HASH], timestamp: NOW / 1000 } });
   } });
   const outcome = await drive(t, reader.observeTransfer(HASH), 600);

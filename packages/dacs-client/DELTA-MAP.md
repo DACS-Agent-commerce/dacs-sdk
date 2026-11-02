@@ -896,6 +896,8 @@ Negotiate-phase timing: the seller no longer records negotiate phase 0 when its 
 | D16 | delta(client): D16 record the merged blobs of two parallel records in phase0-completion | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/seller-agent.mjs:1`, `packages/dacs-client/src/dacs/seller-agent.mjs:80`, `packages/dacs-client/src/dacs/seller-agent.mjs:112`, `packages/dacs-client/src/dacs/seller-agent.mjs:178`, `packages/dacs-client/src/dacs/seller-agent.mjs:193`, `packages/dacs-client/src/dacs/seller-agent.mjs:288`, `packages/dacs-client/src/dacs/seller-agent.mjs:323`, `packages/dacs-client/src/dacs/seller-agent.mjs:348`, `packages/dacs-client/src/dacs/seller-agent.mjs:390`, `packages/dacs-client/src/dacs/seller-agent.mjs:476`, `packages/dacs-client/src/dacs/seller-agent.mjs:1294` | ddf5ad868bbc84355b181be3a82b276e5c4eb199 |
 | | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:91`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:141`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:182`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:186`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:188`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:197`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:199`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:204`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:208`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:210`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:235`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:306`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:816`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:839`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:866`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:930`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1076`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1078`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1094`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1104` | 6215d34787c361a4c056c2a78fcb2dccda823ff0 |
+| D11 | fix(client): D11 give the slow-reader fixture a signed nonce | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/passive-observation.test.mjs:1` | cf4497afe1bd896a8d18a55993bb8b38f4896c16 |
 
 ## Complete commit and file inventory
 
@@ -2848,6 +2850,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D16 record the merged blobs of two parallel records in phase0-completion | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): D16 record the merged blobs of two parallel records in phase0-completion | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D16 record the merged blobs of two parallel records in phase0-completion | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 give the slow-reader fixture a signed nonce | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 give the slow-reader fixture a signed nonce | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 give the slow-reader fixture a signed nonce | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 give the slow-reader fixture a signed nonce | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 give the slow-reader fixture a signed nonce | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 give the slow-reader fixture a signed nonce | `packages/dacs-client/test/passive-observation.test.mjs:1` |
 
 ## Original moved files
 
