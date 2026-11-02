@@ -505,8 +505,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const persist = (session) => { durable?.saveSession(session); verifiedSessions.set(session.jobId, sessionFingerprint(session)); };
   // The seller-state lock, checked last before an effect that leaves through
   // another journal: as the native publisher's authorize hook (called under its
-  // address lock with nothing awaited before the CREATE intent), or just before
-  // a wallet or delivery call. A holder that lost its job's row sends nothing.
+  // address lock with nothing awaited before the CREATE intent), as its
+  // authorizeSigning hook (run by the wallet after its approval wait, right
+  // before it signs), or just before a wallet or delivery call. A holder that
+  // lost its job's row sends nothing.
   const transportAuthority = new AsyncLocalStorage();
   const heldFor = (jobId) => {
     const transport = transportAuthority.getStore();
@@ -1084,7 +1086,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             heldFor(jobId)?.();
             session.commitmentPublishAsked = true;
             persist(session);
-            const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId)});
+            const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId),authorizeSigning:heldFor(jobId)});
             if(out.status!=='present') throw new Error(out.reason ?? 'native commitment publication is indeterminate');
             nativeCommitmentProjection=out.signedProjection;
             return {record:commitmentRecord,nativeAddress:out.receipt.nativeAddress,anchorTxRef:out.txRef,anchorReceipt:out.receipt};
@@ -1848,13 +1850,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     try{
       if(!session.deliveryEvidenceWork){
         session.deliveryEvidenceWork={address,evidenceHash:ready.evidenceHash};persist(session);
-        read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
+        read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId)});
       }else{
         if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash)return held('retained delivery evidence work differs from the verified Deliverable');
         // Only a seller that publishes delivery evidence may send its retained CREATE again,
         // and only while the check that authorized signing it still holds.
         read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true},{resend:deliveryEvidenceEnabled,authorizeResend:heldFor(session.jobId)});
-        if(read?.status==='absent'&&deliveryEvidenceEnabled&&isProvenUnsignedAbsence(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
+        if(read?.status==='absent'&&deliveryEvidenceEnabled&&isProvenUnsignedAbsence(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId)});
       }
     }catch(error){return held(String(error?.message??error).slice(0,240));}
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');
