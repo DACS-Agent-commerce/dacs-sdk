@@ -12,20 +12,16 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packages as policyPackages, validateArtifactSet, validateFiles } from "./release-checks.mjs";
 import { validateReleaseIdentity } from "./release-identity.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const packageDefinitions = Object.freeze([
-  Object.freeze({
-    label: "core",
-    name: "@kynesyslabs/dacs",
-    directory: repoRoot,
-    requiredFiles: ["dist/index.js", "dist/index.d.ts", "LICENSE"],
-  }),
-  Object.freeze({
+// Label and compiled-package file checks per policy package. Client and kit have
+// no compiled output; their packed files are checked against the policy's allow-list.
+const packageDetails = Object.freeze({
+  "@kynesyslabs/dacs": { label: "core", requiredFiles: ["dist/index.js", "dist/index.d.ts", "LICENSE"] },
+  "@kynesyslabs/dacs-node": {
     label: "host",
-    name: "@kynesyslabs/dacs-node",
-    directory: join(repoRoot, "packages", "dacs-node"),
     requiredFiles: [
       "dist/index.js",
       "dist/index.d.ts",
@@ -34,20 +30,30 @@ const packageDefinitions = Object.freeze([
       "dist/demosLoaderHook.js",
       "LICENSE",
     ],
-  }),
-  Object.freeze({
+  },
+  "@kynesyslabs/dacs-client": { label: "client" },
+  "@kynesyslabs/dacs-seller": { label: "seller" },
+  "create-dacs-agent": {
     label: "generator",
-    name: "create-dacs-agent",
-    directory: join(repoRoot, "packages", "create-dacs-agent"),
     requiredFiles: ["dist/index.js", "dist/index.d.ts", "dist/bin.js", "LICENSE"],
-  }),
-]);
+  },
+});
+const packageDefinitions = Object.freeze(policyPackages.map((policy) => {
+  const details = packageDetails[policy.name];
+  if (details === undefined) throw new Error(`release policy names unknown package ${policy.name}`);
+  return Object.freeze({
+    ...details, name: policy.name, policy, directory: resolve(repoRoot, policy.directory),
+  });
+}));
+const INTERNAL_DEPENDENCY_SECTIONS = ["dependencies", "peerDependencies", "optionalDependencies"];
 
 const args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== "--output-dir" || !args[1]) {
-  throw new Error("usage: node scripts/verify-release-set.mjs --output-dir <new-directory>");
+const strict = args.includes("--strict");
+const [outputFlag, outputPath, ...extraArgs] = args.filter((arg) => arg !== "--strict");
+if (outputFlag !== "--output-dir" || !outputPath || extraArgs.length > 0) {
+  throw new Error("usage: node scripts/verify-release-set.mjs --output-dir <new-directory> [--strict]");
 }
-const outputDirectory = resolve(repoRoot, args[1]);
+const outputDirectory = resolve(repoRoot, outputPath);
 
 function run(command, commandArgs, options = {}) {
   const result = spawnSync(command, commandArgs, {
@@ -115,7 +121,10 @@ async function inspectPackedManifest(definition, artifact, scratch) {
   const packageRoot = join(extracted, "package");
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   validateReleaseIdentity(manifest, definition.name);
-  for (const file of definition.requiredFiles) {
+  if (definition.requiredFiles === undefined) {
+    validateFiles(definition.policy, manifest, artifact.metadata.files.map((file) => file.path));
+  }
+  for (const file of definition.requiredFiles ?? []) {
     try {
       const observed = await stat(join(packageRoot, file));
       if (!observed.isFile()) throw new Error("not a file");
@@ -126,16 +135,53 @@ async function inspectPackedManifest(definition, artifact, scratch) {
   return Object.freeze({ manifest, packageRoot });
 }
 
+// Why a package cannot be released yet, or undefined when it can be packed.
+async function notReadyReason(definition) {
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(join(definition.directory, "package.json"), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return "missing package manifest";
+    throw error;
+  }
+  return manifest.private !== undefined && manifest.private !== false
+    ? "private package is not releasable" : undefined;
+}
+
+function assertInternalDependenciesPrecede(artifacts) {
+  const order = packageDefinitions.map((definition) => definition.name);
+  for (const { manifest } of Object.values(artifacts)) {
+    for (const section of INTERNAL_DEPENDENCY_SECTIONS) {
+      for (const dependency of Object.keys(manifest[section] ?? {})) {
+        if (order.indexOf(dependency) > order.indexOf(manifest.name)) {
+          throw new Error(`${manifest.name} depends on ${dependency}, which comes later in policy order`);
+        }
+      }
+    }
+  }
+}
+
 async function createSbom(definition, artifacts, scratch) {
   const consumer = join(scratch, `sbom-${definition.label}`);
   await mkdir(consumer);
-  const dependencyArtifacts = definition.label === "host"
-    ? [artifacts.core, artifacts.host] : [artifacts[definition.label]];
-  const dependencies = Object.fromEntries(dependencyArtifacts.map((item) => [
+  const own = artifacts[definition.label];
+  const declared = new Set(INTERNAL_DEPENDENCY_SECTIONS.flatMap((section) =>
+    Object.keys(own.manifest[section] ?? {})));
+  const internal = packageDefinitions
+    .filter((item) => item.name !== definition.name && declared.has(item.name))
+    .map((item) => {
+      if (artifacts[item.label] === undefined) {
+        throw new Error(`${definition.name} declares ${item.name}, which is not in the release set`);
+      }
+      return artifacts[item.label];
+    });
+  const dependencies = Object.fromEntries([...internal, own].map((item) => [
     item.manifest.name,
     `file:${item.artifact.path}`,
   ]));
-  if (definition.label === "host") dependencies["better-sqlite3"] = "12.6.2";
+  const nativeVersion = definition.label === "host"
+    ? own.manifest.optionalDependencies?.["better-sqlite3"] : undefined;
+  if (nativeVersion !== undefined) dependencies["better-sqlite3"] = nativeVersion;
   await writeFile(join(consumer, "package.json"), `${JSON.stringify({
     name: `dacs-${definition.label}-sbom-root`,
     version: artifacts.core.manifest.version,
@@ -165,6 +211,18 @@ run("npm", ["run", "build"]);
 run("npm", ["run", "host:build"]);
 run("npm", ["run", "generator:build"]);
 
+const notReady = [];
+const releasable = [];
+for (const definition of packageDefinitions) {
+  const reason = await notReadyReason(definition);
+  if (reason === undefined) releasable.push(definition);
+  else notReady.push(`${definition.name}: ${reason}`);
+}
+if (strict && notReady.length > 0) {
+  throw new Error(`strict release requires every package to be releasable: ${notReady.join("; ")}`);
+}
+for (const reason of notReady) process.stderr.write(`not ready: ${reason}\n`);
+
 const scratch = await mkdtemp(join(tmpdir(), "dacs-release-set-"));
 try {
   const firstDirectory = join(scratch, "pack-1");
@@ -172,7 +230,7 @@ try {
   await mkdir(firstDirectory);
   await mkdir(secondDirectory);
   const artifacts = {};
-  for (const definition of packageDefinitions) {
+  for (const definition of releasable) {
     const first = await packOnce(definition, firstDirectory);
     const second = await packOnce(definition, secondDirectory);
     if (first.sha256 !== second.sha256 || !first.bytes.equals(second.bytes)) {
@@ -185,21 +243,27 @@ try {
       manifest: inspected.manifest,
     });
   }
+  if (artifacts.core === undefined) throw new Error("the release set requires the core package");
   const versions = new Set(Object.values(artifacts).map((item) => item.manifest.version));
-  const metadata = new Set(Object.values(artifacts).map((item) =>
-    JSON.stringify(item.manifest.dacs)));
-  if (versions.size !== 1 || metadata.size !== 1 ||
-      artifacts.host.manifest.peerDependencies?.["@kynesyslabs/dacs"] !==
-        artifacts.core.manifest.version) {
+  const metadata = new Set(Object.values(artifacts)
+    .filter((item) => item.manifest.dacs !== undefined)
+    .map((item) => JSON.stringify(item.manifest.dacs)));
+  const hostPeerDiverges = artifacts.host !== undefined &&
+    artifacts.host.manifest.peerDependencies?.["@kynesyslabs/dacs"] !== artifacts.core.manifest.version;
+  if (versions.size !== 1 || metadata.size !== 1 || hostPeerDiverges) {
     throw new Error("release package versions, compatibility metadata or host peer diverge");
   }
+  if (strict) {
+    validateArtifactSet(Object.values(artifacts).map(({ manifest }) => ({ manifest, releasable: true })), true);
+    assertInternalDependenciesPrecede(artifacts);
+  }
   const sboms = {};
-  for (const definition of packageDefinitions) {
+  for (const definition of releasable) {
     sboms[definition.label] = await createSbom(definition, artifacts, scratch);
   }
 
   await mkdir(outputDirectory);
-  for (const definition of packageDefinitions) {
+  for (const definition of releasable) {
     const item = artifacts[definition.label];
     await cp(item.artifact.path, join(outputDirectory, basename(item.artifact.path)));
     await writeFile(join(outputDirectory, `${definition.label}.cdx.json`),
@@ -214,6 +278,8 @@ try {
   const lockfileBytes = await readFile(join(repoRoot, "package-lock.json"));
   const provenance = Object.freeze({
     schema: "dacs-release-set/v1",
+    admission: strict ? "strict-five" : "preparation",
+    order: releasable.map((definition) => definition.name),
     version: artifacts.core.manifest.version,
     compatibility: artifacts.core.manifest.dacs,
     source: Object.freeze({
@@ -226,7 +292,7 @@ try {
       lockfileSha256: sha256(lockfileBytes),
     }),
     toolchain: Object.freeze({ node: process.version, npm: run("npm", ["--version"]) }),
-    packages: Object.freeze(Object.fromEntries(packageDefinitions.map((definition) => {
+    packages: Object.freeze(Object.fromEntries(releasable.map((definition) => {
       const item = artifacts[definition.label];
       return [definition.name, Object.freeze({
         filename: basename(item.artifact.path),
@@ -242,7 +308,7 @@ try {
   await writeFile(join(outputDirectory, "release-provenance.json"),
     `${JSON.stringify(provenance, null, 2)}\n`);
   await writeFile(join(outputDirectory, "SHA256SUMS"),
-    packageDefinitions.map((definition) => {
+    releasable.map((definition) => {
       const item = artifacts[definition.label];
       return `${item.artifact.sha256}  ${basename(item.artifact.path)}`;
     }).sort().join("\n") + "\n");

@@ -6,11 +6,12 @@ import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cacheArchive, npmCi, packTarball, serveArchives } from "./npm-archive-fixtures.js";
 import { auditLock, auditReport } from "./npm-audit-fixtures.js";
+import { runBash, stubBin, workflowJob, workflowStepLines as stepLines, workflowStepScript as stepScript } from "./helpers/workflow.js";
 
 // Keep the classifier executable as plain Node ESM.
 const dispositionModulePath = "../../scripts/registry-container-disposition.mjs";
@@ -23,6 +24,8 @@ const { npmToolchain, runNpmNode } = await import(archiveModulePath);
 vi.setConfig({ testTimeout: 60_000 });
 const repoRoot = resolve(import.meta.dirname, "../..");
 const workflowPath = join(repoRoot, ".github/workflows/registry-container-acceptance.yml");
+const workflowStepLines = (stepName: string, path = workflowPath) => stepLines(stepName, path);
+const workflowStepScript = (stepName: string, path = workflowPath) => stepScript(stepName, path);
 
 // A runtime-image inventory that matches the lock's production closure.
 const completeInventory = { scanComplete: true, errors: [], missing: [] };
@@ -53,40 +56,11 @@ function baselineOnlySummary() {
   };
 }
 
-// The lines of one workflow step, from its `- name:` line to the next step.
-function workflowStepLines(stepName: string, path = workflowPath) {
-  const lines = readFileSync(path, "utf8").split("\n");
-  const start = lines.findIndex((line) => line.trim() === `- name: ${stepName}`);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const stepIndent = (lines[start] ?? "").indexOf("-");
-  let end = start + 1;
-  while (end < lines.length && ((lines[end] ?? "").trim() === "" || (lines[end] ?? "").search(/\S/) > stepIndent)) end += 1;
-  return { lines, start, end, stepIndent };
-}
-
 // A step's own `if:` condition; Actions' default is success().
 function workflowStepCondition(stepName: string): string | undefined {
   const { lines, start, end, stepIndent } = workflowStepLines(stepName);
   const keyIndent = " ".repeat(stepIndent + 2);
   return lines.slice(start + 1, end).find((line) => line.startsWith(`${keyIndent}if:`))?.slice(keyIndent.length + 3).trim();
-}
-
-// Extracts the literal `run: |` block of one workflow step without a YAML dependency.
-function workflowStepScript(stepName: string, path = workflowPath): string {
-  const { lines, start, stepIndent } = workflowStepLines(stepName, path);
-  let index = start + 1;
-  while (index < lines.length && !/^\s+run:/.test(lines[index] ?? "")) index += 1;
-  const runLine = lines[index] ?? "";
-  const inline = runLine.replace(/^\s+run:\s*/, "");
-  if (inline !== "|") return inline;
-  const body: string[] = [];
-  const blockIndent = runLine.indexOf("run:") + 2;
-  for (index += 1; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    if (line.trim() !== "" && line.search(/\S/) <= stepIndent) break;
-    body.push(line.slice(blockIndent));
-  }
-  return body.join("\n");
 }
 
 // The keys of a workflow's top-level `on:` or `jobs:` block, without a YAML
@@ -104,49 +78,11 @@ function workflowBlockKeys(path: string, block: "on" | "jobs") {
   return keys;
 }
 
-// One job's own keys: each four-space `key: value` line, with the trimmed
-// lines nested under it appended one per line.
-function workflowJob(path: string, jobId: string) {
-  const lines = readFileSync(path, "utf8").split("\n");
-  const start = lines.indexOf(`  ${jobId}:`);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const job: Record<string, string> = {};
-  let key = "";
-  for (const line of lines.slice(start + 1)) {
-    if (/^ {0,2}\S/.test(line)) break;
-    const own = /^ {4}([\w-]+):\s*(.*)$/.exec(line);
-    if (own) {
-      key = own[1] ?? "";
-      job[key] = own[2] ?? "";
-    } else if (key && line.trim() !== "") {
-      job[key] += `\n${line.trim()}`;
-    }
-  }
-  return job;
-}
-
 const scratch: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const directory of scratch.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
-
-// Every child runs without rc files and with an explicit PATH whose `node` is
-// this process's own binary, never a host node.
-function stubBin(directory: string, stubs: Record<string, string> = {}) {
-  const bin = join(directory, "bin");
-  mkdirSync(bin, { recursive: true });
-  const node = `'${process.execPath.replaceAll("'", "'\\''")}'`;
-  for (const [name, body] of Object.entries({ node: `exec ${node} "$@"`, ...stubs })) {
-    writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
-    chmodSync(join(bin, name), 0o700);
-  }
-  return [bin, dirname(process.execPath), process.env.PATH ?? ""].join(delimiter);
-}
-function runBash(args: string[], options: { cwd: string; env: Record<string, string> }) {
-  return spawnSync("bash", ["--norc", "--noprofile", ...args], { cwd: options.cwd, encoding: "utf8",
-    env: { HOME: options.cwd, ...options.env } });
-}
 
 // Runs a workflow step in a scratch checkout holding the real disposition
 // script. The npm stub writes `summary` (if given) where acceptance would, then
@@ -592,6 +528,7 @@ describe("registry/container workflow wiring", () => {
       "scripts/bounded-npm-http.cjs", "scripts/bounded-transport.sh",
       "scripts/acceptance-seal.mjs", "scripts/registry-container-registry.sh",
       "scripts/publish-release-set.mjs", "scripts/verify-release-set.mjs", "scripts/check-npm-advisories.mjs",
+      "scripts/release-checks.mjs", "scripts/release-policy.json", "scripts/release-identity.mjs",
       // The wrapper, installer and evidence assembly that acceptance executes,
       // and the closure their decisions are imported from.
       "scripts/acceptance-ci.sh", "scripts/acceptance-bootstrap.mjs", "scripts/acceptance-fixtures.mjs",

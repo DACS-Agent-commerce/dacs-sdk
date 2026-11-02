@@ -30,6 +30,9 @@
 /scripts/http-json-limits.mjs @randomblocker
 /scripts/publish-release-set.mjs @randomblocker
 /scripts/verify-release-set.mjs @randomblocker
+/scripts/release-checks.mjs @randomblocker
+/scripts/release-policy.json @randomblocker
+/scripts/release-identity.mjs @randomblocker
 /scripts/verify-package-lifecycle.mjs @randomblocker
 /scripts/verify-package.mjs @randomblocker
 /scripts/check-npm-advisories.mjs @randomblocker

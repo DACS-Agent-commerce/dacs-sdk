@@ -31,6 +31,16 @@ jobs:
       - name: Install build tools
         id: install
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Require a clean build tree
+        run: |
+          test ! -e dist
+          test ! -e packages/dacs-node/dist
+          test ! -e packages/create-dacs-agent/dist
+      - name: Build workspace packages
+        run: |
+          npm run build
+          npm run host:build
+          npm run generator:build
       - name: Test release gate regressions
         run: npm run release:test
       # Main/PR/merge-queue runs report unfinished packages as not ready.

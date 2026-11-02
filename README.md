@@ -1064,8 +1064,12 @@ the consumer's `node_modules`, performs a frozen rematerialization with an empty
 cache and an unreachable loopback registry, and reruns the substrate-free
 `canonical` and `artifacts` imports. CI uploads the
 core tarball and `provenance.json` for the exact checkout SHA. The release-set
-verifier additionally requires byte-identical core, Node host and generator
-tarballs at one version with identical compatibility metadata. It emits exact
+verifier additionally requires byte-identical tarballs at one version, with
+identical compatibility metadata, for every package of the five-package policy
+that is ready; a private or absent package is reported "not ready" and skipped.
+With `--strict`, which only the gated publish workflow passes, it refuses unless
+all five are releasable at the planned version and every package's internal
+dependencies come earlier in the policy order. It emits exact
 checksums, one CycloneDX SBOM per package and combined release provenance. These
 are qualified package candidates, not evidence that the packages were published
 to npm.
