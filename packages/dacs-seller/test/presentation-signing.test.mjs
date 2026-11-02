@@ -208,17 +208,30 @@ test('a malformed retained signature entry fails with a clear indeterminate erro
  const f=await sessionFixture(t);await f.run();await f.provider.state.update(JOB,row=>{row.presentation.bundle.presentation.signatures=[null];return row;});
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);
 });
-test('cancellation during reservation prevents a new signature',async t=>{
- const f=await sessionFixture(t),store=f.config.store;let open=true;f.job.open=()=>open;
- f.config.store={...store,update:async(key,change)=>{const row=await store.update(key,change);if(row?.presentation?.signing?.state==='pending')open=false;return row;}};
+test('cancellation during reservation signs nothing and restores prepared',async t=>{
+ const f=await sessionFixture(t),store=f.config.store;let open=true,cancelled=false;f.job.open=()=>open;
+ f.config.store={...store,update:async(key,change)=>{const row=await store.update(key,change);if(!cancelled&&row?.presentation?.signing?.state==='pending'){cancelled=true;open=false;}return row;}};
  await assert.rejects(f.run(),error=>error.code==='not-pending');assert.equal(f.controls.signs,0);
+ assert.equal((await f.row()).presentation.signing.state,'prepared');
+ open=true;await f.run();assert.equal(f.controls.signs,1);
+});
+test('a purchase cancelled before the reservation never writes a pending reservation',async t=>{
+ const f=await sessionFixture(t),store=f.config.store;let open=true,reserved=false;f.job.open=()=>open;
+ f.config.store={...store,update:async(key,change)=>{
+  const row=await store.update(key,change);
+  if(row?.presentation?.signing?.state==='pending')reserved=true;
+  if(row?.writeStarted&&row.presentation?.signing?.state==='prepared')open=false;
+  return row;
+ }};
+ await assert.rejects(f.run(),error=>error.code==='not-pending');
+ assert.equal(reserved,false);assert.equal((await f.row()).presentation.signing.state,'prepared');assert.equal(f.controls.signs,0);
 });
 test('expired unknown signatures keep their reservation without requesting another challenge',async t=>{
  const f=await sessionFixture(t);retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
  f.config.now=()=>NOW+60001;delete f.config.wallet.reconcilePresentationSignature;
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);assert.equal(f.issued.size,1);
 });
-test('a challenge expiring during the pending reservation is never signed or reserved again',async t=>{
+test('a challenge expiring during the pending reservation is never signed; its reservation is restored and replaced',async t=>{
  const f=await sessionFixture(t),store=f.config.store;let at=NOW;
  f.config.now=()=>at;
  f.config.store={...store,update:async(key,change)=>{
@@ -228,8 +241,66 @@ test('a challenge expiring during the pending reservation is never signed or res
  }};
  await assert.rejects(f.run(),error=>error.code==='seller_challenge_expired');
  const kept=(await f.row()).presentation;
- assert.equal(kept.signing.state,'pending');assert.equal(f.controls.signs,0);
- await assert.rejects(f.run(),indeterminate);
- assert.deepEqual((await f.row()).presentation,kept);
- assert.equal(f.controls.signs,0);assert.equal(f.issued.size,1);
+ assert.equal(kept.signing.state,'prepared');assert.equal(kept.signing.reservation,undefined);assert.equal(f.controls.signs,0);
+ await f.run();
+ assert.equal(f.issued.size,2);assert.equal(f.controls.signs,1);
+ assert.notEqual((await f.row()).presentation.challenge.sessionNonce,kept.challenge.sessionNonce);
+});
+
+const refusal=()=>Object.assign(new Error('TEST operator refused the signature'),{code:'user_rejected'});
+const signAfterRefusal=(f,refuse)=>{
+ let refused=false;
+ f.config.wallet.signBytes=bytes=>{f.controls.signs++;if(!refused){refused=true;refuse();}return seller.signBytes(bytes);};
+};
+test('a user_rejected refusal restores prepared and the retry signs once',async t=>{
+ const f=await sessionFixture(t);signAfterRefusal(f,()=>{throw refusal();});
+ await assert.rejects(f.run(),error=>error.code==='user_rejected');
+ const kept=(await f.row()).presentation;assert.equal(kept.signing.state,'prepared');assert.equal(kept.signing.reservation,undefined);
+ const bundle=await f.run();
+ assert.equal(f.controls.signs,2);assert.equal(bundle.presentation.signatures.length,1);assert.equal(f.issued.size,1);
+ assert.equal((await f.row()).presentation.signing.state,'complete');
+});
+for(const [name,error] of [['no code',()=>new Error('TEST signer disconnected')],['an internal_error code',()=>Object.assign(new Error('TEST wallet failed'),{code:'internal_error'})]])test(`a refusal with ${name} stays pending and never signs again`,async t=>{
+ const f=await sessionFixture(t);signAfterRefusal(f,()=>{throw error();});
+ await assert.rejects(f.run(),/TEST/);const kept=(await f.row()).presentation;assert.equal(kept.signing.state,'pending');
+ await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);assert.deepEqual((await f.row()).presentation,kept);
+});
+test('a refusal after the challenge expired gets a fresh challenge in place of the unsigned one',async t=>{
+ const f=await sessionFixture(t);signAfterRefusal(f,()=>{f.config.now=()=>NOW+60001;throw refusal();});
+ await assert.rejects(f.run(),error=>error.code==='user_rejected');const first=(await f.row()).presentation.challenge.sessionNonce;
+ const bundle=await f.run();
+ assert.equal(f.issued.size,2);assert.equal(f.controls.signs,2);assert.equal(bundle.presentation.signatures.length,1);
+ assert.notEqual((await f.row()).presentation.challenge.sessionNonce,first);
+});
+test('a refusal never overwrites a reservation that changed meanwhile',async t=>{
+ const f=await sessionFixture(t);
+ f.config.wallet.signBytes=async()=>{f.controls.signs++;await f.provider.state.update(JOB,row=>{row.presentation.signing.reservation='TEST newer reservation';return row;});throw refusal();};
+ await assert.rejects(f.run(),error=>error.code==='indeterminate');
+ const kept=(await f.row()).presentation.signing;assert.equal(kept.state,'pending');assert.equal(kept.reservation,'TEST newer reservation');
+ await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);
+});
+test('an authoritative unsigned receipt restores prepared and the retry signs once',async t=>{
+ const f=await sessionFixture(t);retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
+ const held=(await f.row()).presentation.signing;
+ f.config.wallet.signBytes=bytes=>{f.controls.signs++;return seller.signBytes(bytes);};
+ f.config.wallet.reconcilePresentationSignature=async request=>reply({status:'unsigned',...request});
+ const bundle=await f.run();
+ const done=(await f.row()).presentation.signing;
+ assert.equal(f.controls.signs,2);assert.equal(done.state,'complete');assert.notEqual(done.reservation,held.reservation);
+ assert.equal(bundle.presentation.signatures.length,1);assert.equal(f.issued.size,1);
+});
+test('an authoritative unsigned receipt for an expired challenge gets a fresh challenge',async t=>{
+ const f=await sessionFixture(t);retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
+ const first=(await f.row()).presentation.challenge.sessionNonce;
+ f.config.wallet.signBytes=bytes=>{f.controls.signs++;return seller.signBytes(bytes);};
+ f.config.wallet.reconcilePresentationSignature=async request=>reply({status:'unsigned',...request});
+ f.config.now=()=>NOW+60001;
+ await f.run();
+ assert.equal(f.issued.size,2);assert.equal(f.controls.signs,2);
+ assert.notEqual((await f.row()).presentation.challenge.sessionNonce,first);
+});
+for(const [name,answer] of [['without its identity',()=>({status:'unsigned'})],['for another reservation',request=>({status:'unsigned',...request,reservation:'TEST other reservation'})]])test(`an unsigned receipt ${name} stays indeterminate`,async t=>{
+ const f=await sessionFixture(t);retainSignerOutcome(f,{reject:true});await assert.rejects(f.run(),/reply lost/);
+ f.config.wallet.reconcilePresentationSignature=async request=>reply(answer(request));
+ await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);assert.equal((await f.row()).presentation.signing.state,'pending');
 });

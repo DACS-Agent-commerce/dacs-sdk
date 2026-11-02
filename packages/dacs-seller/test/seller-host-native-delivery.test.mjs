@@ -241,8 +241,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // `beforeDeliveryReconcile` runs before the delivery capability reconciles.
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
-  const effects = { deliverySubmit: [], published: [], publishCalls: [], signCreate: [], signed: [], broadcast: [], componentSigns: [], deliverySignCreate: [], deliverySigned: [], deliveryBroadcast: [] };
-  const faults = { deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, evidenceReadAbsence: null };
+  const effects = { deliverySubmit: [], published: [], publishCalls: [], retainedReads: [], retainedResends: [], signCreate: [], signed: [], broadcast: [], componentSigns: [], deliverySignCreate: [], deliverySigned: [], deliveryBroadcast: [] };
+  const faults = { deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, evidenceReadAbsence: null, evidencePending: false };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
@@ -321,8 +321,14 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       }
       return readBack(logicalAddress, artifactKind);
     },
-    readRetained: async ({ logicalAddress, artifactKind, proofOfNoIntent = false }) => {
+    readRetained: async ({ logicalAddress, artifactKind, proofOfNoIntent = false }, options) => {
+      effects.retainedReads.push({ artifactKind, logicalAddress, resend: options?.resend });
       if (faults.readRetainedThrowKind === artifactKind) { faults.readRetainedThrowKind = null; throw null; }
+      // A retained evidence CREATE the node accepted but cannot show yet: like the shipped capability, a read broadcasts it again unless the read is passive.
+      if (artifactKind === 'SettlementEvidence' && faults.evidencePending && signedCreates.has(logicalAddress)) {
+        if (options?.resend !== false) effects.retainedResends.push({ artifactKind, logicalAddress });
+        return { status: 'indeterminate', reason: 'TEST retained CREATE is pending' };
+      }
       if (artifactKind === 'SettlementEvidence' && faults.evidenceReadAbsence) {
         const absence = faults.evidenceReadAbsence; faults.evidenceReadAbsence = null;
         return absence === 'unbranded' ? { ...provenUnsignedAbsence('TEST serialized proof is not authoritative') } : { status: 'absent', reason: 'TEST lagging name index' };
@@ -2244,6 +2250,25 @@ test('read-only commitment reconciliation cannot start provably unsent work', as
  assert.equal(w.effects.published.length, 1);
 });
 
+test('commitment transport reconciliation reads an uncertain retained commitment back without a resend', async t => {
+ const w = await world(t), p = await w.purchase({ commit: false });
+ w.faults.artifactPublish.push('FinalityCommitmentRecord:land-throw');
+ await assert.rejects(p.client().commit(p.jobId));
+ const agent = await w.agentFor();
+ try {
+  const body = { jobId: p.jobId }, text = JSON.stringify(body);
+  const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
+   resolveJob: () => ({ listingPin: seller.listingPin(w.listing), agreementHash: p.agreementHash }), now: w.capabilities().now }).request('/dacs/v1/commitments', body, text);
+  const readsBefore = w.effects.retainedReads.length;
+  w.faults.artifactRead.push('unknown');
+  await agent.reconcileTransport({ request: payload, body, rawBody: Buffer.from(text) });
+  const reads = w.effects.retainedReads.slice(readsBefore).filter(read => read.artifactKind === 'FinalityCommitmentRecord');
+  assert.ok(reads.length > 0, 'the reconciliation reads the commitment back');
+  assert.deepEqual(reads.filter(read => read.resend !== false), []);
+  assert.equal(w.effects.published.length, 1);
+ } finally { agent.close(); }
+});
+
 // The public host forwards issuance to the same verifier-owned generator.
 test('the host refuses caller-chosen challenges and accepts a buyer presentation of its own challenge', async (t) => {
   const w = await world(t), jobId = '01J8N4YV7YVYQ4DB7M8T'+String(++jobSequence).padStart(6,'0');
@@ -2595,6 +2620,46 @@ test('resume with publication off holds while the evidence readback is unknown, 
   assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(w.createsAt(address), 1);
   assert.equal(evidencePublishes(w, p), 1);
+});
+
+// The anchor rebroadcasts a retained CREATE it cannot read back unless the read is passive.
+const evidenceResends = (w, p) => w.effects.retainedResends.filter((read) => read.logicalAddress === evidenceAddress(p)).length;
+const evidencePendingAfterLostAnswer = async (w, p) => {
+  w.faults.artifactPublish.push('SettlementEvidence:land-throw');
+  await p.claim(p.pay());
+  w.faults.evidencePending = true;
+};
+
+test('a pending evidence CREATE is not broadcast again when the host restarts with publication off, and the claim stays held', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), address = evidenceAddress(p);
+  await evidencePendingAfterLostAnswer(w, p);
+  const resendsBefore = evidenceResends(w, p);
+  const off = await resumed(w, p, { deliveryEvidenceEnabled: false });
+  assert.equal(off.delivery?.evidencePublication, 'held-readback-only', shown(off));
+  assert.notEqual(off.delivery?.status, 'delivered');
+  assert.equal(evidenceResends(w, p), resendsBefore, 'publication off reads the evidence back and sends nothing');
+  assert.equal(w.createsAt(address), 1);
+  assert.equal(evidencePublishes(w, p), 1);
+});
+
+test('a pending evidence CREATE is still read back with the one authorized resend while publication is on and the claim holds its lock', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase();
+  await evidencePendingAfterLostAnswer(w, p);
+  const on = await resumed(w, p, { deliveryEvidenceEnabled: true });
+  assert.equal(on.delivery?.evidencePublication, 'held-readback-only', shown(on));
+  assert.equal(evidenceResends(w, p), 1);
+});
+
+test('a paid claim reads the commitment back passively: the readback-only commit never asks for a resend', async (t) => {
+  const w = await world(t), p = await w.purchase();
+  const readsBeforeClaim = w.effects.retainedReads.length;
+  const claim = await p.claim(p.pay());
+  assert.equal(claim.delivery?.status, 'delivery-ready', shown(claim));
+  const commitmentReads = w.effects.retainedReads.slice(readsBeforeClaim).filter((read) => read.artifactKind === 'FinalityCommitmentRecord');
+  assert.ok(commitmentReads.length > 0, 'the claim reads the commitment back');
+  assert.deepEqual(commitmentReads.filter((read) => read.resend !== false), []);
 });
 
 test('resume with publication never on keeps a delivery-ready order retained and sends no evidence', async (t) => {

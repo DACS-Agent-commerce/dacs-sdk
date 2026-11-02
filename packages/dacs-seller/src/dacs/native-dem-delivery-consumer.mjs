@@ -35,6 +35,12 @@ function operations(value) {
   return capabilities.get(configured);
 }
 
+/**
+ * Options for a retained read whose caller holds no authority to write: the
+ * capability reads the CREATE back and never broadcasts it again.
+ */
+export const PASSIVE_RETAINED_READ = Object.freeze({ resend: false });
+
 const provenUnsigned = new WeakSet();
 /** Mark proven unsigned shutdown absence. Only this object's identity carries proof. */
 export function provenUnsignedAbsence(reason) {

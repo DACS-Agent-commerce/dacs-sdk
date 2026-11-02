@@ -18,7 +18,7 @@ function world(t, options = {}) {
   let time = 1800000000000, store;
   const config = { path, now: () => time, maxRecords: 1,
     contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId], ...options };
-  const reopen = () => { store?.close(); store = createSellerTransportStore(config); return store; };
+  const reopen = (options) => { store?.close(); store = createSellerTransportStore({ ...config, ...options }); return store; };
   reopen(); t.after(() => store.close());
   const issue = (jobId) => store.issueContextChallenge({ jobId, buyer }, { jobId, buyer }, { maxPerBuyer: 1, maxGlobal: 1, admit: () => time });
   const count = table => { const db = new DatabaseSync(path, { readonly: true }); try { return db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n; } finally { db.close(); } };
@@ -592,6 +592,59 @@ test('uncertain context resumes once with a new owner, fences stale completion, 
   const text = '{ "TEST": "resumed" }'; w.store.finish(resumed, 200, text); w.reopen();
   assert.deepEqual(w.store.reserve(p, body), { disposition: 'cached', status: 200, text });
   assert.deepEqual(w.store.contextAnswer(p.jobId), { status: 200, text });
+});
+
+// The host holds the seller state lock, so a row an earlier process left pending has no owner left.
+const HOST_OPEN = { markPendingContextEffectsUncertain: true };
+const effectStates = (w) => { const db = new DatabaseSync(w.path, { readonly: true }); try { return db.prepare('SELECT effect, state FROM peer_effects ORDER BY effect').all(); } finally { db.close(); } };
+
+test('a context step left pending by a dead owner is uncertain after the host opens the store and resume takes it under a new owner', t => {
+  const w = world(t, { maxRecords: 20 }), p = context(w, 0), body = contextBody(0);
+  const dead = w.store.reserve(p, body, { admit: () => w.now() });
+  w.reopen(HOST_OPEN);
+  const again = w.store.reserve(p, body);
+  assert.equal(again.disposition, 'uncertain');
+  const resumed = w.store.resume(again, p);
+  assert.equal(resumed.disposition, 'perform'); assert.equal(resumed.resumed, true); assert.notEqual(resumed.owner, dead.owner);
+  assert.throws(() => w.store.finish(dead, 200, '{}'), { code: 'peer_store_conflict' });
+  const text = '{ "TEST": "resumed" }'; w.store.finish(resumed, 200, text);
+  assert.deepEqual(w.store.reserve(p, body), { disposition: 'cached', status: 200, text });
+});
+
+test('a context step reserved after the host opened the store stays pending and cannot be resumed', t => {
+  const w = world(t, { maxRecords: 20 }); w.reopen(HOST_OPEN);
+  const p = context(w, 1), body = contextBody(1), live = w.store.reserve(p, body, { admit: () => w.now() });
+  const joined = w.store.reserve({ ...p, nonce: 'join' }, body);
+  assert.equal(joined.disposition, 'uncertain');
+  assert.throws(() => w.store.resume(joined, p), { code: 'peer_reconciliation_conflict' });
+  assert.deepEqual(effectStates(w).map(row => row.state), ['pending']);
+  w.store.finish(live, 200, '{}');
+  assert.deepEqual(effectStates(w).map(row => row.state), ['complete']);
+});
+
+test('without the host option a reopen leaves a pending context step pending and resume refuses it', t => {
+  const w = world(t, { maxRecords: 20 }), p = context(w, 0), body = contextBody(0);
+  w.store.reserve(p, body, { admit: () => w.now() }); w.reopen();
+  assert.throws(() => w.store.resume(w.store.reserve(p, body), p), { code: 'peer_reconciliation_conflict' });
+  assert.deepEqual(effectStates(w).map(row => row.state), ['pending']);
+});
+
+test('opening for the host marks only pending context effects: proposals and finished context steps keep their state', t => {
+  const w = world(t, { maxRecords: 20 });
+  w.store.reserve(context(w, 0), contextBody(0), { admit: () => w.now() });
+  w.store.finish(w.store.reserve(context(w, 1), contextBody(1), { admit: () => w.now() }), 200, '{}');
+  w.store.reserve(request(w, 2), {});
+  w.reopen(HOST_OPEN);
+  const states = Object.fromEntries(effectStates(w).map(row => [row.effect, row.state]));
+  assert.deepEqual(Object.values(states).sort(), ['complete', 'pending', 'uncertain']);
+  assert.equal(states[w.store.reserve(context(w, 0), contextBody(0)).effectKey], 'uncertain');
+  assert.equal(states[w.store.reserve(request(w, 2), {}).effectKey], 'pending');
+});
+
+test('a marked context step whose seller session has ended is refused by resume', t => {
+  const w = world(t, { maxRecords: 20 }), p = context(w, 0), body = contextBody(0);
+  w.store.reserve(p, body, { admit: () => w.now() }); w.reopen(HOST_OPEN); w.terminal(p.jobId);
+  assert.throws(() => w.store.resume(w.store.reserve(p, body), p), { code: 'context_session_terminal' });
 });
 
 

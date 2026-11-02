@@ -83,6 +83,8 @@ const PROVEN_LIVE = new Set(['this-process', 'live']);
 // word that every process that could hold it has stopped. A live holder, and a
 // holder on this boot whose lease can't be checked, are refused.
 const RELEASABLE = new Set(['exited', 'other-boot', 'no-identity', 'legacy-format', 'unrecognised']);
+// The refusal code for a row in `state`, or null when it may be released.
+const releaseRefusal = (state) => PROVEN_LIVE.has(state) ? 'seller_state_lock_live' : RELEASABLE.has(state) ? null : 'seller_state_lock_unproven';
 // A busy answer on a row nothing proves alive or gone is reported once per row
 // in this interval, so a held job is never silent.
 const NOTICE_INTERVAL_MS = 10 * 60 * 1000;
@@ -459,12 +461,24 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         return transaction(() => {
           const row = get('SELECT * FROM seller_locks WHERE job=? AND owner=?', job, owner);
           if (!row) fail('seller_state_lock_mismatch');
-          const state = holderState(dir, row, lockHolder(row));
-          if (PROVEN_LIVE.has(state)) fail('seller_state_lock_live');
-          if (!RELEASABLE.has(state)) fail('seller_state_lock_unproven');
+          const refusal = releaseRefusal(holderState(dir, row, lockHolder(row)));
+          if (refusal) fail(refusal);
           run('DELETE FROM seller_locks WHERE job=? AND owner=?', job, owner);
           return { released: true, recordsChanged: 0 };
         });
+      },
+      // For a host that holds the seller state lock, so no other operator runs
+      // on this directory: releases every row releaseAbandonedLock would
+      // release, in one transaction, and returns them as [{ job, owner,
+      // reason }]. A live holder (this process included) and a holder on this
+      // boot whose lease can't be checked stay. Records are untouched.
+      releaseStaleLocks() {
+        return transaction(() => db.prepare('SELECT * FROM seller_locks ORDER BY job').all().flatMap((row) => {
+          const reason = holderState(dir, row, lockHolder(row));
+          if (releaseRefusal(reason)) return [];
+          run('DELETE FROM seller_locks WHERE job=? AND owner=?', row.job, row.owner);
+          return [{ job: row.job, owner: row.owner, reason }];
+        }));
       },
       reserveSignatureCommitment(buyer, jobId) {
         const id = buyerCommitment(buyer);

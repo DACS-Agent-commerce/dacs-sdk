@@ -1,5 +1,6 @@
 import { canonicalize, contentHash, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { MAX_STORAGE_ARTIFACT_BYTES } from '../dacs/wallet-transactions.mjs';
+import { isReportableTitle } from '../dacs/listing.mjs';
 
 const REPORT_TEXT_MAX_BYTES = 16_384;
 const reportTextValid = text => typeof text === 'string' && text.length > 0 && text.length <= REPORT_TEXT_MAX_BYTES &&
@@ -60,7 +61,7 @@ export function isDevnetPurchasedReport(value,{jobId,agreementHash,producer}={})
     && Object.keys(value.listing).sort().join(',')==='contentHash,listingId,version'
     && typeof value.listing.listingId==='string' && /^[A-Za-z0-9._~-]{1,128}$/.test(value.listing.listingId) && Number.isSafeInteger(value.listing.version) && value.listing.version>0 && /^[0-9a-f]{64}$/.test(value.listing.contentHash ?? '')
     && typeof value.settlementId==='string' && value.settlementId.length>0
-    && typeof value.title==='string' && value.title.length>0 && value.title.length<=200
+    && isReportableTitle(value.title)
     && /^did:demos:agent:[0-9a-f]{64}$/.test(value.producer ?? '')
     && value.content?.mediaType==='text/plain; charset=utf-8' && Object.keys(value.content).sort().join(',')==='mediaType,text'
     && reportTextValid(value.content.text) && reportFitsOneCreate(value)

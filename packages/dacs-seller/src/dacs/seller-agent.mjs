@@ -31,6 +31,7 @@ import { randomBytes } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { MAX_STORAGE_ARTIFACT_BYTES, assertStorageJsonDepth } from './wallet-transactions.mjs';
 import { join } from 'node:path';
+import { bindWhenNoSigningGate } from './signing-gate-bind.mjs';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
@@ -40,7 +41,7 @@ import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymen
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
-import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
+import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence, PASSIVE_RETAINED_READ } from './native-dem-delivery-consumer.mjs';
 import { deliverableJournalFor } from './deliverable-wallet-journal.mjs';
 import { agreementInput, agreementTerms, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
 
@@ -373,7 +374,6 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // A Deliverable past its final signing check holds its settlement until its submission returns: another
   // job's claim binds that settlement only afterwards, so credit cannot be contested between check and broadcast.
   const signingGates = new Map(); // settlement id -> promise settled when that submission returns
-  const afterSigning = async (id) => { while (signingGates.has(id)) await signingGates.get(id); };
   // The SDK calls claim only after authenticating the complete payment tuple.
   // Keep that tuple before the primitive's provisional election, including a loser.
   // The delivery runner inspects and consumes the permit before it prepares or sends the Deliverable.
@@ -381,7 +381,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // never a thrown store failure (which the runner would hold as an ambiguous, retryable read).
   const permitCredit = (permit) => !['available', 'already-consumed'].includes(permit?.status) || !permit.claim || hasSettlementCredit(permit.claim.settlementId, permit.claim.jobId);
   const receiptStore = {
-    claim: async candidate => { await afterSigning(candidate.settlementId); bindSettlement(candidate.settlementId, candidate.jobId, structuredClone(candidate)); return rawReceiptStore.claim(candidate); },
+    claim: async candidate => { await bindWhenNoSigningGate(signingGates, candidate.settlementId, () => bindSettlement(candidate.settlementId, candidate.jobId, structuredClone(candidate))); return rawReceiptStore.claim(candidate); },
     inspectPermit: async permitId => { const permit = await rawReceiptStore.inspectPermit(permitId); return permitCredit(permit) ? permit : { status: 'invalid' }; },
     consumePermit: async (permitId, handoff) => permitCredit(await rawReceiptStore.inspectPermit(permitId)) ? rawReceiptStore.consumePermit(permitId, handoff) : { status: 'invalid' },
   };
@@ -1063,7 +1063,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         },
         nativeArtifactAnchor ? {
           resolve: async (logicalAddress) => {
-            const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true});
+            const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true},{resend:!readbackOnly});
             if(read.status==='absent') {
               commitmentProvenUnsigned = isProvenUnsignedAbsence(read);
               if (session.commitmentPublishAsked && !commitmentProvenUnsigned) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
@@ -1224,7 +1224,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const provenUnsignedCommitment = async (jobId) => {
     if (!nativeArtifactAnchor) return false;
     try {
-      const read = await nativeArtifactAnchor.readRetained({ logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true });
+      const read = await nativeArtifactAnchor.readRetained({ logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true }, PASSIVE_RETAINED_READ);
       return read?.status === 'absent' && isProvenUnsignedAbsence(read);
     } catch { return false; }
   };
@@ -1847,7 +1847,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
       }else{
         if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash)return held('retained delivery evidence work differs from the verified Deliverable');
-        read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true});
+        // Only a seller that publishes delivery evidence may send its retained CREATE again.
+        read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true},{resend:deliveryEvidenceEnabled});
         if(read?.status==='absent'&&deliveryEvidenceEnabled&&isProvenUnsignedAbsence(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
       }
     }catch(error){return held(String(error?.message??error).slice(0,240));}
@@ -1894,8 +1895,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (intake.disposition !== 'verified' || !['claim', 'already-claimed'].includes(intake.fulfilment)) return { answer: { status: intake.disposition === 'indeterminate' ? 'indeterminate' : 'rejected', reason: intake.reason } };
       paymentVerified = true;
       step = 'settlement-binding';
-      await afterSigning(intake.settlementId);
-      if (!bindSettlement(intake.settlementId, jobId)) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
+      if (!await bindWhenNoSigningGate(signingGates, intake.settlementId, () => bindSettlement(intake.settlementId, jobId))) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
       step = 'evidence-signing';
       const evidence = await signEvidence(structuredClone(intake.evidenceInput));
       if (contentHash(evidence) !== intake.evidenceHash) throw new SellerAgentError('evidence_hash_mismatch', 'SDK signed evidence hash differs', 500);
@@ -2155,6 +2155,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // releases its proposal effect. Synchronous and read only.
     retainsProposalWork: (jobId) => proposalWork(jobId),
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
+    // For the host that holds the seller state lock: releases the job lock rows
+    // of holders that are gone and returns [{ job, owner, reason }]; undefined
+    // without durable state. See releaseStaleLocks in seller-durable-state.mjs.
+    releaseStaleLocks: durable ? () => durable.releaseStaleLocks() : undefined,
     reconcile: durable ? async({ jobId }) => {
       const session=durable.loadSession(jobId);
       // An unpaid outside buyer may only read back an issued unknown CREATE.

@@ -94,6 +94,22 @@ for(const [method,read] of Object.entries(retainedReads))test(`an ambiguous sign
  assert.equal(w.captured.length,1);assert.equal(w.resends.length,1);
  assert.deepEqual(w.resends[0],(await w.sourceJournal.get(`source/${JOBS[0]}`)).signedTransaction);
 });
+for(const method of ['read','readRetained'])test(`${method} with resend:false on an ambiguous signed CREATE sends nothing and writes no recovery row`,async()=>{
+ const w=await signedFailureWorld('internal_error'),hash=(await w.sourceJournal.get(`source/${JOBS[0]}`)).hash;
+ for(let i=0;i<3;i++)assert.equal((await w.open()[method](w.input,{resend:false})).status,'indeterminate');
+ assert.equal(w.resends.length,0);assert.equal(w.captured.length,1);assert.equal(await w.journal.get(`demo/recovery/${hash}`),null);
+});
+for(const method of ['read','readRetained'])test(`a passive ${method} does not use up the one authorized resend`,async()=>{
+ const w=await signedFailureWorld('internal_error');
+ await w.open()[method](w.input,{resend:false});assert.equal(w.resends.length,0);
+ await w.open()[method](w.input);await w.open()[method](w.input);
+ assert.deepEqual(w.resends,[(await w.sourceJournal.get(`source/${JOBS[0]}`)).signedTransaction]);
+});
+for(const method of ['read','readRetained'])for(const resend of ['false',0,null])test(`${method} refuses a non-boolean resend option (${JSON.stringify(resend)}) and sends nothing`,async()=>{
+ const w=await signedFailureWorld('internal_error');
+ const result=await w.open()[method](w.input,{resend});
+ assert.equal(result.status,'rejected');assert.match(result.reason,/resend option/);assert.equal(w.resends.length,0);
+});
 for(const method of ['read','readRetained'])test(`${method} waits for an in-flight publisher's definitive outcome`,async()=>{
  const w=await anchorFixture({signRpc:async()=> 'rpc-auth'});
  let requested,finish,bindingCalls=0,resends=0;
