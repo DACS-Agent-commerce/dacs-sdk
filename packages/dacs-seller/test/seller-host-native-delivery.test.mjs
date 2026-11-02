@@ -21,7 +21,7 @@ import {testWallet,NOW}from './helpers/protocol-fixture.mjs';
 import * as core from '@kynesyslabs/dacs';
 import {sellerApi as seller}from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
-import { createNativeDemDeliveryCapability, provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
+import { createNativeDemDeliveryCapability, deadRefusedCreate, isDeadRefusedCreate, provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE_CHAIN_IDENTITY } from '../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
@@ -200,7 +200,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // the seller signer's next SettlementEvidence signature; `faults.deliverySubmit`: 'fail' refuses
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
-// signs and keeps the CREATE, then fails before it is broadcast.
+// signs and keeps the CREATE, then fails before it is broadcast; 'refuse-broadcast' signs and keeps it and the node refuses it (see refusedCreates).
 async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
   let startHost = seller.startSellerHost;
   if (agentTransform) {
@@ -291,7 +291,26 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       signedProjection: clone(signed), demosEvidence: read.demosEvidence };
   };
   const recordFinality=(logicalAddress,artifact,artifactKind)=>{if(artifactKind==='FinalityCommitmentRecord'){const signedProjection=signedCreates.get(logicalAddress),included=node.inclusion(signedProjection.hash);finalized.record({logicalAddress,artifact,signedProjection,blockRef:{id:core.sha256Hex('TEST-finalized-block:'+included.blockNumber),height:String(included.blockNumber),timestamp:included.includedAt}});}};
+  // A CREATE the node refused (`faults.deliverySubmit` 'refuse-broadcast', `faults.artifactPublish` 'SettlementEvidence:refuse') is signed
+  // and never applied. Like the shipped anchor, a read of it answers `rejected`, marked dead once the seller's account nonce has passed
+  // it (another write took it), and a new write replaces it only then.
+  const refusedCreates = new Map();
+  const refusedRead = (logicalAddress) => {
+    const refused = refusedCreates.get(logicalAddress);
+    if (!refused || signedCreates.get(logicalAddress) !== refused) return null;
+    return node.accountNonce(sellerKey.address) >= refused.content.nonce ? deadRefusedCreate('TEST the refused CREATE can no longer be included')
+      : { status: 'rejected', reason: 'broadcast_rejected: TEST the node refused the broadcast' };
+  };
+  const refuseCreate = (logicalAddress, artifact, artifactKind, deliveryBinding) => {
+    const signed = node.create(sellerKey, { logicalAddress, artifact, artifactKind, deliveryBinding }, { land: false });
+    signedCreates.set(logicalAddress, signed); refusedCreates.set(logicalAddress, signed); written.set(logicalAddress, clone(artifact));
+  };
   const writeOnce = (logicalAddress, artifact, artifactKind, deliveryBinding) => {
+    const refused = refusedRead(logicalAddress);
+    if (refused) {
+      assert.ok(isDeadRefusedCreate(refused), 'a refused CREATE is replaced only once it is dead');
+      signedCreates.delete(logicalAddress);
+    }
     if (!signedCreates.has(logicalAddress)) {
       signedCreates.set(logicalAddress, node.create(sellerKey, { logicalAddress, artifact, artifactKind, deliveryBinding }));
       written.set(logicalAddress, clone(artifact));
@@ -314,7 +333,13 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       }
       if (faults.artifactPublish[0] === artifactKind + ':land-throw') { faults.artifactPublish.shift(); effects.published.push(artifactKind); writeOnce(logicalAddress, artifact, artifactKind); throw new Error('TEST publication response lost after CREATE'); }
       if (faults.artifactPublish[0] === artifactKind) { faults.artifactPublish.shift(); throw new Error('TEST publisher unavailable before intent'); }
-      if (!signedCreates.has(logicalAddress)) {
+      if (faults.artifactPublish[0] === artifactKind + ':refuse') {
+        faults.artifactPublish.shift();
+        if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
+        effects.published.push(artifactKind); refuseCreate(logicalAddress, artifact, artifactKind);
+        return { status: 'indeterminate', reason: 'broadcast_rejected: TEST the node refused the broadcast' };
+      }
+      if (!signedCreates.has(logicalAddress) || refusedRead(logicalAddress)) {
         if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
         effects.published.push(artifactKind);
         writeOnce(logicalAddress, artifact, artifactKind);
@@ -323,6 +348,12 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     },
     readRetained: async ({ logicalAddress, artifactKind, proofOfNoIntent = false }, options) => {
       effects.retainedReads.push({ artifactKind, logicalAddress, resend: options?.resend });
+      const refused = refusedRead(logicalAddress);
+      if (refused) {
+        // As for a pending CREATE: `beforeEvidenceResendCheck` runs between a dead refused CREATE's read and the new write it leads to.
+        if (isDeadRefusedCreate(refused) && faults.beforeEvidenceResendCheck) { const hook = faults.beforeEvidenceResendCheck; faults.beforeEvidenceResendCheck = null; await hook(); }
+        return refused;
+      }
       if (faults.readRetainedThrowKind === artifactKind) { faults.readRetainedThrowKind = null; throw null; }
       // A retained evidence CREATE the node accepted but cannot show yet: like the shipped capability, a read broadcasts it again only when it asks for a resend and its own check answers true.
       if (artifactKind === 'SettlementEvidence' && faults.evidencePending && signedCreates.has(logicalAddress)) {
@@ -459,6 +490,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       const fault = faults.deliverySubmit.shift();
       if (fault === 'fail') throw new Error('TEST delivery wallet refused before signing');
       if (fault === 'refuse') return { status: 'rejected', reason: 'TEST capability refused before signing' };
+      if (fault === 'refuse-broadcast') { refuseCreate(input.logicalAddress, input.report, 'Deliverable', input.deliveryBinding); return { status: 'indeterminate', reason: 'broadcast_rejected: TEST the node refused the broadcast' }; }
       // Signed and kept, then the answer is lost before anything is broadcast.
       if (fault === 'sign-then-lose') { signedCreates.set(input.logicalAddress, node.create(sellerKey, { logicalAddress: input.logicalAddress, artifact: input.report, artifactKind: 'Deliverable', deliveryBinding: input.deliveryBinding }, { land: false })); throw new Error('TEST delivery wallet failed after signing'); }
       writeOnce(input.logicalAddress, input.report, 'Deliverable', input.deliveryBinding);
@@ -472,6 +504,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       : guarded ? { submitAuthorized: submitDelivery } : { submit: submitDelivery }),
     reconcile: async (input) => {
       await faults.beforeDeliveryReconcile();
+      const refused = refusedRead(input.logicalAddress);
+      if (refused) return { status: isDeadRefusedCreate(refused) ? 'absent' : 'indeterminate', reason: refused.reason };
       if (Array.isArray(faults.deliveryReconcile)) {
         const fault = faults.deliveryReconcile.shift();
         if (fault === 'throw') throw new Error('TEST delivery reconcile unavailable');
@@ -488,6 +522,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     // `faults.deliveryResendable`: a signed CREATE that has not landed is, like the shipped capability's, sent again by a read
     // only when the read asks for a resend and its own check answers true (`faults.beforeDeliveryResendCheck` runs before the check).
     read: async (input, options) => {
+      const refused = refusedRead(input.logicalAddress);
+      if (refused) return refused;
       if (Array.isArray(faults.deliveryRead)) {
         const fault = faults.deliveryRead.shift();
         if (fault === 'throw') throw new Error('TEST delivery node unreachable');
@@ -1507,6 +1543,57 @@ test('a kept Deliverable CREATE is not sent again once the seller-state check, a
   assert.deepEqual(w.effects.deliveryResends, [], 'a failed check sends nothing');
   assert.equal(w.createsAt(deliverable), 0);
   assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+});
+
+// A Deliverable CREATE the node refused is not on the chain, and once another write of the seller has taken its nonce it never will be:
+// the paid order signs one replacement through the same seller-state check as the first send, instead of reading `rejected` for good.
+for (const restart of [false, true]) {
+  test(`a refused Deliverable CREATE whose nonce another write took is signed again once and delivered${restart ? ', across a restart of the host' : ''}`, async (t) => {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('refuse-broadcast');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+    assert.notEqual((await p.claim(tx)).delivery?.status, 'delivery-ready', 'held while its nonce is free');
+    assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
+    w.overtakeWallet();
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+    assert.deepEqual(w.effects.deliverySubmit, [deliverable, deliverable], 'one new signature, for the replacement');
+    assert.equal(w.createsAt(deliverable), 1);
+    await w.restart();
+    assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+    assert.equal(w.effects.deliverySubmit.length, 2, 'a delivered order signs nothing on a later restart');
+    assert.equal(w.createsAt(deliverable), 1);
+  });
+}
+
+test('a refused Deliverable CREATE is not signed again once the seller-state check, asked right before the new signature, fails', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), other = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('refuse-broadcast');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  w.overtakeWallet();
+  // Another purchase claims this payment between the restart's read and the new signature.
+  let asked = false;
+  w.faults.beforeDeliverySubmit = async () => { asked = true; assert.deepEqual(await other.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' }); };
+  const held = await p.claim(tx);
+  assert.ok(asked, 'the check was asked');
+  assert.notEqual(held.delivery?.status, 'delivery-ready', shown(held));
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'a failed check signs nothing');
+  assert.equal(w.createsAt(deliverable), 0);
+});
+
+test('a refused Deliverable CREATE whose replacement was refused too is held: nothing is signed a third time', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('refuse-broadcast', 'refuse-broadcast');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  w.overtakeWallet();
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  for (let i = 0; i < 2; i++) assert.notEqual((await p.claim(tx)).delivery?.status, 'delivery-ready');
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable, deliverable]);
+  assert.equal(w.createsAt(deliverable), 0);
 });
 
 // CORE §5.1 (and the retry rule of DACS-4 PC-7(b) applied to the Deliverable):
@@ -2716,6 +2803,47 @@ test('a pending evidence CREATE is not broadcast again once the seller-state che
   assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
   assert.match(held.delivery?.reason ?? '', /settlement/);
   assert.equal(evidenceResends(w, p), resendsBefore, 'a failed check sends nothing');
+});
+
+// A refused evidence CREATE whose nonce another write took is published again once, through the same check as the first send.
+const evidenceRefusedAndOvertaken = async (w, p) => {
+  const tx = p.pay();
+  w.faults.artifactPublish.push('SettlementEvidence:refuse');
+  assert.notEqual((await p.claim(tx)).delivery?.status, 'delivered');
+  assert.notEqual((await p.claim(tx)).delivery?.status, 'delivered', 'held while its nonce is free');
+  assert.equal(publishedEvidence(w), 1);
+  w.overtakeWallet();
+  return tx;
+};
+for (const restart of [false, true]) {
+  test(`a refused evidence CREATE whose nonce another write took is published again once and delivered${restart ? ', across a restart of the host' : ''}`, async (t) => {
+    const w = await world(t, { deliveryEvidenceEnabled: true });
+    const p = await w.purchase(), address = evidenceAddress(p), tx = await evidenceRefusedAndOvertaken(w, p);
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivered', shown(answer));
+    assert.equal(publishedEvidence(w), 2, 'one new signature, for the replacement');
+    assert.equal(w.createsAt(address), 1);
+    await w.restart();
+    assert.equal((await p.claim(tx)).delivery?.status, 'delivered');
+    assert.equal(publishedEvidence(w), 2);
+    assert.equal(w.createsAt(address), 1);
+  });
+}
+
+test('a refused evidence CREATE is not published again while delivery evidence is off, or once the seller-state check fails', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), other = await w.purchase(), address = evidenceAddress(p), tx = await evidenceRefusedAndOvertaken(w, p);
+  const off = await resumed(w, p, { deliveryEvidenceEnabled: false });
+  assert.equal(off.delivery?.evidencePublication, 'held-readback-only', shown(off));
+  assert.equal(publishedEvidence(w), 1, 'publication off signs nothing');
+  // Another purchase claims this payment before the new signature.
+  w.faults.beforeEvidenceResendCheck = async () => assert.deepEqual(await other.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
+  const held = await resumed(w, p, { deliveryEvidenceEnabled: true });
+  assert.equal(w.faults.beforeEvidenceResendCheck, null, 'the check was asked');
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
+  assert.equal(publishedEvidence(w), 1, 'a failed check signs nothing');
+  assert.equal(w.createsAt(address), 0);
 });
 
 test('a paid claim reads the commitment back passively: the readback-only commit never asks for a resend', async (t) => {

@@ -128,6 +128,52 @@ test('a retry that signed no commitment CREATE cannot publish after the Listing 
  await assert.rejects(fresh.commit({jobId:JOB}),e=>e.code==='commitment_failed'&&/provisional time checks/.test(e.message));
  assert.equal(f.local.writes.length,0,'a commitment CREATE is never requested after the Listing expired');
 });
+// A commitment CREATE the node refused: held while its nonce is free, and signed once more through the seller's check when
+// another write of the seller took the nonce (the real publisher, over the injected source).
+const refusedCommitment=async t=>{
+ const publisher=await anchorFixture({now:()=>NOW,signRpc:async()=> 'TEST rpc authentication'}),f=await commitmentFixture(t,{publisher:publisher.open()}),{agent,agreement}=await f.prepare(),resends=[];
+ const signCreate=request=>{const signed=structuredClone(request.transaction);signed.hash=core.sha256Hex(JSON.stringify(signed.content));signed.signature={type:'ed25519',data:'0x'+seller.signBytes(Buffer.from(signed.hash)).toString('hex')};return signed;};
+ publisher.source.observeBinding=async()=>publisher.source.transportBinding;
+ publisher.source.recoverStorageWrite=async({signedTransaction})=>{resends.push(signedTransaction.hash);};
+ publisher.source.binding=async({hash})=>({disposition:hash===refusedHash?'absent':'included'});
+ let refusedHash;
+ publisher.controls.request=async request=>{
+  const signed=signCreate(request);refusedHash=signed.hash;
+  await publisher.journal.put('demo/wallet/lane',{stage:'broadcast-started',hash:signed.hash,signedTransaction:signed});
+  await publisher.sourceJournal.put(`source/${signed.hash}`,{stage:'signed',hash:signed.hash,signedTransaction:signed});
+  return {success:false,error:{code:'broadcast_rejected'}};
+ };
+ await assert.rejects(agent.commit({jobId:JOB}),e=>e.code==='commitment_failed');
+ assert.equal(publisher.captured.length,1);agent.close();
+ const accept=()=>{publisher.controls.request=async request=>{
+  const signed=signCreate(request),backend=readbackFixture({signedTransaction:signed,observedAt:NOW}),finalized=finalizedCommitmentReader(backend.adapter,{claim:seller.claim,sign:seller.signBytes});
+  finalized.record({logicalAddress:backend.logicalAddress,artifact:backend.artifact,signedProjection:signed,blockRef:{id:backend.state.block.hash,height:String(backend.state.block.number),timestamp:NOW}});
+  Object.assign(publisher.controls.reader,finalized);await publisher.sourceJournal.put('TEST accepted',{stage:'observed',hash:signed.hash,signedTransaction:signed});
+  return {success:true,data:{hash:signed.hash,writeProof:{disposition:'included'}}};
+ };};
+ return {publisher,f,resends,accept,agreement,refused:()=>refusedHash};
+};
+test('a refused commitment CREATE whose nonce is still free is not signed again',async t=>{
+ const {publisher,f}=await refusedCommitment(t);
+ for(let attempt=0;attempt<2;attempt++)await assert.rejects((await f.open()).commit({jobId:JOB}),e=>e.code==='commitment_failed');
+ assert.equal(publisher.captured.length,1);
+});
+for(const restarts of [1,2])test(`a refused commitment CREATE whose nonce another write took is signed again once and committed, ${restarts} restart(s) later`,async t=>{
+ const {publisher,f,resends,accept,refused}=await refusedCommitment(t);
+ publisher.controls.nonce=1;accept();
+ for(let restart=0;restart<restarts;restart++){const fresh=await f.open();assert.equal((await fresh.commit({jobId:JOB})).status,'committed');fresh.close();}
+ assert.equal(publisher.captured.length,2,'one wallet signature for the replacement');assert.deepEqual(resends,[]);
+ assert.equal([...publisher.journal.rows.values()].find(row=>row.input?.artifactKind==='FinalityCommitmentRecord').supersedes.hash,refused());
+});
+// The transport's read-only reconciliation hands the request back to the ordinary start only for a refused CREATE that is dead.
+for(const nonceTaken of [false,true])test(`transport reconciliation ${nonceTaken?'signs the replacement once for':'holds'} a refused commitment CREATE whose nonce ${nonceTaken?'another write took':'is still free'}`,async t=>{
+ const {publisher,f,accept,agreement}=await refusedCommitment(t);
+ publisher.controls.nonce=nonceTaken?1:0;accept();
+ const fresh=await f.open(),body={jobId:JOB};
+ const answer=await fresh.reconcileTransport({request:commitmentRequest(fresh,core.contentHash(agreement)),body,rawBody:Buffer.from(JSON.stringify(body))});
+ assert.equal(answer.disposition,nonceTaken?'present':'indeterminate');
+ assert.equal(publisher.captured.length,nonceTaken?2:1);
+});
 // C-1: a wallet refusal leaves an unsigned intent. The retry re-stamps the
 // provisional time (the Listing check uses the current clock), so the real
 // publisher must replace that proven-unsigned intent instead of refusing the

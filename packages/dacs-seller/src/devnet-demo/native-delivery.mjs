@@ -1,5 +1,5 @@
 import { canonicalize, contentHash, isCanonicalJobId } from '@kynesyslabs/dacs';
-import { createNativeDemDeliveryCapability, PASSIVE_RETAINED_READ } from '../dacs/native-dem-delivery-consumer.mjs';
+import { createNativeDemDeliveryCapability, isDeadRefusedCreate, PASSIVE_RETAINED_READ } from '../dacs/native-dem-delivery-consumer.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 
 const purchasedReaders=new WeakMap(),evidenceReaders=new WeakMap();
@@ -60,7 +60,8 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
   const capability=createNativeDemDeliveryCapability({authority,submit:(input)=>submit(input),submitAuthorized:submit,
     reconcile:async(input)=>{
       const value=await read(input);
-      return value.status==='present' ? {status:'complete',reconciliationId:value.receipt.transactionRef.value,observedAt:value.receipt.blockRef.timestamp} : {status:value.status==='absent'?'absent':'indeterminate',reason:value.reason};
+      // A refused CREATE that can no longer be included is as absent as one that was never signed; every other refusal stays indeterminate.
+      return value.status==='present' ? {status:'complete',reconciliationId:value.receipt.transactionRef.value,observedAt:value.receipt.blockRef.timestamp} : {status:value.status==='absent'||isDeadRefusedCreate(value)?'absent':'indeterminate',reason:value.reason};
     },
     read,
     verifyReceipt:async(input)=>{
