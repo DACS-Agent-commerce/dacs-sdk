@@ -92,7 +92,8 @@ test("only declared Node 22 surfaces may reject node:sqlite on Node 20", () => {
   assert.equal(expectedNode20Rejection(p, ".", error, "22.21.1"), false);
   assert.equal(expectedNode20Rejection({ ...p, name: core.name }, ".", error, "20.19.0"), false);
   assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, ".", error, "20.19.0"), false);
-  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./durable-journal", error, "20.19.0"), true);
+  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./wallet/durable-journal", error, "20.19.0"), true);
+  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./durable-journal", error, "20.19.0"), false);
   for (const message of ["No such built-in module: node:sqlite-extra", "No such built-in module: node:sqlite/extra", "other failure involving node:sqlite"]) {
     assert.equal(expectedNode20Rejection(p, ".", { ...error, message }, "20.19.0"), false);
   }
@@ -606,26 +607,55 @@ test("public packages cannot import the optional driver at module load", { timeo
 }));
 
 
-test("the held private snapshot's preparation inventory cannot admit a new packed path", { timeout: 120_000 }, () => fixture(async root => {
+const client = packages[2];
+const clientNotReady = [`${client.name}: private package is not releasable`, `${client.name}: release identity or publish policy is invalid`];
+
+// The four other packages come from the fixture tree; the client is the real private package.
+async function treeWithRealClient(root) {
   await sourceTree(root);
-  const dir = join(root, packages[2].directory);
+  const dir = join(root, client.directory);
   await rm(dir, { recursive: true });
   await cp(new URL("../../packages/dacs-client/", import.meta.url), dir, { recursive: true });
-  const baseline = await prepare(root, join(root, "baseline"), () => {});
-  assert.deepEqual(baseline.errors, []);
-  assert.equal(baseline.artifacts.length, 5);
-  const identityReason = `${packages[2].name}: release identity or publish policy is invalid`;
-  assert.ok(baseline.notReady.includes(identityReason), "held snapshot diagnostics name the package exactly once");
-  const heldManifest = await readFile(join(dir, "package.json"));
-  await changeManifest(root, packages[2], { license: "UNLICENSED" });
-  const damaged = await prepare(root, join(root, "damaged-manifest"), () => {});
-  assert.ok(damaged.errors.some(e => e.includes("identity or publish policy")), "only the exact held manifest gets baseline exceptions");
-  assert.ok(damaged.errors.includes(identityReason), "unexpected source and packed identity defects keep one package prefix");
-  await writeFile(join(dir, "package.json"), heldManifest);
+  return dir;
+}
+
+test("the private client package prepares as not ready with exact blockers", { timeout: 120_000 }, () => fixture(async root => {
+  await treeWithRealClient(root);
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.artifacts.length, 5);
+  assert.deepEqual(result.notReady, clientNotReady);
+  assert.equal(result.artifacts.find(a => a.manifest.name === client.name).releasable, false);
+}));
+
+test("a changed client manifest is refused, even for a harmless field", { timeout: 120_000 }, () => fixture(async root => {
+  await treeWithRealClient(root);
+  for (const damage of [{ license: "UNLICENSED" }, { description: "changed description" }]) {
+    await changeManifest(root, client, damage);
+    const result = await prepare(root, join(root, `scratch-${Object.keys(damage)[0]}`), () => {});
+    assert.ok(result.errors.includes(clientNotReady[1]), `${Object.keys(damage)[0]} change must refuse the identity blocker`);
+    assert.equal(result.artifacts.length, 4);
+  }
+}));
+
+test("files beside the client that its manifest does not list are not packed", { timeout: 120_000 }, () => fixture(async root => {
+  const dir = await treeWithRealClient(root);
   await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
-  const changed = await prepare(root, join(root, "changed"), () => {});
-  assert.ok(changed.errors.some(e => e.includes("outside allow-list")));
-  assert.equal(changed.artifacts.length, 4);
+  await writeFile(join(dir, "src/unreviewed.mjs"), "export const extra = true;");
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.deepEqual(result.errors, []);
+  const packed = result.artifacts.find(a => a.manifest.name === client.name).files;
+  assert.ok(!packed.some(file => file.includes("unreviewed")));
+}));
+
+test("a client manifest that lists a path outside the allow-list cannot pack it", { timeout: 120_000 }, () => fixture(async root => {
+  const dir = await treeWithRealClient(root);
+  await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
+  const listed = JSON.parse(await readFile(join(dir, "package.json"), "utf8")).files;
+  await changeManifest(root, client, { files: [...listed, "unreviewed.mjs"] });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.ok(result.errors.includes(`${client.name}: outside allow-list: unreviewed.mjs`));
+  assert.equal(result.artifacts.length, 4);
 }));
 
 
