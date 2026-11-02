@@ -34,7 +34,7 @@ for(const method of ['read','readRetained','publish'])for(const sourceCopy of [f
  assert.equal((await w.open()[method](input)).status,'present');
  assert.equal(w.resends.length,1);
 });
-for(const sourceCopy of [false,true])test(`a refused ${sourceCopy?'source and wallet':'wallet-only'} CREATE frees the wallet lane for another job and retains its original bytes`,async()=>{
+for(const sourceCopy of [false,true])test(`a refused ${sourceCopy?'source and wallet':'wallet-only'} CREATE frees the wallet lane for another job and retains its original bytes, which its own read then sends again once`,async()=>{
  const w=await world({sourceCopy,refused:true});
  await w.publish(w.open(),jobs[0]);
  const original=(await w.journal.get('demo/wallet/lane')).signedTransaction;
@@ -42,8 +42,8 @@ for(const sourceCopy of [false,true])test(`a refused ${sourceCopy?'source and wa
  assert.equal(w.captured.length,2);assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,1]);
  const prior=[...w.journal.rows.values()].find(r=>r.input?.artifact.jobId===jobs[0]);
  assert.deepEqual(prior.signedTransaction,original);
- assert.equal((await w.open().readRetained(prior.input)).status,'rejected');
- assert.equal(w.resends.length,0);
+ assert.equal((await w.open().readRetained(prior.input)).status,'present');
+ assert.deepEqual(w.resends,[original]);
 });
 test('a broadcast refusal can authenticate late inclusion without another wallet request or resend',async()=>{
  const w=await world({refused:true});await w.publish(w.open(),jobs[0]);w.include();

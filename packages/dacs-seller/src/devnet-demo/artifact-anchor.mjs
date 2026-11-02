@@ -12,6 +12,9 @@ import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // the process died while the wallet was asked: 'intent'), and only while no
 // signed CREATE for its address is retained by the source or the seller's
 // wallet; an accepted, absent operator CREATE may resend its original bytes.
+// So may a node-refused one while its nonce is free; once the account nonce has
+// passed it and a complete readback finds it absent, publish replaces it once
+// (the new intent's `supersedes`) and asks the wallet for one new signature.
 import { isNativeDeliveryEvidence } from '../dacs/delivery-evidence.mjs';
 import { provenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mjs';
 import { rpcEnvelope, storageWriteAccountNonce, storageWriteRpcSigner } from './storage-write-recovery.mjs';
@@ -84,8 +87,12 @@ function artifactValid(kind,value,writer,expectedSigner=writer) {
 function publicationSnapshot(sourceRows,walletRows) {
   const addresses=new Set(), projections=new Map(), addressHashes=new Map();
   const lane=tx=>JSON.stringify([tx?.content?.from,tx?.content?.nonce,tx?.content?.data?.[1]?.metadata?.logicalAddress]);
-  const rejected=new Set(walletRows.filter(([,row])=>broadcastRejected(row)).map(([,row])=>lane(row.transaction)));
+  // A replacement intent names the dead CREATE it supersedes: that CREATE no
+  // longer counts for its address and its lane is released like a refused one.
+  const superseded=new Map(walletRows.filter(([,row])=>HASH.test(row?.supersedes?.hash ?? '')).map(([,row])=>[row.supersedes.hash,row.supersedes.transaction]));
+  const rejected=new Set([...walletRows.filter(([,row])=>broadcastRejected(row)).map(([,row])=>lane(row.transaction)),...[...superseded.values()].map(lane)]);
   for(const [key,row] of [...sourceRows,...walletRows.filter(([key])=>key.startsWith('demo/wallet/'))]) {
+    if(superseded.has(row?.hash)) continue;
     const tx=row?.signedTransaction, address=tx?.content?.data?.[1]?.metadata?.logicalAddress;
     if(address) addresses.add(address);
     if(address && typeof row.hash==='string') {
@@ -110,7 +117,7 @@ function publicationSnapshot(sourceRows,walletRows) {
     const address=row?.transaction?.content?.data?.[1]?.metadata?.logicalAddress;
     return row?.signedTransaction || row?.hash || classify(address,row)!=='unsigned' && row?.error!=='user_rejected' && !['closing','unsigned','rejected'].includes(row?.stage);
   });
-  return {classify,live,addresses,addressHashes,sourceRows,walletRows,rejected:row=>row.included!==true&&row.stage!=='observed'&&row.stage!=='verified'&&rejected.has(lane(row.signedTransaction ?? row.transaction)),projection:hash=>{const text=projections.get(hash);return text?JSON.parse(text):null;}};
+  return {classify,live,addresses,addressHashes,sourceRows,walletRows,superseded:new Set(superseded.keys()),rejected:row=>row.included!==true&&row.stage!=='observed'&&row.stage!=='verified'&&rejected.has(lane(row.signedTransaction ?? row.transaction)),projection:hash=>{const text=projections.get(hash);return text?JSON.parse(text):null;}};
 }
 function deliveryBindingValid(value,artifact,logicalAddress,hash) {
   return value?.version==='1' && value.profile==='dacs-native-delivery-publication/v1' && value.jobId===artifact.jobId
@@ -189,9 +196,11 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return state.live(sourceRows).filter(([,row])=>!state.rejected(row));
   }
 
-  async function observeSource(hash,projection,writeProof,{resend=true}={}) {
+  // refused: the CREATE was refused by the node, so an absent readback (not only a
+  // pending one) leaves its original bytes eligible for the one resend.
+  async function observeSource(hash,projection,writeProof,{resend=true,refused=false}={}) {
     let observed=await sourceCapability.binding({phase:'readback',address:owner,hash,...(writeProof?{writeProof}:{})});
-    if(resend && observed.disposition==='pending' && signRpc && projection?.content?.type==='storageProgram') {
+    if(resend && (observed.disposition==='pending'||refused&&observed.disposition==='absent') && signRpc && projection?.content?.type==='storageProgram') {
       const recoveryKey=`demo/recovery/${hash}`;
       await journal.withWalletLock(recoveryKey,async()=>{
         const prior=await journal.get(recoveryKey),projectionHash=exactHash(projection);
@@ -225,10 +234,12 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
 
   // The wallet overwrites its accepted row: keep every signed CREATE in its
   // artifact intent before another request. Only started rows need readback
-  // before releasing the lane; accepted rows are never resent here.
-  async function reconcilePriorWalletLane() {
+  // before releasing the lane; accepted rows are never resent here. A superseded
+  // CREATE, and the dead one this publish is replacing (its artifact lock is
+  // held), are skipped: their lane is already released.
+  async function reconcilePriorWalletLane(deadHash) {
     const state=await snapshot();
-    for(const [key,value] of state.walletRows.filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.signedTransaction?.content?.from===owner)){
+    for(const [key,value] of state.walletRows.filter(([key,value])=>key.startsWith('demo/wallet/')&&value?.signedTransaction?.content?.from===owner&&!(deadHash&&value.hash===deadHash)&&!state.superseded.has(value.hash))){
       const projection=state.projection(value.hash),address=projection?.content?.data?.[1]?.metadata?.logicalAddress;
       if(!projection||!projectionAuthentic(projection,{transactionRef:{value:value.hash}})||canonicalize(projection)!==canonicalize(value.signedTransaction)) fail('indeterminate','the retained seller wallet CREATE differs from its original public projection');
       const artifactKey=keyFor(address);
@@ -251,6 +262,31 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   async function publicProjection(hash) {
     return (await snapshot()).projection(hash);
   }
+  // The retained CREATE's hash, or null when none or more than one is retained for the address.
+  async function retainedHash(input,retained) {
+    if(retained.hash) return retained.hash;
+    const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
+    return hashes?.size===1?[...hashes][0]:null;
+  }
+  // A refused CREATE is sent again only while its nonce is still free: the
+  // account has not passed it and no other live signed CREATE holds it.
+  async function refusedCreateMayResend(hash,projection) {
+    const nonce=projection.content.nonce;
+    if(!Number.isSafeInteger(nonce) || await accountNonce()>=nonce) return false;
+    const state=await snapshot();
+    return !state.live([...state.sourceRows,...state.walletRows]).some(([,row])=>row?.hash!==hash && !state.rejected(row) && row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce>=nonce);
+  }
+  // A refused CREATE is dead once the account nonce has passed it and a complete
+  // readback finds it absent, as the evidence journal's fate() decides. The nonce
+  // is read before the index. A replacement is never replaced again: the re-ask
+  // is once. Returns the dead CREATE's hash, or null.
+  async function deadRefusedCreateHash(input,retained) {
+    if(!broadcastRejected(retained) || retained.supersedes) return null;
+    const hash=await retainedHash(input,retained), projection=hash?await publicProjection(hash):null;
+    if(!projection || !projectionAuthentic(projection,{transactionRef:{value:hash}}) || !Number.isSafeInteger(projection.content.nonce)) return null;
+    if(await accountNonce()<projection.content.nonce) return null;
+    return (await observeSource(hash,projection,undefined,{resend:false})).disposition==='absent'?hash:null;
+  }
   async function observe(input,retained,writeProof,{fresh=false,resend=true}={}) {
     let hash=retained.hash;
     if(!hash) {
@@ -269,8 +305,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const cacheable=cachedKinds.has(input.artifactKind),cacheKey=cacheScope(input,projection,retained.receipt ?? null);
     const cached=cacheable&&!fresh?immutable.get(cacheKey):null;
     if(cached){await sourceCapability.observeBinding();return cached;}
-    const included=await observeSource(hash,projection,writeProof,{resend:resend&&!broadcastRejected(retained)});
-    if(broadcastRejected(retained)&&included.disposition==='absent') return {status:'rejected',reason:'broadcast_rejected: the original demo CREATE is absent',noResend:true};
+    const refused=broadcastRejected(retained);
+    const included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused});
+    if(refused&&included.disposition==='absent') return {status:'rejected',reason:'broadcast_rejected: the original demo CREATE is absent',noResend:true};
     if(included.disposition!=='included') return {status:'indeterminate',reason:`the original demo CREATE has no authenticated inclusion readback (${included.disposition}: ${included.reason ?? included.error ?? 'no reason'})`,noResend:true};
     const record=await reader.read(input.logicalAddress,{expectedWriter:claim,expectedArtifactKind:input.artifactKind,...(input.deliveryBinding?{expectedDeliveryBinding:input.deliveryBinding}:{}),signedProjection:projection});
     if(record.status!=='present' || canonicalize(record.artifact)!==canonicalize(input.artifact) || record.receipt.contentHash!==input.receiptContentHash) {
@@ -314,6 +351,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(typeof sourceCapability.withWalletNonceLock!=='function') fail('nonce_lane_unavailable','the source must provide a shared atomic wallet nonce lane');
     return sourceCapability.withWalletNonceLock({owner,network,chainIdentity:sourceCapability.pins.chainIdentity},()=>journal.withWalletLock(`demo/nonce/${exactHash([network,sourceCapability.pins.chainIdentity,owner])}`,()=>journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
+      let supersedes=retained?.supersedes;
       if(retained) {
         authorizeRetained(retained);
         // Nothing was signed (a shutdown ended its approval, the wallet answered
@@ -329,7 +367,11 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
           // artifact may carry a new provisional time; nothing was signed and no
           // immutable intent exists. Any other change stays a conflict.
           if(!unsigned||publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
-        } else if(!unsigned) return observe(input,retained);
+        } else if(!unsigned) {
+          const deadHash=await deadRefusedCreateHash(input,retained);
+          if(!deadHash) return observe(input,retained);
+          supersedes={hash:deadHash,transaction:clone(retained.transaction)};
+        }
       }
       if(!retained&&(await snapshot()).addresses.has(logicalAddress)) return {status:'indeterminate',reason:'signed CREATE retained without an intent',noResend:true};
       authorizeJob(artifactKind,jobId);
@@ -339,7 +381,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       // delivery. Authenticate and release that exact retained transaction;
       // only retained accepted storage bytes can qualify for recovery.
       await reconcilePriorSourceLane();
-      await reconcilePriorWalletLane();
+      await reconcilePriorWalletLane(supersedes?.hash);
       const current=await accountNonce();
       // Retained signed or reserved bytes fence this nonce even after inclusion.
       // Wait for the RPC to catch up instead of preparing a duplicate CREATE.
@@ -370,7 +412,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       if(deliveryBinding) metadata.deliveryBinding=clone(deliveryBinding);
       // Include the SDK's execution edits before persisting or requesting a signature.
       if(!projectionShapeAdmitted(sdkSignedCandidate(transaction))) fail('invalid','demo CREATE exceeds signed projection limits');
-      const intent={stage:'intent',inputHash:exactHash(input),input:clone(input),transaction:clone(transaction)};
+      const intent={stage:'intent',inputHash:exactHash(input),input:clone(input),transaction:clone(transaction),...(supersedes?{supersedes}:{})};
       if(authorize){
         const allowed=await authorize();
         if(allowed!==true) fail('not-authorized',`the caller withdrew this write (${typeof allowed==='string'?allowed.slice(0,160):'no answer'}); no intent was stored and nothing was sent`);

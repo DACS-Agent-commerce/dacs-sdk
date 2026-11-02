@@ -69,23 +69,24 @@ async function signedFailureWorld(code='broadcast_rejected'){
  const [key,row]=[...w.journal.rows].find(([key])=>key.startsWith('demo/artifact/'));
  return {...w,key,input:row.input,resends};
 }
-for(const [method,read] of Object.entries(retainedReads))test(`a rejected signed CREATE stays rejected through ${method}, retries and reopened anchors`,async()=>{
+for(const [method,read] of Object.entries(retainedReads))test(`a rejected signed CREATE is sent again once, never signed again, and stays rejected through ${method}, retries and reopened anchors`,async()=>{
  const w=await signedFailureWorld();
  for(let i=0;i<3;i++){
   const result=await read(w.open(),w.input);
   assert.equal(result.status,'rejected');assert.match(result.reason,/broadcast_rejected/);assert.equal(result.noResend,true);
   assert.equal((await w.journal.get(w.key)).stage,'rejected');
  }
- assert.equal(w.captured.length,1);assert.equal(w.resends.length,0);
+ assert.equal(w.captured.length,1);
+ assert.deepEqual(w.resends,[(await w.sourceJournal.get(`source/${JOBS[0]}`)).signedTransaction]);
  assert.equal((await w.publish(w.open(),JOBS[1])).status,'indeterminate');
- assert.equal(w.captured.length,2);
+ assert.equal(w.captured.length,2);assert.equal(w.resends.length,1);
 });
 test('a rejection promoted by an older retained read can release its wallet lane',async()=>{
  const w=await signedFailureWorld(),row=await w.journal.get(w.key);
  await w.journal.put(w.key,{...row,stage:'issued',hash:(await w.sourceJournal.get(`source/${JOBS[0]}`)).hash});
  for(const read of Object.values(retainedReads))assert.equal((await read(w.open(),w.input)).status,'rejected');
  assert.equal((await w.publish(w.open(),JOBS[1])).status,'indeterminate');
- assert.equal(w.captured.length,2);assert.equal(w.resends.length,0);
+ assert.equal(w.captured.length,2);assert.equal(w.resends.length,1);
 });
 for(const [method,read] of Object.entries(retainedReads))test(`an ambiguous signed CREATE remains fenced after ${method} and restart`,async()=>{
  const w=await signedFailureWorld('internal_error');
@@ -131,7 +132,7 @@ for(const method of ['read','readRetained'])test(`${method} waits for an in-flig
  await new Promise(resolve=>setImmediate(resolve));
  const callsWhilePending=bindingCalls;finish();
  await publication;const result=await observation;
- assert.equal(callsWhilePending,0);assert.equal(result.status,'rejected');assert.equal(resends,0);
+ assert.equal(callsWhilePending,0);assert.equal(result.status,'rejected');assert.equal(resends,1);
  assert.equal((await w.journal.get(key)).stage,'rejected');
  assert.equal((await w.publish(w.open(),JOBS[1])).status,'indeterminate');assert.equal(w.captured.length,2);
 });
