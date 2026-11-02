@@ -293,8 +293,10 @@ test('the journal\'s capability called with an authorization that answers false 
   const journal = w.open();
   t.after(() => journal.close());
   const capability = createNativeDemDeliveryCapability({ authority: 'TEST-journal', submitAuthorized: journal.submitAuthorized, reconcile: async () => ({}), read: async () => ({}), verifyReceipt: async () => 'valid' });
-  for (const [label, authorize] of [['false', () => false], ['a throw', () => { throw new Error('TEST credit withdrawn'); }], ['a promise of true', async () => true], ['a truthy value', () => 1]]) {
+  for (const [label, authorize] of [['false', () => false], ['a throw', () => { throw new Error('TEST credit withdrawn'); }], ['a promise of true', async () => true], ['a promise that rejects', async () => { throw new Error('TEST credit withdrawn'); }], ['a truthy value', () => 1]]) {
     await assert.rejects(submitNativeDemDelivery(capability, { ...w.input(), expectedJournalId: journal.journalId }, authorize), { code: 'wallet_not_authorized' }, label);
+    // A rejection nobody handles surfaces on the next turn of the event loop.
+    await new Promise((resolve) => setImmediate(resolve));
   }
   // Without an authorization the capability's own submit is the guarded one too.
   await assert.rejects(submitNativeDemDelivery(capability, { ...w.input(), expectedJournalId: journal.journalId }), TypeError, 'no authorization');
