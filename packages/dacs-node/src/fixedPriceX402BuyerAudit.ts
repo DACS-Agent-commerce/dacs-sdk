@@ -744,7 +744,9 @@ export function createDacsFixedPriceBuyerAuditV1(
         const sellerReceivingKey = sellerKey === null
           ? undefined : Buffer.from(sellerKey).toString("hex");
         const expectedAmountOs = baseUnits(agreement.terms.price.amount, 9);
-        if (observation.status !== "included" || buyerPayingKey === undefined ||
+        if (observation.status !== "included" ||
+            (observation.execution !== undefined && observation.execution !== "executed") ||
+            buyerPayingKey === undefined ||
             sellerReceivingKey === undefined || observation.txHash !== event.txHash ||
             observation.blockNumber !== event.blockNumber ||
             observation.includedAt !== paymentEvidence.observedAt ||
@@ -760,6 +762,9 @@ export function createDacsFixedPriceBuyerAuditV1(
         }
         if (payout.payeeAddress !== sellerReceivingKey) {
           throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-payment-terms-invalid");
+        }
+        if (observation.execution === undefined) {
+          throw new DacsFixedPriceX402BuyerAuditError("buyer-audit-native-execution-pending");
         }
         const settlementId = canonicalSellerSettlementId({
           kind: "demos",
@@ -832,7 +837,7 @@ export function createDacsFixedPriceBuyerAuditV1(
           "revalidateSettlement"
         ] = async () => {
           const fresh = await options.observeDemosTransfer(event.txHash);
-          if (fresh.status !== "included") {
+          if (fresh.status !== "included" || fresh.execution !== "executed") {
             return fresh.status === "failed" || fresh.status === "invalid"
               ? { disposition: "fail" as const,
                   reason: "buyer-audit-native-settlement-failed" }
