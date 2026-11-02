@@ -381,8 +381,11 @@ function composeRetainedApproval({mode,policy,manual}){
     const requestText=JSON.stringify(request);
     // A manual binding is its request text alone, so the same bytes are never prepared again once settled: a repeat of
     // the first settlement could not be told from the settlement of a later authorization and would cancel it.
-    if(settledManualTexts.has(requestText))throw approvalRefusal('manual-request-settled');
+    const assertNotSettled=()=>{if(settledManualTexts.has(requestText))throw approvalRefusal('manual-request-settled');};
+    assertNotSettled();
     if((await manual(JSON.parse(requestText)))!==true||JSON.stringify(request)!==requestText)throw approvalRefusal('manual-declined');
+    // The answer may arrive after another preparation of the same bytes was settled: it must not recreate that binding.
+    assertNotSettled();
     freezeRequest(request);manualDecisions.set(requestText,request);
     return{ledgerId:null,requestText};
   };

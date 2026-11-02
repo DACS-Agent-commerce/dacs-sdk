@@ -445,3 +445,19 @@ test('a manual authorization is not prepared again after it was settled, so a re
  assert.equal(await approval.retained.confirm(decision,executed(other)),true);
  assert.equal((await approval.retained.prepare(evidence({nonce:7}))).ledgerId,null);
 });
+
+test('a manual answer that arrives after the same bytes were settled records nothing, so a repeated settlement cannot cancel it',async t=>{
+ const fixture=await ledgerFixture(t);let asked=0,answerLate;
+ const manual=()=>{asked++;return asked===1?Promise.resolve(true):new Promise(resolve=>{answerLate=resolve;});};
+ const approval=composeSellerApproval({mode:'manual',policy:fixture.restart(),manual}),request=evidence();
+ const first=await approval.retained.prepare(request);
+ // The second preparation was asked before the first binding is settled; its answer arrives after.
+ const second=approval.retained.prepare(request);
+ while(asked<2)await new Promise(resolve=>setImmediate(resolve));
+ await approval.retained.settle(first,'released');
+ answerLate(true);
+ await rejectsWith(second,'approval_refused');
+ await approval.retained.settle(first,'released');
+ assert.equal(await approval.retained.open(first.requestText),null);
+ await rejectsWith(approval.retained.confirm(first,executed(request)),'approval_reservation_unavailable');
+});
