@@ -192,9 +192,10 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   // module loads demosdk), the payer as observePayDemTransferCore does, the
   // nonce with nodeProjectedNonce. `limit` is the page size asked for, a whole
   // number from 1 to HISTORY_PAGE_SIZE.
-  // Returns { status: 'found', hash } (plus signedByAlternateKey: true when
-  // another key signed it for the address) or { status: 'unknown' }. Anything
-  // unreadable, inconsistent or unexplained is 'unknown'. The answer is never
+  // Returns { status: 'found', hash } or { status: 'unknown' }. Anything
+  // unreadable, inconsistent or unexplained is 'unknown', including a
+  // confirmed row the address owns but another key signed (whether it took
+  // the address's nonce is not read here). The answer is never
   // 'skipped': the node orders the history by signed timestamp, so a page can
   // drop the slot's row and still hold own rows on both sides of it.
   // Throws OutboundError 'invalid' for a nonce or page size out of range
@@ -207,26 +208,24 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     const from = normalizeDemosAddress(address);
     const history = await nodeCall('getTransactionHistory', { address: from, type: 'all', start: 0, limit });
     if (!Array.isArray(history) || history.length > limit) throw new OutboundError('invalid', 'transaction history is not a list within the page size');
-    let found = null, alternate = null, last = Infinity;
+    let found = null, last = Infinity;
     for (const tx of history) {
       const content = tx?.content;
       if (!isRecord(content) || !HISTORY_STATUSES.includes(tx.status) || typeof tx.hash !== 'string' || tx.hash === '') return SLOT_UNKNOWN;
       // The payer is from_ed25519_address when present, else from; a present one that is unreadable is not replaced by from.
-      let payer, signer = null;
+      let payer;
       try { payer = normalizeDemosAddress(content.from_ed25519_address === undefined ? content.from : content.from_ed25519_address); } catch { return SLOT_UNKNOWN; }
       if (payer !== from) continue;
       const own = nodeProjectedNonce(content.nonce);
       if (own === null) return SLOT_UNKNOWN;
       // A failed transaction is not proof that its nonce was consumed (verifySettlement); it is never the slot's.
       if (tx.status === 'failed') continue;
-      try { signer = normalizeDemosAddress(content.from); } catch { signer = null; }
-      // Another signing key may leave this wallet's nonce free: such an entry proves nothing about the slot.
-      if (signer !== from) { if (alternate !== null) return SLOT_UNKNOWN; alternate = { own, hash: tx.hash }; continue; }
+      // Another signing key (or none readable) may leave this wallet's nonce free: such an entry proves nothing about the slot.
+      try { if (normalizeDemosAddress(content.from) !== from) return SLOT_UNKNOWN; } catch { return SLOT_UNKNOWN; }
       if (own > last) return SLOT_UNKNOWN;
       last = own;
       if (own === nonce) { if (found !== null) return SLOT_UNKNOWN; found = tx.hash; }
     }
-    if (alternate !== null) return found === null && alternate.own === nonce ? { status: 'found', hash: alternate.hash, signedByAlternateKey: true } : SLOT_UNKNOWN;
     return found !== null ? { status: 'found', hash: found } : SLOT_UNKNOWN;
   }
 

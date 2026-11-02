@@ -79,14 +79,25 @@ test('an entry the reader cannot read makes the slot unknown, never found past i
 });
 
 // The package reads the payer as observePayDemTransferCore does: from_ed25519_address when present, else from.
-test('a payment signed by another key for the wallet is found, and marked as signed by another key', async () => {
-  const slot = await read([tx(9), tx(7, { signer: ALT, payer: WALLET }), tx(6)]);
-  assert.deepEqual(slot, { status: 'found', hash: tx(7, { signer: ALT }).hash, signedByAlternateKey: true });
+// Whether a payment signed by another key took the wallet's nonce is not something the reader can tell, so it never answers found for one.
+test('a payment signed by another key for the wallet makes the slot unknown, at the slot or off it', async () => {
+  const alt = (nonce) => tx(nonce, { signer: ALT, payer: WALLET });
+  assert.deepEqual(await read([tx(9), alt(7), tx(6)]), unknown, 'alone at the slot');
+  assert.deepEqual(await read([tx(9), alt(8), tx(7), tx(6)]), unknown, 'off the slot');
+  assert.deepEqual(await read([tx(9), alt(7), tx(7), tx(6)]), unknown, 'beside the slot\'s own row');
+  assert.deepEqual(await read([tx(9), alt(8), alt(7), tx(6)]), unknown, 'two of them');
 });
 
-test('an entry signed by another key for the wallet, off the slot or beside the slot\'s own row, makes the slot unknown', async () => {
-  assert.equal((await read([tx(9), tx(8, { signer: ALT, payer: WALLET }), tx(6)])).status, 'unknown');
-  assert.equal((await read([tx(9), tx(7, { signer: ALT, payer: WALLET }), tx(7), tx(6)])).status, 'unknown');
+test('an entry that names the wallet as owner but whose signing key is missing or unreadable makes the slot unknown', async () => {
+  for (const from of [undefined, 'zzz', null, 7]) {
+    const row = { ...tx(7), content: { ...tx(7).content, from } };
+    assert.deepEqual(await read([tx(9), row, tx(6)]), unknown, String(from));
+  }
+});
+
+test('a failed payment signed by another key for the wallet is never proof and does not block the wallet\'s own row', async () => {
+  const failedAlt = tx(7, { signer: ALT, payer: WALLET, status: 'failed' });
+  assert.deepEqual(await read([tx(9), failedAlt, tx(7), tx(6)]), { status: 'found', hash: tx(7).hash });
 });
 
 test('an entry whose payer cannot be read makes the slot unknown', async () => {
