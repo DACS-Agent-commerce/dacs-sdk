@@ -903,6 +903,8 @@ Payment evidence shape: `checkNativePaymentEvidence` in `src/dacs/native-payment
 | D16 | delta(client): D16 fail a malformed payment reference on scope instead of throwing | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:3`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:19`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:33`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:47`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:52`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:56`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:60` | b10ec778520587c7d49045ae569b9742b05c097a |
 | | `packages/dacs-client/test/native-payment-evidence-shape.test.mjs:1` | 834d1cf7f501c8302919700b77891d11fc00dd48 |
+| D16 | delta(client): D16 drop an unused binding in the payment-reference shape test | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/native-payment-evidence-shape.test.mjs:1` | bb761efa71a4b511c65d6796798861a6ad40c7d3 |
 
 ## Complete commit and file inventory
 
@@ -2869,6 +2871,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D16 fail a malformed payment reference on scope instead of throwing | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D16 fail a malformed payment reference on scope instead of throwing | `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:3`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:19`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:33`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:47`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:52`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:56`, `packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs:60` |
 | delta(client): D16 fail a malformed payment reference on scope instead of throwing | `packages/dacs-client/test/native-payment-evidence-shape.test.mjs:1` |
+| delta(client): D16 drop an unused binding in the payment-reference shape test | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D16 drop an unused binding in the payment-reference shape test | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D16 drop an unused binding in the payment-reference shape test | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D16 drop an unused binding in the payment-reference shape test | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D16 drop an unused binding in the payment-reference shape test | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D16 drop an unused binding in the payment-reference shape test | `packages/dacs-client/test/native-payment-evidence-shape.test.mjs:1` |
 
 ## Original moved files
 

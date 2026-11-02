@@ -37,7 +37,8 @@ test('the native evidence check fails on scope when paymentTxRefs has two entrie
 });
 
 test('the native evidence check fails on scope when paymentTxRefs is missing', async () => {
-  const { paymentTxRefs, ...withoutPaymentTxRefs } = await signedArtifact();
+  const withoutPaymentTxRefs = { ...await signedArtifact() };
+  delete withoutPaymentTxRefs.paymentTxRefs;
   assert.deepEqual(await checkNativePaymentEvidence({ artifact: withoutPaymentTxRefs, ...input }), SCOPE_MISMATCH);
 });
 
