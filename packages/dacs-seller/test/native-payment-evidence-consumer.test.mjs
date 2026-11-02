@@ -137,7 +137,8 @@ for (const [label, value] of malformedPaymentTxRefs) test(`the native evidence c
 
 test('the native evidence check fails on scope when paymentTxRefs is missing', async () => {
   const f = await consumerFixture();
-  const { paymentTxRefs, ...withoutPaymentTxRefs } = f.artifact;
+  const withoutPaymentTxRefs = { ...f.artifact };
+  delete withoutPaymentTxRefs.paymentTxRefs;
   assert.deepEqual(await checkNativePaymentEvidence({ artifact: withoutPaymentTxRefs, ...f.input }), SCOPE_MISMATCH);
 });
 
