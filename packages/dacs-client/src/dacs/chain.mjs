@@ -13,6 +13,9 @@ import { normalizeDemosAddress } from '../signatures.mjs';
 const LOCATOR = /^stor-[0-9a-f]{40}$/;
 const CHAIN_IDENTITY = /^(?:0x)?([0-9a-f]{64})$/;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const HISTORY_PAGE_SIZE = 100;
+const HISTORY_STATUSES = ['confirmed', 'failed'];
+const SLOT_UNKNOWN = Object.freeze({ status: 'unknown' });
 
 // A fixture endpoint advertises itself with this header; evidence read from it
 // is labelled simulated and can never be reported as live chain evidence.
@@ -180,6 +183,53 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return nodeCall('getTxByHash', { hash }, options);
   }
 
+  // Which of the address's own transactions took `nonce`, from the node's
+  // history of the address, which only indexes the slot: what a transaction
+  // is is read back by the caller (observeTransfer). Each field is read as the
+  // package reads it: the row's status as demosHistory.ts does (confirmed or
+  // failed, newest first, a page of HISTORY_PAGE_SIZE rows by default: its
+  // DEMOS_HISTORY_MAX_PAGE_SIZE, which cannot be imported here because its
+  // module loads demosdk), the payer as observePayDemTransferCore does, the
+  // nonce with nodeProjectedNonce. `limit` is the page size asked for, a whole
+  // number from 1 to HISTORY_PAGE_SIZE.
+  // Returns { status: 'found', hash } (plus signedByAlternateKey: true when
+  // another key signed it for the address) or { status: 'unknown' }. Anything
+  // unreadable, inconsistent or unexplained is 'unknown'. The answer is never
+  // 'skipped': the node orders the history by signed timestamp, so a page can
+  // drop the slot's row and still hold own rows on both sides of it.
+  // Throws OutboundError 'invalid' for a nonce or page size out of range
+  // (before any request) and for a history that is not a list within the page,
+  // and whatever nodeCall throws (timeout, refused, oversized) with its own
+  // kind.
+  async function findTransferAtNonce(address, nonce, { limit = HISTORY_PAGE_SIZE } = {}) {
+    if (!Number.isSafeInteger(nonce) || nonce < 0) throw new OutboundError('invalid', 'the nonce is not a non-negative safe integer');
+    if (!Number.isInteger(limit) || limit < 1 || limit > HISTORY_PAGE_SIZE) throw new OutboundError('invalid', `the history page size is not a whole number from 1 to ${HISTORY_PAGE_SIZE}`);
+    const from = normalizeDemosAddress(address);
+    const history = await nodeCall('getTransactionHistory', { address: from, type: 'all', start: 0, limit });
+    if (!Array.isArray(history) || history.length > limit) throw new OutboundError('invalid', 'transaction history is not a list within the page size');
+    let found = null, alternate = null, last = Infinity;
+    for (const tx of history) {
+      const content = tx?.content;
+      if (!isRecord(content) || !HISTORY_STATUSES.includes(tx.status) || typeof tx.hash !== 'string' || tx.hash === '') return SLOT_UNKNOWN;
+      // The payer is from_ed25519_address when present, else from; a present one that is unreadable is not replaced by from.
+      let payer, signer = null;
+      try { payer = normalizeDemosAddress(content.from_ed25519_address === undefined ? content.from : content.from_ed25519_address); } catch { return SLOT_UNKNOWN; }
+      if (payer !== from) continue;
+      const own = nodeProjectedNonce(content.nonce);
+      if (own === null) return SLOT_UNKNOWN;
+      // A failed transaction is not proof that its nonce was consumed (verifySettlement); it is never the slot's.
+      if (tx.status === 'failed') continue;
+      try { signer = normalizeDemosAddress(content.from); } catch { signer = null; }
+      // Another signing key may leave this wallet's nonce free: such an entry proves nothing about the slot.
+      if (signer !== from) { if (alternate !== null) return SLOT_UNKNOWN; alternate = { own, hash: tx.hash }; continue; }
+      if (own > last) return SLOT_UNKNOWN;
+      last = own;
+      if (own === nonce) { if (found !== null) return SLOT_UNKNOWN; found = tx.hash; }
+    }
+    if (alternate !== null) return found === null && alternate.own === nonce ? { status: 'found', hash: alternate.hash, signedByAlternateKey: true } : SLOT_UNKNOWN;
+    return found !== null ? { status: 'found', hash: found } : SLOT_UNKNOWN;
+  }
+
   // Exact account balance in OS, read as the deployment's
   // DACS_DEM_AMOUNT_ENCODING says the node carries amounts (see
   // balanceOsFromNode). Anything inexact fails closed.
@@ -273,6 +323,7 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     getAddressBalance,
     getTransactionFees,
     getTransaction,
+    findTransferAtNonce,
     getIdentities,
     observeTransfer,
   };
