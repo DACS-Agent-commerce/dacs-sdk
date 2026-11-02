@@ -10,12 +10,14 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import {
-  checkWireRequest, openWireEnvelope, signWireEnvelope, signWireResponse,
+  openWireEnvelope, signWireEnvelope, signWireResponse,
   signSellerSessionDelegation, verifySellerSessionDelegation, signDiscoveryDocument, verifyEndpointProof,
   verifyWireResponse, TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_APPROVED_IDENTITY_RECORD,
   TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES, TP1_CAPABILITIES, WireError,
   type LocalNetworkBinding, type Tp1Binding, type Tp1WireProfile, type WireRequestPayload,
 } from "../../src/wire/index.js";
+import { stageAllocation } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { testJournal } = journalFixture(fixtureWire);
@@ -117,7 +119,7 @@ describe("identity approved on 2026-10-20 using shipped approval", () => {
     expect(bb.profile).toEqual(sb.profile);
     const { payload, header } = await request(buyer, seller, bb, buyerLocal);
     const opened = (await openWireEnvelope(header, "request", { binding: sb, local: sellerLocal, purchaseProfile: sb.profile }));
-    (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.claim, seller: seller.claim }, seller: seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(BODY), now: NOW, binding: sb, local: sellerLocal, purchaseProfile: sb.profile }));
+    (await checkAndReserve(opened, { requestJournal: testJournal(), ready: true, retained: { jobId: JOB, agreementHash: job.agreementHash, buyer: buyer.claim, seller: seller.claim, ...stageAllocation(payload.path) }, seller: seller.claim, listingPin: PIN, method: "POST", path: payload.path, rawBody: Buffer.from(BODY), now: NOW, binding: sb, local: sellerLocal, purchaseProfile: sb.profile }));
     const response = await signWireResponse(opened.payload, 200, "{}", { signer: seller, binding: sb, local: sellerLocal, now: NOW, purchaseProfile: sb.profile });
     expect((await verifyWireResponse(payload, { header: response, status: 200, body: Buffer.from("{}"), now: NOW, binding: bb, local: buyerLocal })).principal).toBe(seller.claim);
     expect(buyer.calls + seller.calls).toBe(2);

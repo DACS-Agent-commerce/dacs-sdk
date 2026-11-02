@@ -39,6 +39,9 @@ const file = JSON.parse(readFileSync(new URL("../../vectors/dacs-seller-http-v1.
 const vectors = file.vectors as Vector[];
 const b = (text: string) => Buffer.from(text, "base64url");
 const rawBodyText = (text: string) => b(text).toString("utf8");
+/** The request vectors whose admitted request reserved a fresh journal's first attempt. */
+const reservedVectors = new Set<string>();
+const STAGE_ROUTES: readonly string[] = [wire.DACS_SELLER_HTTP_PATHS.proposals, wire.DACS_SELLER_HTTP_PATHS.commitments, wire.DACS_SELLER_HTTP_PATHS.commitmentSignature];
 
 /**
  * The tuple an actor kept for the purchase: the vector's own value (null, a
@@ -179,9 +182,10 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
       const subject = input.checkSubject === "decoded-header" ? JSON.parse(rawBodyText(input.header))
         : input.checkSubject === "copy" ? { ...opened } : opened;
       // retained: the job, Agreement hash and parties the seller host kept (the file's job); a vector may give another, or "omitted".
-      const retained = input.retained === "omitted" ? undefined
-        : input.retained ?? { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller };
-      const { readbackOnly } = (await wire.checkWireRequest(subject, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained,
+      // The three routes that start or commit a purchase also carry the host's own `allocated` flag: false, as the seller is ready.
+      const kept4 = input.retained ?? { jobId: file.job.jobId, agreementHash: file.job.agreementHash, buyer: file.parties.buyer, seller: file.parties.seller };
+      const retained = input.retained === "omitted" ? undefined : STAGE_ROUTES.includes(input.path) ? { ...kept4, allocated: false } : kept4;
+      const { readbackOnly, reserve } = (await wire.checkWireRequest(subject, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained,
         seller: input.server?.seller ?? file.parties.seller, listingPin: input.server?.listingPin ?? file.job.listingPin,
         method: input.method ?? "POST", path: input.path, rawBody, now: file.now,
         requireDelegation: Object.hasOwn(input, "checkRequireDelegation") ? input.checkRequireDelegation : input.requireDelegation,
@@ -189,6 +193,11 @@ async function run(v: Vector): Promise<Record<string, unknown>> {
         ...(input.maxLifetimeMs === undefined ? {} : { maxLifetimeMs: input.maxLifetimeMs }), ...(input.artifacts === undefined ? {} : { artifacts: input.artifacts }),
         ...keptAtCheck(input),
       } as unknown as WireModule.RequestCheck));
+      // An admitted effect-route request reserves the first attempt of a fresh journal.
+      if (reserve !== null) {
+        if ((await reserve()).state !== "new") throw new Error(`${v.id}: its reservation was not new`);
+        reservedVectors.add(v.id);
+      }
       return readbackOnly ? { ok: true, readbackOnly } : { ok: true };
     }
     case "delegation":
@@ -359,4 +368,11 @@ describe("dacs-seller-http/v1 vectors", () => {
       expect(await outcome(v)).toEqual(v.expect);
     });
   }
+
+  it("replays every vector; admitted effect-route vectors reserve new", () => {
+    const effectPaths = wire.DACS_SELLER_HTTP_ROUTES.filter((route) => route.effect === "effect").map((route) => route.path);
+    const admitted = vectors.filter((v) => v.kind === "request" && v.expect.ok && !v.expect.readbackOnly && effectPaths.includes(v.input.path)).map((v) => v.id);
+    expect(admitted.length).toBeGreaterThan(0);
+    expect([...reservedVectors].sort()).toEqual([...admitted].sort());
+  });
 });

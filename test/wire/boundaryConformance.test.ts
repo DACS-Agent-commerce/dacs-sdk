@@ -4,6 +4,8 @@ import { admitOutgoingBody, admitWireRequestBody, admitWireResponseBody, message
 import { admitWireJson, envelopeSignatureBytes, ownedFields, walletSignatureBytes } from "../../src/wire/validate.js";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import { alias, encodeHeader, NOW, wireWorld } from "./conformanceFixture.js";
+import { stageAllocation } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 const refuses = async (fn: () => unknown, code: string, status?: number) => await expect(Promise.resolve().then(fn)).rejects.toThrowError(expect.objectContaining({ code, ...(status ? { status } : {}) }));
 describe("wire boundary regression cases", () => {
@@ -179,12 +181,15 @@ it("the producer includes signature bytes in the inclusive 4096-character header
 it("delegation readback exactly at expiry has its own future expiry and cannot start an effect", async () => {
   const x = (await wireWorld());
   const d = await wire.signSellerSessionDelegation(x.delegation, x.buyer, x.binding, x.local);
-  for (const path of [wire.DACS_SELLER_HTTP_PATHS.state, wire.DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, wire.DACS_SELLER_HTTP_PATHS.commitments]) {
+  // The buyer's copy of the bundle reads a committed result: it is signed only with the job's commitment evidence (continuationEvidence.test.ts).
+  await expect(wire.signWireRequest({ ...x.input, signer: x.session, delegation: d, path: wire.DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, now: d.payload.expiresAt }))
+    .rejects.toMatchObject({ code: "continuation_commitment_invalid" });
+  for (const path of [wire.DACS_SELLER_HTTP_PATHS.state, wire.DACS_SELLER_HTTP_PATHS.commitments]) {
     const sent = await wire.signWireRequest({ ...x.input, signer: x.session, delegation: d, path, now: d.payload.expiresAt });
     expect(sent.payload.expiresAt).toBe(d.payload.expiresAt + 30_000);
     const opened = (await wire.openWireEnvelope(sent.header, "request", x.context));
-    const invoke = async () => (await wire.checkWireRequest(opened, { ...x.context, now: d.payload.expiresAt, seller: x.seller.claim, listingPin: x.pin,
-      method: "POST", path, rawBody: Buffer.from("{}"), retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim },
+    const invoke = async () => (await checkAndReserve(opened, { ...x.context, now: d.payload.expiresAt, seller: x.seller.claim, listingPin: x.pin,
+      method: "POST", path, rawBody: Buffer.from("{}"), retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim, ...stageAllocation(path) },
       artifacts: [{ jobId: x.request.jobId, listingRef: x.pin, parties: [{ role: "buyer", primaryClaim: x.buyer.claim }, { role: "seller", primaryClaim: x.seller.claim }], terms: { deadline: d.payload.expiresAt } }] }));
     if (wire.isReadRoute(path)) expect((await invoke())).toMatchObject({ readbackOnly: true, effect: null });
     else await expect(Promise.resolve().then(invoke)).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_expired" }));
@@ -205,6 +210,6 @@ it("a receiver window of exactly 1ms admits a live request, and zero is refused"
   const opened = (await wire.openWireEnvelope(sent.header, "request", x.context));
   const check = { ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW,
     retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } };
-  expect((await wire.checkWireRequest(opened, { ...check, maxLifetimeMs: 1 }))).toMatchObject({ readbackOnly: false, effect: null });
-  await expect(Promise.resolve().then(async () => (await wire.checkWireRequest(opened, { ...check, maxLifetimeMs: 0 })))).rejects.toThrowError(expect.objectContaining({ code: "seller_configuration_invalid" }));
+  expect((await checkAndReserve(opened, { ...check, maxLifetimeMs: 1 }))).toMatchObject({ readbackOnly: false, effect: null });
+  await expect(Promise.resolve().then(async () => (await checkAndReserve(opened, { ...check, maxLifetimeMs: 0 })))).rejects.toThrowError(expect.objectContaining({ code: "seller_configuration_invalid" }));
 });

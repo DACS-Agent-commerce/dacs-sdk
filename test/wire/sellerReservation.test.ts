@@ -15,6 +15,8 @@ import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from
 import type { CommitmentReceiptReader } from "../../src/wire/commitment.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { committedPurchase, BUYER_SEED, bytes, type Purchase } from "./committedPurchaseFixture.js";
+import { stageAllocation } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 const EFFECT_PATHS = wire.DACS_SELLER_HTTP_ROUTES.filter((route) => route.auth === "signed" && route.effect === "effect").map((route) => route.path);
 
@@ -39,7 +41,7 @@ function requestCheck(p: Purchase, request: Awaited<ReturnType<typeof openReques
   const { payload, context } = request;
   return { ...context, seller: payload.seller, listingPin: payload.listingPin, method: payload.method, path: payload.path,
     rawBody: Buffer.from("{}"), now: p.scope.now, ready: true,
-    retained: { jobId: payload.jobId, agreementHash: payload.agreementHash, buyer: payload.buyer, seller: payload.seller },
+    retained: { jobId: payload.jobId, agreementHash: payload.agreementHash, buyer: payload.buyer, seller: payload.seller, ...stageAllocation(payload.path) },
     requestJournal: { directory: "unused-contract-fixture" },
     commitment: bytes(p.anchored), agreement: bytes(p.agreement), signedListing: bytes(p.listing), readCommitmentReceipt };
 }
@@ -55,7 +57,7 @@ it.each(EFFECT_PATHS)("%s passes the authenticated job and route to the journal"
   const effect: wire.WireEffect = { state: "new", operationId: wire.wireOperationId(request.payload), attempt: 0, leaseUntil: now + 60_000 };
   vi.mocked(journalStore).mockReturnValue(store);
   vi.mocked(reserveEffect).mockReturnValue(effect);
-  const checked = await wire.checkWireRequest(request.opened, requestCheck(p, request, receiptReader(binding)));
+  const checked = await checkAndReserve(request.opened, requestCheck(p, request, receiptReader(binding)));
   expect(reserveEffect).toHaveBeenCalledExactlyOnceWith(store, {
     key: expect.any(String), seller: request.payload.seller, jobId: request.payload.jobId, path,
     binding: expect.any(String), requestHash: wire.wireRequestHash(request.payload),
@@ -72,7 +74,7 @@ it.each(CONTINUING_PATHS)("%s reserves nothing for a request that expired while 
   const monotonic = vi.spyOn(performance, "now").mockImplementation(() => elapsedMs);
   try {
     const slowReceipt = receiptReader(p.scope.binding, () => { elapsedMs += 11_000; return "valid"; });
-    await expect(wire.checkWireRequest(request.opened, requestCheck(p, request, slowReceipt))).rejects.toMatchObject({ code: "peer_expired" });
+    await expect(checkAndReserve(request.opened, requestCheck(p, request, slowReceipt))).rejects.toMatchObject({ code: "peer_expired" });
   } finally {
     monotonic.mockRestore();
   }
@@ -103,10 +105,10 @@ it.each(finalReadCases)("$path rechecks expiry after the final authority read (d
   try {
     checking = true;
     if (elapsed >= 10_000) {
-      await expect(wire.checkWireRequest(request.opened, check)).rejects.toMatchObject({ code: "peer_expired", status: 408 });
+      await expect(checkAndReserve(request.opened, check)).rejects.toMatchObject({ code: "peer_expired", status: 408 });
       expect(reserveEffect).not.toHaveBeenCalled();
     } else {
-      expect((await wire.checkWireRequest(request.opened, check)).effect?.state).toBe("new");
+      expect((await checkAndReserve(request.opened, check)).effect?.state).toBe("new");
       expect(reserveEffect).toHaveBeenCalledOnce();
     }
     expect(participantReads).toBe(finalRead);
@@ -129,6 +131,6 @@ it.each(CONTINUING_PATHS)("%s reserves nothing once the connection's authority i
   const request = await openRequest(p, binding, path);
   vi.mocked(journalStore).mockReturnValue(Object.freeze({}));
   const withdrawingReceipt = receiptReader(binding, () => { lost = true; return "valid"; });
-  await expect(wire.checkWireRequest(request.opened, requestCheck(p, request, withdrawingReceipt))).rejects.toThrow("authority withdrawn");
+  await expect(checkAndReserve(request.opened, requestCheck(p, request, withdrawingReceipt))).rejects.toThrow("authority withdrawn");
   expect(reserveEffect).not.toHaveBeenCalled();
 });

@@ -2,6 +2,7 @@ import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalDirectory, journalFixture, reservationsIn } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 import { ed25519KeyPair, received, signedAgreement, tp1Listing, wireCommitment } from "./commitmentFixture.js";
 import { registerDiscoverySigner, signRequestWithProof as signWireRequest } from "./requestFixture.js";
 // Two parties never share a clock. A signer stamps expiresAt (or notBefore)
@@ -18,7 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import {
-  checkWireRequest, DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, openWireEnvelope, signSellerSessionDelegation, signWireResponse, verifyWireResponse,
+  DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, openWireEnvelope, signSellerSessionDelegation, signWireResponse, verifyWireResponse,
   WireError, wireOperationId, wireRequestHash, type RequestCheck, type WireRequestPayload, type WireSigner,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
@@ -86,7 +87,7 @@ const buyerSigns = (w: World, now: number, change: Record<string, unknown> = {})
 
 async function sellerCheck(w: World, header: string, now: number, change: Partial<RequestCheck> = {}, requireDelegation = false) {
   const opened = (await openWireEnvelope(header, "request", { binding: w.sellerBinding, local: RPC_B, purchaseProfile: w.sellerBinding.profile, requireDelegation }));
-  return { opened, check: async () => (await checkWireRequest(opened, {
+  return { opened, check: async () => (await checkAndReserve(opened, {
     requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), seller: w.seller.claim, listingPin: PIN,
     method: "POST", path: opened.payload.path, rawBody: Buffer.from(TEXT), now, binding: w.sellerBinding, local: RPC_B,
     purchaseProfile: w.sellerBinding.profile, requireDelegation, commitment: received(w.commitment), agreement: received(w.agreement), readCommitmentReceipt: Object.assign(() => "valid", { chainIdentity: w.sellerBinding.profile.chainIdentity }), signedListing: received(LISTING), ...change,

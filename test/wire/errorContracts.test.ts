@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import * as wire from "../../src/wire/index.js";
 import { journalDirectory } from "./requestJournalFixture.js";
 import { NOW, wireWorld } from "./conformanceFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 it("malformed local payloads retain WireError contracts and never call a signer", async () => {
   const x = (await wireWorld());
@@ -42,7 +43,7 @@ it("raw body and artifact option failures retain local input diagnostics", async
   const x = (await wireWorld());
   const { encodeHeader } = await import("./conformanceFixture.js");
   const opened = (await wire.openWireEnvelope(encodeHeader(x.signed(x.request)), "request", x.context));
-  for (const patch of [{ artifacts: {} }, { rawBody: "{}" }]) await expect(Promise.resolve().then(async () => (await wire.checkWireRequest(opened, { ...x.context,
+  for (const patch of [{ artifacts: {} }, { rawBody: "{}" }]) await expect(Promise.resolve().then(async () => (await checkAndReserve(opened, { ...x.context,
     seller: x.seller.claim, listingPin: x.pin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now: NOW,
     retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim }, ...patch } as any)))).rejects
     .toThrowError(expect.objectContaining({ code: "wire_input_invalid", status: 500 }));

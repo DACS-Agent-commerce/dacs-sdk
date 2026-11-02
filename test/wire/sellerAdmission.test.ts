@@ -6,6 +6,8 @@ import { ed25519Sign, privateKeyFromSeed } from "../../src/crypto/ed25519.js";
 import * as wire from "../../src/wire/index.js";
 import { committedPurchase, BUYER_SEED, bytes } from "./committedPurchaseFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
+import { stageAllocation } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 async function fixture(path: string = "/dacs/v1/payments") {
   const p = await committedPurchase(), binding = p.scope.binding, local = binding.local;
@@ -20,7 +22,7 @@ async function fixture(path: string = "/dacs/v1/payments") {
   };
   const check: wire.RequestCheck = { binding, local, purchaseProfile: binding.profile, seller: p.scope.seller, listingPin: p.scope.listingPin,
     method: "POST", path, now: p.scope.now, rawBody: Buffer.from("{}"), ready: true,
-    retained: { ...p.scope.request, seller: p.scope.seller }, requestJournal: journal,
+    retained: { ...p.scope.request, seller: p.scope.seller, ...stageAllocation(path) }, requestJournal: journal,
     commitment: bytes(p.anchored), agreement: bytes(p.agreement), signedListing: bytes(p.listing),
     readCommitmentReceipt: Object.assign(async () => "valid", { chainIdentity: binding.profile.chainIdentity }) };
   const reservations = () => readdirSync(journal.directory).filter((name) => name.startsWith("k-"));
@@ -30,11 +32,11 @@ async function fixture(path: string = "/dacs/v1/payments") {
 it.each(wireDiscovery.CONTINUING_PATHS)("%s requires the verified Agreement before reserving any effect", async (path) => {
   const f = await fixture(path), opened = await f.open();
   for (const agreement of [undefined, Buffer.from("{}"), bytes({ ...f.p.agreement, signatures: [] })]) {
-    await expect(Promise.resolve().then(() => wire.checkWireRequest(opened, { ...f.check, agreement })))
+    await expect(Promise.resolve().then(() => checkAndReserve(opened, { ...f.check, agreement })))
       .rejects.toMatchObject({ code: "continuation_agreement_invalid" });
     expect(f.reservations()).toEqual([]);
   }
-  expect((await wire.checkWireRequest(opened, f.check)).effect?.state).toBe("new");
+  expect((await checkAndReserve(opened, f.check)).effect?.state).toBe("new");
 });
 
 it("reserves nothing while a receipt verdict is pending or after it rejects", async () => {
@@ -44,7 +46,7 @@ it("reserves nothing while a receipt verdict is pending or after it rejects", as
   const receipt = new Promise<string>((resolve) => { release = resolve; });
   f.check.readCommitmentReceipt = Object.assign(async () => { if (!enter) throw new Error("missing barrier"); enter(); return receipt; },
     { chainIdentity: f.p.scope.binding.profile.chainIdentity });
-  const pending = Promise.resolve().then(() => wire.checkWireRequest(opened, f.check));
+  const pending = Promise.resolve().then(() => checkAndReserve(opened, f.check));
   // A broken gate may return a runnable effect before entering the reader.
   await Promise.race([entered, pending.then(() => { throw new Error("effect issued before receipt verification"); })]);
   expect(f.reservations()).toEqual([]);
@@ -56,7 +58,7 @@ it("reserves nothing while a receipt verdict is pending or after it rejects", as
 
 it("refuses new purchases when the seller drains, before reserving an effect", async () => {
   const f = await fixture("/dacs/v1/commitments");
-  await expect(Promise.resolve().then(async () => wire.checkWireRequest(await f.open(), { ...f.check, ready: false })))
+  await expect(Promise.resolve().then(async () => checkAndReserve(await f.open(), { ...f.check, ready: false })))
     .rejects.toMatchObject({ code: "seller_not_ready" });
   expect(f.reservations()).toEqual([]);
 });
@@ -65,7 +67,7 @@ it.each(["jobId", "agreementHash", "buyer", "seller"] as const)("rejects a retai
   const f = await fixture("/dacs/v1/commitments");
   if (!f.check.retained) throw new Error("missing retained fixture");
   const retained = { ...f.check.retained, [field]: field === "jobId" ? "01J8ME0SXKQ4T9V2RC5HJ6WX7F" : field === "agreementHash" ? "0".repeat(64) : `did:demos:agent:${"f".repeat(64)}` };
-  await expect(Promise.resolve().then(async () => wire.checkWireRequest(await f.open(), { ...f.check, retained })))
+  await expect(Promise.resolve().then(async () => checkAndReserve(await f.open(), { ...f.check, retained })))
     .rejects.toMatchObject({ code: field === "jobId" ? "peer_job_mismatch" : field === "agreementHash" ? "peer_agreement_mismatch" : "peer_agreement_party_mismatch" });
   expect(f.reservations()).toEqual([]);
 });
@@ -73,7 +75,7 @@ it.each(["jobId", "agreementHash", "buyer", "seller"] as const)("rejects a retai
 it("requires an issued restart-qualified journal instead of a host-made handle", async () => {
   const f = await fixture("/dacs/v1/commitments"), opened = await f.open();
   for (const requestJournal of [undefined, Object.freeze({ directory: f.journal.directory })]) {
-    await expect(Promise.resolve().then(() => wire.checkWireRequest(opened, { ...f.check, requestJournal })))
+    await expect(Promise.resolve().then(() => checkAndReserve(opened, { ...f.check, requestJournal })))
       .rejects.toMatchObject({ code: "seller_replay_guard_required" });
   }
   expect(f.reservations()).toEqual([]);
@@ -81,10 +83,10 @@ it("requires an issued restart-qualified journal instead of a host-made handle",
 
 it("keeps one completed operation for a job and path across changed bodies and nonces", async () => {
   const f = await fixture("/dacs/v1/commitments");
-  const first = await wire.checkWireRequest(await f.open(), f.check);
+  const first = await checkAndReserve(await f.open(), f.check);
   if (!first.effect || first.effect.state !== "new") throw new Error("expected issued effect");
   wire.completeWireEffect(f.journal, first.effect, { status: 200, text: "{}" });
   const text = '{"changed":true}';
-  const second = await wire.checkWireRequest(await f.open(text), { ...f.check, rawBody: Buffer.from(text) });
+  const second = await checkAndReserve(await f.open(text), { ...f.check, rawBody: Buffer.from(text) });
   expect(second.effect).toMatchObject({ state: "completed", operationId: first.effect.operationId });
 });

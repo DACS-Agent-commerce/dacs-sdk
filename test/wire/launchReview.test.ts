@@ -9,6 +9,8 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 import * as wire from "../../src/wire/index.js";
 import { walletSignatureBytes } from "../../src/wire/validate.js";
+import { stageAllocation } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 vi.setConfig({ testTimeout: 60_000 });
 afterAll(() => vi.resetConfig());
@@ -51,7 +53,7 @@ async function world(path = "/dacs/v1/payments") {
   /** The buyer-signed (undelegated) request header. */
   const direct = () => header(signed(request, buyer, wire.DACS_SELLER_HTTP_DOMAINS.request));
   /** What the seller host retained for the job: its own record, not read from the request. */
-  const retained = { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash, buyer: buyer.claim, seller: seller.claim };
+  const retained = { jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4H", agreementHash, buyer: buyer.claim, seller: seller.claim, ...stageAllocation(path) };
   // The job's finalized commitment, which the seller read itself: payment and delivery routes need it.
   const commitment = wireCommitment({ seller, buyer: buyer.claim, jobId: retained.jobId, agreementHash: retained.agreementHash, listingPin: PIN, committedAt: NOW - 5000 });
   const check = { ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from("{}"), now: NOW, retained, ready: true,
@@ -62,34 +64,34 @@ async function world(path = "/dacs/v1/payments") {
 describe("effect request replay reservations", () => {
   it.each(["/dacs/v1/payments", "/dacs/v1/commitments"])("%s requires the SDK's journal and refuses replays across reopen and nonce reuse", async (path) => {
     const x = (await world(path));
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), x.check)))).rejects.toThrowError(expect.objectContaining({ code: "seller_replay_guard_required" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), x.check)))).rejects.toThrowError(expect.objectContaining({ code: "seller_replay_guard_required" }));
     const directory = journalDirectory();
     const check = { ...x.check, requestJournal: openJournal(directory) };
-    expect((await wire.checkWireRequest((await x.open()), check))).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new", attempt: 0 }) });
+    expect((await checkAndReserve((await x.open()), check))).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new", attempt: 0 }) });
     const { profile, buyer, agreementHash } = x.request;
     expect(reservationsIn(directory)).toEqual([{ key: expect.any(String), operationId: wire.wireOperationId(x.request),
       binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wire.wireRequestHash(x.request) }]);
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), check)))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), check)))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
     // Another worker opening another request under the same nonce uses the same journal directory.
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open({ ...x.request, expiresAt: NOW + 20_000 })), { ...check, requestJournal: openJournal(directory) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open({ ...x.request, expiresAt: NOW + 20_000 })), { ...check, requestJournal: openJournal(directory) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
     // A fresh nonce is the same operation, still held by its first attempt.
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open({ ...x.request, nonce: "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA" })), check)))).rejects.toThrowError(expect.objectContaining({ code: "seller_effect_pending", status: 503 }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open({ ...x.request, nonce: "FxYVFBMSERAPDg0MCwoJCAcGBQQDAgEA" })), check)))).rejects.toThrowError(expect.objectContaining({ code: "seller_effect_pending", status: 503 }));
   });
 
   it("does not reserve invalid requests or require reservations for read routes", async () => {
     const x = (await world()), reserveRequest = testJournals();
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...x.check, rawBody: Buffer.from('{"changed":true}'), requestJournal: (await reserveRequest.open()) })))).rejects.toThrow();
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...x.check, rawBody: Buffer.from('{"changed":true}'), requestJournal: (await reserveRequest.open()) })))).rejects.toThrow();
     expect(reserveRequest.reservations()).toHaveLength(0);
     const read = (await world("/dacs/v1/agreements/state"));
-    expect((await wire.checkWireRequest((await read.open()), read.check)).readbackOnly).toBe(false);
+    expect((await checkAndReserve((await read.open()), read.check)).readbackOnly).toBe(false);
   });
 
   it("reserves a live delegated effect request once and refuses its replay", async () => {
     const x = (await world());
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated()), { ...x.check, artifacts: [x.artifact] })))).rejects.toThrowError(expect.objectContaining({ code: "seller_replay_guard_required" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated()), { ...x.check, artifacts: [x.artifact] })))).rejects.toThrowError(expect.objectContaining({ code: "seller_replay_guard_required" }));
     const directory = journalDirectory();
     const check = { ...x.check, artifacts: [x.artifact], requestJournal: openJournal(directory) };
-    expect((await wire.checkWireRequest((await x.delegated()), check))).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
+    expect((await checkAndReserve((await x.delegated()), check))).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
     const { profile, jobId, agreementHash, path } = x.request;
     expect(reservationsIn(directory)).toEqual([{
       key: sha256Hex(canonicalize({ buyer: x.buyer.claim, seller: x.seller.claim, profile: x.request.profile, nonce: x.request.nonce })),
@@ -97,7 +99,7 @@ describe("effect request replay reservations", () => {
       binding: sha256Hex(canonicalize({ profile, buyer: x.buyer.claim, agreementHash })),
       requestHash: wire.wireRequestHash(x.request),
     }]);
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated()), check)))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated()), check)))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed" }));
     expect(reservationsIn(directory)).toHaveLength(1);
   });
 
@@ -125,9 +127,9 @@ describe("effect request replay reservations", () => {
       const directory = journalDirectory();
       const at = (now: number) => ({ ...x.check, now, requestJournal: openJournal(directory), ...(mode === "delegated" ? { artifacts: [x.artifact] } : {}) });
       const opened = async () => (mode === "delegated" ? (await x.delegated()) : (await x.open()));
-      expect((await wire.checkWireRequest((await opened()), at(NOW))).readbackOnly).toBe(false);
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await opened()), at(x.request.expiresAt - 1))))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await opened()), at(x.request.expiresAt))))).rejects.toThrowError(expect.objectContaining({ code: "peer_expired", status: 408 }));
+      expect((await checkAndReserve((await opened()), at(NOW))).readbackOnly).toBe(false);
+      await expect(Promise.resolve().then(async () => (await checkAndReserve((await opened()), at(x.request.expiresAt - 1))))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
+      await expect(Promise.resolve().then(async () => (await checkAndReserve((await opened()), at(x.request.expiresAt))))).rejects.toThrowError(expect.objectContaining({ code: "peer_expired", status: 408 }));
       expect(reservationsIn(directory)).toHaveLength(1);
     } finally {
       monotonic.mockRestore();
@@ -159,7 +161,7 @@ describe("effect request replay reservations", () => {
     for (const [name, plant, detail] of cases) {
       const directory = journalDirectory();
       plant(directory);
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...x.check, requestJournal: openJournal(directory) }))), name).rejects
+      await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...x.check, requestJournal: openJournal(directory) }))), name).rejects
         .toThrowError(expect.objectContaining({ code: "seller_replay_guard_invalid", status: 500, detail }));
       expect(existsSync(join(directory, `k-${key}`)), name).toBe(true);
       expect(existsSync(join(directory, `o-${operationId}-1`)), name).toBe(false);
@@ -173,8 +175,8 @@ describe("exchange and delegation scope bindings", () => {
     ["method", { method: "GET" }],
   ])("refuses a request signed for another %s before reservation", async (_name, change) => {
     const x = (await world("/dacs/v1/agreements/state")), reserveRequest = testJournals();
-    expect((await wire.checkWireRequest((await x.open()), { ...x.check, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...x.check, ...change, requestJournal: (await reserveRequest.open()) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_mismatch" }));
+    expect((await checkAndReserve((await x.open()), { ...x.check, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...x.check, ...change, requestJournal: (await reserveRequest.open()) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_mismatch" }));
     expect(reserveRequest.reservations()).toHaveLength(0);
   });
 
@@ -188,12 +190,12 @@ describe("exchange and delegation scope bindings", () => {
 
   it("checkWireRequest alone refuses a buyer-signed request when it requires a delegation, before reservation", async () => {
     const x = (await world()), reserveRequest = testJournals();
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...x.check, requireDelegation: true, requestJournal: (await reserveRequest.open()) })))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...x.check, requireDelegation: true, requestJournal: (await reserveRequest.open()) })))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_delegation_required", status: 401 }));
     expect(reserveRequest.reservations()).toHaveLength(0);
     // Controls: the same request without the requirement, and a delegated one with it, each reserve once.
-    expect((await wire.checkWireRequest((await x.open()), { ...x.check, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
-    expect((await wire.checkWireRequest((await x.delegated()), { ...x.check, requireDelegation: true, artifacts: [x.artifact], requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
+    expect((await checkAndReserve((await x.open()), { ...x.check, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
+    expect((await checkAndReserve((await x.delegated()), { ...x.check, requireDelegation: true, artifacts: [x.artifact], requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
     expect(reserveRequest.reservations()).toHaveLength(2);
   });
 
@@ -212,16 +214,16 @@ describe("exchange and delegation scope bindings", () => {
 describe("delegated Agreement context", () => {
   it.each([[undefined], [[]], [[null]]])("refuses missing Agreement context %j before reserving an effect", async (artifacts) => {
     const x = (await world()), reserveRequest = testJournals();
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated()), { ...x.check, artifacts, requestJournal: (await reserveRequest.open()) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_required" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated()), { ...x.check, artifacts, requestJournal: (await reserveRequest.open()) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_required" }));
     expect(reserveRequest.reservations()).toHaveLength(0);
   });
 
   it("binds a delegated request to the host's retained parties and deadline before reservation", async () => {
     const x = (await world()), reserveRequest = testJournals(), opened = (await x.delegated());
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest(opened, { ...x.check, artifacts: [{ ...x.artifact, terms: { deadline: NOW + 59_999 } }], requestJournal: (await reserveRequest.open()) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_deadline" }));
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest(opened, { ...x.check, artifacts: [{ ...x.artifact, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4J" }], requestJournal: (await reserveRequest.open()) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve(opened, { ...x.check, artifacts: [{ ...x.artifact, terms: { deadline: NOW + 59_999 } }], requestJournal: (await reserveRequest.open()) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_deadline" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve(opened, { ...x.check, artifacts: [{ ...x.artifact, jobId: "01K7FZ8Q9W3V5T2R1N0M8K6J4J" }], requestJournal: (await reserveRequest.open()) })))).rejects.toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
     expect(reserveRequest.reservations()).toHaveLength(0);
-    expect((await wire.checkWireRequest(opened, { ...x.check, artifacts: [x.artifact], requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
+    expect((await checkAndReserve(opened, { ...x.check, artifacts: [x.artifact], requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
   });
 
   it.each([
@@ -232,7 +234,7 @@ describe("delegated Agreement context", () => {
     ["the parties' roles swapped", (b: any, s: any) => [{ ...b, role: "seller" }, { ...s, role: "buyer" }]],
   ])("refuses a retained Agreement naming %s before reservation", async (_name, parties) => {
     const x = (await world()), reserveRequest = testJournals(), [b, s] = x.artifact.parties;
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated()), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], requestJournal: (await reserveRequest.open()) })))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated()), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], requestJournal: (await reserveRequest.open()) })))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_delegation_agreement_mismatch" }));
     expect(reserveRequest.reservations()).toHaveLength(0);
   });
@@ -240,10 +242,10 @@ describe("delegated Agreement context", () => {
   it("accepts a delegated request expiring exactly at its delegation only when it names the retained Agreement", async () => {
     const x = (await world()), reserveRequest = testJournals(), artifacts = [x.artifact];
     const signed = { ...x.request, expiresAt: NOW + 60_000 };
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated({ ...signed, agreementHash: "b".repeat(64) })), { ...x.check, artifacts, requestJournal: (await reserveRequest.open()) })))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated({ ...signed, agreementHash: "b".repeat(64) })), { ...x.check, artifacts, requestJournal: (await reserveRequest.open()) })))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
     expect(reserveRequest.reservations()).toHaveLength(0);
-    expect((await wire.checkWireRequest((await x.delegated(signed)), { ...x.check, artifacts, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
+    expect((await checkAndReserve((await x.delegated(signed)), { ...x.check, artifacts, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
   });
 
   it.each([
@@ -251,12 +253,12 @@ describe("delegated Agreement context", () => {
     ["a null entry first", (b: unknown, s: unknown) => [null, b, s]],
   ])("finds each party by role, not by position (%s)", async (_name, parties) => {
     const x = (await world()), [b, s] = x.artifact.parties;
-    expect((await wire.checkWireRequest((await x.delegated()), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], requestJournal: (await testJournals().open()) })).readbackOnly).toBe(false);
+    expect((await checkAndReserve((await x.delegated()), { ...x.check, artifacts: [{ ...x.artifact, parties: parties(b, s) }], requestJournal: (await testJournals().open()) })).readbackOnly).toBe(false);
   });
 
   it("refuses a retained Agreement without terms with its own code, before reservation", async () => {
     const x = (await world()), reserveRequest = testJournals(), { terms: _terms, ...withoutTerms } = x.artifact;
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated()), { ...x.check, artifacts: [withoutTerms], requestJournal: (await reserveRequest.open()) })))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated()), { ...x.check, artifacts: [withoutTerms], requestJournal: (await reserveRequest.open()) })))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_delegation_deadline", status: 409 }));
     expect(reserveRequest.reservations()).toHaveLength(0);
   });
@@ -264,7 +266,7 @@ describe("delegated Agreement context", () => {
   it("accepts a delegated request that expires exactly when its delegation does", async () => {
     // world()'s delegation expires at NOW + 60 000; a request outliving it is refused (request/delegated-outlives-delegation).
     const x = (await world()), reserveRequest = testJournals(), artifacts = [x.artifact];
-    expect((await wire.checkWireRequest((await x.delegated({ ...x.request, expiresAt: NOW + 60_000 })), { ...x.check, artifacts, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
+    expect((await checkAndReserve((await x.delegated({ ...x.request, expiresAt: NOW + 60_000 })), { ...x.check, artifacts, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
     expect(reserveRequest.reservations()).toHaveLength(1);
   });
 });
@@ -279,52 +281,52 @@ describe("the job and Agreement the host retained", () => {
       const x = (await world(path)), mallory = party(), reserveRequest = testJournals();
       const signedHeader = x.signed({ ...x.request, buyer: mallory.claim }, mallory, wire.DACS_SELLER_HTTP_DOMAINS.request);
       const opened = (await wire.openWireEnvelope(Buffer.from(canonicalize(signedHeader)).toString("base64url"), "request", x.context));
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest(opened, { ...x.check, requestJournal: (await reserveRequest.open()) })))).rejects
+      await expect(Promise.resolve().then(async () => (await checkAndReserve(opened, { ...x.check, requestJournal: (await reserveRequest.open()) })))).rejects
         .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
       // The host's record is what is compared: the job's own buyer is refused under another retained buyer or seller.
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...x.check, retained: { ...x.retained, buyer: mallory.claim }, requestJournal: (await reserveRequest.open()) })))).rejects
+      await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...x.check, retained: { ...x.retained, buyer: mallory.claim }, requestJournal: (await reserveRequest.open()) })))).rejects
         .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...x.check, retained: { ...x.retained, seller: mallory.claim }, requestJournal: (await reserveRequest.open()) })))).rejects
+      await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...x.check, retained: { ...x.retained, seller: mallory.claim }, requestJournal: (await reserveRequest.open()) })))).rejects
         .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated()), { ...x.check, artifacts: [x.artifact], retained: { ...x.retained, buyer: mallory.claim }, requestJournal: (await reserveRequest.open()) })))).rejects
+      await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated()), { ...x.check, artifacts: [x.artifact], retained: { ...x.retained, buyer: mallory.claim }, requestJournal: (await reserveRequest.open()) })))).rejects
         .toThrowError(expect.objectContaining({ code: "peer_agreement_party_mismatch", status: 409 }));
       expect(reserveRequest.reservations()).toHaveLength(0);
-      expect((await wire.checkWireRequest((await x.open()), { ...x.check, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
+      expect((await checkAndReserve((await x.open()), { ...x.check, requestJournal: (await reserveRequest.open()) })).readbackOnly).toBe(false);
     });
 
   it.each(effects)("%s: a correctly signed direct request naming another Agreement or job makes no reservation", async (path) => {
     const x = (await world(path)), reserveRequest = testJournals(), check = { ...x.check, requestJournal: (await reserveRequest.open()) };
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open({ ...x.request, agreementHash: "b".repeat(64) })), check)))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open({ ...x.request, agreementHash: "b".repeat(64) })), check)))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open({ ...x.request, jobId: OTHER_JOB })), check)))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open({ ...x.request, jobId: OTHER_JOB })), check)))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_job_mismatch", status: 409 }));
     // The host's record is what is compared: the same signed request is refused under another retained hash.
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...check, retained: { ...x.retained, agreementHash: "b".repeat(64) } })))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...check, retained: { ...x.retained, agreementHash: "b".repeat(64) } })))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
     expect(reserveRequest.reservations()).toHaveLength(0);
-    expect((await wire.checkWireRequest((await x.open()), check))).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
+    expect((await checkAndReserve((await x.open()), check))).toEqual({ body: {}, readbackOnly: false, effect: expect.objectContaining({ state: "new" }) });
     expect(reserveRequest.reservations()).toHaveLength(1);
   });
 
   it.each(effects)("%s: a delegated request naming another Agreement or job makes no reservation", async (path) => {
     const x = (await world(path)), reserveRequest = testJournals(), check = { ...x.check, artifacts: [x.artifact], requestJournal: (await reserveRequest.open()) };
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated({ ...x.request, agreementHash: "b".repeat(64) })), check)))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated({ ...x.request, agreementHash: "b".repeat(64) })), check)))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch", status: 409 }));
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated({ ...x.request, jobId: OTHER_JOB })), check)))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated({ ...x.request, jobId: OTHER_JOB })), check)))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_delegation_mismatch", status: 409 }));
     expect(reserveRequest.reservations()).toHaveLength(0);
-    expect((await wire.checkWireRequest((await x.delegated()), check)).readbackOnly).toBe(false);
+    expect((await checkAndReserve((await x.delegated()), check)).readbackOnly).toBe(false);
     expect(reserveRequest.reservations()).toHaveLength(1);
   });
 
   it.each(["/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"])("%s: read routes compare it too, including expired-delegation readback", async (path) => {
     const x = (await world(path)), later = { ...x.check, artifacts: [x.artifact], now: NOW + 60_000 };
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open({ ...x.request, agreementHash: "b".repeat(64) })), x.check)))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open({ ...x.request, agreementHash: "b".repeat(64) })), x.check)))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch" }));
     const readback = { ...x.request, expiresAt: NOW + 90_000 };
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated({ ...readback, agreementHash: "b".repeat(64) })), later)))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated({ ...readback, agreementHash: "b".repeat(64) })), later)))).rejects
       .toThrowError(expect.objectContaining({ code: "peer_agreement_mismatch" }));
-    expect((await wire.checkWireRequest((await x.delegated(readback)), later)).readbackOnly).toBe(true);
+    expect((await checkAndReserve((await x.delegated(readback)), later)).readbackOnly).toBe(true);
   });
 
   it.each([
@@ -345,9 +347,9 @@ describe("the job and Agreement the host retained", () => {
   ])("refuses a retained Agreement %s, on effect and read routes, before reservation", async (_name, retained) => {
     for (const path of [...effects, "/dacs/v1/agreements/state"]) {
       const x = (await world(path)), reserveRequest = testJournals();
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...x.check, retained: retained as never, requestJournal: (await reserveRequest.open()) })))).rejects
+      await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...x.check, retained: retained as never, requestJournal: (await reserveRequest.open()) })))).rejects
         .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
-      await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.delegated()), { ...x.check, artifacts: [x.artifact], retained: retained as never, requestJournal: (await reserveRequest.open()) })))).rejects
+      await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.delegated()), { ...x.check, artifacts: [x.artifact], retained: retained as never, requestJournal: (await reserveRequest.open()) })))).rejects
         .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
       expect(reserveRequest.reservations()).toHaveLength(0);
     }
@@ -357,7 +359,7 @@ describe("the job and Agreement the host retained", () => {
     const x = (await world()), reserveRequest = testJournals();
     let reads = 0;
     const retained = { jobId: x.retained.jobId, buyer: x.retained.buyer, seller: x.retained.seller, get agreementHash() { return ++reads === 1 ? x.retained.agreementHash : "b".repeat(64); } };
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open()), { ...x.check, retained, requestJournal: (await reserveRequest.open()) })))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open()), { ...x.check, retained, requestJournal: (await reserveRequest.open()) })))).rejects
       .toThrowError(expect.objectContaining({ code: "seller_retained_agreement_required", status: 500 }));
     expect(reserveRequest.reservations()).toHaveLength(0);
   });
@@ -375,7 +377,7 @@ describe("body admission refuses JSON that is not an object", () => {
 
   it("refuses a correctly signed non-object request body before reservation", async () => {
     const x = (await world()), reserveRequest = testJournals();
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.open({ ...x.request, bodyHash: sha256Hex("[]") })), { ...x.check, rawBody: Buffer.from("[]"), requestJournal: (await reserveRequest.open()) })))).rejects
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.open({ ...x.request, bodyHash: sha256Hex("[]") })), { ...x.check, rawBody: Buffer.from("[]"), requestJournal: (await reserveRequest.open()) })))).rejects
       .toThrowError(expect.objectContaining({ code: "bad_request", status: 400 }));
     expect(reserveRequest.reservations()).toHaveLength(0);
   });

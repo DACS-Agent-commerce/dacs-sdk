@@ -56,10 +56,11 @@ async function runJournalWorker(): Promise<void> {
     for (const { path, body, envelope } of opened) {
       let effect: wire.WireEffect | null;
       try {
-        effect = (await wire.checkWireRequest(envelope, { ...context, requestJournal: journal, seller: input.seller, listingPin: input.listingPin,
+        const { reserve } = (await wire.checkWireRequest(envelope, { ...context, requestJournal: journal, seller: input.seller, listingPin: input.listingPin,
           method: "POST", path, rawBody: Buffer.from(body), now: input.now, retained: kept,
           commitment: Buffer.from(JSON.stringify(input.commitment)), agreement: Buffer.from(JSON.stringify(input.agreement)),
-          signedListing: Buffer.from(JSON.stringify(input.signedListing)), readCommitmentReceipt: Object.assign(() => "valid", { chainIdentity: binding.profile.chainIdentity }) })).effect;
+          signedListing: Buffer.from(JSON.stringify(input.signedListing)), readCommitmentReceipt: Object.assign(() => "valid", { chainIdentity: binding.profile.chainIdentity }) }));
+        effect = reserve === null ? null : await reserve();
       } catch (error) {
         if (error instanceof wire.WireError) { verdicts.push(error.code); continue; }
         throw error;

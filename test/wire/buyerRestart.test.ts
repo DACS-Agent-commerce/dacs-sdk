@@ -8,6 +8,7 @@ import { ed25519Sign, privateKeyFromSeed } from "../../src/crypto/ed25519.js";
 import { committedPurchase, BUYER_SEED, SELLER_SEED, COMMITTED_AT, bytes } from "./committedPurchaseFixture.js";
 import { journalDirectory, journalFixture } from "./requestJournalFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 it("a fresh buyer process rechecks retained bytes and reuses the seller's completed operation", async () => {
   const p = await committedPurchase((listing) => { listing.seller.publicEndpoint = "https://seller.restart.invalid"; });
@@ -36,7 +37,7 @@ it("a fresh buyer process rechecks retained bytes and reuses the seller's comple
     requestJournal: journal, ...evidence,
     readCommitmentReceipt: Object.assign(() => { serverReads++; return "valid"; }, { chainIdentity: binding.profile.chainIdentity }) };
   const open = (header: string) => wire.openWireEnvelope(header, "request", { binding, local, purchaseProfile: binding.profile });
-  const issued = await wire.checkWireRequest(await open(first.header), check);
+  const issued = await checkAndReserve(await open(first.header), check);
   if (!issued.effect || issued.effect.state !== "new") throw new Error("expected first effect");
   wire.completeWireEffect(journal, issued.effect, { status: 200, text: '{"retained":true}' });
 
@@ -61,7 +62,7 @@ it("a fresh buyer process rechecks retained bytes and reuses the seller's comple
     throw new Error("invalid isolated buyer result");
   }
   expect(answer.pid).not.toBe(process.pid);
-  const repeated = await wire.checkWireRequest(await open(answer.header), check);
+  const repeated = await checkAndReserve(await open(answer.header), check);
   expect(repeated.effect).toMatchObject({ state: "completed", operationId: issued.effect.operationId, outcome: { status: 200, text: '{"retained":true}' } });
   expect(serverReads).toBe(2);
 }, 60_000);
