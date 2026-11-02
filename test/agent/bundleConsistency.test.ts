@@ -9,7 +9,7 @@ import {
   bundlesDiverge,
   lookupBundleCopies,
 } from "../../src/agent/bundleConsistency.js";
-import { bundleAddress } from "../../src/canonical/addressing.js";
+import { legacyBundleAddress as bundleAddress } from "../../src/canonical/addressing.js";
 
 const CONF = join(
   dirname(fileURLToPath(import.meta.url)),

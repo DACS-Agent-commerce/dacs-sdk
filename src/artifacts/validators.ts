@@ -46,7 +46,7 @@ import type {
 import { canonicalizeDecimal } from "../canonical/decimal.js";
 import {
   assertPositiveAmount,
-  bundleAddress,
+  legacyBundleAddress,
   canonicalize,
   stripSignature,
 } from "../canonical/index.js";
@@ -2274,7 +2274,7 @@ export function isBundleBinding(v: unknown): v is BundleBinding {
     isComponentSignature(v.signature) &&
     v.signature.signer === v.signer &&
     v.logicalAddress ===
-      bundleAddress(v.jobId as string, v.role as "buyer" | "seller" | "orchestrator")
+      legacyBundleAddress(v.jobId as string, v.role as "buyer" | "seller" | "orchestrator")
   );
 }
 

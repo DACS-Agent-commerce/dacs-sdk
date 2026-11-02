@@ -1,4 +1,4 @@
-import { bundleAddress } from "../canonical/addressing.js";
+import { legacyBundleAddress } from "../canonical/addressing.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
@@ -184,7 +184,7 @@ export async function lookupBundleCopies(
   const lookup = async (role: BundleRole): Promise<BundleCopyRead> => {
     try {
       return captureBundleCopyRead(
-        await read(bundleAddress(jobId, role), role),
+        await read(legacyBundleAddress(jobId, role), role),
         jobId,
         role,
       );

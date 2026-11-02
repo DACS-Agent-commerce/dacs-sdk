@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertPositiveAmount,
-  attestationAddress,
-  bundleAddress,
+  legacyAttestationAddress as attestationAddress,
+  legacyBundleAddress as bundleAddress,
   canonicalSignedScope,
   canonicalize,
   canonicalizeDecimal,
@@ -15,8 +15,8 @@ import {
   decodeAddressSegment,
   encodeAddressSegment,
   listingAddress,
-  paymentEvidenceAddress,
-  ratingAddress,
+  legacyPaymentEvidenceAddress as paymentEvidenceAddress,
+  legacyRatingAddress as ratingAddress,
   sha256Hex,
   stripSignature,
 } from "../../src/canonical/index.js";

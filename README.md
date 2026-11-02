@@ -937,6 +937,14 @@ address grammar. New code should use the typed address helper exported by the
 relevant producer, such as `compositeVerificationAddress`,
 `fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
 
+The public `attestationAddress`, `paymentEvidenceAddress`, `ratingAddress`, and
+`bundleAddress` builders validate a canonical JID-1 uppercase ULID before
+assembling an address or hashing a job-specific preimage. The `jid1*` helpers
+retain the same boundary. To read historical non-JID-1 artifacts, select
+`legacyAttestationAddress`, `legacyPaymentEvidenceAddress`, `legacyRatingAddress`,
+or `legacyBundleAddress` explicitly; these preserve the historical address bytes
+and segment checks. New current-profile jobs use the public builders.
+
 ## Doctor
 
 The package ships a read-only preflight command:
