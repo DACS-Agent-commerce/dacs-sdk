@@ -1,0 +1,323 @@
+{
+  "packages/dacs-client/scripts/check-provenance.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/scripts/check-provenance.test.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-client/scripts/copy-verbatim.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/scripts/delta-map.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/src/config.mjs": {
+    "no-undef": {
+      "count": 3
+    }
+  },
+  "packages/dacs-client/src/dacs/buyer-chain-readback.mjs": {
+    "no-unused-vars": {
+      "count": 4
+    }
+  },
+  "packages/dacs-client/src/dacs/dem-delivery-consumer.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs": {
+    "no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-client/src/dacs/protocol-purchases.mjs": {
+    "no-unused-vars": {
+      "count": 4
+    }
+  },
+  "packages/dacs-client/src/dacs/purchase-protocol.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    },
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/src/dacs/seller-agent.mjs": {
+    "no-unused-vars": {
+      "count": 9
+    }
+  },
+  "packages/dacs-client/src/dacs/seller-durable-state.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-client/src/dacs/seller-transport-auth.mjs": {
+    "no-unused-vars": {
+      "count": 4
+    }
+  },
+  "packages/dacs-client/src/devnet-demo/native-delivery.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-client/src/devnet-demo/operator-approval.mjs": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/src/purchases.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-client/src/seams/buyer-access-not-wired.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/src/seams/purchase-store-not-wired.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-client/src/seams/seller-integration-not-wired.mjs": {
+    "no-unused-vars": {
+      "count": 4
+    }
+  },
+  "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-client/src/wallet/devnet-native-transport.mjs": {
+    "no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-client/test/buyer-chain-indeterminate.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/fixtures/authorization-server.pre-dcr-logout.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    },
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/fixtures/seller-durable-state.main-06958bb.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-client/test/helpers/commitment-node-junk.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/helpers/devnet-live-composition-app.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/helpers/model-report.mjs": {
+    "no-misleading-character-class": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/helpers/native-settlement-consumer-seller.mjs": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/helpers/party-vet-fixture.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/helpers/public-sr2-projection-flow.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/helpers/review-node2-current-coverage-fixture.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/helpers/showcase-safety-fixture.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/readback-review-decisions.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/sweep-contracts.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/demosRuntime.ts": {
+    "no-useless-assignment": {
+      "count": 2
+    }
+  },
+  "packages/dacs-node/src/evmRuntime.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/publicJson.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/src/readiness.ts": {
+    "no-useless-assignment": {
+      "count": 2
+    }
+  },
+  "packages/dacs-node/src/sqliteTransport.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-node/test/fixedPricePayDemProfile.test.ts": {
+    "@typescript-eslint/await-thenable": {
+      "count": 3
+    }
+  },
+  "scripts/verify-pr303-test-effectiveness.mjs": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "src/agent/compositeVerification.ts": {
+    "no-useless-assignment": {
+      "count": 3
+    }
+  },
+  "src/agent/fencedSessionStoreFs.ts": {
+    "no-unsafe-finally": {
+      "count": 1
+    }
+  },
+  "src/agent/runDurableFulfilmentCore.ts": {
+    "no-useless-assignment": {
+      "count": 2
+    }
+  },
+  "src/agent/runSessionCore.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "src/agent/sessionSettlement.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "src/agent/sessionStoreFs.ts": {
+    "no-unsafe-finally": {
+      "count": 1
+    }
+  },
+  "src/agent/vetCore.ts": {
+    "no-useless-assignment": {
+      "count": 2
+    }
+  },
+  "src/identity/demosCci.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "src/identity/domainClaimVerification.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "src/negotiate/durableFixedPriceExchange.ts": {
+    "no-unused-private-class-members": {
+      "count": 1
+    }
+  },
+  "src/rails/payAlternative.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "src/rails/walletSpendAuthorityFs.ts": {
+    "no-unsafe-finally": {
+      "count": 1
+    }
+  },
+  "src/rails/x402PaywallSettlementFs.ts": {
+    "no-unsafe-finally": {
+      "count": 1
+    }
+  },
+  "src/substrate/DemosAdapter.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "test/agent/fencedSessionStore.test.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "test/agent/sessionStore.test.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "test/canonical/jcs.test.ts": {
+    "no-loss-of-precision": {
+      "count": 1
+    }
+  },
+  "test/e2e/localChainTwoSidedBundle.e2e.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 1
+    }
+  },
+  "test/identity/domainClaimVerification.test.ts": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "test/integration/funded-two-agent.e2e.test.ts": {
+    "no-useless-assignment": {
+      "count": 2
+    }
+  },
+  "test/rails/x402Paywall.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 2
+    }
+  },
+  "test/seller/durableBundleFinalization.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 1
+    }
+  }
+}
