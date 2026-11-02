@@ -25,8 +25,8 @@ export async function recordFor(input,signer=buyer,decision='pass',claim=signer.
  return signComponentArtifact({recordVersion:'1',jobId:input.jobId,evaluatedParty:input.identityBundle.presentedBy,bundleHash:identityBundleHash(input.identityBundle),requirementHash:sha256Hex(canonicalize(input.requirement)),freshness:[],supplementary:[],dealSpecific:[],overallDecision:decision,generatedAt:NOW},ARTIFACT_SEPARATORS.CompositeVerificationRecord,{signer:claim,algorithm:'ed25519',sign:signer.signBytes});
 }
 export function productionFixture(options={}){
- const base=createInMemoryPartyVetStore(options),local=localAnchor({now:()=>NOW}),seen=[],issued=new Map(),evaluations=new Map();let nonceSequence=0;
- const controls={nonce:null,wrongSigner:false,qualifiedSigner:false,decision:'pass',receiptState:'finalized',receiptVerdict:null,failCounterpartySave:false,relayOnly:false,signs:0,presentationSigns:0};
+ const base=createInMemoryPartyVetStore(options),local=localAnchor({now:()=>NOW}),seen=[],issued=new Map(),issuedByKey=new Map(),evaluations=new Map();let nonceSequence=0;
+ const controls={nonce:null,wrongSigner:false,qualifiedSigner:false,decision:'pass',receiptState:'finalized',receiptVerdict:null,failCounterpartySave:false,relayOnly:false,onePerJob:false,signs:0,presentationSigns:0};
  const store={...base,update:(key,change)=>base.update(key,(old,rows)=>{const next=change(old,rows);if(controls.failCounterpartySave&&!old?.counterpartyRecord&&next?.counterpartyRecord){controls.failCounterpartySave=false;throw new Error('TEST counterparty checkpoint lost');}return next;})};
  const listing=fixtureListing(seller,{now:NOW}),pin=listingPin(listing);
  const anchor={writer:seller.claim,hasIntent:async address=>local.rows.has(address),readRetained:async({logicalAddress})=>{const row=await local.read(logicalAddress);return row.status==='present'?{...row,receipt:{...row.receipt,state:controls.receiptStateFor?.(logicalAddress)??controls.receiptState}}:row;},read:input=>anchor.readRetained(input),
@@ -35,7 +35,13 @@ export function productionFixture(options={}){
  const evaluationKey=input=>sha256Hex(canonicalize([input.jobId,identityBundleHash(input.identityBundle),sha256Hex(canonicalize(input.requirement))]));
  const consumed=new Set(),expiries=new Map();
  const counterparty={
-  issueChallenge:async({jobId})=>{const sessionNonce=controls.nonce??sha256Hex('TEST nonce '+jobId+ ++nonceSequence);issued.set(`${jobId}/${sessionNonce}`,true);const expiresAt=config.now()+(controls.challengeLifetime??60000);expiries.set(sessionNonce,expiresAt);return{issuer:buyer.claim,seller:seller.claim,jobId,sessionNonce,expiresAt};},
+  // Answers the challenge already issued for an idempotency key; with onePerJob, a second key for a job is refused.
+  issueChallenge:async({jobId,idempotencyKey})=>{
+   const answered=idempotencyKey&&issuedByKey.get(idempotencyKey);if(answered)return structuredClone(answered);
+   if(controls.onePerJob&&[...issued.keys()].some(entry=>entry.startsWith(jobId+'/')))throw new Error('TEST the verifier issues one challenge per job');
+   const sessionNonce=controls.nonce??sha256Hex('TEST nonce '+jobId+ ++nonceSequence);issued.set(`${jobId}/${sessionNonce}`,true);const expiresAt=config.now()+(controls.challengeLifetime??60000);expiries.set(sessionNonce,expiresAt);
+   const challenge={issuer:buyer.claim,seller:seller.claim,jobId,sessionNonce,expiresAt};if(idempotencyKey)issuedByKey.set(idempotencyKey,challenge);return structuredClone(challenge);
+  },
   readRecord:async input=>{const record=evaluations.get(evaluationKey(input));if(record)return{status:'present',record:structuredClone(record)};return issued.has(`${input.jobId}/${input.identityBundle.sessionNonce}`)&&!consumed.has(input.identityBundle.sessionNonce)?{status:'unattempted',issuer:buyer.claim,jobId:input.jobId,bundleHash:identityBundleHash(input.identityBundle),requirementHash:sha256Hex(canonicalize(input.requirement))}:{status:'indeterminate'};},
   evaluate:async input=>{const nonce=input.identityBundle.sessionNonce;if(consumed.has(nonce))throw new Error('TEST buyer challenge already consumed');consumed.add(nonce);seen.push(structuredClone(input));if(config.now()+(controls.buyerSkew??0)>expiries.get(nonce))throw new Error('TEST expired challenge');const signer=controls.wrongSigner?seller:buyer;const record=await recordFor(input,signer,controls.decision,controls.qualifiedSigner?signer.claim+'?region=GB':signer.claim);evaluations.set(evaluationKey(input),record);return record;},
  };

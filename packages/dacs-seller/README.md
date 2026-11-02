@@ -612,6 +612,20 @@ per-client limiter so one client cannot exhaust the shared request budget.
   is called, or a `user_rejected` refusal from it, releases the step so a retry
   can run it; after the signer answered, a busy store is retried briefly while
   its signature and outcome are saved, and never by signing again.
+  The buyer's verifier (`counterparty`) is asked `issueChallenge({ jobId, buyer,
+  seller, idempotencyKey })` with an idempotency key the provider stores in the
+  job row before it asks, and keeps until the presentation for the answer is
+  stored. A retry (a lost answer, a busy store, a restart) sends the same key,
+  and the verifier must answer the same challenge for it rather than issue
+  another; a verifier that issues one challenge per job then still recovers.
+  A fresh key is sent only to replace an expired unused presentation, or after
+  an answer that had already expired before it was stored.
+  A step cut before anything of a party's Vet was signed or sent (no anchor
+  intent, and no retained presentation, buyer-issued record, checkpoint or
+  signature for that party) is resumable: the context route admits the remaining writes
+  and the request runs again, without a new record. A job row that is missing
+  or ended is not resumable, and nothing of a party signed with no intent is
+  resumed this way.
   If the reservation write commits but its acknowledgement is lost, the row is
   pending although the signer was never called; because the process cannot tell
   whether another provider holds it, a retry requires wallet reconciliation and

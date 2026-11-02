@@ -396,6 +396,24 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       await new Promise((resolve)=>setTimeout(resolve,READ_POLL_MS));
     }
   }
+  // The issuance intent: stored in the job row before the verifier is asked and sent as its
+  // idempotency key, so a retry after a lost answer or a lost presentation save asks for the
+  // same challenge instead of issuing another. `replaces` is the expired challenge a fresh one
+  // is wanted for; an intent made for another replacement is stale and gets a new key.
+  async function issuanceKey(job,expired) {
+    const replaces=expired?.challenge.sessionNonce??null;
+    const row=await state.update(job.jobId,current=>{
+      if(!liveJob(current,job))fail('binding-changed','seller presentation binding changed');
+      if(current.issuance?.replaces===replaces)return undefined;
+      return{...current,issuance:{key:randomUUID(),replaces}};
+    });
+    return row.issuance.key;
+  }
+  // An answer that expired before it was retained was never presented, so the next attempt may ask anew.
+  const releaseIssuance=(job,key)=>state.update(job.jobId,current=>{
+    if(!liveJob(current,job)||current.issuance?.key!==key)return undefined;
+    const {issuance:_released,...rest}=current;return rest;
+  });
   async function sellerSession(job) {
     const retained=await state.read(job.jobId);
     if(!retained?.binding||!same(retained.binding,job.binding))fail('binding-changed','seller presentation binding changed');
@@ -428,11 +446,13 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       const buyer=job.binding.buyerIdentityBundle.presentedBy;
       // Challenge issuance must check the durable lifecycle and purchase state.
       await authorizeEffect(job);
-      const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim});
+      const idempotencyKey=await issuanceKey(job,expired);
+      const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim,idempotencyKey});
       if(!sameCanonicalClaimIdentity(challenge?.issuer,buyer) || challenge?.jobId!==job.jobId || !sameCanonicalClaimIdentity(challenge?.seller,wallet.claim)
         // SN-2 sets only a floor for an issued challenge: at least 32
         // lowercase-hex characters, with no upper bound.
-        || typeof challenge.sessionNonce!=='string' || !/^[a-f0-9]{32,}$/.test(challenge.sessionNonce) || !usableChallenge(challenge)) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
+        || typeof challenge.sessionNonce!=='string' || !/^[a-f0-9]{32,}$/.test(challenge.sessionNonce)) fail('seller_challenge_invalid','buyer challenge is not bound to this session');
+      if(!usableChallenge(challenge)){await releaseIssuance(job,idempotencyKey);fail('seller_challenge_invalid','buyer challenge expired before it was retained');}
       if(expired&&challenge.sessionNonce===expired.challenge.sessionNonce)fail('seller_challenge_reused','the expired seller challenge cannot be issued again');
       const {presentation:_publicationProof,...identity}=listing.seller.identity;
       const value={challenge:clone(challenge),bundle:{...identity,presentedAt:now(),sessionNonce:challenge.sessionNonce}};
@@ -452,7 +472,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(!liveJob(current,job)) fail('binding-changed','seller presentation binding changed');
         if(current.presentation&&(!expired||!same(current.presentation,expired)))return undefined;
         if(current.counterpartyRecord)fail('seller_vet_reconciliation_required','the seller challenge already has a retained record');
-        return {...current,presentation:value};
+        const {issuance:_asked,...unasked}=current;
+        return {...unasked,presentation:value};
       })).presentation;
     }
     return clone(await signPresentation(job,kept));
@@ -890,15 +911,30 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     try{await finish(jobId,ticket,candidate);}catch(error){if(!['context_released','binding-changed','conflict'].includes(error?.code))throw error;return{disposition:'indeterminate',reason:'the context lifecycle changed'};}
     return{disposition:'present',value:{input:clone(candidate.input),vetRequirements:clone(candidate.vetRequirements)}};
   }
+  // The row names this request's job and is still open: bound, not yet admitted (a cut between
+  // those two writes), or admitted and not ended. A missing row says nothing: nothing marks an
+  // ended job whose row was deleted.
+  const resumableRow=(row,scope,buyerIdentityBundle)=>Boolean(row?.binding&&same(row.binding,bindingFor(scope,buyerIdentityBundle))
+    &&(!row.lifecycle||admissible(row,ticketFor(row,scope.generatedAt))));
+  const hasOperations=ops=>Object.values(ops??{}).some(entries=>Object.keys(entries??{}).length>0);
+  // Whether the row shows any signing started for the party: a retained presentation or Vet
+  // record of the seller, or a checkpoint, step or signature of the SDK steps.
+  const signingStarted=(row,party)=>party===wallet.claim
+    ?Boolean(row.presentation||row.counterpartyRecord)||hasOperations(row.ops?.seller)
+    :hasOperations(row.ops?.buyer);
+  // What a clean cut must find unchanged when the row is read again after the anchor reads.
+  const cutState=row=>[row.presentation??null,row.counterpartyRecord??null,row.ops??null,row.lifecycle?.incarnation??null,row.lifecycle?.epoch??null];
+  // Answers {writes}, the writes a retry of resolveBuyer still makes, only for a clean cut: some
+  // party has no intent and the row shows nothing of its signing, or has an intent whose CREATE is
+  // proven unsigned, and every other party is anchored and verified. Anything else answers null.
   async function resumableBuyer({scope,buyerIdentityBundle}){
     if(!ownTerms(scope))return null;
     validate(scope);assertAccess(buyerIdentityBundle.presentedBy);
-    const row=await state.read(scope.jobId);if(!row?.binding||!row.lifecycle||!same(row.binding,bindingFor(scope,buyerIdentityBundle)))return null;
-    const ticket=ticketFor(row,scope.generatedAt);if(!admissible(row,ticket))return null;
+    const row=await state.read(scope.jobId);if(!resumableRow(row,scope,buyerIdentityBundle))return null;
     let writes=0,cut=false;
     for(const party of [buyerIdentityBundle.presentedBy,wallet.claim]){
       const logicalAddress=compositeVerificationAddress(scope.jobId,party);
-      if(!(await anchor.hasIntent(logicalAddress))){writes++;continue;}
+      if(!(await anchor.hasIntent(logicalAddress))){if(signingStarted(row,party))return null;writes++;cut=true;continue;}
       const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ);
       if(isProvenUnsignedAbsence(read)){writes++;cut=true;continue;}
       if(read?.status!=='present')return null;
@@ -910,7 +946,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         ||!await validReceipt(read,logicalAddress,read.artifact,authority))return null;
     }
     const current=await state.read(scope.jobId);
-    return cut&&admissible(current,ticket)&&same([current.presentation??null,current.counterpartyRecord??null,current.ops?.buyer?.checkpoints??{}],[row.presentation??null,row.counterpartyRecord??null,row.ops?.buyer?.checkpoints??{}])?{writes}:null;
+    return cut&&resumableRow(current,scope,buyerIdentityBundle)&&same(cutState(current),cutState(row))?{writes}:null;
   }
   const logged=(what,jobId)=>(error)=>log(`party-vet-store: job ${jobId} ${what} failed: ${oneLine(error?.code??'error')}\n`);
   function evict(jobId,generatedAt){
