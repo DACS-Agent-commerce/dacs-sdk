@@ -1,0 +1,4 @@
+# Byte-pinned wire fixtures and provenance must retain their checkout bytes.
+scripts/wire/*.mjs text eol=lf
+test/wire/fixtures/*.json text eol=lf
+conformance/tp1-node-observations/*.json text eol=lf

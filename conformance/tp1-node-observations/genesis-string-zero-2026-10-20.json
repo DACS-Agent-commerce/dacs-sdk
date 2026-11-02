@@ -1,0 +1,18 @@
+{
+  "name": "genesis-string-zero",
+  "time": "2026-10-20T20:29:50.368570+00:00",
+  "request": {
+    "method": "nodeCall",
+    "params": [
+      {
+        "type": "nodeCall",
+        "message": "getBlockByNumber",
+        "data": {
+          "blockNumber": "0"
+        }
+      }
+    ]
+  },
+  "http": 200,
+  "body": "{\"result\":200,\"response\":{\"number\":0,\"hash\":\"d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc\"},\"require_reply\":false,\"extra\":\"\"}"
+}
