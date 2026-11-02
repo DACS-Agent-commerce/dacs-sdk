@@ -12,7 +12,16 @@
         "docs/fixed-price-offline-coordinator.md", "docs/fixed-price-x402-coordinator.md",
         "docs/settlement-verified-reputation.md", "docs/rfq-negotiation-core.md",
         "docs/pay-solana-spl.md", "docs/pay-ap2.md", "docs/filesystem-store-safety.md",
-        "docs/x402-seller-paywall.md", "docs/wallet-spend-authority.md", "docs/raw-json-admission.md"
+        "docs/x402-seller-paywall.md", "docs/wallet-spend-authority.md", "docs/raw-json-admission.md",
+        "docs/pay-dem-execution.md", "docs/testnet-profile-tp1.md", "docs/about-the-testnet-release.md", "docs/dacs-seller-http-v1.md",
+        "vectors/dacs-seller-http-v1.json",
+        "conformance/tp1-register.json", "conformance/tp1-provenance-ids.json",
+        "conformance/tp1-node-observations/manifest.json", "conformance/tp1-node-observations/manifest-2026-10-20.json",
+        "conformance/tp1-node-observations/block0.json", "conformance/tp1-node-observations/block0-2026-10-20.json",
+        "conformance/tp1-node-observations/block1.json", "conformance/tp1-node-observations/block1-2026-10-20.json",
+        "conformance/tp1-node-observations/genesis-string-zero.json", "conformance/tp1-node-observations/genesis-string-zero-2026-10-20.json",
+        "conformance/tp1-node-observations/network.json", "conformance/tp1-node-observations/network-2026-10-20.json",
+        "conformance/tp1-node-observations/missing-status.json", "conformance/tp1-node-observations/missing-tx.json"
       ]
     },
     {
@@ -31,9 +40,11 @@
     },
     {
       "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
-      "preparationBlockers": ["missing package manifest"],
+      "preparationBlockers": ["private package is not releasable"],
+      "preparationManifestSha256": "3e85fe4c15765fc9c5a0a5f7aef8ecb10ee7dd8fd0e3b7082b3b38aef7df04de",
+      "preparationSnapshotBlockers": ["@kynesyslabs/dacs-seller: release identity or publish policy is invalid"],
       "requiredExports": ["."],
-      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
+      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md"]
     },
     {
       "name": "create-dacs-agent", "directory": "packages/create-dacs-agent",
