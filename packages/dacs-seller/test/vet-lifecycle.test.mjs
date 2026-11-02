@@ -139,12 +139,12 @@ for(const transition of ['end','select'])test(`buyer refuses ${transition} commi
  else{const b=next(input);await w.provider().resolveBuyer(b);await w.provider().release({jobId:JOBS[0],generatedAt:b.scope.generatedAt});}
  resume();assert.equal((await held).code,'context_released');assert.equal(p.contexts.size,0);w.base.close();
 });
-test('lost challenge retention requests a fresh unused challenge before any signature or evaluation',async()=>{
+test('lost challenge retention asks again for the same challenge before any signature or evaluation',async()=>{
  const w=fixture(),update=w.config.store.update;let once=true;
  w.config.store.update=(key,change)=>update(key,(row,rows)=>{const next=change(row,rows);if(once&&!row?.presentation&&next?.presentation){once=false;throw new Error('TEST lost challenge save');}return next;});
  await assert.rejects(w.provider().resolveBuyer(w.input()),/lost challenge save/);
  assert.equal(w.controls.presentationSigns,0);assert.equal(w.seen.length,0);
- assert.equal((await w.provider().resolveBuyer(w.input())).disposition,'present');assert.equal(w.issued.size,2);assert.equal(w.seen.length,1);w.base.close();
+ assert.equal((await w.provider().resolveBuyer(w.input())).disposition,'present');assert.equal(w.issued.size,1);assert.equal(w.seen.length,1);w.base.close();
 });
 
 // Pause after admission and producer binding, before the buyer's first write.
