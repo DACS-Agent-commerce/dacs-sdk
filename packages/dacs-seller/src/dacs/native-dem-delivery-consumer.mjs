@@ -53,6 +53,24 @@ export function isProvenUnsignedAbsence(value) {
   return provenUnsigned.has(value) && value.status === 'absent';
 }
 
+const deadRefusedCreates = new WeakSet();
+/**
+ * The `rejected` answer for a node-refused CREATE that can no longer be included (the account nonce passed it and
+ * the readback proves it absent), so publishing it again cannot make a second CREATE. Only this object's identity carries the proof.
+ */
+export function deadRefusedCreate(reason) {
+  const value = { status: 'rejected', reason, noResend: true };
+  deadRefusedCreates.add(value);
+  return value;
+}
+/** Test process-local dead refused CREATE; serialized/copied results confer no proof. */
+export function isDeadRefusedCreate(value) {
+  return deadRefusedCreates.has(value) && value.status === 'rejected';
+}
+
+/** True when a read proves nothing signed for the address can still land (never signed, or refused and dead), so publishing it again makes no second CREATE. */
+export const mayPublishAgain = (value) => isProvenUnsignedAbsence(value) || isDeadRefusedCreate(value);
+
 /** Submit isolated data; an authorization callback requires a registered guarded operation or holds delivery. */
 export async function submitNativeDemDelivery(capability, input, authorize) {
   const { submit, submitAuthorized } = operations(capability);

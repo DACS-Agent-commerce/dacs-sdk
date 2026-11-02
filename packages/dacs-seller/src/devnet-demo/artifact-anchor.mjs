@@ -16,9 +16,12 @@ import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // again right before the send, says yes. Reads never resend by default.
 // So may a node-refused one while its nonce is free; once the account nonce has
 // passed it and a complete readback finds it absent, publish replaces it once
-// (the new intent's `supersedes`) and asks the wallet for one new signature.
+// (the new intent's `supersedes`) and asks the wallet for one new signature. Such
+// a read answers `rejected`, marked dead (deadRefusedCreate), so a caller with the
+// authority to write publishes it again; if its bytes were sent again first, the
+// absence must also be complete through the nonce snapshot's block height.
 import { isNativeDeliveryEvidence } from '../dacs/delivery-evidence.mjs';
-import { provenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mjs';
+import { deadRefusedCreate, provenUnsignedAbsence } from '../dacs/native-dem-delivery-consumer.mjs';
 import { rpcEnvelope, storageWriteAccountNonce, storageWriteRpcSigner } from './storage-write-recovery.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { OPERATOR_CLOSING } from './operator-approval.mjs';
@@ -69,6 +72,15 @@ const resendOptionsRefusal=({resend,authorizeResend})=>typeof resend!=='boolean'
 // The nonce reply has a byte cap before decoding in the source, and a
 // deadline and strict decoded JSON budgets enforced at this boundary.
 const NONCE_READ_LIMITS=Object.freeze({maxBytes:4096,timeoutMs:10_000});
+// The node answers a bare nonce, or exactly {nonce, blockHeight}: the nonce with the block height it was read at.
+const nonceAnswer=(value)=>{
+  if(value===null || typeof value!=='object' || Array.isArray(value)) return {nonce:storageWriteAccountNonce(value),blockHeight:null};
+  const exact=Object.keys(value).length===2 && Object.hasOwn(value,'nonce') && Number.isSafeInteger(value.blockHeight) && value.blockHeight>=0;
+  return {nonce:exact?storageWriteAccountNonce(value.nonce):null,blockHeight:exact?value.blockHeight:null};
+};
+// A refused CREATE's fate once the account nonce has passed it: its readback is absent and the bytes can no longer be included
+// (dead), or they were sent again and the index is not proven complete past the nonce (incomplete), so the resend may be what took it.
+const REFUSED_DEAD='dead', REFUSED_INCOMPLETE='incomplete';
 // A signed CREATE carries one artifact of at most MAX_STORAGE_ARTIFACT_BYTES
 // plus its fixed CREATE fields and bindings; a caller's projection larger than
 // this is refused before it is hashed.
@@ -186,17 +198,18 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   const snapshot=async()=>publicationSnapshot(await sourceCapability.journal.entries(),await journal.entries());
   const signedNothing=async(address,row)=>(await snapshot()).classify(address,row)==='unsigned';
 
-  async function accountNonce() {
+  async function accountNonceSnapshot() {
     try {
       const response=boundedResolutionValue(await resolveWithDeadline(limits=>sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]},limits),NONCE_READ_LIMITS),
         {...NONCE_READ_LIMITS,maxValues:64,maxDepth:8,maxListEntries:16});
-      const current=storageWriteAccountNonce(response?.response);
-      if(!rpcEnvelope(response,200,null) || current===null) fail('indeterminate','seller nonce is unavailable');
-      return current;
+      const snapshot=nonceAnswer(response?.response);
+      if(!rpcEnvelope(response,200,null) || snapshot.nonce===null) fail('indeterminate','seller nonce is unavailable');
+      return snapshot;
     } catch(cause) {
       throw Object.assign(new Error(`seller nonce read failed or exceeded its deadline: ${cause.message}`,{cause}),{code:'indeterminate'});
     }
   }
+  const accountNonce=async()=>(await accountNonceSnapshot()).nonce;
   async function liveSourceRows() {
     const sourceRows=await sourceCapability.journal.entries();
     const state=publicationSnapshot(sourceRows,await journal.entries());
@@ -294,16 +307,39 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const state=await snapshot();
     return !state.live([...state.sourceRows,...state.walletRows]).some(([,row])=>row?.hash!==hash && !state.rejected(row) && row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce>=nonce);
   }
-  // A refused CREATE is dead once the account nonce has passed it and a complete
-  // readback finds it absent, as the evidence journal's fate() decides. The nonce
-  // is read before the index. A replacement is never replaced again: the re-ask
-  // is once. Returns the dead CREATE's hash, or null.
+  // The refused bytes went out again: the one authorized resend ran or may have run (an unsent one did not).
+  async function refusedCreateResent(hash) {
+    const recovery=await journal.get(`demo/recovery/${hash}`);
+    return Boolean(recovery) && recovery.stage!==UNSENT_RECOVERY_STAGE;
+  }
+  // The fate of a refused CREATE whose readback is absent, or null while its nonce is free or the readback is not absent. The nonce
+  // is read before the index. Before any resend, a passed nonce means another transaction took it. After a resend the resend may have
+  // taken it, so the index must be complete as the evidence journal's fate() requires: the absence is checked through at least the
+  // block height of the nonce snapshot.
+  async function refusedCreateFate(hash,projection) {
+    const snapshot=await accountNonceSnapshot();
+    if(snapshot.nonce<projection.content.nonce) return null;
+    const observed=await observeSource(hash,projection,undefined,{resend:false});
+    if(observed.disposition!=='absent') return null;
+    const complete=snapshot.blockHeight!==null && Number.isSafeInteger(observed.checkedThroughBlock) && observed.checkedThroughBlock>=snapshot.blockHeight;
+    return complete || !await refusedCreateResent(hash) ? REFUSED_DEAD : REFUSED_INCOMPLETE;
+  }
+  // A replacement is never replaced again: the re-ask is once. Returns the dead CREATE's hash, or null.
   async function deadRefusedCreateHash(input,retained) {
     if(!broadcastRejected(retained) || retained.supersedes) return null;
     const hash=await retainedHash(input,retained), projection=hash?await publicProjection(hash):null;
     if(!projection || !projectionAuthentic(projection,{transactionRef:{value:hash}}) || !Number.isSafeInteger(projection.content.nonce)) return null;
-    if(await accountNonce()<projection.content.nonce) return null;
-    return (await observeSource(hash,projection,undefined,{resend:false})).disposition==='absent'?hash:null;
+    return await refusedCreateFate(hash,projection)===REFUSED_DEAD?hash:null;
+  }
+  // The answer for a refused CREATE whose readback is absent. A nonce that cannot be read keeps the plain refusal.
+  async function refusedAbsence(hash,projection,retained) {
+    const refusal='broadcast_rejected: the original demo CREATE is absent';
+    if(retained.supersedes || !Number.isSafeInteger(projection.content.nonce)) return {status:'rejected',reason:refusal,noResend:true};
+    let fate;
+    try { fate=await refusedCreateFate(hash,projection); } catch(error) { if(error?.code!=='indeterminate') throw error; }
+    if(fate===REFUSED_DEAD) return deadRefusedCreate(`${refusal}, its nonce has passed and it can no longer be included`);
+    if(fate===REFUSED_INCOMPLETE) return {status:'indeterminate',reason:'broadcast_rejected: the original demo CREATE was sent again and the index is not complete past its nonce',noResend:true};
+    return {status:'rejected',reason:refusal,noResend:true};
   }
   async function observe(input,retained,writeProof,{fresh=false,resend=false,authorizeResend}={}) {
     let hash=retained.hash;
@@ -325,7 +361,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(cached){await sourceCapability.observeBinding();return cached;}
     const refused=broadcastRejected(retained);
     const included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused,authorizeResend});
-    if(refused&&included.disposition==='absent') return {status:'rejected',reason:'broadcast_rejected: the original demo CREATE is absent',noResend:true};
+    if(refused&&included.disposition==='absent') return refusedAbsence(hash,projection,retained);
     if(included.disposition!=='included') return {status:'indeterminate',reason:`the original demo CREATE has no authenticated inclusion readback (${included.disposition}: ${included.reason ?? included.error ?? 'no reason'})`,noResend:true};
     const record=await reader.read(input.logicalAddress,{expectedWriter:claim,expectedArtifactKind:input.artifactKind,...(input.deliveryBinding?{expectedDeliveryBinding:input.deliveryBinding}:{}),signedProjection:projection});
     if(record.status!=='present' || canonicalize(record.artifact)!==canonicalize(input.artifact) || record.receipt.contentHash!==input.receiptContentHash) {
