@@ -6,7 +6,7 @@
   "description": "Linter for this repo. Kept apart from the packages so it never ships in them.",
   "license": "MIT",
   "engines": {
-    "node": "^20.19.0 || >=22.13.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "lint": "cd ../.. && node --max-old-space-size=6144 tools/lint/node_modules/eslint/bin/eslint.js --config tools/lint/eslint.config.mjs --suppressions-location tools/lint/eslint-suppressions.json --no-warn-ignored .",

@@ -4,7 +4,7 @@ ESLint with bug-finding rules only. There are no style rules. It lives here, apa
 
 ## Run it
 
-The type-aware checks read this repo's dependencies, so install those too. The run can take a few minutes and needs up to about 6 GB of memory.
+Needs Node 22.13 or newer. The type-aware checks read this repo's dependencies, so install those too. The run can take a few minutes and needs up to about 6 GB of memory.
 
 ```bash
 npm ci --ignore-scripts
@@ -14,7 +14,7 @@ npm run lint --prefix tools/lint
 
 ## Existing issues
 
-`eslint-suppressions.json` lists the issues that were already in the code when the linter was added, as a count per file and rule. They don't fail the run. A new issue does, even in a file that is already listed.
+`eslint-suppressions.json` lists the issues that were already in the code when the linter was added, as a count per file and rule. They don't fail the run. A new issue fails it, unless a listed issue of the same rule in the same file was removed in the same change, because the list holds counts rather than exact lines.
 
 After fixing listed issues, shrink the list, or the run fails:
 
