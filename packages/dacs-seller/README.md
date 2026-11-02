@@ -154,7 +154,10 @@ commitment that is not readback-only), with `authorizeResend` the same seller-st
 check that authorized signing; the capability asks it again right before the send
 and sends the original bytes only when it answers exactly `true`. A `resend` that
 is not a boolean, or `true` without an `authorizeResend` function, is refused.
-`read` takes the same options. The agent durably records `commitmentPublishAsked` before calling `publish`.
+`read` takes the same options. The seller's restart of a submitted Deliverable
+passes them (with the same check) to the native delivery `read`, so a Deliverable
+CREATE kept before a crash that is still pending is sent again once; every other
+read of it is passive. The agent durably records `commitmentPublishAsked` before calling `publish`.
 After that, a plain `absent` or `indeterminate` read holds the commitment. Only
 the actual object returned by `provenUnsignedAbsence(reason)` (from
 `src/dacs/native-dem-delivery-consumer.mjs`) authorizes another call to publish:

@@ -63,9 +63,14 @@ export async function submitNativeDemDelivery(capability, input, authorize) {
 export async function reconcileNativeDemDelivery(capability, input) {
   return operations(capability).reconcile(structuredClone(input));
 }
-/** Read an isolated input copy; rejects without registered native authority. */
-export async function readNativeDemDelivery(capability, input) {
-  return operations(capability).read(structuredClone(input));
+/**
+ * Read an isolated input copy; rejects without registered native authority. The
+ * read is passive. Only the restart path of a seller passes `resendOptions`
+ * ({ resend: true, authorizeResend }): the capability may then send a retained
+ * CREATE's original bytes again, once, after authorizeResend answers true.
+ */
+export async function readNativeDemDelivery(capability, input, resendOptions) {
+  return operations(capability).read(structuredClone(input), resendOptions);
 }
 /** Verify an isolated receipt input; rejects without registered native authority. */
 export async function verifyNativeDemDeliveryReceipt(capability, input) {

@@ -44,9 +44,10 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
   const expected=(input)=>isDevnetPurchasedReport(input.report,{jobId:input.jobId ?? input.report?.jobId,agreementHash:input.deliveryBinding?.agreementHash,producer:anchor.writer})
     && input.logicalAddress===`dacs4:deliverable:${input.report.jobId}` && input.receiptContentHash===contentHash(input.report)
     && bindsReport(input.deliveryBinding,input.report,input.receiptContentHash);
-  const read=async(input)=>{
+  // Passive unless the seller's restart path passes resendOptions: the anchor then sends a pending retained CREATE once, after its authorizeResend check.
+  const read=async(input,resendOptions)=>{
     if(!expected(input)) return {status:'rejected',reason:'native purchased report scope differs'};
-    const value=await anchor.read({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding});
+    const value=await anchor.read({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding},resendOptions);
     return value.status==='present' ? {...value,status:'present'} : value;
   };
   // Guarded: authorize is asked before the intent is stored, and by the wallet after its approval, right before it signs.

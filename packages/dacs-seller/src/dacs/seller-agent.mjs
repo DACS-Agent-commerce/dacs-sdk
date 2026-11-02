@@ -512,6 +512,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const transport = transportAuthority.getStore();
     return () => { transport?.check(); assertSettlementCredit(jobId); return durable ? durable.assertHeld(jobId) : true; };
   };
+  // The restart read of a Deliverable this seller submitted: a CREATE it kept that
+  // is still pending is sent again (the original bytes, once) only while heldFor's
+  // check, asked right before the send, still holds. Any other read is passive.
+  const deliverableResendFor = (jobId) => ({ resend: true, authorizeResend: heldFor(jobId) });
   function recordPhase(session, index, invokedAt, result, write = true) {
     const contextDelta = structuredClone(result.contextDelta ?? {});
     const entry = { index, step: structuredClone(listing.pipeline[index]), invokedAt, result: { ...structuredClone(result), contextDelta }, contextDelta };
@@ -1431,7 +1435,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let read;
     try {
       read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: deliverableAddress(session.jobId), report,
-        receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: binding });
+        receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: binding }, deliverableResendFor(session.jobId));
     } catch (error) {
       if (!isDeliverableMiss(error)) return { status: 'held', reason: `native delivery reconciliation readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` };
       read = { status: 'absent' };
@@ -1630,7 +1634,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         if (!(session.deliverySubmitted ?? []).includes(input.fulfilmentId)) return { status: 'absent', reason: 'this seller never submitted the Deliverable for this fulfilment' };
         const report = deliveryReport(session, work.intake.settlementId);
         let read;
-        try { read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: input.logicalAddress, report, receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: deliveryBinding(input.fulfilmentId) }); }
+        try { read = await readNativeDemDelivery(nativeDelivery, { jobId: session.jobId, logicalAddress: input.logicalAddress, report, receiptContentHash: sha256Hex(canonicalize(report)), deliveryBinding: deliveryBinding(input.fulfilmentId) }, deliverableResendFor(session.jobId)); }
         catch (error) {
           if (!isDeliverableMiss(error)) return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.code ?? 'unknown').slice(0, 64)}: ${String(error?.message ?? error).slice(0, 180)}` };
           read = { status: 'absent' };

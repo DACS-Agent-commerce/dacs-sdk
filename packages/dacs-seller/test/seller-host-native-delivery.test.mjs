@@ -241,8 +241,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // `beforeDeliveryReconcile` runs before the delivery capability reconciles.
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
-  const effects = { deliverySubmit: [], published: [], publishCalls: [], retainedReads: [], retainedResends: [], signCreate: [], signed: [], broadcast: [], componentSigns: [], deliverySignCreate: [], deliverySigned: [], deliveryBroadcast: [] };
-  const faults = { deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, evidenceReadAbsence: null, evidencePending: false };
+  const effects = { deliverySubmit: [], deliveryResends: [], published: [], publishCalls: [], retainedReads: [], retainedResends: [], signCreate: [], signed: [], broadcast: [], componentSigns: [], deliverySignCreate: [], deliverySigned: [], deliveryBroadcast: [] };
+  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, evidenceReadAbsence: null, evidencePending: false };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
@@ -485,7 +485,9 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     // for the address returns the proven unsigned absence; a miss for a CREATE
     // it did sign (a lagging index, an unbroadcast one) is a plain absence. With
     // the journal, the reader keeps no CREATE of its own and reports plain absence.
-    read: async (input) => {
+    // `faults.deliveryResendable`: a signed CREATE that has not landed is, like the shipped capability's, sent again by a read
+    // only when the read asks for a resend and its own check answers true (`faults.beforeDeliveryResendCheck` runs before the check).
+    read: async (input, options) => {
       if (Array.isArray(faults.deliveryRead)) {
         const fault = faults.deliveryRead.shift();
         if (fault === 'throw') throw new Error('TEST delivery node unreachable');
@@ -495,7 +497,17 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
         // native-address search reported, not a failure to ask (CORE §5.1).
         if (fault === 'name-index-miss' || fault === 'native-address-miss') throw Object.assign(new Error(`TEST delivery read missed: ${fault}`), { observation: fault });
       }
-      const read = await deliverable(input);
+      let read, notYetReadable = null;
+      try { read = await deliverable(input); } catch (error) { if (!(faults.deliveryResendable && signedCreates.has(input.logicalAddress))) throw error; notYetReadable = error; }
+      if (faults.deliveryResendable && (notYetReadable || read.status === 'absent') && signedCreates.has(input.logicalAddress)) {
+        const check = options?.resend === true && typeof options.authorizeResend === 'function' ? options.authorizeResend : null;
+        if (check && faults.beforeDeliveryResendCheck) { const hook = faults.beforeDeliveryResendCheck; faults.beforeDeliveryResendCheck = null; await hook(); }
+        if (check && await check() === true) {
+          effects.deliveryResends.push(input.logicalAddress);
+          node.rebroadcast(signedCreates.get(input.logicalAddress).hash);
+          read = await deliverable(input);
+        } else if (notYetReadable) throw notYetReadable;
+      }
       if(read.status==='present'&&typeof faults.deliveryRead==='function')return faults.deliveryRead(clone(read));
       return read.status === 'absent' && !signedCreates.has(input.logicalAddress) && !journalInUse ? provenUnsignedAbsence(read.reason) : read;
     },
@@ -1457,6 +1469,44 @@ test('a Deliverable a capability without a wallet journal signed but lost is hel
     }
   }
   assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'the Deliverable is asked for once');
+});
+
+// The same kept CREATE, when the capability's read can send it again (a pending one
+// the shipped capability resends once on a read that asks for it and is authorized):
+// the restart finishes it, through the seller-state check, without a second signature.
+for (const restart of [false, true]) {
+  test(`a Deliverable CREATE signed and kept before a crash is sent again as the same bytes and delivered${restart ? ', across a restart of the host' : ''}`, async (t) => {
+    const w = await world(t);
+    const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+    w.faults.deliverySubmit.push('sign-then-lose');
+    assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+    w.faults.deliveryResendable = true;
+    if (restart) await w.restart();
+    const answer = await p.claim(tx);
+    assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
+    assert.deepEqual(w.effects.deliveryResends, [deliverable], 'the kept bytes were sent again once');
+    assert.deepEqual(w.effects.deliverySubmit, [deliverable], 'never signed or asked again');
+    await w.restart();
+    assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
+    assert.equal(w.effects.deliveryResends.length, 1, 'a delivered order sends nothing on a later restart');
+    assert.equal(w.createsAt(deliverable), 1);
+  });
+}
+
+test('a kept Deliverable CREATE is not sent again once the seller-state check, asked right before the resend, fails', async (t) => {
+  const w = await world(t);
+  const p = await w.purchase(), other = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
+  w.faults.deliverySubmit.push('sign-then-lose');
+  assert.equal((await p.claim(tx)).error, 'seller_unavailable');
+  w.faults.deliveryResendable = true;
+  // Another purchase claims this payment between the restart's read starting and the resend.
+  w.faults.beforeDeliveryResendCheck = async () => assert.deepEqual(await other.claim(tx), { status: 'indeterminate', reason: 'settlement-collision' });
+  const held = await p.claim(tx);
+  assert.equal(w.faults.beforeDeliveryResendCheck, null, 'the check was asked');
+  assert.notEqual(held.delivery?.status, 'delivery-ready', shown(held));
+  assert.deepEqual(w.effects.deliveryResends, [], 'a failed check sends nothing');
+  assert.equal(w.createsAt(deliverable), 0);
+  assert.deepEqual(w.effects.deliverySubmit, [deliverable]);
 });
 
 // CORE §5.1 (and the retry rule of DACS-4 PC-7(b) applied to the Deliverable):
