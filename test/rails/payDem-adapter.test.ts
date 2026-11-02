@@ -93,6 +93,13 @@ beforeEach(() => {
                 rpc_fee: "500000000",
                 additional_fee: "100000000",
               },
+              // What executes: the payer's removals are the amount and a 1 DEM gas burn (#604).
+              gcr_edits: [
+                { type: "balance", operation: "remove", isRollback: false, account: signed.content.from, txhash: "", amount: signed.content.amount },
+                { type: "balance", operation: "add", isRollback: false, account: signed.content.to, txhash: "", amount: signed.content.amount },
+                { type: "balance", operation: "remove", isRollback: false, account: signed.content.from, txhash: "", amount: "1000000000" },
+                { type: "nonce", operation: "add", isRollback: false, account: signed.content.from, txhash: "", amount: 1 },
+              ],
             },
           },
         },
@@ -474,6 +481,7 @@ describe("createPayDemRail nonce coordination", () => {
         payee: "cd".repeat(32),
         amountOs: "1000000000",
         confirmedTotalDebitOs: "2000000000",
+        confirmedRecordFeeOs: "1000000000",
         denomination: "os",
         network: "demos",
         maxTotalDebitOs: "2000000000",
@@ -809,7 +817,7 @@ describe("createPayDemRail nonce coordination", () => {
     expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
-  it("uses authoritative gas-operation fees for the debit ceiling", async () => {
+  it("takes the record fee from authoritative gas-operation fees and the debit ceiling from the execution edits", async () => {
     sdk.confirm.mockResolvedValue({
       response: {
         data: {
@@ -837,6 +845,11 @@ describe("createPayDemRail nonce coordination", () => {
                 rpc_fee: "0",
                 additional_fee: "0",
               },
+              gcr_edits: [
+                { type: "balance", operation: "remove", isRollback: false, account: WALLET, txhash: "", amount: "1000000000" },
+                { type: "balance", operation: "add", isRollback: false, account: RECIPIENT, txhash: "", amount: "1000000000" },
+                { type: "balance", operation: "remove", isRollback: false, account: WALLET, txhash: "", amount: "1000000000" },
+              ],
             },
           },
         },
@@ -845,13 +858,13 @@ describe("createPayDemRail nonce coordination", () => {
     const rail = await createPayDemRail({
       rpc: "https://node.test",
       secret: "test-secret",
-      maxTotalDebitOs: 2_500_000_000n,
+      maxTotalDebitOs: 2_000_000_000n,
     });
 
     await expect(
       rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
-    ).rejects.toThrow(/exceeds maxTotalDebitOs/);
-    expect(sdk.broadcast).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ ok: true, networkFeeOs: "1000000000", recordFeeOs: "2000000000" });
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("does not fall back from malformed authoritative gas-operation fees", async () => {
@@ -982,6 +995,11 @@ describe("createPayDemRail nonce coordination", () => {
                 rpc_fee: 0,
                 additional_fee: 0,
               },
+              gcr_edits: [
+                { type: "balance", operation: "remove", isRollback: false, account: WALLET, txhash: "", amount: 1 },
+                { type: "balance", operation: "add", isRollback: false, account: RECIPIENT, txhash: "", amount: 1 },
+                { type: "balance", operation: "remove", isRollback: false, account: WALLET, txhash: "", amount: 1 },
+              ],
             },
           },
         },
@@ -1068,5 +1086,94 @@ describe("createPayDemRail nonce coordination", () => {
       rail.settle({ recipient: RECIPIENT, amount: "1" }),
     ).rejects.toThrow(/do not bind the requested native transfer/);
     expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+});
+
+describe("pay-dem books what the chain debits, not the record's declared fee (#604)", () => {
+  const DEM = 1_000_000_000n;
+  const AMOUNT = 50n * DEM;
+  const PAYER = `0x${"ab".repeat(32)}`;
+  // A node2 record (test/fixtures/demos-node2-records.json) declares
+  // network_fee + rpc_fee = 2 DEM; its execution edits remove the amount and a
+  // 1 DEM gas burn from the payer: a 300 DEM balance ends at 249.
+  const balance = (account: string, operation: "add" | "remove", amount: bigint, extra: object = {}) =>
+    ({ type: "balance", operation, isRollback: false, account, txhash: "", amount: amount.toString(), ...extra });
+  const node2Edits = (amount: bigint, gas = DEM) => [
+    balance(PAYER, "remove", amount),
+    balance(RECIPIENT, "add", amount),
+    balance(PAYER, "remove", gas),
+    { type: "nonce", operation: "add", account: PAYER, amount: 1, txhash: "", isRollback: false },
+  ];
+  function confirmWith(edits: unknown, fee = { network_fee: DEM.toString(), rpc_fee: DEM.toString(), additional_fee: "0" }) {
+    sdk.confirm.mockImplementation(async (input?: { hash: string; content: Record<string, unknown> }) => {
+      const signed = input ?? await sdk.transfer(RECIPIENT, AMOUNT);
+      return { response: { data: { transaction: { hash: signed.hash, content: {
+        ...signed.content, transaction_fee: fee, ...(edits === undefined ? {} : { gcr_edits: edits }),
+      } } } } };
+    });
+  }
+  const railWith = (maxTotalDebitOs?: bigint, journalPreparedTransfer?: (prepared: unknown) => Promise<void>) =>
+    createPayDemRail({ rpc: "https://node.test", secret: "test-secret", network: "demos",
+      ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }),
+      ...(journalPreparedTransfer === undefined ? {} : { journalPreparedTransfer }) });
+
+  it("accepts a cap of amount plus 1 DEM and reports the 1 DEM debit as networkFeeOs, the 2 DEM record fee as recordFeeOs", async () => {
+    confirmWith(node2Edits(AMOUNT));
+    const prepared: unknown[] = [];
+    const rail = await railWith(AMOUNT + DEM, async (value) => { prepared.push(value); });
+    const result = await rail.settle({ recipient: RECIPIENT, amount: AMOUNT.toString() });
+    expect(result).toMatchObject({ ok: true, txHash: TX_HASH, networkFeeOs: DEM.toString(), recordFeeOs: (2n * DEM).toString() });
+    // 300 DEM - (amount + networkFeeOs) = 249 DEM, the observed balance.
+    expect(300n * DEM - AMOUNT - BigInt(result.networkFeeOs!)).toBe(249n * DEM);
+    expect(prepared).toEqual([expect.objectContaining({
+      confirmedTotalDebitOs: (AMOUNT + DEM).toString(), confirmedRecordFeeOs: (2n * DEM).toString(), maxTotalDebitOs: (AMOUNT + DEM).toString(),
+    })]);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the debit without a cap too: 20 DEM from 298 ends at 277", async () => {
+    const amount = 20n * DEM;
+    confirmWith(node2Edits(amount));
+    const result = await (await railWith()).settle({ recipient: RECIPIENT, amount: amount.toString() });
+    expect(result).toMatchObject({ ok: true, networkFeeOs: DEM.toString(), recordFeeOs: (2n * DEM).toString() });
+    expect(298n * DEM - amount - BigInt(result.networkFeeOs!)).toBe(277n * DEM);
+  });
+
+  it("refuses a cap one OS below the real debit before broadcast", async () => {
+    confirmWith(node2Edits(AMOUNT));
+    await expect((await railWith(AMOUNT + DEM - 1n)).settle({ recipient: RECIPIENT, amount: AMOUNT.toString() }))
+      .rejects.toThrow(/exceeds maxTotalDebitOs/);
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("caps every payer removal: edits that debit more than the declared fee are refused under a cap the fee would pass", async () => {
+    confirmWith(node2Edits(AMOUNT, 3n * DEM));
+    await expect((await railWith(AMOUNT + 2n * DEM)).settle({ recipient: RECIPIENT, amount: AMOUNT.toString() }))
+      .rejects.toThrow(/exceeds maxTotalDebitOs/);
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no execution edits", undefined],
+    ["empty execution edits", []],
+    ["a rollback edit", node2Edits(AMOUNT).map((edit, i) => (i === 2 ? { ...edit, isRollback: true } : edit))],
+    ["a credit to the payer", [...node2Edits(AMOUNT), balance(PAYER, "add", DEM)]],
+    ["an unknown edit type", [...node2Edits(AMOUNT), { type: "storageProgram", isRollback: false }]],
+    ["a malformed edit amount", node2Edits(AMOUNT).map((edit, i) => (i === 2 ? { ...edit, amount: 1 } : edit))],
+    ["no removal of the amount", node2Edits(AMOUNT).filter((_, i) => i !== 0)],
+    ["no credit of the amount to the payee", node2Edits(AMOUNT).filter((_, i) => i !== 1)],
+  ])("refuses broadcast under a cap when the confirmed record has %s", async (_name, edits) => {
+    confirmWith(edits);
+    await expect((await railWith(AMOUNT + 2n * DEM)).settle({ recipient: RECIPIENT, amount: AMOUNT.toString() }))
+      .rejects.toThrow(/no unambiguous bound OS debit/);
+    expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("keeps the uncapped path without fee accounting when the edits are absent", async () => {
+    confirmWith(undefined);
+    const result = await (await railWith()).settle({ recipient: RECIPIENT, amount: AMOUNT.toString() });
+    expect(result.ok).toBe(true);
+    expect(result).not.toHaveProperty("networkFeeOs");
+    expect(result).not.toHaveProperty("recordFeeOs");
   });
 });

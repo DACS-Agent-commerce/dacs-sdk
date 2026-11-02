@@ -167,6 +167,11 @@ beforeEach(() => {
               rpc_fee: "500000000",
               additional_fee: "100000000",
             },
+            gcr_edits: [
+              { type: "balance", operation: "remove", isRollback: false, account: signed.content.from, txhash: "", amount: signed.content.amount },
+              { type: "balance", operation: "add", isRollback: false, account: signed.content.to, txhash: "", amount: signed.content.amount },
+              { type: "balance", operation: "remove", isRollback: false, account: signed.content.from, txhash: "", amount: "1000000000" },
+            ],
           },
         },
       },
@@ -231,6 +236,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
       blockNumber: BLOCK,
       txRefKind: "demos",
       networkFeeOs: "1000000000",
+      recordFeeOs: "1000000000",
     });
     expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
