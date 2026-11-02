@@ -15,7 +15,7 @@ import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
-  admitWireJson, isAdmittedValue, ownedBytes, claimKey, cloneJson, fail, hasKeys, HASH, isClaim, isListingPin, isUint, lacksProfile, ownedArtifact, ownedConfig, ownedFields,
+  admitWireJson, isAdmittedValue, ownedBytes, claimKey, cloneJson, fail, hasKeys, HASH, isClaim, isListingPin, isUint, lacksProfile, ownedArtifact, ownedConfig, ownedFields, withCanonicalClaims,
   sameCanonical, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
@@ -40,8 +40,11 @@ export interface SellerSessionDelegation {
 
 const FIELDS = ["version", "kind", "buyer", "sessionPublicKey", "seller", "listingPin", "jobId", "notBefore", "expiresAt", "profile"];
 
-/** `status`: 401 for a received delegation, 500 for the wallet side's own payload. */
-function payloadBytes(p: unknown, status = 401): Buffer {
+/**
+ * `status`: 401 for a received delegation, 500 for the wallet side's own payload.
+ * `signed`, for a received delegation, is the payload as received when `p` is its canonical-claim copy.
+ */
+function payloadBytes(p: unknown, status = 401, signed: unknown = p): Buffer {
   if (!hasKeys(p, FIELDS) || p.version !== "1" || p.kind !== "seller-session-delegation" ||
       !isClaim(p.buyer) || !isClaim(p.seller) || p.buyer === p.seller ||
       typeof p.sessionPublicKey !== "string" || !HASH.test(p.sessionPublicKey) || p.sessionPublicKey === claimKey(p.buyer) || p.sessionPublicKey === claimKey(p.seller) || !isListingPin(p.listingPin) ||
@@ -49,7 +52,7 @@ function payloadBytes(p: unknown, status = 401): Buffer {
       p.expiresAt - p.notBefore > DACS_SELLER_HTTP_LIMITS.maxDelegationLifetimeMs || !isTp1WireProfile(p.profile)) {
     return fail("peer_delegation_invalid", status);
   }
-  return Buffer.from(`${DACS_SELLER_HTTP_DOMAINS.delegation}${canonicalize(p)}`, "utf8");
+  return Buffer.from(`${DACS_SELLER_HTTP_DOMAINS.delegation}${canonicalize(signed)}`, "utf8");
 }
 
 /** One owned copy of the payload, checked against the current binding, and the bytes signed for that copy. */
@@ -130,11 +133,13 @@ export async function verifySellerSessionDelegation(supplied: unknown, scope: De
   const delegation = ownedArtifact(admitted, "peer_delegation_invalid");
   await assertTp1Binding(binding, local);
   if (!hasKeys(delegation, ["payload", "signature"])) return fail("peer_delegation_invalid");
-  const p = delegation.payload as SellerSessionDelegationPayload;
-  if (lacksProfile(p, FIELDS)) fail("tp1_profile_missing", 409);
+  const received = delegation.payload as SellerSessionDelegationPayload;
+  if (lacksProfile(received, FIELDS)) fail("tp1_profile_missing", 409);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
-  if (hasKeys(p, FIELDS)) await assertPeerProfile(p.profile, binding as Tp1Binding);
-  const bytes = payloadBytes(p);
+  if (hasKeys(received, FIELDS)) await assertPeerProfile(received.profile, binding as Tp1Binding);
+  // DACS-1 reader rule: a `DID:` scheme resolves as `did:`. Checks read the canonical copy; the signature covers the payload as received.
+  const p = withCanonicalClaims(received, ["buyer", "seller"]);
+  const bytes = payloadBytes(p, 401, received);
   if (!verifyEd25519(bytes, walletSignatureBytes(delegation.signature), claimKey(p.buyer))) fail("peer_delegation_signature_invalid");
   // The trusted reader is asked only about a delegation the buyer's wallet signed.
   await assertTp1Authority(binding as Tp1Binding, local, [p.buyer, p.seller], p.jobId);

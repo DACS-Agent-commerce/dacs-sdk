@@ -243,16 +243,67 @@ describe("endpoint proof purchase gate", () => {
     const getter = Object.defineProperty({ seller: x.seller.claim, listingPin: PIN }, "publicEndpoint", { enumerable: true, get() { throw new Error("must not run"); } });
     await refuses(async () => (await w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: getter as never, binding: x.binding, local: LOCAL, now: NOW })), "wire_input_invalid");
   });
-  it("refuses uppercase DID claims at each receiver without rewriting signed bytes", async () => {
+  it("resolves a DID: scheme spelling at each receiver over the received signed bytes and returns canonical claims (DACS-1 reader rule)", async () => {
     const x = (await world());
-    for (const role of ["buyer", "seller"] as const) {
-      const request = { ...x.request, [role]: x.request[role].replace(/^did:/, "DID:") };
-      await refuses(async () => (await w.openWireEnvelope(header(signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context)), "peer_envelope_invalid");
-      const delegation = { ...x.delegation, [role]: x.delegation[role].replace(/^did:/, "DID:") };
-      await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(signed(delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer))), x.delegationScope)), "peer_delegation_invalid");
+    const spellings = [(c: string) => c.replace(/^did:/, "DID:"), (c: string) => c.replace(/^did:/, "Did:")];
+    const D = w.DACS_SELLER_HTTP_DOMAINS;
+    for (const spell of spellings) {
+      for (const role of ["buyer", "seller"] as const) {
+        // Request: the signature covers the payload as received; the opened payload carries the canonical claims.
+        const request = { ...x.request, [role]: spell(x.request[role]) };
+        const envelope = signed(request, D.request, x.buyer);
+        const opened = await w.openWireEnvelope(header(envelope), "request", x.context);
+        expect(opened.payload).toEqual(x.request);
+        expect(opened.authenticationHash).toBe(sha(header(envelope)));
+        expect(opened.authenticationHash).not.toBe(sha(header(signed(x.request, D.request, x.buyer))));
+        // A signature over the canonical spelling does not verify the received spelling: bytes are never rewritten before verification.
+        await refuses(async () => (await w.openWireEnvelope(header({ payload: request, signature: signed(x.request, D.request, x.buyer).signature }), "request", x.context)), "peer_signature_invalid");
+        // Response, checked against the canonical principal.
+        const response = { ...x.request, kind: "response" as const, requestHash: sha("request"), status: 200, [role]: spell(x.request[role]) };
+        const answered = await w.openWireEnvelope(header(signed(response, D.response, x.seller)), "response", { ...x.context, principal: x.seller.claim });
+        expect(answered.payload).toEqual({ ...response, [role]: x.request[role] });
+        // Delegation, alone and inside a delegated request.
+        const delegation = { ...x.delegation, [role]: spell(x.delegation[role]) };
+        const delegated = signed(delegation, D.delegation, x.buyer);
+        expect(await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegated)), x.delegationScope)).toEqual(x.delegation);
+        await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify({ payload: delegation, signature: signed(x.delegation, D.delegation, x.buyer).signature })), x.delegationScope)), "peer_delegation_signature_invalid");
+        const viaSession = await w.openWireEnvelope(header({ ...signed(x.request, D.request, x.session), delegation: delegated }), "request", x.context);
+        expect(viaSession.payload).toEqual(x.request);
+        expect(viaSession.delegation).toEqual(delegated);
+      }
+      // Discovery: the proof carries the canonical seller and serves the buyer's request signer.
+      const discovery = { ...x.discovery, seller: spell(x.seller.claim) };
+      const document = signed(discovery, D.discovery, x.seller);
+      const options = { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW };
+      const endpointProof = await w.verifyEndpointProof(Buffer.from(canonicalize(document)), options);
+      expect(endpointProof.payload).toEqual(x.discovery);
+      expect((await w.signWireRequest({ ...x.input, endpointProof })).payload.seller).toBe(x.seller.claim);
+      await refuses(async () => (await w.verifyEndpointProof(Buffer.from(canonicalize({ payload: discovery, signature: signed(x.discovery, D.discovery, x.seller).signature })), options)), "discovery_signature_invalid");
     }
-    const document = signed({ ...x.discovery, seller: x.seller.claim.replace(/^did:/, "DID:") }, w.DACS_SELLER_HTTP_DOMAINS.discovery, x.seller);
-    await refuses(async () => (await w.verifyEndpointProof(Buffer.from(canonicalize(document)), { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW })), "discovery_invalid");
+  });
+  it("still refuses non-canonical DID claims beyond the scheme: identifier case, uppercase keys and a malformed scheme", async () => {
+    const x = (await world());
+    const D = w.DACS_SELLER_HTTP_DOMAINS;
+    const variants = [
+      (c: string) => "DID:" + c.slice(4, -64) + c.slice(-64).toUpperCase(),
+      (c: string) => c.replace(/^did:demos:agent:/, "did:DEMOS:agent:"),
+      (c: string) => c.replace(/^did:demos:agent:/, "DID:demos:AGENT:"),
+      (c: string) => c.replace(/^did:/, "dld:"),
+      (c: string) => c.replace(/^did:/, " DID:"),
+      (c: string) => c.replace(/^did:/, "DİD:"),
+    ];
+    for (const spell of variants) {
+      for (const role of ["buyer", "seller"] as const) {
+        expect(spell(x.request[role])).not.toBe(x.request[role]);
+        const request = { ...x.request, [role]: spell(x.request[role]) };
+        await refuses(async () => (await w.openWireEnvelope(header(signed(request, D.request, x.buyer)), "request", x.context)), "peer_envelope_invalid");
+        const delegation = { ...x.delegation, [role]: spell(x.delegation[role]) };
+        await refuses(async () => (await w.verifySellerSessionDelegation(Buffer.from(JSON.stringify(signed(delegation, D.delegation, x.buyer))), x.delegationScope)), "peer_delegation_invalid");
+      }
+      const document = signed({ ...x.discovery, seller: spell(x.seller.claim) }, D.discovery, x.seller);
+      await refuses(async () => (await w.verifyEndpointProof(Buffer.from(canonicalize(document)), { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim, publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW })), "discovery_invalid");
+    }
+    // The caller's verified Listing is local input: it must already be canonical.
     const { bytes } = await proof(x);
     await refuses(async () => (await w.verifyEndpointProof(bytes, { readListingEligibility: readFixtureListingEligibility, listing: { seller: x.seller.claim.replace(/^did:/, "DID:"), publicEndpoint: ENDPOINT, listingPin: PIN }, binding: x.binding, local: LOCAL, now: NOW })), "wire_input_invalid");
   });

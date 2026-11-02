@@ -64,6 +64,27 @@ export const isUint = (v: unknown): v is number =>
   Number.isSafeInteger(v) && (v as number) >= 0 && !Object.is(v, -0);
 export const isHash = (v: unknown): v is string => typeof v === "string" && HASH.test(v);
 export const isClaim = (v: unknown): v is string => typeof v === "string" && CLAIM.test(v);
+/**
+ * A received claim spelling the DACS-1 reader rule resolves: the leading `did`
+ * scheme in any letter case (spec/DACS-1-IDENTIFY.md:170-177 at d45c0a2). The
+ * `demos:agent:` identifier and its key stay case-sensitive, so an uppercase
+ * key is still refused.
+ */
+const RECEIVED_CLAIM = /^[dD][iI][dD]:demos:agent:[0-9a-f]{64}$/;
+/** The canonical lowercase spelling of a received claim; any other value comes back unchanged, for the shape check to refuse. */
+export const canonicalClaim = (v: unknown): unknown =>
+  typeof v === "string" && RECEIVED_CLAIM.test(v) ? `did${v.slice(3)}` : v;
+/**
+ * A copy of a received payload with the named claim members in canonical
+ * spelling, for every check, comparison and hash after the signature. The
+ * signature itself is verified over the payload as received.
+ */
+export function withCanonicalClaims<T>(p: T, fields: readonly string[]): T {
+  if (!isRecord(p)) return p;
+  const copy: JsonRecord = { ...p };
+  for (const field of fields) if (Object.hasOwn(copy, field)) copy[field] = canonicalClaim(copy[field]);
+  return copy as T;
+}
 export const sameCanonical = (a: unknown, b: unknown): boolean => canonicalize(a) === canonicalize(b);
 export const cloneJson = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 export function deepFreeze<T>(value: T): T {
@@ -146,7 +167,7 @@ export function isListingPin(pin: unknown): pin is ListingPin {
     isUint(pin.version) && pin.version > 0 && isHash(pin.contentHash);
 }
 
-/** The raw Ed25519 key behind a did:demos:agent claim or a bare 64-hex key. */
+/** The raw Ed25519 key behind a canonical did:demos:agent claim or a bare 64-hex key. */
 export function claimKey(claimOrHex: string): string {
   return claimOrHex.startsWith("did:demos:agent:") ? claimOrHex.slice("did:demos:agent:".length) : claimOrHex;
 }

@@ -15,7 +15,7 @@ import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfi
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_HTTP_V1, isReadRoute } from "./routes.js";
 import {
   admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isListingPin, isRecord, isUint,
-  lacksProfile, ownedArtifact, ownedBytes, deepFreeze, ownedFields, uncurry, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
+  lacksProfile, ownedArtifact, ownedBytes, deepFreeze, ownedFields, uncurry, sameCanonical, verifyEd25519, withCanonicalClaims, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 export const DACS_SELLER_DISCOVERY_FORMAT = "dacs-seller-discovery/v1";
@@ -300,15 +300,18 @@ export async function verifyEndpointProof(bytes: Uint8Array, options: {
   await assertTp1Binding(binding, local);
   const document = admitWireJson(received, DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes, "discovery_json_rejected", 502) as JsonRecord;
   if (!hasKeys(document, ["payload", "signature"])) fail("discovery_invalid", 502);
-  const p = document.payload as JsonRecord;
-  if (lacksProfile(p, FIELDS)) fail("tp1_profile_missing", 502);
+  const asReceived = document.payload as JsonRecord;
+  if (lacksProfile(asReceived, FIELDS)) fail("tp1_profile_missing", 502);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
-  if (hasKeys(p, FIELDS)) await assertPeerProfile(p.profile, binding as Tp1Binding, 502);
+  if (hasKeys(asReceived, FIELDS)) await assertPeerProfile(asReceived.profile, binding as Tp1Binding, 502);
+  // DACS-1 reader rule: a `DID:` scheme resolves as `did:`. Checks read the canonical copy; the signature covers the payload as received.
+  const p = withCanonicalClaims(asReceived, ["seller"]);
   if (!payloadValid(p)) fail("discovery_invalid", 502);
   if (!hasKeys(listing, ["seller", "publicEndpoint", "listingPin"]) || !isClaim(listing.seller) ||
       !isPublicEndpoint(listing.publicEndpoint) || !isListingPin(listing.listingPin)) fail("wire_input_invalid", 500);
   if (p.seller !== listing.seller) fail("discovery_signer_wrong", 502);
-  if (!verifyEd25519(discoverySigningBytes(p), envelopeSignatureBytes(document.signature, "discovery_signature_invalid"), claimKey(p.seller))) {
+  const signedBytes = Buffer.from(`${DACS_SELLER_HTTP_DOMAINS.discovery}${canonicalize(asReceived)}`, "utf8");
+  if (!verifyEd25519(signedBytes, envelopeSignatureBytes(document.signature, "discovery_signature_invalid"), claimKey(p.seller))) {
     fail("discovery_signature_invalid", 502);
   }
   // The trusted reader is asked only about the verified Listing's seller, once its signature verified.
