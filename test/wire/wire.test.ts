@@ -35,7 +35,7 @@ it.each([
 });
 
 describe("dacs-seller-http/v1 routes and limits", () => {
-  it("keeps the plugin's seven routes and adds commit-on-signature, the context route and discovery", () => {
+  it("keeps the plugin's seven routes and adds commit-on-signature, the context route, the context challenge route and discovery", () => {
     expect(DACS_SELLER_HTTP_ROUTES.map((r) => `${r.method} ${r.path}${r.option ? ` [${r.option}]` : ""}`)).toEqual([
       "POST /dacs/v1/agreements/proposals",
       "POST /dacs/v1/agreements/state",
@@ -46,6 +46,7 @@ describe("dacs-seller-http/v1 routes and limits", () => {
       "POST /dacs/v1/bundles/buyer-copy",
       "POST /dacs/v1/commitments/signature [commit-on-signature]",
       "POST /dacs/v1/agreements/context [context-route]",
+      "POST /dacs/v1/agreements/context/challenge [context-route]",
       `GET ${DACS_SELLER_DISCOVERY_PATH}`,
     ]);
     expect(Object.isFrozen(DACS_SELLER_HTTP_ROUTES)).toBe(true);
