@@ -965,23 +965,43 @@ function targetCheckpointKey(
   return `dacs2:recipe-pin:${targetHash}`;
 }
 
+/**
+ * Resolve an exact historical version, or the latest required-claim family
+ * head, from a runtime-authenticated durable snapshot. Returns its immutable
+ * reference and signed recipe; throws DacsError for unbranded snapshots or
+ * missing, ambiguous, disabled or deprecated implicit selections.
+ */
+export function selectDurableSessionRecipe(
+  snapshot: Readonly<DurableSessionRecipeRegistrySnapshot>,
+  selector: Readonly<{ scheme: string; method: VerificationMethodKind; recipeVersion?: number }>,
+): Readonly<AuthenticatedRecipeRegistryEntry> {
+  if (!isDurableSessionRecipeRegistrySnapshot(snapshot)) {
+    throw new DacsError("recipe selection requires an authenticated durable session snapshot");
+  }
+  const entries = snapshot.entries as ReadonlyArray<Readonly<AuthenticatedRecipeRegistryEntry>>;
+  return selector.recipeVersion === undefined
+    ? selectLatestRecipeRegistryEntry(entries, {
+        scheme: selector.scheme,
+        method: selector.method,
+        required: true,
+      })
+    : resolveHistoricalRecipeRegistryEntry(entries, {
+        scheme: selector.scheme,
+        method: selector.method,
+        recipeVersion: selector.recipeVersion,
+      });
+}
+
 function selectionProvenanceFromDurableSnapshot(
   snapshot: Readonly<DurableSessionRecipeRegistrySnapshot>,
   requirement: Readonly<CompositeClaimRequirement>,
   requestedMethod: VerificationMethodKind,
 ): DurableRecipeSelectionProvenance {
-  const entries = snapshot.entries as ReadonlyArray<Readonly<AuthenticatedRecipeRegistryEntry>>;
-  const selected = requirement.recipeVersion === undefined
-    ? selectLatestRecipeRegistryEntry(entries, {
-        scheme: requirement.scheme,
-        method: requestedMethod,
-        required: true,
-      })
-    : resolveHistoricalRecipeRegistryEntry(entries, {
-        scheme: requirement.scheme,
-        method: requestedMethod,
-        recipeVersion: requirement.recipeVersion,
-      });
+  const selected = selectDurableSessionRecipe(snapshot, {
+    scheme: requirement.scheme,
+    method: requestedMethod,
+    ...(requirement.recipeVersion === undefined ? {} : { recipeVersion: requirement.recipeVersion }),
+  });
   if (
     selected.recipe.availability === "disabled" ||
     selected.recipe.governance.deprecated === true

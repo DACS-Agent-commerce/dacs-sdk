@@ -25,7 +25,6 @@ import {
 import {
   canonicalize,
   contentHash,
-  encodeAddressSegment,
   sha256Hex,
 } from "../canonical/index.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
@@ -46,6 +45,8 @@ import {
 import {
   SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
   isSellerFulfilmentAuditSource,
+  isSellerFulfilmentVetInvocationMismatch,
+  sellerFulfilmentVetRequirementMembers,
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
   type SellerFulfilmentSessionRecord,
@@ -445,6 +446,8 @@ interface SellerFulfilmentDepsBase {
 /** V2-only fulfilment dependencies with one atomic authenticated audit source. */
 export interface SellerFulfilmentDeps extends SellerFulfilmentDepsBase {
   auditSourceProfile: "v2";
+  /** Opt in only after strict presence replay; completed-bundle finalization is unsupported. */
+  acceptsPresenceOnlyVetRequirements?: true;
   resolveAuditSource: SellerFulfilmentAuditSourceResolver;
 }
 
@@ -469,6 +472,7 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const resolveListingSource = source.resolveListing;
     const resolveAuditSourceSource = source.resolveAuditSource;
     const auditSourceProfile = source.auditSourceProfile;
+    const acceptsPresenceOnlyVetRequirements = source.acceptsPresenceOnlyVetRequirements === true ? true : undefined;
     const prepareDeliverySource = source.prepareDelivery;
     const submitDeliverySource = source.submitDelivery;
     const reconcileDeliverySource = source.reconcileDelivery;
@@ -575,6 +579,7 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const captured = Object.freeze({
       receiptStore,
       auditSourceProfile,
+      acceptsPresenceOnlyVetRequirements,
       resolveAgreement: bindCaptured(resolveAgreementSource, source),
       resolveListing: bindCaptured(resolveListingSource, source),
       resolveAuditSource: bindCaptured(resolveAuditSourceSource, source),
@@ -1455,6 +1460,7 @@ function auditSourceViolation(
   request: SellerFulfilmentRequest,
   deliveryPhaseIndex: number,
   expectedCommitmentAddress: string,
+  acceptsPresenceOnly?: true,
 ): string | null {
   if (!isSellerFulfilmentAuditSource(source)) {
     return "audit source is not the strict versioned operational provenance shape";
@@ -1526,60 +1532,20 @@ function auditSourceViolation(
       !exact(sellerParty.vetRecordRef, agreement.seller.vetRecordRef)) {
     return "audit source party Vet references differ from the committed Agreement";
   }
-  if (source.artifacts.vetRequirements.some((invocation) => {
-    const key = canonicalize(invocation.vetRecordRef);
-    const binding = uniquePartyVetBindings.get(key);
-    const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];
-    const requirementCandidates = [
-      ...invocation.requirement.required,
-      ...(invocation.requirement.oneOf ?? []).flat(),
-    ];
-    const seenResultRefs = new Set<string>();
-    const seenResultHashes = new Set<string>();
-    const listingOwned = binding?.roles.has("buyer") === true;
-    const expectedVerifier = listingOwned
-      ? sellerParty.primaryClaim
-      : binding?.roles.has("seller") === true
-        ? buyerParty.primaryClaim
-        : undefined;
-    const expectedCompositeAddress =
-      `dacs2:composite:${authorization.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
-    const uncoveredRequired = invocation.requirement.required.some(
-      (required) => !expectedResults.some((result) =>
-        result.scheme === required.scheme && exact(result.requirement, required)),
-    );
-    const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
-      (group) => group.length === 0 || !group.some((alternative) =>
-        expectedResults.some((result) =>
-          result.scheme === alternative.scheme && exact(result.requirement, alternative))),
-    );
-    return !binding || expectedVerifier === undefined ||
-      invocation.evaluatedParty !== binding.primaryClaim ||
-      invocation.verifier !== expectedVerifier ||
-      invocation.vetRecordRef.anchor.kind !== "storage-program" ||
-      invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
-      (invocation.vetRecordRef.signer !== undefined &&
-        invocation.vetRecordRef.signer !== invocation.verifier) ||
-      (listingOwned && !exact(invocation.requirement, listing.buyerRequirement)) ||
-      invocation.dealSpecific.some((result) => result.sourceJobId !== authorization.jobId) ||
-      uncoveredRequired || uncoveredOneOf ||
-      expectedResults.some((result) => {
-        const refKey = canonicalize(result.ref);
-        const expectedResultAddress =
-          `dacs2:${result.sourceJobId}:${result.scheme}:` +
-          `${encodeAddressSegment(result.identifier)}:v${result.ref.recipeVersion}`;
-        const duplicate = seenResultRefs.has(refKey) ||
-          seenResultHashes.has(result.ref.contentHash);
-        seenResultRefs.add(refKey);
-        seenResultHashes.add(result.ref.contentHash);
-        return duplicate || result.scheme !== result.requirement.scheme ||
-          result.ref.anchor.kind !== "storage-program" ||
-          result.ref.anchor.locator !== expectedResultAddress ||
-          !requirementCandidates.some((candidate) => exact(candidate, result.requirement)) ||
-          (result.requirement.recipeVersion !== undefined &&
-            result.ref.recipeVersion !== result.requirement.recipeVersion);
-      });
-  })) {
+  const invocationContext = {
+    jobId: authorization.jobId,
+    buyerClaim: buyerParty.primaryClaim,
+    sellerClaim: sellerParty.primaryClaim,
+    buyerRequirement: listing.buyerRequirement,
+    bindings: uniquePartyVetBindings,
+    acceptsPresenceOnly,
+  };
+  if (acceptsPresenceOnly !== true && source.artifacts.vetRequirements.some((invocation) =>
+    sellerFulfilmentVetRequirementMembers(invocation.requirement).some((member) => !member.verificationRequired))) {
+    return "core delivery cannot finalize presence-only Vet requirements";
+  }
+  if (source.artifacts.vetRequirements.some((invocation) =>
+    isSellerFulfilmentVetInvocationMismatch(invocation, invocationContext))) {
     return "audit source Vet provenance differs from the authenticated party/orchestrator bindings";
   }
 
@@ -3482,6 +3448,7 @@ async function runFulfilmentCoreInner(
     request,
     request.deliveryPhaseIndex,
     expectedCommitmentAddress,
+    deps.acceptsPresenceOnlyVetRequirements,
   );
   if (auditViolation) return rejected("audit-source-mismatch", auditViolation);
   const derivedHash = sellerFulfilmentAuditSourceHash(auditSource);

@@ -18,7 +18,8 @@ import {
   isChainTxRef,
   isPhaseStep,
 } from "../artifacts/index.js";
-import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { canonicalize, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
+import { presenceRequirementPreflight } from "../agent/compositeVerification.js";
 
 /** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
 export const SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR =
@@ -413,6 +414,206 @@ export function isSellerFulfilmentAuditSource(
     return true;
   } catch {
     return false;
+  }
+}
+
+/** One distinct party Vet reference of the authenticated SessionRecord roster. */
+export interface SellerFulfilmentVetBinding {
+  primaryClaim: string;
+  roles: ReadonlySet<string>;
+}
+
+const sameJcs = (left: unknown, right: unknown): boolean => {
+  try {
+    return canonicalize(left) === canonicalize(right);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * True when one Vet requirement invocation differs from its party's
+ * authenticated provenance: the evaluated party, the counterparty
+ * verifier, the composite address, the Listing-owned buyer requirement, the
+ * coverage of every required/oneOf member, this job's deal-specific results
+ * and each result's address. The seller package and fulfilment core share
+ * this predicate and its explicit presence-only capability.
+ *
+ * A presence-only member (`verificationRequired: false`) needs no result and
+ * may have none: DACS-2 forbids a synthetic VerifyResult for it. It is only
+ * counted as covered when the strict verifier's presence preflight (DACS-1
+ * PCR-1/PCR-2) accepts it. The seller package counts presence by strict replay
+ * of the Vet record over the authenticated bundle, which this structural
+ * check does not repeat. Without acceptsPresenceOnly, every presence-only
+ * member is refused, including an unused oneOf alternative, because core
+ * finalization cannot supply the companion bundle and registry pin.
+ */
+export function isSellerFulfilmentVetInvocationMismatch(
+  invocation: unknown,
+  context: {
+    jobId: string;
+    buyerClaim: string;
+    sellerClaim: string;
+    buyerRequirement: unknown;
+    bindings: ReadonlyMap<string, SellerFulfilmentVetBinding>;
+    acceptsPresenceOnly?: true;
+  },
+): boolean {
+  try {
+    if (!hasExactJcsView(invocation) || !isVetRequirementInvocation(invocation)) return true;
+    const requirementCandidates = sellerFulfilmentVetRequirementMembers(invocation.requirement);
+    const presenceOnlyMembers = requirementCandidates.filter((member) => member.verificationRequired === false);
+    if (presenceOnlyMembers.length > 0 && context.acceptsPresenceOnly !== true) return true;
+    // DACS-1 PCR-1/PCR-2: a presence-only member is only covered when the
+    // strict verifier would accept it — a registered scheme that selects no
+    // freshness or recipe field. Counting any other member as covered would
+    // carry a requirement the party Vet refuses into delivery.
+    if (presenceOnlyMembers.length > 0 && presenceRequirementPreflight({
+      ...invocation.requirement, required: presenceOnlyMembers, oneOf: [],
+    }) !== null) return true;
+    const key = canonicalize(invocation.vetRecordRef);
+    const binding = context.bindings.get(key);
+    const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];
+    const seenResultRefs = new Set<string>();
+    const seenResultHashes = new Set<string>();
+    const listingOwned = binding?.roles.has("buyer") === true;
+    const expectedVerifier = listingOwned
+      ? context.sellerClaim
+      : binding?.roles.has("seller") === true
+        ? context.buyerClaim
+        : undefined;
+    const expectedCompositeAddress =
+      `dacs2:composite:${context.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
+    const isCovered = (claim: ClaimRequirement): boolean =>
+      (context.acceptsPresenceOnly === true && !claim.verificationRequired) || expectedResults.some((result) =>
+        result.scheme === claim.scheme && sameJcs(result.requirement, claim));
+    const uncoveredRequired = !invocation.requirement.required.every(isCovered);
+    const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
+      (group) => group.length === 0 || !group.some(isCovered),
+    );
+    return !binding || expectedVerifier === undefined ||
+      invocation.evaluatedParty !== binding.primaryClaim ||
+      invocation.verifier !== expectedVerifier ||
+      invocation.vetRecordRef.anchor.kind !== "storage-program" ||
+      invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
+      (invocation.vetRecordRef.signer !== undefined &&
+        invocation.vetRecordRef.signer !== invocation.verifier) ||
+      (listingOwned && !sameJcs(invocation.requirement, context.buyerRequirement)) ||
+      invocation.dealSpecific.some((result) => result.sourceJobId !== context.jobId) ||
+      uncoveredRequired || uncoveredOneOf ||
+      expectedResults.some((result) => {
+        const refKey = canonicalize(result.ref);
+        const expectedResultAddress =
+          `dacs2:${result.sourceJobId}:${result.scheme}:` +
+          `${encodeAddressSegment(result.identifier)}:v${result.ref.recipeVersion}`;
+        const duplicate = seenResultRefs.has(refKey) ||
+          seenResultHashes.has(result.ref.contentHash);
+        seenResultRefs.add(refKey);
+        seenResultHashes.add(result.ref.contentHash);
+        return duplicate || !result.requirement.verificationRequired ||
+          result.scheme !== result.requirement.scheme ||
+          result.ref.anchor.kind !== "storage-program" ||
+          result.ref.anchor.locator !== expectedResultAddress ||
+          !requirementCandidates.some((candidate) => sameJcs(candidate, result.requirement)) ||
+          (result.requirement.recipeVersion !== undefined &&
+            result.ref.recipeVersion !== result.requirement.recipeVersion);
+      });
+  } catch {
+    return true;
+  }
+}
+
+const MAX_PARTY_VET_INVOCATIONS = 2;
+const MAX_VET_REQUIREMENT_MEMBERS = 64;
+const MAX_VET_INVOCATION_RESULTS = 64;
+
+/** Return required members and every oneOf alternative of a strict requirement. */
+export function sellerFulfilmentVetRequirementMembers(requirement: BundleRequirement): ClaimRequirement[] {
+  return [...requirement.required, ...(requirement.oneOf ?? []).flat()];
+}
+
+/**
+ * Why the Vet requirement invocations a seller would carry into its delivery
+ * audit source are not ones the fulfilment core accepts, or null: the strict
+ * invocation shape, exactly one invocation per distinct party Vet record, and
+ * `isSellerFulfilmentVetInvocationMismatch` for each. Returns a refusal for
+ * malformed or over-limit invocation sets; never throws.
+ * Authenticate the SessionRecord roster separately; supply its bundle hashes
+ * when parties share a Vet record, and validate the orchestrator role. This checks invocation
+ * coverage before signing with the runner's same presence-only capability,
+ * not every delivery precondition. Presence-only members are refused by default;
+ * opt in only after strict replay over the exact bundle and an authenticated job registry snapshot.
+ */
+export function sellerFulfilmentVetRequirementsViolation(
+  vetRequirements: unknown,
+  input: {
+    jobId: string;
+    buyer: { primaryClaim: string; vetRecordRef: AttestationRef; bundleHash?: string };
+    seller: { primaryClaim: string; vetRecordRef: AttestationRef; bundleHash?: string };
+    buyerRequirement: unknown;
+    acceptsPresenceOnly?: true;
+  },
+): string | null {
+  try {
+    if (!Array.isArray(vetRequirements) || vetRequirements.length > MAX_PARTY_VET_INVOCATIONS ||
+        !hasExactJcsView(vetRequirements) || !vetRequirements.every(isVetRequirementInvocation)) {
+      return "the Vet requirement invocations are not the strict audit-source shape";
+    }
+    for (const entry of vetRequirements) {
+      const groups = entry.requirement.oneOf ?? [];
+      const members = entry.requirement.required.length +
+        groups.reduce((count, group) => count + group.length, 0);
+      if (groups.length > MAX_VET_REQUIREMENT_MEMBERS || members > MAX_VET_REQUIREMENT_MEMBERS ||
+          entry.freshness.length + entry.dealSpecific.length > MAX_VET_INVOCATION_RESULTS) {
+        return "the Vet requirement invocations exceed the requirement or result limit";
+      }
+    }
+    canonicalize({ artifacts: { vetRequirements } });
+    const bindings = new Map<string, { primaryClaim: string; bundleHash?: string; roles: Set<string> }>();
+    for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
+      if (!hasExactJcsView(party.vetRecordRef) ||
+          !isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
+        return `the ${role} Vet reference or claim is malformed`;
+      }
+      const key = canonicalize(party.vetRecordRef);
+      const existing = bindings.get(key);
+      if (existing && (existing.primaryClaim !== party.primaryClaim ||
+          typeof existing.bundleHash !== "string" || !HASH_RE.test(existing.bundleHash) ||
+          existing.bundleHash !== party.bundleHash)) {
+        return "one Vet record cannot represent different authenticated party identities";
+      }
+      if (existing) existing.roles.add(role);
+      else bindings.set(key, { primaryClaim: party.primaryClaim, bundleHash: party.bundleHash, roles: new Set([role]) });
+    }
+    const partyRefs = [...new Map([input.buyer, input.seller].map((party) =>
+      [canonicalize(party.vetRecordRef), party.vetRecordRef])).values()];
+    if (!hasNoDuplicateContentHashes(partyRefs)) {
+      return "distinct party Vet references share one content hash";
+    }
+    const invocationRefs = vetRequirements.map((entry) => entry.vetRecordRef);
+    if (vetRequirements.length !== bindings.size || !hasNoDuplicateRefs(invocationRefs) ||
+        !invocationRefs.every((ref) => bindings.has(canonicalize(ref)))) {
+      return "the Vet requirement invocations are not exactly one per party Vet record";
+    }
+    const context = {
+      jobId: input.jobId,
+      buyerClaim: input.buyer.primaryClaim,
+      sellerClaim: input.seller.primaryClaim,
+      buyerRequirement: input.buyerRequirement,
+      bindings,
+      acceptsPresenceOnly: input.acceptsPresenceOnly,
+    };
+    if (input.acceptsPresenceOnly !== true && vetRequirements.some((entry) =>
+      sellerFulfilmentVetRequirementMembers(entry.requirement).some((member) => !member.verificationRequired))) {
+      return "core delivery cannot finalize presence-only Vet requirements";
+    }
+    if (vetRequirements.some((entry) => isSellerFulfilmentVetInvocationMismatch(entry, context))) {
+      return "a Vet requirement invocation differs from its party, counterparty verifier, " +
+        "address, requirement or covered results";
+    }
+    return null;
+  } catch {
+    return "the Vet requirement invocations are not canonicalizable";
   }
 }
 

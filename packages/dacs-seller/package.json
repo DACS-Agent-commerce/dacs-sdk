@@ -1,0 +1,40 @@
+{
+  "name": "@kynesyslabs/dacs-seller",
+  "version": "0.1.0-alpha.0",
+  "description": "Self-hosted DACS seller kit (fixture-only: TEST authorities and a loopback fixture node, not a real Demos node): one seller agent for one signed Listing behind the authenticated seller transport, on loopback.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git",
+    "directory": "packages/dacs-seller"
+  },
+  "homepage": "https://github.com/DACS-Agent-commerce/dacs-sdk/tree/main/packages/dacs-seller#readme",
+  "bugs": {
+    "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json",
+    "./PROFILE.json": "./PROFILE.json"
+  },
+  "files": [
+    "src/",
+    "!src/devnet-demo/operator-custody.mjs",
+    "!src/devnet-demo/seller-issuance.mjs",
+    "PROFILE.json",
+    "ADMISSION.md",
+    "SOURCES.md"
+  ],
+  "peerDependencies": {
+    "@kynesyslabs/dacs": "0.1.0-alpha.0"
+  },
+  "private": true,
+  "dependencies": {
+    "better-sqlite3": "12.6.2"
+  }
+}

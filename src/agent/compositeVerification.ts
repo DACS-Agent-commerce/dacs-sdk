@@ -147,6 +147,12 @@ export interface VerifyCompositeVerificationDeps<TKey> {
   verifyRequirementParameters?: (
     input: VerifyAuthorityAttestationInput,
   ) => Promise<boolean> | boolean;
+  /** DACS-2 §7.4.3: an implicit version satisfies a member only when selected
+   * as latest live by the authenticated session registry; a result at another
+   * version does not apply to that member, whatever its decision. */
+  isImplicitRecipeVersionSelected?: (
+    input: VerifyAuthorityAttestationInput,
+  ) => Promise<boolean> | boolean;
   /** Authenticate CRQ-1 even when no verification recipe is invoked. */
   isSessionRecipeRegistrySnapshotAuthenticated?: (
     snapshotHash: string,
@@ -382,6 +388,8 @@ function captureVerificationDeps<TKey>(
       deps.verifyAuthorityAttestation.bind(deps);
     const verifyRequirementParameters =
       deps.verifyRequirementParameters?.bind(deps);
+    const isImplicitRecipeVersionSelected =
+      deps.isImplicitRecipeVersionSelected?.bind(deps);
     const authenticateRegistry =
       deps.isSessionRecipeRegistrySnapshotAuthenticated?.bind(deps);
     const verifyIdentityPresentation =
@@ -406,6 +414,7 @@ function captureVerificationDeps<TKey>(
       verify,
       verifyAuthorityAttestation,
       ...(verifyRequirementParameters ? { verifyRequirementParameters } : {}),
+      ...(isImplicitRecipeVersionSelected ? { isImplicitRecipeVersionSelected } : {}),
       ...(authenticateRegistry
         ? {
             isSessionRecipeRegistrySnapshotAuthenticated: async (hash: string) =>
@@ -1498,7 +1507,30 @@ async function qualifyResolvedMember<TKey>(
   expected: Readonly<ExpectedVerifyResult>,
   deps: VerifyCompositeVerificationDeps<TKey>,
   sharedProjection: boolean,
-): Promise<VerificationDecision | StrictCompositeVerification> {
+): Promise<VerificationDecision | StrictCompositeVerification | null> {
+  const verificationInput = (): VerifyAuthorityAttestationInput => ({
+    result: deepFreezeSnapshot(structuredClone(resolved.result)),
+    expected: deepFreezeSnapshot(structuredClone(expected)),
+    recipe: deepFreezeSnapshot(structuredClone(resolved.recipe)),
+    content: resolved.content.encoding === "bytes"
+      ? { encoding: "bytes", value: Uint8Array.from(resolved.content.value) }
+      : {
+          encoding: "canonical-json",
+          value: deepFreezeSnapshot(structuredClone(resolved.content.value)),
+        },
+  });
+  if (
+    expected.requirement.recipeVersion === undefined &&
+    deps.isImplicitRecipeVersionSelected
+  ) {
+    try {
+      const selected = await deps.isImplicitRecipeVersionSelected(Object.freeze(verificationInput()));
+      // CRQ: a result outside the selected version does not apply to the member.
+      if (selected !== true) return null;
+    } catch (error) {
+      return unresolved("recipe-resolution", String(error));
+    }
+  }
   if (
     resolved.effectiveDecision !== "pass" ||
     expected.requirement.parameters === undefined
@@ -1512,17 +1544,7 @@ async function qualifyResolvedMember<TKey>(
     );
   }
   try {
-    const matches = await deps.verifyRequirementParameters({
-      result: deepFreezeSnapshot(structuredClone(resolved.result)),
-      expected: deepFreezeSnapshot(structuredClone(expected)),
-      recipe: deepFreezeSnapshot(structuredClone(resolved.recipe)),
-      content: resolved.content.encoding === "bytes"
-        ? { encoding: "bytes", value: Uint8Array.from(resolved.content.value) }
-        : {
-            encoding: "canonical-json",
-            value: deepFreezeSnapshot(structuredClone(resolved.content.value)),
-          },
-    });
+    const matches = await deps.verifyRequirementParameters(verificationInput());
     if (matches === true) return "pass";
     return !sharedProjection && resolved.result.decision !== "fail"
       ? invalid("requirement-parameters")
@@ -1835,6 +1857,7 @@ export async function verifyCompositeVerificationRecord<TKey>(
         capturedDeps,
         entry.members.length > 1,
       );
+      if (decision === null) continue;
       if (typeof decision !== "string") return decision;
       mixedEntries.push({
         requirement: memberExpected.requirement,

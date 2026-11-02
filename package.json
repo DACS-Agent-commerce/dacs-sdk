@@ -146,7 +146,9 @@
     "release:test:native": "DACS_RELEASE_NATIVE_INTEGRATION=1 node --test --test-concurrency=1 --test-name-pattern=\"native sqlite integration\" test/scripts/release-checks.test.mjs",
     "release:test": "node --test --test-concurrency=1 test/scripts/release-*.test.mjs && vitest run test/scripts/release-identity.test.ts",
     "release:set:publish": "node scripts/publish-release-set.mjs",
-    "acceptance:registry-container": "bash scripts/verify-registry-container-consumer.sh"
+    "acceptance:registry-container": "bash scripts/verify-registry-container-consumer.sh",
+    "seller:test": "node scripts/run-seller-tests.mjs",
+    "seller:prepare": "node scripts/prepare-seller-consumer.mjs"
   },
   "publishConfig": {
     "access": "public",
