@@ -64,6 +64,15 @@ export interface DemosWriteEvidence {
   writer: string;
   logicalName: string;
   nativeAddress: string;
+  /**
+   * Optional lifecycle label. Evidence read from a real Demos node is final
+   * and carries none; a producer of simulated or partial evidence sets it, and
+   * anything other than `finalized` is refused wherever evidence is projected
+   * into a receipt.
+   */
+  state?: string;
+  /** Optional finality label, checked like {@link DemosWriteEvidence.state}. */
+  finalityProfile?: string;
   operation: "create" | "update";
   nonce: number;
   transactionRef: string;

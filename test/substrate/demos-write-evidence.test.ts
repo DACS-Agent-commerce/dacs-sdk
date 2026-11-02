@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertDemosWriteEvidence,
   canonicalize,
   contentHash,
+  DacsError,
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
   demosWriteEvidenceToAnchorReceipt,
+  NonFinalDemosEvidenceError,
   sha256Hex,
 } from "../../src/index.js";
 import * as root from "../../src/index.js";
@@ -243,5 +246,69 @@ describe("Demos portable write evidence", () => {
     expect(substrate.demosTransactionContentMatches).toBe(demosTransactionContentMatches);
     expect(root.demosTransactionContentMatches(content, content, "tx-abc")).toBe(true);
     expect(root.demosTransactionContentMatches(content, { ...content, nonce: 8 }, "tx-abc")).toBe(false);
+  });
+});
+
+describe("Demos write evidence that is not final", () => {
+  const portableInput = (candidate: DemosWriteEvidence) => ({
+    logicalAddress: "dacs:test:v1",
+    contentHash: artifactHash,
+    writer: "did:demos:agent:abc",
+    evidence: candidate,
+  });
+  const fixtureLabelled: DemosWriteEvidence = {
+    ...evidence,
+    state: "included",
+    finalityProfile: "simulated-fixture-inclusion-only",
+  };
+
+  it("refuses evidence labelled as simulated fixture inclusion", () => {
+    expect(() => demosWriteEvidenceToAnchorReceipt(portableInput(fixtureLabelled)))
+      .toThrow(NonFinalDemosEvidenceError);
+    expect(() => demosWriteEvidenceToAnchorReceipt(portableInput(fixtureLabelled)))
+      .toThrow(/not final/);
+  });
+
+  it.each([
+    ["a state other than finalized", { state: "included" }],
+    ["a finality profile other than Demos BFT", { finalityProfile: "simulated-fixture-inclusion-only" }],
+  ] as const)("refuses evidence carrying %s", (_name, labels) => {
+    expect(() => demosWriteEvidenceToAnchorReceipt(portableInput({ ...evidence, ...labels })))
+      .toThrow(NonFinalDemosEvidenceError);
+  });
+
+  it("refuses non-final evidence in the evidence assertion too", () => {
+    expect(() => assertDemosWriteEvidence(fixtureLabelled))
+      .toThrow(NonFinalDemosEvidenceError);
+    expect(substrate.NonFinalDemosEvidenceError).toBe(NonFinalDemosEvidenceError);
+  });
+
+  it("types the refusal as a permanent SDK error", () => {
+    expect.assertions(2);
+    try {
+      demosWriteEvidenceToAnchorReceipt(portableInput(fixtureLabelled));
+    } catch (error) {
+      expect(error).toBeInstanceOf(DacsError);
+      expect((error as DacsError).category).toBe("permanent");
+    }
+  });
+
+  it("still converts evidence explicitly labelled final", () => {
+    expect(demosWriteEvidenceToAnchorReceipt(portableInput({
+      ...evidence,
+      state: "finalized",
+      finalityProfile: "demos-bft-confirmed-native-read",
+    }))).toMatchObject({ state: "finalized" });
+  });
+
+  it("keeps refusing a decoded receipt that carries the fixture labels", () => {
+    const receipt = demosWriteEvidenceToAnchorReceipt(portableInput(evidence));
+    expect(() => decodeDemosAnchorReceiptProof({
+      ...receipt,
+      substrate: "demos-sr2-simulated-fixture",
+      finalityProfile: "simulated-fixture-inclusion-only",
+      state: "included",
+      evidence: { ...receipt.evidence, kind: "demos-sr2-simulated-fixture-proof-v1" },
+    })).toThrow(/does not contain Demos write evidence/);
   });
 });

@@ -6,6 +6,7 @@ import {
   createInMemoryDemosWriteJournal,
   demosSignedTransactionProofHash,
   demosWriteEvidenceToAnchorReceipt,
+  NonFinalDemosEvidenceError,
   type AnchorAttemptReceipt,
   type DemosWriteJournalRecord,
 } from "../../src/substrate/index.js";
@@ -1303,6 +1304,13 @@ describe("DemosAdapter.anchorAndWait", () => {
         blockHash: "tampered-block",
       }),
     ).resolves.toBe(false);
+    await expect(
+      adapter.verifyDemosWriteEvidence({
+        ...anchored.demosEvidence!,
+        state: "included",
+        finalityProfile: "simulated-fixture-inclusion-only",
+      }),
+    ).rejects.toBeInstanceOf(NonFinalDemosEvidenceError);
 
     expect(raw.storagePrograms.sign).toHaveBeenCalledWith(
       expect.anything(),
