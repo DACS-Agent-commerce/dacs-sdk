@@ -22,6 +22,13 @@ const bugRules = {
   "no-unreachable-loop": "error",
 };
 
+// Globals from different config blocks add up, so switch Node's off for code
+// that runs in a browser, where they would throw.
+const browserOnly = {
+  ...Object.fromEntries(Object.keys(globals.node).map((name) => [name, "off"])),
+  ...globals.browser,
+};
+
 export default [
   {
     // Existing comments disable rules this config doesn't load, so don't report those.
@@ -51,7 +58,7 @@ export default [
   },
   {
     files: ["packages/dacs-client/src/public/**/*.{js,mjs}"],
-    languageOptions: { globals: globals.browser },
+    languageOptions: { globals: browserOnly },
   },
   {
     files: ["**/*.ts"],
