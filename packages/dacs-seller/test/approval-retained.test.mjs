@@ -37,7 +37,8 @@ const completions=async(path,id)=>(await lines(path)).filter(line=>line.reservat
 const signLines=async(path)=>(await lines(path)).filter(line=>line.format==='dacs-node2-seller-policy-sign-authorization/v1');
 const openSigns=async(path)=>(await parsed(path)).rows.filter(row=>row.signAuthorized&&row.outcome===null);
 const budget=async(path)=>heldPolicyBudget((await parsed(path)).rows,T0);
-const bindingOf=(prepared)=>({ledgerId:prepared.ledgerId,requestText:prepared.requestText});
+// A manual binding also carries its generation's process-local token.
+const bindingOf=(prepared)=>({ledgerId:prepared.ledgerId,requestText:prepared.requestText,...(prepared.token?{token:prepared.token}:{})});
 const withinTimeout=(work)=>Promise.race([work,new Promise((_,fail)=>setTimeout(()=>fail(new Error('operation did not complete: lock or flight not released')),OPERATION_TIMEOUT_MS).unref())]);
 const rejectsWith=(work,code)=>assert.rejects(work,error=>error.code===code);
 // The policy lock's identity while it is held: its file text and inode, read from inside a purchase read.
@@ -49,9 +50,10 @@ test('in policy mode retained.prepare writes one sign-authorized line and return
  const prepared=await approval.retained.prepare(request);
  const signed=await signLines(fixture.evidencePath);
  assert.equal(signed.length,1);assert.equal(prepared.ledgerId,signed[0].reservationId);
- assert.equal(prepared.requestText,JSON.stringify(request));assert.equal(prepared.requestText,signed[0].requestBytes);
+ assert.equal(prepared.requestText,JSON.stringify(request));assert.equal(prepared.requestText,signed[0].requestBytes);assert.equal(signed[0].retained,true);
  const manualFixture=await ledgerFixture(t),manual=composeSellerApproval({mode:'manual',policy:manualFixture.restart(),manual:async()=>true});
- assert.deepEqual(await manual.retained.prepare(evidence()),{ledgerId:null,requestText:JSON.stringify(evidence())});
+ const manualPrepared=await manual.retained.prepare(evidence());
+ assert.equal(manualPrepared.ledgerId,null);assert.equal(manualPrepared.requestText,JSON.stringify(evidence()));assert.equal(typeof manualPrepared.token,'object');
  assert.deepEqual(await signLines(manualFixture.evidencePath),[]);
 });
 
@@ -251,9 +253,10 @@ test('retained.prepare refuses with no ledger line, as approve.prepare does for 
   'resolved purchase price':{amountOs:'2000000000'},'payment transaction':{paymentTxRef:{...PAYMENT_TX_REF,txHash:'6'.repeat(64)}},'listing pin':{listingPin:{...pin,version:2}},
   'source binding':{sourceBinding:{...sourceBinding,bindingId:'f'.repeat(64)}},'seller':{seller:`did:demos:agent:${'3'.repeat(64)}`},'job':{jobId:JOBS[4]},
  };
+ // A request that is not payment evidence is refused at the boundary, before the policy reads anything.
  const refuse=async(name,request)=>{
   const before=await text(fixture.evidencePath),outcome=await approval.retained.prepare(request).then(()=>'not refused',error=>error.code);
-  assert.equal(outcome,'approval_refused',name);assert.equal(await text(fixture.evidencePath),before,name);
+  assert.equal(outcome,name==='kind swapped to the artifact-create kind'?'invalid_params':'approval_refused',name);assert.equal(await text(fixture.evidencePath),before,name);
  };
  for(const [name,mutate] of Object.entries(requestMutations)){const request=evidence();mutate(request);await refuse(name,request);}
  for(const [name,change] of Object.entries(purchaseMutations)){fixture.state.purchase={...purchase(),...change};await refuse(name,evidence());}
@@ -280,7 +283,9 @@ test('manual approval runs the same checks as policy approval, table {purchase c
   await approval.retained.settle(bindingOf(decision),'spent');
  }
  await zeroWrites();
- // Definite policy refusals that no manual answer may waive never reach the operator.
+ // Definite policy refusals that no manual answer may waive never reach the operator (an open generation of the same
+ // bytes would be returned as it is, so the first is released).
+ await approval.retained.settle(bindingOf(prepared),'released');
  const before=asked;fixture.state.purchase=false;await rejectsWith(approval.retained.prepare(request),'approval_refused');
  fixture.state.purchase=unpaid();await rejectsWith(approval.retained.prepare(request),'approval_refused');
  fixture.state.purchase=purchase();const inconsistent=evidence();inconsistent.content.debit.totalOs='4000000001';
@@ -307,9 +312,10 @@ test('confirmRetained refuses an otherwise valid executed confirmation whose fee
 test('two retained.prepare calls for the same wallet, nonce and exact CREATE that differ only in display-only purpose: the second returns the open row or refuses, and one open sign authority exists afterwards',async t=>{
  const fixture=await ledgerFixture(t),approval=fixture.compose(fixture.restart()),first=evidence(),renamed=evidence();renamed.purpose='A different display-only purpose';
  const prepared=await approval.retained.prepare(first),before=await text(fixture.evidencePath);
- const second=await approval.retained.prepare(renamed);
- assert.equal(second.ledgerId,prepared.ledgerId);assert.equal(second.requestText,prepared.requestText);assert.equal(await text(fixture.evidencePath),before);
- assert.equal((await openSigns(fixture.evidencePath)).length,1);
+ // Only the exact bytes address an open authorization: a display-only difference is refused, not answered with the old row.
+ await assert.rejects(approval.retained.prepare(renamed),error=>error.code==='approval_refused'&&error.reason==='sign-authorization-open');
+ assert.equal(await text(fixture.evidencePath),before);
+ assert.equal((await approval.retained.prepare(evidence())).ledgerId,prepared.ledgerId);assert.equal((await openSigns(fixture.evidencePath)).length,1);
  // The same wallet and nonce with a different CREATE is refused outright.
  const different=evidence({job:JOBS[1]});await rejectsWith(approval.retained.prepare(different),'approval_refused');assert.equal((await openSigns(fixture.evidencePath)).length,1);
 });
@@ -367,7 +373,7 @@ test('a manual authorization lives only in its process: after a restart open(req
  const fixture=await ledgerFixture(t);let asked=0;
  const manual=async()=>{asked++;return true;},first=composeSellerApproval({mode:'manual',policy:fixture.restart(),manual});
  const prepared=await first.retained.prepare(evidence());
- assert.deepEqual(await first.retained.open(prepared.requestText),{ledgerId:null,requestText:prepared.requestText});
+ assert.deepEqual(await first.retained.open(prepared.requestText),bindingOf(prepared));
  const restarted=composeSellerApproval({mode:'manual',policy:fixture.restart(),manual});
  assert.equal(await restarted.retained.open(prepared.requestText),null);
  assert.equal((await restarted.retained.prepare(evidence())).ledgerId,null);assert.equal(asked,2);
@@ -383,7 +389,7 @@ test('settle by id still completes after the approval is stopped, and a second s
 });
 
 const SIGN_FORMAT='dacs-node2-seller-policy-sign-authorization/v1';
-const signLineFor=(requestBytes)=>JSON.stringify({format:SIGN_FORMAT,reservationId:randomUUID(),approvalHash:createHash('sha256').update(requestBytes).digest('hex'),requestBytes,totalOs:JSON.parse(requestBytes).content.debit.totalOs,recordedAt:T0})+'\n';
+const signLineFor=(requestBytes,mark={retained:true})=>JSON.stringify({format:SIGN_FORMAT,reservationId:randomUUID(),approvalHash:createHash('sha256').update(requestBytes).digest('hex'),requestBytes,totalOs:JSON.parse(requestBytes).content.debit.totalOs,recordedAt:T0,...mark})+'\n';
 
 test('open(requestText) refuses with approval_ambiguous when two open authorizations hold the same exact bytes, instead of reporting none',async t=>{
  const fixture=await ledgerFixture(t),approval=fixture.compose(fixture.restart()),prepared=await approval.retained.prepare(evidence());
@@ -400,8 +406,9 @@ test('a retained row whose stored bytes are not the canonical JSON of their requ
 
 // Every by-id operation and the exact-request lookup refuse a sign row that a session write owns: it is not a retained authorization.
 const assertNotRetainable=async(fixture,request,ledgerId)=>{
- const approval=fixture.compose(fixture.restart()),before=await text(fixture.evidencePath),binding={ledgerId,requestText:JSON.stringify(request)};
+ const approval=fixture.compose(fixture.restart()),before=await text(fixture.evidencePath),held=await budget(fixture.evidencePath),binding={ledgerId,requestText:JSON.stringify(request)};
  await assert.rejects(approval.retained.prepare(request),error=>error.code==='approval_refused'&&error.reason==='sign-authorization-open');
+ assert.deepEqual(await budget(fixture.evidencePath),held,'the session row keeps holding its budget');
  assert.equal(await approval.retained.open(binding.requestText),null);
  await rejectsWith(approval.retained.reopen(ledgerId),'approval_reservation_unavailable');
  await rejectsWith(approval.retained.confirm(binding,executed(request)),'approval_reservation_unavailable');
@@ -417,7 +424,7 @@ test('the sign row of a manually held session write (it carries an attemptId) is
  await assertNotRetainable(fixture,request,signed.reservationId);
 });
 
-test('the sign row a live session write of this process holds in the shared slot is no retained authorization; after a restart it has no session owner and prepare returns it',async t=>{
+test('the sign row a live session write of this process holds in the shared slot is no retained authorization; after a restart it is still none',async t=>{
  const fixture=await ledgerFixture(t),session=fixture.compose(fixture.restart()),request=evidence();
  assert.equal(await session(request),true);
  const [signed]=await signLines(fixture.evidencePath);
@@ -427,37 +434,152 @@ test('the sign row a live session write of this process holds in the shared slot
  assert.equal(await session.retained.open(JSON.stringify(request)),null);
  await rejectsWith(session.retained.settle({ledgerId:signed.reservationId,requestText:JSON.stringify(request)},'released'),'approval_reservation_unavailable');
  assert.equal(await text(fixture.evidencePath),before);
- assert.equal((await fixture.compose(fixture.restart()).retained.prepare(request)).ledgerId,signed.reservationId);
+ // The ledger, not this process's memory, says the row is the session's.
+ assert.equal(Object.hasOwn(signed,'retained'),false);await assertNotRetainable(fixture,request,signed.reservationId);
 });
 
-test('a manual authorization is not prepared again after it was settled, so a repeated settlement of the first binding cannot cancel a later one',async t=>{
+test('a settled manual authorization ends only its own generation: the same bytes are prepared again under a new token, and a repeat of the first settlement neither cancels nor confirms the later one',async t=>{
  const fixture=await ledgerFixture(t);let asked=0;
  const approval=composeSellerApproval({mode:'manual',policy:fixture.restart(),manual:async()=>{asked++;return true;}}),request=evidence();
  const first=await approval.retained.prepare(request);
  await approval.retained.settle(first,'released');
- await rejectsWith(approval.retained.prepare(request),'approval_refused');assert.equal(asked,1,'the operator is not asked again for settled bytes');
- await approval.retained.settle(first,'released');
- assert.equal(await approval.retained.open(first.requestText),null);
+ const second=await approval.retained.prepare(request);
+ assert.equal(asked,2,'released bytes are asked about again');assert.notEqual(second.token,first.token);assert.equal(second.requestText,first.requestText);
+ await approval.retained.settle(first,'released');await rejectsWith(approval.retained.settle(first,'spent'),'approval_settlement_conflict');
  await rejectsWith(approval.retained.confirm(first,executed(request)),'approval_reservation_unavailable');
- // A settlement that leaves the outcome open, or one for bytes never prepared, settles nothing.
+ await rejectsWith(approval.retained.confirm({ledgerId:null,requestText:first.requestText},executed(request)),'approval_reservation_unavailable');
+ assert.deepEqual(await approval.retained.open(first.requestText),bindingOf(second));
+ assert.equal(await approval.retained.confirm(second,executed(request)),true);
+ await approval.retained.settle(second,'spent');assert.equal(await approval.retained.open(second.requestText),null);
+ // A settlement that leaves the outcome open settles nothing; one without a token names no generation.
  const other=secondEvidence(),decision=await approval.retained.prepare(other);
- await approval.retained.settle(decision,'unknown');await approval.retained.settle({ledgerId:null,requestText:JSON.stringify(evidence({nonce:7}))},'released');
+ await approval.retained.settle(decision,'unknown');
+ await rejectsWith(approval.retained.settle({ledgerId:null,requestText:decision.requestText},'released'),'approval_reservation_unavailable');
  assert.equal(await approval.retained.confirm(decision,executed(other)),true);
- assert.equal((await approval.retained.prepare(evidence({nonce:7}))).ledgerId,null);
+ assert.equal(await text(fixture.evidencePath),'');
 });
 
-test('a manual answer that arrives after the same bytes were settled records nothing, so a repeated settlement cannot cancel it',async t=>{
- const fixture=await ledgerFixture(t);let asked=0,answerLate;
- const manual=()=>{asked++;return asked===1?Promise.resolve(true):new Promise(resolve=>{answerLate=resolve;});};
+test('a prepare of manual bytes that are pending or open shares that generation and its one prompt; a repeat settlement of an ended generation while the next one is pending leaves the next one to its own answer',async t=>{
+ const fixture=await ledgerFixture(t);let asked=0,answer;
+ const manual=()=>{asked++;return new Promise(resolve=>{answer=resolve;});};
  const approval=composeSellerApproval({mode:'manual',policy:fixture.restart(),manual}),request=evidence();
- const first=await approval.retained.prepare(request);
- // The second preparation was asked before the first binding is settled; its answer arrives after.
- const second=approval.retained.prepare(request);
- while(asked<2)await new Promise(resolve=>setImmediate(resolve));
- await approval.retained.settle(first,'released');
- answerLate(true);
- await rejectsWith(second,'approval_refused');
- await approval.retained.settle(first,'released');
- assert.equal(await approval.retained.open(first.requestText),null);
- await rejectsWith(approval.retained.confirm(first,executed(request)),'approval_reservation_unavailable');
+ const until=async(count)=>{while(asked<count)await new Promise(resolve=>setImmediate(resolve));};
+ const first=approval.retained.prepare(request),concurrent=approval.retained.prepare(evidence());
+ await until(1);
+ assert.equal(await approval.retained.open(JSON.stringify(request)),null,'a pending answer is not open');
+ answer(true);
+ const [a,b]=await Promise.all([first,concurrent]);
+ assert.equal(asked,1,'one prompt');assert.equal(a.token,b.token);
+ assert.equal((await approval.retained.prepare(evidence())).token,a.token);assert.equal(asked,1,'open bytes are not asked about again');
+ await approval.retained.settle(a,'released');
+ const later=approval.retained.prepare(request);
+ await until(2);
+ await approval.retained.settle(b,'released');
+ answer(true);
+ const next=await later;
+ assert.notEqual(next.token,a.token);assert.equal(await approval.retained.confirm(next,executed(request)),true);
+ await rejectsWith(approval.retained.confirm(a,executed(request)),'approval_reservation_unavailable');
+ // A declined answer ends its generation for every caller sharing it; the next prepare asks again.
+ await approval.retained.settle(next,'spent');
+ const declined=approval.retained.prepare(request),sharing=approval.retained.prepare(evidence());
+ await until(3);answer(false);
+ await rejectsWith(declined,'approval_refused');await rejectsWith(sharing,'approval_refused');
+ const retry=approval.retained.prepare(request);await until(4);answer(true);assert.equal((await retry).ledgerId,null);
+});
+
+test('a session sign row is never adopted by another approval object on the same ledger, while its owner lives or after a restart: with maxWritesPerHour 1 no second write is authorized and the owner still confirms; a retained:true row is recovered by any object',async t=>{
+ const fixture=await ledgerFixture(t,{limits:{maxWritesPerHour:1}}),owner=fixture.restart(),session=fixture.compose(owner),request=evidence();
+ assert.equal(await session(request),true);
+ const [signed]=await signLines(fixture.evidencePath);assert.equal(Object.hasOwn(signed,'retained'),false);
+ // A second live approval object over the same ledger, while the owner holds the row.
+ await assertNotRetainable(fixture,request,signed.reservationId);
+ const other=fixture.restart();
+ assert.equal(await other.authorizeRetained(secondEvidence()),null,'the hourly write limit still counts the session row');
+ assert.equal((await signLines(fixture.evidencePath)).length,1);
+ assert.equal(await session.confirm(executed(request)),true,'the owner confirms its own write');
+ // A restart: the owner's memory is gone, and the ledger still says the row is the session's.
+ await owner.stop();
+ await assertNotRetainable(fixture,request,signed.reservationId);
+ assert.equal(await fixture.restart().authorizeRetained(secondEvidence()),null);assert.equal((await budget(fixture.evidencePath)).writes,1);
+ const retainedFixture=await ledgerFixture(t),prepared=await retainedFixture.compose(retainedFixture.restart()).retained.prepare(evidence());
+ const recovering=retainedFixture.compose(retainedFixture.restart());
+ assert.deepEqual(await recovering.retained.open(prepared.requestText),bindingOf(prepared));
+ assert.equal((await recovering.retained.reopen(prepared.ledgerId)).requestText,prepared.requestText);
+ await recovering.retained.settle(bindingOf(prepared),'released');assert.equal((await rowOf(retainedFixture.evidencePath,prepared.ledgerId)).outcome,'released');
+});
+
+test('with a 4 DEM authorization open, a request that differs from its exact bytes in any member (a 51 DEM debit, one debit component, timestamp, job, method, address, kind, CREATE, display-only purpose) is refused with no new line and the hold kept; the original bytes return the one authorization',async t=>{
+ const fixture=await ledgerFixture(t),approval=fixture.compose(fixture.restart(),()=>assert.fail('a refusal for an open authorization never asks the operator')),request=evidence();
+ const prepared=await approval.retained.prepare(request),before=await text(fixture.evidencePath);
+ const variants={
+  '51 DEM debit':(c)=>{c.debit.rpcFeeDem='48';c.debit.totalDem='51';c.debit.totalOs='51000000000';},
+  '60 DEM debit total':(c)=>{c.debit.totalOs='60000000000';},
+  'one debit component':(c)=>{c.debit.networkFeeDem='2';},
+  timestamp:(c)=>{c.timestamp=8;},
+  job:(c)=>{c.jobId=JOBS[1];},
+  kind:(c)=>{c.kind='devnet-demo-artifact-storage-create';},
+  CREATE:(c)=>{c.exactCreate=evidence({job:JOBS[1]}).content.exactCreate;},
+  'display-only purpose':(_,r)=>{r.purpose='A different display-only purpose';},
+  method:(_,r)=>{r.method='signTransaction';},
+  address:(_,r)=>{r.address=`0x${'4'.repeat(64)}`;},
+ };
+ for(const [name,mutate] of Object.entries(variants)){
+  const changed=evidence();mutate(changed.content,changed);
+  await assert.rejects(approval.retained.prepare(changed),error=>name==='kind'?error.code==='invalid_params':error.code==='approval_refused'&&error.reason==='sign-authorization-open',name);
+  assert.equal(await text(fixture.evidencePath),before,`${name}: no line`);assert.equal((await rowOf(fixture.evidencePath,prepared.ledgerId)).outcome,null,`${name}: the hold is kept`);
+ }
+ const again=await approval.retained.prepare(evidence());
+ assert.equal(again.ledgerId,prepared.ledgerId);assert.equal(again.requestText,prepared.requestText);assert.equal((await budget(fixture.evidencePath)).writes,1);
+});
+
+test('the ledger accepts retained:true only on a payment-evidence sign line without an attemptId, exposes it on the row, and counts the same budgets with or without the mark',async t=>{
+ const fixture=await ledgerFixture(t),approval=fixture.compose(fixture.restart()),prepared=await approval.retained.prepare(evidence());
+ assert.equal(await approval(artifactWrite()),true);
+ const ledger=await text(fixture.evidencePath),rows=parsePolicyLedger(ledger).rows;
+ assert.equal(rows.find(row=>row.reservationId===prepared.ledgerId).retained,true);assert.equal(rows.find(row=>row.signAuthorized&&row.reservationId!==prepared.ledgerId).retained,false);
+ const edit=(source,change)=>source.split('\n').map(line=>line&&JSON.parse(line).retained?JSON.stringify(change(JSON.parse(line))):line).join('\n');
+ const unmarked=edit(ledger,row=>{const line={...row};delete line.retained;return line;});
+ assert.notEqual(unmarked,ledger);assert.deepEqual(heldPolicyBudget(parsePolicyLedger(unmarked).rows,T0),heldPolicyBudget(rows,T0));
+ const malformed=(source,name)=>assert.throws(()=>parsePolicyLedger(source),/malformed/,name);
+ malformed(edit(ledger,row=>({...row,retained:false})),'retained false');malformed(edit(ledger,row=>({...row,retained:'true'})),'retained not true');
+ malformed(signLineFor(JSON.stringify(artifactWrite())),'an artifact write');malformed(signLineFor(JSON.stringify(evidence({phase:'deliver-storage-program'}))),'delivery-phase evidence');
+ // A held write's sign line carries its attempt: it cannot also be retained.
+ const held=await ledgerFixture(t,{limits:{maxWriteTotalOs:'3000000000'}});
+ assert.equal(await held.compose(held.restart(),manualApprover(held))(evidence()),true);
+ const heldLedger=await text(held.evidencePath),withAttempt=heldLedger.split('\n').map(line=>line&&JSON.parse(line).attemptId&&JSON.parse(line).requestBytes&&JSON.parse(line).format===SIGN_FORMAT?JSON.stringify({...JSON.parse(line),retained:true}):line).join('\n');
+ parsePolicyLedger(heldLedger);assert.notEqual(withAttempt,heldLedger);malformed(withAttempt,'retained with an attemptId');
+});
+
+test('retained operations cut a context line a crash tore at the ledger tail, as the public path does, instead of failing on it',async t=>{
+ const fixture=await ledgerFixture(t),approval=fixture.compose(fixture.restart()),request=evidence(),prepared=await approval.retained.prepare(request);
+ const torn=`{"format":"dacs-node2-seller-context-admission/v1","holdId":"${randomUUID()}","jobId":"`;
+ const operations={
+  prepare:()=>approval.retained.prepare(secondEvidence()),open:()=>approval.retained.open(prepared.requestText),reopen:()=>approval.retained.reopen(prepared.ledgerId),
+  confirm:()=>approval.retained.confirm(bindingOf(prepared),executed(request)),settle:()=>approval.retained.settle(bindingOf(prepared),'unknown'),
+ };
+ for(const [name,operation] of Object.entries(operations)){
+  await appendFile(fixture.evidencePath,torn);
+  await operation();
+  assert.ok(!(await text(fixture.evidencePath)).includes(torn),`${name}: the torn line is cut`);
+ }
+ assert.equal((await rowOf(fixture.evidencePath,prepared.ledgerId)).confirmed,'approved');
+});
+
+test('delivery-phase SettlementEvidence (not the payment-evidence kind) is refused invalid_params before either approval source runs, and by authorizeRetained itself',async t=>{
+ const fixture=await ledgerFixture(t),delivery=evidence({phase:'deliver-storage-program'}),policy=fixture.restart();
+ assert.equal(delivery.content.artifactKind,'SettlementEvidence');assert.equal(delivery.content.kind,'devnet-demo-artifact-storage-create');
+ await rejectsWith(fixture.compose(policy).retained.prepare(delivery),'invalid_params');
+ await rejectsWith(composeSellerApproval({mode:'manual',policy,manual:()=>assert.fail('the operator was asked')}).retained.prepare(delivery),'invalid_params');
+ await rejectsWith(policy.authorizeRetained(delivery),'invalid_params');
+ assert.equal(await text(fixture.evidencePath),'');
+});
+
+test('settle(id, unknown) needs an open retained authorization, and a confirm or settle whose requestText is not that authorization\'s bytes is refused; nothing is appended',async t=>{
+ const fixture=await ledgerFixture(t),approval=fixture.compose(fixture.restart()),request=evidence(),prepared=await approval.retained.prepare(request),before=await text(fixture.evidencePath);
+ await rejectsWith(approval.retained.settle({ledgerId:randomUUID(),requestText:prepared.requestText},'unknown'),'approval_reservation_unavailable');
+ const foreign={ledgerId:prepared.ledgerId,requestText:JSON.stringify(secondEvidence())};
+ await rejectsWith(approval.retained.confirm(foreign,executed(request)),'approval_reservation_unavailable');
+ await rejectsWith(approval.retained.settle(foreign,'released'),'approval_reservation_unavailable');
+ await approval.retained.settle(bindingOf(prepared),'unknown');
+ assert.equal(await text(fixture.evidencePath),before);
 });
