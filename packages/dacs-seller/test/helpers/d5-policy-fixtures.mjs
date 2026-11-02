@@ -37,14 +37,14 @@ const PAYMENT_TX_REF=Object.freeze({kind:'demos',txHash:'5'.repeat(64),blockNumb
 // overrides top-level artifact members (undefined deletes one); editArtifact,
 // editDeliveryBinding and editCreate change the artifact, the binding (in the
 // request and the CREATE) or the CREATE before the request is derived from them.
-function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='deliver-storage-program',artifact:override={},editArtifact=()=>{},editDeliveryBinding=()=>{},editCreate=()=>{},logicalAddress:addressOverride,rpcFeeDem='1'}={}){
+function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='deliver-storage-program',artifact:override={},editArtifact=()=>{},editDeliveryBinding=()=>{},editCreate=()=>{},logicalAddress:addressOverride,rpcFeeDem='1',nonce=1}={}){
   const settlementKind=artifactKind==='SettlementEvidence'&&phase==='pay-dem';
   const artifact={...artifactFor(artifactKind,job,party,phase),...override};
   for(const [key,value] of Object.entries(override))if(value===undefined)delete artifact[key];
   editArtifact(artifact);
   const logicalAddress=addressOverride??(artifactKind==='Deliverable'?`dacs4:deliverable:${job}`:artifactKind==='CompositeVerificationRecord'?compositeVerificationAddress(job,artifact.evaluatedParty)
     :artifactKind==='FinalityCommitmentRecord'?finalityCommitmentAddress(job):settlementKind?paymentEvidenceAddress(job,'demos-native:DEM',2):`dacs4:evidence:${job}`);
-  const stored=canonicalize(artifact),programName=logicalAddress.replace(/:/g,'%3A'),storageAddress=`stor-${sha(`${address}:${programName}:1:`).slice(0,40)}`;
+  const stored=canonicalize(artifact),programName=logicalAddress.replace(/:/g,'%3A'),storageAddress=`stor-${sha(`${address}:${programName}:${nonce}:`).slice(0,40)}`;
   let deliveryBinding=null;
   if(artifactKind==='Deliverable'){
     deliveryBinding={version:'1',profile:'dacs-native-delivery-publication/v1',jobId:job,phase:'deliver-storage-program',phaseIndex:3,listing:{...pin},agreementHash,fulfilmentId:'TEST-fulfilment',purchaseAmount:{amount:'1',currency:'DEM'},payloadHash:contentHash(artifact)};
@@ -60,7 +60,7 @@ function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='d
     content:{kind:settlementKind?'devnet-settlement-evidence-storage-create':'devnet-demo-artifact-storage-create',action:'immutable DACS storage anchor CREATE',artifactKind,jobId:job,
       owner:seller,wallet:address,logicalAddress,storageAddress,programName,contentHash:contentHash(artifact),contentHashProfile:'SDK CF-1 signed scope (top-level signature/signatures omitted)',
       envelopeHash:sha(stored),...(deliveryBinding?{deliveryBinding:structuredClone(deliveryBinding)}:{}),storageBytes:Buffer.byteLength(stored),exactStorageBytes:stored,exactCreate:canonicalize(create),
-      nonce:1,timestamp:7,debit:{storageFeeDem:'1',sellerAmountDem:'0',sdkGasDem:'1',networkFeeDem:'1',rpcFeeDem,additionalFeeDem:'0',totalDem:demString(totalOs),totalOs:totalOs.toString(),note:'Complete debit'},
+      nonce,timestamp:7,debit:{storageFeeDem:'1',sellerAmountDem:'0',sdkGasDem:'1',networkFeeDem:'1',rpcFeeDem,additionalFeeDem:'0',totalDem:demString(totalOs),totalOs:totalOs.toString(),note:'Complete debit'},
       network:sourceBinding.network,chainIdentity:sourceBinding.chainIdentity,networkBinding:sourceBinding,evidence:'TEST source',sending:'Send once'}};
 }
 

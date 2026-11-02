@@ -297,15 +297,33 @@ function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null,
   return null;
 }
 
+// The most JSON a retained authorization examines in one node confirmation. A real executed CREATE of a payment
+// record is a few KiB; anything larger is refused before it is checked or appended.
+const MAX_RETAINED_CONFIRMATION_BYTES=65_536;
+const SETTLEMENT_OUTCOMES=['spent','released','unknown'];
+const approvalError=(code,message,details={})=>Object.assign(new Error(message),{code,...details});
+const approvalRefusal=(reason)=>approvalError('approval_refused',`seller approval refused this write: ${reason}`,{reason});
+const reservationUnavailable=()=>approvalError('approval_reservation_unavailable','no open retained authorization has this id');
+const assertSettlementOutcome=(outcome)=>{if(!SETTLEMENT_OUTCOMES.includes(outcome))throw new TypeError('seller attempt outcome must be spent, released or unknown');};
+const withinConfirmationBound=(validity)=>{try{return Buffer.byteLength(JSON.stringify(validity))<=MAX_RETAINED_CONFIRMATION_BYTES;}catch{return false;}};
+
 /** Combine exact manual approval with the seller policy for one seller wallet; returns the wallet's approve(request),
- * with confirm(validity) and settle(request, outcome). Listing writes and manual mode always ask manual. In policy
+ * with confirm(validity) and settle(request, outcome), and approve.retained for payment-evidence writes (below). Listing writes and manual mode always ask manual. In policy
  * mode the policy decides (policy.decide): an approved write is already sign-authorized; a held write is asked of
  * manual only when its (phase, reason) is in the closed manual table, and the answer goes to the policy's sign gate
  * (policy.authorizeHeld); every other refusal is final. Manual is shown the held request's own bytes
  * (decision.requestBytes); a request that no longer matches them is not asked about and its attempt is released
  * (policy.releaseHeld), as is a hold outside the table. Policy errors reject; a manual answer or sign gate that
  * throws first releases the held attempt (policy.releaseHeld). confirm checks the one policy-approved write in flight
- * at the policy's confirmation gate, and is false for any other approval. */
+ * at the policy's confirmation gate, and is false for any other approval.
+ * approve.retained = {prepare, open, reopen, confirm, settle} is the lifecycle of a SettlementEvidence write whose exact
+ * bytes the caller retains for replay. Its authorization is held, by ledger id, until settle(binding, outcome) ends it:
+ * a replacement, a mismatched or refused confirmation, or another write never releases it, and it never enters the
+ * shared prepared slot. A binding is {ledgerId, requestText}; ledgerId is null for an authorization the operator gave
+ * alone, which lives in this process until it is settled. prepare resolves a binding, or rejects with invalid_params
+ * (another kind), approval_refused (a final policy refusal or a declined manual answer, with its reason) or
+ * operator_closing; confirm resolves false for a confirmation the current checks refuse, whatever an earlier one
+ * was; reopen, confirm and settle reject with approval_reservation_unavailable for an unknown or settled id. */
 export function composeSellerApproval({mode,policy,manual}){
   let prepared=null;
   const approve=async(request)=>{
@@ -351,7 +369,45 @@ export function composeSellerApproval({mode,policy,manual}){
     return confirmed;
   };
   approve.settle=(request,outcome)=>{if(outcome==='released'&&prepared===request)prepared=null;return policy.settle(request,outcome);};
+  approve.retained=composeRetainedApproval({mode,policy,manual});
   return approve;
+}
+
+// The retained lifecycle of composeSellerApproval. It never touches the shared prepared slot, so no other approval
+// can release what it holds. Manual answers are kept by exact request text; policy authorizations are the ledger's.
+function composeRetainedApproval({mode,policy,manual}){
+  const manualDecisions=new Map();
+  const approveManually=async(request)=>{
+    const requestText=JSON.stringify(request);
+    if((await manual(JSON.parse(requestText)))!==true||JSON.stringify(request)!==requestText)throw approvalRefusal('manual-declined');
+    freezeRequest(request);manualDecisions.set(requestText,request);
+    return{ledgerId:null,requestText};
+  };
+  const exactBinding=(binding)=>{
+    if(!binding||typeof binding!=='object'||typeof binding.requestText!=='string'||(binding.ledgerId!==null&&typeof binding.ledgerId!=='string'))throw approvalError('invalid_params','a retained binding is {ledgerId, requestText}');
+    return binding;
+  };
+  return Object.freeze({
+    // A definite policy refusal the operator may waive (null) asks manual; any other refusal or failure rejects.
+    prepare:async(request)=>{
+      if(request?.content?.artifactKind!=='SettlementEvidence')throw approvalError('invalid_params','retained approval is for SettlementEvidence writes only');
+      return (mode==='policy'?await policy.authorizeRetained(request):null)??approveManually(request);
+    },
+    open:async(requestText)=>(mode==='policy'?await policy.openRetained(requestText):null)??(manualDecisions.has(requestText)?{ledgerId:null,requestText}:null),
+    reopen:(ledgerId)=>policy.reopenRetained(ledgerId),
+    confirm:async(binding,validity)=>{
+      const{ledgerId,requestText}=exactBinding(binding);
+      if(ledgerId!==null)return policy.confirmRetained(ledgerId,validity);
+      if(!manualDecisions.has(requestText))throw reservationUnavailable();
+      return policy.confirmManualRetained(requestText,validity);
+    },
+    settle:async(binding,outcome,reason)=>{
+      const{ledgerId,requestText}=exactBinding(binding);
+      if(ledgerId!==null)return policy.settleById(ledgerId,outcome,reason);
+      assertSettlementOutcome(outcome);
+      if(outcome!=='unknown')manualDecisions.delete(requestText);
+    },
+  });
 }
 
 // How long a policy decision waits between reads of an approval ledger that cannot be read.
@@ -381,7 +437,15 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
  * it ended, so a release whose append failed can be repeated. A manual answer for a held attempt is recorded only
  * while that attempt is open and unsigned in its ledger, for the same bytes; otherwise it is false and writes
  * nothing. Purchase resolver and policy input errors reject with nothing decided or written; an unreadable ledger is
- * waited for until stop(). */
+ * waited for until stop().
+ * Retained payment-evidence authorizations (composeSellerApproval's approve.retained) are held by ledger id until
+ * settleById: authorizeRetained(request) resolves {ledgerId, requestText} (the open one for the same transaction, else a
+ * new sign line), or null for a refusal manual approval may waive; openRetained(requestText) recovers one by its exact
+ * bytes; reopenRetained(ledgerId) rebuilds its frozen request; confirmRetained(ledgerId, validity) reruns every
+ * current check on each call and links one confirmation line; confirmManualRetained(requestText, validity) runs the same
+ * checks for an operator-only decision; settleById(ledgerId, outcome, reason) completes it once, also after stop().
+ * Each ledger operation takes the policy lock once and reads the ledger afresh; none releases an authorization except
+ * settleById, and an unreadable ledger rejects with its own error. */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
   if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
   if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
@@ -441,7 +505,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const reason=await policyRefusal(copy,checked,total===null?settings:{...settings,maxWriteTotalOs:total.toString()},{held:HOLD_REASONS.has(waiver)});
     live();
     if(reason&&!HOLD_REASONS.has(reason))return reason;
-    if(snapshot.rows.some(row=>row.signAuthorized&&row.outcome===null&&row.request?.content?.wallet===c.wallet&&row.request.content.nonce===c.nonce))return 'sign-authorization-open';
+    if(openHolder(snapshot.rows,c))return 'sign-authorization-open';
     return (waiver!=='write-fee-cap'&&total>BigInt(settings.maxWriteTotalOs)?'write-fee-cap':budgetRefusal({jobId:c.jobId,totalOs:total,at:clock(),limits:settings,writes:1,snapshot,converting:c,waived:waiver}))??reason;
   };
   // Ledger lines need a nonnegative integer time; a clock without one decides nothing.
@@ -480,21 +544,27 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     open.delete(record.attemptId);records.delete(request);
   };
   const pendingError=()=>Object.assign(new Error('this seller write is already held, for its manual answer or the release of a sign line that could not be retained; nothing more is decided for it until that ends'),{code:'seller_approval_pending'});
-  // decide: the policy's answer for one exact write. A refusal and a hold are logged; only a hold in the manual
-  // table opens an attempt (unless attempt is false), which counts its declared debit until it ends.
-  const decide=(request,{attempt=true}={})=>locked(async()=>{
+  // The open sign line of this wallet nonce, if any: one sign authority exists per transaction identity.
+  const openHolder=(rows,c)=>rows.find(row=>row.signAuthorized&&row.outcome===null&&row.request?.content?.wallet===c.wallet&&row.request.content.nonce===c.nonce);
+  const appendRefusal=(bytes,copy,reason,attemptId=null)=>appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:sha(bytes),requestBytes:bytes,method:copy?.method??null,address:copy?.address??null,totalOs:declaredOs(copy)?.toString()??null,
+    decision:'rejected',approvalMode:'policy',policyReason:reason,...(attemptId?{attemptId}:{}),recordedAt:clock()});
+  // decide with the policy lock already held. logRefusal false (retained preparation) leaves the ledger as it was for a
+  // refusal; snapshot is a ledger read under this same lock.
+  const decideLocked=async(request,{attempt=true,logRefusal=true,snapshot=null}={})=>{
     const previous=records.get(request);
     if(previous&&!previous.reservation&&(previous.attemptId||previous.signIds))throw pendingError();
-    const bytes=JSON.stringify(request),copy=JSON.parse(bytes),snapshot=await readableLedger(copy);
+    const bytes=JSON.stringify(request),copy=JSON.parse(bytes),ledger=snapshot??await readableLedger(copy);
     const record={bytes,attemptId:null,reason:null,reservation:null};
-    const reason=await signRefusal(copy,snapshot)??await reread(request,record);
+    const reason=await signRefusal(copy,ledger)??await reread(request,record);
     if(reason===null){await appendSign(request,record);return{outcome:'approved'};}
     const attemptId=attempt&&manualReason(copy?.content?.artifactKind,reason)?randomUUID():null;
-    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:sha(bytes),requestBytes:bytes,method:copy?.method??null,address:copy?.address??null,totalOs:declaredOs(copy)?.toString()??null,
-      decision:'rejected',approvalMode:'policy',policyReason:reason,...(attemptId?{attemptId}:{}),recordedAt:clock()});
+    if(logRefusal)appendRefusal(bytes,copy,reason,attemptId);
     if(attemptId){records.set(request,{...record,attemptId,reason});open.add(attemptId);}
     return attemptId?{outcome:'held',reason,attemptId,requestBytes:bytes}:{outcome:'refused',reason,attemptId};
-  });
+  };
+  // decide: the policy's answer for one exact write. A refusal and a hold are logged; only a hold in the manual
+  // table opens an attempt (unless attempt is false), which counts its declared debit until it ends.
+  const decide=(request,{attempt=true}={})=>locked(()=>decideLocked(request,{attempt}));
   // The sign gate for a held attempt's manual answer: only its recorded reason is waived; every other check runs
   // again (the attempt's own hold no longer counts against its limits).
   const authorizeHeld=(request,accepted)=>locked(async()=>{
@@ -515,19 +585,31 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   const confirm=(request,validity)=>locked(async()=>{
     const record=records.get(request),ids=record?.reservation;
     if(!ids)return false;
-    const copy=JSON.parse(record.bytes),declared=declaredOs(copy),confirmed=confirmedWriteOs(validity,copy),counted=confirmed!==null&&confirmed>declared?confirmed:declared;
-    const row=await openSignLine(record);
+    const copy=JSON.parse(record.bytes),row=await openSignLine(record);
     if(row.confirmed!==null)return false;
-    const reason=confirmed===null?'confirmation-mismatch':counted>BigInt(maxTotalOs)?'operator-fee-budget':await stillAuthorizedToSign(copy,checked,HOLD_REASONS.has(record.reason));
-    live();
-    if(reason){completeReservation(request,record,row,'released',reason==='confirmation-mismatch'?reason:'confirmation-refused');return false;}
-    // Retained: the executed transaction confirmedWriteOs checked member by member, not the rest of the node's answer.
-    const tx=validity.response.data.transaction;
-    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:ids.approvalHash,requestBytes:record.bytes,method:copy.method,address:copy.address,totalOs:counted.toString(),decision:'approved',approvalMode:'policy',policyReason:null,
-      reservationId:ids.reservationId,...(record.attemptId?{attemptId:record.attemptId,policyHold:record.reason}:{}),confirmation:{hash:typeof tx.hash==='string'&&HASH.test(tx.hash)?tx.hash:null,content:tx.content},declaredTotalOs:declared.toString(),
-      confirmedRemovalsOs:confirmed.toString(),countedTotalOs:counted.toString(),recordedAt:clock()});
+    const checks=await confirmationChecks(copy,validity,HOLD_REASONS.has(record.reason));
+    if(checks.reason){completeReservation(request,record,row,'released',checks.reason==='confirmation-mismatch'?checks.reason:'confirmation-refused');return false;}
+    appendConfirmation(record.bytes,copy,ids,validity,checks,record);
     return true;
   });
+  // Every check a confirmation passes before a line is appended, with the policy lock already held: the node's
+  // executed CREATE of exactly this request, the operator maximum on the counted total, and (in policy mode) fresh
+  // purchase authority. reason is null when all pass, else the refusal; confirmed is null for a confirmation that
+  // is not this request's.
+  const confirmationChecks=async(copy,validity,held=false)=>{
+    const declared=declaredOs(copy),confirmed=confirmedWriteOs(validity,copy),counted=confirmed!==null&&confirmed>declared?confirmed:declared;
+    const reason=confirmed===null?'confirmation-mismatch':counted>BigInt(maxTotalOs)?'operator-fee-budget':policyMode?await stillAuthorizedToSign(copy,checked,held):null;
+    live();
+    return{reason,declared,confirmed,counted};
+  };
+  // Appends the linked confirmation line. It keeps only the executed transaction confirmedWriteOs checked member by
+  // member, not the rest of the node's answer. attempt: the held attempt whose id and hold reason the line carries.
+  const appendConfirmation=(bytes,copy,ids,validity,{declared,confirmed,counted},attempt=null)=>{
+    const tx=validity.response.data.transaction;
+    appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:ids.approvalHash,requestBytes:bytes,method:copy.method,address:copy.address,totalOs:counted.toString(),decision:'approved',approvalMode:'policy',policyReason:null,
+      reservationId:ids.reservationId,...(attempt?.attemptId?{attemptId:attempt.attemptId,policyHold:attempt.reason}:{}),confirmation:{hash:typeof tx.hash==='string'&&HASH.test(tx.hash)?tx.hash:null,content:tx.content},declaredTotalOs:declared.toString(),
+      confirmedRemovalsOs:confirmed.toString(),countedTotalOs:counted.toString(),recordedAt:clock()});
+  };
   // The record's sign line, still open, from a fresh ledger read (an unreadable ledger rejects). Not refused after
   // stop(): settle completes a line this process already opened; confirm checks live() before it writes.
   const openSignLine=async(record)=>{
@@ -535,10 +617,13 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     if(row?.outcome!==null)throw new Error('seller policy reservation is unavailable');
     return row;
   };
-  const completeReservation=(request,record,row,outcome,reason,ids=record.reservation)=>{
+  const appendCompletion=(row,outcome,reason,ids)=>{
     const at=clock();
     if(at<row.recordedAt)throw new RangeError('seller policy completion cannot predate its sign authorization');
     appendAttempt({...ids,outcome,...(outcome==='released'?{reason:RELEASE_REASONS.has(reason)?reason:'wallet-released'}:{}),recordedAt:at});
+  };
+  const completeReservation=(request,record,row,outcome,reason,ids=record.reservation)=>{
+    appendCompletion(row,outcome,reason,ids);
     open.delete(ids.reservationId);open.delete(record.attemptId);records.delete(request);
   };
   // Exact manual approval of one request: the operator's answer, recorded with the exact bytes it approved.
@@ -572,6 +657,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     accepted&&=JSON.stringify(request)===requestBytes;
     const record=()=>{
       const recordedAt=clock();
+      if(closeSignal.aborted)throw closingError();
       if(accepted)freezeRequest(request);
       appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:copy.method,address:copy.address??null,totalOs:declared.toString(),decision:accepted?'approved':'rejected',...(attemptId?{attemptId}:{}),recordedAt});
       return accepted;
@@ -608,7 +694,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   };
   // Not refused after stop(), as releaseHeld: the wallet's outcome for a sign line it was already given is recorded.
   approve.settle=async(request,outcome,reason='wallet-released')=>{
-    if(!['spent','released','unknown'].includes(outcome))throw new TypeError('seller attempt outcome must be spent, released or unknown');
+    assertSettlementOutcome(outcome);
     if(outcome==='unknown')return;
     return fly(serializedPolicy(evidencePath,async()=>{
       const record=records.get(request);
@@ -616,6 +702,100 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       else if(record&&outcome==='released')await endRecord(request,record,reason);
     }));
   };
+  // Retained authorizations are the ledger's own: addressed by ledger id, never put in records or the shared slot,
+  // and read afresh under one acquisition of the policy lock per operation. Nothing but settleById ends one.
+  const openRetainedRows=async()=>{
+    const{rows}=await readPolicyLedger(evidencePath);live();
+    return rows.filter(row=>row.signAuthorized&&row.outcome===null);
+  };
+  const openRetainedRow=async(ledgerId)=>{
+    const row=(await openRetainedRows()).find(entry=>entry.reservationId===ledgerId);
+    if(!row)throw reservationUnavailable();
+    return row;
+  };
+  // The exact bytes the row retains; a row whose parsed request no longer hashes to them is refused.
+  const retainedBytes=(row)=>{
+    const bytes=JSON.stringify(row.request);
+    if(sha(bytes)!==row.approvalHash)throw approvalError('approval_ledger_mismatch','the retained request bytes do not match their recorded hash');
+    return bytes;
+  };
+  const retainedHandle=(row)=>({ledgerId:row.reservationId,requestText:retainedBytes(row)});
+  // The open authorization of this request's transaction (wallet, nonce, exact CREATE), whatever display-only members
+  // differ; a different CREATE for the same wallet nonce is refused, so one sign authority exists.
+  const retainedHolder=(rows,c)=>{
+    const holder=openHolder(rows,c);
+    if(holder&&holder.request.content.exactCreate!==c.exactCreate)throw approvalRefusal('sign-authorization-open');
+    return holder??null;
+  };
+  // Resolves the open authorization for the request (a new sign line only when none exists), or null for a definite
+  // refusal the operator may waive. A refusal that cannot be waived rejects approval_refused; a failure that may have
+  // committed a sign line rereads this exact request first, and an unreadable ledger keeps the original failure.
+  const authorizeRetained=(request)=>locked(async()=>{
+    const c=request?.content??{},snapshot=await readPolicyLedger(evidencePath);live();
+    const existing=retainedHolder(snapshot.rows,c);
+    if(existing)return retainedHandle(existing);
+    let decision;const inherited=records.has(request);
+    try{decision=await decideLocked(request,{attempt:false,logRefusal:false,snapshot});}
+    catch(error){
+      // A retained authorization is never an in-process record: what this call left there is the ledger's to show.
+      if(!inherited)records.delete(request);
+      const committed=await readPolicyLedger(evidencePath).then(({rows})=>retainedHolder(rows,c),()=>null).catch(()=>null);
+      if(committed)return retainedHandle(committed);
+      throw error;
+    }
+    if(decision.outcome==='approved'){
+      const{bytes,reservation}=records.get(request);
+      records.delete(request);open.delete(reservation.reservationId);
+      return{ledgerId:reservation.reservationId,requestText:bytes};
+    }
+    if(manualReason(c.artifactKind,decision.reason))return null;
+    throw approvalRefusal(decision.reason);
+  });
+  // The unambiguous open authorization for exactly these bytes, or null once a fresh read proves there is none.
+  const openRetained=(requestText)=>locked(async()=>{
+    if(typeof requestText!=='string')throw new TypeError('retained request text must be a string');
+    const hash=sha(requestText),matches=(await openRetainedRows()).filter(row=>row.approvalHash===hash);
+    if(matches.length>1)throw approvalError('approval_ambiguous','more than one open retained authorization holds these exact bytes');
+    return matches.length?retainedHandle(matches[0]):null;
+  });
+  // The frozen request an open authorization retains, rebuilt from its bytes. It writes nothing and counts no write.
+  const reopenRetained=(ledgerId)=>locked(async()=>{
+    const requestText=retainedBytes(await openRetainedRow(ledgerId)),request=JSON.parse(requestText);
+    freezeRequest(request);
+    return{ledgerId,requestText,request};
+  });
+  // Resolves true when the node's executed CREATE of exactly this request passes the current checks, whatever an
+  // earlier confirmation said; the linked confirmation line is appended once. A falsy or oversized confirmation, or one
+  // that is not this request's, resolves false with nothing appended; a refusal by current policy appends an unlinked
+  // decision line. A false answer leaves the authorization open.
+  const confirmRetained=(ledgerId,validity)=>locked(async()=>{
+    const row=await openRetainedRow(ledgerId);
+    if(!validity||!withinConfirmationBound(validity))return false;
+    const bytes=retainedBytes(row),copy=JSON.parse(bytes),checks=await confirmationChecks(copy,validity);
+    if(checks.reason){if(checks.confirmed!==null)appendRefusal(bytes,copy,checks.reason);return false;}
+    if(row.confirmed===null)appendConfirmation(bytes,copy,row,validity,checks);
+    return true;
+  });
+  // The same checks for an authorization the operator gave alone (no ledger row): true only when all of them pass.
+  const confirmManualRetained=(requestText,validity)=>track(async()=>{
+    if(!validity||!withinConfirmationBound(validity))return false;
+    return (await confirmationChecks(JSON.parse(requestText),validity)).reason===null;
+  });
+  // Ends an open authorization: a repeat of the same outcome changes nothing, a different one rejects
+  // approval_settlement_conflict. The ledger never infers spent; only the caller's settlement writes it. Not refused
+  // after stop(), as settle: the wallet's outcome for an authorization it was given is still recorded.
+  const settleById=(ledgerId,outcome,reason='wallet-released')=>{
+    assertSettlementOutcome(outcome);
+    if(outcome==='unknown')return Promise.resolve();
+    return fly(serializedPolicy(evidencePath,async()=>{
+      const{rows}=await readPolicyLedger(evidencePath),row=rows.find(entry=>entry.signAuthorized&&entry.reservationId===ledgerId);
+      if(!row)throw reservationUnavailable();
+      if(row.outcome===outcome)return;
+      if(row.outcome!==null)throw approvalError('approval_settlement_conflict',`this authorization is already settled as ${row.outcome}`,{outcome:row.outcome});
+      appendCompletion(row,outcome,reason,{reservationId:row.reservationId,approvalHash:row.approvalHash,...(row.attemptId?{attemptId:row.attemptId}:{})});
+    }));
+  };
+  Object.assign(approve,{authorizeRetained,openRetained,reopenRetained,confirmRetained,confirmManualRetained,settleById});
   // Restart only labels unresolved attempts; it never resends or releases them.
   approve.reconcile=()=>locked(async()=>{
     if(!policyMode)return{released:[],held:[]};
