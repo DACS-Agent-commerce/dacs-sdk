@@ -1,0 +1,67 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "leaf": {
+      "name": "leaf",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 1002,
+          "name": "leaf",
+          "dependency": "leaf",
+          "title": "high on leaf 2",
+          "url": "https://github.com/advisories/GHSA-2pr8-phx7-x9h3",
+          "severity": "high",
+          "cwe": [],
+          "cvss": {
+            "score": 0,
+            "vectorString": null
+          },
+          "range": ">=2.0.0 <3.0.0"
+        }
+      ],
+      "effects": [
+        "mid"
+      ],
+      "range": ">=2.0.0",
+      "nodes": [
+        "node_modules/leaf",
+        "node_modules/mid/node_modules/leaf"
+      ],
+      "fixAvailable": false
+    },
+    "mid": {
+      "name": "mid",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        "leaf"
+      ],
+      "effects": [],
+      "range": "*",
+      "nodes": [
+        "node_modules/mid"
+      ],
+      "fixAvailable": false
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 2,
+      "critical": 0,
+      "total": 2
+    },
+    "dependencies": {
+      "prod": 4,
+      "dev": 0,
+      "optional": 0,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 3
+    }
+  }
+}

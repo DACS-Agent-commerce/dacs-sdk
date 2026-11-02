@@ -19,3 +19,4 @@ audit.json
 
 # Reproducible local package candidates and provenance receipts.
 package-artifacts/
+registry-container-artifacts/
