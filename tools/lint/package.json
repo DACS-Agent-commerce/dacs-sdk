@@ -1,0 +1,22 @@
+{
+  "name": "dacs-sdk-lint",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Linter for this repo. Kept apart from the packages so it never ships in them.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "lint": "cd ../.. && node --max-old-space-size=6144 tools/lint/node_modules/eslint/bin/eslint.js --config tools/lint/eslint.config.mjs --suppressions-location tools/lint/eslint-suppressions.json --no-warn-ignored .",
+    "lint:prune": "cd ../.. && node --max-old-space-size=6144 tools/lint/node_modules/eslint/bin/eslint.js --config tools/lint/eslint.config.mjs --suppressions-location tools/lint/eslint-suppressions.json --no-warn-ignored --prune-suppressions ."
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1"
+  }
+}
