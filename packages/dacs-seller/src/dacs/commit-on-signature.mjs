@@ -1,6 +1,7 @@
 import { canonicalize, contentHash, finalizeFixedPriceAgreementContributions, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
 import { deriveStorageAddress } from './wallet-transactions.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 const plainJson = value => JSON.parse(canonicalize(value));
 
 /** Validates the commitOnSignature switch; returns it unchanged. */
@@ -45,6 +46,7 @@ export function signatureCommitmentAnchor(anchor, seller, enabled) {
   if (!enabled || typeof anchor.onCreateAuthorized !== 'function') return anchor;
   const { onCreateAuthorized, ...sdkAnchor } = anchor;
   return { ...sdkAnchor, async anchorAgreement(input) {
+    assertKitOperationAdmitted('signatureCommitmentAnchor');
     // The broker invokes this only after retaining the approved signed CREATE.
     // It returns immediately so the buyer remains the sole broadcaster.
     onCreateAuthorized(input, signedProjection => {

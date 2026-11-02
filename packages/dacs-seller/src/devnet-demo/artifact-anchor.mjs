@@ -35,6 +35,7 @@ import {
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, demosSr2TxRef } from '../dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress, MAX_STORAGE_ARTIFACT_BYTES } from '../dacs/wallet-transactions.mjs';
 import { addressForClaim, verifyDemosSignature } from '../dacs/demos-claims.mjs';
+import { assertKitOperationAdmitted, kitOperationAdmitted } from '../kit-operation-guard.mjs';
 import {
   DEVNET_AGREEMENT_PROFILE,
   DEVNET_DEMO_ARTIFACT_KIND,
@@ -212,7 +213,8 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   async function observeSource(hash,projection,writeProof,{resend=false,refused=false,authorizeResend}={}) {
     if(resend&&typeof authorizeResend!=='function')fail('invalid','a resend needs the caller\'s authorization check');
     let observed=await sourceCapability.binding({phase:'readback',address:owner,hash,...(writeProof?{writeProof}:{})});
-    if(resend && (observed.disposition==='pending'||refused&&observed.disposition==='absent') && signRpc && projection?.content?.type==='storageProgram') {
+    // While the kit's guard is off every read, resend-enabled lane reconcilers included, stays readback only.
+    if(resend && kitOperationAdmitted() && (observed.disposition==='pending'||refused&&observed.disposition==='absent') && signRpc && projection?.content?.type==='storageProgram') {
       const recoveryKey=`demo/recovery/${hash}`;
       await journal.withWalletLock(recoveryKey,async()=>{
         const prior=await journal.get(recoveryKey),projectionHash=exactHash(projection);
@@ -359,6 +361,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // which is asked once more right before the resend; without authorize, or when
   // it answers anything but true, the retained intent is only read back.
   async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false}) {
+    assertKitOperationAdmitted('publish');
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
     if(authorizeSigning!==undefined&&(typeof authorizeSigning!=='function'||wallet.guardsSigning!==true)) fail('not-authorized','the wallet cannot check this write right before it signs; no intent was stored and nothing was sent');
     if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,writer,verifier)) fail('invalid','demo artifact kind, producer, or signed shape differs');

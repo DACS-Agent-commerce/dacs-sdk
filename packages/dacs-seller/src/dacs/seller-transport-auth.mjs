@@ -9,6 +9,7 @@ import DatabaseSync from 'better-sqlite3';
 import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
 export const SELLER_TRANSPORT_MAX_RESPONSE = 512 * 1024;
@@ -691,6 +692,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
 
 /** Create request validation and response signing over a supplied store; throw on invalid configuration. */
 export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = MAX_TRANSPORT_LIFETIME_MS, requireDelegation = false }) {
+  assertKitOperationAdmitted('createSellerTransportServerAuth');
   checkSigner(sellerSigner);
   if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > MAX_TRANSPORT_LIFETIME_MS) throw new Error('seller transport configuration is invalid');
   if (typeof requireDelegation !== 'boolean' || store.journaledOnlyReserve !== true) throw new Error('seller delegation configuration is invalid');
@@ -801,6 +803,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
 // resolveJob comes from the approved Agreement, never an HTTP response.
 /** Create signed requests and bound response verification; throw on invalid configuration. */
 export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, delegation, seller, resolveJob, now = () => Date.now(), lifetimeMs = DEFAULT_TRANSPORT_LIFETIME_MS, nonce = () => randomBytes(24).toString('base64url') }) {
+  assertKitOperationAdmitted('createSellerTransportClientAuth');
   const signing = sessionSigner ?? buyerSigner;
   checkSigner(signing);
   if (sessionSigner && (buyerSigner || !delegation || signing.claim !== `did:demos:agent:${delegation.payload?.sessionPublicKey}`)) throw new Error('session signing key differs from the buyer delegation');

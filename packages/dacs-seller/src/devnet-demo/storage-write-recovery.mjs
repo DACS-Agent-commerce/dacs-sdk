@@ -1,5 +1,7 @@
 // The source uses bounded JSON RPC replies, not SDK/Axios transport wrappers.
 // A success code alone cannot authorize recovery of an ambiguous submission.
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+
 export const STORAGE_WRITE_SUBMISSION_PROFILE = 'hash-or-validator-relay/v3';
 
 export function rpcEnvelope(answer, result, extra) {
@@ -64,5 +66,5 @@ export function storageWriteAccountNonce(value) {
 // asks the operator wallet to sign or prepare another transaction.
 export function storageWriteRpcSigner(signer, writer) {
   return signer?.claim===writer && typeof signer.sign==='function'
-    ? async message=>`0x${Buffer.from(await signer.sign(Buffer.from(message))).toString('hex')}` : null;
+    ? async message=>{assertKitOperationAdmitted('storageWriteRpcSigner');return `0x${Buffer.from(await signer.sign(Buffer.from(message))).toString('hex')}`;} : null;
 }

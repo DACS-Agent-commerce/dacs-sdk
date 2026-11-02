@@ -5,12 +5,14 @@ import test from 'node:test';
 import {sellerPackFiles,staleSetupReason}from'../../../scripts/prepare-seller-consumer.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
+// The unshipped guard loader (K11 fixture bypass); the packed archive never carries it.
+const KIT_GUARD_FIXTURE_URL = new URL('./helpers/kit-guard-fixture.mjs', import.meta.url).href;
 const packageDirectory = join(root, 'packages', 'dacs-seller');
 // Entry modules that could not be imported without test hooks before the run-time port.
 const ENTRY_MODULES = ['src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-context-route.mjs', 'src/dacs/seller-http.mjs', 'src/dacs/seller-agent.mjs',
@@ -74,7 +76,7 @@ test('the import scan sees static, side-effect, re-export and literal dynamic im
   assert.deepEqual(relativeImports('src/probe.mjs', probe).sort(), ['c.mjs', 'src/dacs/a.mjs', 'src/dacs/b.mjs', 'src/util/d.mjs']);
 });
 
-test('the packed seller installs outside the repository and serves one Listing without test hooks', { timeout: INSTALLED_TEST_TIMEOUT_MS }, async (t) => {
+test('the packed seller installs outside the repository, refuses to start while its guard is off, and serves one Listing only under the unshipped fixture loader', { timeout: INSTALLED_TEST_TIMEOUT_MS }, async (t) => {
   const manifestPath = join(packageDirectory, 'package.json');
   assert.ok(existsSync(manifestPath), 'packages/dacs-seller/package.json is the package manifest');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -106,11 +108,24 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.ok(!existsSync(join(app,'node_modules','@kynesyslabs','dacs-seller','test')),'test files are not shipped');
   // A clean child: no inherited flags, loaders, hooks or NODE_OPTIONS.
   const env={PATH:process.env.PATH,TMPDIR:work,NPM_CONFIG_OFFLINE:'true',NPM_CONFIG_CACHE:join(work,'empty-npm-cache')};mkdirSync(env.NPM_CONFIG_CACHE);
-  const child = spawnSync(process.execPath, ['run.mjs'], { cwd: app, env, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
-  assert.equal(child.status, 0, `installed seller run failed\n${child.stdout}\n${child.stderr}`);
-  const out = JSON.parse(child.stdout.trim().split('\n').at(-1));
+  const runInstalled = (environment) => {
+    const result = spawnSync(process.execPath, ['run.mjs'], { cwd: app, env: environment, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
+    assert.equal(result.status, 0, `installed seller run failed\n${result.stdout}\n${result.stderr}`);
+    return JSON.parse(result.stdout.trim().split('\n').at(-1));
+  };
+  const refused = runInstalled(env);
+  assert.deepEqual(refused.environment, { execArgv: [], nodeOptions: null });
+  assert.deepEqual(refused.guardOff, { guard: 'off', start: { name: 'KitOperationGuardError', code: 'kit_operation_guard_off', entry: 'startSellerHost' } }, 'the packed host refuses to start while its guard is off');
+  assert.equal(refused.imports, undefined, 'a refused start goes no further');
+  // The same install under the unshipped loader, told where the installed guard module is.
+  const installedGuard = pathToFileURL(realpathSync(join(app, 'node_modules', '@kynesyslabs', 'dacs-seller', 'src', 'kit-operation-guard.mjs'))).href;
+  const registerLoader = join(work, 'register-kit-guard-fixture.mjs');
+  writeFileSync(registerLoader, `import { registerKitGuardFixture } from ${JSON.stringify(KIT_GUARD_FIXTURE_URL)};\nregisterKitGuardFixture([${JSON.stringify(installedGuard)}]);\n`);
+  const loaderOptions = `--import=${pathToFileURL(registerLoader).href}`;
+  const out = runInstalled({ ...env, NODE_OPTIONS: loaderOptions });
 
-  assert.deepEqual(out.environment, { execArgv: [], nodeOptions: null });
+  assert.deepEqual(out.environment, { execArgv: [], nodeOptions: loaderOptions });
+  assert.equal(out.guardOff, undefined, 'under the loader the installed guard admits');
   assert.equal(out.packageRoot, join('node_modules', '@kynesyslabs', 'dacs-seller'));
   assert.deepEqual(out.imports.filter((entry) => !entry.loaded), [], 'every installed module imports');
   assert.deepEqual(out.imports.map((entry) => entry.file).sort(), shippedModules());
@@ -158,4 +173,29 @@ test('the packed seller installs outside the repository and serves one Listing w
   assert.deepEqual(out.reached, [], 'negotiation reached no operator capability but the Vet context');
   assert.deepEqual(out.vetContextJobs, ['vetted', 'unvetted', 'fabricated'], 'every admitted proposal takes its Agreement input from the Vet context');
   assert.deepEqual(out.admittedJobs, ['vetted', 'unvetted', 'fabricated'], 'every session with an issued challenge asks the session admission; the replayed job has none, so the seller refuses it before asking');
+});
+
+test('importing every ./src/* path from the packed archive yields no guard bypass', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+  const preparedPath = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(preparedPath, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
+  const app = realpathSync(preparedPath);
+  const { sellerPack } = JSON.parse(readFileSync(join(app, 'prepared.json'), 'utf8'));
+  const packed = sellerPack.files.map((entry) => entry.path).sort();
+  assert.ok(packed.includes('src/kit-operation-guard.mjs'), 'the guard ships');
+  assert.deepEqual(packed.filter((path) => /fixture|loader|hook/i.test(path) && path.startsWith('test')), [], 'no loader ships');
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-guard-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const script = `
+    const bypasses = [];
+    for (const file of ${JSON.stringify(packed.filter((path) => path.startsWith('src/') && path.endsWith('.mjs')))}) {
+      const namespace = await import('@kynesyslabs/dacs-seller/' + file);
+      for (const name of Object.keys(namespace)) if (/kitoperation|operationguard|fortest|bypass/i.test(name) && !file.endsWith('kit-operation-guard.mjs')) bypasses.push(file + ':' + name);
+    }
+    const guard = await import('@kynesyslabs/dacs-seller/src/kit-operation-guard.mjs');
+    process.stdout.write(JSON.stringify({ bypasses, exports: Object.keys(guard).sort(), guard: guard.KIT_OPERATION_GUARD, admitted: guard.kitOperationAdmitted(), nodeOptions: process.env.NODE_OPTIONS ?? null }) + '\\n');`;
+  const env = { PATH: process.env.PATH, TMPDIR: work };
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: app, env, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
+  assert.equal(child.status, 0, `importing the packed modules failed\n${child.stdout}\n${child.stderr}`);
+  const answer = JSON.parse(child.stdout.trim().split('\n').at(-1));
+  assert.deepEqual(answer, { bypasses: [], exports: ['KIT_OPERATION_GUARD', 'KitOperationGuardError', 'assertKitOperationAdmitted', 'kitOperationAdmitted'], guard: 'off', admitted: false, nodeOptions: null });
 });

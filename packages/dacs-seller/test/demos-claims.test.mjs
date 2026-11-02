@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { sign } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import vm from 'node:vm';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import { privateKeyFromSeed, publicKeyFromSeed } from '@kynesyslabs/dacs';
 import { addressForClaim, claimForAddress, decodeSignature, normalizeDemosAddress, verifyDemosSignature, isCanonicalEd25519Signature, DemosClaimFormatError } from '../src/dacs/demos-claims.mjs';
 
@@ -216,9 +216,9 @@ test('CI runs every seller Node regression file with VM isolation and serial exe
   const manifest=JSON.parse(readFileSync(new URL('../../../package.json',import.meta.url),'utf8'));
   assert.equal(manifest.scripts['seller:test'],'node scripts/run-seller-tests.mjs');
   const runnerUrl=new URL('../../../scripts/run-seller-tests.mjs',import.meta.url);
-  const context=vm.createContext({URL,process:{argv:[],execPath:process.execPath,exitCode:null}});
+  const context=vm.createContext({URL,process:{argv:[],env:{NODE_OPTIONS:'--require TEST-existing-preload.cjs'},execPath:process.execPath,exitCode:null}});
   let invoked;
-  const imports={'node:fs':{readdirSync},'node:url':{fileURLToPath},'node:child_process':{spawnSync:(...args)=>{invoked=args;return{status:0};}}};
+  const imports={'node:fs':{readdirSync},'node:url':{fileURLToPath,pathToFileURL},'node:child_process':{spawnSync:(...args)=>{invoked=args;return{status:0};}}};
   const runner=new vm.SourceTextModule(readFileSync(runnerUrl,'utf8'),{context,initializeImportMeta:meta=>{meta.url=runnerUrl.href;}});
   await runner.link(specifier=>{const values=imports[specifier];assert.ok(values,`expected runner import ${specifier}`);return new vm.SyntheticModule(Object.keys(values),function(){for(const [name,value]of Object.entries(values))this.setExport(name,value);},{context});});
   await runner.evaluate();
@@ -228,4 +228,7 @@ test('CI runs every seller Node regression file with VM isolation and serial exe
   const files=readdirSync(new URL('./',import.meta.url)).filter(name=>name.endsWith('.test.mjs')).sort().map(name=>'packages/dacs-seller/test/'+name);
   assert.deepEqual(args.filter(arg=>arg.endsWith('.test.mjs')),files);
   assert.equal(invoked[2].cwd,fileURLToPath(new URL('../../../',import.meta.url)));
+  // Every test process gets the unshipped guard fixture loader, appended to any NODE_OPTIONS already set.
+  const guardFixture=pathToFileURL(fileURLToPath(new URL('./helpers/kit-guard-fixture.mjs',import.meta.url))).href;
+  assert.equal(invoked[2].env.NODE_OPTIONS,`--require TEST-existing-preload.cjs --import=${guardFixture}`);
 });

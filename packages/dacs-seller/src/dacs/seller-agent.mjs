@@ -43,6 +43,7 @@ import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
 import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence, PASSIVE_RETAINED_READ } from './native-dem-delivery-consumer.mjs';
 import { deliverableJournalFor } from './deliverable-wallet-journal.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { agreementInput, agreementTerms, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
 
 /** A seller refusal with its stable code and HTTP status (422 by default). */
@@ -174,6 +175,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // when the seller durably admitted exactly that context request for the job.
 const MAX_CHALLENGES_PER_JOB=16;
 export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
+  assertKitOperationAdmitted('createSellerAgent');
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
   if (typeof simulatedFixture !== 'boolean') throw new TypeError('simulatedFixture must be true or false');

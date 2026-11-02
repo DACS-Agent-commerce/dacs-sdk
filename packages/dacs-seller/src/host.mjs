@@ -35,6 +35,7 @@ import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
+import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']);
@@ -154,11 +155,14 @@ function syncDirectory(path) {
 
 // Resolves once the host listens: { url, listingPin, seller, timeouts,
 // issueSessionChallenge({ jobId, buyer }), close() }.
+// Rejects with KitOperationGuardError (kit_operation_guard_off) first of all,
+// before reading the options, while the kit's operation guard is off.
 // Rejects with a TypeError before opening anything when an option is missing,
 // unknown, malformed or not private, and with the startup error otherwise
 // (carrying `cleanupError` when cleanup fails; an AggregateError with the
 // startup error as `cause` when that error cannot carry the property).
 export async function startSellerHost(options) {
+  assertKitOperationAdmitted('startSellerHost');
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('seller host options must be an object');
   const unknown = Object.keys(options).filter((key) => !REQUIRED.includes(key) && !OPTIONAL.includes(key));
   if (unknown.length) throw new TypeError(`unknown seller host option: ${unknown.join(', ')}`);

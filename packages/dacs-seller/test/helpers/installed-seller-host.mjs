@@ -1,7 +1,8 @@
 // Runs inside a temporary application that installed the packed core and
 // seller tarballs. It is copied there and started with a clean `node` (no
-// flags, loaders or NODE_OPTIONS), so every import below resolves through that
-// application's node_modules, never through this repository.
+// flags or NODE_OPTIONS), so every import below resolves through that
+// application's node_modules, never through this repository. The host run
+// needs the unshipped guard loader, which the test passes as NODE_OPTIONS.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { sign, verify } from 'node:crypto';
@@ -20,6 +21,16 @@ import { createNativePaymentEvidenceConsumer } from '@kynesyslabs/dacs-seller/sr
 const require = createRequire(import.meta.url);
 const packageRoot = dirname(require.resolve('@kynesyslabs/dacs-seller/package.json'));
 const out = { environment: { execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS ?? null }, packageRoot: relative(process.cwd(), packageRoot) };
+// While the installed kit's guard is off (no fixture loader), the run only
+// proves that the host refuses to start, and ends there.
+const guard = await import('@kynesyslabs/dacs-seller/src/kit-operation-guard.mjs');
+if (!guard.kitOperationAdmitted()) {
+  let refusal = null;
+  try { await seller.startSellerHost({}); } catch (error) { refusal = { name: error.name, code: error.code, entry: error.entry }; }
+  out.guardOff = { guard: guard.KIT_OPERATION_GUARD, start: refusal };
+  process.stdout.write(`${JSON.stringify(out)}\n`);
+  process.exit(0);
+}
 // `--second <dataDirectory>`: another process tries to host on a live host's state.
 const second = process.argv[2] === '--second' ? process.argv[3] : null;
 

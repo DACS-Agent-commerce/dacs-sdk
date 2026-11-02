@@ -7,6 +7,7 @@
 // Only an authenticated definite refusal becomes SellerRefusedError in that
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
 import { transportOutcome } from './seller-agent.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 
@@ -84,6 +85,7 @@ function readRequest(req, timeoutMs) {
 // `context` (seller-context-route.mjs, seller context route) mounts the
 // Vet and Agreement-context route. Without it the route table is unchanged.
 export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null } = {}) {
+  assertKitOperationAdmitted('createSellerHttpHandler');
   if (![bodyTimeoutMs, maxRequestsPerWindow, rateWindowMs, maxConcurrent].every((n) => Number.isSafeInteger(n) && n > 0)) throw new Error('seller transport limits must be positive integers');
   if (typeof commitOnSignature !== 'boolean') throw new TypeError('commitOnSignature must be boolean');
   const routes = commitOnSignature ? SIGNATURE_ROUTES : ROUTES;
@@ -310,6 +312,7 @@ export class SellerRefusedError extends Error {
 }
 
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {
+  assertKitOperationAdmitted('createSellerAgentClient');
   const base = new URL(String(url).replace(/\/$/, ''));
   if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');

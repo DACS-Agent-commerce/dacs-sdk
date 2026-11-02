@@ -6,6 +6,7 @@ import { contentHash, createPayDemSellerObserver, paymentEvidenceAddress, verify
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_REPLY_BYTES } from './demos-sr2-adapter.mjs';
 import { agreementTerms, ed25519Deps } from './purchase-protocol.mjs';
 import { isDevnetSettlementTransport } from './devnet-source.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
 export const NATIVE_PAYMENT_EVIDENCE = 'sdk-pay-dem-intake-native-evidence/loopback-v1';
 const capabilities = new WeakSet();
@@ -58,6 +59,7 @@ export async function checkNativePaymentEvidence({ artifact, agreement, writer, 
 // key or Boolean authority. Tests call the unchanged packaged wallet bridge.
 // Reader and observer always use the actual pinned SDK/adapter on this origin.
 export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability = null, anchorEvidence, readSignedProjection, fetchImpl = globalThis.fetch, now = () => Date.now() }) {
+  if (anchorEvidence !== undefined) assertKitOperationAdmitted('createNativePaymentEvidenceConsumer');
   const rpc = new URL(rpcUrl);
   const source = sourceCapability !== null;
   if (source && (!isDevnetSettlementTransport(sourceCapability) || rpc.href !== sourceCapability.pins.endpoint)) throw new TypeError('native payment evidence requires the exact opaque SettlementEvidence source capability');

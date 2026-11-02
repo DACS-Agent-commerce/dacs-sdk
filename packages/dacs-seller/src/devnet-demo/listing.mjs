@@ -1,5 +1,6 @@
 import { canonicalize, contentHash, isAnchorReceipt, publishListingCore } from '@kynesyslabs/dacs';
 import { verifyComponent } from '../dacs/listing.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { stopRequested, stopSignal } from './stop-request.mjs';
 
 /** Publish a signed Listing only after its signature verifies for the seller and fresh authenticated final readback; sign receives its stop signal. */
@@ -8,6 +9,7 @@ export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,lo
       !['publish','read','verifyReceipt'].every(method=>typeof anchor?.[method]==='function')) throw new TypeError('listing publication requires signer, history, rail authority and authenticated native anchor operations');
   const assertRunning=()=>{if(stopRequested()) throw new Error('the operator is stopping');};
   return async(draft)=>{
+    assertKitOperationAdmitted('createDevnetDemoListingPublisher');
     assertRunning();
     const seller=draft.seller.identity.presentedBy;
     let signedListing=null;
