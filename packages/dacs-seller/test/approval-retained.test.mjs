@@ -397,3 +397,35 @@ test('a retained row whose stored bytes are not the canonical JSON of their requ
  await rejectsWith(approval.retained.open(spaced),'approval_ledger_mismatch');
  await rejectsWith(approval.retained.reopen(JSON.parse(line).reservationId),'approval_ledger_mismatch');
 });
+
+// Every by-id operation and the exact-request lookup refuse a sign row that a session write owns: it is not a retained authorization.
+const assertNotRetainable=async(fixture,request,ledgerId)=>{
+ const approval=fixture.compose(fixture.restart()),before=await text(fixture.evidencePath),binding={ledgerId,requestText:JSON.stringify(request)};
+ await assert.rejects(approval.retained.prepare(request),error=>error.code==='approval_refused'&&error.reason==='sign-authorization-open');
+ assert.equal(await approval.retained.open(binding.requestText),null);
+ await rejectsWith(approval.retained.reopen(ledgerId),'approval_reservation_unavailable');
+ await rejectsWith(approval.retained.confirm(binding,executed(request)),'approval_reservation_unavailable');
+ await rejectsWith(approval.retained.settle(binding,'released'),'approval_reservation_unavailable');
+ assert.equal(await text(fixture.evidencePath),before,'the ledger is byte-identical');await parsed(fixture.evidencePath);
+};
+
+test('the sign row of a manually held session write (it carries an attemptId) is no retained authorization: prepare refuses sign-authorization-open, open returns null, reopen, confirm and settle by id reject, and the ledger is unchanged and still parses',async t=>{
+ // The policy fee cap (3 DEM) is below the request's 4 DEM debit: the write is held, and the operator's yes signs it with an attemptId.
+ const fixture=await ledgerFixture(t,{limits:{maxWriteTotalOs:'3000000000'}}),request=evidence();
+ assert.equal(await fixture.compose(fixture.restart(),manualApprover(fixture))(request),true);
+ const [signed]=await signLines(fixture.evidencePath);assert.ok(signed.attemptId,'the sign line carries the held attempt');
+ await assertNotRetainable(fixture,request,signed.reservationId);
+});
+
+test('the sign row a live session write of this process holds in the shared slot is no retained authorization; after a restart it has no session owner and prepare returns it',async t=>{
+ const fixture=await ledgerFixture(t),session=fixture.compose(fixture.restart()),request=evidence();
+ assert.equal(await session(request),true);
+ const [signed]=await signLines(fixture.evidencePath);
+ // The same approval that owns the shared slot refuses it by every retained operation.
+ const before=await text(fixture.evidencePath);
+ await assert.rejects(session.retained.prepare(request),error=>error.reason==='sign-authorization-open');
+ assert.equal(await session.retained.open(JSON.stringify(request)),null);
+ await rejectsWith(session.retained.settle({ledgerId:signed.reservationId,requestText:JSON.stringify(request)},'released'),'approval_reservation_unavailable');
+ assert.equal(await text(fixture.evidencePath),before);
+ assert.equal((await fixture.compose(fixture.restart()).retained.prepare(request)).ledgerId,signed.reservationId);
+});

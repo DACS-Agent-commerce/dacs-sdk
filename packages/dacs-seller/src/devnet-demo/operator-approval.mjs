@@ -445,7 +445,9 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
  * current check on each call and links one confirmation line; confirmManualRetained(requestText, validity) runs the same
  * checks for an operator-only decision; settleById(ledgerId, outcome, reason) completes it once, also after stop().
  * Each ledger operation takes the policy lock once and reads the ledger afresh; none releases an authorization except
- * settleById, and an unreadable ledger rejects with its own error. */
+ * settleById, and an unreadable ledger rejects with its own error. A sign row a session write owns (a manually held
+ * write's, with an attemptId, or one in this process's shared slot) is not retained: authorizeRetained refuses its
+ * transaction as sign-authorization-open, and the other operations treat its id as unavailable. */
 export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,sellerApproval,policy,sellerNotice=()=>null,signal=null,now=()=>Date.now(),ledgerRetryMs=SELLER_LEDGER_RETRY_MS}){
   if(!OS.test(maxTotalOs??'')||BigInt(maxTotalOs)<=0n)throw new TypeError('maxTotalOs must be a positive canonical OS string');
   if(signal!==null&&!(signal instanceof AbortSignal)&&typeof signal!=='function')throw new TypeError('seller approval signal must be an AbortSignal or a function returning one');
@@ -704,9 +706,12 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   };
   // Retained authorizations are the ledger's own: addressed by ledger id, never put in records or the shared slot,
   // and read afresh under one acquisition of the policy lock per operation. Nothing but settleById ends one.
+  // A sign row is retained only when no session write owns it: a held write's row carries an attemptId (a retained
+  // confirmation line could not link to it), and a row in this process's shared slot is the session's to release.
+  const retainable=(row)=>row.attemptId===null&&![...records.values()].some(record=>record.reservation?.reservationId===row.reservationId);
   const openRetainedRows=async()=>{
     const{rows}=await readPolicyLedger(evidencePath);live();
-    return rows.filter(row=>row.signAuthorized&&row.outcome===null);
+    return rows.filter(row=>row.signAuthorized&&row.outcome===null&&retainable(row));
   };
   const openRetainedRow=async(ledgerId)=>{
     const row=(await openRetainedRows()).find(entry=>entry.reservationId===ledgerId);
@@ -721,10 +726,11 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   };
   const retainedHandle=(row)=>({ledgerId:row.reservationId,requestText:retainedBytes(row)});
   // The open authorization of this request's transaction (wallet, nonce, exact CREATE), whatever display-only members
-  // differ; a different CREATE for the same wallet nonce is refused, so one sign authority exists.
+  // differ; a different CREATE for the same wallet nonce, or a row a session write owns, is refused, so one sign
+  // authority exists.
   const retainedHolder=(rows,c)=>{
     const holder=openHolder(rows,c);
-    if(holder&&holder.request.content.exactCreate!==c.exactCreate)throw approvalRefusal('sign-authorization-open');
+    if(holder&&(!retainable(holder)||holder.request.content.exactCreate!==c.exactCreate))throw approvalRefusal('sign-authorization-open');
     return holder??null;
   };
   // Resolves the open authorization for the request (a new sign line only when none exists), or null for a definite
@@ -789,10 +795,10 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     if(outcome==='unknown')return Promise.resolve();
     return fly(serializedPolicy(evidencePath,async()=>{
       const{rows}=await readPolicyLedger(evidencePath),row=rows.find(entry=>entry.signAuthorized&&entry.reservationId===ledgerId);
-      if(!row)throw reservationUnavailable();
+      if(!row||!retainable(row))throw reservationUnavailable();
       if(row.outcome===outcome)return;
       if(row.outcome!==null)throw approvalError('approval_settlement_conflict',`this authorization is already settled as ${row.outcome}`,{outcome:row.outcome});
-      appendCompletion(row,outcome,reason,{reservationId:row.reservationId,approvalHash:row.approvalHash,...(row.attemptId?{attemptId:row.attemptId}:{})});
+      appendCompletion(row,outcome,reason,{reservationId:row.reservationId,approvalHash:row.approvalHash});
     }));
   };
   Object.assign(approve,{authorizeRetained,openRetained,reopenRetained,confirmRetained,confirmManualRetained,settleById});
