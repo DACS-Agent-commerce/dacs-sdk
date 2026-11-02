@@ -27,7 +27,9 @@ SQLite is an explicit subpath so importing the offline/root host surface never
 loads a native database driver. This keeps the deterministic offline quickstart
 usable in installs where optional dependencies or lifecycle scripts are
 disabled. Live hosts must install the package's optional SQLite dependency;
-the live doctor will fail closed when that adapter is unavailable.
+the live doctor will fail closed when that adapter is unavailable, and a live
+role runtime reports `role-database-open-failed` with the driver error as its
+`cause`.
 
 `@kynesyslabs/dacs-node/demos-loader` is the live host's bounded Node import
 hook for `@kynesyslabs/demosdk@4.0.16`. It resolves only that release's one

@@ -52,9 +52,9 @@ import {
   type DacsLiveRoleServiceOptionsV1,
   type DacsLiveRoleServiceV1,
 } from "./service.js";
-import {
+import type {
+  DacsNodeSqliteDatabase,
   openDacsNodeSqliteDatabase,
-  type DacsNodeSqliteDatabase,
 } from "./sqlite.js";
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
 import type {
@@ -217,9 +217,21 @@ export interface DacsLiveRoleRuntimeV1 {
 export class DacsLiveRoleRuntimeError extends Error {
   override readonly name = "DacsLiveRoleRuntimeError";
 
-  constructor(readonly reasonCode: string) {
-    super(reasonCode);
+  constructor(readonly reasonCode: string, options?: ErrorOptions) {
+    super(reasonCode, options);
   }
+}
+
+/**
+ * Production database opener. `sqlite.ts` is loaded on first use so that
+ * importing the package root works when the optional `better-sqlite3`
+ * dependency is absent; a missing driver rejects here.
+ */
+async function openDefaultDacsNodeSqliteDatabase(
+  input: Parameters<typeof openDacsNodeSqliteDatabase>[0],
+): Promise<DacsNodeSqliteDatabase> {
+  const sqlite = await import("./sqlite.js");
+  return sqlite.openDacsNodeSqliteDatabase(input);
 }
 
 function plainObject(value: unknown): value is Record<string, unknown> {
@@ -315,7 +327,7 @@ export async function createDacsLiveRoleRuntimeV1(
   });
   let database: DacsNodeSqliteDatabase | undefined;
   try {
-    const openDatabase = rawOptions.openDatabase ?? openDacsNodeSqliteDatabase;
+    const openDatabase = rawOptions.openDatabase ?? openDefaultDacsNodeSqliteDatabase;
     database = await openDatabase({
       databasePath: resolve(
         rawOptions.databasePath ?? resolve(config.dataDirectory, "actor.sqlite"),
@@ -325,9 +337,9 @@ export async function createDacsLiveRoleRuntimeV1(
       role,
       authority: rawOptions.authority,
     });
-  } catch {
+  } catch (cause) {
     demosIdentity.destroy();
-    throw new DacsLiveRoleRuntimeError("role-database-open-failed");
+    throw new DacsLiveRoleRuntimeError("role-database-open-failed", { cause });
   }
 
   let demos: Readonly<DacsDemosActorRuntimeV1>;

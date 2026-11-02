@@ -76,6 +76,10 @@ import {
   DACS_NODE_LIVE_PROFILE,
   DACS_NODE_OFFLINE_PROFILE,
 } from "./config.js";
+import {
+  DACS_NODE_SQLITE_APPLICATION_ID,
+  DACS_NODE_SQLITE_SCHEMA_VERSION,
+} from "./sqliteConstants.js";
 import type {
   DacsHttpInboxStoreV1,
   DacsHttpOutboxStoreV1,
@@ -91,8 +95,7 @@ import {
 
 export { createSqliteRatingPublicationEffectStore } from "./sqliteRatingPublication.js";
 
-export const DACS_NODE_SQLITE_SCHEMA_VERSION = 8 as const;
-export const DACS_NODE_SQLITE_APPLICATION_ID = 0x44414353 as const;
+export { DACS_NODE_SQLITE_APPLICATION_ID, DACS_NODE_SQLITE_SCHEMA_VERSION };
 export const DACS_NODE_SQLITE_DEFAULT_BUSY_TIMEOUT_MS = 5_000 as const;
 export const DACS_NODE_SQLITE_MAX_PAGE_SIZE = 1_000 as const;
 

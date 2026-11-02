@@ -129,6 +129,23 @@ jobs:
           (cd host-package-smoke/app && node --input-type=module -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport'), import('@kynesyslabs/dacs-node/sqlite')]).then(([core, host, transport, sqlite]) => { if (typeof core.createFixedPriceOfflineBuyerCoordinator !== 'function' || typeof host.validateDacsAgentConfig !== 'function' || typeof host.runOfflineVerifierSimulation !== 'function' || typeof host.createDacsBuyerServiceV1 !== 'function' || typeof host.createDacsSellerServiceV1 !== 'function' || typeof host.createDacsBuyerLiveCommerceGraphV1 !== 'function' || typeof host.createDacsSellerLiveCommerceGraphV1 !== 'function' || typeof host.createDacsUnavailableLiveCommerceGraphV1 !== 'function' || typeof host.createDacsBuyerLiveCommerceAssemblyV1 !== 'function' || typeof host.createDacsSellerLiveCommerceAssemblyV1 !== 'function' || typeof host.createDacsFixedPriceX402RoleOrderV1 !== 'function' || typeof host.createDacsFixedPriceX402OrderPairV1 !== 'function' || typeof host.loadDacsSecretV1 !== 'function' || typeof host.installDacsRoleServiceProcessHooksV1 !== 'function' || typeof host.runDacsLiveDoctorV1 !== 'function' || typeof host.createDacsNodeLocalDoctorProbesV1 !== 'function' || typeof host.inspectDacsNodePackageIntegrityV1 !== 'function' || typeof host.createDacsRoleServiceDoctorProbesV1 !== 'function' || typeof host.readDacsRoleServiceStatusesV1 !== 'function' || typeof host.createDacsGuardedSetupPlanV1 !== 'function' || typeof host.createDacsGuardedPurchasePlanV1 !== 'function' || typeof host.createDacsFundedDoctorPlanV1 !== 'function' || typeof host.prepareDacsFundedDoctorV1 !== 'function' || typeof host.createDacsFundedDoctorExecutorV1 !== 'function' || typeof host.runDacsGuardedCommandV1 !== 'function' || typeof transport.createDacsHttpEnvelopeV1 !== 'function' || typeof transport.createDacsHttpMessageClientV1 !== 'function' || typeof transport.startDacsHttpMessageServerV1 !== 'function' || typeof sqlite.inspectExistingDacsNodeSqliteDatabaseV1 !== 'function' || typeof sqlite.inspectDacsNodeSqliteUpgradeSafetyV1 !== 'function') process.exit(1) })")
           node -e "const p=require('./package.json'); if ((p.dependencies && p.dependencies['@kynesyslabs/dacs-node']) || (p.optionalDependencies && p.optionalDependencies['@kynesyslabs/dacs-node']) || (p.peerDependencies && p.peerDependencies['@kynesyslabs/dacs-node'])) process.exit(1)"
 
+      - name: Package smoke (host root without its optional native driver)
+        run: |
+          PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
+          smoke_root="$RUNNER_TEMP/dacs-host-no-driver"
+          core_pack="$GITHUB_WORKSPACE/host-package-smoke/kynesyslabs-dacs-$PACKAGE_VERSION.tgz"
+          node_pack="$GITHUB_WORKSPACE/host-package-smoke/kynesyslabs-dacs-node-$PACKAGE_VERSION.tgz"
+          mkdir -p "$smoke_root/app" "$smoke_root/runner"
+          npm install --prefix "$smoke_root/app" --no-audit --omit=optional --ignore-scripts "$core_pack" "$node_pack"
+          test ! -e "$smoke_root/app/node_modules/better-sqlite3"
+          (cd "$smoke_root/app" && node --input-type=module -e "await Promise.all([import('@kynesyslabs/dacs-node'), import('@kynesyslabs/dacs-node/transport'), import('@kynesyslabs/dacs-node/demos-loader')])")
+          npm pack --workspace create-dacs-agent --pack-destination "$smoke_root"
+          npm install --prefix "$smoke_root/runner" --no-audit --ignore-scripts "$smoke_root/create-dacs-agent-$PACKAGE_VERSION.tgz"
+          node "$smoke_root/runner/node_modules/create-dacs-agent/dist/bin.js" "$smoke_root/generated" --yes --mode offline --no-install
+          (cd "$smoke_root/generated" && npm install --no-audit --no-save --ignore-scripts --omit=optional "$core_pack" "$node_pack" typescript@5.9.2 @types/node@20.19.1)
+          test ! -e "$smoke_root/generated/node_modules/better-sqlite3"
+          (cd "$smoke_root/generated" && npm test)
+
       - name: Packed SQLite host smoke
         run: |
           mkdir -p host-sqlite-smoke/app
