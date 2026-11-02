@@ -186,10 +186,20 @@ export async function validateListing(listing, { now, revocationSurfaces, readMa
 
 const SUPPORTED_PHASES = Object.freeze(['negotiate-fixed-price', 'commit-payee-bound-agreement', 'pay-dem', 'deliver-storage-program']);
 
+export const MAX_OFFERING_TITLE_LENGTH = 200;
+
+// True for a title the purchased report can carry: a string of 1 to MAX_OFFERING_TITLE_LENGTH characters.
+export function isReportableTitle(title) {
+  return typeof title === 'string' && title.length > 0 && title.length <= MAX_OFFERING_TITLE_LENGTH;
+}
+
 // v0.1 transacts only fixed-price native DEM listings. Anything else stays
-// discoverable but is reported as unsupported for purchase.
+// discoverable but is reported as unsupported for purchase. A Listing whose
+// title the purchased report would refuse is unsupported too: the Standard
+// admits an empty title, but no Deliverable could be produced for that order.
 export function purchaseSupport(listing) {
   const reasons = [];
+  if (!isReportableTitle(listing?.offering?.title)) reasons.push(`offering title is not 1 to ${MAX_OFFERING_TITLE_LENGTH} characters`);
   if (listing?.pricing?.kind !== 'fixed') reasons.push('pricing is not fixed-price');
   if (listing?.pricing?.price?.currency !== 'DEM') reasons.push('price currency is not DEM');
   let amount = null;

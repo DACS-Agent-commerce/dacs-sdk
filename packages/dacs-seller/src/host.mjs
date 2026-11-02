@@ -195,9 +195,14 @@ export async function startSellerHost(options) {
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
       agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
     opened.push(() => agent.close());
+    // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
+    for (const { job, reason } of agent.releaseStaleLocks()) {
+      process.stderr.write(`seller-state: released the lock on job ${job} left by a holder that is gone (${reason})\n`);
+    }
     const transport = join(dataDirectory, 'transport');
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    const store = createSellerTransportStore({ path: join(transport, 'transport.sqlite'), maxJobs, now });
+    // Likewise a context step still pending in the journal has no run left: it opens as uncertain.
+    const store = createSellerTransportStore({ path: join(transport, 'transport.sqlite'), maxJobs, now, markPendingContextEffectsUncertain: true });
     opened.push(() => store.close());
     // Both child directories and the new transport database entry are durable
     // before listen permits an answer: seller/ was created by the durable state

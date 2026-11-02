@@ -17,7 +17,20 @@ const liveJob=(row,job)=>Boolean(row?.binding&&same(row.binding,job.binding)&&ty
 const fail=(code,message,cause)=>{throw Object.assign(new Error(message,{cause}),{code});};
 // Pending receipts and native uncertainty keep anchor work retryable; signed bytes stay retained.
 const PENDING_RECEIPT_STATES=new Set(['accepted','included']);
-const RETRYABLE_ANCHOR_CODES=new Set(['indeterminate','journal-busy','journal-capacity']);
+// A busy or full store changed nothing, so the write that met it may be repeated.
+const RETRYABLE_STORE_CODES=new Set(['journal-busy','journal-capacity']);
+const RETRYABLE_ANCHOR_CODES=new Set(['indeterminate',...RETRYABLE_STORE_CODES]);
+// A wallet refuses with this code only before it produced any signature.
+const DEFINITIVE_REFUSAL_CODES=new Set(['user_rejected']);
+const STORE_WRITE_ATTEMPTS=3;
+// Repeats a fenced, idempotent write that met a busy or full store. Used only
+// after the signer answered, where giving up would hold the step for good.
+async function retryStoreWrite(write) {
+  for(let attempt=1;;attempt+=1){
+    try{return await write();}
+    catch(error){if(attempt>=STORE_WRITE_ATTEMPTS||!RETRYABLE_STORE_CODES.has(error?.code))throw error;}
+  }
+}
 function requireJobId(jobId) {
   if (!isCanonicalJobId(jobId)) fail('job_invalid','jobId must be a canonical uppercase ULID');
 }
@@ -118,12 +131,16 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
         });
         view=Object.freeze({key,generatedAt:at});
       }else await state.update(job.jobId,current=>{fenced(own(current));});}catch(error){try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet preparation cleanup failed',{cause}),{code:'indeterminate'});}throw error;}
-      const scope=Object.freeze({state,jobId:job.jobId,role,key,owner,clock,view});
-      const finish=outcome=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);ops.steps[key]={...identity,...outcome};return current;});
+      const signer={called:false};
+      const scope=Object.freeze({state,jobId:job.jobId,role,key,owner,clock,view,signer});
+      const finish=outcome=>retryStoreWrite(()=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);ops.steps[key]={...identity,...outcome};return current;}));
+      // Before the signer ran, only a busy or full store left the step open; after it,
+      // only the wallet's own refusal proves nothing was signed. Both leave a way back.
+      const hasWayBack=error=>signer.called?DEFINITIVE_REFUSAL_CODES.has(error?.code):RETRYABLE_STORE_CODES.has(error?.code);
       wait.pending=false;wait.terminal=false;
       try{value=clone(await signingContext.run(scope,execute));}
       catch(error){
-        if(step==='composite-anchor'&&wait.pending&&!wait.terminal){
+        if(!wait.terminal&&((step==='composite-anchor'&&wait.pending)||hasWayBack(error))){
           try{await clear();}catch(cause){throw Object.assign(new AggregateError([error,cause],'party Vet pending cleanup failed',{cause}),{code:'indeterminate'});}
           throw error;
         }
@@ -157,15 +174,17 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
   };
   const recordSignature=async(bytes,signature)=>{
     const scope=signingScope(),step=scope.view,hex=Buffer.from(bytes).toString('hex');
-    await state.update(job.jobId,(current)=>{
+    await retryStoreWrite(()=>state.update(job.jobId,(current)=>{
       const ops=own(current);signingFence(ops,scope);const entry=ops.signing[step.key];
       if(entry?.generatedAt!==step?.generatedAt||entry.signedBytes!==hex)fail('binding-changed','the written-ahead party Vet record changed; the signature was not kept');
       if(entry.signature!==undefined){if(entry.signature!==signature)fail('conflict','the signer gave another signature for the same written-ahead bytes');return undefined;}
       entry.signature=signature;
       return current;
-    });
+    }));
   };
-  return{writeAhead,recordSignature,operationStore:{
+  // Called right before the signer, so a failed step knows whether one may have signed.
+  const markSignerCall=()=>{signingScope().signer.called=true;};
+  return{writeAhead,recordSignature,markSignerCall,operationStore:{
     load:async(key)=>{const value=own(await state.read(job.jobId)).checkpoints[key];return value===undefined?null:clone(value);},
     compareAndSet:async({operationKey,expected,next})=>{
       let changed=false;
@@ -256,6 +275,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     && read.requirementHash===sha256Hex(canonicalize(request.requirement));
   // A read-only wallet receipt can recover an interrupted signer, never grant
   // permission to sign again. Remote adapters bound wire bytes before returning.
+  // Answers the signature, or null when the wallet says, with this exact
+  // identity, that it never signed it and never will under that reservation.
   async function readPresentationSignature(request) {
     if(typeof wallet.reconcilePresentationSignature!=='function')presentationUnknown('the seller presentation signer outcome requires wallet reconciliation');
     const controller=new AbortController();let timer;
@@ -268,8 +289,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       // brand check is the same one admitRawJson uses.
       if(!nodeTypes.isUint8Array(raw))throw new TypeError('wallet signature lookup must return bounded raw JSON bytes');
       const {status,signature,...identity}=admitRawJson(raw,{maxBytes:PRESENTATION_LOOKUP_MAX_BYTES});
-      if(status!=='signed'||!same(identity,request))presentationUnknown('the wallet has no matching signed seller presentation receipt');
-      return signature;
+      const answered=status==='signed'?signature!==undefined:status==='unsigned'&&signature===undefined;
+      if(!answered||!same(identity,request))presentationUnknown('the wallet has no matching seller presentation receipt');
+      return status==='unsigned'?null:signature;
     }catch(cause){presentationUnknown('seller presentation signature reconciliation failed',cause);}
     finally{clearTimeout(timer);controller.abort();}
   }
@@ -291,13 +313,41 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     verifiedPresentation(kept,proof.signatures[0].signature);
     return clone(kept.bundle);
   }
+  // Puts a reservation the signer never used back to prepared, only while the
+  // row still holds that exact pending reservation.
+  const restorePrepared=(job,reservation)=>state.update(job.jobId,current=>{
+    if(!liveJob(current,job))fail('binding-changed','seller presentation binding changed');
+    const other=current.presentation;
+    if(other?.signing?.state!=='pending'||other.signing.reservation!==reservation)fail('binding-changed','seller presentation signing reservation changed; it was not restored');
+    current.presentation={...other,signing:{state:'prepared',signedBytes:other.signing.signedBytes}};return current;
+  });
+  // The error to throw after a reservation the signer never used: the cause
+  // itself once restored, or one that says the reservation stays held.
+  async function restoredOrHeld(job,reservation,error) {
+    try{await restorePrepared(job,reservation);return error;}
+    catch(cause){return Object.assign(new AggregateError([error,cause],'the seller presentation reservation could not be restored; it stays held',{cause}),{code:'indeterminate'});}
+  }
+  // The checks before the signer run again after the reservation (the purchase
+  // or the challenge may have ended while it was written); a failing check, or
+  // the wallet's definitive refusal, restores the reservation: nothing was signed.
+  async function signUnderReservation(job,kept,request) {
+    try{
+      guard(job,'seller presentation');await authorizeEffect(job);
+      if(!usableChallenge(kept.challenge))fail('seller_challenge_expired','seller challenge expired before presentation');
+    }catch(error){throw await restoredOrHeld(job,request.reservation,error);}
+    let raw;
+    try{raw=await wallet.signBytes(Buffer.from(request.signedBytes,'hex'),request);}
+    catch(error){throw DEFINITIVE_REFUSAL_CODES.has(error?.code)?await restoredOrHeld(job,request.reservation,error):error;}
+    return typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
+  }
   async function signPresentation(job,kept) {
     const completed=retainedPresentation(kept);if(completed)return completed;
     if(!kept.signing||!['prepared','pending'].includes(kept.signing.state))presentationUnknown('the unsigned seller presentation has no safe signing reservation');
     let mine=false;
     if(kept.signing.state==='prepared'){
       if(!usableChallenge(kept.challenge))fail('seller_challenge_expired','seller challenge expired before presentation');
-      guard(job,'seller presentation');await markWrite(job);
+      // Nothing is reserved yet: a failing check here leaves the row prepared.
+      guard(job,'seller presentation');await markWrite(job);await authorizeEffect(job);
       if(!usableChallenge(kept.challenge))fail('seller_challenge_expired','seller challenge expired before presentation');
       const expected=kept,reservation=randomUUID();
       kept=(await state.update(job.jobId,current=>{
@@ -309,15 +359,13 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     }
     if(kept.signing?.state!=='pending'||typeof kept.signing.reservation!=='string'||!kept.signing.reservation)presentationUnknown('the seller presentation reservation is unavailable');
     const request=Object.freeze({jobId:job.jobId,signer:wallet.claim,reservation:kept.signing.reservation,signedBytes:kept.signing.signedBytes});
-    let signature;
-    if(mine){
-      guard(job,'seller presentation');await authorizeEffect(job);
-      // The reservation and authorization both await durable work. A pending
-      // signature may be reconciled later, but an expired challenge is never signed.
-      if(!usableChallenge(kept.challenge))fail('seller_challenge_expired','seller challenge expired before presentation');
-      const raw=await wallet.signBytes(Buffer.from(request.signedBytes,'hex'),request);
-      signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
-    }else signature=await readPresentationSignature(request);
+    let signature=mine?await signUnderReservation(job,kept,request):await readPresentationSignature(request);
+    if(signature===null){
+      // The wallet says this reservation never signed: ask again from the
+      // row, which replaces an expired challenge and otherwise signs once.
+      await restorePrepared(job,request.reservation);
+      return sellerSession(job);
+    }
     const bundle=verifiedPresentation(kept,signature);
     signature=bundle.presentation.signatures[0].signature;
     const saved=await state.update(job.jobId,current=>{
@@ -554,6 +602,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       // nothing. A retained signature is replayed; an interrupted reservation
       // holds instead of calling the signer again.
       if(stored)return stored;
+      durable.markSignerCall();
       const raw=await wallet.signBytes(bytes),signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
       try{await durable.recordSignature(bytes,signature);}catch(error){writerFailed(error);throw error;}
       return signature;
@@ -566,11 +615,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         let out;
         try{
           if(job.open()===true){
-            await markWrite(job);
             // The anchor asks again under its key lock, right before it
             // stores the intent: a purchase cancelled meanwhile stores none
-            // and sends nothing.
-            out=await anchorCall(()=>anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>authorizeEffect(job)}));
+            // and sends nothing. The write mark is inside anchorCall, so a busy
+            // store there is a retryable wait like a busy anchor journal.
+            out=await anchorCall(async()=>{await markWrite(job);return anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>authorizeEffect(job)});});
           }else{
             // Readback only: a read never creates an intent.
             out=await anchorCall(()=>anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'}));
