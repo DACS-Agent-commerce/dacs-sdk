@@ -47,6 +47,7 @@ function wallet(t, { file = false } = {}) {
     broadcast: async ({ signedTransaction, txHash: hash }) => {
       calls.broadcast.push(signedTransaction);
       const fault = faults.broadcast.shift();
+      if (typeof fault === 'function') fault();
       if (fault === 'throw') throw new Error('TEST node unreachable');
       if (fault !== 'drop') node.land(hash);
     },
@@ -791,6 +792,29 @@ for(const [read,lost] of [['nonce','withdrawn'],['state','withdrawn'],['nonce','
  try{assert.equal(db.prepare('SELECT COUNT(*) AS n FROM evidence_creates WHERE superseded_at IS NOT NULL').get().n,0);}finally{db.close();}
  gone=false;const retried=await journal.ensureEvidence(input);
  assert.equal(w.calls.sign,2,'one successor once authorization is back');assert.notEqual(retried.txHash,first.txHash);assert.equal(w.chain.applied.length,1);
+});
+
+test('a broadcast is made only while authorized: a withdrawal queued by the answer that permitted it cannot come between the check and the broadcast',async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ w.faults.broadcast.push('drop');const first=await journal.anchorEvidence(w.input());
+ let allowed=true,armed=false,broadcastsWithdrawn=0;
+ const authorize=()=>{const answer=allowed;if(armed)queueMicrotask(()=>{allowed=false;});return answer;};
+ w.faults.state.push(()=>{armed=true;});
+ w.faults.broadcast.push(()=>{if(!allowed)broadcastsWithdrawn++;});
+ const result=await journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,attempt:{outcome:'sent',answer:first},authorize});
+ assert.equal(broadcastsWithdrawn,0,'no broadcast after the withdrawal');assert.equal(result.txHash,first.txHash);assert.equal(w.calls.sign,1);
+});
+
+for(const [label,authorize] of [['rejects',async()=>{throw new Error('TEST authorization failed');}],['resolves true',async()=>true],['a truthy value',()=>1]])test(`evidence authorization that answers ${label} is not true: nothing is signed or sent and nothing is left unhandled`,async t=>{
+ const w=wallet(t),journal=w.open();t.after(()=>journal.close());
+ await assert.rejects(journal.ensureEvidence({...w.input(),expectedJournalId:journal.journalId,authorize}),{code:'wallet_not_authorized'});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(w.calls.sign,0);assert.equal(w.calls.broadcast.length,0);assert.equal(await journal.readSignedProjection(w.input()),null);
+});
+
+test('a withdrawal while the wallet reads the nonce does not end the process and signs no successor',t=>{
+ const w=wallet(t),child=spawnSync(process.execPath,[fileURLToPath(new URL('./helpers/payment-evidence-authorization-withdrawn.mjs',import.meta.url)),w.path],{encoding:'utf8',timeout:60000});
+ assert.equal(child.status,0,child.stderr);assert.deepEqual(JSON.parse(child.stdout),{signs:1,code:'wallet_not_authorized'});
 });
 
 test('an accepted legacy name survives a lost successor broadcast answer',async t=>{
