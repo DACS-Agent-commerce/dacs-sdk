@@ -182,6 +182,14 @@ per-client limiter so one client cannot exhaust the shared request budget.
   One live process owns a data directory (`seller-state.lock`): a second host,
   in this process or another, is refused; the lock of a process that is
   provably gone is taken over, and any doubt refuses until it is removed by hand.
+  Holding that lock, the host recovers what a holder that is gone left before it
+  serves: it releases every job lock row `releaseAbandonedLock` would release
+  (never a live holder, nor one on this boot whose lease cannot be checked),
+  logging one `seller-state: released the lock on job ...` line per row, and
+  marks each context step still pending in the transport journal as uncertain,
+  so the route's own reconciliation decides whether it runs again. Saved
+  sessions, effects and settlements are not changed. A lock row the host
+  cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
   and body, for this seller and Listing; unsigned or mismatched requests are
   refused before the agent runs. Effects are journaled before they run, so a
@@ -585,6 +593,20 @@ per-client limiter so one client cannot exhaust the shared request budget.
   signing bytes in its party Vet job row. An atomic reservation permits one
   signer invocation across providers. A failed or interrupted signer call or
   outcome save leaves that reservation pending; a retry never signs again.
+  Only proof that nothing was signed puts the row back to prepared (fenced by
+  the reservation, so it never replaces a newer one): the purchase or challenge
+  check failing after the reservation and before the signer is called, the
+  wallet's `signBytes` throwing an error with `code: 'user_rejected'`, or
+  `reconcilePresentationSignature` answering `unsigned` (below). The next
+  attempt reserves again, and an expired challenge is replaced by a fresh one
+  while the row still holds the same unsigned challenge. The purchase check and
+  the challenge lifetime also run before the reservation is written. Any other
+  failure stays pending.
+  The buyer and seller composite record steps follow the same rule: a busy or
+  full party Vet store (`journal-busy`, `journal-capacity`) before their signer
+  is called, or a `user_rejected` refusal from it, releases the step so a retry
+  can run it; after the signer answered, a busy store is retried briefly while
+  its signature and outcome are saved, and never by signing again.
   If the reservation write commits but its acknowledgement is lost, the row is
   pending although the signer was never called; because the process cannot tell
   whether another provider holds it, a retry requires wallet reconciliation and
@@ -595,14 +617,19 @@ per-client limiter so one client cannot exhaust the shared request budget.
   For the presentation, `wallet.signBytes(bytes, request)` receives a frozen
   request with `jobId`, `signer`, `reservation` and `signedBytes` (lowercase hex).
   A wallet that supports recovery must retain its signature under that identity
-  before answering. Its optional read-only
+  before answering. A wallet that refuses before producing any signature throws
+  an error with `code: 'user_rejected'`; any other error is an unknown outcome.
+  Its optional read-only
   `wallet.reconcilePresentationSignature(request, { signal, maxBytes, timeoutMs })`
-  returns raw JSON bytes of exactly `{ ...request, status: 'signed', signature }`.
+  returns raw JSON bytes of exactly `{ ...request, status: 'signed', signature }`,
+  or `{ ...request, status: 'unsigned' }` when it never signed that reservation
+  and never will (it must refuse a later signing request carrying it).
   The provider admits at most 4,096 bytes before decoding and waits at most ten
   seconds. Remote adapters must enforce the byte limit before decoding their
   own wire replies and honor the abort signal. The recovered signature must
   verify for the exact retained bundle. Missing capability, unknown or absent
-  outcome, mismatched identity, invalid signature, malformed reply or timeout
+  outcome, `unsigned` without the exact identity, mismatched identity, invalid
+  signature, malformed reply or timeout
   returns `seller_presentation_indeterminate`; none permits another signature
   or challenge. A lost save acknowledgement reuses the completed job row
   without a wallet lookup. This changes no signed wire format or factory gate.

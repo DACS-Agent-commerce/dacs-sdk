@@ -8,6 +8,8 @@ import {syncBuiltinESMExports} from 'node:module';
 import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
+import {randomUUID} from 'node:crypto';
+import Database from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import {commitmentFixture} from './helpers/commitment-fixture.mjs';
 import {privateModule} from './helpers/private-module.mjs';
@@ -15,7 +17,8 @@ import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
-import {createSellerTransportClientAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportClientAuth,createSellerTransportStore,SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
+import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent}={}){
  const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
@@ -261,6 +264,50 @@ test('host makes newly created seller and transport directories durable before l
   assert.ok(synced.includes(f.dataDirectory),'the new seller and transport directory entries are synced in dataDirectory');
   await host.close();
  }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
+});
+
+const lockOwner=(lease,pid,namespace)=>`${pid}:${lease}:${Date.now()}:${randomUUID()}${namespace?`:${namespace.ns}.${namespace.boot}.${namespace.start}`:''}`;
+// A holder on a boot that is not this one: nothing in this process can prove it is running.
+const goneHolderOwner=()=>lockOwner(randomUUID(),4242,{ns:'1',boot:randomUUID(),start:'1'});
+const liveHolderOwner=()=>lockOwner(PROCESS_LEASE_ID,process.pid,PROCESS_NAMESPACE);
+const plantLock=(dataDirectory,job,owner)=>{
+ const db=new Database(join(dataDirectory,'seller','seller-state.sqlite'));
+ try{db.prepare('INSERT INTO seller_locks VALUES (?,?,?)').run(job,owner,Number(owner.split(':')[0]));}finally{db.close();}
+};
+async function stderrOf(work){
+ const original=process.stderr.write,lines=[];
+ process.stderr.write=chunk=>{lines.push(String(chunk));return true;};
+ try{await work();}finally{process.stderr.write=original;}
+ return lines;
+}
+
+test('host releases the job lock of a holder that is gone before serving and logs one line for it, while a live holder keeps its job busy',async t=>{
+ const refusals=[];
+ const f=await fixture(t,{wrap:agent=>({...agent,receiveProposal:async request=>{
+  try{return await agent.receiveProposal(request);}catch(error){refusals.push([request.transportIdentity.jobId,error.code]);throw error;}
+ }})});
+ await (await f.start()).close();
+ const goneJob=core.generateCanonicalJobId(),liveJob=core.generateCanonicalJobId();
+ plantLock(f.dataDirectory,goneJob,goneHolderOwner());plantLock(f.dataDirectory,liveJob,liveHolderOwner());
+ let host;const lines=await stderrOf(async()=>{host=await f.start();});
+ const released=lines.filter(line=>line.startsWith('seller-state: released'));
+ assert.equal(released.length,1);assert.ok(released[0].includes(goneJob));assert.ok(!released[0].includes(liveJob));
+ const gone=await f.proposal(host,goneJob);assert.equal((await f.client(host,gone).propose(gone)).disposition,'complete');
+ const live=await f.proposal(host,liveJob);
+ await assert.rejects(f.client(host,live).propose(live),{name:'SellerUnavailableError'});
+ assert.deepEqual(refusals,[[liveJob,'seller_state_busy']]);
+});
+
+test('host opens its transport store so a context step an earlier process left pending is uncertain',async t=>{
+ const f=await fixture(t);await (await f.start()).close();
+ const path=join(f.dataDirectory,'transport','transport.sqlite'),jobId=core.generateCanonicalJobId();
+ const earlier=createSellerTransportStore({path});
+ earlier.reserve({path:SELLER_CONTEXT_PATH,method:'POST',bodyHash:'c'.repeat(64),jobId,buyer:buyer.claim,seller:seller.claim,listingPin:{listingId:'test',version:1,contentHash:'d'.repeat(64)},agreementHash:'e'.repeat(64),nonce:'earlier',expiresAt:Date.now()+60000},{scope:{jobId}},{admit:()=>Date.now()});
+ earlier.close();
+ const states=()=>{const db=new Database(path,{readonly:true});try{return db.prepare('SELECT state FROM peer_effects').all().map(row=>row.state);}finally{db.close();}};
+ assert.deepEqual(states(),['pending']);
+ await f.start();
+ assert.deepEqual(states(),['uncertain']);
 });
 
 test('host refuses malformed options before opening any state',async t=>{

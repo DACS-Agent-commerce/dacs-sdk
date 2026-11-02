@@ -220,7 +220,10 @@ const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (
 const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
 const CHALLENGE_RATE_WINDOW_MS = 3600000;
 const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
-export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now() }) {
+// markPendingContextEffectsUncertain: the caller holds the seller state lock, so no other
+// process owns this journal. Every context step still `pending` at open belongs to an owner
+// that is gone and becomes `uncertain`, which `resume` can take. Only the host sets it.
+export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), markPendingContextEffectsUncertain = false }) {
   if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
   if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
   if (!uint(maxChallenges) || maxChallenges === 0 || typeof contextSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
@@ -272,6 +275,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     run("INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, substr(slot, 1, instr(slot, ':') - 1) FROM peer_slots WHERE instr(slot, ':') > 0");
     if (admissions()) run('INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, job FROM peer_context_admissions');
   });
+  if (markPendingContextEffectsUncertain && admissions()) {
+    transaction(() => run("UPDATE peer_effects SET state = 'uncertain' WHERE state = 'pending' AND effect IN (SELECT effect FROM peer_context_admissions)"));
+  }
   function reclaimableJobs(needed, jobId, time) {
     // Unmapped legacy effects fence all reclamation; empty bindings need no terminal evidence.
     if (!needed || get('SELECT 1 FROM peer_effects e WHERE NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.effect = e.effect) LIMIT 1')) return [];
