@@ -88,7 +88,7 @@ describe("the gated publish workflow", () => {
       "npm run release:test",
       "npm run release:set:verify -- --output-dir package-artifacts/release-set --strict",
     ])).toBe(true);
-    expect(commands.indexOf("npm run release:test")).toBeLessThan(commands.indexOf("node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next"));
+    expect(commands.indexOf("npm run release:test")).toBeLessThan(commands.indexOf("node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at \"$DACS_PUBLISH_JOB_STARTED_AT\""));
   });
 
   it("the gated workflow keeps one publication at a time", () => {

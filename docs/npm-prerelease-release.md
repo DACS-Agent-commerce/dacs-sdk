@@ -92,6 +92,32 @@ provenance on npm. Generate a clean project from the registry packages and run
 the clean-VPS restart, replay and capped funded acceptance before promoting a
 prerelease or changing the stable `latest` tag.
 
+## Rerunning an interrupted or timed-out publication
+
+Rerun the same workflow for the same tag. The publisher skips each version whose
+registry integrity equals the reviewed receipt and whose `next` is the release
+version, and publishes the rest. It never retries `npm publish` and never moves a
+tag. After a failed or timed-out publish it reads the registry back: an exact
+version counts as published, an absent one stops the run. Every read is bounded,
+and the run ends 40 minutes after it starts or 2 minutes before the job's
+45-minute limit; a publish starts only with 6 minutes left. Errors:
+
+- `publish_outcome_unknown`: the version is not visible after a failed publish;
+  the cause holds npm's message. Check npm, then rerun.
+- `dist_tag_conflict`: `next` points elsewhere. Fix it on npm by hand, rerun.
+- `existing_release_conflict`, `published_integrity_conflict`: the registry holds
+  this version with other bytes. Stop and prepare a new version.
+- `publish_budget_exhausted`: too little job time was left. Rerun.
+- `registry_*`: a read stopped; the cause says why. Rerun after a timeout or
+  `registry_unavailable`, investigate the others first.
+
+Only `npm publish` gets credentials: the job's setup-node configuration with the
+first-release token or, later, trusted publishing. Every other release npm
+command runs without token, auth or password variables and with
+`npm_config_userconfig=/dev/null`. `ENEEDAUTH`, `E401` or `E403` in the cause of
+`publish_outcome_unknown` means npm could not authenticate: complete the
+credential steps below and rerun.
+
 ## Moving publication credentials to the gated workflow
 
 These are repository and npm settings, so a pull request cannot make them.
