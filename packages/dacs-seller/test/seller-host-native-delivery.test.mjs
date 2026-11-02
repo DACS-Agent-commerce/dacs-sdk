@@ -242,7 +242,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], deliveryResends: [], published: [], publishCalls: [], retainedReads: [], retainedResends: [], signCreate: [], signed: [], broadcast: [], componentSigns: [], deliverySignCreate: [], deliverySigned: [], deliveryBroadcast: [] };
-  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, evidenceReadAbsence: null, evidencePending: false };
+  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, readRetainedEvidenceHang: null, evidenceReadAbsence: null, evidencePending: false };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
@@ -324,6 +324,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     readRetained: async ({ logicalAddress, artifactKind, proofOfNoIntent = false }, options) => {
       effects.retainedReads.push({ artifactKind, logicalAddress, resend: options?.resend });
       if (faults.readRetainedThrowKind === artifactKind) { faults.readRetainedThrowKind = null; throw null; }
+      if (artifactKind === 'SettlementEvidence' && faults.readRetainedEvidenceHang) return faults.readRetainedEvidenceHang(options);
       // A retained evidence CREATE the node accepted but cannot show yet: like the shipped capability, a read broadcasts it again only when it asks for a resend and its own check answers true.
       if (artifactKind === 'SettlementEvidence' && faults.evidencePending && signedCreates.has(logicalAddress)) {
         const check = options?.resend === true && typeof options.authorizeResend === 'function' ? options.authorizeResend : null;
@@ -345,9 +346,9 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       // branded, and only when neither journal retains a signed CREATE.
       return read.status === 'absent' && proofOfNoIntent && !signedCreates.has(logicalAddress) ? provenUnsignedAbsence(read.reason) : read;
     },
-    verifyReceipt: async (input) => {
+    verifyReceipt: async (input, options) => {
       if (faults.verifyReceipt) {
-        const forced = await faults.verifyReceipt(input);
+        const forced = await faults.verifyReceipt(input, options);
         if (forced !== undefined) return forced;
       }
       const { logicalAddress, artifact, artifactKind, receipt, signedProjection } = input;
@@ -2844,6 +2845,31 @@ test('a delivery evidence capability that rejects without an Error leaves a held
   assert.equal(held.status, 200);
   assert.equal(held.body.delivery?.status, 'delivery-ready', shown(held.body));
   assert.equal(held.body.delivery?.evidencePublication, 'held-readback-only', shown(held.body));
+  assert.equal((await post()).body.delivery?.status, 'delivered');
+  assert.equal(w.createsAt(address), 1);
+});
+
+// A reader that never answers is given up on at its local deadline: the claim is a held readback, and the next claim delivers.
+for (const hung of ['retained read', 'receipt verification']) test(`a delivery evidence ${hung} that never answers is a held readback, and the next claim delivers`, async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true }), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
+  assert.equal((await p.claim(tx)).delivery?.status, 'delivered');
+  const signed = await w.signedClaim(p, tx);
+  let asked; const reached = new Promise((resolve) => { asked = resolve; });
+  // The host waits for a reader that ignores its signal when it closes, so this one stops when the deadline aborts it.
+  const never = (options) => { asked(); return new Promise((resolve) => options?.signal?.addEventListener('abort', () => resolve('indeterminate'))); };
+  if (hung === 'retained read') w.faults.readRetainedEvidenceHang = never;
+  else w.faults.verifyReceipt = ({ artifactKind, logicalAddress }, options) => (artifactKind === 'SettlementEvidence' && logicalAddress === address ? never(options) : undefined);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const post = async () => { const res = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); return { status: res.status, body: await res.json() }; };
+  const pending = post();
+  await reached;
+  t.mock.timers.tick(10_000);
+  const held = await pending;
+  t.mock.timers.reset();
+  assert.equal(held.status, 200, shown(held.body));
+  assert.equal(held.body.delivery?.evidencePublication, 'held-readback-only', shown(held.body));
+  assert.match(held.body.delivery?.reason ?? '', /deadline expired/);
+  w.faults.readRetainedEvidenceHang = null; w.faults.verifyReceipt = null;
   assert.equal((await post()).body.delivery?.status, 'delivered');
   assert.equal(w.createsAt(address), 1);
 });

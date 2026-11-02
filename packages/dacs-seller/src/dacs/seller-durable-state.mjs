@@ -675,12 +675,15 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // Read back and authenticate the anchor `anchor:<address>` again, completed
       // or not, and record its receipt. Returns the receipt; throws a coded
       // SellerRecoveryError (seller_effect_missing, or the readback's code).
-      async reconcileAnchor(id, anchors) {
+      // With `record: false` the readback is authenticated and returned and
+      // nothing is signed or saved.
+      async reconcileAnchor(id, anchors, { record = true } = {}) {
         const prior = typeof id === 'string' && id.startsWith('anchor:') ? anchorRow(id.slice('anchor:'.length)) : null;
         if (!prior) fail('seller_effect_missing');
         const scoped = running.getStore()?.api === api;
         if (scoped) transaction(() => fence(prior.jobId));
         const receipt = await authenticatedReadback(anchors, prior);
+        if (!record) return receipt;
         // Inside an acquisition the update is fenced like every job-scoped
         // write. Unscoped (the lock-free reconcile) it only records an
         // authenticated readback of a retained intent, as before.
