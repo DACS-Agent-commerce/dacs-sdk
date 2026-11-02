@@ -7,6 +7,7 @@ import {seller as sellerKey,buyer as buyerKey,NOW} from './protocol-fixture.mjs'
 import {JOBS} from './bilateral-vet-fixture.mjs';
 import {fixtureListing,fixtureIdentityBundle} from '../fixtures/listings.mjs';
 import {localAnchor,signAnchorWrite} from './local-anchor-fixture.mjs';
+import {observeConfirmedNativeTransfer} from './confirmed-native-transfer-fixture.mjs';
 import * as protocol from '../../src/dacs/purchase-protocol.mjs';
 import {agreementInput,contributionVerifier,listingPin} from '../../src/dacs/purchase-protocol.mjs';
 import {createSellerDurableState} from '../../src/dacs/seller-durable-state.mjs';
@@ -15,7 +16,7 @@ import {buildStorageProgramCreatePayload,deriveStorageAddress} from '../../src/d
 // memory: an agent with no durable directory (no job fence, no store), kept open; it cannot be reopened.
 export async function agentFixture({paid=false,collision=false,lifecycle=false,early=false,memory=false}={}){
  const seller={...sellerKey,sign:sellerKey.signBytes},buyer={...buyerKey,sign:buyerKey.signBytes},dir=mkdtempSync(join(tmpdir(),'TEST-fixture-payment-')),listing=fixtureListing(sellerKey,{now:NOW}),pin=listingPin(listing),anchors=localAnchor({now:()=>NOW+2000}),agreements=new Map(),controls={observation:null};
- const config={signer:seller,listing,anchors,...(memory?{}:{durableDirectory:dir}),commitOnSignature:early,now:()=>NOW+2000,simulatedFixture:true,observeDemosTransfer:async hash=>controls.observation??{status:'included',txHash:hash,payer:buyer.address,payee:seller.address,amountOs:'2500000000',blockNumber:8,includedAt:NOW+3000}};
+ const config={signer:seller,listing,anchors,...(memory?{}:{durableDirectory:dir}),commitOnSignature:early,now:()=>NOW+2000,simulatedFixture:true,observeDemosTransfer:async hash=>controls.observation??await observeConfirmedNativeTransfer({txHash:hash,payer:buyer.address,payee:seller.address,amountOs:'2500000000',blockNumber:8,includedAt:NOW+3000})};
  let agent,store;const create=()=>createSellerAgent(config);
  const openStore=()=>createSellerDurableState({dir,signer:seller,listingPin:pin});
  const negotiate=async(jobId,{anchor=true,claims=[]}={})=>{

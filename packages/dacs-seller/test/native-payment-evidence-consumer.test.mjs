@@ -4,6 +4,7 @@ import { ARTIFACT_SEPARATORS, paymentEvidenceAddress, signComponentArtifact } fr
 import { createNativePaymentEvidenceConsumer, nativeEvidenceReadOutcome } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { DEMOS_SR2_REPLY_BYTES } from '../src/dacs/demos-sr2-adapter.mjs';
 import { readbackFixture } from './helpers/sr2-readback-fixture.mjs';
+import { FIXTURE_SIGNED_NONCE } from './helpers/confirmed-native-transfer-fixture.mjs';
 import { buyer, seller, protocolFixture, NOW } from './helpers/protocol-fixture.mjs';
 
 const json = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json', 'x-dacs-simulation': 'fixture' } });
@@ -23,7 +24,7 @@ async function consumerFixture({ evidence = {}, transfer = {}, respond } = {}) {
       if (message === 'getTransactionStatus') return json({ result: 200, response: { state: 'included', blockNumber: observed.blockNumber } });
       if (message === 'getTxByHash' && data.hash.replace(/^0x/, '') === observed.txHash.replace(/^0x/, '')) return json({ result: 200, response: {
         hash: observed.txHash, status: 'confirmed', blockNumber: observed.blockNumber,
-        content: { type: 'native', from: buyer.address, to: seller.address, amount: '2500000000',
+        content: { type: 'native', from: buyer.address, to: seller.address, amount: '2500000000', nonce: FIXTURE_SIGNED_NONCE,
           data: ['native', { nativeOperation: 'send', args: [seller.address, '2500000000'] }], ...transfer } } });
       if (message === 'getBlockByNumber' && data.blockNumber === observed.blockNumber) return json({ result: 200, response: {
         number: observed.blockNumber, status: 'confirmed', content: { timestamp: NOW / 1000, ordered_transactions: [observed.txHash] } } });
@@ -96,6 +97,16 @@ for (const [label, projection] of [
   const result = await f.consumer.readEvidence({ ...f.input, signedProjection: projection(f) });
   assert.equal(result.disposition, 'indeterminate'); assert.equal(result.nativeReadStatus, 'public-projection-malformed');
   assert.equal(f.calls.length, 0);
+});
+
+test('the confirmed transaction served by the consumer fixture carries a valid signed nonce', async () => {
+  const f = await consumerFixture();
+  const reply = await f.fetchImpl('http://127.0.0.1:9922/', { method: 'POST',
+    body: JSON.stringify({ params: [{ message: 'getTxByHash', data: { hash: f.input.txHash } }] }) });
+  const { response: transaction } = await reply.json();
+  assert.equal(transaction.status, 'confirmed');
+  assert.equal(transaction.content.nonce, FIXTURE_SIGNED_NONCE);
+  assert.ok(Number.isSafeInteger(transaction.content.nonce) && transaction.content.nonce >= 0);
 });
 
 test('matching signed evidence and observed transfer remain present', async () => {
