@@ -51,6 +51,7 @@ export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1
 export const PURCHASE_RAIL = 'demos-native:DEM';
 export const PURCHASE_APPROVAL_TTL_MS = 30 * 60 * 1000;
 const MAX_OBSERVATION_REASON_LENGTH = 240;
+const RELEASE_AMOUNT_OS = '1000000000'; // 1 DEM: the self-transfer that takes a handed-off payment's nonce slot.
 const MAX_TRANSFER_IDENTIFIER_LENGTH = 66; // 32-byte hex, optionally prefixed with 0x.
 function errorText(error) {
   let text = 'chain reader failed';
@@ -126,7 +127,7 @@ export const PURCHASE_STATUS_HELP = {
   expired: 'The approval window expired before approval. Prepare a new purchase.',
   terms_changed: 'The listing changed or failed re-verification after approval; nothing was sent. Prepare a new purchase.',
   superseded: 'This wallet nonce slot was consumed by a transaction that settled another of your operations, so this purchase can never be paid. Nothing was charged for it.',
-  cancelled: 'Cancelled while the buyer wallet nonce proved the payment slot was not consumed. A later confirmed read of the old transfer can still settle it.',
+  cancelled: 'Cancelled while the buyer wallet nonce proved the payment slot was not consumed, or (a payment handed to a wallet, with the nonce-slot gate on) once another transaction took the slot. A later confirmed read of the old transfer can still settle it.',
 };
 
 // A native payment with the settlement terms of a cancelled purchase's payment
@@ -1419,8 +1420,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return { operation: move(operation, 'payment_uncertain', { reason: 'cancel refused: the buyer nonce was used outside the operator source; readback only', nonce }), cancelled: false };
   }
 
-  // Cancel only while the buyer nonce proves nothing from this handoff was
-  // consumed. The model may call this: cancelling never moves funds, and a
+  // Cancel a purchase that was never handed to a wallet (no coordinates); a
+  // native handoff is decided by the operator's source below; any other
+  // handoff is cancelled only once its nonce slot is used by another
+  // transaction. The model may call this: cancelling never moves funds, and a
   // late landing of the old payload is still recorded by verify_deal.
   async function cancel({ accountId, operationId }) {
     if (diagnosticOnly) assertPurchaseActionsAdmitted();
@@ -1482,12 +1485,44 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         }
         return { operation: move(operation, 'payment_uncertain', { reason: 'issued native delivery cannot be cancelled/reissued; readback only' }), cancelled: false };
       }
-      // Only the bound network's nonce can show that nothing was sent.
+      // The confirmed nonce does not count a broadcast the node has not included
+      // yet, so an unchanged nonce cannot show that a handed-off transfer was
+      // never sent; cancelling on it freed the wallet for a purchase whose nonce
+      // followed the late landing of this one (two transfers). The purchase
+      // stays open until the nonce slot its payload would take is used. That
+      // slot's transaction is then read back: this payment settles the
+      // purchase, any other transaction means the payload can never land.
       await assertBoundDomain(operation);
-      const nonce = await chain.getAddressNonce(operation.terms.buyer.wallet);
-      if (nonce !== coords.nonceFence) {
-        return { operation: move(operation, 'payment_uncertain', { reason: 'cancel refused: buyer nonce advanced since handoff', nonce }), cancelled: false };
+      const wallet = operation.terms.buyer.wallet;
+      // Another transaction at the slot proves this payload can never land only where the bound network counts one nonce
+      // for every key of the account; set only once P40 has shown that there.
+      const slotProof = config.nonceSlotProof === 'account';
+      // Any transaction from the wallet at this nonce releases the purchase; a 1 DEM self-transfer is the smallest. When the wallet's
+      // own other transaction already holds the slot (slotTx) a release would be refused, so the answer names that transaction instead.
+      const open = (reason, slotTx = null) => ({
+        operation: move(operation, 'payment_uncertain', { reason, nonceFence: coords.nonceFence }), cancelled: false,
+        ...(slotTx ? { slotTxHash: slotTx } : { release: buildNativeTransferPayload({ from: wallet, to: wallet, amountOs: RELEASE_AMOUNT_OS, nonce: coords.expectedNonce, timestamp: now(), encoding: config.demAmountEncoding }) }),
+        message: slotTx ? `Not cancelled: ${operation.id} stays open and blocks this wallet's next purchase. Wallet transaction number ${coords.expectedNonce} is already ${slotTx}, so no release can be sent; call verify_deal with that hash if this wallet signs with its own key alone.`
+          : `Not cancelled: nothing proves the payment was never sent, so ${operation.id} stays open and blocks this wallet's next purchase. Send the release transfer (wallet transaction number ${coords.expectedNonce}). Report its hash only after it has landed: ${slotProof ? 'call cancel again, or ' : ''}call verify_deal with it if this wallet signs with its own key alone. If the payment landed instead, call verify_deal with the payment's hash.`,
+      });
+      if (await chain.getAddressNonce(wallet) < coords.expectedNonce) return open('cancel pending: the handed-off transfer may still land; waiting for its nonce slot to be used');
+      const slot = typeof chain.findTransferAtNonce === 'function' ? await chain.findTransferAtNonce(wallet, coords.expectedNonce) : { status: 'unknown' };
+      // Only the slot's own row, read back by hash, can end the purchase. No page of the history shows a skipped slot: the node orders
+      // it by signed timestamp, the payment carries this service's clock, so a page can drop the slot's row and keep rows on both sides.
+      if (slot.status !== 'found') return open('cancel pending: the nonce slot is used but its transaction could not be found in the wallet history');
+      // What took the slot is read as settlement reads it: observeTransfer decodes type, payer, payee, amount,
+      // inclusion and failure; the canonical body's nonce is read with nodeProjectedNonce. Anything else leaves it open.
+      let taken = null, unreadable = 'it is not an included transfer from this wallet at this nonce';
+      try {
+        const seen = transferObservationRecord(await chain.observeTransfer(slot.hash), canonicalHash(slot.hash));
+        const body = seen.status === 'included' ? await chain.getTransaction(slot.hash) : null;
+        if (same(seen.payer, wallet) && nodeProjectedNonce(body?.content?.nonce) === coords.expectedNonce) taken = seen;
+      } catch (error) { unreadable = String(error?.message ?? error); }
+      if (!taken) return open(`cancel pending: the transaction that used the nonce slot could not be read back: ${unreadable}`);
+      if (same(taken.payee, operation.terms.seller.payee) && taken.amountOs === operation.terms.price.amountOs) {
+        return continueProtocol({ ...await attachHashAndVerify(operation, slot.hash, 'nonce-slot-readback'), cancelled: false });
       }
+      if (!slotProof) return open('cancel pending: on this network another transaction at the nonce slot does not prove the payment can never land', slot.hash);
     }
     const next = move(operation, 'cancelled', { reason: 'cancelled by account owner', nonceFence: coords?.nonceFence ?? null });
     return { operation: next, cancelled: next.status === 'cancelled' };
