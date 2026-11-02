@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Generate vectors/dacs-seller-http-v1.json from the built SDK (npm run build).
 // Every vector names the one check that refuses it; test/wire/vectors.test.ts
-// replays them, and scripts/wire/mutate-wire-checks.mjs shows each named check
-// is the one that catches its vector. Keys are generated at run time and
-// discarded. The TP-1 identity records are SYNTHETIC: none is the approved record.
+// replays them and requires each refusal to carry its own named code. Keys are
+// generated at run time and discarded. The TP-1 identity records are SYNTHETIC:
+// none is the approved record.
 // The generator binds nothing: it writes the TP-1 profile member from the
 // synthetic record itself. test/wire/vectors.test.ts approves that record
 // only through its test approval list (test/wire/testApproval.ts); binding
@@ -136,6 +136,19 @@ const discoveryNonNfc = (() => {
 })();
 const discoveryBigNumber = b64(enc(discoveryText(discovery).replace(`"expiresAt":${discovery.expiresAt}`, '"expiresAt":9007199254740993')));
 
+// The context challenge route: the body carries the context scope's ten keys (all but buyerBundleHash),
+// and the envelope's agreementHash is the hash of that scope. The answer is the seller host's.
+const CHALLENGE_PATH = wire.DACS_SELLER_HTTP_PATHS.contextChallenge;
+const challengeScope = {
+  source: "dacs-chatgpt-plugin/operator-agreement-context/v1", wallet: `0x${buyer.raw}`, jobId: JOB_ID, buyer: buyer.claim, seller: seller.claim, listingPin: LISTING_PIN,
+  rail: { railId: "demos-native:DEM", railVersion: 1 }, payee: `0x${seller.raw}`, price: { amount: "1", currency: "DEM", amountOs: "1000000000" }, generatedAt: NOW,
+};
+const challengeBody = canonicalize({ scope: challengeScope });
+const challengeRequest = { ...request, path: CHALLENGE_PATH, bodyHash: sha256Hex(challengeBody), agreementHash: sha256Hex(canonicalize(challengeScope)) };
+const CHALLENGE_LIFETIME_MS = 600_000;
+const challengeAnswer = canonicalize({ sessionNonce: sha256Hex("wire-fixture-challenge-nonce"), expiresAt: NOW + CHALLENGE_LIFETIME_MS });
+const challengeResponse = { ...challengeRequest, kind: "response", bodyHash: sha256Hex(challengeAnswer), expiresAt: NOW + 60_000, requestHash: sha256Hex(canonicalize(challengeRequest)), status: 200 };
+
 const R = (id, check, input, expect) => ({ id, kind: "request", check, input: { path: PATH, body: b64(enc(BODY)), requireDelegation: false, ...input }, expect });
 const G = (id, check, input, expect) => ({ id, kind: "delegation", check, input: { scope: {}, ...input }, expect });
 const S = (id, check, input, expect) => ({ id, kind: "response", check, input: { status: 200, body: b64(enc(RESPONSE_TEXT)), ...input }, expect });
@@ -197,6 +210,8 @@ const vectors = [
   // Signed for the read route, received on an effect route; and signed for POST, received as another method.
   R("request/path-mismatch", "request path binding", { header: req({ ...request, path: "/dacs/v1/agreements/state" }), path: "/dacs/v1/payments" }, no("peer_request_mismatch")),
   R("request/method-mismatch", "request method binding", { header: req(request), method: "GET" }, no("peer_request_mismatch")),
+  // A correctly signed challenge request is opened, then refused by checkWireRequest: no host may skip pre-Agreement admission.
+  R("request/challenge-check-refused", "pre-Agreement route refusal", { header: req(challengeRequest), path: CHALLENGE_PATH, body: b64(enc(challengeBody)) }, no("wire_route_requires_preagreement")),
   R("request/delegation-required", "delegation required", { header: req(request), requireDelegation: true }, no("peer_delegation_required")),
   // The seller requires a delegation when it opens the request and again in checkWireRequest. `checkRequireDelegation`,
   // when present, is given to checkWireRequest instead; each of these requires it at one entry point only, so only that
@@ -271,6 +286,7 @@ const vectors = [
   G("delegation/payload-changes-between-reads", "CF-5 delegation input", { delegation, view: { of: "delegation.payload", as: "proxy", field: "expiresAt", after: NOW - 500 } }, no("peer_delegation_invalid", "ARTIFACT-NOT-ADMITTED")),
 
   S("response/valid", null, { request, header: resp(response) }, ok),
+  S("response/challenge-valid", null, { request: challengeRequest, header: resp(challengeResponse), body: b64(enc(challengeAnswer)) }, ok),
   S("response/old-domain", "response signature domain", { request, header: resp(response, { domain: OLD.request }) }, no("peer_signature_invalid")),
   S("response/request-domain", "response signature domain", { request, header: resp(response, { domain: D.request }) }, no("peer_signature_invalid")),
   S("response/profile-missing", "profile present", { request, header: (() => { const { profile: _x, ...p } = response; return resp(p); })() }, no("tp1_profile_missing")),
@@ -328,6 +344,7 @@ const vectors = [
   // invalid bodies with zero signatures; decomposed string values are accepted. Malformed UTF-8 has no case here: both take
   // the body as a string.
   P("signing/request-valid", null, { producer: "request", body: b64(enc(BODY)) }, ok),
+  P("signing/challenge-request-valid", null, { producer: "request", path: CHALLENGE_PATH, body: b64(enc(challengeBody)) }, ok),
   P("signing/request-listing-x402", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { rail: "pay-x402" } }, no("listing_unsupported")),
   P("signing/request-listing-metered", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { pricingKind: "metered" } }, no("listing_unsupported")),
   P("signing/request-listing-input", "authenticated Listing eligibility", { producer: "request-eligibility", body: b64(enc(BODY)), eligibility: { buyerRequestInput: true } }, no("listing_unsupported")),

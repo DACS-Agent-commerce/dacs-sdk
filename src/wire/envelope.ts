@@ -17,7 +17,7 @@ import { commitmentReceiptTime, type CommitmentReceiptReader } from "./commitmen
 import { journalStore, reserveEffect, type WireEffect, type WireRequestJournal } from "./journal.js";
 import { assertEndpointProof, isContinuingRoute, type EndpointProof } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isReadRoute } from "./routes.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPreAgreementRoute, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
 import {
   admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
@@ -470,6 +470,8 @@ export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPaylo
   await assertTp1Binding(c.binding, c.local);
   if (typeof envelope !== "object" || envelope === null || openedBinding(opened, envelope) !== c.binding ||
       envelope.payload?.kind !== "request") fail("peer_request_unverified", 500);
+  // A pre-Agreement route issues a nonce no Agreement or journal admission covers: no host passes it here.
+  if (isPreAgreementRoute(envelope.payload.path)) fail("wire_route_requires_preagreement", 500);
   // openWireEnvelope checked the kept tuple and the request's own; the tuple kept now is checked again.
   if (c.purchaseProfile !== null) await assertPurchaseProfile(c.purchaseProfile, c.binding, 500);
   const { payload: request, delegation } = envelope;

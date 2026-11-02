@@ -71,7 +71,31 @@ route (`findDacsSellerHttpRoute`).
 | `POST /dacs/v1/bundles/buyer-copy` | read | always |
 | `POST /dacs/v1/commitments/signature` | effect | seller option commit-on-signature |
 | `POST /dacs/v1/agreements/context` | effect | seller option context route |
+| `POST /dacs/v1/agreements/context/challenge` | read: no journal operation, never answered as readback | seller option context route |
 | `GET /.well-known/dacs-seller.json` | read | always; signed document, no envelope |
+
+### Context challenge
+
+`POST /dacs/v1/agreements/context/challenge` asks the seller for a session
+nonce before any Agreement exists. It has no journal operation, and it is never
+answered as readback, under an expired delegation or otherwise
+(`isReadRoute` is false for it).
+
+- Request body: `{"scope":{…}}`, the context scope's ten keys: `source`,
+  `wallet`, `jobId`, `buyer`, `seller`, `listingPin`, `rail`, `payee`, `price`
+  and `generatedAt` (every key of the context scope except `buyerBundleHash`).
+  The envelope's `agreementHash` is `sha256(JCS(scope))` over those ten keys.
+- Answer body: `{"sessionNonce":"<64 lowercase hex>","expiresAt":<uint ms>}`,
+  signed like any answer (`signWireResponse`) and checked with
+  `verifyWireResponse`. A refusal is `{"error":"<code>","message":"…"}`.
+- Lifetime: a seller host gives every challenge one lifetime, 600,000 ms
+  (10 minutes). A challenge used at or after its `expiresAt` is refused with
+  `context_challenge_expired` (409).
+- Issuing and consuming nonces is the seller host's ledger. The wire signs and
+  authenticates the envelope; it does not compare the scope with the Listing.
+- No host can admit the route yet: `checkWireRequest` refuses it with
+  `wire_route_requires_preagreement` (500) before it reads any participant,
+  reserves anything or returns a body.
 
 ## Limits (unchanged)
 
@@ -180,7 +204,9 @@ request reaches effect handling. `checkWireRequest` also admits the exact receiv
 bytes (D7) before comparing their hash, and returns the admitted body; effect
 handling uses that body, never a separately parsed copy. A request
 authenticated only by an expired delegation, or one that outlives a live
-delegation, can reach only declared read routes, where it is `readbackOnly`.
+delegation, can reach only the two readback routes (`agreements/state` and
+`bundles/buyer-copy`), where it is `readbackOnly`. The context challenge route
+is never answered as readback.
 The buyer decides readback by its own clock, so a readback request signed just
 after the delegation expired by the buyer's clock is answered even while the
 seller's clock is still before that expiry. Effect routes fail with
@@ -823,6 +849,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `tp1_binding_required`, `tp1_local_binding_changed`, `tp1_local_binding_invalid` | signing or verifying without a binding from `bindTp1Profile`, or on a changed connection |
 | `tp1_authority_required`, `tp1_connection_unverified`, `tp1_participant_profile_mismatch` | missing trusted reader, unauthenticated/changed active connection, or mismatched authenticated participant/session profile and module evidence |
 | `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
+| `wire_route_requires_preagreement` (500) | a pre-Agreement route given to `checkWireRequest` |
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal` |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
@@ -883,11 +910,12 @@ request with the job's finalized `commitment` continues; see the endpoint
 proof section). Signing-byte
 helpers describe transport bytes; purchase preparation uses the gated signers.
 
-Expired session delegations are accepted only on the declared read routes.
-`checkWireRequest` refuses every effect route with `peer_delegation_expired`
-before returning a body to a handler, so a recorded outcome is answered
-again only under a live delegation. After expiry, recovery uses the declared
-read routes.
+Expired session delegations are accepted only on the two readback routes
+(`agreements/state` and `bundles/buyer-copy`); the context challenge route is
+never answered as readback. `checkWireRequest` refuses every effect route with
+`peer_delegation_expired` before returning a body to a handler, so a recorded
+outcome is answered again only under a live delegation. After expiry, recovery
+uses the readback routes.
 
 
 ## Host validation requirements
