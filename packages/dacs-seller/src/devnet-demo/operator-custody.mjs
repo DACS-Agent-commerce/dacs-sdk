@@ -2,7 +2,7 @@ import { createPrivateKey, randomBytes, sign } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { lstat, mkdir, readFile, realpath, rmdir, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { publishFileExclusive, syncDirectory } from './durable-file.mjs';
+import { publishFileExclusive, syncDirectory, syncFile } from './durable-file.mjs';
 import { acquireSellerStateLock } from './seller-state-lock.mjs';
 import { createSdkWalletSession, createDevnetAgreementWalletTransport } from '../../public/portal/embedded-wallet/sdk-provider.mjs';
 import { claimForAddress } from '../wallet/demos-signature.mjs';
@@ -162,6 +162,8 @@ async function readWalletRecord(path,role,{Demos,validateMnemonic}){
       if(String(wallet.getAddress()).toLowerCase()!==record.address)throw new Error('the retained address differs from its recovery phrase');
     }finally{wallet.disconnect();}
   }catch(cause){throw new Error(`the ${role} custody record is malformed`,{cause});}
+  // An earlier run may have left this record unsynced: it is not durable until this succeeds.
+  await syncFile(path);
   return record;
 }
 // A zero-byte role file holds no secret: only the earlier bootstrap, which wrote in place, left one.
@@ -209,7 +211,8 @@ async function ensureWallet({directory,role,walletRuntime}){
  * Each file is published whole (synced temporary file, then a link) and the
  * directory is synced before this returns. A role file that is already there is
  * kept as it is, so a run that stopped between the two files, or a repeat, ends
- * with the same pair and never replaces a mnemonic. Returns the directory and
+ * with the same pair and never replaces a mnemonic. Each kept file is validated
+ * and then synced, and a failed sync refuses the bootstrap. Returns the directory and
  * both wallets (role, address, claim, path); recovery phrases are not returned.
  * Throws for invalid retained phrases/addresses or non-private/malformed records.
  * Parent directory opens and syncs must succeed before any credential access.
@@ -225,6 +228,7 @@ export async function bootstrapTestWalletCustody({directory,publicOrigin}){
 
 // inProcessRelay(address), optional, returns {run(work)}: every request of
 // this wallet runs inside it (the operator seller's in-process source relay).
+// The role's record is synced before a signer is returned; a failed sync throws.
 export async function openTestWalletCustody({directory,role,publicOrigin,transactionTransport,anchorJournal,approve,inProcessRelay=null}){
   role=checkRole(role);directory=await privateDirectory(directory);const path=join(directory,FILES[role]);await exactPrivateFile(path);
   const walletRuntime=await runtime(publicOrigin);
@@ -273,10 +277,13 @@ export async function openTestWalletCustody({directory,role,publicOrigin,transac
   return Object.freeze({role,path,signer,wallet,walletFactory,close(){session?.lock();}});
 }
 
-// Returns the stored cookie key, or null when there is no secret file yet.
+// Returns the stored cookie key once its file is synced, or null when there is no secret file yet.
 async function readOperatorSecret(path){
-  try{await exactPrivateFile(path);const value=JSON.parse(await readFile(path,'utf8'));if(value?.format!==SECRET_FORMAT||typeof value.cookieKey!=='string'||value.cookieKey.length<43)throw new Error('operator secret record is malformed');return value.cookieKey;}
+  let cookieKey;
+  try{await exactPrivateFile(path);const value=JSON.parse(await readFile(path,'utf8'));if(value?.format!==SECRET_FORMAT||typeof value.cookieKey!=='string'||value.cookieKey.length<43)throw new Error('operator secret record is malformed');cookieKey=value.cookieKey;}
   catch(error){if(error.code!=='ENOENT')throw error;return null;}
+  await syncFile(path);
+  return cookieKey;
 }
 
 /**
@@ -284,8 +291,9 @@ async function readOperatorSecret(path){
  * creating the file first when it is missing. A new file is published whole. The
  * directory is synced before every successful return, including reuse and retry;
  * containing-parent opens and syncs must also succeed before credential access.
- * When another writer publishes first,
- * that writer's key is returned. Throws when the stored record is not private or is malformed.
+ * A stored file, including one another writer published first, is validated and
+ * then synced before its key is returned; a failed sync throws.
+ * Throws when the stored record is not private or is malformed.
  */
 export async function ensureOperatorSecret({directory}){
   directory=await privateDirectory(directory);const path=join(directory,'app-secret.json');
