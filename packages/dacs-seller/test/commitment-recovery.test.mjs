@@ -153,22 +153,25 @@ const refusedCommitment=async t=>{
  };};
  return {publisher,f,resends,accept,agreement,refused:()=>refusedHash};
 };
-test('a refused commitment CREATE whose nonce is still free is not signed again',async t=>{
+// Each retry stamps the commitment's provisional createdAt from the clock, so with a later clock its bytes differ from the refused
+// intent's; the replacement must not depend on the clock standing still.
+const CLOCK_ADVANCES_MS=[0,1000];
+for(const advanceMs of CLOCK_ADVANCES_MS)test(`a refused commitment CREATE whose nonce is still free is not signed again, clock ${advanceMs} ms later`,async t=>{
  const {publisher,f}=await refusedCommitment(t);
- for(let attempt=0;attempt<2;attempt++)await assert.rejects((await f.open()).commit({jobId:JOB}),e=>e.code==='commitment_failed');
+ for(let attempt=0;attempt<2;attempt++){f.advance(advanceMs);await assert.rejects((await f.open()).commit({jobId:JOB}),e=>e.code==='commitment_failed');}
  assert.equal(publisher.captured.length,1);
 });
-for(const restarts of [1,2])test(`a refused commitment CREATE whose nonce another write took is signed again once and committed, ${restarts} restart(s) later`,async t=>{
+for(const advanceMs of CLOCK_ADVANCES_MS)for(const restarts of [1,2])test(`a refused commitment CREATE whose nonce another write took is signed again once and committed, ${restarts} restart(s) and ${advanceMs} ms later`,async t=>{
  const {publisher,f,resends,accept,refused}=await refusedCommitment(t);
  publisher.controls.nonce=1;accept();
- for(let restart=0;restart<restarts;restart++){const fresh=await f.open();assert.equal((await fresh.commit({jobId:JOB})).status,'committed');fresh.close();}
+ for(let restart=0;restart<restarts;restart++){f.advance(advanceMs);const fresh=await f.open();assert.equal((await fresh.commit({jobId:JOB})).status,'committed');fresh.close();}
  assert.equal(publisher.captured.length,2,'one wallet signature for the replacement');assert.deepEqual(resends,[]);
  assert.equal([...publisher.journal.rows.values()].find(row=>row.input?.artifactKind==='FinalityCommitmentRecord').supersedes.hash,refused());
 });
 // The transport's read-only reconciliation hands the request back to the ordinary start only for a refused CREATE that is dead.
-for(const nonceTaken of [false,true])test(`transport reconciliation ${nonceTaken?'signs the replacement once for':'holds'} a refused commitment CREATE whose nonce ${nonceTaken?'another write took':'is still free'}`,async t=>{
+for(const advanceMs of CLOCK_ADVANCES_MS)for(const nonceTaken of [false,true])test(`transport reconciliation ${nonceTaken?'signs the replacement once for':'holds'} a refused commitment CREATE whose nonce ${nonceTaken?'another write took':'is still free'}, clock ${advanceMs} ms later`,async t=>{
  const {publisher,f,accept,agreement}=await refusedCommitment(t);
- publisher.controls.nonce=nonceTaken?1:0;accept();
+ publisher.controls.nonce=nonceTaken?1:0;accept();f.advance(advanceMs);
  const fresh=await f.open(),body={jobId:JOB};
  const answer=await fresh.reconcileTransport({request:commitmentRequest(fresh,core.contentHash(agreement)),body,rawBody:Buffer.from(JSON.stringify(body))});
  assert.equal(answer.disposition,nonceTaken?'present':'indeterminate');

@@ -15,8 +15,8 @@ const JOB='01ARZ3NDEKTSV4RRFFQ69G5FAW';
 const resendWith=(authorizeResend)=>({resend:true,authorizeResend});
 
 // The wallet signs and keeps the first CREATE and the node refuses its broadcast; the next one it signs is accepted.
-async function refusedDeliverable(){
- const w=await anchorFixture({artifactKinds:['Deliverable'],signRpc:async()=> 'TEST rpc authentication'});
+async function refusedDeliverable({now}={}){
+ const w=await anchorFixture({artifactKinds:['Deliverable'],signRpc:async()=> 'TEST rpc authentication',now});
  const listing=fixtureListing(seller),listingRef={listingId:listing.listingId,version:listing.listingVersion,contentHash:core.contentHash(listing)},agreement={jobId:JOB,listingRef};
  const report=createDevnetPurchasedReportProducer({producer:w.seller,produce:()=>'Bound purchased content'})({agreement,listing,settlementId:'settlement-1'});
  const logicalAddress=`dacs4:deliverable:${JOB}`,receiptContentHash=core.contentHash(report);
@@ -69,6 +69,14 @@ test('the new submission signs one replacement through the seller\'s authorizati
  assert.deepEqual(stages,['intent','signing','intent','signing'],'the replacement is asked through the same two checks as the first send');
  assert.equal(w.captured.length,2);assert.deepEqual(w.captured.map(request=>request.transaction.content.nonce),[1,2]);
  assert.equal((await readNativeDemDelivery(capability(),input)).status,'present');
+ assert.equal((await submitNativeDemDelivery(capability(),input,authorize)).status,'accepted');
+ assert.equal(w.captured.length,2,'one wallet signature for the replacement');
+});
+// The Deliverable is the retained report, with no re-derived time, so its replacement does not wait on a standing clock either.
+test('a dead refused Deliverable CREATE is replaced once with the clock a second later, across a restart',async()=>{
+ const clock={time:1800000000000},{w,input,capability,authorize}=await refusedDeliverable({now:()=>clock.time});
+ w.controls.nonce=1;clock.time+=1000;
+ assert.equal((await submitNativeDemDelivery(capability(),input,authorize)).status,'accepted');
  assert.equal((await submitNativeDemDelivery(capability(),input,authorize)).status,'accepted');
  assert.equal(w.captured.length,2,'one wallet signature for the replacement');
 });

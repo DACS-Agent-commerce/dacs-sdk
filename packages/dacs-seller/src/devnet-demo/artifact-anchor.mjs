@@ -75,8 +75,9 @@ const NONCE_READ_LIMITS=Object.freeze({maxBytes:4096,timeoutMs:10_000});
 // The node answers a bare nonce, or exactly {nonce, blockHeight}: the nonce with the block height it was read at.
 const nonceAnswer=(value)=>{
   if(value===null || typeof value!=='object' || Array.isArray(value)) return {nonce:storageWriteAccountNonce(value),blockHeight:null};
-  const exact=Object.keys(value).length===2 && Object.hasOwn(value,'nonce') && Number.isSafeInteger(value.blockHeight) && value.blockHeight>=0;
-  return {nonce:exact?storageWriteAccountNonce(value.nonce):null,blockHeight:exact?value.blockHeight:null};
+  // The nonce with a block height is a safe integer, as the wallet journal's fate() requires; a numeric string is not accepted here.
+  const exact=Object.keys(value).length===2 && Number.isSafeInteger(value.nonce) && value.nonce>=0 && Number.isSafeInteger(value.blockHeight) && value.blockHeight>=0;
+  return {nonce:exact?value.nonce:null,blockHeight:exact?value.blockHeight:null};
 };
 // A refused CREATE's fate once the account nonce has passed it: its readback is absent and the bytes can no longer be included
 // (dead), or they were sent again and the index is not proven complete past the nonce (incomplete), so the resend may be what took it.
@@ -420,15 +421,16 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         // proof: its row is unsigned and neither journal retains a signed CREATE.
         const deniedListing=reaskDenied===true&&artifactKind==='Listing'&&retained.stage==='denied'&&retained.error==='user_rejected';
         const unsigned=(await snapshot()).classify(logicalAddress,retained,{reaskDenied:deniedListing})==='unsigned';
-        if(retained.inputHash!==exactHash(input)) {
-          // A retry after a proven unsigned attempt is a new publication, so its
-          // artifact may carry a new provisional time; nothing was signed and no
-          // immutable intent exists. Any other change stays a conflict.
-          if(!unsigned||publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
-        } else if(!unsigned) {
+        const sameInput=retained.inputHash===exactHash(input);
+        // A retry may carry a new provisional time, which the caller stamps again on each attempt. Only a new publication may
+        // carry it, and only within the same scope: a proven unsigned attempt signed nothing, and a dead refused CREATE can
+        // never be included, so no immutable intent is left to contradict. Any other change stays a conflict.
+        if(!sameInput&&publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
+        if(!unsigned) {
           const deadHash=await deadRefusedCreateHash(input,retained);
-          if(!deadHash) return observe(input,retained,undefined,resendOptions);
-          supersedes={hash:deadHash,transaction:clone(retained.transaction)};
+          if(deadHash) supersedes={hash:deadHash,transaction:clone(retained.transaction)};
+          else if(sameInput) return observe(input,retained,undefined,resendOptions);
+          else fail('conflict','immutable demo artifact intent differs');
         }
       }
       if(!retained&&(await snapshot()).addresses.has(logicalAddress)) return {status:'indeterminate',reason:'signed CREATE retained without an intent',noResend:true};
