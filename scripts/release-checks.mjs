@@ -269,7 +269,7 @@ export function validateLock(lock, artifacts, consumer = ".", omitOptional = fal
 
 export function expectedNode20Rejection(p, subpath, error, node = process.versions.node) {
   const restricted = p.name === "@kynesyslabs/dacs-seller" && p.engines?.node === ">=22.13.0" ||
-    p.name === "@kynesyslabs/dacs-client" && subpath === "./durable-journal";
+    p.name === "@kynesyslabs/dacs-client" && subpath === "./wallet/durable-journal";
   return node.startsWith("20.") && Boolean(restricted) && error.code === "ERR_UNKNOWN_BUILTIN_MODULE" && error.message === "No such built-in module: node:sqlite";
 }
 
@@ -346,11 +346,7 @@ export async function prepare(root, scratch, log = console.log, execute = run) {
         if (!path.startsWith("package/")) fail(`invalid archive path ${path}`);
         return path.slice(8);
       }).filter(path => path && !path.endsWith("/"));
-      // Pin the held private snapshot's existing inventory for preparation only.
-      const snapshot = createHash("sha256").update(JSON.stringify([...files].sort())).digest("hex");
-      const filePolicy = source.private === true && snapshot === definition.preparationFileListSha256 ?
-        { ...definition, allow: [...definition.allow, ...files] } : definition;
-      validateFiles(filePolicy, source, files);
+      validateFiles(definition, source, files);
       if (JSON.stringify([...files].sort()) !== JSON.stringify(pack[0].files.map(f => f.path).sort())) fail("archive members disagree with npm pack file list");
       const extracted = await mkdtemp(join(scratch, "extract-")); execute("tar", ["-xzf", tarball, "-C", extracted], root);
       const manifest = JSON.parse(await readFile(join(extracted, "package", "package.json"), "utf8"));
@@ -360,7 +356,7 @@ export async function prepare(root, scratch, log = console.log, execute = run) {
         () => validateInternalPins(manifest, version),
       ])];
       recordProblems(manifest, packedProblems);
-      validateFiles(filePolicy, manifest, files);
+      validateFiles(definition, manifest, files);
       const releasable = sourceProblems.length === 0 && packedProblems.length === 0;
       // Unexpectedly invalid archives are not supplied to dry-runs or consumers.
       if (errors.some(error => error.startsWith(`${definition.name}:`))) continue;
