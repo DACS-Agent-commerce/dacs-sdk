@@ -4,10 +4,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {anchorFixture,signSdkCreate} from './helpers/anchor-isolated-fixture.mjs';
 const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX'];
+// A resend is on only where the caller passes the check in.
+const allowResend=()=>({resend:true,authorizeResend:async()=>true});
 const METHODS={
- publish:(anchor,input)=>anchor.publish(input),
- read:(anchor,input)=>anchor.read(input),
- readRetained:(anchor,input)=>anchor.readRetained(input),
+ publish:(anchor,input)=>anchor.publish({...input,authorize:async()=>true}),
+ read:(anchor,input)=>anchor.read(input,allowResend()),
+ readRetained:(anchor,input)=>anchor.readRetained(input,allowResend()),
 };
 
 // outcomes: what the wallet does on each request, in order.
@@ -81,13 +83,13 @@ test('publishing another artifact never resends a refused CREATE',async()=>{
 test('a refused CREATE is not resent while another signed CREATE holds its nonce',async()=>{
  const w=await refusedWorld(['refused','ambiguous'],{resendLands:true});
  await w.publish(w.open(),JOBS[0]);await w.publish(w.open(),JOBS[1]);
- assert.equal((await w.open().readRetained(w.input(JOBS[0]))).status,'rejected');
+ assert.equal((await w.open().readRetained(w.input(JOBS[0]),allowResend())).status,'rejected');
  assert.equal(w.resends.length,0);
 });
 for(const method of ['read','readRetained'])test(`${method} on a refused CREATE fails closed with the nonce read's cause`,async()=>{
  const w=await refusedWorld(['refused'],{resendLands:true});
  await w.publish(w.open(),JOBS[0]);w.controls.nonce=null;
- await assert.rejects(w.open()[method](w.input(JOBS[0])),{code:'indeterminate'});
+ await assert.rejects(w.open()[method](w.input(JOBS[0]),allowResend()),{code:'indeterminate'});
  assert.equal(w.resends.length,0);
  assert.equal((await w.open()[method](w.input(JOBS[0]),{resend:false})).status,'rejected');
 });
@@ -120,7 +122,7 @@ test('a refused CREATE whose nonce passed is replaced by exactly one new signatu
 for(const method of ['read','readRetained'])test(`${method} on a refused CREATE whose nonce passed neither asks the wallet nor replaces the row`,async()=>{
  const w=await refusedWorld(['refused','accepted']);
  await w.publish(w.open(),JOBS[0]);w.controls.nonce=1;
- for(let i=0;i<2;i++)assert.equal((await w.open()[method](w.input(JOBS[0]))).status,'rejected');
+ for(let i=0;i<2;i++)assert.equal((await w.open()[method](w.input(JOBS[0]),allowResend())).status,'rejected');
  assert.equal(w.captured.length,1);assert.equal(w.resends.length,0);
  assert.equal(w.artifactRow(JOBS[0]).stage,'rejected');assert.equal(w.artifactRow(JOBS[0]).supersedes,undefined);
 });
@@ -173,4 +175,100 @@ test('a wallet that dies after signing the replacement is not asked again',async
  await assert.rejects(w.publish(w.open(),JOBS[0]),/died after signing/);
  assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
  assert.equal(w.captured.length,2);assert.equal(w.signed.length,2);
+});
+
+// Resend authorization: the caller's check is asked fresh, right before the bytes are sent.
+const countedCheck=(answer)=>{const check=async()=>{check.calls++;return typeof answer==='function'?answer():answer;};check.calls=0;return check;};
+for(const method of ['read','readRetained'])test(`${method} with default options never sends a refused CREATE again`,async()=>{
+ const w=await refusedWorld(['refused'],{resendLands:true});
+ await w.publish(w.open(),JOBS[0]);
+ for(let i=0;i<2;i++)assert.equal((await w.open()[method](w.input(JOBS[0]))).status,'rejected');
+ assert.equal(w.resends.length,0);
+});
+for(const method of ['read','readRetained'])test(`${method} with a resend and no authorization check is refused before anything is sent`,async()=>{
+ const w=await refusedWorld(['refused'],{resendLands:true});
+ await w.publish(w.open(),JOBS[0]);
+ const result=await w.open()[method](w.input(JOBS[0]),{resend:true});
+ assert.equal(result.status,'rejected');assert.match(result.reason,/authorization/);
+ assert.equal(w.resends.length,0);
+});
+for(const method of ['read','readRetained'])test(`${method} sends a refused CREATE again only after its authorization check passes, asked once at send time`,async()=>{
+ const w=await refusedWorld(['refused'],{resendLands:true}),authorizeResend=countedCheck(true);
+ await w.publish(w.open(),JOBS[0]);
+ assert.equal((await w.open()[method](w.input(JOBS[0]),{resend:true,authorizeResend})).status,'present');
+ assert.equal(authorizeResend.calls,1);assert.equal(w.resends.length,1);
+});
+for(const method of ['read','readRetained'])test(`${method} sends nothing when the authorization check refuses, and a later passing check still sends once`,async()=>{
+ const w=await refusedWorld(['refused'],{resendLands:true}),refuse=countedCheck(false);
+ await w.publish(w.open(),JOBS[0]);
+ for(let i=0;i<2;i++)assert.equal((await w.open()[method](w.input(JOBS[0]),{resend:true,authorizeResend:refuse})).status,'rejected');
+ assert.equal(refuse.calls,2);assert.equal(w.resends.length,0);
+ assert.equal((await w.open()[method](w.input(JOBS[0]),allowResend())).status,'present');
+ assert.equal(w.resends.length,1);
+});
+for(const method of ['read','readRetained'])test(`${method} sends nothing when the authorization check throws, and keeps its cause`,async()=>{
+ const w=await refusedWorld(['refused'],{resendLands:true});
+ await w.publish(w.open(),JOBS[0]);
+ const lost=countedCheck(()=>{throw Object.assign(new Error('TEST purchase cancelled'),{code:'purchase_cancelled'});});
+ await assert.rejects(w.open()[method](w.input(JOBS[0]),{resend:true,authorizeResend:lost}),{code:'purchase_cancelled'});
+ assert.equal(w.resends.length,0);
+ assert.equal((await w.open()[method](w.input(JOBS[0]),allowResend())).status,'present');
+ assert.equal(w.resends.length,1);
+});
+test('a check that answers anything but true sends nothing',async()=>{
+ const w=await refusedWorld(['refused'],{resendLands:true});
+ await w.publish(w.open(),JOBS[0]);
+ for(const answer of [undefined,'yes',1,{}])await w.open().readRetained(w.input(JOBS[0]),{resend:true,authorizeResend:countedCheck(answer)});
+ assert.equal(w.resends.length,0);
+});
+test('publish on a retained refused CREATE sends it again only through its authorize check',async()=>{
+ const w=await refusedWorld(['refused'],{resendLands:true}),authorize=countedCheck(false);
+ await w.publish(w.open(),JOBS[0]);
+ assert.equal((await w.open().publish(w.input(JOBS[0]))).status,'rejected');
+ assert.equal(w.resends.length,0);
+ assert.equal((await w.open().publish({...w.input(JOBS[0]),authorize})).status,'rejected');
+ assert.equal(authorize.calls,1);assert.equal(w.resends.length,0);
+ assert.equal((await w.open().publish({...w.input(JOBS[0]),authorize:countedCheck(true)})).status,'present');
+ assert.equal(w.resends.length,1);assert.equal(w.captured.length,1);
+});
+test('publish on an accepted CREATE that is not yet readable never sends it again without an authorize check',async()=>{
+ const w=await refusedWorld(['accepted']);
+ w.source.binding=async()=>({disposition:'pending'});
+ await w.publish(w.open(),JOBS[0]);
+ assert.equal(w.resends.length,0);
+});
+
+// A resend slot is used only by bytes that were sent.
+const slotWorld=async(answers)=>{
+ const w=await refusedWorld(['refused']);
+ w.source.recoverStorageWrite=async({signedTransaction})=>{
+  const answer=answers.shift();w.resends.push(structuredClone(signedTransaction));
+  if(answer.lands)w.included.add(signedTransaction.hash);
+  return answer.report;
+ };
+ await w.publish(w.open(),JOBS[0]);
+ return w;
+};
+for(const method of ['read','readRetained'])test(`${method}: a refused CREATE whose resend was reported unsent keeps its one resend`,async()=>{
+ const w=await slotWorld([{report:{disposition:'pending',resent:false}},{lands:true}]);
+ assert.equal((await w.open()[method](w.input(JOBS[0]),allowResend())).status,'rejected');
+ assert.equal((await w.open()[method](w.input(JOBS[0]),allowResend())).status,'present');
+ assert.equal(w.resends.length,2);
+});
+for(const method of ['read','readRetained'])test(`${method}: a refused CREATE whose resend was sent uses its one resend`,async()=>{
+ const w=await slotWorld([{report:{disposition:'pending',resent:true}},{lands:true}]);
+ for(let i=0;i<3;i++)assert.equal((await w.open()[method](w.input(JOBS[0]),allowResend())).status,'rejected');
+ assert.equal(w.resends.length,1);
+});
+test('a resend whose outcome is not reported counts as sent',async()=>{
+ const w=await slotWorld([{report:undefined},{lands:true}]);
+ for(let i=0;i<3;i++)await w.open().readRetained(w.input(JOBS[0]),allowResend());
+ assert.equal(w.resends.length,1);
+});
+test('a resend that throws counts as sent',async()=>{
+ const w=await slotWorld([{report:undefined},{lands:true}]);
+ w.source.recoverStorageWrite=async()=>{w.resends.push('thrown');throw new Error('TEST transport died');};
+ await assert.rejects(w.open().readRetained(w.input(JOBS[0]),allowResend()),/transport died/);
+ await w.open().readRetained(w.input(JOBS[0]),allowResend());
+ assert.equal(w.resends.length,1);
 });

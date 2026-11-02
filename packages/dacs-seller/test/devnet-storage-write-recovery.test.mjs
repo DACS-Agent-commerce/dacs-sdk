@@ -50,10 +50,13 @@ for(const code of ['internal_error','capture-without-signing','broadcast_rejecte
  assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,1]);
 });
 
+// A resend is on only where the caller passes its authorization check in.
+const allowResend=async()=>true;
+const RESEND={resend:true,authorizeResend:allowResend};
 const retainedReads={
- read:(anchor,input)=>anchor.read(input),
- readRetained:(anchor,input)=>anchor.readRetained(input),
- publish:(anchor,input)=>anchor.publish(input),
+ read:(anchor,input)=>anchor.read(input,RESEND),
+ readRetained:(anchor,input)=>anchor.readRetained(input,RESEND),
+ publish:(anchor,input)=>anchor.publish({...input,authorize:allowResend}),
 };
 async function signedFailureWorld(code='broadcast_rejected'){
  const w=await anchorFixture({signRpc:async()=> 'rpc-auth'}),resends=[];
@@ -103,7 +106,7 @@ for(const method of ['read','readRetained'])test(`${method} with resend:false on
 for(const method of ['read','readRetained'])test(`a passive ${method} does not use up the one authorized resend`,async()=>{
  const w=await signedFailureWorld('internal_error');
  await w.open()[method](w.input,{resend:false});assert.equal(w.resends.length,0);
- await w.open()[method](w.input);await w.open()[method](w.input);
+ await w.open()[method](w.input,RESEND);await w.open()[method](w.input,RESEND);
  assert.deepEqual(w.resends,[(await w.sourceJournal.get(`source/${JOBS[0]}`)).signedTransaction]);
 });
 for(const method of ['read','readRetained'])for(const resend of ['false',0,null])test(`${method} refuses a non-boolean resend option (${JSON.stringify(resend)}) and sends nothing`,async()=>{
@@ -164,11 +167,12 @@ test('retained readback never resends through an unqualified deployment; qualifi
  await w.journal.put(key,{...row,stage:'issued',hash:signedTransaction.hash});
  await w.sourceJournal.put('original',{stage:'signed',hash:signedTransaction.hash,signedTransaction});
  w.source.pins.deployment.dirty=true;
- await assert.rejects(w.open().readRetained({logicalAddress:row.input.logicalAddress,artifactKind:row.input.artifactKind}),{code:'deployment_unqualified'});
+ const retainedInput={logicalAddress:row.input.logicalAddress,artifactKind:row.input.artifactKind};
+ await assert.rejects(w.open().readRetained(retainedInput,RESEND),{code:'deployment_unqualified'});
  assert.equal(resends.length,0);assert.equal(w.captured.length,1);
  w.source.pins.deployment.dirty=false;
- assert.equal((await w.open().readRetained({logicalAddress:row.input.logicalAddress,artifactKind:row.input.artifactKind})).status,'indeterminate');
- for(let i=0;i<3;i++)await w.open().readRetained({logicalAddress:row.input.logicalAddress,artifactKind:row.input.artifactKind});
+ assert.equal((await w.open().readRetained(retainedInput,RESEND)).status,'indeterminate');
+ for(let i=0;i<3;i++)await w.open().readRetained(retainedInput,RESEND);
  assert.deepEqual(resends,[signedTransaction],'at most one resend, including provider restart');assert.equal(w.captured.length,1,'recovery never asks the transaction wallet again');
 });
 

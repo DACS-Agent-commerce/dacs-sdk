@@ -324,9 +324,11 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     readRetained: async ({ logicalAddress, artifactKind, proofOfNoIntent = false }, options) => {
       effects.retainedReads.push({ artifactKind, logicalAddress, resend: options?.resend });
       if (faults.readRetainedThrowKind === artifactKind) { faults.readRetainedThrowKind = null; throw null; }
-      // A retained evidence CREATE the node accepted but cannot show yet: like the shipped capability, a read broadcasts it again unless the read is passive.
+      // A retained evidence CREATE the node accepted but cannot show yet: like the shipped capability, a read broadcasts it again only when it asks for a resend and its own check answers true.
       if (artifactKind === 'SettlementEvidence' && faults.evidencePending && signedCreates.has(logicalAddress)) {
-        if (options?.resend !== false) effects.retainedResends.push({ artifactKind, logicalAddress });
+        const check = options?.resend === true && typeof options.authorizeResend === 'function' ? options.authorizeResend : null;
+        if (check && faults.beforeEvidenceResendCheck) { const hook = faults.beforeEvidenceResendCheck; faults.beforeEvidenceResendCheck = null; await hook(); }
+        if (check && await check() === true) effects.retainedResends.push({ artifactKind, logicalAddress });
         return { status: 'indeterminate', reason: 'TEST retained CREATE is pending' };
       }
       if (artifactKind === 'SettlementEvidence' && faults.evidenceReadAbsence) {
@@ -2650,6 +2652,20 @@ test('a pending evidence CREATE is still read back with the one authorized resen
   const on = await resumed(w, p, { deliveryEvidenceEnabled: true });
   assert.equal(on.delivery?.evidencePublication, 'held-readback-only', shown(on));
   assert.equal(evidenceResends(w, p), 1);
+});
+
+test('a pending evidence CREATE is not broadcast again once the seller-state check, asked right before the resend, fails', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const p = await w.purchase(), other = await w.purchase();
+  await evidencePendingAfterLostAnswer(w, p);
+  const resendsBefore = evidenceResends(w, p);
+  // Another purchase claims this payment between the read starting and the resend.
+  w.faults.beforeEvidenceResendCheck = async () => assert.deepEqual(await other.claim(p.pay()), { status: 'indeterminate', reason: 'settlement-collision' });
+  const held = await resumed(w, p, { deliveryEvidenceEnabled: true });
+  assert.equal(w.faults.beforeEvidenceResendCheck, null, 'the check was asked');
+  assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
+  assert.match(held.delivery?.reason ?? '', /settlement/);
+  assert.equal(evidenceResends(w, p), resendsBefore, 'a failed check sends nothing');
 });
 
 test('a paid claim reads the commitment back passively: the readback-only commit never asks for a resend', async (t) => {

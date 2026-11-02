@@ -1063,7 +1063,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         },
         nativeArtifactAnchor ? {
           resolve: async (logicalAddress) => {
-            const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true},{resend:!readbackOnly});
+            const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true},{resend:!readbackOnly,authorizeResend:heldFor(jobId)});
             if(read.status==='absent') {
               commitmentProvenUnsigned = isProvenUnsignedAbsence(read);
               if (session.commitmentPublishAsked && !commitmentProvenUnsigned) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
@@ -1847,8 +1847,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
       }else{
         if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash)return held('retained delivery evidence work differs from the verified Deliverable');
-        // Only a seller that publishes delivery evidence may send its retained CREATE again.
-        read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true},{resend:deliveryEvidenceEnabled});
+        // Only a seller that publishes delivery evidence may send its retained CREATE again,
+        // and only while the check that authorized signing it still holds.
+        read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true},{resend:deliveryEvidenceEnabled,authorizeResend:heldFor(session.jobId)});
         if(read?.status==='absent'&&deliveryEvidenceEnabled&&isProvenUnsignedAbsence(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
       }
     }catch(error){return held(String(error?.message??error).slice(0,240));}

@@ -11,7 +11,9 @@ import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // approval: stage 'closing'; the wallet answered without signing: 'unsigned';
 // the process died while the wallet was asked: 'intent'), and only while no
 // signed CREATE for its address is retained by the source or the seller's
-// wallet; an accepted, absent operator CREATE may resend its original bytes.
+// wallet; an accepted, absent operator CREATE may resend its original bytes,
+// but only when the caller asks for it and its own authorization check, asked
+// again right before the send, says yes. Reads never resend by default.
 // So may a node-refused one while its nonce is free; once the account nonce has
 // passed it and a complete readback finds it absent, publish replaces it once
 // (the new intent's `supersedes`) and asks the wallet for one new signature.
@@ -59,6 +61,11 @@ const NO_INTENT_ABSENT='no seller-owned demo CREATE intent';
 const UNSIGNED_ABSENT='the wallet never signed this CREATE (no signed transaction is retained for it); publishing it asks again';
 const CLOSING_ABSENT='a shutdown ended this CREATE\'s approval before anything was signed; publishing it asks again';
 const RESEND_OPTION_REFUSED=Object.freeze({status:'rejected',reason:'the resend option must be a boolean'});
+const RESEND_UNAUTHORIZED=Object.freeze({status:'rejected',reason:'a resend needs the caller\'s authorization check (authorizeResend)'});
+// The recovery row of a resend the transport reported as never dispatched: its one resend is still unused.
+const UNSENT_RECOVERY_STAGE='unsent';
+// The refusal of a read's resend options, or null when they are usable.
+const resendOptionsRefusal=({resend,authorizeResend})=>typeof resend!=='boolean'?RESEND_OPTION_REFUSED:resend&&typeof authorizeResend!=='function'?RESEND_UNAUTHORIZED:null;
 // The nonce reply has a byte cap before decoding in the source, and a
 // deadline and strict decoded JSON budgets enforced at this boundary.
 const NONCE_READ_LIMITS=Object.freeze({maxBytes:4096,timeoutMs:10_000});
@@ -198,7 +205,12 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
 
   // refused: the CREATE was refused by the node, so an absent readback (not only a
   // pending one) leaves its original bytes eligible for the one resend.
-  async function observeSource(hash,projection,writeProof,{resend=true,refused=false}={}) {
+  // A resend is off unless asked for, and then only after authorizeResend (the
+  // caller's own check, asked here, under the recovery lock, right before the
+  // resend is recorded) answers exactly true. Anything else sends nothing and
+  // records nothing; a throw from it reaches the caller with its cause.
+  async function observeSource(hash,projection,writeProof,{resend=false,refused=false,authorizeResend}={}) {
+    if(resend&&typeof authorizeResend!=='function')fail('invalid','a resend needs the caller\'s authorization check');
     let observed=await sourceCapability.binding({phase:'readback',address:owner,hash,...(writeProof?{writeProof}:{})});
     if(resend && (observed.disposition==='pending'||refused&&observed.disposition==='absent') && signRpc && projection?.content?.type==='storageProgram') {
       const recoveryKey=`demo/recovery/${hash}`;
@@ -206,18 +218,24 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         const prior=await journal.get(recoveryKey),projectionHash=exactHash(projection);
         if(prior){
           if(prior.projectionHash!==projectionHash)fail('invalid','retained recovery projection differs');
-          return; // An interrupted or uncertain resend never authorizes another.
+          // An interrupted or uncertain resend never authorizes another; one the
+          // transport said it never dispatched left its slot unused.
+          if(prior.stage!==UNSENT_RECOVERY_STAGE)return;
         }
+        if(await authorizeResend()!==true)return;
         await assertQualifiedDeployment(sourceCapability);
         await journal.put(recoveryKey,{stage:'intent',projectionHash});
-        await sourceCapability.recoverStorageWrite({signedTransaction:projection,signRpc});
-        await journal.put(recoveryKey,{stage:'issued',projectionHash});
+        const answer=await sourceCapability.recoverStorageWrite({signedTransaction:projection,signRpc});
+        await journal.put(recoveryKey,{stage:answer?.resent===false?UNSENT_RECOVERY_STAGE:'issued',projectionHash});
       });
       observed=await sourceCapability.binding({phase:'readback',address:owner,hash});
     }
     return observed;
   }
 
+  // The lane reconcilers' own resend of another job's accepted-but-missing write
+  // (named exception closed-access-19-resend, below): no caller check applies.
+  const laneResend={resend:true,authorizeResend:async()=>true};
   async function reconcilePriorSourceLane() {
     const pending=(await liveSourceRows()).map(([,value])=>value).filter((value)=>value?.signedTransaction?.content?.from===owner&&value.stage!=='observed');
     const hashes=new Set(pending.map((value)=>value.hash).filter((value)=>typeof value==='string'&&value.length>0));
@@ -227,7 +245,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       // may finish another job's accepted-but-missing write after access closed.
       // It adds no transaction signature, approval or nonce; refusing it would
       // fence this lane. The source reports it (operator.mjs logs it).
-      const hash=[...hashes][0],observed=await observeSource(hash,await publicProjection(hash));
+      const hash=[...hashes][0],observed=await observeSource(hash,await publicProjection(hash),undefined,laneResend);
       if(observed.disposition!=='included') fail('indeterminate',`the retained seller source transaction requires readback (${observed.disposition})`);
     }
   }
@@ -250,7 +268,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         if(!retained.signedTransaction) await journal.put(artifactKey,{...retained,hash:value.hash,signedTransaction:projection});
       });
       if(value.stage!=='broadcast-started') continue;
-      const observed=await observeSource(value.hash,projection,undefined,{resend:!state.rejected(value)});
+      const observed=await observeSource(value.hash,projection,undefined,{...laneResend,resend:!state.rejected(value)});
       if(observed.disposition!=='included'&&!(state.rejected(value)&&observed.disposition==='absent')) fail('indeterminate',`the retained seller wallet CREATE requires readback (${observed.disposition})`);
       await journal.withWalletLock(key,async()=>{
         const current=await journal.get(key);
@@ -287,7 +305,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(await accountNonce()<projection.content.nonce) return null;
     return (await observeSource(hash,projection,undefined,{resend:false})).disposition==='absent'?hash:null;
   }
-  async function observe(input,retained,writeProof,{fresh=false,resend=true}={}) {
+  async function observe(input,retained,writeProof,{fresh=false,resend=false,authorizeResend}={}) {
     let hash=retained.hash;
     if(!hash) {
       const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
@@ -306,7 +324,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const cached=cacheable&&!fresh?immutable.get(cacheKey):null;
     if(cached){await sourceCapability.observeBinding();return cached;}
     const refused=broadcastRejected(retained);
-    const included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused});
+    const included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused,authorizeResend});
     if(refused&&included.disposition==='absent') return {status:'rejected',reason:'broadcast_rejected: the original demo CREATE is absent',noResend:true};
     if(included.disposition!=='included') return {status:'indeterminate',reason:`the original demo CREATE has no authenticated inclusion readback (${included.disposition}: ${included.reason ?? included.error ?? 'no reason'})`,noResend:true};
     const record=await reader.read(input.logicalAddress,{expectedWriter:claim,expectedArtifactKind:input.artifactKind,...(input.deliveryBinding?{expectedDeliveryBinding:input.deliveryBinding}:{}),signedProjection:projection});
@@ -337,6 +355,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // anything) is replaced under this lock by a fresh intent and asked again.
   // Every other retained intent is only read back, as without it, apart from
   // a 'closing' one (a shutdown ended its approval), which is always asked again.
+  // A retained CREATE is sent again (its original bytes) only through authorize,
+  // which is asked once more right before the resend; without authorize, or when
+  // it answers anything but true, the retained intent is only read back.
   async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false}) {
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
     if(authorizeSigning!==undefined&&(typeof authorizeSigning!=='function'||wallet.guardsSigning!==true)) fail('not-authorized','the wallet cannot check this write right before it signs; no intent was stored and nothing was sent');
@@ -345,6 +366,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const value=clone(artifact), jobId=value.jobId ?? `listing:${value.listingId}`, receiptContentHash=contentHash(value);
     if((artifactKind==='Deliverable')!==Boolean(deliveryBinding) || (deliveryBinding && !deliveryBindingValid(deliveryBinding,value,logicalAddress,receiptContentHash))) fail('invalid','demo Deliverable is not bound to the exact Agreement, Listing, fulfilment, amount and payload');
     const input={logicalAddress,artifact:value,artifactKind,writer,receiptContentHash,...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
+    const resendOptions={resend:authorize!==undefined,authorizeResend:authorize};
     // The source owns the atomic wallet lane used by ALL its CREATE writers,
     // including writers using other journals. An artifact-local lock cannot
     // establish that guarantee. Unintegrated hosts may still read retained data.
@@ -369,7 +391,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
           if(!unsigned||publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
         } else if(!unsigned) {
           const deadHash=await deadRefusedCreateHash(input,retained);
-          if(!deadHash) return observe(input,retained);
+          if(!deadHash) return observe(input,retained,undefined,resendOptions);
           supersedes={hash:deadHash,transaction:clone(retained.transaction)};
         }
       }
@@ -442,7 +464,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         const code=answer?.error?.code;
         const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
         await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});
-        if(signed&&code==='user_rejected') return observe(input,{...intent,stage,error:code});
+        if(signed&&code==='user_rejected') return observe(input,{...intent,stage,error:code},undefined,resendOptions);
         return {status:answer?.error?.code==='user_rejected'?'rejected':'indeterminate',reason:`${answer?.error?.code ?? 'wallet-response-missing'}: ${answer?.error?.message ?? 'wallet response missing'}`.slice(0,240),noResend:true};
       }
       const hash=answer?.data?.hash;
@@ -453,14 +475,18 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       }
       const issued={...intent,stage:'issued',hash};
       await journal.put(keyFor(logicalAddress),issued);
-      return observe(input,issued,answer.data.writeProof);
+      return observe(input,issued,answer.data.writeProof,resendOptions);
     })));
   }
-  // options.resend (default true): false makes the read passive. It reads the
-  // chain back and never rebroadcasts the retained CREATE or records a resend;
-  // anything but a boolean is refused. Callers without write authority pass false.
-  async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false},{resend=true}={}) {
-    if(typeof resend!=='boolean') return RESEND_OPTION_REFUSED;
+  // options.resend (default false): a read is passive. It reads the chain back and
+  // never rebroadcasts the retained CREATE or records a resend. true sends the
+  // retained CREATE's original bytes again, once, and only with
+  // options.authorizeResend: the caller's own check (a function), asked right
+  // before the send, that must answer exactly true. A non-boolean resend, or a
+  // resend with no check, is refused before anything is read.
+  async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false},{resend=false,authorizeResend}={}) {
+    const refusal=resendOptionsRefusal({resend,authorizeResend});
+    if(refusal) return refusal;
     if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier)) return {status:'rejected',reason:'demo read scope differs'};
     authorizeJob(artifactKind,artifact?.jobId);
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
@@ -471,7 +497,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       authorizeRetained(retained);
       if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
       if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
-      return observe(input,retained,undefined,{fresh,resend});
+      return observe(input,retained,undefined,{fresh,resend,authorizeResend});
     });
   }
   // publish stores its intent before it asks the wallet to sign anything, and
@@ -486,9 +512,11 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   async function hasIntent(logicalAddress) {
     return Boolean(await journal.get(keyFor(logicalAddress)));
   }
-  // options.resend as for read: false is a passive readback, no rebroadcast.
-  async function readRetained({logicalAddress,artifactKind,writer=claim,fresh=false,proofOfNoIntent=false},{resend=true}={}) {
-    if(typeof resend!=='boolean') return RESEND_OPTION_REFUSED;
+  // options.resend and options.authorizeResend as for read: by default a passive
+  // readback, no rebroadcast.
+  async function readRetained({logicalAddress,artifactKind,writer=claim,fresh=false,proofOfNoIntent=false},{resend=false,authorizeResend}={}) {
+    const refusal=resendOptionsRefusal({resend,authorizeResend});
+    if(refusal) return refusal;
     if(writer!==claim || !kinds.has(artifactKind) || typeof proofOfNoIntent!=='boolean') return {status:'rejected',reason:'demo retained read scope differs'};
     authorizeJob(artifactKind,logicalAddress.split(':')[2]);
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
@@ -500,7 +528,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       // context route resumes a step a shutdown cut only from that proof).
       if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
       if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
-      return observe(clone(retained.input),retained,undefined,{fresh,resend});
+      return observe(clone(retained.input),retained,undefined,{fresh,resend,authorizeResend});
     });
   }
   // The original public signed CREATE of one of this seller's own verified

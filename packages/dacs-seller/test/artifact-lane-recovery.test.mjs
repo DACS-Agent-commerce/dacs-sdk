@@ -24,14 +24,17 @@ async function world({sourceCopy=false,refused=false}={}){
  };
  return {...w,resends,include:()=>included=true};
 }
+// A resend is on only where the caller passes its authorization check in.
+const allowResend=async()=>true;
+const resendingCall=(anchor,method,input)=>method==='publish'?anchor.publish({...input,authorize:allowResend}):anchor[method](input,{resend:true,authorizeResend:allowResend});
 for(const method of ['read','readRetained','publish'])for(const sourceCopy of [false,true])test(`${method} recovers original signed bytes from ${sourceCopy?'both journals':'the wallet alone'} after restart`,async()=>{
  const w=await world({sourceCopy});
  await assert.rejects(w.publish(w.open(),jobs[0]),/interrupted/);
  const original=(await w.journal.get('demo/wallet/lane')).signedTransaction;
  const input=[...w.journal.rows.values()].find(r=>r.input).input;
- assert.equal((await w.open()[method](input)).status,'present');
+ assert.equal((await resendingCall(w.open(),method,input)).status,'present');
  assert.deepEqual(w.resends,[original]);assert.equal(w.captured.length,1);
- assert.equal((await w.open()[method](input)).status,'present');
+ assert.equal((await resendingCall(w.open(),method,input)).status,'present');
  assert.equal(w.resends.length,1);
 });
 for(const sourceCopy of [false,true])test(`a refused ${sourceCopy?'source and wallet':'wallet-only'} CREATE frees the wallet lane for another job and retains its original bytes, which its own read then sends again once`,async()=>{
@@ -42,7 +45,7 @@ for(const sourceCopy of [false,true])test(`a refused ${sourceCopy?'source and wa
  assert.equal(w.captured.length,2);assert.deepEqual(w.captured.map(r=>r.transaction.content.nonce),[1,1]);
  const prior=[...w.journal.rows.values()].find(r=>r.input?.artifact.jobId===jobs[0]);
  assert.deepEqual(prior.signedTransaction,original);
- assert.equal((await w.open().readRetained(prior.input)).status,'present');
+ assert.equal((await resendingCall(w.open(),'readRetained',prior.input)).status,'present');
  assert.deepEqual(w.resends,[original]);
 });
 test('a broadcast refusal can authenticate late inclusion without another wallet request or resend',async()=>{
