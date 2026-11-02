@@ -1,9 +1,10 @@
-import { createProtocolPurchases as createInternalProtocolPurchases } from './dacs/protocol-purchases.mjs';
-import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
+import { createProtocolPurchases as createInternalProtocolPurchases, registerPlanFlightReader } from './dacs/protocol-purchases.mjs';
+import { createPublicPurchaseService } from './purchases.mjs';
+import { admitPublicFactory } from './public-admission.mjs';
 // Public buyer API. Root import leaves SQLite unloaded; constructing the SQLite store loads it.
-/** createPurchaseService(options) returns authenticated diagnostic status/readback methods; requires db, ops, coordinates, chain, store and purposes. Actions throw OperationError(profile_not_admitted); missing/expired capabilities throw not_found. purchaseNext(operation) returns held guidance, PURCHASE_STATUS_HELP is its status map, and networkIdentityLabel(domain) returns a genesis label; these formatters do not write. */
-export { createPublicPurchaseService as createPurchaseService, diagnosticPurchaseNext as purchaseNext, DIAGNOSTIC_PURCHASE_STATUS_HELP as PURCHASE_STATUS_HELP, networkIdentityLabel } from './purchases.mjs';
-/** createProtocolPurchases({db,ops,coordinates,store,...}) returns held protocol methods; actions refuse with profile_not_admitted. protocolView(operation,options) returns redacted historical guidance; usesAgreementContext/usesNativeDemDelivery(operation) return booleans. Projection has no writes; invalid seams throw. */
+/** purchaseNext(operation) returns held guidance, PURCHASE_STATUS_HELP is its status map, and networkIdentityLabel(domain) returns a genesis label; these formatters do not write. */
+export { diagnosticPurchaseNext as purchaseNext, DIAGNOSTIC_PURCHASE_STATUS_HELP as PURCHASE_STATUS_HELP, networkIdentityLabel } from './purchases.mjs';
+/** protocolView(operation,options) returns redacted historical guidance; usesAgreementContext/usesNativeDemDelivery(operation) return booleans. Projection has no writes; invalid seams throw. */
 export { diagnosticProtocolView as protocolView, usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
 /** createDeliveryDeadlineWatch({db,ops,coordinates,store,enabled=false,now}) returns observe/sweep/start/stop/setDeliveryCheck methods. When enabled, observe may call ops.transition and persist overdue/delivery events despite purchase actions being held; invalid/async stores throw NotWiredError. */
 export { createDeliveryDeadlineWatch } from './dacs/delivery-deadline-watch.mjs';
@@ -11,7 +12,7 @@ export { createDeliveryDeadlineWatch } from './dacs/delivery-deadline-watch.mjs'
 export { createCoordinateStore } from './dacs/wallet-transactions.mjs';
 /** createDirectoryClient({origin,timeoutMs,maxBytes,fetchImpl}) returns bounded search/findSummary/getListingDetail reads. It performs HTTP reads and throws OutboundError for invalid or unavailable responses; directory summaries confer no purchase authority. */
 export { createDirectoryClient } from './dacs/directory.mjs';
-/** createListingVerifier(options) returns {verify(request)}; verify always rejects with OperationError(profile_not_admitted) before resolution in this candidate. NotConfiguredError(message) identifies missing verifier configuration; constructor/configuration errors can also throw. */
+/** createListingVerifier({admission,directory,chain,...}) returns {verify(request)}; verify rejects with OperationError(profile_not_admitted) before resolution while purchase actions are held or the binding check fails. Construction throws TypeError(admission_required|admission_input_untrusted) or OperationError(runtime_unsupported). NotConfiguredError(message) identifies missing verifier configuration. */
 export { createListingVerifier, NotConfiguredError } from './public-verification.mjs';
 /** DEM_DECIMAL and OS_INTEGER are RegExp constants for canonical DEM and OS text; test(value) returns a boolean without reads or writes. */
 export { DEM_DECIMAL, OS_INTEGER } from './dacs/chain.mjs';
@@ -60,12 +61,10 @@ export { createSqlitePurchaseStore } from './seams/purchase-store-not-wired.mjs'
 /** PURCHASE_STATE_SCHEMA is the host SQLite DDL string required by the buyer factories; db.exec(PURCHASE_STATE_SCHEMA) creates persistent schema objects and may throw SQLite errors. Reading the constant has no effect. */
 export { PURCHASE_STATE_SCHEMA } from './purchase-state-schema.mjs';
 
-const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment']);
-/** createProtocolPurchases(options) returns passive protocol readers and refusal methods; actions throw profile_not_admitted before host effects. */
-export function createProtocolPurchases(options) {
-  const protocol = createInternalProtocolPurchases(options);
-  const methods = Object.fromEntries(Object.entries(protocol).filter(([, value]) => typeof value === 'function')
-    .map(([name, method]) => [name, PASSIVE_PROTOCOL_METHODS.has(name) ? method : assertPurchaseActionsAdmitted]));
-  return Object.freeze({ available: protocol.available, actionsAdmitted: false,
-    nativePaymentReadbackAvailable: protocol.nativePaymentReadbackAvailable, ...methods });
-}
+const PASSIVE_PROTOCOL_METHODS = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment'];
+const PASSIVE_SERVICE_METHODS = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning'];
+/** createPurchaseService({admission,db,ops,coordinates,chain,store,purposes,...}) returns the purchase service; `admission` is {binding,currentLocal} from the host composition. status, portalOperation, portalEvidence, verifyDeal and planRunning are passive readers (planRunning stays synchronous); every other method returns a Promise that rejects OperationError(profile_not_admitted) while purchase actions are held or the binding check fails, with the cause kept. actionsAdmitted is a construction-time snapshot. Construction throws TypeError(admission_required|admission_input_untrusted) or OperationError(runtime_unsupported); missing/expired capabilities reject not_found. */
+export const createPurchaseService = admitPublicFactory(createPublicPurchaseService, { purchase: true, passive: PASSIVE_SERVICE_METHODS });
+/** createProtocolPurchases({admission,db,ops,coordinates,store,...}) returns the protocol object; `admission` is {binding,currentLocal}. assertBuyerAccess, supportsMode, readIssued, readIssuedPayment and observeReportedPayment are passive readers; every other function member returns a Promise that rejects OperationError(profile_not_admitted) before host effects while purchase actions are held or the binding check fails. actionsAdmitted is a construction-time snapshot. Construction throws TypeError(admission_required|admission_input_untrusted) or OperationError(runtime_unsupported). */
+export const createProtocolPurchases = admitPublicFactory(createInternalProtocolPurchases,
+  { purchase: true, passive: PASSIVE_PROTOCOL_METHODS, onCreated: registerPlanFlightReader });

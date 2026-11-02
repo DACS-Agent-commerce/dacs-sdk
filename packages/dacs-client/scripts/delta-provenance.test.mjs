@@ -161,10 +161,10 @@ function scratchGit(dir){return (...args)=>execFileSync('git',['-C',dir,'-c','us
 const control=['packages/dacs-client/DELTA-COMMITS.json','packages/dacs-client/DELTA-LEDGER.json','packages/dacs-client/DELTA-MAP.md'];
 // Commits one recorded change to the moved file. The inventory row stays
 // unhashed, as for any record commit, unless a later edit qualifies it.
-function recordedCommit(dir,subject,line){
+function recordedCommit(dir,subject,line,delta='D11'){
  const git=scratchGit(dir),node=(...args)=>execFileSync(process.execPath,args,{cwd:dir});
  appendFileSync(join(dir,moved),`\n// ${line}\n`);git('add','--',moved);
- node('packages/dacs-client/scripts/delta-map.mjs','--record','D11',subject);
+ node('packages/dacs-client/scripts/delta-map.mjs','--record',delta,subject);
  const inventory=join(dir,control[0]),rows=JSON.parse(readFileSync(inventory,'utf8'));
  rows.push({sha:null,subject,files:[moved,...control].sort()});writeFileSync(inventory,JSON.stringify(rows,null,2)+'\n');
  node('packages/dacs-client/scripts/delta-map.mjs');git('add','--',...control);git('commit','-qm',subject);
@@ -216,5 +216,47 @@ test('a hashed inventory row must carry its commit subject, and one commit has o
  ]){
   writeFileSync(file,JSON.stringify([...rows,extra]));
   const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,message);
+ }
+});
+
+// W-finish client commits carry the WF id (DC-CW4). Each scratch clone uses this checkout's checker.
+function useThisChecker(dir){copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));}
+test('a WF delta record is accepted and an unlisted delta id is still refused',t=>{
+ const dir=scratch(t);useThisChecker(dir);
+ recordedCommit(dir,'delta(client): WF TEST accepted record','TEST WF record','WF');
+ let r=check(dir);assert.equal(r.status,0,r.text);
+ recordedCommit(dir,'delta(client): D99 TEST unlisted id','TEST unlisted id','D99');
+ r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/invalid delta/);
+});
+
+// Each fault edits only the PR's own records, in a scratch clone of the checked head.
+const LEDGER_FAULTS=[
+ {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
+  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);}},
+ {name:'(a) the same record is removed and an empty-files record is appended last',message:/unenumerated change/,
+  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);
+   data.changes.push({delta:'WF',subject:'delta(client): WF TEST empty record',files:[]});}},
+ {name:'(b) a no-op checkpoint record is removed',message:/differs from generated Git table/,
+  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.length>0&&record.files.every(file=>file.before===file.after)),1);}},
+ {name:'(c) a record\'s last recorded blob for a path is replaced by an earlier one',message:/current blob differs/,
+  edit:data=>{
+   const history=new Map();
+   for(const record of data.changes)for(const file of record.files){const entries=history.get(file.path)??[];entries.push({record,file});history.set(file.path,entries);}
+   const [,entries]=[...history].filter(([,all])=>all.length>1&&all.at(-2).file.after!==all.at(-1).file.after).at(-1);
+   entries.at(-1).file.after=entries.at(-2).file.after;}},
+];
+test('the ledger gate refuses each fault in a PR\'s own delta records, one table row per fault, each run in a scratch clone of the checked head, and the committed head passes with every WF record listing the files its PR changed at their committed blobs',t=>{
+ const head=check(scratch(t));assert.equal(head.status,0,head.text);
+ const {changes}=JSON.parse(readFileSync(join(root,control[1]),'utf8'));
+ const wfRecords=changes.filter(record=>record.delta==='WF');
+ assert.ok(wfRecords.length>0,'this PR records its changes under WF');
+ for(const record of wfRecords)for(const file of record.files){
+  const newest=changes.findLast(other=>other.files.some(entry=>entry.path===file.path)).files.find(entry=>entry.path===file.path).after;
+  assert.equal(execFileSync('git',['-C',root,'rev-parse',`HEAD:${file.path}`],{encoding:'utf8'}).trim(),newest,`${file.path} is recorded at its committed blob`);
+ }
+ for(const fault of LEDGER_FAULTS){
+  const dir=scratch(t),file=join(dir,control[1]),data=JSON.parse(readFileSync(file,'utf8'));
+  fault.edit(data);writeFileSync(file,JSON.stringify(data));
+  const r=check(dir);assert.equal(r.status,1,`${fault.name}: ${r.text}`);assert.match(r.text,fault.message,fault.name);
  }
 });

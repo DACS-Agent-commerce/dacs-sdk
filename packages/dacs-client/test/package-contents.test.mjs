@@ -1,14 +1,13 @@
 import test from 'node:test';
-import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { installPackedPair } from './helpers/packed-install.mjs';
 
 const packageDir = fileURLToPath(new URL('..', import.meta.url));
-const sdkDir = resolve(packageDir, '../..');
 function entryPointClosure() {
   const files = new Set();
   function visit(path) {
@@ -46,51 +45,31 @@ test('npm pack ships only the two entry points and their reviewed import closure
     assert.doesNotMatch(path, /(?:^|\/)(?:public|portal|portal-intent|config|seller-agent|seller-durable-state|switch-files|FIX-REPORT|\.fix-tmp|\.rr-tmp|\.stack)(?:[/.]|$)/, path);
   }
   assert.deepEqual(files, [...entryPointClosure(), 'package.json', 'README.md', 'LICENSE'].sort());
+  for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs']) assert.ok(files.includes(path), `${path} ships`);
+});
+
+test('the packed archive offers no admission bypass and every packed module sees PURCHASE_ADMISSION held', t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'held.mjs'), `
+    import assert from 'node:assert/strict';
+    import { readdirSync, readFileSync } from 'node:fs';
+    const root = new URL('./node_modules/@kynesyslabs/dacs-client/src/', import.meta.url);
+    const modules = readdirSync(root, { recursive: true }).filter(path => path.endsWith('.mjs'));
+    const definers = modules.filter(path => /PURCHASE_ADMISSION\\s*=(?!=)/.test(readFileSync(new URL(path, root), 'utf8')));
+    assert.deepEqual(definers, ['dacs/purchase-admission-state.mjs'], 'only the state module sets the constant');
+    for (const path of modules) assert.doesNotMatch(readFileSync(new URL(path, root), 'utf8'), /registerHooks|setPurchaseAdmission|DACS_PURCHASE_ADMISSION/, path);
+    const state = await import(new URL('dacs/purchase-admission-state.mjs', root));
+    assert.deepEqual(Object.entries(state), [['PURCHASE_ADMISSION', 'held']]);
+    const { purchaseActionsAdmitted } = await import(new URL('public-admission.mjs', root));
+    const { assertPurchaseActionsAdmitted } = await import(new URL('dacs/action-admission.mjs', root));
+    assert.equal(purchaseActionsAdmitted(), false);
+    assert.throws(() => assertPurchaseActionsAdmitted(), { code: 'profile_not_admitted' });
+  `);
+  run(process.execPath, ['held.mjs'], app, { DACS_PURCHASE_ADMISSION: 'testnet-tp1' });
 });
 
 test('paired packed artifacts supply the schema needed by every buyer factory', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'dacs-client-consumer-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const run = (command, args, cwd) => {
-    const result = spawnSync(command, args, { cwd, encoding: 'utf8', maxBuffer: 4 << 20,
-      env: { ...process.env, npm_config_cache: join(directory, '.npm-cache') } });
-    assert.equal(result.status, 0, result.stdout + result.stderr);
-    return result.stdout;
-  };
-  const core = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], sdkDir))[0];
-  const client = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], packageDir))[0];
-  const app = join(directory, 'app');
-  mkdirSync(app);
-  const dependencies = { '@kynesyslabs/dacs': 'file:' + join(directory, core.filename),
-    '@kynesyslabs/dacs-client': 'file:' + join(directory, client.filename) };
-  const manifest = { name: 'TEST-packed-buyer', private: true, type: 'module', dependencies };
-  writeFileSync(join(app, 'package.json'), JSON.stringify(manifest));
-  // Stage exact installed runtime packages as local artifacts. This test owns
-  // its fresh npm cache and never needs ambient registry tarballs or a network.
-  const lock = JSON.parse(readFileSync(join(sdkDir, 'package-lock.json')));
-  lock.name = manifest.name;
-  lock.packages[''] = manifest;
-  for (const path of Object.keys(lock.packages)) {
-    if (path && (!path.startsWith('node_modules/') || lock.packages[path].link)) delete lock.packages[path];
-  }
-  const dependencyArtifacts = join(directory, 'dependencies');
-  mkdirSync(dependencyArtifacts);
-  for (const [path, entry] of Object.entries(lock.packages)) {
-    if (!path || entry.dev || entry.optional) continue;
-    const installed = join(sdkDir, path);
-    assert.equal(JSON.parse(readFileSync(join(installed, 'package.json'))).version, entry.version, path);
-    const artifact = join(dependencyArtifacts, String(Object.keys(lock.packages).indexOf(path)) + '.tgz');
-    run('tar', ['-czf', artifact, '--exclude=./node_modules', '--transform=s,^.,package,', '-C', installed, '.'], directory);
-    entry.resolved = 'file:' + artifact;
-    entry.integrity = 'sha512-' + createHash('sha512').update(readFileSync(artifact)).digest('base64');
-  }
-  for (const [name, packed, source] of [['@kynesyslabs/dacs', core, sdkDir], ['@kynesyslabs/dacs-client', client, packageDir]]) {
-    const pkg = JSON.parse(readFileSync(join(source, 'package.json')));
-    lock.packages['node_modules/' + name] = { version: pkg.version, resolved: dependencies[name], integrity: packed.integrity,
-      dependencies: pkg.dependencies, peerDependencies: pkg.peerDependencies, peerDependenciesMeta: pkg.peerDependenciesMeta, engines: pkg.engines };
-  }
-  writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
-  run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
+  const { app, run } = installPackedPair(t);
   await t.test('installed root resolves the complete diagnostic factory graph', () => {
     run(process.execPath, ['--input-type=module', '-e', `
       import assert from 'node:assert/strict';
@@ -108,6 +87,10 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
     writeFileSync(join(app, 'readme-harness.mjs'), `
       import assert from 'node:assert/strict';
       import { createHash } from 'node:crypto';
+      import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+      const local = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'vector-authority', connectionId: 'vector-conn-1' };
+      const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: async scope => ({ local: { ...scope.local },
+        chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, provenance: 'TEST-authority', sessionId: scope.sessionId, participants: [] }) });
       const rollback = process.argv[2] === 'rollback', NOW = Date.UTC(2030, 0, 1);
       Date.now = () => NOW;
       const sentinel = new Error('TEST-after-operation-write');
@@ -118,6 +101,7 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       let connection, diagnosed = false;
       globalThis.host = {
         accountId, token, config: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, dacsProtocol: {},
+        admission: { binding, currentLocal: () => ({ ...local }) },
         coordinate: { operationId: id, kind: 'dem-transfer', network: 'testnet', from: 'TEST-buyer',
           nonceFence: 0, expectedNonce: 1, target: 'TEST-seller', amountOs: '1', payload: {} },
         createOperations(db) {
@@ -172,7 +156,13 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
     import { PURCHASE_STATE_SCHEMA, createSqlitePurchaseStore, createCoordinateStore,
       createPurchaseService, createProtocolPurchases, createDeliveryDeadlineWatch } from '@kynesyslabs/dacs-client';
     import { fileURLToPath } from 'node:url';
+    import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
     import { openDurableWalletJournal, DurableWalletJournalError } from '@kynesyslabs/dacs-client/wallet/durable-journal';
+    // The consumer binds the approved record through its own wire import; the packed client accepts only that.
+    const local = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'vector-authority', connectionId: 'vector-conn-1' };
+    const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: async scope => ({ local: { ...scope.local },
+      chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, provenance: 'TEST-authority', sessionId: scope.sessionId, participants: [] }) });
+    const admission = { binding, currentLocal: () => ({ ...local }) };
     const journalPath = fileURLToPath(new URL('./TEST-journal.sqlite', import.meta.url));
     assert.throws(() => openDurableWalletJournal({ path: journalPath, mode: 'invalid' }), error => error instanceof DurableWalletJournalError && error.code === 'journal-invalid');
     let journal = openDurableWalletJournal({ path: journalPath, mode: 'create' });
@@ -186,8 +176,8 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
       db.exec(PURCHASE_STATE_SCHEMA);
       const store = createSqlitePurchaseStore(), coordinates = createCoordinateStore({ db });
       assert.equal(typeof createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {},
-        challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' } }).verifyDeal, 'function');
-      assert.equal(createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store }).actionsAdmitted, false);
+        challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission }).verifyDeal, 'function');
+      assert.equal(createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission }).actionsAdmitted, false);
       assert.equal(typeof createDeliveryDeadlineWatch({ db, coordinates, ops: {}, store, enabled: true }).observe, 'function');
       db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('buyer','TEST','buyer','TEST');
       const operation = db.prepare('INSERT INTO operations (id,account_id,kind,idempotency_key,request_hash,status,terms,terms_hash,handoff_token_hash,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -216,8 +206,8 @@ test('paired packed artifacts supply the schema needed by every buyer factory', 
         getByHandoff: (id, _token) => id === 'first' ? saved : null,
         history: () => { secondaryReads++; return []; }, handoffTokenFor: forbidden,
         transition: forbidden, record: forbidden };
-      const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store,
-        diagnosticOnly: false, settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } }, false);
+      const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store, admission,
+        settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } });
       db.prepare('UPDATE operations SET handoff_token_hash=?, handoff_expires_at=? WHERE id=?')
         .run((await import('node:crypto')).createHash('sha256').update('dacs-handoff-hash:TEST-token').digest('hex'), '2099-01-01T00:00:00.000Z', 'first');
       await assert.rejects(service.verifyDeal({ accountId: 'buyer', operationId: 'first' }), { code: 'not_found' });
