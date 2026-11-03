@@ -435,9 +435,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const creates = p.path === CONTEXT && !admissions();
         const requestHash = sha256Hex(canonicalize(p));
         const nonce = `${p.buyer}:${p.nonce}`;
+        // The tuple is not part of the request hash, so a repeated nonce is compared here too.
+        const refuseOtherProfile = () => { if (profileText !== null && keptProfileText(p.jobId) !== profileText) fail('tp1_purchase_profile_mismatch', 500); };
         const previous = get('SELECT * FROM peer_nonces WHERE nonce = ?', nonce);
         if (previous) {
           if (previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
+          if (get('SELECT job FROM peer_jobs WHERE job = ?', p.jobId)) refuseOtherProfile();
           // A definite earlier no-effect answer belongs to its own nonce,
           // even if a fresh attempt of the same command later succeeds.
           if (previous.response !== null && (previous.status < 500 || previous.effect === NO_EFFECT_KEY)) return { disposition: 'cached', status: previous.status, text: previous.response };
@@ -457,7 +460,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         // Before the Agreement the job belongs to the buyer of its admission record.
         const admitted = admissions() ? get('SELECT buyer, seller, listing_pin FROM peer_context_admissions WHERE job = ?', p.jobId) : null;
         if (admitted && (admitted.buyer !== p.buyer || admitted.seller !== p.seller || admitted.listing_pin !== canonicalize(p.listingPin))) fail('peer_job_conflict', 409);
-        if (profileText !== null && job && keptProfileText(p.jobId) !== profileText) fail('tp1_purchase_profile_mismatch', 500);
+        if (job) refuseOtherProfile();
         const effectKey = effectIdentity(p);
         if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
         // The SDK buyer coordinator reconciles before publishing a proposal.

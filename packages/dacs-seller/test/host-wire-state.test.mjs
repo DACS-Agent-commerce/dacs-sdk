@@ -649,6 +649,30 @@ test('P10-T12 a tuple kept by an admitted reservation is durable when reserve re
   assert.equal(w.store.purchaseProfile(jobId('t12-unseen')), null);
 });
 
+test('P10-T12 a repeated nonce is compared with the job\'s kept tuple before its earlier answer is returned, through reserve and classify, for a profiled job, a legacy job and after restart', async (t) => {
+  const w = storeFixture(t);
+  const profiled = jobId('t12-replay');
+  const legacy = jobId('t12-replay-legacy');
+  const first = w.request(profiled);
+  const legacyFirst = w.request(legacy);
+  assert.equal(w.store.reserve(first, {}, { keepProfile: PROFILE }).disposition, 'perform');
+  assert.equal(w.store.reserve(legacyFirst, {}, {}).disposition, 'perform');
+  const check = (store) => {
+    assert.equal(store.reserve(first, {}, { keepProfile: PROFILE }).disposition, 'uncertain', 'the same nonce and tuple still replays');
+    assert.equal(store.classify(first, {}, { keepProfile: PROFILE }), 'known');
+    assert.throws(() => store.reserve(first, {}, { keepProfile: OTHER_PROFILE }), MISMATCH);
+    assert.throws(() => store.classify(first, {}, { keepProfile: OTHER_PROFILE }), MISMATCH);
+    assert.throws(() => store.reserve(legacyFirst, {}, { keepProfile: PROFILE }), MISMATCH, 'a job with no kept tuple is refused a supplied one');
+    assert.throws(() => store.classify(legacyFirst, {}, { keepProfile: PROFILE }), MISMATCH);
+    assert.equal(store.reserve(legacyFirst, {}, {}).disposition, 'uncertain', 'the legacy replay without a tuple is unchanged');
+  };
+  check(w.store);
+  assert.deepEqual(w.store.purchaseProfile(profiled), PROFILE, 'the kept tuple is unchanged');
+  assert.equal(w.store.purchaseProfile(legacy), null);
+  check(w.reopen());
+  assert.equal(w.tuples(), 1);
+});
+
 test('P10-T13 a tuple kept before a crash is present after restart; one not kept is absent', async (t) => {
   const w = storeFixture(t);
   const kept = jobId('t13-kept');
