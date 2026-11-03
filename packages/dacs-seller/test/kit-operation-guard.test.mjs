@@ -24,6 +24,7 @@ const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/se
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
   'src/dacs/seller-agent.mjs': ['createSellerAgent'],
+  'src/dacs/seller-challenge-ledger.mjs': ['issue', 'issueForOperator'],
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
   'src/dacs/seller-transport-auth.mjs': ['createSellerTransportServerAuth', 'createSellerTransportClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
