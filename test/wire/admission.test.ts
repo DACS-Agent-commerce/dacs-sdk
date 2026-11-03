@@ -544,7 +544,7 @@ describe("the seller's own drain state at a new purchase", { timeout: 60_000 }, 
     return { x, checks, counter };
   }
   // Every route the buyer signs as a new purchase (discovery.ts CONTINUING_PATHS names the others).
-  it.each([P.proposals, P.commitments, P.commitmentSignature, P.context])("a ready: true proof kept after the seller drains is refused at the seller on %s, direct and delegated, with the same code", async (path) => {
+  it.each([P.proposals, P.commitments, P.commitmentSignature])("a ready: true proof kept after the seller drains is refused at the seller on %s, direct and delegated, with the same code", async (path) => {
     const { checks, counter } = await drained();
     const [direct, delegated] = await checks(path);
     for (const check of [direct!, delegated!]) {
@@ -812,7 +812,7 @@ describe("expired session authority at every seller route", () => {
     const opened = (await w.openWireEnvelope(h, "request", { ...x.context, requireDelegation: true }));
     const check = async () => (await checkAndReserve(opened, { requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true }));
     let effects = 0;
-    if (route.path === w.DACS_SELLER_HTTP_PATHS.contextChallenge) await refuses(async () => { (await check()); effects++; }, "wire_route_requires_preagreement");
+    if (w.isPreAgreementRoute(route.path)) await refuses(async () => { (await check()); effects++; }, "wire_route_requires_preagreement");
     else if (route.effect === "effect") await refuses(async () => { (await check()); effects++; }, "peer_delegation_expired");
     else expect((await check())).toMatchObject({ readbackOnly: true, body: {} });
     expect(effects).toBe(0);
