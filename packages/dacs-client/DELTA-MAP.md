@@ -753,6 +753,8 @@ Published part-05 iteration records are archived with the existing ledger archiv
 | | `packages/dacs-client/src/util/sqlite-write-lease.mjs:1` | 67ba42ca11407a20ce0869ef36079e43f8056d9b |
 | | `packages/dacs-client/src/util/sqlite-purchase-admission.mjs:1` | 5659a095247774027f29b46cc9cb2c847994007b |
 | | `packages/dacs-client/test/sqlite-purchase-temp-admission.test.mjs:1` | 3710b30c4b3331243431f1e67e2f6acfa8c433e2 |
+| D11 | fix(client): D11 give the slow-reader passive test a signed nonce | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/passive-observation.test.mjs:1` | 1fe0fe0837472ca2fdca069087ec5f53db4d3822 |
 
 ## Complete commit and file inventory
 
@@ -1860,6 +1862,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 align purchase transaction options and merge records | `packages/dacs-client/test/purchase-tx-result-options.test.mjs:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/test/passive-observation.test.mjs:1` |
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-NOTES.md:1` |
