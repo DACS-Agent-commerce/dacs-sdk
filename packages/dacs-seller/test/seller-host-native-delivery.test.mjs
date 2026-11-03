@@ -242,7 +242,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // `effects.signCreate` lists the address of each signature asked of the
   // wallet, `signed` the hash of each it gave, `broadcast` each sent payload.
   const effects = { deliverySubmit: [], deliveryResends: [], published: [], publishCalls: [], retainedReads: [], retainedResends: [], signCreate: [], signed: [], broadcast: [], componentSigns: [], deliverySignCreate: [], deliverySigned: [], deliveryBroadcast: [] };
-  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, evidenceReadAbsence: null, evidencePending: false };
+  const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, evidenceReadAbsence: null, evidencePending: false, artifactApproval: null };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
     effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
@@ -299,12 +299,19 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     }
   };
   const artifactAnchor = { writer: sellerKey.claim, source: 'TEST-host-native-delivery/artifacts',
-    publish: async ({ logicalAddress, artifact, artifactKind, authorize }) => {
+    publish: async ({ logicalAddress, artifact, artifactKind, authorize, authorizeSigning }) => {
       effects.publishCalls.push({ artifactKind, logicalAddress });
+      // As the shipped anchor: `authorize` before the intent, then the wallet's approval wait
+      // (`faults.artifactApproval`), then `authorizeSigning` (when given) right before the CREATE.
+      const permitCreate = async () => {
+        if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
+        await faults.artifactApproval?.(artifactKind);
+        if (authorizeSigning && authorizeSigning() !== true) throw new Error('TEST the seller withdrew this write at signing');
+      };
       // A plain wallet creates a new program on every call. Exercise that
       // operator contract too, so the seller must prevent a duplicate call.
       if (!idempotentArtifacts) {
-        if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
+        await permitCreate();
         effects.published.push(artifactKind);
         signedCreates.set(logicalAddress, node.create(sellerKey, { logicalAddress, artifact, artifactKind }));
         written.set(logicalAddress, clone(artifact));
@@ -315,7 +322,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       if (faults.artifactPublish[0] === artifactKind + ':land-throw') { faults.artifactPublish.shift(); effects.published.push(artifactKind); writeOnce(logicalAddress, artifact, artifactKind); throw new Error('TEST publication response lost after CREATE'); }
       if (faults.artifactPublish[0] === artifactKind) { faults.artifactPublish.shift(); throw new Error('TEST publisher unavailable before intent'); }
       if (!signedCreates.has(logicalAddress)) {
-        if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
+        await permitCreate();
         effects.published.push(artifactKind);
         writeOnce(logicalAddress, artifact, artifactKind);
       }
@@ -2244,6 +2251,13 @@ test('ordinary commitments recover after Agreement-read and pre-publication fail
   }
 });
 
+test('a commitment CREATE is not requested when the seller loses the job during the wallet\'s approval wait', async (t) => {
+  const w = await world(t), p = await w.purchase({ commit: false });
+  w.faults.artifactApproval = async (kind) => { if (kind === 'FinalityCommitmentRecord') w.loseJobLock(p.jobId); };
+  await assert.rejects(p.client().commit(p.jobId));
+  assert.equal(w.effects.published.filter(kind => kind === 'FinalityCommitmentRecord').length, 0, 'the wallet was asked for the commitment CREATE after the job was lost');
+});
+
 test('the native host delivers without the unused compatibility observer', async (t) => {
   const w = await world(t, { compatibilityObserver: false });
   const p = await w.purchase();
@@ -2606,6 +2620,32 @@ test('a delivery evidence publication that never reached the wallet is published
   assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(publishedEvidence(w), 1);
   assert.equal(w.createsAt(address), 1);
+});
+
+// The wallet's approval wait comes after the publisher's first check: a claim on another job made during
+// that wait must stop the evidence CREATE, for the first publish and for the one that sends it again.
+test('a delivery evidence CREATE is not requested when another job claims the settlement during the wallet\'s approval wait', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+  let contested = null;
+  w.faults.artifactApproval = async (kind) => { if (kind === 'SettlementEvidence') contested = await b.claim(tx); };
+  await a.claim(tx);
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' });
+  assert.equal(publishedEvidence(w), 0, 'the wallet was asked for the evidence CREATE after the collision');
+  assert.equal(w.createsAt(evidenceAddress(a)), 0);
+});
+
+test('a resent delivery evidence CREATE is not requested when another job claims the settlement during the wallet\'s approval wait', async (t) => {
+  const w = await world(t, { deliveryEvidenceEnabled: true });
+  const a = await w.purchase(), b = await w.purchase(), tx = a.pay();
+  w.faults.artifactPublish.push('SettlementEvidence');
+  assert.equal((await a.claim(tx)).delivery?.evidencePublication, 'held-readback-only', 'the first publish never reached the wallet');
+  let contested = null;
+  w.faults.artifactApproval = async (kind) => { if (kind === 'SettlementEvidence') contested = await b.claim(tx); };
+  await a.claim(tx);
+  assert.deepEqual(contested, { status: 'indeterminate', reason: 'settlement-collision' });
+  assert.equal(publishedEvidence(w), 0, 'the wallet was asked for the evidence CREATE after the collision');
+  assert.equal(w.createsAt(evidenceAddress(a)), 0);
 });
 
 // resume() under publication switched off: the option gates new effects only,
@@ -3091,7 +3131,7 @@ test('a report nested past the storage CREATE depth is held before the permit is
  assert.equal(w.createsAt(deliverable),1);
 });
 
-for (const stage of ['entry', 'restore', 'publish']) for (const expiry of ['delegation', 'request']) test(`cached payment refresh refuses ${expiry} expiry during agent ${stage}`, { timeout: NATIVE_FLOW_TIMEOUT_MS }, async (t) => {
+for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expiry of ['delegation', 'request']) test(`cached payment refresh refuses ${expiry} expiry during agent ${stage}`, { timeout: NATIVE_FLOW_TIMEOUT_MS }, async (t) => {
   const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
   assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
   assert.equal(w.createsAt(address), 0);
@@ -3106,6 +3146,8 @@ for (const stage of ['entry', 'restore', 'publish']) for (const expiry of ['dele
   };
   const agent = await w.agentFor({ deliveryEvidenceEnabled: true,
     beforePublish: stage === 'publish' ? async () => { enter(); await released; } : null });
+  // 'approval': the wallet's approval wait, after the publisher's first check passed.
+  if (stage === 'approval') w.faults.artifactApproval = async (kind) => { if (kind === 'SettlementEvidence') { enter(); await released; } };
   const session = agent.durableSessionOf(p.jobId), sessionKey = key(99);
   let time = Math.max(NOW, w.node.latestBlockMs());
   const now = () => time, pin = agent.listingPin;

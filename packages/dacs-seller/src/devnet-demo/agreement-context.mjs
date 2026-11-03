@@ -3,6 +3,7 @@ import { listingPin, protocolSupport } from '../dacs/purchase-protocol.mjs';
 import { attachIdentityPresentation, DEM_RAIL, purchaseSupport, verifyComponent } from '../dacs/listing.mjs';
 import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore, identityBundleHash, partyVetCore, verifyCompositeVerificationRecord, vetPhaseFailureClass } from '@kynesyslabs/dacs';
 import { addressForClaim } from '../dacs/demos-claims.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { OperationError } from '../operations.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -210,6 +211,7 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
 // createSellerContextRecords): the scope of that buyer's completed route step
 // from the seller's durable records, or null.
 export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
+  assertKitOperationAdmitted('createDevnetDemoAgreementContextProvider');
   if(anchor?.writer!==wallet?.claim || listing?.seller?.identity?.presentedBy!==wallet?.claim || typeof wallet?.signBytes!=='function') throw new TypeError('Vet producer and native anchor must belong to the seller');
   if(typeof anchor.hasIntent!=='function') throw new TypeError('the native anchor must answer whether a CREATE intent is retained');
   if(!store || !['read','update','entries'].every((key)=>typeof store[key]==='function')) throw new TypeError('party Vet state requires the seller\'s party Vet store');
@@ -334,6 +336,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     try{
       guard(job,'seller presentation');await authorizeEffect(job);
       if(!usableChallenge(kept.challenge))fail('seller_challenge_expired','seller challenge expired before presentation');
+      guard(job,'seller presentation');
     }catch(error){throw await restoredOrHeld(job,request.reservation,error);}
     let raw;
     try{raw=await wallet.signBytes(Buffer.from(request.signedBytes,'hex'),request);}
@@ -546,7 +549,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     let read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true});
     if(read.status!=='present'){
       guard(job,'counterparty anchor');await markWrite(job);
-      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job)});
+      read=await anchor.publish({logicalAddress,artifact:record,artifactKind:'CompositeVerificationRecord',verifier:authority,authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job)});
       // A returned refusal and an unknown submission are different outcomes:
       // keep the anchor's own reason and its retryable/terminal class.
       if(read?.status!=='present'){
@@ -576,6 +579,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   function guard(job,what) {
     const open=job.open();
     if(open!==true)fail('not-pending',`the purchase is no longer pending (${typeof open==='string'?open:'its check gave no answer'}); no ${what} was made`);
+  }
+  // The check a wallet runs after its approval wait, right before it signs a record CREATE. The wallet signs
+  // only on an immediate true, so it is the purchase check alone (authorizeEffect reads the durable row first).
+  function authorizeSigningFor(job) {
+    return ()=>{guard(job,'signature');return true;};
   }
   // The durable lifecycle is shared by every provider, unlike job.open().
   async function authorizeEffect(job) {
@@ -616,12 +624,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const durable=durableOperationStore(state,job,role,{now,clock,wait});
     const sign=async(bytes)=>{
       let stored;
-      try{guard(job,'signature');await markWrite(job);stored=await durable.writeAhead(bytes);await authorizeEffect(job);}
+      try{guard(job,'signature');await markWrite(job);stored=await durable.writeAhead(bytes);await authorizeEffect(job);guard(job,'signature');}
       catch(error){writerFailed(error);throw error;}
       // The purchase was read again just above, with no await before the
-      // signer: one cancelled while the mark or the bytes were stored signs
-      // nothing. A retained signature is replayed; an interrupted reservation
-      // holds instead of calling the signer again.
+      // signer: one cancelled while the mark, the bytes or the durable row
+      // were read signs nothing. A retained signature is replayed; an
+      // interrupted reservation holds instead of calling the signer again.
       if(stored)return stored;
       durable.markSignerCall();
       const raw=await wallet.signBytes(bytes),signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
@@ -640,7 +648,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
             // stores the intent: a purchase cancelled meanwhile stores none
             // and sends nothing. The write mark is inside anchorCall, so a busy
             // store there is a retryable wait like a busy anchor journal.
-            out=await anchorCall(async()=>{await markWrite(job);return anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>authorizeEffect(job)});});
+            out=await anchorCall(async()=>{await markWrite(job);return anchor.publish({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord',authorize:()=>authorizeEffect(job),authorizeSigning:authorizeSigningFor(job)});});
           }else{
             // Readback only: a read never creates an intent.
             out=await anchorCall(()=>anchor.read({logicalAddress,artifact,artifactKind:'CompositeVerificationRecord'}));

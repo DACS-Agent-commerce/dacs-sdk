@@ -1,7 +1,8 @@
 import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
-import { agreementFixture } from "./agreementFixture.js";
+import { agreementFixture, stageAllocation } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 // Compares the SDK wire with the original plugin wire captured from frontend
 // 82bf8c4 (test/wire/fixtures/plugin-wire-82bf8c4.original.json; captured messages are immutable),
 // through its separately identified TP-1 revision adaptation
@@ -17,7 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { canonicalize } from "../../src/canonical/index.js";
 import {
-  checkWireRequest, DACS_SELLER_HTTP_DOMAINS, openWireEnvelope, verifySellerSessionDelegation,
+  DACS_SELLER_HTTP_DOMAINS, openWireEnvelope, verifySellerSessionDelegation,
   verifyWireResponse, wireEnvelopeSigningBytes, WireError, isWirePayload, type WireRequestPayload, type Tp1Binding,
 } from "../../src/wire/index.js";
 // SYNTHETIC records are approved only by replacing src/wire/approval.ts with a
@@ -68,8 +69,8 @@ async function sellerVerdict(c: RequestCase): Promise<string> {
   return (await code(async () => {
     const body = c.bodyText ?? `{"jobId":"${scope.jobId}"}`;
     const opened = (await openWireEnvelope(c.header, "request", { binding: sellerBinding, local: adapted.localBindings.seller, purchaseProfile: sellerBinding.profile, requireDelegation: c.requireDelegation ?? false }));
-    (await checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened),
-      retained: { jobId: scope.jobId, agreementHash: scope.agreementHash, buyer: adapted.parties.buyer, seller: adapted.parties.seller },
+    (await checkAndReserve(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened),
+      retained: { jobId: scope.jobId, agreementHash: scope.agreementHash, buyer: adapted.parties.buyer, seller: adapted.parties.seller, ...stageAllocation(scope.path) },
       seller: c.server?.seller === "other" ? adapted.parties.other : adapted.parties.seller,
       listingPin: c.server?.listingPin ?? scope.listingPin, method: "POST", path: scope.path, rawBody: Buffer.from(body),
       now: adapted.now, binding: sellerBinding, local: adapted.localBindings.seller, purchaseProfile: sellerBinding.profile, requireDelegation: c.requireDelegation ?? false,

@@ -1,6 +1,7 @@
 import { canonicalize, contentHash, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { createNativeDemDeliveryCapability, PASSIVE_RETAINED_READ } from '../dacs/native-dem-delivery-consumer.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
 const purchasedReaders=new WeakMap(),evidenceReaders=new WeakMap();
 const DIGEST=/^[0-9a-f]{64}$/;
@@ -52,6 +53,7 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
   };
   // Guarded: authorize is asked before the intent is stored, and by the wallet after its approval, right before it signs.
   const submit=async(input,authorize)=>{
+    assertKitOperationAdmitted('createDevnetDemoDeliveryCapability.submit');
     if(!expected(input)) return {status:'rejected',reason:'native purchased report scope differs'};
     const value=await anchor.publish({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding,
       ...(authorize?{authorize:()=>authorize('intent'),authorizeSigning:()=>authorize('signing')}:{})});
