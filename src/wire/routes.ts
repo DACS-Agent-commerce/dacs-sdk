@@ -2,13 +2,15 @@
 //
 // The seven routes, commit-on-signature and the context route are the buyer
 // plugins' (taken from the plugin implementation; test/wire/wire.test.ts pins
-// them here); discovery is new.
+// them here); the context challenge route and discovery are new.
 // Paths are matched exactly against the raw request target: no query string,
 // alternate spelling or encoded alias reaches a handler.
 
 export const DACS_SELLER_HTTP_V1 = "dacs-seller-http/v1";
 /** Header carrying the base64url signed envelope (the plugin's header name). */
 export const DACS_SELLER_HTTP_HEADER = "x-dacs-seller-peer";
+/** Header carrying the explicit-resume proof of one CREATE (explicitResume.ts). */
+export const DACS_SELLER_RESUME_HEADER = "x-dacs-seller-resume";
 export const DACS_SELLER_DISCOVERY_PATH = "/.well-known/dacs-seller.json";
 
 /**
@@ -23,12 +25,14 @@ export const DACS_SELLER_HTTP_DOMAINS = Object.freeze({
   response: "dacs-seller-http:v1:response:",
   delegation: "dacs-seller-http:v1:delegation:",
   discovery: "dacs-seller-http:v1:discovery:",
+  explicitCreateResume: "dacs-seller-http:v1:explicit-create-resume:",
 });
 
 export const DACS_SELLER_HTTP_PATHS = Object.freeze({
   proposals: "/dacs/v1/agreements/proposals",
   state: "/dacs/v1/agreements/state",
   context: "/dacs/v1/agreements/context",
+  contextChallenge: "/dacs/v1/agreements/context/challenge",
   commitments: "/dacs/v1/commitments",
   commitmentSignature: "/dacs/v1/commitments/signature",
   payments: "/dacs/v1/payments",
@@ -44,7 +48,11 @@ export interface DacsSellerHttpRoute {
   readonly method: "POST" | "GET";
   /** `signed`: request and response carry signed envelopes. `discovery`: the body is a signed document. */
   readonly auth: "signed" | "discovery";
-  /** `read` routes never start a seller effect (as in the plugin). */
+  /**
+   * `read` routes never start a seller effect (as in the plugin): they have no
+   * journal operation. That is not `isReadRoute`, which also says a route is
+   * answered as readback.
+   */
   readonly effect: "effect" | "read";
   /** A seller option the route is mounted under; `null` means always mounted. */
   readonly option: "commit-on-signature" | "context-route" | null;
@@ -66,6 +74,7 @@ export const DACS_SELLER_HTTP_ROUTES: readonly DacsSellerHttpRoute[] = Object.fr
   route(DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, "read"),
   route(DACS_SELLER_HTTP_PATHS.commitmentSignature, "effect", "commit-on-signature"),
   route(DACS_SELLER_HTTP_PATHS.context, "effect", "context-route"),
+  route(DACS_SELLER_HTTP_PATHS.contextChallenge, "read", "context-route"),
   Object.freeze({ path: DACS_SELLER_DISCOVERY_PATH, method: "GET", auth: "discovery", effect: "read", option: null }),
 ]);
 
@@ -74,8 +83,22 @@ export function findDacsSellerHttpRoute(method: string, target: string): DacsSel
   return DACS_SELLER_HTTP_ROUTES.find((r) => r.method === method && r.path === target) ?? null;
 }
 
+const PRE_AGREEMENT_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_PATHS.contextChallenge]);
+
+/**
+ * Whether a route is used before any Agreement exists. Its request issues or
+ * consumes a seller nonce, so `checkWireRequest` refuses it and it is never
+ * answered as readback. Not exported from the package index.
+ */
+export const isPreAgreementRoute = (path: string): boolean => PRE_AGREEMENT_PATHS.includes(path);
+
+/**
+ * Whether a signed route is a readback route: answered as readback, including
+ * under an expired delegation. A pre-Agreement route has `effect: "read"` (no
+ * journal operation) and is still never one.
+ */
 export const isReadRoute = (path: string): boolean =>
-  DACS_SELLER_HTTP_ROUTES.some((r) => r.path === path && r.auth === "signed" && r.effect === "read");
+  !isPreAgreementRoute(path) && DACS_SELLER_HTTP_ROUTES.some((r) => r.path === path && r.auth === "signed" && r.effect === "read");
 
 /** Limits kept from the plugin (pinned by test/wire/wire.test.ts). */
 export const DACS_SELLER_HTTP_LIMITS = Object.freeze({

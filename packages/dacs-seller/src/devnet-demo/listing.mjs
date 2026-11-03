@@ -1,5 +1,6 @@
 import { canonicalize, contentHash, isAnchorReceipt, publishListingCore } from '@kynesyslabs/dacs';
 import { verifyComponent } from '../dacs/listing.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { stopRequested, stopSignal } from './stop-request.mjs';
 
 /** Publish a signed Listing only after its signature verifies for the seller and fresh authenticated final readback; sign receives its stop signal. */
@@ -8,6 +9,7 @@ export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,lo
       !['publish','read','verifyReceipt'].every(method=>typeof anchor?.[method]==='function')) throw new TypeError('listing publication requires signer, history, rail authority and authenticated native anchor operations');
   const assertRunning=()=>{if(stopRequested()) throw new Error('the operator is stopping');};
   return async(draft)=>{
+    assertKitOperationAdmitted('createDevnetDemoListingPublisher');
     assertRunning();
     const seller=draft.seller.identity.presentedBy;
     let signedListing=null;
@@ -32,7 +34,10 @@ export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,lo
           result.receipt.observationDisposition==='established' && result.receipt.logicalAddress===logicalAddress &&
           result.receipt.writer===input.writer && result.receipt.contentHash===hash &&
           await anchor.verifyReceipt({...input,receipt:result.receipt,signedProjection:result.signedProjection,fresh:true})==='valid';
-        const written=await anchor.publish({...input,authorize:()=>stopRequested()?'the operator is stopping':true,reaskDenied:true,stopSignal});
+        // authorize runs before the intent is stored; authorizeSigning runs in the wallet as its approval answer returns.
+        // A stop during the wallet's later network and nonce reads is not rechecked here.
+        const running=()=>stopRequested()?'the operator is stopping':true;
+        const written=await anchor.publish({...input,authorize:running,authorizeSigning:running,reaskDenied:true});
         if(written?.status!=='present' || !await authenticatedFinalReceipt(written)) throw new Error(written?.reason ?? 'native Listing publication has no authenticated finalized receipt');
         const resolved=await anchor.read({...input,fresh:true});
         if(resolved?.status!=='present' || !await authenticatedFinalReceipt(resolved) || canonicalize(resolved.artifact)!==canonicalize(value) ||

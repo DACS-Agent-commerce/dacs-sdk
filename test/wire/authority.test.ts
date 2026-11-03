@@ -5,6 +5,7 @@ import { assertEndpointProof } from "../../src/wire/discovery.js";
 import { canonicalize } from "../../src/canonical/index.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 const local = { endpoint: "https://unverified.example/", transportAuthority: "test", connectionId: "generation-1" };
 const { testJournals } = journalFixture(wire);
@@ -78,7 +79,7 @@ async function boundaries(x: Awaited<ReturnType<typeof world>>) {
     ["delegation signer", () => wire.signSellerSessionDelegation(delegationPayload, x.buyer, x.binding, local)],
     ["discovery signer", () => wire.signDiscoveryDocument(discoveryPayload, x.seller, x.binding, local)],
     ["request open", async () => (await wire.openWireEnvelope(requestHeader, "request", context))],
-    ["retained request admission", async () => (await wire.checkWireRequest(opened, { ...context, seller: x.seller.claim,
+    ["retained request admission", async () => (await checkAndReserve(opened, { ...context, seller: x.seller.claim,
       retained: { jobId: x.request.jobId, agreementHash: x.request.agreementHash, buyer: x.request.buyer, seller: x.request.seller }, listingPin: x.request.listingPin, method: "POST", path: x.request.path, rawBody: Buffer.from("{}"), now,
       ready: true, requestJournal: journals.open() }))],
     ["delegation verifier", async () => (await wire.verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { ...context, seller: x.seller.claim, listingPin: x.request.listingPin, jobId, time: now }))],

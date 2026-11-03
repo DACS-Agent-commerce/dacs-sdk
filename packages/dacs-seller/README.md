@@ -26,6 +26,12 @@ The repository's `engines` require Node.js `^20.19.0 || >=22.12.0`; the
 durable stores use the native `better-sqlite3` module. Use the same version of
 `@kynesyslabs/dacs` as this kit.
 The private package uses a core tarball built from the same checkout.
+This build refuses to start (`kit_operation_guard_off`) until the testnet
+switch, and every other entry that signs for a send or sends refuses too. A
+durable store still signs its own local records through the signer you give it:
+when it creates a new store and when it creates or updates an authenticated
+record (reopening a store or taking a lock signs nothing). The kit publishes
+none of these signatures; what your own signer does with them is up to it.
 
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
@@ -166,6 +172,23 @@ journals that no signed CREATE for this address can land. A missing name-index
 entry, an RPC failure, or a copied/serialized proof is insufficient. A retained
 attempt from an older version without this marker is conservatively treated as
 already asked. Read-only recovery never initiates publication, even with proof.
+The same holds for a CREATE the node refused: its read stays `rejected`, and once
+the account nonce has passed it and the readback finds it absent the read returns
+the object made by `deadRefusedCreate(reason)` (`isDeadRefusedCreate`, same module;
+`mayPublishAgain` accepts either proof). The seller then publishes the Deliverable,
+the delivery evidence (when publication is on) or the commitment again, once,
+through the same authorization check as the first send, and the anchor records
+the replacement (`supersedes`), so it is never replaced again. If the refused
+bytes were sent again first, the resend may be what took the nonce: a replacement
+then also needs the complete-index rule of the wallet journal's `fate()`. The
+nonce read answers `{ nonce, blockHeight }` and the absent readback reports
+`checkedThroughBlock`, which must reach that height; any other answer stays
+`indeterminate` and signs nothing. The nonce there is a safe integer, not a
+numeric string. The replacement may differ from the refused intent only in the
+fields the seller stamps again on each attempt (the commitment's `createdAt`, and
+the signature over it); any other difference stays a `conflict`, as does a
+different artifact for the address while the refused CREATE is still live or
+uncertain.
 Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.
@@ -207,6 +230,16 @@ per-client limiter so one client cannot exhaust the shared request budget.
   restarted host answers a completed request again and reconciles uncertain
   work through the agent's retained state. A commitment retry first reads back
   the original CREATE and publishes again only with proof that nothing was signed.
+  Every read of a commitment or delivery evidence during such a readback has the
+  10 s and 64 KiB limits. For a commitment, a read past either is an
+  `indeterminate` answer (`causeCode` `timeout` or `reply-limit`, and `reader`
+  for any other read failure, including the proof-of-no-intent read) and the job
+  is released. For delivery evidence, any failed read (past a limit or not) holds
+  the delivery as `evidencePublication: 'held-readback-only'` with the failure
+  in `reason`, and the next claim reads it back again. A replay
+  admitted only by an expired delegation also signs nothing and saves no
+  session or anchor state: it answers for a commitment the seller already retained and holds
+  (`commitment_readback_required`) rather than adopting one.
   Agreement state reads use isolated retained snapshots; cached payment and
   delivery answers require current durable settlement credit (DACS-4 SB-2).
   A payment answer that is not final is not cached as final:

@@ -5,6 +5,7 @@
 export {
   DACS_SELLER_HTTP_V1,
   DACS_SELLER_HTTP_HEADER,
+  DACS_SELLER_RESUME_HEADER,
   DACS_SELLER_DISCOVERY_PATH,
   DACS_SELLER_HTTP_DOMAINS,
   DACS_SELLER_HTTP_PATHS,
@@ -51,7 +52,9 @@ export {
   signWireEnvelope,
   openWireEnvelope,
   checkWireRequest,
+  authorizeWireRequest,
   wireOperationId,
+  wireOperationBinding,
   admitWireRequestBody,
   admitWireResponseBody,
   type CheckedWireRequest,
@@ -60,6 +63,7 @@ export {
   type OpenEnvelopeOptions,
   type RequestCheck,
   type WireRetainedAgreement,
+  type WireRetainedStage,
   type SigningContext,
   type WireKind,
   type WirePayload,
@@ -75,6 +79,17 @@ export {
   type SellerSessionDelegationPayload,
 } from "./delegation.js";
 export {
+  MAX_EXPLICIT_RESUME_CLAIMS,
+  createExplicitResumeLedger,
+  explicitCreateResumeSigningBytes,
+  signExplicitCreateResume,
+  verifyExplicitCreateResume,
+  type ExplicitCreateResumePayload,
+  type ExplicitResumeLedger,
+  type ExplicitResumeScope,
+  type ExplicitResumeSigningContext,
+} from "./explicitResume.js";
+export {
   signWireResponse,
   signWireRequest,
   verifyWireResponse,
@@ -88,6 +103,7 @@ export {
   discoverySigningBytes,
   signDiscoveryDocument,
   verifyEndpointProof,
+  retainedPurchaseContinuation,
   isPublicEndpoint,
   type DiscoveryDocument,
   type DiscoveryPayload,
@@ -95,6 +111,8 @@ export {
   type VerifiedListingEndpoint,
   type VerifiedListingEligibility,
   type ListingEligibilityReader,
+  type RetainedPurchaseContinuation,
+  type RetainedPurchaseScope,
 } from "./discovery.js";
 export {
   admitWireArtifact,
@@ -107,8 +125,12 @@ export {
   MAX_EFFECT_ATTEMPTS,
   openWireRequestJournal,
   completeWireEffect,
+  inspectWireOperation,
+  listWireNonceKeys,
   type WireEffect,
   type WireEffectOutcome,
+  type WireNonceRecord,
+  type WireOperationView,
   type WireRequestJournal,
   type WireRequestJournalOptions,
 } from "./journal.js";

@@ -35,7 +35,7 @@ it.each([
 });
 
 describe("dacs-seller-http/v1 routes and limits", () => {
-  it("keeps the plugin's seven routes and adds commit-on-signature, the context route and discovery", () => {
+  it("keeps the plugin's seven routes and adds commit-on-signature, the context route, the context challenge route and discovery", () => {
     expect(DACS_SELLER_HTTP_ROUTES.map((r) => `${r.method} ${r.path}${r.option ? ` [${r.option}]` : ""}`)).toEqual([
       "POST /dacs/v1/agreements/proposals",
       "POST /dacs/v1/agreements/state",
@@ -46,6 +46,7 @@ describe("dacs-seller-http/v1 routes and limits", () => {
       "POST /dacs/v1/bundles/buyer-copy",
       "POST /dacs/v1/commitments/signature [commit-on-signature]",
       "POST /dacs/v1/agreements/context [context-route]",
+      "POST /dacs/v1/agreements/context/challenge [context-route]",
       `GET ${DACS_SELLER_DISCOVERY_PATH}`,
     ]);
     expect(Object.isFrozen(DACS_SELLER_HTTP_ROUTES)).toBe(true);
@@ -71,8 +72,8 @@ describe("dacs-seller-http/v1 routes and limits", () => {
 describe("signing domains", () => {
   it("are new SDK wire domains, distinct from the Standard's artifact domains and from each other", () => {
     const wire = Object.values(DACS_SELLER_HTTP_DOMAINS);
-    expect(wire).toEqual(["dacs-seller-http:v1:request:", "dacs-seller-http:v1:response:", "dacs-seller-http:v1:delegation:", "dacs-seller-http:v1:discovery:"]);
-    expect(new Set(wire).size).toBe(4);
+    expect(wire).toEqual(["dacs-seller-http:v1:request:", "dacs-seller-http:v1:response:", "dacs-seller-http:v1:delegation:", "dacs-seller-http:v1:discovery:", "dacs-seller-http:v1:explicit-create-resume:"]);
+    expect(new Set(wire).size).toBe(5);
     // The Standard's signature domains and its hash-domain tags (CORE §B.7; the tags are not signature domains).
     const standardDomains = [...SIGNATURE_DOMAIN_SEPARATORS, ...COMPOSITE_DOMAIN_SEPARATORS, "dacs-sealed-bid:v1:", "dacs-sb3:v1:", "dacs-ap2-idem:v1:"];
     expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(30);
