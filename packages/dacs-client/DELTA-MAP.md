@@ -972,6 +972,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-history.test.mjs:1` | fad10bcd3acfcb4076653f885de9c4fdcdd14d41 |
 | | `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:4`, `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:7`, `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:33` | e3987c120fb08295aa49ab436c627c2823ebe846 |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 8f8757994d69d512ccbf145bcd2180b622acc962 |
+| WF | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-fence.mjs:1` | 4919d146fb62f67705ae52f4fb553e165a9dfebe |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6402003588457f0340179859466e374237f7fd6 |
 
 ## Complete commit and file inventory
 
@@ -3050,6 +3053,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:4`, `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:7`, `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:33` |
 | delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `scripts/release-policy.json:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/src/wallet/effect-fence.mjs:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
 
 ## Original moved files
 

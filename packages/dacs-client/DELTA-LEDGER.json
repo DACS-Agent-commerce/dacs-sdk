@@ -5858,6 +5858,22 @@
           "after": "8f8757994d69d512ccbf145bcd2180b622acc962"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "5e899dc36581ead321d1ddd6597497965ad46af5",
+          "after": "4919d146fb62f67705ae52f4fb553e165a9dfebe"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "0c406f1b30b33f1011df654f7d67282b99309148",
+          "after": "b6402003588457f0340179859466e374237f7fd6"
+        }
+      ]
     }
   ]
 }

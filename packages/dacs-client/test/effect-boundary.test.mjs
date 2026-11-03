@@ -111,6 +111,42 @@ test('a local digest read that throws after the acquisition releases the fence a
   assert.equal(world.held, false);
 });
 
+test('a work rejection with a falsy value is still a failure: the fence is released and the caller sees the rejection, not a success', async () => {
+  const outcomeOf = (promise) => promise.then((value) => ({ resolved: true, value }), (error) => ({ resolved: false, error }));
+  for (const falsy of [undefined, null, 0, '', false, NaN]) {
+    const world = fakeFence();
+    const fence = createEffectFence(world.options);
+    const outcome = await outcomeOf(fence.withFence('op-a', () => Promise.reject(falsy)));
+    assert.equal(outcome.resolved, false, `a rejection with ${String(falsy)} does not resolve`);
+    assert.ok(Object.is(outcome.error, falsy), `the rejection value ${String(falsy)} is kept`);
+    assert.deepEqual(world.released, [1], 'the fence is released');
+    assert.equal(world.held, false);
+
+    // The work's failure still wins over a release failure.
+    let failRelease = true;
+    const failing = createEffectFence({ ...world.options, acquire: async () => ({ release: () => { if (failRelease) throw new Error('release failed'); } }) });
+    const both = await outcomeOf(failing.withFence('op-b', () => Promise.reject(falsy)));
+    assert.equal(both.resolved, false);
+    assert.ok(Object.is(both.error, falsy), 'the work\'s falsy rejection wins over the release error');
+    failRelease = false;
+  }
+
+  // A release failure after successful work is still thrown.
+  const releaseFailure = new Error('release failed');
+  const world = fakeFence();
+  const releasing = createEffectFence({ ...world.options, acquire: async () => ({ release: () => { throw releaseFailure; } }) });
+  assert.equal(await releasing.withFence('op-c', async () => undefined).catch((error) => error), releaseFailure);
+
+  // replaceConnection goes through the same path and still counts the replacement.
+  const replacing = fakeFence();
+  const fence = createEffectFence(replacing.options);
+  const outcome = await outcomeOf(fence.replaceConnection(() => Promise.reject(undefined)));
+  assert.equal(outcome.resolved, false, 'a replacement that rejects with undefined does not resolve');
+  assert.equal(outcome.error, undefined);
+  assert.equal(fence.connectionGeneration, 1);
+  assert.equal(replacing.held, false);
+});
+
 test('replaceConnection acquires the fence like an effect and increments connectionGeneration, also when the replacement throws', async () => {
   const world = fakeFence();
   const fence = createEffectFence(world.options);

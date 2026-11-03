@@ -87,9 +87,9 @@ export function createEffectFence({ acquire, currentLocal, setTimer = setTimeout
     if (capability) { ownedBy(capability, operationId); return work(capability); }
     const acquired = await acquireCapability(operationId);
     let outcome;
-    try { outcome = { value: await work(acquired) }; } catch (error) { outcome = { error }; }
-    try { await release(acquired, operationId); } catch (error) { if (!outcome.error) throw error; }
-    if (outcome.error) throw outcome.error;
+    try { outcome = { value: await work(acquired) }; } catch (error) { outcome = { failed: true, error }; }
+    try { await release(acquired, operationId); } catch (error) { if (!outcome.failed) throw error; }
+    if (outcome.failed) throw outcome.error;
     return outcome.value;
   }
 
