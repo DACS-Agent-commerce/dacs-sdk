@@ -1,18 +1,26 @@
 // EXPLICIT durable public wallet journal (node:sqlite). Opt-in only: nothing in
 // application configuration constructs it. It stores public signed intents,
 // approvals and receipts; it never holds a key, mnemonic, password or vault.
-// Interface: async get(key), put(key, value), entries(), withWalletLock(key, work).
+// Interface: async get(key), put(key, value), entries(), withWalletLock(key, work),
+// appendUnderLock(laneKey, key, value), withOwnedOrAcquiredLane(laneKey, work).
 //
 // Locks are rows in the same database, shared by every process that opens the
 // same file. A lock is released only by its own holder after its work settles.
-// A dead or stalled holder is NEVER timed out: others see a bounded busy error.
-// Lane records are never deleted, so an issued/unknown stage keeps fencing even
-// after an operator explicitly removes an abandoned lock row.
+// A stalled holder is NEVER timed out: others see a bounded busy error. A lock
+// left by a process that crashed is taken over only when that holder is proven
+// dead (holder-incarnation.mjs): the dead holder's row is replaced in the
+// acquiring transaction and no record changes. Death is proven, never assumed
+// from time; a row nothing proves gone stays busy until an operator explicitly
+// removes it. Lane records are never deleted, so an issued/unknown stage keeps
+// fencing even after a lock row is reclaimed or explicitly removed.
+// Lock order wherever more than one is needed: the actor's connection fence, then
+// the wallet lane, then the per-address claim and refusal keys.
 import { DatabaseSync } from 'node:sqlite';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
+import { classifyHolder, formatHolderInstance, HolderLeaseError, OS_IDENTITY, PROCESS_LEASE_ID, takeLease } from './holder-incarnation.mjs';
 
 export const DURABLE_WALLET_JOURNAL_FORMAT = 'dacs-durable-wallet-journal';
 export const DURABLE_WALLET_JOURNAL_VERSION = 1;
@@ -66,9 +74,12 @@ function translate(error) {
 
 // mode 'create' requires an absent file; mode 'open' requires an existing,
 // intact journal. An absent journal is never silently recreated, because that
-// would forget issued lanes.
+// would forget issued lanes. Opening takes this process's lease in a private
+// `holders` directory beside the file and throws journal-lease-unavailable when
+// it cannot. `identity` replaces the OS readings that decide whether a lock
+// holder has exited (OS_IDENTITY); it is an internal seam for tests.
 export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTimeoutMs = 2000, pollMs = 20, busyTimeoutMs = 1000,
-  maxRecords = 4096, maxKeyBytes = 512, maxValueBytes = 256 * 1024, maxTotalBytes = 32 * 1024 * 1024 } = {}) {
+  maxRecords = 4096, maxKeyBytes = 512, maxValueBytes = 256 * 1024, maxTotalBytes = 32 * 1024 * 1024, identity = OS_IDENTITY } = {}) {
   if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0') || path.startsWith('file:')) fail('journal-invalid', 'an explicit absolute caller-owned database path is required');
   if (mode !== 'create' && mode !== 'open') fail('journal-invalid', "mode must be explicitly 'create' or 'open'");
   if (expectedJournalId !== undefined && (typeof expectedJournalId !== 'string' || !/^[a-f0-9]{32}$/.test(expectedJournalId))) fail('journal-invalid', 'expected journal id is malformed');
@@ -78,6 +89,11 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
   const present = existsSync(path);
   if (mode === 'create' && present) fail('journal-exists', 'create refuses an existing database path');
   if (mode === 'open' && !present) fail('journal-absent', 'the durable journal is absent; it is not recreated');
+  if (typeof identity?.runningStart !== 'function' || typeof identity.now !== 'function') fail('journal-invalid', 'identity readings must provide runningStart and now');
+  const directory = dirname(path);
+  try { takeLease(directory); } catch (error) {
+    throw error instanceof HolderLeaseError ? new DurableWalletJournalError('journal-lease-unavailable', 'the process lease for this journal directory is unavailable; nothing was opened', { cause: error }) : translate(error);
+  }
 
   let db;
   try {
@@ -117,7 +133,7 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     });
   } catch (error) { try { db.close(); } catch { /* already failed */ } closed = true; throw error; }
 
-  const instance = randomBytes(16).toString('hex');
+  const instance = formatHolderInstance(randomBytes(16).toString('hex'), { pid: process.pid, process: PROCESS_LEASE_ID, namespace: identity.self });
   const held = new AsyncLocalStorage();
   let active = 0;
   const digest = (key, text) => sha256(`${DURABLE_WALLET_JOURNAL_FORMAT}\n${journalId}\n${key}\n${text}`);
@@ -156,31 +172,63 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     });
   }
 
+  // The caller holds an IMMEDIATE transaction and has read `m = meta()`.
+  function writeRecord(m, key, text, bytes) {
+    const old = db.prepare('SELECT bytes FROM records WHERE key = ?').get(key);
+    const records = Number(m.records) + (old ? 0 : 1);
+    const total = Number(m.total_bytes) - (old?.bytes ?? 0) + bytes;
+    if (records > maxRecords || total > maxTotalBytes) fail('journal-capacity', 'journal record capacity is exhausted; nothing was written');
+    if (old) db.prepare('UPDATE records SET value = ?, digest = ?, bytes = ? WHERE key = ?').run(text, digest(key, text), bytes, key);
+    else {
+      db.prepare('INSERT INTO records (key, seq, value, digest, bytes) VALUES (?, ?, ?, ?, ?)').run(key, Number(m.next_seq), text, digest(key, text), bytes);
+      db.prepare("UPDATE meta SET value = ? WHERE key = 'next_seq'").run(String(Number(m.next_seq) + 1));
+    }
+    db.prepare("UPDATE meta SET value = ? WHERE key = 'records'").run(String(records));
+    db.prepare("UPDATE meta SET value = ? WHERE key = 'total_bytes'").run(String(total));
+  }
+  const checkedRecord = (value) => {
+    const text = exactJson(value);
+    const bytes = Buffer.byteLength(text);
+    if (bytes > maxValueBytes) fail('journal-capacity', `record exceeds ${maxValueBytes} bytes; nothing was written`);
+    return { text, bytes };
+  };
+
   // A key locked by another holder may not be written; a holder whose lock
   // row was removed is fenced. The check and write are one IMMEDIATE commit.
   async function put(key, value) {
     checkKey(key);
-    const text = exactJson(value);
-    const bytes = Buffer.byteLength(text);
-    if (bytes > maxValueBytes) fail('journal-capacity', `record exceeds ${maxValueBytes} bytes; nothing was written`);
+    const { text, bytes } = checkedRecord(value);
     const mine = held.getStore()?.get(key);
     tx('BEGIN IMMEDIATE', () => {
       const m = meta();
       const lock = db.prepare('SELECT token FROM locks WHERE key = ?').get(key);
       if (mine ? lock?.token !== mine : lock) fail('journal-fenced', mine ? 'this holder no longer owns the wallet lane lock; nothing was written' : 'another holder owns this key; nothing was written');
-      const old = db.prepare('SELECT bytes FROM records WHERE key = ?').get(key);
-      const records = Number(m.records) + (old ? 0 : 1);
-      const total = Number(m.total_bytes) - (old?.bytes ?? 0) + bytes;
-      if (records > maxRecords || total > maxTotalBytes) fail('journal-capacity', 'journal record capacity is exhausted; nothing was written');
-      if (old) db.prepare('UPDATE records SET value = ?, digest = ?, bytes = ? WHERE key = ?').run(text, digest(key, text), bytes, key);
-      else {
-        db.prepare('INSERT INTO records (key, seq, value, digest, bytes) VALUES (?, ?, ?, ?, ?)').run(key, Number(m.next_seq), text, digest(key, text), bytes);
-        db.prepare("UPDATE meta SET value = ? WHERE key = 'next_seq'").run(String(Number(m.next_seq) + 1));
-      }
-      db.prepare("UPDATE meta SET value = ? WHERE key = 'records'").run(String(records));
-      db.prepare("UPDATE meta SET value = ? WHERE key = 'total_bytes'").run(String(total));
+      writeRecord(m, key, text, bytes);
     });
   }
+
+  // Adds a record that does not exist yet while this context holds `laneKey`:
+  // the lane's lock row still being this holder's, the key's absence and the
+  // capacity are checked in one IMMEDIATE commit. Throws journal-fenced when the
+  // lane is not held, or its lock was removed or taken by another holder,
+  // journal-key-exists (nothing is overwritten) and journal-capacity.
+  async function appendUnderLock(laneKey, key, value) {
+    checkKey(laneKey); checkKey(key);
+    const { text, bytes } = checkedRecord(value);
+    const mine = held.getStore()?.get(laneKey);
+    tx('BEGIN IMMEDIATE', () => {
+      const m = meta();
+      if (!mine || db.prepare('SELECT token FROM locks WHERE key = ?').get(laneKey)?.token !== mine) fail('journal-fenced', 'this context does not own the wallet lane lock; nothing was written');
+      if (db.prepare('SELECT 1 FROM records WHERE key = ?').get(key)) fail('journal-key-exists', 'the record already exists and is never overwritten; nothing was written');
+      writeRecord(m, key, text, bytes);
+    });
+  }
+
+  const holderOf = (row) => classifyHolder(directory, { instance: row.instance, pid: row.pid, acquiredAt: row.acquired_at }, identity);
+  // Inside the acquiring transaction: removes `lock` when its holder has exited,
+  // by compare-and-set on the exact row. Any other holder keeps the lane busy.
+  const reclaimedFromExited = (key, lock) => holderOf(lock) === 'exited'
+    && db.prepare('DELETE FROM locks WHERE key = ? AND token = ? AND instance = ? AND fence = ?').run(key, lock.token, lock.instance, lock.fence).changes === 1;
 
   async function withWalletLock(key, work) {
     checkKey(key);
@@ -199,7 +247,8 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
           // A lane whose own record changed is never handed to new work.
           const row = db.prepare('SELECT key, value, digest, bytes FROM records WHERE key = ?').get(key);
           if (row) decode(row);
-          if (db.prepare('SELECT 1 FROM locks WHERE key = ?').get(key)) return false;
+          const lock = db.prepare('SELECT token, instance, pid, fence, acquired_at FROM locks WHERE key = ?').get(key);
+          if (lock && !reclaimedFromExited(key, lock)) return false;
           const fence = Number(m.fence) + 1;
           db.prepare('INSERT INTO locks (key, token, instance, pid, fence, acquired_at) VALUES (?, ?, ?, ?, ?, ?)').run(key, token, instance, process.pid, fence, new Date().toISOString());
           db.prepare("UPDATE meta SET value = ? WHERE key = 'fence'").run(String(fence));
@@ -223,14 +272,26 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     return outcome.value;
   }
 
+  // The lane when this context already holds it, else acquired once through
+  // withWalletLock. `work` must not take the same lane again.
+  async function withOwnedOrAcquiredLane(laneKey, work) {
+    checkKey(laneKey);
+    if (typeof work !== 'function') fail('journal-invalid', 'lock work must be a function');
+    return held.getStore()?.has(laneKey) ? work() : withWalletLock(laneKey, work);
+  }
+
+  // Each lock row with its holder class (holder-incarnation.mjs): only 'exited'
+  // is reclaimed on acquisition; the rest stay busy until released explicitly.
   function inspectLocks() {
     return tx('BEGIN', () => db.prepare('SELECT key, instance, pid, fence, acquired_at FROM locks ORDER BY fence').all()
-      .map((r) => ({ key: r.key, instance: r.instance, pid: r.pid, fence: r.fence, acquiredAt: r.acquired_at, thisInstance: r.instance === instance })));
+      .map((r) => ({ key: r.key, instance: r.instance, pid: r.pid, fence: r.fence, acquiredAt: r.acquired_at, thisInstance: r.instance === instance, holder: holderOf(r) })));
   }
 
   // Explicit operator action after independently establishing that the holder
-  // process is gone. It removes only mutual exclusion; records are untouched,
-  // so an issued or unknown lane stage still refuses every new payload.
+  // process is gone, for a row nothing here proves gone (a lock written before
+  // incarnations, another boot, no identity). It removes only mutual exclusion;
+  // records are untouched, so an issued or unknown lane stage still refuses
+  // every new payload.
   function releaseAbandonedLock({ key, instance: holder, fence } = {}) {
     checkKey(key);
     if (holder === instance) fail('journal-lock-live', 'this live journal instance owns the lock');
@@ -248,5 +309,5 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     db.close();
   }
 
-  return { journalId, instance, path, get, put, entries, withWalletLock, inspectLocks, releaseAbandonedLock, close };
+  return { journalId, instance, path, get, put, entries, withWalletLock, appendUnderLock, withOwnedOrAcquiredLane, inspectLocks, releaseAbandonedLock, close };
 }
