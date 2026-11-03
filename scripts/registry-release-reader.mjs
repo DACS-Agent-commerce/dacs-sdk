@@ -101,7 +101,8 @@ function validateRelease(document, name, version, subject) {
   return { integrity, tarball };
 }
 
-function validateDistTags(document, subject) {
+function validateDistTags(document, name, subject) {
+  if (document?.name !== name) throw new ReleaseError("registry_malformed", subject, "the document names another package");
   const tags = document?.["dist-tags"];
   if (typeof tags !== "object" || tags === null || Array.isArray(tags)) throw new ReleaseError("registry_malformed", subject, "dist-tags is not an object");
   const values = Object.values(tags);
@@ -125,5 +126,5 @@ export async function readRegistryRelease(name, version, options) {
 /** Reads a package's `dist-tags` from its abbreviated document; same `options` and errors as readRegistryRelease. Resolves to a tag-to-version object, or undefined when absent. */
 export async function readRegistryDistTags(name, options) {
   const document = await readDocument({ url: `${REGISTRY_ORIGIN}/${encodeURIComponent(name)}`, accept: "application/vnd.npm.install-v1+json", subject: name }, options);
-  return document === undefined ? undefined : validateDistTags(document, name);
+  return document === undefined ? undefined : validateDistTags(document, name, name);
 }

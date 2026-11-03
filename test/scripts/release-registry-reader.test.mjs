@@ -158,11 +158,27 @@ test("dist-tags above the entry limit, or with non-string values, are refused", 
   assert.equal(observed.next, VERSION);
   assert.equal(accepted.calls[0].url, `${REGISTRY_ORIGIN}/%40kynesyslabs%2Fdacs`);
   assert.equal(accepted.calls[0].init.headers.accept, "application/vnd.npm.install-v1+json");
-  await refusal(readRegistryDistTags(NAME, harness([json({ "dist-tags": tags(REGISTRY_DIST_TAGS_MAX_ENTRIES + 1) })]).options), "registry_oversized");
+  await refusal(readRegistryDistTags(NAME, harness([json({ name: NAME, "dist-tags": tags(REGISTRY_DIST_TAGS_MAX_ENTRIES + 1) })]).options), "registry_oversized");
   for (const invalid of [{ next: 1 }, [], null, "next"]) {
-    await refusal(readRegistryDistTags(NAME, harness([json({ "dist-tags": invalid })]).options), "registry_malformed");
+    const error = await refusal(readRegistryDistTags(NAME, harness([json({ name: NAME, "dist-tags": invalid })]).options), "registry_malformed");
+    assert.match(error.message, /dist-tag/);
   }
   assert.equal(await readRegistryDistTags(NAME, harness([new Response("{}", { status: 404 })]).options), undefined);
+});
+
+test("an abbreviated package document that names another package, or no package, is refused as malformed even when its next tag matches", async () => {
+  const tags = { "dist-tags": { next: VERSION } };
+  for (const [label, body] of Object.entries({
+    "another package": { name: "@kynesyslabs/other", ...tags },
+    "another scope": { name: "@someone/dacs", ...tags },
+    "no name": tags,
+    "a non-string name": { name: [NAME], ...tags },
+  })) {
+    const { options, calls } = harness([json(body)]);
+    const error = await refusal(readRegistryDistTags(NAME, options), "registry_malformed");
+    assert.match(error.message, /names another package/, label);
+    assert.equal(calls.length, 1, `${label} is not retried`);
+  }
 });
 
 // Both documents the reader decodes: the version document and the abbreviated package document.
