@@ -34,7 +34,8 @@ export function createDevnetDemoListingPublisher({anchor,sign,scanOwnListings,lo
           result.receipt.observationDisposition==='established' && result.receipt.logicalAddress===logicalAddress &&
           result.receipt.writer===input.writer && result.receipt.contentHash===hash &&
           await anchor.verifyReceipt({...input,receipt:result.receipt,signedProjection:result.signedProjection,fresh:true})==='valid';
-        // authorize runs before the intent is stored; authorizeSigning runs in the wallet after its approval, right before it signs.
+        // authorize runs before the intent is stored; authorizeSigning runs in the wallet as its approval answer returns.
+        // A stop during the wallet's later network and nonce reads is not rechecked here.
         const running=()=>stopRequested()?'the operator is stopping':true;
         const written=await anchor.publish({...input,authorize:running,authorizeSigning:running,reaskDenied:true});
         if(written?.status!=='present' || !await authenticatedFinalReceipt(written)) throw new Error(written?.reason ?? 'native Listing publication has no authenticated finalized receipt');

@@ -16,12 +16,13 @@ const railAuthority = () => ({ trustPhase: 'PA-1', trustPolicyAcceptsPA1: true, 
 test('a stop that arrives after the wallet approved the Listing CREATE signs nothing', async () => {
   const w = await anchorFixture({ writer: { claim: wallet.claim, sign: wallet.signBytes }, artifactKinds: ['Listing'], now: () => NOW });
   let signed = 0;
-  // As the operator custody wallet: the operator approves, the stop lands before the write's own check, then it signs.
+  // As the operator custody wallet: the operator approves, the stop lands before the write's own check runs on that answer.
   w.controls.approval = async () => { requestStop(); };
   w.controls.request = async () => { signed++; return { success: false, error: { code: 'capture-without-signing' } }; };
   const publish = createDevnetDemoListingPublisher({ anchor: w.open(), sign: (bytes) => wallet.signBytes(bytes),
     scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: railAuthority });
-  const { signature, ...draft } = fixtureListing(wallet, { now: NOW });
+  const draft = fixtureListing(wallet, { now: NOW });
+  delete draft.signature;
   await assert.rejects(publish(draft));
   assert.equal(stopRequested(), true);
   assert.equal(w.captured.length, 1, 'the wallet was asked for the Listing CREATE once');
