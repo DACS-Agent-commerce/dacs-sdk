@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,16 +8,9 @@ import { fileURLToPath } from "node:url";
 import { prepare } from "../../scripts/release-checks.mjs";
 import { checkRecord } from "../../packages/dacs-client/scripts/check-hold.mjs";
 import { discoverTests } from "../../packages/dacs-client/scripts/test.mjs";
+import { CLIENT, CORE, FIVE, GENERATOR, HOST, PLANNED, SELLER, publish, publisherFixture } from "./fixtures/publisher-harness.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const registryDouble = join(repoRoot, "test/scripts/fixtures/registry-double.mjs");
-const PLANNED = "0.1.0-alpha.1";
-const CORE = "@kynesyslabs/dacs";
-const HOST = "@kynesyslabs/dacs-node";
-const CLIENT = "@kynesyslabs/dacs-client";
-const SELLER = "@kynesyslabs/dacs-seller";
-const GENERATOR = "create-dacs-agent";
-const FIVE = [CORE, HOST, CLIENT, SELLER, GENERATOR];
 
 const scratch = [];
 after(() => { for (const directory of scratch) rmSync(directory, { recursive: true, force: true }); });
@@ -26,69 +18,6 @@ function tempDirectory(prefix) {
   const directory = mkdtempSync(join(tmpdir(), prefix));
   scratch.push(directory);
   return directory;
-}
-const lines = (path) => existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
-
-// ---- The publisher, run as a child process against an in-memory registry ----
-
-const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const integrityOf = (bytes) => `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
-
-// A null `admission` leaves the field out. `existing` maps a package name to "same" or "other": a registry release whose
-// integrity equals the receipt's, or differs from it.
-function publisherFixture({ names = FIVE, admission = "strict-five", existing = {} } = {}) {
-  const directory = tempDirectory("dacs-publisher-");
-  const artifactDirectory = join(directory, "set");
-  mkdirSync(artifactDirectory);
-  const receipts = {};
-  const archives = {};
-  const releases = {};
-  for (const name of names) {
-    const filename = `${basename(name)}-${PLANNED}.tgz`;
-    const bytes = Buffer.from(`archive bytes of ${name}`);
-    writeFileSync(join(artifactDirectory, filename), bytes);
-    receipts[name] = { filename, sha256: sha256(bytes), integrity: integrityOf(bytes) };
-    archives[join(artifactDirectory, filename)] = { name, integrity: receipts[name].integrity };
-    if (existing[name]) releases[name] = existing[name] === "same" ? receipts[name].integrity : "sha512-other";
-  }
-  writeFileSync(join(artifactDirectory, "release-provenance.json"), JSON.stringify({
-    schema: "dacs-release-set/v1", version: PLANNED, admission: admission ?? undefined, source: { clean: true }, packages: receipts,
-  }));
-  writeFileSync(join(directory, "registry.json"), JSON.stringify({ releases, archives }));
-  mkdirSync(join(directory, "bin"));
-  // A publish whose arguments contain NPM_FAIL_ON exits 1 before it is recorded, as a failed publish leaves no release.
-  writeFileSync(join(directory, "bin/npm"), [
-    "#!/bin/sh",
-    "if [ -n \"$NPM_FAIL_ON\" ]; then case \"$*\" in *\"$NPM_FAIL_ON\"*) exit 1;; esac; fi",
-    "echo \"$@\" >> \"$REGISTRY_DOUBLE_DIR/npm.log\"",
-    "",
-  ].join("\n"), { mode: 0o700 });
-  return { directory, artifactDirectory, archives };
-}
-
-// `env` entries set to null are removed from the child's environment.
-function publish(fixture, env = {}) {
-  const childEnv = {
-    ...process.env,
-    PATH: `${join(fixture.directory, "bin")}:${process.env.PATH}`,
-    REGISTRY_DOUBLE_DIR: fixture.directory,
-    GITHUB_ACTIONS: "true",
-    DACS_NPM_PUBLISH_CONFIRM: `publish:${PLANNED}:next`,
-    ...env,
-  };
-  for (const [key, value] of Object.entries(env)) if (value === null) delete childEnv[key];
-  const result = spawnSync(process.execPath, [
-    "--import", registryDouble, join(repoRoot, "scripts/publish-release-set.mjs"),
-    "--artifact-dir", fixture.artifactDirectory, "--tag", "next",
-  ], { encoding: "utf8", env: childEnv, timeout: 30_000 });
-  const npmCalls = lines(join(fixture.directory, "npm.log"));
-  return {
-    status: result.status,
-    output: result.stdout + result.stderr,
-    fetchCalls: lines(join(fixture.directory, "fetch.log")),
-    npmCalls,
-    publishedNames: npmCalls.map((call) => fixture.archives[call.split(" ")[1]].name),
-  };
 }
 
 function assertRefusedBeforeNetwork(result, pattern) {
@@ -139,7 +68,7 @@ test("an existing exact version is skipped and the remaining packages publish in
 test("a conflicting existing version of the last package refuses before the first publish", () => {
   const result = publish(publisherFixture({ existing: { [GENERATOR]: "other" } }));
   assert.notEqual(result.status, 0);
-  assert.match(result.output, /existing registry release conflicts for create-dacs-agent/);
+  assert.match(result.output, /existing_release_conflict for create-dacs-agent/);
   assert.equal(result.fetchCalls.length, 5);
   assert.equal(result.npmCalls.length, 0);
 });
@@ -148,7 +77,7 @@ test("a publish that fails midway leaves the earlier packages published and a re
   const fixture = publisherFixture();
   const failed = publish(fixture, { NPM_FAIL_ON: `${basename(CLIENT)}-${PLANNED}.tgz` });
   assert.notEqual(failed.status, 0);
-  assert.match(failed.output, /npm publish failed for @kynesyslabs\/dacs-client/);
+  assert.match(failed.output, /publish_outcome_unknown for @kynesyslabs\/dacs-client/);
   assert.deepEqual(failed.publishedNames, [CORE, HOST]);
   const rerun = publish(fixture);
   assert.equal(rerun.status, 0, rerun.output);

@@ -62,6 +62,9 @@ jobs:
       actions: read
       id-token: write
     steps:
+      - name: Record the publish job start
+        run: echo "DACS_PUBLISH_JOB_STARTED_AT=$(date +%s%3N)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
@@ -147,4 +150,4 @@ jobs:
           DACS_NPM_PUBLISH_CONFIRM: publish:${{ inputs.confirm_version }}:next
         run: |
           bash scripts/require-publish-environment.sh
-          node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next
+          node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at "$DACS_PUBLISH_JOB_STARTED_AT"
