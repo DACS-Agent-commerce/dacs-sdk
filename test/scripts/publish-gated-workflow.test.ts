@@ -12,7 +12,7 @@ const POLICY_PACKAGES = (JSON.parse(readFileSync(join(repoRoot, "scripts/release
   { packages: { name: string; directory: string }[] }).packages;
 const VERSION = "0.1.0-alpha.1";
 
-type Step = { name?: string; run?: string; if?: string };
+type Step = { name?: string; run?: string; if?: string; uses?: string; with?: Record<string, unknown> };
 type Job = {
   steps?: Step[]; needs?: string[]; environment?: string; permissions?: Record<string, string>;
   "timeout-minutes"?: number; strategy?: { matrix?: { "node-version"?: string[] } };
@@ -123,6 +123,16 @@ describe("the gated publish workflow", () => {
     expect(verify?.permissions).toEqual({ contents: "read" });
     expect(JSON.stringify(verify?.steps)).not.toMatch(/secrets\.|registry-url|NODE_AUTH_TOKEN|GH_TOKEN/u);
     expect(gated.jobs.verify?.needs).toEqual(expect.arrayContaining(["registry-container-acceptance", "publish-environment"]));
+  });
+
+  it("every artifact upload in a re-runnable job of the gated workflow carries the run attempt in its name, so \"Re-run failed jobs\" does not upload an existing name", () => {
+    const uploads = Object.values(gated.jobs).flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses?.startsWith("actions/upload-artifact@"));
+    expect(uploads.length).toBeGreaterThan(0);
+    for (const upload of uploads) {
+      expect(String(upload.with?.name), upload.name).toContain("${{ github.run_attempt }}");
+    }
+    expect(gated.jobs.publish?.steps?.some((step) => step.uses?.startsWith("actions/upload-artifact@"))).toBe(true);
   });
 
   it("the gated workflow keeps one publication at a time", () => {

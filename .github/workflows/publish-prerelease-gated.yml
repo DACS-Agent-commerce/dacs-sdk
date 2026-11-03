@@ -173,7 +173,7 @@ jobs:
       - name: Upload exact reviewed release set
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dacs-npm-prerelease-${{ github.sha }}
+          name: dacs-npm-prerelease-${{ github.sha }}-${{ github.run_attempt }}
           path: package-artifacts/release-set/
           if-no-files-found: error
           retention-days: 90
