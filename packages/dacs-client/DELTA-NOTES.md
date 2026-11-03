@@ -237,3 +237,7 @@ Payment evidence shape: `checkNativePaymentEvidence` in `src/dacs/native-payment
 ## D11 — Nonce-slot reader
 
 The chain reader gains `findTransferAtNonce(address, nonce, { limit, signal })`: one `getTransactionHistory` page, each row classified by one closed check (`slotRow`), answering `found` with a hash the caller reads back, or `unknown`. A failed row is skipped unread; an own confirmed row needs the wallet's own signing key, a block number, a bare 64-hex hash and a readable nonce, and own rows must be newest first by nonce. It is on the reader object only: no package export and no caller. `test/chain-nonce-slot.test.mjs` covers every row check. The ledger records the two earlier commits of this reader by full commit hash, because their subjects carry no delta prefix.
+
+## D11 — Handed-off cancel
+
+`cancel` for a handed-off payment that is not native stays open until the payment's nonce slot is used, then reads that slot's transaction back; it ends the purchase as cancelled only with `DACS_NONCE_SLOT_PROOF=account` (default `off`, which keeps it open). The change is in `src/purchases.mjs` and `src/config.mjs`; `test/config-nonce-slot-proof.test.mjs` pins the setting, and `test/client/nonce-slot-cancel.test.ts` in the SDK tests the cancel.
