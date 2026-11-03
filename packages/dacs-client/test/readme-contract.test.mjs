@@ -7,7 +7,10 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as client from '@kynesyslabs/dacs-client';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
+import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 
+const { binding, currentLocal } = await bindFixture();
+const admission = { binding, currentLocal };
 const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const contract = readme.slice(readme.indexOf('## Factory integration'));
 const NOW = Date.UTC(2030, 0, 1), HASH = 'a'.repeat(64), IDENTITY = 'f'.repeat(64);
@@ -69,7 +72,7 @@ function world(t, { native = false, expired = false, reader = 'present', disposi
     }) }),
   }, { get(target, key) { chainTouched.add(key); return target[key]; } });
   const service = client.createPurchaseService({ db, ops, coordinates, chain, store, now: () => NOW,
-    config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
+    config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
   const token = savedOps.handoffTokenFor(op.id);
   return { db, op, coordinates, touched, chainTouched, service,
     activeCalls: () => activeCalls,
@@ -222,7 +225,7 @@ probe('README protocol pass-through behavior and every held method', passive.con
   const { db } = database(t), store = client.createSqlitePurchaseStore();
   let hostCalls = 0;
   const protocol = client.createProtocolPurchases({ db, store, ops: {}, coordinates: client.createCoordinateStore({ db }),
-    dacsProtocol: {}, buyerAccess: { assertWallet(wallet) { assert.equal(wallet, PAYER); hostCalls++; } } });
+    dacsProtocol: {}, buyerAccess: { assertWallet(wallet) { assert.equal(wallet, PAYER); hostCalls++; } }, admission });
   assert.deepEqual([...section('Protocol').matchAll(/`([^`]+)`/g)].map(m => m[1]), [...passive, 'profile_not_admitted']);
   assert.equal(protocol.assertBuyerAccess(PAYER), undefined);
   assert.equal(hostCalls, 1);
@@ -232,10 +235,10 @@ probe('README protocol pass-through behavior and every held method', passive.con
   assert.equal(await protocol.observeReportedPayment(HASH), null);
   for (const [name, method] of Object.entries(protocol)) {
     if (typeof method === 'function' && !passive.includes(name)) {
-      assert.throws(() => method({ id: 'TEST-operation' }, 'TEST-hold'), { code: 'profile_not_admitted' }, name);
+      await assert.rejects(method({ id: 'TEST-operation' }, 'TEST-hold'), { code: 'profile_not_admitted' }, name);
     }
   }
-  assert.throws(() => protocol.holdChainReadback({}, 'TEST-hold'), { code: 'profile_not_admitted' });
+  await assert.rejects(protocol.holdChainReadback({}, 'TEST-hold'), { code: 'profile_not_admitted' });
   assert.equal(hostCalls, 1);
 });
 probe('README writer list admits only watch.observe host bookkeeping', ['watch.observe', 'transition'], t => {
