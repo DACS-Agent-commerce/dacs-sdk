@@ -369,6 +369,55 @@ test('P10-T08 a connection that changes while the host starts refuses before it 
   lockReleased(f);
 });
 
+test('P10-T08 the re-check before listening reads the reader within 10,000 ms, keeps its cause, and releases the lock', async (t) => {
+  await t.test('a reader that answers the startup read and then stalls times out at 10,000 ms', async (subtest) => {
+    const f = await hostFixture(subtest);
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    const answer = authorityReader();
+    let reads = 0;
+    let answerLate;
+    let secondRead;
+    const secondReadStarted = new Promise((resolve) => { secondRead = resolve; });
+    const readAuthority = (scope) => {
+      if (++reads === 1) return answer(scope);
+      secondRead();
+      return new Promise((resolve) => { answerLate = () => resolve(answer(scope)); });
+    };
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      let outcome = 'pending';
+      const starting = f.start({ tp1Network: testNetwork({ readAuthority }) }).then(() => { outcome = 'started'; }, (error) => { outcome = error; });
+      await secondReadStarted;
+      mock.timers.tick(AUTHORITY_DEADLINE_MS - 1);
+      await flush();
+      assert.equal(outcome, 'pending', 'still waiting at 9,999 ms');
+      mock.timers.tick(1);
+      await starting;
+      assert.equal(outcome.code, 'tp1_authority_timeout');
+      assert.equal(outcome.cause.name, 'TimeoutError', 'the timeout is the cause');
+      answerLate();
+      await flush();
+      assert.equal(f.wires.length, 0, 'nothing was served');
+      assert.deepEqual(unhandled, []);
+      lockReleased(f);
+    } finally {
+      mock.timers.reset();
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+  await t.test('a reader that fails its second read keeps its cause', async (subtest) => {
+    const f = await hostFixture(subtest);
+    const cause = new Error('TEST authority went away');
+    const answer = authorityReader();
+    let reads = 0;
+    const error = await rejection(f.start({ tp1Network: testNetwork({ readAuthority: (scope) => (++reads === 1 ? answer(scope) : Promise.reject(cause)) }) }));
+    assert.equal(error, cause);
+    lockReleased(f);
+  });
+});
+
 test('P10-T09 a plain-HTTP endpoint or a revision-1 chain refuses before the lock and before any file', async (t) => {
   const cases = [
     ['a plain-HTTP endpoint', { connection: () => ({ ...TEST_CONNECTION, endpoint: 'http://rpc.example.invalid/' }) }, 'tp1_local_binding_invalid'],

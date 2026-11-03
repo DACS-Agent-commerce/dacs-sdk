@@ -169,16 +169,20 @@ function checkTp1Network(tp1Network) {
   if (TP1_NETWORK_KEYS.some((key) => typeof tp1Network[key] !== 'function')) throw new TypeError('tp1Network needs a connection() and a readAuthority function');
 }
 
-// K7: the binding over the SDK's approved record and the operator's current connection. The read is
-// bounded (SA-16): a deadline is `tp1_authority_timeout` with the timeout as its cause, any other
-// failure is the reader's or the binding's own error, and a late answer is never used.
-async function bindApprovedProfile({ connection, readAuthority }) {
-  const { result } = boundedCall(() => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: connection(), readAuthority }), { timeoutMs: TP1_AUTHORITY_TIMEOUT_MS });
+// Every wait on the operator's reader is bounded (SA-16), at startup and in the context the signed
+// routes use: a deadline is `tp1_authority_timeout` with the timeout as its cause, any other failure
+// is the reader's or the binding's own error, and a late answer is never used.
+async function withinAuthorityDeadline(work) {
+  const { result } = boundedCall(work, { timeoutMs: TP1_AUTHORITY_TIMEOUT_MS });
   try { return await result; } catch (error) {
     if (error?.name === 'TimeoutError') throw new WireError('tp1_authority_timeout', 500, undefined, error);
     throw error;
   }
 }
+
+// K7: the binding over the SDK's approved record and the operator's current connection.
+const bindApprovedProfile = ({ connection, readAuthority }) =>
+  withinAuthorityDeadline(() => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: connection(), readAuthority }));
 
 const journalAccountingMismatch = (detail, cause) => Object.assign(
   new Error(`kit_journal_accounting_mismatch: ${detail}`, cause === undefined ? undefined : { cause }), { code: 'kit_journal_accounting_mismatch' });
@@ -210,7 +214,8 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // The startup errors include the binding's own (`tp1_*`, with the reader's
 // error kept as the cause; `tp1_authority_timeout` after 10,000 ms), which come
 // before the state lock and any file, and `tp1_local_binding_changed` when the
-// connection no longer matches the binding just before the host listens; `kit_store_format_unsupported` for a data
+// connection no longer matches the binding just before the host listens (that re-check
+// reads the reader again, within the same 10,000 ms); `kit_store_format_unsupported` for a data
 // directory from an older kit format; `kit_journal_accounting_mismatch` for a
 // new kit store over a journal that already holds reservations; and the
 // journal's own `seller_replay_guard_invalid` with its detail.
@@ -271,7 +276,9 @@ export async function startSellerHost(options) {
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     // The context the signed routes on `./wire` use (P11a1); until they are mounted the host itself re-checks the binding with it before it listens.
-    const wire = Object.freeze({ binding, connection: tp1Network.connection, journal, assertCurrentBinding: () => assertTp1Binding(binding, tp1Network.connection()) });
+    // The check reads the reader again, so it has the same 10,000 ms deadline as the first read.
+    const assertCurrentBinding = () => withinAuthorityDeadline(() => assertTp1Binding(binding, tp1Network.connection()));
+    const wire = Object.freeze({ binding, connection: tp1Network.connection, journal, assertCurrentBinding });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before
