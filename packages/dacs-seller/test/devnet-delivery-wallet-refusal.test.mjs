@@ -118,3 +118,29 @@ test('the operator custody wallet checks a guarded write after the operator appr
   assert.deepEqual(settled,['released'],'the operator approval is released: nothing was sent');
  }
 });
+
+test('the operator custody wallet checks a guarded write again right before it signs, after its later reads', async () => {
+ for (const contested of [false, true]) {
+  const settled=[];let signed=0,withdrawn=false;
+  const approve=Object.assign(async()=>true,{settle:async(_request,outcome)=>{settled.push(outcome);}});
+  const attempt=createOperatorApprovalAttempt(approve);
+  const Demos=attempt.guardSigning(class{async sign(tx){signed++;return {...tx,signed:true};}});
+  // As the packaged wallet: approval, then the network and nonce reads during which the write is withdrawn,
+  // then the SDK signature; a thrown signature is answered sdk_error, and nothing is sent.
+  const result=await attempt.run(async()=>{
+   try{await attempt.approve({method:'sendTransaction'});}catch{return {success:false,error:{code:'internal_error'}};}
+   await new Promise(resolve=>setImmediate(()=>{withdrawn=contested;resolve();}));
+   try{await new Demos().sign({TEST:'create'});}catch(error){assert.equal(error.code,'not-authorized');return {success:false,error:{code:'sdk_error'}};}
+   return {success:true};
+  },()=>withdrawn?'TEST withdrawn during the wallet reads':true);
+  assert.equal(signed,contested?0:1,`contested ${contested}`);
+  assert.equal(result.success,!contested);
+  assert.deepEqual(settled,['released'],'the operator approval is released: nothing was sent');
+ }
+});
+
+test('the guarded SDK class signs as before outside a guarded write', async () => {
+ const attempt=createOperatorApprovalAttempt(async()=>true);
+ const Demos=attempt.guardSigning(class{async sign(tx){return {...tx,signed:true};}});
+ assert.deepEqual(await new Demos().sign({TEST:'plain'}),{TEST:'plain',signed:true});
+});
