@@ -369,7 +369,8 @@ cardTest('T13', (t) => {
     w.control.now = T0 + LIFETIME + 1;
     if (reopened) w.reopen('generation-two');
     for (const buyer of [BUYER, EQUIVALENT]) assert.deepEqual(w.quiet(() => w.attempt(first.sessionNonce, { ...route, buyer })), { kind: 'continuation', accepted: record }, label);
-    for (const change of [{ buyer: OTHER }, { jobId: job('other') }, { challengeScopeHash: hash('other scope') }, { presentationHash: hash('other bundle') }]) {
+    const otherPath = operator ? 'context' : 'proposal';
+    for (const change of [{ buyer: OTHER }, { jobId: job('other') }, { challengeScopeHash: hash('other scope') }, { presentationHash: hash('other bundle') }, { path: otherPath }]) {
       assert.deepEqual(w.quiet(() => w.attempt(first.sessionNonce, { ...route, ...change })), refused('context_challenge_consumed'), `${label} ${Object.keys(change)}`);
     }
     for (const buyer of [BUYER, EQUIVALENT, OTHER]) quietRefusal(w, () => issue(buyer), 'context_job_closed', 409);
@@ -758,6 +759,71 @@ test('challenge-final-liveness-barrier', (t) => {
   w.control.counts.contextRecords = CHALLENGE_LIMIT_DEFAULTS.maxContextRecords;
   quietRefusal(w, () => w.ledger.issue({ jobId: job('two'), buyer: BUYER }, SCOPE, closure()), 'peer_context_capacity', 503);
   assert.equal(calls.includes('liveness'), false);
+});
+
+test('challenge-reused-nonce-passes-the-final-barrier', (t) => {
+  const calls = [];
+  const closure = (error) => ({ assertStillLive() { calls.push('liveness'); if (error) throw error; } });
+  const expired = Object.assign(new Error('peer_expired'), { code: 'peer_expired', status: 408 });
+  const request = { jobId: job('one'), buyer: BUYER };
+  const entries = {
+    route: (w, authorization = LIVE) => w.ledger.issue(request, SCOPE, authorization),
+    operator: (w) => w.ledger.issueForOperator(request),
+  };
+  for (const [origin, issue] of Object.entries(entries)) for (const reopened of [false, true]) {
+    const label = `${origin} ${reopened ? 'reopened' : 'live'}`;
+    const w = world(t);
+    const first = issue(w);
+    if (reopened) w.reopen();
+    // Every count at its limit and no stop: the reused nonce still comes back with no write and no second charge.
+    Object.assign(w.control.counts, { contextRecords: CHALLENGE_LIMIT_DEFAULTS.maxContextRecords, starts: CHALLENGE_LIMIT_DEFAULTS.maxStartsPerHour });
+    assert.deepEqual(w.quiet(() => issue(w)), first, label);
+    w.control.counts.contextRecords = 0;
+    w.control.counts.starts = 0;
+    // A stop, or a stop value that is not exactly false, refuses the reused nonce too.
+    for (const stopped of [true, 'yes', undefined]) {
+      w.control.stopped = stopped;
+      quietRefusal(w, () => issue(w), 'seller_stopped', 503);
+    }
+    w.control.stopped = false;
+    assert.deepEqual(w.quiet(() => issue(w)), first, `${label}: answered again once the stop is lifted`);
+    assert.equal(w.rows().length, 1);
+  }
+
+  // The route's closure runs once, last, on a reused nonce; its refusal is not swallowed and a stop answers before it.
+  const w = world(t);
+  const first = entries.route(w);
+  Object.defineProperty(w.control.counts, 'starts', { get() { calls.push('counts'); return 0; } });
+  w.quiet(() => assert.throws(() => entries.route(w, closure(expired)), expired));
+  assert.deepEqual(calls, ['liveness'], 'a reused nonce reads no counts');
+  calls.length = 0;
+  w.control.stopped = true;
+  quietRefusal(w, () => entries.route(w, closure(expired)), 'seller_stopped', 503);
+  assert.deepEqual(calls, [], 'a stop answers before the liveness closure');
+  w.control.stopped = false;
+  w.quiet(() => assert.throws(() => entries.route(w, { assertStillLive: async () => {} }), TypeError));
+  assert.deepEqual(w.quiet(() => entries.route(w, closure())), first);
+});
+
+test('challenge-attempt-answers-need-the-path-of-the-origin', (t) => {
+  for (const operator of [false, true]) {
+    const label = operator ? 'operator' : 'route';
+    const own = operator ? { path: 'proposal', challengeScopeHash: null } : { path: 'context', challengeScopeHash: SCOPE };
+    const other = operator ? { path: 'context', challengeScopeHash: null } : { path: 'proposal', challengeScopeHash: SCOPE };
+    const w = world(t);
+    const { sessionNonce } = operator ? w.ledger.issueForOperator({ jobId: job('one'), buyer: BUYER }) : w.issue();
+    // An attempted row answers pending only on its own path, and the other path changes nothing.
+    const { owner } = w.attempt(sessionNonce, own);
+    assert.deepEqual(w.quiet(() => w.attempt(sessionNonce, other)), refused('context_challenge_consumed'), `${label} attempted on the other path`);
+    assert.deepEqual(w.ledger.retained(sessionNonce).owner, owner, `${label} keeps its owner`);
+    assert.equal(w.ledger.retained(sessionNonce).state, 'attempted');
+    assert.deepEqual(w.quiet(() => w.attempt(sessionNonce, own)), refused('context_attempt_pending', 503), `${label} attempted on its own path`);
+    // The same holds once it is accepted.
+    const record = w.record(sessionNonce);
+    assert.equal(w.ledger.accept(owner, sessionNonce, record), true);
+    assert.deepEqual(w.quiet(() => w.attempt(sessionNonce, other)), refused('context_challenge_consumed'), `${label} accepted on the other path`);
+    assert.deepEqual(w.quiet(() => w.attempt(sessionNonce, own)), { kind: 'continuation', accepted: record }, `${label} accepted on its own path`);
+  }
 });
 
 test('challenge-drain-state-table', (t) => {
