@@ -26,7 +26,7 @@ const GUARD_SITES = {
   'src/dacs/seller-agent.mjs': ['createSellerAgent'],
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
   'src/dacs/seller-transport-auth.mjs': ['createSellerTransportServerAuth', 'createSellerTransportClientAuth'],
-  'src/dacs/seller-durable-state.mjs': ['signOnce'],
+  'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],
   'src/dacs/native-payment-evidence-consumer.mjs': ['createNativePaymentEvidenceConsumer'],
   'src/dacs/native-dem-delivery-consumer.mjs': ['submitNativeDemDelivery'],
@@ -82,6 +82,9 @@ test('while the guard is off, every directly reachable effect entry under ./src/
   assert.deepEqual(Object.keys(answer.refused).sort(), [...new Set(Object.values(GUARD_SITES).flat())].sort(), 'every guarded entry was reached');
   for (const [entry, refusal] of Object.entries(answer.refused)) assert.deepEqual({ name: refusal?.name, code: refusal?.code, entry: refusal?.entry }, { name: 'KitOperationGuardError', code: GUARD_CODE, entry }, entry);
   assert.deepEqual(answer.effects, { signs: 0, sends: 0 });
+  assert.equal(answer.readable.anchorIntentKept, false, 'the refused durable-state anchor kept no intent');
+  assert.equal(answer.refusedWithoutInput.anchor?.code, GUARD_CODE, 'the durable-state anchor refuses with no request too');
+  assert.equal(answer.signsAtOpen, 1, 'opening a store still signs its own local record once while off');
   assert.equal(answer.walletRequests, 0);
   assert.equal(answer.anchorJournalRows, 0, 'the refused publish stored no intent');
   assert.equal(answer.readable.durableState, 'function', 'the durable store stays readable');

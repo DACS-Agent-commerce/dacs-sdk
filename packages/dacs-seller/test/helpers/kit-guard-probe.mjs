@@ -7,11 +7,13 @@ import { mkdtempSync, readdirSync, realpathSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { contentHash } from '@kynesyslabs/dacs';
 import { seller } from './protocol-fixture.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
 
 const WATCHED_FS_CALLS = ['openSync', 'mkdirSync', 'lstatSync', 'realpathSync', 'writeFileSync', 'readFileSync', 'readdirSync', 'statSync'];
 const ARTIFACT_JOB = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
+const SECOND_JOB = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
 const [caseName, ...caseArguments] = process.argv.slice(2);
 
 const refusalOf = async (run) => {
@@ -96,7 +98,7 @@ async function effectEntries() {
   const effects = { signs: 0, sends: 0 };
   const signBytes = (bytes) => { effects.signs++; return seller.signBytes(bytes); };
   const directory = privateTemporaryDirectory();
-  const refused = {}, readable = {};
+  const refused = {}, readable = {}, refusedWithoutInput = {};
   const attempt = async (entry, run) => { refused[entry] = await refusalOf(run); };
 
   const { startSellerHost } = await import('../../src/host.mjs');
@@ -133,9 +135,19 @@ async function effectEntries() {
   await attempt('createDevnetDemoDeliveryCapability.submit', () => nativeDemDeliverySubmitsOf(createDevnetDemoDeliveryCapability({ authority: delivery.authority, anchor: delivery })).submit({}));
 
   const store = await createSellerDurableState({ dir: directory, signer: { claim: seller.claim, sign: signBytes }, listingPin: { contentHash: 'a'.repeat(64) } });
-  effects.signs = 0; // opening the store authenticates its signer once; the refusals below must add none
+  const signsAtOpen = effects.signs; // opening the store signs its own local records, which stays allowed while off
+  effects.signs = 0; // the refusals below must add none
   readable.durableState = typeof store.retainContext;
   await attempt('signOnce', () => store.signOnce('signature:probe', Buffer.from('bytes')));
+  // A complete request with a valid external writer signature: only the guard can stop it before it keeps an intent and writes.
+  const { anchorWriteMessage } = await import('../../src/dacs/fixture-anchors.mjs');
+  const anchorAddress = 'dacs4:probe:anchor', anchorArtifact = { probe: 'artifact' };
+  const anchorStore = { write: async () => { effects.sends++; }, read: async () => { effects.sends++; return { status: 'absent' }; } };
+  const authorize = () => seller.signBytes(Buffer.from(anchorWriteMessage(anchorAddress, contentHash(anchorArtifact)))).toString('base64url');
+  await attempt('anchor', () => store.withJob(ARTIFACT_JOB, () => store.anchor({ jobId: ARTIFACT_JOB, logicalAddress: anchorAddress, artifact: anchorArtifact, anchors: anchorStore, authorize })));
+  readable.anchorIntentKept = store.hasAnchor(anchorAddress);
+  // The refusal does not depend on the request's shape: no request at all is still the guard's refusal.
+  refusedWithoutInput.anchor = await refusalOf(() => store.withJob(SECOND_JOB, () => store.anchor()));
   store.close?.();
 
   const journalOptions = (name) => ({ path: join(directory, name), signCreate: async () => { effects.signs++; }, broadcast: async () => { effects.sends++; }, readAccountNonce: async () => { effects.sends++; }, readTransactionState: async () => { effects.sends++; } });
@@ -152,7 +164,7 @@ async function effectEntries() {
   const anchors = await anchorFixture();
   await attempt('publish', () => anchors.publish(anchors.open(), ARTIFACT_JOB));
   readable.anchorRead = (await anchors.open().read({ logicalAddress: 'dacs4:probe', artifactKind: 'FinalityCommitmentRecord', artifact: {} }).catch((error) => ({ error: error.code ?? error.name }))).error ?? 'answered';
-  return { refused, readable, effects, walletRequests: anchors.captured.length, anchorJournalRows: anchors.journal.rows.size };
+  return { refused, refusedWithoutInput, signsAtOpen, readable, effects, walletRequests: anchors.captured.length, anchorJournalRows: anchors.journal.rows.size };
 }
 
 const CASES = { startWithHostileOptions, concurrentStarts, namedGuardInputs, guardValues, fixtureAdmits, artifactReadRecovery, effectEntries };

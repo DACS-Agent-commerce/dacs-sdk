@@ -651,7 +651,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // address, the artifact size and the writer authorization. A kept intent
       // is never sent again: after it, any failure (a write refused before it
       // left this process included) holds the anchor, and recovery only reads.
-      async anchor({ jobId, logicalAddress, artifact, anchors, authorize }) {
+      async anchor(request) {
+        assertKitOperationAdmitted('anchor');
+        const { jobId, logicalAddress, artifact, anchors, authorize } = request;
         if (!isCanonicalJobId(jobId) || typeof logicalAddress !== 'string' || logicalAddress.length < 1 || logicalAddress.length > MAX_ANCHOR_ADDRESS_LENGTH) fail('seller_state_binding_invalid');
         const id = `anchor:${logicalAddress}`;
         const prior = transaction(() => { fence(jobId); return anchorRow(logicalAddress); });

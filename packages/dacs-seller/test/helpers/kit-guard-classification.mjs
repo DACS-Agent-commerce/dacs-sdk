@@ -22,7 +22,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/rail-authority.mjs': { effect: {  }, pure: ['intakeRailDefinition', 'railAuthorityConfig', 'validateSellerListing'] },
   'src/dacs/seller-agent.mjs': { effect: { createSellerAgent: ['createSellerAgent'] }, pure: ['SellerAgentError', 'buildReport', 'canonicalSignature', 'proposalTimeProblem', 'transportOutcome'] },
   'src/dacs/seller-context-route.mjs': { effect: {  }, pure: ['createSellerContextClient', 'createSellerContextRecords', 'createSellerContextRoute', 'sellerContextReason', 'sellerContextRequestUnknown'] },
-  'src/dacs/seller-durable-state.mjs': { effect: { createSellerDurableState: ['signOnce'] }, pure: ['SellerRecoveryError'] },
+  'src/dacs/seller-durable-state.mjs': { effect: { createSellerDurableState: ['signOnce', 'anchor'] }, pure: ['SellerRecoveryError'] },
   'src/dacs/seller-http.mjs': { effect: { createSellerHttpHandler: ['createSellerHttpHandler'], createSellerAgentClient: ['createSellerAgentClient'] }, pure: ['SellerRefusedError', 'SellerTlsUnusableError', 'SellerUnavailableError', 'loopbackSocket', 'sellerFailureAttempt', 'sellerFailureCause'] },
   'src/dacs/seller-proposal-time.mjs': { effect: {  }, pure: ['proposalTimeProblem'] },
   'src/dacs/seller-transport-auth.mjs': { effect: { createSellerTransportServerAuth: ['createSellerTransportServerAuth'], createSellerTransportClientAuth: ['createSellerTransportClientAuth'] }, pure: ['SellerTransportError', 'createSellerTransportStore', 'normalizeSellerSessionDelegationSignature', 'sellerContextChallengeScope', 'sellerContextScopeHash', 'sellerSessionDelegationSigningBytes', 'sellerTransportEffect', 'sellerTransportSigningBytes', 'verifySellerSessionDelegation'] },
