@@ -12,12 +12,21 @@ const POLICY_PACKAGES = (JSON.parse(readFileSync(join(repoRoot, "scripts/release
   { packages: { name: string; directory: string }[] }).packages;
 const VERSION = "0.1.0-alpha.1";
 
-type Step = { name?: string; run?: string; if?: string };
-type Job = { steps?: Step[]; strategy?: { matrix?: { "node-version"?: string[] } } };
+type Step = { name?: string; run?: string; if?: string; uses?: string; with?: Record<string, unknown> };
+type Job = {
+  steps?: Step[]; needs?: string[]; environment?: string; permissions?: Record<string, string>;
+  "timeout-minutes"?: number; strategy?: { matrix?: { "node-version"?: string[] } };
+};
 type Workflow = { concurrency?: unknown; jobs: Record<string, Job> };
 const readWorkflow = (path: string) => parse(readFileSync(path, "utf8")) as Workflow;
 const gated = readWorkflow(gatedPath);
 const publishSteps = gated.jobs.publish?.steps ?? [];
+const verifySteps = gated.jobs.verify?.steps ?? [];
+const SUITE_COMMANDS = [
+  "npm test", "npm run host:test", "npm run generator:test", "npm test --workspace @kynesyslabs/dacs-client",
+  "npm run seller:prepare -- \"$DACS_SELLER_SMOKE_DIR\"", "npm run seller:test", "npm run release:test",
+];
+const PUBLISH_COMMAND = "node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at \"$DACS_PUBLISH_JOB_STARTED_AT\"";
 
 // Each non-comment line of every step's `run`, in step order.
 const commandsOf = (steps: Step[]) => steps.flatMap((step) =>
@@ -76,23 +85,67 @@ describe("the gated publish workflow", () => {
     }
   });
 
-  it("the gated workflow requires a clean build tree after npm ci, builds core, dacs-node and the generator, runs all five packages' suites and then release:test, before building the release set", () => {
-    const commands = commandsOf(publishSteps);
-    expect(isInOrder(commands, [
+  it("the gated workflow's verify job requires a clean build tree after npm ci, builds core, dacs-node and the generator, and runs all five packages' suites and then release:test", () => {
+    expect(isInOrder(commandsOf(verifySteps), [
       "npm ci",
       "test ! -e dist", "test ! -e packages/dacs-node/dist", "test ! -e packages/create-dacs-agent/dist",
       "npm run build", "npm run host:build", "npm run generator:build",
-      "npm test", "npm run host:test", "npm run generator:test",
-      "npm test --workspace @kynesyslabs/dacs-client",
-      "npm run seller:prepare -- \"$DACS_SELLER_SMOKE_DIR\"", "npm run seller:test",
-      "npm run release:test",
-      "npm run release:set:verify -- --output-dir package-artifacts/release-set --strict",
+      ...SUITE_COMMANDS,
     ])).toBe(true);
-    expect(commands.indexOf("npm run release:test")).toBeLessThan(commands.indexOf("node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at \"$DACS_PUBLISH_JOB_STARTED_AT\""));
+  });
+
+  it("the gated workflow's publish job requires a clean build tree, builds, and builds the release set before it publishes", () => {
+    expect(isInOrder(commandsOf(publishSteps), [
+      "npm ci",
+      "test ! -e dist", "test ! -e packages/dacs-node/dist", "test ! -e packages/create-dacs-agent/dist",
+      "npm run build", "npm run host:build", "npm run generator:build",
+      "npm run release:set:verify -- --output-dir package-artifacts/release-set --strict",
+      PUBLISH_COMMAND,
+    ])).toBe(true);
+  });
+
+  it("the gated workflow's publish job runs none of the suites, so its 45-minute clock holds only the release set and the publish", () => {
+    const commands = commandsOf(publishSteps);
+    for (const suite of SUITE_COMMANDS) expect(commands, suite).not.toContain(suite);
+    expect(commands.filter((command) => /\b(?:test|seller:prepare)\b/u.test(command))
+      .filter((command) => command.startsWith("npm "))).toEqual([]);
+  });
+
+  it("the gated workflow's publish job waits for the verify job, which has its own longer time limit", () => {
+    expect(gated.jobs.publish?.needs).toEqual(expect.arrayContaining(["verify"]));
+    const verifyLimit = gated.jobs.verify?.["timeout-minutes"];
+    expect(verifyLimit).toBeGreaterThan(gated.jobs.publish?.["timeout-minutes"] ?? Infinity);
+  });
+
+  it("the gated workflow's verify job gets no publication credential: no environment, no OIDC token, no secret", () => {
+    const verify = gated.jobs.verify;
+    expect(verify?.environment).toBeUndefined();
+    expect(verify?.permissions).toEqual({ contents: "read" });
+    expect(JSON.stringify(verify?.steps)).not.toMatch(/secrets\.|registry-url|NODE_AUTH_TOKEN|GH_TOKEN/u);
+    expect(gated.jobs.verify?.needs).toEqual(expect.arrayContaining(["registry-container-acceptance", "publish-environment"]));
+  });
+
+  it("every artifact upload in a re-runnable job of the gated workflow carries the run attempt in its name, so \"Re-run failed jobs\" does not upload an existing name", () => {
+    const uploads = Object.values(gated.jobs).flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses?.startsWith("actions/upload-artifact@"));
+    expect(uploads.length).toBeGreaterThan(0);
+    for (const upload of uploads) {
+      expect(String(upload.with?.name), upload.name).toContain("${{ github.run_attempt }}");
+    }
+    expect(gated.jobs.publish?.steps?.some((step) => step.uses?.startsWith("actions/upload-artifact@"))).toBe(true);
   });
 
   it("the gated workflow keeps one publication at a time", () => {
     expect(gated.concurrency).toEqual({ group: "dacs-npm-prerelease", "cancel-in-progress": false });
+  });
+});
+
+describe("the publication runbook", () => {
+  it("tells the operator to re-run only the failed publish job after publish_budget_exhausted, so the verified suites are not repeated", () => {
+    const runbook = readFileSync(join(repoRoot, "docs/npm-prerelease-release.md"), "utf8");
+    const line = runbook.split("\n").find((text) => text.includes("`publish_budget_exhausted`"));
+    expect(line).toMatch(/Re-run failed jobs/u);
+    expect(runbook).toMatch(/`verify` job/u);
   });
 });
 
@@ -129,7 +182,7 @@ describe("every workflow", () => {
       }
     }
     expect(callers).toContain("package-artifact.yml:release-packages");
-    expect(callers).toContain("publish-prerelease-gated.yml:publish");
+    expect(callers).toContain("publish-prerelease-gated.yml:verify");
     const legs = readWorkflow(join(workflowsDirectory, "package-artifact.yml")).jobs["release-packages"]?.strategy?.matrix?.["node-version"];
     expect(legs).toEqual(["20.19.0", "22.21.1"]);
   });
