@@ -36,7 +36,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/buyer-access.mjs': { effect: {  }, pure: ['createOperatorBuyerAccess', 'operatorBuyerAccessConfig'] },
   'src/devnet-demo/deliverable.mjs': { effect: {  }, pure: ['createDevnetPurchasedReportProducer', 'isDevnetPurchasedReport'] },
   'src/devnet-demo/deployment-qualification.mjs': { effect: {  }, pure: ['assertQualifiedDeployment'] },
-  'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory'] },
+  'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory', 'syncFile'] },
   'src/devnet-demo/listing.mjs': { effect: { createDevnetDemoListingPublisher: ['createDevnetDemoListingPublisher'] }, pure: [] },
   'src/devnet-demo/native-delivery.mjs': { effect: { createDevnetDemoDeliveryCapability: ['createDevnetDemoDeliveryCapability.submit'] }, pure: ['hasDevnetDeliveryEvidenceReader', 'hasDevnetPurchasedReportReader', 'readDevnetDeliveryEvidence', 'readDevnetPurchasedReport'] },
   'src/devnet-demo/operator-approval.mjs': { effect: {  }, pure: ['composeSellerApproval', 'confirmedWriteOs', 'createExactOperatorApproval', 'createSellerContextAdmission', 'decidedFromJournals', 'heldPolicyBudget', 'parsePolicyLedger', 'policyRefusal', 'releaseSellerContextHolds', 'sellerApprovalSettings', 'sellerIssuanceJournalIds', 'sellerPurchaseSource', 'serializedPolicy', 'stillAuthorizedToSign', 'stillOpenBeforePayment', 'withContextHolds'] },
