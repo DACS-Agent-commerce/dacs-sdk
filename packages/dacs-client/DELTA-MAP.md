@@ -762,6 +762,8 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | | `packages/dacs-client/src/purchases.mjs:32`, `packages/dacs-client/src/purchases.mjs:34`, `packages/dacs-client/src/purchases.mjs:37`, `packages/dacs-client/src/purchases.mjs:40`, `packages/dacs-client/src/purchases.mjs:46`, `packages/dacs-client/src/purchases.mjs:51`, `packages/dacs-client/src/purchases.mjs:83`, `packages/dacs-client/src/purchases.mjs:176`, `packages/dacs-client/src/purchases.mjs:185`, `packages/dacs-client/src/purchases.mjs:242`, `packages/dacs-client/src/purchases.mjs:248`, `packages/dacs-client/src/purchases.mjs:311`, `packages/dacs-client/src/purchases.mjs:383`, `packages/dacs-client/src/purchases.mjs:399`, `packages/dacs-client/src/purchases.mjs:402`, `packages/dacs-client/src/purchases.mjs:412`, `packages/dacs-client/src/purchases.mjs:432`, `packages/dacs-client/src/purchases.mjs:449`, `packages/dacs-client/src/purchases.mjs:494`, `packages/dacs-client/src/purchases.mjs:513`, `packages/dacs-client/src/purchases.mjs:620`, `packages/dacs-client/src/purchases.mjs:725`, `packages/dacs-client/src/purchases.mjs:745`, `packages/dacs-client/src/purchases.mjs:755`, `packages/dacs-client/src/purchases.mjs:805`, `packages/dacs-client/src/purchases.mjs:840`, `packages/dacs-client/src/purchases.mjs:852`, `packages/dacs-client/src/purchases.mjs:915`, `packages/dacs-client/src/purchases.mjs:928`, `packages/dacs-client/src/purchases.mjs:936`, `packages/dacs-client/src/purchases.mjs:938`, `packages/dacs-client/src/purchases.mjs:940`, `packages/dacs-client/src/purchases.mjs:962`, `packages/dacs-client/src/purchases.mjs:991`, `packages/dacs-client/src/purchases.mjs:998`, `packages/dacs-client/src/purchases.mjs:1124`, `packages/dacs-client/src/purchases.mjs:1137`, `packages/dacs-client/src/purchases.mjs:1139`, `packages/dacs-client/src/purchases.mjs:1145`, `packages/dacs-client/src/purchases.mjs:1189`, `packages/dacs-client/src/purchases.mjs:1213`, `packages/dacs-client/src/purchases.mjs:1222`, `packages/dacs-client/src/purchases.mjs:1229`, `packages/dacs-client/src/purchases.mjs:1236`, `packages/dacs-client/src/purchases.mjs:1243` | 5a5fdd164e41dd4abc7f1107620ce413458b29a6 |
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | 0f866a907680797a18eaaa3f0b284e299ab13866 |
 | | `packages/dacs-client/test/portal-capability.test.mjs:1` | 073700c9a849a4bfc092cb5913498364fd622f0d |
+| D11 | fix(client): D11 give the slow-reader passive test a signed nonce | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/passive-observation.test.mjs:1` | 1fe0fe0837472ca2fdca069087ec5f53db4d3822 |
 
 ## Complete commit and file inventory
 
@@ -1879,6 +1881,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record rebuilt portal capability sources and tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 give the slow-reader passive test a signed nonce | `packages/dacs-client/test/passive-observation.test.mjs:1` |
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 qualify provenance selectors by commit when subjects repeat | `packages/dacs-client/DELTA-NOTES.md:1` |
