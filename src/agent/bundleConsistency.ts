@@ -1,4 +1,4 @@
-import { bundleAddress } from "../canonical/addressing.js";
+import { jid1BundleAddress } from "../canonical/jid1Addressing.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { bundlesDiverge } from "./bundleDivergence.js";
@@ -163,20 +163,20 @@ function captureBundleCopyRead(
  * {@link verifyBundleCopy}; then {@link bundleConsistency} classifies the two
  * verified dispositions. A reader exception or malformed response is retained
  * as `indeterminate`, never silently converted to authoritative absence.
+ *
+ * @throws DacsError (as a rejection) before any address is hashed or any read
+ * is made, when `jobId` is not a canonical JID-1 job ID (26 uppercase Crockford
+ * characters, first 0-7) or `read` is not a function.
  */
 export async function lookupBundleCopies(
   jobId: string,
   read: BundleCopyReader,
 ): Promise<BundleCopies> {
-  if (
-    typeof jobId !== "string" ||
-    jobId.length === 0 ||
-    jobId !== jobId.trim() ||
-    jobId !== jobId.normalize("NFC") ||
-    /[\u0000-\u001f\u007f]/.test(jobId)
-  ) {
-    throw new DacsError("bundle lookup jobId must be non-empty canonical text");
-  }
+  // JID-3: the job ID is validated while deriving the addresses, before any read.
+  const addresses: Record<BundleRole, string> = {
+    buyer: jid1BundleAddress(jobId, "buyer"),
+    seller: jid1BundleAddress(jobId, "seller"),
+  };
   if (typeof read !== "function") {
     throw new DacsError("bundle lookup requires a reader");
   }
@@ -184,7 +184,7 @@ export async function lookupBundleCopies(
   const lookup = async (role: BundleRole): Promise<BundleCopyRead> => {
     try {
       return captureBundleCopyRead(
-        await read(bundleAddress(jobId, role), role),
+        await read(addresses[role], role),
         jobId,
         role,
       );
