@@ -1,6 +1,7 @@
 // Opaque process-local native delivery authority; operations own bounded transport
 // reads and deadlines. A submit timeout never proves that no write occurred.
 import { isDemDeliveryContextAuthority } from './dem-delivery-context-consumer.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 export const NATIVE_DEM_DELIVERY_SOURCE = 'dacs-chatgpt-plugin/native-dem-delivery/v1';
 const capabilities = new WeakMap();
 
@@ -55,6 +56,7 @@ export function isProvenUnsignedAbsence(value) {
 
 /** Submit isolated data; an authorization callback requires a registered guarded operation or holds delivery. */
 export async function submitNativeDemDelivery(capability, input, authorize) {
+  assertKitOperationAdmitted('submitNativeDemDelivery');
   const { submit, submitAuthorized } = operations(capability);
   if (authorize !== undefined && (typeof authorize !== 'function' || typeof submitAuthorized !== 'function')) return { status: 'indeterminate', reason: 'native delivery requires guarded submission' };
   return (authorize === undefined ? submit : submitAuthorized)(structuredClone(input), authorize);

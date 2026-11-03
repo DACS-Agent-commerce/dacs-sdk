@@ -15,7 +15,7 @@
 // only after the attempt's own end, so a superseded attempt never records one and no attempt starts after it. An attempt is issued only if its lease still runs
 // when its publication is done. Every request's nonce key is published too: the same signed request again is peer_request_replayed (409).
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, readSync, realpathSync, statfsSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, opendirSync, readSync, realpathSync, statfsSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 
 import { qualifyJournalRestart } from "./journalRestart.js";
@@ -315,9 +315,25 @@ function issue(store: Store, effect: Exclude<WireEffect, { state: "completed" }>
 }
 
 /** The operation of an effect: one per seller, job and route, so no request body names another. */
-function operationOf({ seller, jobId, path }: EffectReservation): string {
+function operationOf({ seller, jobId, path }: Pick<EffectReservation, "seller" | "jobId" | "path">): string {
   if (!isClaim(seller) || !isCanonicalJobId(jobId) || !DACS_SELLER_HTTP_ROUTES.some((r) => r.path === path && r.auth === "signed" && r.effect === "effect")) fail("wire_input_invalid", 500);
   return sha256Hex(canonicalize({ seller, jobId, path }));
+}
+
+/** How many attempts an operation has: they form a contiguous index, found in at most 106 safe-integer probes. */
+function attemptCount(store: Store, operationId: string): number {
+  if (!exists(store, attemptName(operationId, 0))) return 0;
+  let next = 0, upper = 1;
+  while (exists(store, attemptName(operationId, upper))) {
+    if (upper === Number.MAX_SAFE_INTEGER) corrupt("STORE-ATTEMPT-LIMIT");
+    next = upper; upper = Math.min(Number.MAX_SAFE_INTEGER, upper * 2);
+  }
+  while (next + 1 < upper) {
+    const middle = next + Math.floor((upper - next) / 2);
+    if (exists(store, attemptName(operationId, middle))) next = middle;
+    else upper = middle;
+  }
+  return upper;
 }
 
 /** Reserve one effect request (envelope.ts): its nonce key, then its operation's next state. */
@@ -335,20 +351,7 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
     return deepFreeze({ state: "completed" as const, operationId, outcome });
   };
   if (exists(store, outcomeName(operationId))) return completed();
-  // Immutable attempts form a contiguous index. Search it in at most 106 safe-integer probes.
-  let next = 0, upper = 1;
-  if (exists(store, attemptName(operationId, 0))) {
-    while (exists(store, attemptName(operationId, upper))) {
-      if (upper === Number.MAX_SAFE_INTEGER) corrupt("STORE-ATTEMPT-LIMIT");
-      next = upper; upper = Math.min(Number.MAX_SAFE_INTEGER, upper * 2);
-    }
-    while (next + 1 < upper) {
-      const middle = next + Math.floor((upper - next) / 2);
-      if (exists(store, attemptName(operationId, middle))) next = middle;
-      else upper = middle;
-    }
-    next = upper;
-  }
+  const next = attemptCount(store, operationId);
   if (next === 0) {
     if (publish(store, attemptName(operationId, 0), lease(0))) return issue(store, { state: "new", operationId, attempt: 0, leaseUntil: at + store.leaseMs });
     // Another worker published attempt 0 first: its binding decides.
@@ -396,4 +399,79 @@ export function completeWireEffect(journal: WireRequestJournal, effect: WireEffe
     if (!sameOutcome(end.outcome, owned)) fail("seller_effect_conflict", 500);
   }
   if (owned !== null) publishOutcome(store, operationId, attempt, owned);
+}
+
+/**
+ * What inspectWireOperation reports. `binding` is the one attempt 0 recorded. `pending`: the latest attempt has no end record, whatever its lease (compare
+ * `leaseUntil` with the journal's clock). `ended`: it ended with no outcome, `superseded` of the MAX_EFFECT_ATTEMPTS spent. `completed`: the outcome file exists
+ * or the latest end record carries the outcome.
+ */
+export type WireOperationView =
+  | { readonly state: "none" }
+  | { readonly state: "pending"; readonly binding: string; readonly attempt: number; readonly requestHash: string; readonly leaseUntil: number }
+  | { readonly state: "ended"; readonly binding: string; readonly attempt: number; readonly requestHash: string; readonly superseded: number }
+  | { readonly state: "completed"; readonly binding: string; readonly outcome: WireEffectOutcome };
+
+/**
+ * Read an effect operation's state without changing it: no publish, no clock, no ending of a lapsed attempt. The view confers no effect authority; the host
+ * serializes it with `reserve()` and revalidates a `completed` outcome at its source. A record the journal did not write is `seller_replay_guard_invalid`
+ * (500), a non-effect path or malformed seller or job `wire_input_invalid` (500), a foreign journal `seller_replay_guard_required` (500).
+ */
+export function inspectWireOperation(journal: WireRequestJournal, target: Pick<EffectReservation, "seller" | "jobId" | "path">): WireOperationView {
+  const store = journalStore(journal) as Store;
+  const operationId = operationOf(target);
+  const firstBinding = (): string => {
+    if (!exists(store, attemptName(operationId, 0))) corrupt("STORE-ATTEMPT-MISSING");
+    return readAttempt(store, operationId, 0).binding as string;
+  };
+  const completed = (outcome: WireEffectOutcome): WireOperationView => deepFreeze({ state: "completed" as const, binding: firstBinding(), outcome });
+  if (exists(store, outcomeName(operationId))) return completed(readOutcome(store, operationId));
+  const count = attemptCount(store, operationId);
+  if (count === 0) return deepFreeze({ state: "none" as const });
+  const attempt = count - 1;
+  const { requestHash, leaseUntil, superseded } = readAttempt(store, operationId, attempt) as { requestHash: string; leaseUntil: number; superseded: number };
+  const binding = firstBinding();
+  if (!exists(store, endedName(operationId, attempt))) return deepFreeze({ state: "pending" as const, binding, attempt, requestHash, leaseUntil });
+  const end = readEnd(store, operationId, attempt);
+  if (end.outcome !== null) return completed(end.outcome);
+  return deepFreeze({ state: "ended" as const, binding, attempt, requestHash, superseded: superseded + Number(end.superseded) });
+}
+
+/** A request's nonce key as the journal recorded it with its reservation. */
+export type WireNonceRecord = Readonly<Pick<EffectReservation, "key" | "binding" | "requestHash"> & { operationId: string }>;
+
+/** The most nonce keys listWireNonceKeys lists by default before it refuses the journal as too large to list. */
+const MAX_LISTED_NONCE_KEYS = 100_000;
+const NONCE_NAME = /^k-([0-9a-f]{64})$/;
+const NONCE_RECORD = ["key", "operationId", "binding", "requestHash"];
+
+/** The nonce key file `name`, read bounded; anything this journal did not write there is a corrupt store. */
+function readNonceRecord(store: Store, name: string, key: string): WireNonceRecord {
+  if (!exists(store, name)) corrupt("STORE-NONCE-INVALID");
+  const record = readRecord(store, name, SMALL_FILE_BYTES);
+  if (!hasKeys(record, NONCE_RECORD) || record.key !== key || !isHash(record.operationId) || !isHash(record.binding) || !isHash(record.requestHash)) corrupt("STORE-NONCE-INVALID");
+  return { key, operationId: record!.operationId as string, binding: record!.binding as string, requestHash: record!.requestHash as string };
+}
+
+/**
+ * Every nonce key the journal holds, in key order, those no attempt follows included. Read-only: no clock, no write. It refuses rather than truncate: more
+ * than `maxKeys` keys (detail STORE-ENUMERATION-INCOMPLETE) or a key entry that is not a regular file of the right name and shape is `seller_replay_guard_invalid`.
+ */
+export function listWireNonceKeys(journal: WireRequestJournal, maxKeys: number = MAX_LISTED_NONCE_KEYS): readonly WireNonceRecord[] {
+  const store = journalStore(journal) as Store;
+  if (!isUint(maxKeys)) fail("wire_input_invalid", 500);
+  assertSameDirectory(store);
+  const records: WireNonceRecord[] = [];
+  const directory = opendirSync(store.directory);
+  try {
+    for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+      if (!entry.name.startsWith("k-")) continue;
+      const key = NONCE_NAME.exec(entry.name)?.[1];
+      if (key === undefined) corrupt("STORE-NONCE-INVALID");
+      if (records.length >= maxKeys) corrupt("STORE-ENUMERATION-INCOMPLETE");
+      records.push(readNonceRecord(store, entry.name, key as string));
+    }
+  } finally { directory.closeSync(); }
+  assertSameDirectory(store);
+  return deepFreeze(records.sort((a, b) => a.key < b.key ? -1 : 1));
 }

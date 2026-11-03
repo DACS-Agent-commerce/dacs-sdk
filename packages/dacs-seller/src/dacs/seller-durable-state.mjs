@@ -1,4 +1,5 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 // Opt-in host-local recovery for the SIMULATED seller adapter. This retains
 // seller-authenticated application context beside the pinned SDK stores. It
 // never obtains a buyer key or reconstructs facts from a cached HTTP answer.
@@ -606,6 +607,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // under the same fence. Without that, one signer failure would refuse
       // these bytes for good, a paid order's evidence included.
       signOnce(id, bytes) {
+        assertKitOperationAdmitted('signOnce');
         const bytesHash = sha256Hex(bytes), jobId = scopedJob();
         return transaction(() => {
           fence(jobId);
@@ -649,7 +651,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // address, the artifact size and the writer authorization. A kept intent
       // is never sent again: after it, any failure (a write refused before it
       // left this process included) holds the anchor, and recovery only reads.
-      async anchor({ jobId, logicalAddress, artifact, anchors, authorize }) {
+      async anchor(request) {
+        assertKitOperationAdmitted('anchor');
+        const { jobId, logicalAddress, artifact, anchors, authorize } = request;
         if (!isCanonicalJobId(jobId) || typeof logicalAddress !== 'string' || logicalAddress.length < 1 || logicalAddress.length > MAX_ANCHOR_ADDRESS_LENGTH) fail('seller_state_binding_invalid');
         const id = `anchor:${logicalAddress}`;
         const prior = transaction(() => { fence(jobId); return anchorRow(logicalAddress); });
@@ -675,12 +679,15 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // Read back and authenticate the anchor `anchor:<address>` again, completed
       // or not, and record its receipt. Returns the receipt; throws a coded
       // SellerRecoveryError (seller_effect_missing, or the readback's code).
-      async reconcileAnchor(id, anchors) {
+      // With `record: false` the readback is authenticated and returned and
+      // nothing is signed or saved.
+      async reconcileAnchor(id, anchors, { record = true } = {}) {
         const prior = typeof id === 'string' && id.startsWith('anchor:') ? anchorRow(id.slice('anchor:'.length)) : null;
         if (!prior) fail('seller_effect_missing');
         const scoped = running.getStore()?.api === api;
         if (scoped) transaction(() => fence(prior.jobId));
         const receipt = await authenticatedReadback(anchors, prior);
+        if (!record) return receipt;
         // Inside an acquisition the update is fenced like every job-scoped
         // write. Unscoped (the lock-free reconcile) it only records an
         // authenticated readback of a retained intent, as before.
