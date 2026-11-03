@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { SettleRequest, SettleResult } from "../../src/agent/runSessionCore.js";
 import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
@@ -737,5 +737,136 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     expect(() => settlementKey("x402", "default:job", 0)).toThrow(
       /colon-free job id/,
     );
+  });
+});
+
+describe("pay-dem terminal-failure proof binding", () => {
+  const PAYER_HEX = "ab".repeat(32);
+  const PAYEE_HEX = "cd".repeat(32);
+  const HASH = "85".repeat(32);
+  const AMOUNT_OS = "9500000000";
+  const DEM_KEY = settlementKey("pay-dem", "job-338", 0);
+  const demBinding = (
+    override: Partial<SettlementBinding> = {},
+  ): Readonly<SettlementBinding> => Object.freeze({
+    bindingVersion: "1",
+    railId: "pay-dem",
+    jobId: "job-338",
+    phaseIndex: 0,
+    phase: "pay-dem",
+    amount: AMOUNT_OS,
+    agreementAsset: "DEM",
+    settlementAsset: "DEM",
+    payer: PAYER_HEX,
+    payee: PAYEE_HEX,
+    network: "demos",
+    finality: Object.freeze({ model: "bft-final" }),
+    ...override,
+  });
+  const proof = (override: Record<string, unknown> = {}) => ({
+    kind: "demos-failed-record",
+    txHash: HASH,
+    nonce: 9,
+    blockNumber: 480877,
+    payer: PAYER_HEX,
+    payee: PAYEE_HEX,
+    amountOs: AMOUNT_OS,
+    ...override,
+  });
+  // An `undefined` override removes the key, so the result stays canonical JSON.
+  const failed = (override: Record<string, unknown> = {}): SettleResult => Object.fromEntries(
+    Object.entries({
+      ok: false,
+      txHash: HASH,
+      chainId: "demos",
+      payer: PAYER_HEX,
+      payee: PAYEE_HEX,
+      errorClass: "permanent",
+      blockNumber: 480877,
+      txRefKind: "demos",
+      failureProof: proof(),
+      ...override,
+    }).filter(([, value]) => value !== undefined),
+  ) as unknown as SettleResult;
+
+  // The proof checks shape and bindings, not origin. One no node served, from
+  // a caller's own submission, must keep the attempt held: never a durable
+  // verdict and never a second submission. Only payDemSettle's submission
+  // around createPayDemRail's own settle is record-verified; the persisted
+  // case is pinned with that rail in payDemExecutedStatus.test.ts.
+  test("keeps an invented, self-consistent proof from a caller's submission held", async () => {
+    const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const invented = failed({
+      txHash: "ab".repeat(32),
+      blockNumber: 2,
+      failureProof: proof({ txHash: "ab".repeat(32), nonce: 1, blockNumber: 2 }),
+    });
+    const submit = vi.fn(async () => invented);
+    await expect(createIdempotencyStore(log).once(DEM_KEY, demBinding(), submit))
+      .resolves.toEqual(invented);
+    const restarted = createIdempotencyStore(log);
+    await expect(restarted.once(DEM_KEY, demBinding(), submit)).rejects.toThrow(/refusing to resubmit/);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  test("never records a reconciled failure proof as the definitive outcome", async () => {
+    let clock = 1_000;
+    const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const options = { now: () => clock, leaseDurationMs: 10 };
+    const first = createIdempotencyStore(log, options);
+    // An attempt whose process died after the effect: a not-ok result with a
+    // hash leaves the intent held until its lease expires.
+    await first.once(DEM_KEY, demBinding(), async () => failed({
+      errorClass: undefined, failureProof: undefined,
+    }));
+    clock += 100;
+    const submit = vi.fn(async () => failed());
+    const reconcile = vi.fn(async () => failed());
+    await expect(createIdempotencyStore(log, options).once(DEM_KEY, demBinding(), submit, reconcile))
+      .rejects.toThrow(/reconciliation was not definitive/);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(submit).not.toHaveBeenCalled();
+    expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["another amount", { failureProof: proof({ amountOs: "1" }) }],
+    ["another transaction", { failureProof: proof({ txHash: "34".repeat(32) }) }],
+    ["another block", { failureProof: proof({ blockNumber: 1 }) }],
+    ["another payer", { failureProof: proof({ payer: "ef".repeat(32) }) }],
+    ["another payee", { failureProof: proof({ payee: "ef".repeat(32) }) }],
+    ["an extra proof key", { failureProof: { ...proof(), extra: 1 } }],
+    ["a missing proof key", { failureProof: (({ nonce: _nonce, ...rest }) => rest)(proof()) }],
+    ["another proof kind", { failureProof: proof({ kind: "demos-included" }) }],
+    ["no proof", { failureProof: undefined }],
+    ["a proof without a permanent class", { errorClass: undefined }],
+    ["a success that carries a proof", { ok: true, finality: { model: "bft-final" } }],
+    ["a result block other than the proof's", { blockNumber: 480878 }],
+  ])("once() refuses a failure proof with %s and never persists it", async (_case, override) => {
+    const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const store = createIdempotencyStore(log);
+    const submit = vi.fn(async () => failed(override));
+    await expect(store.once(DEM_KEY, demBinding(), submit))
+      .rejects.toThrow(/terminal-failure proof does not bind the payment/);
+    await expect(store.once(DEM_KEY, demBinding(), submit)).rejects.toThrow(/refusing to resubmit/);
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(putOutcome).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a non-pay-dem phase", { phase: "pay-evm-erc20" }],
+    ["a non-DEM agreement asset", { agreementAsset: "USDC" }],
+    ["another payment amount", { amount: "9500000001" }],
+  ])("once() refuses a bound-looking proof under %s", async (_case, override) => {
+    const log = createInMemorySettlementLog();
+    const putOutcome = vi.spyOn(log, "putOutcome");
+    const store = createIdempotencyStore(log);
+    await expect(store.once(DEM_KEY, demBinding(override), async () => failed()))
+      .rejects.toThrow(/terminal-failure proof does not bind the payment/);
+    expect(putOutcome).not.toHaveBeenCalled();
   });
 });

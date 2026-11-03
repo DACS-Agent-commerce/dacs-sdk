@@ -198,6 +198,28 @@ describe("pay-DEM funded-run adapter", () => {
     });
   });
 
+  // #338: an included transfer whose bound record failed is recorded as such,
+  // not as unobserved inclusion.
+  it("records an included but failed transfer with its hash and block", async () => {
+    const { marker } = await executePayDemFundedRun(await fixture(), async () => "ok");
+    await expect(recordPayDemFundedRunOutcome(marker, {
+      status: "not-completed",
+      reason: "execution-failed",
+      txHash: "ab".repeat(32),
+      blockNumber: -1,
+    })).rejects.toThrow(/outcome-invalid/);
+    await expect(recordPayDemFundedRunOutcome(marker, {
+      status: "not-completed",
+      reason: "execution-failed",
+      txHash: "ab".repeat(32),
+      blockNumber: 9,
+    })).resolves.toBeUndefined();
+    expect(JSON.parse(await readFile(marker.outcomePath, "utf8"))).toMatchObject({
+      state: "not-completed",
+      details: { reason: "execution-failed", txHash: "ab".repeat(32), blockNumber: 9 },
+    });
+  });
+
   it("persists the original included transaction when nonce visibility fails", async () => {
     let markerPath = "";
     let outcomePath = "";

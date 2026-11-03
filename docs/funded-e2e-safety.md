@@ -90,7 +90,7 @@ replay fence, or an ambiguous transaction must never cause an automatic broadcas
 Hash-first observation has a finite wait even when demosdk's broadcast promise
 or a status call never settles. A pending JavaScript promise alone does not keep
 Node alive, but demosdk 4.0.16 does not expose cancellation or a request timeout
-for the underlying Axios broadcast, status, or nonce reads. An active socket may
+for the underlying Axios broadcast, status, transaction-record, or nonce reads. An active socket may
 outlive the SDK result and keep the process open. The operator may terminate
 that process after preserving the durable records; termination never authorizes
 a rerun. One SDK broadcast invocation may also contain demosdk's internal

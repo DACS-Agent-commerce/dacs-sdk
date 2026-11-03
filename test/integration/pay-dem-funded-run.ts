@@ -35,6 +35,13 @@ export type PayDemFundedRunOutcome =
       status: "unresolved";
       reason: "inclusion-not-observed";
       txHash?: string;
+    }
+  | {
+      // Included, but the node's bound record says the transfer failed (#338).
+      status: "not-completed";
+      reason: "execution-failed";
+      txHash: string;
+      blockNumber: number;
     };
 
 export interface PayDemFundedPreparedTransfer {
@@ -209,6 +216,18 @@ function captureOutcome(value: unknown): PayDemFundedRunOutcome {
         : {}),
     };
   }
+  if (snapshot.status === "not-completed" &&
+      exactKeys(snapshot, ["status", "reason", "txHash", "blockNumber"]) &&
+      snapshot.reason === "execution-failed" &&
+      Number.isSafeInteger(snapshot.blockNumber) &&
+      (snapshot.blockNumber as number) >= 0) {
+    return {
+      status: "not-completed",
+      reason: "execution-failed",
+      txHash: canonicalTxHash(snapshot.txHash),
+      blockNumber: snapshot.blockNumber as number,
+    };
+  }
   throw new Error("pay-dem-live:outcome-invalid");
 }
 
@@ -271,10 +290,16 @@ export async function recordPayDemFundedRunOutcome(
     status: captured.status,
     details: captured.status === "included"
       ? { txHash: captured.txHash, blockNumber: captured.blockNumber }
-      : {
-          reason: captured.reason,
-          ...(captured.txHash === undefined ? {} : { txHash: captured.txHash }),
-        },
+      : captured.status === "not-completed"
+        ? {
+            reason: captured.reason,
+            txHash: captured.txHash,
+            blockNumber: captured.blockNumber,
+          }
+        : {
+            reason: captured.reason,
+            ...(captured.txHash === undefined ? {} : { txHash: captured.txHash }),
+          },
   });
 }
 
