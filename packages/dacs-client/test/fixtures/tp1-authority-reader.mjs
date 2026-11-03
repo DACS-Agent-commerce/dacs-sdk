@@ -18,10 +18,10 @@ export function createAuthorityFixture() {
   return { read, state };
 }
 
-/** A real binding over the approved record, with a mutable current connection. */
+/** A real binding over the approved record, with a mutable current connection. `currentLocal` returns a fresh copy; `liveLocal` returns the one live object a host may hand out. */
 export async function bindFixture(overrides = {}) {
   const authority = createAuthorityFixture();
   const current = { ...LOCAL };
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...LOCAL }, readAuthority: authority.read, ...overrides });
-  return { binding, authority, current, currentLocal: () => ({ ...current }) };
+  return { binding, authority, current, currentLocal: () => ({ ...current }), liveLocal: () => current };
 }

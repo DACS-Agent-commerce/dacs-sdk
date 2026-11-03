@@ -21,6 +21,7 @@ export const SELLER_ENDPOINT = 'http://127.0.0.1:9';
 const AUTHORITY = 'TEST-RUN-composition0';
 const OPERATOR_CONTEXT_AUTHORITY = 'test:composition-operator';
 const THIRD_PARTY_SIGNER = 'did:demos:agent:' + 'd'.repeat(64);
+const HANDOFF_NONCE_FENCE = 6;
 
 const vetRef = (jobId, party) => ({ anchor: { kind: 'storage-program', locator: compositeVerificationAddress(jobId, party) }, contentHash: 'c'.repeat(64), signer: THIRD_PARTY_SIGNER });
 
@@ -48,7 +49,7 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
     anchor: { authority: AUTHORITY, readRetained() { throw new Error('not used'); }, verifyReceipt() { throw new Error('not used'); } } });
   // `observation` answers the passive transfer read; broadcast and signer counts stay at 0 in held tests.
   const chain = { network: 'testnet', pinnedIdentity: IDENTITY, networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
-    getAddressBalance: async () => 10n ** 20n, getTransactionFees: async () => 1n, broadcasts: 0,
+    getAddressBalance: async () => 10n ** 20n, getTransactionFees: async () => 1n, getAddressNonce: async () => HANDOFF_NONCE_FENCE, broadcasts: 0,
     observePassiveTransfer: async () => ({ status: 'not-found' }), broadcastTransaction: async () => { chain.broadcasts++; } };
   const listing = fixtureListing(seller, { listingId: 'TEST-listing', now: NOW });
   const verifier = { verify: async () => ({ transactable: true, payee: seller.address, price: { amount: '2.5', amountOs: '2500000000' }, contentHash: contentHash(listing),
@@ -56,12 +57,13 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   const contextReads = { count: 0 };
   const agreementContext = { authority: OPERATOR_CONTEXT_AUTHORITY, resolve: async (request) => { contextReads.count++; await contextGate; return presentAnswer(request, listing); } };
   // Every protocol call that reaches a seller or the buyer-access seam is counted.
-  const counters = { sellerLookups: 0, buyerAccess: 0 };
+  const counters = { sellerLookups: 0, buyerAccess: 0, challengesIssued: 0 };
+  const challenges = { issue: () => { counters.challengesIssued++; return { challengeId: 'TEST-challenge' }; } };
   const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, now: () => NOW, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment, agreementContext, sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: wallet.address }] }, verifier, chain, protocol,
-    challenges: {}, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+    challenges, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId: ACCOUNT_ID, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
   // Prepares a purchase and has the buyer present their identity; returns what agreementPlan needs.
@@ -73,21 +75,22 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   };
   const tableCounts = () => Object.fromEntries(['operations', 'operation_events', 'write_coordinates'].map((name) => [name, db.prepare(`SELECT count(*) n FROM ${name}`).get().n]));
   // Seeds a saved purchase row directly, as a host database would hold it after earlier work.
-  const seed = ({ status, key, expiresAt = new Date(NOW + 3_600_000).toISOString(), protocolTerms, state = { protocol: {} }, reportedTxHash, events = 0, eventData = {} }) => {
+  // `currentListing` makes the saved listing hash equal what the verifier answers; `handoff` saves unreported coordinates at the chain's nonce fence.
+  const seed = ({ status, key, expiresAt = new Date(NOW + 3_600_000).toISOString(), protocolTerms, state = { protocol: {} }, reportedTxHash, events = 0, eventData = {}, currentListing = false, handoff = false }) => {
     const terms = { buyer: { accountId: ACCOUNT_ID, wallet: wallet.address }, seller: { claim: seller.claim, payee: seller.address }, price: { amount: '2.5', amountOs: '2500000000' },
-      network: 'testnet', rail: 'demos-native:DEM', listing: { listingId: 'TEST-listing', version: 1, contentHash: IDENTITY },
+      network: 'testnet', rail: 'demos-native:DEM', listing: { listingId: 'TEST-listing', version: 1, contentHash: currentListing ? contentHash(listing) : IDENTITY },
       domain: { network: 'testnet', rail: 'demos-native:DEM', mode: 'public-chain-read', chainIdentity: IDENTITY }, ...(protocolTerms ? { protocol: protocolTerms } : {}) };
     const { operation } = ops.createIdempotent({ accountId: ACCOUNT_ID, kind: 'purchase', idempotencyKey: key, request: {}, status, terms, termsHash: IDENTITY, state, expiresAt });
-    if (reportedTxHash) {
-      coordinates.save({ operationId: operation.id, kind: 'native-dem-transfer', network: 'testnet', from: wallet.address, nonceFence: 6, expectedNonce: 7, target: seller.address, amountOs: '2500000000', payload: {} });
-      coordinates.reportHash(operation.id, reportedTxHash);
+    if (reportedTxHash || handoff) {
+      coordinates.save({ operationId: operation.id, kind: 'native-dem-transfer', network: 'testnet', from: wallet.address, nonceFence: HANDOFF_NONCE_FENCE, expectedNonce: 7, target: seller.address, amountOs: '2500000000', payload: {} });
+      if (reportedTxHash) coordinates.reportHash(operation.id, reportedTxHash);
     }
     for (let index = 0; index < events; index++) ops.record(operation.id, 'TEST-seeded-event', { index, ...eventData });
     return { operation, token: ops.handoffTokenFor(operation.id) };
   };
   const rows = () => JSON.stringify(['operations', 'operation_events', 'write_coordinates', 'wallet_nonce_consumptions', 'approvals']
     .map((name) => [name, db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).all()]));
-  return { db, ops, coordinates, store, service, protocol, authority, current, native, chain, counters, prepare, preparedWithIdentity, seed, rows, tableCounts, contextReads, wallet };
+  return { db, ops, coordinates, store, service, protocol, admission, authority, current, native, chain, counters, prepare, preparedWithIdentity, seed, rows, tableCounts, contextReads, wallet };
 }
 
 /** Throws unless no object member, at any depth, is undefined. */

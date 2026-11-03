@@ -11,6 +11,8 @@ import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 
 installPurchaseAdmissionHook();
 const { setPurchaseAdmission } = await loadAdmissionDouble();
+const { openDatabase } = await import('./helpers/purchase-integrity-database.mjs');
+const { createOperationStore } = await import('./helpers/purchase-integrity-operations.mjs');
 const { admitPublicFactory, AUTHORITY_READ_DEADLINE_MS } = await import('../src/public-admission.mjs');
 const { assertPurchaseActionsAdmitted } = await import('../src/dacs/action-admission.mjs');
 const client = await import('../src/index.mjs');
@@ -221,6 +223,65 @@ test('admitted: currentLocal changes at a barrier inside the binding check and t
   world.authority.state.gate = async () => { world.current.connectionId = 'vector-conn-2'; };
   await assert.rejects(world.wrapped.completionRequest(), refusal('tp1_local_binding_changed'));
   assert.equal(world.calls.length, 0);
+});
+
+// A host may hand out one live connection object from currentLocal; the check
+// compares what the wire verified, not whatever that object holds afterwards.
+for (const [member, changed] of [['connectionId', 'vector-conn-2'], ['endpoint', 'https://other.example.invalid/'], ['transportAuthority', 'other-authority']]) {
+  test(`admitted: a live currentLocal object whose ${member} changes at the authority barrier is refused tp1_local_binding_changed and the original runs 0 times (K6-W21, live object)`, async (t) => {
+    const world = await admittedWorld(t, { construct: false });
+    const wrapped = admitPublicFactory(world.factory, {})({ admission: { binding: world.binding, currentLocal: world.liveLocal } });
+    world.authority.state.gate = async () => { world.current[member] = changed; };
+    await assert.rejects(wrapped.completionRequest(), refusal('tp1_local_binding_changed'));
+    assert.equal(world.calls.length, 0);
+  });
+}
+
+test('admitted: two calls share one live currentLocal object that changes while the first read is pending: the first is refused tp1_local_binding_changed, the second is refused by the wire, and both originals run 0 times', async (t) => {
+  const world = await admittedWorld(t, { construct: false });
+  const wrapped = admitPublicFactory(world.factory, {})({ admission: { binding: world.binding, currentLocal: world.liveLocal } });
+  let release;
+  world.authority.state.gate = () => new Promise((resolve) => { release = resolve; });
+  const first = wrapped.completionRequest();
+  await flush();
+  world.current.connectionId = 'vector-conn-2';
+  const second = wrapped.completionRequest();
+  release();
+  await assert.rejects(first, refusal('tp1_local_binding_changed'));
+  await assert.rejects(second, refusal());
+  assert.equal(world.calls.length, 0);
+});
+
+test('admitted: a currentLocal that returns a cyclic object, or a getter-based one, is still refused with a cause and the original runs 0 times', async (t) => {
+  const world = await admittedWorld(t, { construct: false });
+  const cyclic = { ...world.current };
+  cyclic.self = cyclic;
+  const getterBased = Object.defineProperty({ ...world.current }, 'connectionId', { enumerable: true, get: () => 'vector-conn-1' });
+  for (const currentLocal of [() => cyclic, () => getterBased]) {
+    const wrapped = admitPublicFactory(world.factory, {})({ admission: { binding: world.binding, currentLocal } });
+    await assert.rejects(wrapped.completionRequest(), (error) => error.code === 'profile_not_admitted' && error.cause !== undefined);
+  }
+  assert.equal(world.calls.length, 0);
+});
+
+test('admitted: each public factory built with a live currentLocal object that changes at the authority barrier rejects its active members and runs none', async (t) => {
+  setPurchaseAdmission('testnet-tp1');
+  t.after(() => setPurchaseAdmission('held'));
+  const { binding, authority, current, liveLocal } = await bindFixture();
+  const admission = { binding, currentLocal: liveLocal };
+  const db = openDatabase(':memory:');
+  t.after(() => db.close());
+  const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => 1 });
+  const coordinates = client.createCoordinateStore({ db });
+  const store = client.createSqlitePurchaseStore();
+  const protocol = client.createProtocolPurchases({ db, ops, coordinates, store, admission });
+  const service = client.createPurchaseService({ db, ops, coordinates, chain: {}, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+  const verifier = client.createListingVerifier({ directory: {}, chain: {}, admission });
+  authority.state.gate = async () => { current.connectionId = 'vector-conn-2'; };
+  for (const [name, member] of [['protocol.holdChainReadback', protocol.holdChainReadback], ['service.prepare', service.prepare], ['verifier.verify', verifier.verify]]) {
+    current.connectionId = 'vector-conn-1';
+    await assert.rejects(member({}), refusal('tp1_local_binding_changed'), name);
+  }
 });
 
 test('admitted: the constant flips to held at the same barrier and the call is refused profile_not_admitted (K6-W22)', async (t) => {

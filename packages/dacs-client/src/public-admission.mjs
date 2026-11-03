@@ -43,11 +43,14 @@ function readAdmission(options) {
 }
 
 // Step 3: the wire's binding check, bounded by the read deadline. The timer is
-// cleared on every path; a late answer finds the race already settled.
+// cleared on every path; a late answer finds the race already settled. Returns
+// the canonical text of the connection that was checked, taken before the
+// await: a host's live object may change while the authority read is pending.
 async function checkBinding({ binding, currentLocal }) {
-  let local, timer;
+  let local, checked, timer;
   try {
     local = currentLocal();
+    checked = canonicalize(local);
   } catch (error) {
     throw notAdmittedError(error);
   }
@@ -61,15 +64,15 @@ async function checkBinding({ binding, currentLocal }) {
   } finally {
     clearTimeout(timer);
   }
-  return local;
+  return checked;
 }
 
 // Step 3a, synchronous: the hold and the actor's connection are as they were when the check began.
-function assertUnchangedSinceCheck(checkedLocal, currentLocal) {
+function assertUnchangedSinceCheck(checkedText, currentLocal) {
   if (!purchaseActionsAdmitted()) throw notAdmittedError();
   let unchanged;
   try {
-    unchanged = canonicalize(currentLocal()) === canonicalize(checkedLocal);
+    unchanged = canonicalize(currentLocal()) === checkedText;
   } catch (error) {
     throw notAdmittedError(error);
   }
@@ -79,8 +82,8 @@ function assertUnchangedSinceCheck(checkedLocal, currentLocal) {
 async function callAdmitted(original, receiver, args, admission, purchase) {
   if (!purchaseActionsAdmitted()) throw notAdmittedError();
   if (purchase) assertPurchaseRuntime(process.version);
-  const checkedLocal = await checkBinding(admission);
-  assertUnchangedSinceCheck(checkedLocal, admission.currentLocal);
+  const checkedText = await checkBinding(admission);
+  assertUnchangedSinceCheck(checkedText, admission.currentLocal);
   return original.apply(receiver, args);
 }
 

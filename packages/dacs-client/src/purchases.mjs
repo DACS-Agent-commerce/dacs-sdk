@@ -48,6 +48,10 @@ import { buyerFundingError } from './buyer-funding.mjs';
 import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
 import { purchaseActionsAdmitted } from './public-admission.mjs';
 
+// A wrapped protocol call that refuses admission never ran its original: it is no
+// protocol outcome, so the catches below neither record nor convert it.
+const admissionRefused = (error) => error?.code === 'profile_not_admitted';
+
 export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1';
 export const PURCHASE_RAIL = 'demos-native:DEM';
 export const PURCHASE_APPROVAL_TTL_MS = 30 * 60 * 1000;
@@ -579,6 +583,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     try {
       await protocol.recheckCommitment(operation, { reuseVerified: stage === 'pre-approval' });
     } catch (error) {
+      if (admissionRefused(error)) throw error;
       if (error instanceof OperationError) ops.record(operation.id, 'commitment_recheck_refused', { stage, reason: error.code });
       throw error;
     }
@@ -633,7 +638,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
           try {
             await protocolGate(operation, 'handoff-reissue');
           } catch (error) {
-            if (!(error instanceof OperationError)) throw error;
+            if (admissionRefused(error) || !(error instanceof OperationError)) throw error;
             return { operation, payload: null, refused: error.code };
           }
         }
@@ -665,7 +670,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       try {
         await protocolGate(operation, 'handoff');
       } catch (error) {
-        if (!(error instanceof OperationError)) throw error;
+        if (admissionRefused(error) || !(error instanceof OperationError)) throw error;
         ops.record(operation.id, 'handoff_refused', { reason: error.code });
         return { operation, payload: null, refused: error.code };
       }
@@ -875,6 +880,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       });
       return true;
     } catch (error) {
+      if (admissionRefused(error)) throw error;
       transaction(db, () => {
         const pending = ops.history(operation.id).findLast((event) => event.type === 'native_supersession_pending');
         if (pending?.data.reason !== error.message) ops.record(operation.id, 'native_supersession_pending', { reason: error.message });
@@ -921,6 +927,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       });
       return true;
     } catch (error) {
+      if (admissionRefused(error)) throw error;
       transaction(db, () => {
         const pending = ops.history(operation.id).findLast((event) => event.type === 'native_nonce_pending');
         if (pending?.data.reason !== error.message) ops.record(operation.id, 'native_nonce_pending', { reason: error.message });

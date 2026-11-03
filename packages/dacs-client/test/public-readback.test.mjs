@@ -10,6 +10,7 @@ const { setPurchaseAdmission } = await loadAdmissionDouble();
 const { compositionWorld, ACCOUNT_ID, NOW } = await import('./helpers/public-composition-world.mjs');
 const { OFFLINE_AGREEMENT_PROFILE } = await import('../src/dacs/protocol-purchases.mjs');
 const { createPublicPurchaseService } = await import('../src/purchases.mjs');
+const { admitPublicFactory } = await import('../src/public-admission.mjs');
 const { DIAGNOSTIC_LIMITS } = await import('../src/diagnostic-projection.mjs');
 
 const HASH = '1'.repeat(64);
@@ -144,4 +145,128 @@ test('held readback is write-free and leak-free for every purchase state and lan
     await assert.rejects(diagnostic[method]({ accountId: ACCOUNT_ID, operationId: purchase.operation.id, token: purchase.token }), { code: 'profile_not_admitted' }, method);
   }
   assert.equal(world.rows(), before);
+});
+
+// A wrapped protocol call that refuses admission never ran its original, so the
+// service neither records it as a protocol outcome nor turns it into a result.
+// Each case runs with the connection changed, and with the hold re-held, inside the protocol's authority read.
+const ADMISSION_REFUSALS = [
+  { label: 'the connection changes', change: (world) => { world.current.connectionId = 'vector-conn-2'; }, cause: 'tp1_local_binding_changed' },
+  { label: 'the hold is re-held', change: () => setPurchaseAdmission('held'), cause: undefined },
+];
+const refusedAdmission = (cause) => (error) => error.code === 'profile_not_admitted' && (cause === undefined || error.cause?.code === cause);
+// Arms the barrier for the authority read that follows `reads` earlier ones.
+const refuseAfterReads = (world, reads, change) => {
+  const target = world.authority.state.calls + reads;
+  world.authority.state.gate = async () => { if (world.authority.state.calls === target) change(world); };
+};
+const eventTypes = (world, operation) => world.ops.history(operation.id).map((event) => event.type);
+
+for (const { label, change, cause } of ADMISSION_REFUSALS) {
+  test(`${label} inside a wrapped protocol call: issueApprovalChallenge rejects profile_not_admitted, records no event and issues no challenge`, async (t) => {
+    setPurchaseAdmission('testnet-tp1');
+    holdAfter(t);
+    const world = await compositionWorld(t);
+    const { operation, token } = world.seed({ status: 'awaiting_approval', key: 'TEST-challenge', protocolTerms: {}, currentListing: true });
+    const before = world.rows();
+    refuseAfterReads(world, 2, change);
+    await assert.rejects(world.service.issueApprovalChallenge({ operationId: operation.id, token, address: world.wallet.address }), refusedAdmission(cause));
+    assert.equal(world.rows(), before);
+    assert.equal(world.counters.challengesIssued, 0);
+  });
+
+  test(`${label} inside a wrapped protocol call: prepareHandoff of an approved purchase rejects profile_not_admitted, with no event and no coordinates`, async (t) => {
+    setPurchaseAdmission('testnet-tp1');
+    holdAfter(t);
+    const world = await compositionWorld(t);
+    const { operation, token } = world.seed({ status: 'approved', key: 'TEST-handoff', protocolTerms: {}, currentListing: true });
+    const before = world.rows();
+    refuseAfterReads(world, 2, change);
+    await assert.rejects(world.service.prepareHandoff({ operationId: operation.id, token }), refusedAdmission(cause));
+    assert.equal(world.rows(), before);
+    assert.equal(world.coordinates.get(operation.id), null);
+  });
+
+  test(`${label} inside a wrapped protocol call: prepareHandoff re-entry of a payment_handoff purchase at its nonce fence rejects profile_not_admitted and records neither a refusal nor a reissue`, async (t) => {
+    setPurchaseAdmission('testnet-tp1');
+    holdAfter(t);
+    const world = await compositionWorld(t);
+    const { operation, token } = world.seed({ status: 'payment_handoff', key: 'TEST-reissue', protocolTerms: {}, handoff: true });
+    const before = world.rows();
+    refuseAfterReads(world, 2, change);
+    await assert.rejects(world.service.prepareHandoff({ operationId: operation.id, token }), refusedAdmission(cause));
+    assert.equal(world.rows(), before);
+  });
+}
+
+// verifyDeal on a settled or superseded native purchase, over a wrapped stand-in protocol that has the native readback methods.
+const nativeSource = (nativePaymentSuperseded) => ({ available: true, nativePaymentReadbackAvailable: true, assertBuyerAccess() {}, recheck: async (operation) => operation, nativePaymentSuperseded, nativeIntentsSupersededBy: async () => [] });
+const wrappedSource = (world, source) => admitPublicFactory(() => source, { passive: ['assertBuyerAccess'] })({ admission: world.admission });
+const nativeService = (world, protocol) => createPublicPurchaseService({ db: world.db, ops: world.ops, coordinates: world.coordinates, store: world.store, chain: world.chain, config: {}, protocol,
+  now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
+function seedNativeOwner(world, key) {
+  const owner = world.seed({ status: 'settled_verified', key, protocolTerms: NATIVE_TERMS, reportedTxHash: HASH });
+  world.coordinates.recordObservation(owner.operation.id, { txHash: HASH, slotConsumed: true }, true);
+  return owner;
+}
+// Both resolvers run through verifyDeal: the settled owner releases its own nonce, and a superseded purchase releases its lane.
+const NATIVE_RESOLUTIONS = [
+  { name: 'nonce consumption', pending: 'native_nonce_pending', seedTarget: (world) => seedNativeOwner(world, 'TEST-owner') },
+  { name: 'supersession', pending: 'native_supersession_pending',
+    seedTarget(world) {
+      const owner = seedNativeOwner(world, 'TEST-owner');
+      const target = world.seed({ status: 'superseded', key: 'TEST-superseded', protocolTerms: NATIVE_TERMS, handoff: true });
+      world.coordinates.recordObservation(target.operation.id, { txHash: HASH, supersededBy: owner.operation.id }, false, null);
+      return target;
+    } },
+];
+
+for (const { name, pending, seedTarget } of NATIVE_RESOLUTIONS) {
+  for (const { label, change, cause } of ADMISSION_REFUSALS) {
+    test(`${label} inside a wrapped protocol call during native ${name}: verifyDeal ${cause ? 'rejects profile_not_admitted' : 'returns the diagnostic readback'} and writes no ${pending} event`, async (t) => {
+      setPurchaseAdmission('testnet-tp1');
+      holdAfter(t);
+      const world = await compositionWorld(t);
+      const target = seedTarget(world);
+      const service = nativeService(world, wrappedSource(world, nativeSource(async () => true)));
+      const before = world.rows();
+      refuseAfterReads(world, 1, change);
+      const read = service.verifyDeal({ accountId: ACCOUNT_ID, operationId: target.operation.id, token: target.token });
+      if (cause) await assert.rejects(read, refusedAdmission(cause));
+      else assert.ok((await read).verification, 'the diagnostic readback is returned');
+      assert.equal(world.rows(), before);
+      assert.ok(!eventTypes(world, target.operation).includes(pending));
+    });
+  }
+}
+
+// Guards: any other refusal from the protocol keeps the service's own recording.
+test('a protocol refusal that is not an admission refusal is still recorded: commitment_recheck_refused with its code, and a resolved refused result from prepareHandoff', async (t) => {
+  setPurchaseAdmission('testnet-tp1');
+  holdAfter(t);
+  const world = await compositionWorld(t);
+  const challenge = world.seed({ status: 'awaiting_approval', key: 'TEST-guard-challenge', protocolTerms: {}, currentListing: true });
+  await assert.rejects(world.service.issueApprovalChallenge({ operationId: challenge.operation.id, token: challenge.token, address: world.wallet.address }),
+    (error) => error instanceof Error && error.code !== undefined && error.code !== 'profile_not_admitted');
+  const recorded = world.ops.history(challenge.operation.id).find((event) => event.type === 'commitment_recheck_refused');
+  assert.ok(recorded, 'the refusal is recorded');
+  assert.notEqual(recorded.data.reason, 'profile_not_admitted');
+  const handoff = world.seed({ status: 'approved', key: 'TEST-guard-handoff', protocolTerms: {}, currentListing: true });
+  const result = await world.service.prepareHandoff({ operationId: handoff.operation.id, token: handoff.token });
+  assert.equal(result.payload, null);
+  assert.ok(result.refused && result.refused !== 'profile_not_admitted');
+  assert.ok(eventTypes(world, handoff.operation).includes('handoff_refused'));
+});
+
+test('a source error that is not an admission refusal still records native_nonce_pending and native_supersession_pending and leaves the lane unresolved', async (t) => {
+  setPurchaseAdmission('testnet-tp1');
+  holdAfter(t);
+  for (const { pending, seedTarget } of NATIVE_RESOLUTIONS) {
+    const world = await compositionWorld(t);
+    const target = seedTarget(world);
+    const service = nativeService(world, nativeSource(async () => { throw new Error('TEST-source-unavailable'); }));
+    const result = await service.verifyDeal({ accountId: ACCOUNT_ID, operationId: target.operation.id, token: target.token });
+    assert.ok(result.verification);
+    assert.ok(eventTypes(world, target.operation).includes(pending));
+  }
 });

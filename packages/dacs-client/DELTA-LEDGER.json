@@ -5645,6 +5645,42 @@
           "after": "6c920248367b799050ce5f473574a6a9ca927f1e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P52a compare the checked connection text and keep admission refusals out of the purchase record",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public-admission.mjs",
+          "before": "8cd7a70ad816ac3caf486bfaefd2fc3f96848486",
+          "after": "3f31bdea587a0f038d5a8fcc892b053dbd129fff"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "b0cb13ceb181c512591a6278908c8c9e5a29ca6b",
+          "after": "cf5ffa1bcf4e41c741c2a3a89edda7b3de31740b"
+        },
+        {
+          "path": "packages/dacs-client/test/fixtures/tp1-authority-reader.mjs",
+          "before": "a1c383c21f8e2da03251b0a23a5e0d2a18b4448b",
+          "after": "68ea2b88ad0de31bf8ee80ce03a39fb89c85806b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+          "before": "28a9f58b6113b804842ae6f24dc5a5d71a43f6f5",
+          "after": "6671b70cf3fad1b68f2e4085c67352d4102a04d4"
+        },
+        {
+          "path": "packages/dacs-client/test/public-admission.test.mjs",
+          "before": "df9522ec8d8401b053e9c46577acf9873f02da90",
+          "after": "76c0d3d351164bb216cab9ef1fb43e23f07580c5"
+        },
+        {
+          "path": "packages/dacs-client/test/public-readback.test.mjs",
+          "before": "909b0b5753a4eff5ff00cfb31766de691c88a0ec",
+          "after": "6674b54365ccd75f0ec9623205622e85bbfe9a21"
+        }
+      ]
     }
   ]
 }
