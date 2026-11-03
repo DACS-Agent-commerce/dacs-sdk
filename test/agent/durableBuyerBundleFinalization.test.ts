@@ -70,7 +70,7 @@ import type {
 } from "../../src/seller/bundleFinalization.js";
 
 const NOW = 1_786_200_000_000;
-const JOB_ID = "durable-buyer-finalization-122";
+const JOB_ID = "01JA9DBF000000000000000001";
 const AGREEMENT_HASH = "4".repeat(64);
 const BUYER = "did:demos:buyer";
 const SELLER = "did:demos:seller";
@@ -1645,7 +1645,7 @@ describe("durable buyer bundle finalization", () => {
     );
     await entered;
     f.input.buyer.primaryClaim = "did:demos:mutated-buyer";
-    f.input.sellerVerificationInput.agreement.jobId = "mutated-job";
+    f.input.sellerVerificationInput.agreement.jobId = "01JA9DBF000000000000000002";
     f.provider.mapping = "write-input";
     f.provider.submitBuyerBundle = vi.fn(() => {
       throw new Error("mutated writer must not be observed");

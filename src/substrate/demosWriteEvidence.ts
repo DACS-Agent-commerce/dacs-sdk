@@ -7,6 +7,13 @@ import {
 import { DacsError } from "../errors.js";
 import type { DemosWriteEvidence } from "./SubstrateAdapter.js";
 
+/**
+ * DEMOS-MAPPING §A.2 binding-defined finality profile: deterministic BFT, so a
+ * valid `included` write is `finalized`. The SDK's own proof format is named
+ * by `evidence.kind`, not by the profile (CORE SR2-6).
+ */
+export const DEMOS_BFT_FINALITY_PROFILE = "demos-bft-final" as const;
+
 export interface DemosPortableAnchorReceiptInput {
   logicalAddress: string;
   contentHash: string;
@@ -373,7 +380,7 @@ export function demosWriteEvidenceToAnchorReceipt(
   return {
     receiptVersion: "1",
     substrate: "demos",
-    finalityProfile: "demos-bft-confirmed-native-read",
+    finalityProfile: DEMOS_BFT_FINALITY_PROFILE,
     logicalAddress: input.logicalAddress,
     nativeAddress: input.evidence.nativeAddress,
     contentHash: input.contentHash,
@@ -405,7 +412,7 @@ export function decodeDemosAnchorReceiptProof(
   if (
     receipt.receiptVersion !== "1" ||
     receipt.substrate !== "demos" ||
-    receipt.finalityProfile !== "demos-bft-confirmed-native-read" ||
+    receipt.finalityProfile !== DEMOS_BFT_FINALITY_PROFILE ||
     receipt.state !== "finalized" ||
     receipt.observationDisposition !== "established" ||
     !nonEmpty(receipt.logicalAddress) ||

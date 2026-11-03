@@ -66,7 +66,7 @@ function identity(role: BundlePartyRole): IdentityBundle {
   };
 }
 
-function failureAuthority(jobId = "durable-terminal-81"): Readonly<TerminalBundleAuthority> {
+function failureAuthority(jobId = "01JA9DTB000000000000000001"): Readonly<TerminalBundleAuthority> {
   return createTerminalBundleAuthority({
     jobId,
     terminalClass: "failure",
@@ -624,7 +624,7 @@ describe("durable role-local terminal bundle finalization", () => {
   }, 30_000);
 
   test("deduplicates concurrent three-role proposal publication with one shared key", async () => {
-    const authority = failureAuthority("durable-concurrent-proposal-81");
+    const authority = failureAuthority("01JA9DTB000000000000000002");
     const mode = { kind: "co-signed" } as const;
     const shared = transportState();
     const proposal = concurrentProposalHarness(shared);
@@ -664,7 +664,7 @@ describe("durable role-local terminal bundle finalization", () => {
   });
 
   test("cold restart accepts the identical signer role set in a different caller order", async () => {
-    const authority = failureAuthority("durable-reordered-keys-81");
+    const authority = failureAuthority("01JA9DTB000000000000000003");
     const mode = { kind: "co-signed" } as const;
     const shared = transportState();
     const store = createInMemoryFencedSessionStore();
@@ -697,7 +697,7 @@ describe("durable role-local terminal bundle finalization", () => {
   });
 
   test("strict single-signed abort publishes only the locally owned copy", async () => {
-    const authority = abortAuthority("durable-abort-81");
+    const authority = abortAuthority("01JA9DTB000000000000000006");
     const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
     const shared = transportState();
     const store = createInMemoryFencedSessionStore();
@@ -718,7 +718,7 @@ describe("durable role-local terminal bundle finalization", () => {
   });
 
   test("rejects malformed store records before treating a terminal phase as recoverable", async () => {
-    const authority = abortAuthority("durable-malformed-load-81");
+    const authority = abortAuthority("01JA9DTB000000000000000007");
     const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
     const shared = transportState();
     const store = createInMemoryFencedSessionStore();
@@ -740,7 +740,7 @@ describe("durable role-local terminal bundle finalization", () => {
   });
 
   test("does not accept a pre-existing result outcome outside its exact sealed phase", async () => {
-    const authority = abortAuthority("durable-unsealed-result-81");
+    const authority = abortAuthority("01JA9DTB000000000000000008");
     const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
     const shared = transportState();
     const store = createInMemoryFencedSessionStore();
@@ -764,7 +764,7 @@ describe("durable role-local terminal bundle finalization", () => {
   });
 
   test("rejects a concurrent final record whose bundle receipt is rebound", async () => {
-    const authority = abortAuthority("durable-concurrent-wrong-receipt-81");
+    const authority = abortAuthority("01JA9DTB000000000000000009");
     const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
     const shared = transportState();
     const store = createInMemoryFencedSessionStore();
@@ -792,7 +792,7 @@ describe("durable role-local terminal bundle finalization", () => {
   });
 
   test("rejects a substituted remote contribution before any own anchor", async () => {
-    const authority = failureAuthority("durable-substitution-81");
+    const authority = failureAuthority("01JA9DTB000000000000000004");
     const mode = { kind: "co-signed" } as const;
     const plan = createTerminalBundlePlan(authority, mode);
     const shared = transportState();
@@ -810,7 +810,7 @@ describe("durable role-local terminal bundle finalization", () => {
   });
 
   test("indeterminate reconciliation never authorizes a redrive", async () => {
-    const authority = abortAuthority("durable-indeterminate-81");
+    const authority = abortAuthority("01JA9DTB00000000000000000A");
     const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
     const shared = transportState();
     const store = createInMemoryFencedSessionStore();
@@ -846,7 +846,7 @@ describe("durable role-local terminal bundle finalization", () => {
   });
 
   test("maps resolver promise rejections to indeterminate at the exact active stage", async () => {
-    const proposalAuthority = abortAuthority("durable-rejected-proposal-81");
+    const proposalAuthority = abortAuthority("01JA9DTB00000000000000000B");
     const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
     const proposalStore = createInMemoryFencedSessionStore();
     const proposalState = transportState();
@@ -877,7 +877,7 @@ describe("durable role-local terminal bundle finalization", () => {
     });
     expect(proposalEffects.signerCalls).toBe(0);
 
-    const signatureAuthority = abortAuthority("durable-rejected-signature-81");
+    const signatureAuthority = abortAuthority("01JA9DTB00000000000000000C");
     const signatureStore = createInMemoryFencedSessionStore();
     const signatureState = transportState();
     const signatureEffects = roleEffects();
@@ -904,7 +904,7 @@ describe("durable role-local terminal bundle finalization", () => {
     });
     expect(signatureEffects.signerCalls).toBe(0);
 
-    const contributionAuthority = failureAuthority("durable-rejected-contribution-81");
+    const contributionAuthority = failureAuthority("01JA9DTB000000000000000005");
     const contributionMode = { kind: "co-signed" } as const;
     const contributionStore = createInMemoryFencedSessionStore();
     const contributionState = transportState();
@@ -942,7 +942,7 @@ describe("durable role-local terminal bundle finalization", () => {
       stage: "contribution-publication",
     });
 
-    const anchorAuthority = abortAuthority("durable-rejected-anchor-81");
+    const anchorAuthority = abortAuthority("01JA9DTB00000000000000000D");
     const anchorStore = createInMemoryFencedSessionStore();
     const anchorState = transportState();
     const anchorEffects = roleEffects();
@@ -968,7 +968,7 @@ describe("durable role-local terminal bundle finalization", () => {
       stage: "bundle-anchor",
     });
 
-    const bindingAuthority = abortAuthority("durable-rejected-binding-81");
+    const bindingAuthority = abortAuthority("01JA9DTB00000000000000000E");
     const bindingStore = createInMemoryFencedSessionStore();
     const bindingState = transportState();
     const bindingEffects = roleEffects();
@@ -994,7 +994,7 @@ describe("durable role-local terminal bundle finalization", () => {
       stage: "bundle-binding",
     });
 
-    const recoveryAuthority = abortAuthority("durable-rejected-recovery-81");
+    const recoveryAuthority = abortAuthority("01JA9DTB00000000000000000F");
     const recoveryStore = createInMemoryFencedSessionStore();
     const recoveryState = transportState();
     const recoveryEffects = roleEffects();
@@ -1039,7 +1039,11 @@ describe("durable role-local terminal bundle finalization", () => {
   ])(
     "recovers a crash after the %s effect without duplicating it",
     async (checkpointSuffix) => {
-      const jobId = `durable-crash-${checkpointSuffix.replaceAll(":", "-")}`;
+      const jobId = {
+        "signature:buyer": "01JA9DTB00000000000000000G",
+        "bundle-anchor": "01JA9DTB00000000000000000H",
+        "bundle-binding-publication": "01JA9DTB00000000000000000J",
+      }[checkpointSuffix]!;
       const authority = abortAuthority(jobId);
       const mode = { kind: "single-signed-abort", signerRole: "buyer" } as const;
       const shared = transportState();

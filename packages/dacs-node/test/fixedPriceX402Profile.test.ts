@@ -359,7 +359,7 @@ async function fixture() {
         }) => ({
           receiptVersion: "1" as const,
           substrate: "demos",
-          finalityProfile: "demos-bft-confirmed-native-read",
+          finalityProfile: "demos-bft-final",
           logicalAddress: input.logicalAddress,
           nativeAddress: input.nativeAddress,
           contentHash: input.contentHash,
@@ -470,7 +470,7 @@ async function buyerFixture() {
         }) => ({
           receiptVersion: "1" as const,
           substrate: "demos",
-          finalityProfile: "demos-bft-confirmed-native-read",
+          finalityProfile: "demos-bft-final",
           logicalAddress: input.logicalAddress,
           nativeAddress: input.nativeAddress,
           contentHash: input.contentHash,
@@ -546,7 +546,7 @@ async function buyerFixture() {
       anchorReceipt: {
         receiptVersion: "1" as const,
         substrate: "demos" as const,
-        finalityProfile: "demos-bft-confirmed-native-read",
+        finalityProfile: "demos-bft-final",
         logicalAddress: recordRef.anchor.locator,
         nativeAddress: `stor-${sha256Hex(subject).slice(0, 40)}`,
         contentHash: recordRef.contentHash,
@@ -943,7 +943,7 @@ describe("fixed-price x402 generated profile policy", () => {
           anchorReceipt: {
             receiptVersion: "1",
             substrate: "demos",
-            finalityProfile: "demos-bft-confirmed-native-read",
+            finalityProfile: "demos-bft-final",
             logicalAddress: commitmentAddress,
             nativeAddress: address,
             contentHash: contentHash(record as unknown as Record<string, unknown>),
@@ -1153,7 +1153,7 @@ describe("fixed-price x402 generated profile policy", () => {
     const buyerVetReceipt = {
       receiptVersion: "1" as const,
       substrate: "demos" as const,
-      finalityProfile: "demos-bft-confirmed-native-read",
+      finalityProfile: "demos-bft-final",
       logicalAddress: buyerVetRef.anchor.locator,
       nativeAddress: `stor-${sha256Hex("seller-buyer-vet").slice(0, 40)}`,
       contentHash: buyerVetRef.contentHash,

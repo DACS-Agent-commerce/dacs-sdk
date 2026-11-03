@@ -17,6 +17,8 @@ import {
   runDacsRoleTransportDiagnosticV1,
   type DacsDemosAdapterV1,
 } from "../src/index.js";
+import { createDacsUnavailableLiveCommerceGraphV1 } from "../src/liveCommerceGraph.js";
+import { createDacsMultirailLiveCommerceGraphV1 } from "../src/multirailCommerceGraph.js";
 
 const SEED = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const PEER_SEED = Uint8Array.from({ length: 32 }, (_, index) => 255 - index);
@@ -287,7 +289,7 @@ describe("complete role-owned live runtime", () => {
     }
   });
 
-  it("admits both complete rail graphs without sharing EVM requirements with DEM-only", async () => {
+  it("starts a both-rail service with unavailable x402 and complete pay-dem operations", async () => {
     const directory = root();
     const secretPath = join(directory, "demos.secret");
     const evmSecretPath = join(directory, "evm.secret");
@@ -309,15 +311,18 @@ describe("complete role-owned live runtime", () => {
         getAddress: vi.fn(() => wallet),
       }),
       createPayDemRail: async () => ({ address: wallet, settle: vi.fn() }),
-      createCommerceGraph: async () => Object.freeze({
-        role: "buyer" as const,
-        availability: Object.freeze({ status: "configured" as const }),
-        operations: buyerOperations(),
-        payDemOperations: buyerOperations(),
-        validatePayload: vi.fn(() => Object.freeze({ status: "valid" as const })),
-        handleMessage: vi.fn(async () => Object.freeze({
-          disposition: "accepted" as const,
-        })),
+      createCommerceGraph: async () => createDacsMultirailLiveCommerceGraphV1({
+        role: "buyer",
+        x402: createDacsUnavailableLiveCommerceGraphV1({
+          role: "buyer", reasonCode: "x402-live-profile-unavailable",
+        }) as never,
+        payDem: {
+          role: "buyer", availability: { status: "configured" },
+          router: {} as never,
+          payDemOperations: buyerOperations(),
+          validatePayload: () => ({ status: "valid" }),
+          handleMessage: async () => ({ disposition: "accepted" }),
+        },
       }),
       server: { hostname: "127.0.0.1", port: 0 },
     });

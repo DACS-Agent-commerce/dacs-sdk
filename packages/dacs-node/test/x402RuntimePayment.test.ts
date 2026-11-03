@@ -399,3 +399,6 @@ describe("buyer runtime x402 payment composition", () => {
     expect(database.loadEffect("payment", "buyer-payment-effect")).toBeUndefined();
   });
 });
+
+// Exercise offline protocol behavior below the unreleased live-profile boundary.
+vi.mock("../../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

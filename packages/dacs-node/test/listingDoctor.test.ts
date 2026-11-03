@@ -417,6 +417,21 @@ describe("existing x402 Listing doctor", () => {
     });
   });
 
+  it("keeps thrown anchor-read and receipt-recovery failures blocked and admits a retry", async () => {
+    const value = await publishedFixture();
+    value.options.readAnchor.mockRejectedValueOnce(new Error("Demos read is indeterminate"));
+    await expect(resolveDacsX402ExistingListingV1(value.options as never)).resolves.toEqual({
+      status: "blocked", reasonCode: "listing-anchor-read-unavailable",
+    });
+    value.options.authenticateAnchor.mockRejectedValueOnce(new Error("Demos receipt native read failed"));
+    await expect(resolveDacsX402ExistingListingV1(value.options as never)).resolves.toEqual({
+      status: "blocked", reasonCode: "listing-anchor-authentication-unavailable",
+    });
+    await expect(resolveDacsX402ExistingListingV1(value.options as never)).resolves.toMatchObject({
+      status: "verified", admission: { listingRef: value.listingRef },
+    });
+  });
+
   it("fails a false Demos receipt and blocks an integrity-mismatched discovery index", async () => {
     const receipt = await publishedFixture();
     receipt.options.authenticateAnchor.mockResolvedValue(false);

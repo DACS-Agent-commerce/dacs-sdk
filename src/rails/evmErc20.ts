@@ -1,5 +1,6 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import {
   createIdempotencyStore,
   settlementKey,
@@ -269,6 +270,8 @@ export function evmErc20Settle(
   }
   return (req) => {
     const { amount, asset, expectedPayee, jobId, phase, rail: railId } = req;
+    // CORE JID-3: an alias of a jobId must not key a second transfer.
+    requireCanonicalJobId(jobId, "pay-evm-erc20 jobId");
     const phaseIndex = req.phaseIndex ?? 0;
     if (expectedPayee !== recipientEvm) {
       throw new DacsError(

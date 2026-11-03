@@ -142,6 +142,51 @@ describe("verifyX402ReceiptClaim — DACS-4 §9.5.7", () => {
     });
   });
 
+  // DACS-4 SB-1: an EVM settlement chain id is positive; chain 0 never binds.
+  it("refuses chain id 0 in the evidence and in a v2 network", () => {
+    const receipt = {
+      success: true,
+      transaction: `0x${"ab".repeat(32)}`,
+      network: "eip155:0",
+      payer: `0x${"11".repeat(20)}`,
+    };
+    const claim = (chainId: number) => verifyX402ReceiptClaim({
+      protocolVersion: "2",
+      responseHeader: {
+        name: "PAYMENT-RESPONSE",
+        value: Buffer.from(JSON.stringify(receipt), "utf8").toString("base64"),
+      },
+      evidence: { paymentReceiptHash: sha256Hex(canonicalize(receipt)), chainId },
+    });
+    expect(claim(0)).toMatchObject({ disposition: "error", reason: "invalid-chainId" });
+    expect(claim(84532).disposition).not.toBe("pass");
+  });
+
+  // The v2 network is the exact CAIP-2 string, anchored at both ends.
+  it.each([
+    ["eip155:84532", "pass"],
+    ["eip155:84532x", "fail"],
+    ["xeip155:84532", "fail"],
+    ["eip155:084532", "fail"],
+  ] as const)("maps the v2 network %s to chain 84532 only when exact", (network, disposition) => {
+    const receipt = {
+      success: true,
+      transaction: `0x${"ab".repeat(32)}`,
+      network,
+      payer: `0x${"11".repeat(20)}`,
+    };
+    expect(verifyX402ReceiptClaim({
+      protocolVersion: "2",
+      responseHeader: {
+        name: "PAYMENT-RESPONSE",
+        value: Buffer.from(JSON.stringify(receipt), "utf8").toString("base64"),
+      },
+      evidence: { paymentReceiptHash: sha256Hex(canonicalize(receipt)), chainId: 84532 },
+    })).toMatchObject(disposition === "pass"
+      ? { disposition, reason: "verified" }
+      : { disposition, reason: "network-does-not-map-to-chainId" });
+  });
+
   it("retains an unrecognised v1 member without assigning v2 schema semantics", () => {
     const receipt = {
       success: true,

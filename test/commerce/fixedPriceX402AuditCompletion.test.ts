@@ -27,6 +27,7 @@ import {
 import { attestationBundleHash } from "../../src/agent/twoSidedBundle.js";
 import { bundlesDiverge } from "../../src/agent/bundleConsistency.js";
 import { bundleAddress, contentHash } from "../../src/canonical/index.js";
+import { DEMOS_BFT_FINALITY_PROFILE } from "../../src/substrate/index.js";
 import {
   combineFixedPriceX402OrderStatus,
   createFixedPriceX402BuyerCoordinator,
@@ -252,27 +253,40 @@ function signBundle(
   };
 }
 
+// The gate is substrate-neutral and these cases inject verifyBundleAnchor. The
+// default is a self-consistent test substrate; the "demos" variant has the
+// exact shape demosWriteEvidenceToAnchorReceipt emits (DEMOS-MAPPING §A.2),
+// whose profile and kinds the Demos decoder enforces
+// (test/substrate/demos-write-evidence.test.ts).
 function receipt(
   logicalAddress: string,
   nativeAddress: string,
   hash: string,
   writer: string,
-  substrate = "test:final",
+  substrate: "test:final" | "demos" = "test:final",
 ): AnchorReceipt {
+  const demos = substrate === "demos";
   return {
     receiptVersion: "1",
     substrate,
-    finalityProfile: substrate === "demos" ? "demos-bft" : "test-final",
+    finalityProfile: demos ? DEMOS_BFT_FINALITY_PROFILE : "test-final",
     logicalAddress,
     nativeAddress,
     contentHash: hash,
-    transactionRef: { kind: "demos", value: `tx:${hash}` },
+    transactionRef: {
+      kind: demos ? "demos-storage-program" : "test-tx",
+      value: `tx:${hash}`,
+    },
     writer,
+    ...(demos ? { nonce: "7" } : {}),
     state: "finalized",
     observationDisposition: "established",
     observedAt: 1780000000000,
     blockRef: { id: "block-10", height: "10", timestamp: 1780000000000 },
-    evidence: { kind: "demos-bft-proof", value: "proof" },
+    evidence: {
+      kind: demos ? "demos-bft-write-proof-v1" : "test-final-proof",
+      value: "proof",
+    },
   };
 }
 
@@ -280,6 +294,8 @@ function binding(
   bundle: FaultAttestationBundle,
   role: FixedPriceX402CoordinatorRole,
   nativeAddress: string,
+  overrides: Partial<Omit<BundleBinding, "signature">> = {},
+  signingKey = (role === "buyer" ? BUYER : SELLER).privateKey,
 ): BundleBinding {
   const signer = role === "buyer" ? BUYER : SELLER;
   const body = {
@@ -290,18 +306,19 @@ function binding(
     nativeAddress,
     bundleContentHash: attestationBundleHash(bundle),
     signer: signer.did,
+    ...overrides,
   };
   return {
     ...body,
     signature: {
       algorithm: "ed25519",
-      signer: signer.did,
+      signer: body.signer,
       value: Buffer.from(ed25519Sign(
         signedBytes(
           BUNDLE_BINDING_SEPARATOR,
           contentHash(body as unknown as Record<string, unknown>),
         ),
-        signer.privateKey,
+        signingKey,
       )).toString("base64url"),
     },
   };
@@ -635,6 +652,111 @@ describe("fixed-price x402 DACS-5 ST-11 completion gate", () => {
       }),
       verifyBundleBinding: () => ({ disposition: "valid" }),
     })).resolves.toMatchObject({ milestone: "audit-complete" });
+  });
+
+  // DACS-5 ST-11 step 4 and CORE SR2-9: audit-complete needs a verified
+  // finalized, established receipt for the bundle itself; SR2-5: every bound
+  // tuple member must match. The buyer copy is checked by this gate alone.
+  it.each<[string, (receipt: AnchorReceipt) => void]>([
+    ["only included", (anchor) => { anchor.state = "included"; }],
+    ["an indeterminate observation", (anchor) => {
+      anchor.observationDisposition = "indeterminate";
+      anchor.preservedReceiptHash = h("9");
+    }],
+    ["bound to the seller's logical address", (anchor) => {
+      anchor.logicalAddress = bundleAddress(JOB_ID, "seller");
+    }],
+    ["bound to another native address", (anchor) => {
+      anchor.nativeAddress = "native:other-bundle";
+    }],
+    ["bound to another content hash", (anchor) => { anchor.contentHash = h("8"); }],
+  ])("refuses audit-complete when the buyer bundle receipt is %s", async (_label, mutate) => {
+    const fx = await fixture();
+    const input = structuredClone(fx.input);
+    mutate(input.copies.buyer.anchorReceipt);
+    await expect(verifyFixedPriceX402AuditCompletion(input, fx.deps))
+      .rejects.toThrow(/buyer bundle receipt is not the exact established finalized receipt/);
+  });
+
+  // DACS-5 BB-1: on a write-input substrate the copy's signed BundleBinding
+  // must name exactly this native address and content hash, under the role
+  // party's own key. Each near miss below is otherwise self-consistent: it is
+  // re-signed and returned verbatim by the resolver.
+  it.each<[
+    string,
+    (fx: Awaited<ReturnType<typeof fixture>>) => BundleBinding,
+    string,
+  ]>([
+    ["another native address", (fx) => binding(fx.buyerBundle, "buyer", fx.buyerNative, {
+      nativeAddress: "native:other-bundle",
+    }), "completed buyer bundle lacks its exact BB-1 binding"],
+    ["another content hash", (fx) => binding(fx.buyerBundle, "buyer", fx.buyerNative, {
+      bundleContentHash: h("8"),
+    }), "completed buyer bundle lacks its exact BB-1 binding"],
+    ["the seller's signing key", (fx) => binding(
+      fx.buyerBundle,
+      "buyer",
+      fx.buyerNative,
+      {},
+      SELLER.privateKey,
+    ), "completed buyer BundleBinding signature is invalid"],
+    // BB-5 step 9 / BB-1: validly signed, but by the seller as signer, so the
+    // buyer copy would complete without the buyer's own binding.
+    ["the seller as signer under the seller's key", (fx) => binding(
+      fx.buyerBundle,
+      "buyer",
+      fx.buyerNative,
+      { signer: SELLER.did },
+      SELLER.privateKey,
+    ), "completed buyer bundle lacks its exact BB-1 binding"],
+    // BB-5 step 4: role and jobId must be the requested ones, even when the
+    // logical address is derived consistently from the signed values.
+    ["the seller role at the seller's logical address", (fx) => binding(
+      fx.buyerBundle,
+      "buyer",
+      fx.buyerNative,
+      { role: "seller", logicalAddress: bundleAddress(JOB_ID, "seller") },
+    ), "completed buyer bundle lacks its exact BB-1 binding"],
+    ["another job's id and logical address", (fx) => binding(
+      fx.buyerBundle,
+      "buyer",
+      fx.buyerNative,
+      {
+        jobId: "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+        logicalAddress: bundleAddress("01J8ME0SXKQ4T9V2RC5HJ6WX7F", "buyer"),
+      },
+    ), "completed buyer bundle lacks its exact BB-1 binding"],
+  ])("refuses a buyer BundleBinding with %s", async (_label, makeBinding, message) => {
+    const fx = await fixture();
+    const buyerBinding = makeBinding(fx);
+    const sellerBinding = binding(fx.sellerBundle, "seller", fx.sellerNative);
+    const input = {
+      ...fx.input,
+      sellerClosure: {
+        ...fx.input.sellerClosure,
+        result: { ...fx.closureResult, binding: sellerBinding },
+      },
+      copies: {
+        buyer: { ...fx.input.copies.buyer, binding: buyerBinding },
+        seller: { ...fx.input.copies.seller, binding: sellerBinding },
+      },
+    };
+    await expect(verifyFixedPriceX402AuditCompletion(input, {
+      ...fx.deps,
+      sellerFinalizationProvider: {
+        ...fx.sellerFinalizationProvider,
+        mapping: "write-input" as const,
+      },
+      verifyBundleAnchor: () => ({
+        disposition: "valid" as const,
+        mapping: "write-input" as const,
+      }),
+      resolveBundleBinding: (_logicalAddress, _signer, role) => ({
+        disposition: "present" as const,
+        binding: role === "buyer" ? buyerBinding : sellerBinding,
+      }),
+      verifyBundleBinding: () => ({ disposition: "valid" }),
+    })).rejects.toThrow(message);
   });
 
   it("never accepts caller-selected pure mapping for Demos", async () => {

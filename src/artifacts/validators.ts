@@ -2248,7 +2248,11 @@ export function isEvidenceBoundFaultBundleExtendedPointer(
   );
 }
 
-/** DACS-5 §10.4.2 BB-4/BB-5 structural and self-consistency gate. */
+/**
+ * DACS-5 §10.4.2 BB-4/BB-5 structural and self-consistency gate. BB-5 makes a
+ * malformed signed jobId an error before hashing, so CORE JID-1 is checked
+ * before the logical address is derived from it.
+ */
 export function isBundleBinding(v: unknown): v is BundleBinding {
   return (
     isObj(v) &&
@@ -2264,7 +2268,7 @@ export function isBundleBinding(v: unknown): v is BundleBinding {
       "signature",
     ]) &&
     v.bindingVersion === "1" &&
-    isNonEmptyStr(v.jobId) &&
+    isCanonicalJobId(v.jobId) &&
     isOneOf(["buyer", "seller", "orchestrator"], v.role) &&
     isNonEmptyStr(v.logicalAddress) &&
     isNonEmptyStr(v.nativeAddress) &&

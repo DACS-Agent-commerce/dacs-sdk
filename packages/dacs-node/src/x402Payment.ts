@@ -26,6 +26,7 @@ import {
   type X402BuyerSettlementStore,
 } from "@kynesyslabs/dacs";
 import { canonicalize } from "@kynesyslabs/dacs/canonical";
+import { requireJid1LiveProfile } from "@kynesyslabs/dacs/negotiate";
 
 import {
   createDacsLiveEffectTrackV1,
@@ -514,6 +515,7 @@ function reconciliationFence(
 export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
   options: Readonly<DacsX402BuyerPaymentTrackOptionsV1<TObservation>>,
 ): FixedPriceX402TrackOperation {
+  requireJid1LiveProfile();
   if (options === null || typeof options !== "object" ||
       typeof options.workerId !== "string" || options.workerId.length === 0 ||
       !options.settlementStore || typeof options.settlementStore.load !== "function" ||
@@ -894,7 +896,7 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
     },
   };
 
-  return createDacsLiveEffectTrackV1({
+  const track = createDacsLiveEffectTrackV1({
     database,
     kind: "payment",
     role: "buyer",
@@ -927,4 +929,9 @@ export function createDacsX402BuyerPaymentTrackV1<TObservation = unknown>(
       authenticationHash: result.settlement.authenticationHash,
     }),
   });
+  return async (input) => {
+    // Check again before retained recovery, preparation or a SQLite claim.
+    requireJid1LiveProfile();
+    return track(input);
+  };
 }

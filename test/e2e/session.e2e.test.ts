@@ -1,4 +1,9 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+
+// Offline protocol simulation: keep settlement and bundle-verification coverage
+// beneath the unreleased profile boundary. jid1LiveAdmission.test.ts exercises
+// the real production refusal without this test-only module replacement.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));
 
 import { buildSignedArtifact, verifySignedArtifact, type Signer } from "../../src/agent/signedArtifact.js";
 import {

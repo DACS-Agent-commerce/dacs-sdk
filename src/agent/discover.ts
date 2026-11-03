@@ -12,7 +12,7 @@ import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
-import { DacsError } from "../errors.js";
+import { DacsError, SubstrateError } from "../errors.js";
 import {
   canonicalDemosAgentPublicKey,
   parseCanonicalClaimReference,
@@ -341,8 +341,20 @@ export async function discoverListings(
     throw new DacsError("discoverListings requires non-empty canonical Listing refs");
   }
   const found: DiscoveredListing[] = [];
+  let unanswered = 0;
+  let firstReadError: unknown;
   for (const ref of refs) {
-    const raw = await capturedReadAnchor(ref);
+    // A read the substrate did not answer (a Demos 404 included) is neither an
+    // absence verdict nor a reason to drop the other refs: skip only this one,
+    // as a throwing key resolver does (#71).
+    let raw: Record<string, unknown> | null;
+    try {
+      raw = await capturedReadAnchor(ref);
+    } catch (error) {
+      if (unanswered === 0) firstReadError = error;
+      unanswered += 1;
+      continue;
+    }
     if (!raw) continue;
     const snapshot = snapshotListingArtifact(raw);
     if (!snapshot) continue;
@@ -386,6 +398,11 @@ export async function discoverListings(
       continue;
     }
     found.push({ ref, ...readable });
+  }
+  if (refs.length > 0 && unanswered === refs.length) {
+    throw new SubstrateError("Listing discovery is indeterminate: every anchor read was unanswered", {
+      cause: firstReadError,
+    });
   }
   return found;
 }

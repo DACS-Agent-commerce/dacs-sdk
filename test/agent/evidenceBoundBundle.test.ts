@@ -31,6 +31,7 @@ import {
   type VerifiedEvidenceBoundExecutionAuthority,
 } from "../../src/index.js";
 import { signedBytes } from "../../src/crypto/signing.js";
+import { isCanonicalJobId } from "../../src/negotiate/jobId.js";
 import {
   ed25519Verify,
   ed25519Sign,
@@ -120,7 +121,7 @@ async function compactAuthority(options: {
   };
   const copies = await buildEvidenceBoundTwoSidedBundle(
     {
-      jobId: "ebfab-compact-authority-job",
+      jobId: "01JA9EBFAB0000000000000001",
       outcome: "aborted-by-self",
       faultedParty: "buyer",
       listingRef: {
@@ -809,19 +810,28 @@ describe("DACS-5 v0.4 EvidenceBoundFaultAttestationBundle", () => {
     }
   });
 
-  it("retains all four v0.3 FAB pointer outcomes", async () => {
+  // The v0.3 corpus binds its pointers with free-form jobIds ("FBEP-1" ...).
+  // DACS-5 BB-5 at the SDK's Standard pin makes a malformed signed jobId an
+  // error before hashing, so every one of its bindings is refused here,
+  // including fab-pointer-valid. The vectors are left as published; the
+  // triple-identity pass path is covered with a canonical jobId above.
+  it("refuses every v0.3 FAB pointer binding whose jobId fails JID-1", async () => {
     const fixture = read("fab-bundle-extended-pointer-v0.3.json");
     const pointerDeps = depsFor(fixture.publicKeys);
+    expect(fixture.vectors.map((vector: any) => vector.want.expected))
+      .toEqual(["pass", "fail", "fail", "fail"]);
     for (const vector of fixture.vectors) {
+      expect(isCanonicalJobId(vector.binding.jobId), vector.name).toBe(false);
       const result = await verifyFaultBundleExtendedPointer(
         vector.pointer,
         vector.dereferenced,
         vector.binding,
         pointerDeps,
       );
-      expect(result.ok, `${vector.name}: ${result.reason}`).toBe(
-        vector.want.expected === "pass",
-      );
+      expect(result.ok, `${vector.name}: ${result.reason}`).toBe(false);
+      if (vector.want.expected === "pass") {
+        expect(result.reason).toMatch(/BundleBinding is malformed/);
+      }
     }
   });
 

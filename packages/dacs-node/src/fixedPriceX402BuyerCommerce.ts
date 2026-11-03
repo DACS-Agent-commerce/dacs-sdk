@@ -16,6 +16,10 @@ import {
 import type { DacsBuyerDemosPaymentEvidenceRuntimeOptionsV1 } from
   "./paymentEvidenceRuntime.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import {
+  hasInvalidDacsX402FinalityParameterV1,
+  resolveDacsX402FinalityBlocksV1,
+} from "./x402SellerEvm.js";
 
 const DID_PREFIX = "did:demos:agent:";
 
@@ -78,16 +82,6 @@ function paymentRailContext(rail: Readonly<AuthenticatedRailDefinition>) {
     network: `eip155:${rail.asset.chainId}`,
     handler: rail.phaseHandler,
   });
-}
-
-function requiredFinalityBlocks(rail: Readonly<AuthenticatedRailDefinition>): number {
-  const value = rail.parameters.finalityBlocks;
-  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
-    throw new TypeError(
-      "fixed-price buyer commerce requires a positive x402 finalityBlocks parameter",
-    );
-  }
-  return Number(value);
 }
 
 function agreementPrice(value: unknown): Readonly<{ amount: string; currency: string }> | null {
@@ -164,7 +158,12 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
     throw new TypeError("fixed-price buyer commerce options are invalid");
   }
   const railContext = paymentRailContext(options.rail);
-  const finalityBlocks = requiredFinalityBlocks(options.rail);
+  if (hasInvalidDacsX402FinalityParameterV1(options.rail)) {
+    throw new TypeError(
+      "fixed-price buyer commerce requires a positive x402 finalityBlocks parameter when one is set",
+    );
+  }
+  const rail = options.rail;
   const asset = options.rail.asset;
   if (asset.kind !== "erc20") {
     throw new TypeError("fixed-price buyer commerce requires an ERC-20 rail");
@@ -195,6 +194,17 @@ export function createDacsFixedPriceX402BuyerCommerceV1(
           return { disposition: "indeterminate" as const,
             reason: "buyer settlement finality is unavailable" };
         }
+        // DACS-4 §9.7: the depth echo is optional; one that is present must
+        // equal the authenticated rail policy, absent parameter included.
+        const finality = await resolveDacsX402FinalityBlocksV1(rail);
+        if (finality.disposition !== "resolved") {
+          return finality.disposition === "rejected"
+            ? { disposition: "invalid" as const,
+              reason: "payment evidence finality policy invalid" }
+            : { disposition: "indeterminate" as const,
+              reason: "payment evidence finality policy unavailable" };
+        }
+        const finalityBlocks = finality.finalityBlocks;
         const event = request.evidence.paymentTxRefs?.[0];
         const evidenceFinalityBlocks =
           request.evidence.settlementFinality?.finalityBlocks;

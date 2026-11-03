@@ -1,3 +1,11 @@
+import { UnsupportedCapabilityError } from "@kynesyslabs/dacs";
+
+import {
+  createDacsUnavailableLiveCommerceGraphV1,
+  type DacsBuyerLiveCommerceGraphV1,
+  type DacsSellerLiveCommerceGraphV1,
+} from "./liveCommerceGraph.js";
+
 import {
   createDacsFixedPricePayDemBuyerLiveV1,
   type DacsFixedPricePayDemBuyerLiveOptionsV1,
@@ -36,7 +44,7 @@ function sameActor(
   return left.context === right.context && left.workerId === right.workerId;
 }
 
-/** Build both buyer rails concurrently, then join them without fallback. */
+/** Join both buyer rails, retaining an explicitly unavailable x402 capability. */
 export async function createDacsFixedPriceMultirailBuyerLiveV1(
   options: Readonly<DacsFixedPriceMultirailBuyerLiveOptionsV1>,
 ): Promise<Readonly<DacsMultirailLiveCommerceGraphV1>> {
@@ -45,13 +53,18 @@ export async function createDacsFixedPriceMultirailBuyerLiveV1(
     throw new TypeError("fixed-price multirail buyer options are actor-incompatible");
   }
   const [x402, payDem] = await Promise.all([
-    createDacsFixedPriceX402BuyerLiveV1(options.x402),
+    createDacsFixedPriceX402BuyerLiveV1(options.x402).catch((error: unknown) => {
+      if (!(error instanceof UnsupportedCapabilityError)) throw error;
+      return createDacsUnavailableLiveCommerceGraphV1({
+        role: "buyer", reasonCode: "x402-live-profile-unavailable",
+      }) as Readonly<DacsBuyerLiveCommerceGraphV1>;
+    }),
     createDacsFixedPricePayDemBuyerLiveV1(options.payDem),
   ]);
   return createDacsMultirailLiveCommerceGraphV1({ role: "buyer", x402, payDem });
 }
 
-/** Build both seller rails concurrently, then join them without fallback. */
+/** Join both seller rails, retaining an explicitly unavailable x402 capability. */
 export async function createDacsFixedPriceMultirailSellerLiveV1(
   options: Readonly<DacsFixedPriceMultirailSellerLiveOptionsV1>,
 ): Promise<Readonly<DacsMultirailLiveCommerceGraphV1>> {
@@ -60,7 +73,12 @@ export async function createDacsFixedPriceMultirailSellerLiveV1(
     throw new TypeError("fixed-price multirail seller options are actor-incompatible");
   }
   const [x402, payDem] = await Promise.all([
-    createDacsFixedPriceX402SellerLiveV1(options.x402),
+    createDacsFixedPriceX402SellerLiveV1(options.x402).catch((error: unknown) => {
+      if (!(error instanceof UnsupportedCapabilityError)) throw error;
+      return createDacsUnavailableLiveCommerceGraphV1({
+        role: "seller", reasonCode: "x402-live-profile-unavailable",
+      }) as Readonly<DacsSellerLiveCommerceGraphV1>;
+    }),
     createDacsFixedPricePayDemSellerLiveV1(options.payDem),
   ]);
   return createDacsMultirailLiveCommerceGraphV1({ role: "seller", x402, payDem });

@@ -20,6 +20,7 @@ import {
   sha256Hex,
 } from "../canonical/index.js";
 import { signedBytes } from "../crypto/index.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import {
   type FinalizedSessionSettlement,
   type SessionSettlementDisposition,
@@ -522,9 +523,11 @@ function isPaymentFinality(value: unknown): value is SellerPaymentFinality {
     return exactKeys(value, ["model", "finalityObservedAt"]) &&
       isUint(value.finalityObservedAt);
   }
+  // DACS-4 §9.7: the depth echo is optional; a present one is a positive depth.
   return value.model === "block-depth" &&
-    exactKeys(value, ["model", "finalityBlocks", "finalityObservedAt"]) &&
-    isUint(value.finalityBlocks) && value.finalityBlocks > 0 &&
+    exactKeys(value, ["model", "finalityObservedAt"], ["finalityBlocks"]) &&
+    (value.finalityBlocks === undefined ||
+      (isUint(value.finalityBlocks) && value.finalityBlocks > 0)) &&
     isUint(value.finalityObservedAt);
 }
 
@@ -688,8 +691,9 @@ function deriveNativeProofRef(
 }
 
 function validAuthorization(value: unknown): value is SellerPaymentAuthorization {
+  // CORE JID-1/JID-3: no evidence is signed or addressed for a malformed jobId.
   if (!isRecord(value) || !isRecord(value.evidenceInput) ||
-      !isNonEmpty(value.settlementId) || !isNonEmpty(value.jobId) ||
+      !isNonEmpty(value.settlementId) || !isCanonicalJobId(value.jobId) ||
       !isUint(value.phaseIndex) || typeof value.evidenceHash !== "string") return false;
   return isValidSellerReceiptClaim({
     settlementId: value.settlementId,

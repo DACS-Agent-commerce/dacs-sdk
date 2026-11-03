@@ -182,3 +182,7 @@ describe("fixed-price seller settlement composition", () => {
     expect(factories.observer).not.toHaveBeenCalled();
   });
 });
+
+// Exercise the offline protocol below the unreleased live-profile boundary.
+// The real, non-overridable boundary is covered by jid1LiveAdmission.test.ts.
+vi.mock("../../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));

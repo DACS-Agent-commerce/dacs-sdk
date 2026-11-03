@@ -217,7 +217,7 @@ async function fixture() {
         }>) => ({
           receiptVersion: "1" as const,
           substrate: "demos" as const,
-          finalityProfile: "demos-bft-confirmed-native-read",
+          finalityProfile: "demos-bft-final",
           logicalAddress: input.logicalAddress,
           nativeAddress: input.nativeAddress,
           contentHash: input.contentHash,

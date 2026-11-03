@@ -31,7 +31,8 @@ import {
   createFsX402PaywallSettlementStore,
 } from "../../src/rails/x402PaywallSettlementFs.js";
 
-const JOB_ID = "seller-job-cafe\u0301";
+const JOB_ID = "01JA9X402SE11ERST0RE000000";
+const OTHER_JOB_ID = "01JA9X402SE11ERST0RE000001";
 const PHASE_INDEX = 4;
 const PAYER = `0x${"11".repeat(20)}`;
 const NETWORK = "eip155:84532";
@@ -273,7 +274,7 @@ describe("filesystem x402 paywall settlement store", () => {
         name: "path/key mismatch",
         content: JSON.stringify({
           storeVersion: X402_PAYWALL_SETTLEMENT_STORE_VERSION,
-          intent: intentFor("https://seller.example/different-binding", "other-job"),
+          intent: intentFor("https://seller.example/different-binding", OTHER_JOB_ID),
         }),
       },
     ];
@@ -300,6 +301,31 @@ describe("filesystem x402 paywall settlement store", () => {
     await expect(store.load(intent.settlementKey)).rejects.toThrow(/unsafe/);
   });
 
+  // The binding hash is recomputed over intentVersion "2", so only the version
+  // check refuses an otherwise intact intent that claims another version.
+  test("refuses an intent of another intentVersion before any store effect", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = await createFsX402PaywallSettlementStore({ dir: directory });
+    const intent = intentFor();
+    const otherVersion = { ...intent, intentVersion: "3" } as unknown as
+      X402PaywallSettlementIntent;
+    await expect(store.claim(otherVersion)).rejects.toThrow(
+      "x402 paywall settlement intent shape is invalid",
+    );
+    await expect(store.load(intent.settlementKey)).resolves.toEqual({ status: "absent" });
+    await writeFile(recordFile(directory, intent.settlementKey), JSON.stringify({
+      storeVersion: X402_PAYWALL_SETTLEMENT_STORE_VERSION,
+      intent: otherVersion,
+    }), "utf8");
+    const error = await store.load(intent.settlementKey).then(
+      () => undefined,
+      (reason: unknown) => reason as Error,
+    );
+    expect(error?.message).toBe("x402 paywall settlement record is corrupt");
+    expect((error?.cause as Error | undefined)?.message)
+      .toBe("x402 paywall settlement intent shape is invalid");
+  });
+
   test("rejects non-canonical inputs without invoking accessors", async () => {
     const directory = await temporaryStoreDirectory();
     const store = await createFsX402PaywallSettlementStore({ dir: directory });
@@ -323,6 +349,27 @@ describe("filesystem x402 paywall settlement store", () => {
     const proxied = intentFor();
     proxied.sessionAuthorization = new Proxy({ secret: "never-read" }, {});
     await expect(store.claim(proxied)).rejects.toThrow(/proxies/);
+  });
+
+  test("refuses an intent whose jobId fails JID-1 before deriving its key", async () => {
+    const directory = await temporaryStoreDirectory();
+    const store = await createFsX402PaywallSettlementStore({ dir: directory });
+    for (const jobId of [
+      JOB_ID.toLowerCase(),
+      `${JOB_ID.slice(0, -1)}U`,
+      `${JOB_ID} `,
+      "seller-job-café",
+    ]) {
+      // Otherwise self-consistent: only the jobId grammar is wrong.
+      const { bindingHash: _bindingHash, ...canonical } = intentFor();
+      const core = { ...canonical, jobId };
+      const intent = { ...core, bindingHash: sha256Hex(canonicalize(core)) };
+      await expect(store.claim(intent), JSON.stringify(jobId))
+        .rejects.toThrow("x402 paywall settlement intent shape is invalid");
+      expect(() => x402PaywallSettlementKey({ jobId, phaseIndex: PHASE_INDEX }))
+        .toThrow("x402 paywall settlement key requires a canonical jobId and phaseIndex");
+    }
+    expect(await readdir(join(directory, "records"))).toEqual([]);
   });
 
   test("uses restrictive modes, hashed filenames and reclaims an abandoned stale lock", async () => {

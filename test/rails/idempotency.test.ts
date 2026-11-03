@@ -13,6 +13,8 @@ import {
   type SettlementLog,
 } from "../../src/rails/idempotency.js";
 
+const JOB_ID = "01JA9REV1EWJ1DCAN0N1CAXYZ0";
+
 const ok = (txHash: string): SettleResult => ({
   ok: true,
   txHash,
@@ -27,7 +29,7 @@ const binding = (
 ): Readonly<SettlementBinding> => Object.freeze({
   bindingVersion: "1",
   railId: "evm-erc20-usdc",
-  jobId: "job-1",
+  jobId: JOB_ID,
   phaseIndex: 0,
   phase: "pay-evm-erc20",
   amount: "1000000",
@@ -39,7 +41,7 @@ const binding = (
   finality: Object.freeze({ model: "block-depth", finalityBlocks: 12 }),
   ...override,
 });
-const KEY = "evm-erc20-usdc:job-1:0";
+const KEY = `evm-erc20-usdc:${JOB_ID}:0`;
 
 describe("settlement idempotency store (#43)", () => {
   test("a repeated call for the same key returns the recorded result WITHOUT resubmitting", async () => {
@@ -608,14 +610,14 @@ describe("settlement idempotency store (#43)", () => {
     const terms = binding();
     const bindingHash = settlementBindingHash(terms);
     const first = await log.claimIntent({
-      key: "evm-erc20-usdc:job-1:0",
+      key: KEY,
       bindingHash,
       owner: "first",
       now: 0,
       leaseDurationMs: 10,
     });
     const second = await log.claimIntent({
-      key: "evm-erc20-usdc:job-1:0",
+      key: KEY,
       bindingHash,
       owner: "second",
       now: 11,
@@ -625,20 +627,20 @@ describe("settlement idempotency store (#43)", () => {
       throw new Error("expected two generations");
     }
     await expect(log.putOutcome({
-      key: "evm-erc20-usdc:job-1:0",
+      key: KEY,
       bindingHash,
       lease: first.lease,
       result: ok("0xstale"),
       now: 11,
     })).resolves.toEqual({ status: "stale" });
     await expect(log.releaseIntent({
-      key: "evm-erc20-usdc:job-1:0",
+      key: KEY,
       bindingHash,
       lease: first.lease,
       now: 11,
     })).resolves.toBe("stale");
     await expect(log.isCurrent({
-      key: "evm-erc20-usdc:job-1:0",
+      key: KEY,
       bindingHash,
       lease: second.lease,
       now: 11,
@@ -688,7 +690,7 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     asset: "USDC",
     payee: "0xpayee",
     expectedPayee: "0xpayee",
-    jobId: "job-1",
+    jobId: JOB_ID,
     phaseIndex: 0,
   };
   const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
@@ -721,21 +723,32 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
   });
 
   test("settlementKey is (railId, jobId, phaseIndex)", () => {
-    expect(settlementKey("evm-erc20-usdc", "job-1", 0)).toBe("evm-erc20-usdc:job-1:0");
+    expect(settlementKey("evm-erc20-usdc", JOB_ID, 0)).toBe(`evm-erc20-usdc:${JOB_ID}:0`);
   });
 
-  test("settlementKey rejects a non-NFC job id instead of aliasing it", () => {
-    expect(() => settlementKey("evm-erc20-usdc", "cafe\u0301-job", 0)).toThrow(
-      /exact NFC/,
-    );
+  // CORE JID-1/JID-3: the key never repairs or admits another spelling.
+  test.each([
+    ["non-NFC", "cafe\u0301-job"],
+    ["free-form", "job-1"],
+    ["lower-case alias", JOB_ID.toLowerCase()],
+    ["I alias", `${JOB_ID.slice(0, -1)}I`],
+    ["overflow", `8${JOB_ID.slice(1)}`],
+    ["27 characters", `${JOB_ID}0`],
+    ["colon-bearing", `default:${JOB_ID}`],
+  ])("settlementKey rejects a %s job id instead of keying it", (_name, jobId) => {
+    expect(() => settlementKey("evm-erc20-usdc", jobId, 0)).toThrow(/canonical JID-1 job id/);
   });
 
-  test("settlementKey rejects delimiter collisions between rail and job ids", () => {
-    expect(settlementKey("x402:default", "job", 0)).toBe(
-      "x402:default:job:0",
-    );
-    expect(() => settlementKey("x402", "default:job", 0)).toThrow(
-      /colon-free job id/,
-    );
+  test("settlementKey keeps rail-id colons unambiguous", () => {
+    expect(settlementKey("x402:default", JOB_ID, 0)).toBe(`x402:default:${JOB_ID}:0`);
+  });
+
+  test("direct EVM bridge refuses a lower-case alias of a paid jobId with no second transfer", async () => {
+    const rail = countingRail();
+    const settle = evmErc20Settle(rail, cfg);
+    await settle(req);
+    expect(() => settle({ ...req, jobId: JOB_ID.toLowerCase() })).toThrow(/canonical uppercase ULID/);
+    expect(() => settle({ ...req, jobId: "job-1" })).toThrow(/canonical uppercase ULID/);
+    expect(rail.transferCalls).toBe(1);
   });
 });

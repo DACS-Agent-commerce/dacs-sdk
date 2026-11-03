@@ -457,7 +457,7 @@ describe("pre-agreement session bootstrap transport", () => {
       buyerVetReceipt: Object.freeze({
         receiptVersion: "1" as const,
         substrate: "demos" as const,
-        finalityProfile: "demos-bft-confirmed-native-read",
+        finalityProfile: "demos-bft-final",
         logicalAddress: compositeVerificationAddress(JOB_ID, value.buyer),
         nativeAddress: `stor-${"a".repeat(40)}`,
         contentHash: contentHash(record as unknown as Record<string, unknown>),

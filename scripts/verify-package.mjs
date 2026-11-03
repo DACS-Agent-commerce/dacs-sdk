@@ -185,6 +185,9 @@ try {
   if (!files.includes("docs/raw-json-admission.md")) {
     throw new Error("packed package is missing the raw JSON admission guide");
   }
+  if (!files.includes("docs/demos-node-compatibility.md")) {
+    throw new Error("packed package is missing the Demos node compatibility record");
+  }
   await assertPureSubpaths(packageRoot);
 
   const consumer = join(scratch, "consumer");

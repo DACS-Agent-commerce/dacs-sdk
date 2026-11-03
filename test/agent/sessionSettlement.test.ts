@@ -45,9 +45,9 @@ const SETTLEMENT_ID = `evm:8453:${"e".repeat(64)}:0`;
 function context(finalityBlocks = 12): SessionSettlementContext {
   return {
     contextVersion: "1",
-    jobId: "job-settlement-1",
+    jobId: "01JZ0000000000000000000350",
     agreementRef: {
-      anchor: { kind: "storage-program", locator: "agreement:job-settlement-1" },
+      anchor: { kind: "storage-program", locator: "agreement:01JZ0000000000000000000350" },
       contentHash: "b".repeat(64),
     },
     agreementHash: "b".repeat(64),
@@ -140,7 +140,7 @@ function signedEvidence(input: {
   const outcome = input.outcome ?? "success";
   const base = {
     evidenceVersion: "1" as const,
-    jobId: input.jobId ?? "job-settlement-1",
+    jobId: input.jobId ?? "01JZ0000000000000000000350",
     phase: "pay-x402" as const,
     outcome,
     paymentTxRefs: input.currentX402Event
@@ -169,7 +169,7 @@ function signedEvidence(input: {
             anchor: {
               kind: "storage-program" as const,
               locator:
-                `dacs4:payment:${input.jobId ?? "job-settlement-1"}:` +
+                `dacs4:payment:${input.jobId ?? "01JZ0000000000000000000350"}:` +
                 `${encodeAddressSegment(input.railId ?? "rail-x402-base")}:` +
                 `${input.phaseIndex ?? 3}`,
             },
@@ -209,7 +209,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     anchor: {
       kind: "storage-program",
       locator:
-        `dacs4:payment:${options.jobId ?? "job-settlement-1"}:` +
+        `dacs4:payment:${options.jobId ?? "01JZ0000000000000000000350"}:` +
         `${encodeAddressSegment(options.railId ?? "rail-x402-base")}:` +
         `${options.phaseIndex ?? 3}${options.resolved ? ":resolved" : ""}`,
     },
@@ -220,7 +220,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     substrate: "demos",
     finalityProfile: "bft-final",
     logicalAddress: evidenceRef.anchor.locator,
-    nativeAddress: "native:evidence:job-settlement-1:3",
+    nativeAddress: "native:evidence:01JZ0000000000000000000350:3",
     contentHash: evidenceHash,
     transactionRef: { kind: "demos", value: "anchor-tx-1" },
     writer: ORCHESTRATOR,
@@ -250,7 +250,7 @@ function fixture(options: Parameters<typeof signedEvidence>[0] = {}) {
     nativeProofRef: {
       proofVersion: "1",
       kind: "x402-response-and-chain-observation",
-      locator: "proof:job-settlement-1:3",
+      locator: "proof:01JZ0000000000000000000350:3",
       contentHash: sha256Hex(canonicalize(proof)),
       encoding: "jcs",
     },
@@ -269,7 +269,7 @@ function replacePaymentEvidence(input: {
 }): void {
   const unsigned = {
     evidenceVersion: "1" as const,
-    jobId: "job-settlement-1",
+    jobId: "01JZ0000000000000000000350",
     phase: input.phase,
     outcome: "success" as const,
     paymentTxRefs: [input.txRef],
@@ -414,6 +414,196 @@ describe("verifyFinalizedSessionSettlement", () => {
     expect(revalidate).not.toHaveBeenCalled();
   });
 
+  // CORE JID-1/JID-3: a jobId is a canonical ULID before any callback,
+  // payment-address derivation or hash.
+  it("refuses a non-canonical context or evidence jobId before any provider call", async () => {
+    const JOB = "01JZ0000000000000000000350";
+    const malformed = [
+      JOB.toLowerCase(),
+      ...["I", "L", "O", "U"].map((alias) => `${JOB.slice(0, 25)}${alias}`),
+      ` ${JOB}`,
+      JOB.slice(1),
+      `${JOB}0`,
+      `8${JOB.slice(1)}`,
+      "job-settlement-1",
+    ];
+    for (const jobId of malformed) {
+      const calls = {
+        authenticateContext: vi.fn(() => ({ disposition: "pass" as const })),
+        verifyEvidenceAnchor: vi.fn(() => ({ disposition: "pass" as const })),
+        resolveNativeProof: vi.fn(),
+        revalidateSettlement: vi.fn(),
+        resolvePublicKey: vi.fn(async () => new Uint8Array(PUBLIC_KEY)),
+      };
+      const spied = (proof: Record<string, unknown>) => ({
+        ...provider(proof, {
+          authenticateContext: calls.authenticateContext,
+          verifyEvidenceAnchor: calls.verifyEvidenceAnchor,
+          resolveNativeProof: calls.resolveNativeProof,
+          revalidateSettlement: calls.revalidateSettlement,
+        }),
+        evidence: {
+          resolvePublicKey: calls.resolvePublicKey,
+          verify: () => true,
+        },
+      });
+      // A malformed context jobId, with evidence signed for the same spelling.
+      const aliased = fixture({ jobId });
+      const aliasedContext = context();
+      aliasedContext.jobId = jobId;
+      await expect(verifyFinalizedSessionSettlement(
+        aliasedContext, aliased.settlement, spied(aliased.proof),
+      ), jobId).resolves.toEqual({
+        disposition: "error",
+        reason: "settlement context is not exact canonical data",
+      });
+      // A canonical context with evidence signed for a malformed jobId.
+      await expect(verifyFinalizedSessionSettlement(
+        context(), aliased.settlement, spied(aliased.proof),
+      ), jobId).resolves.toEqual({
+        disposition: "error",
+        reason: "finalized settlement is not exact canonical data",
+      });
+      for (const call of Object.values(calls)) {
+        expect(call, jobId).not.toHaveBeenCalled();
+      }
+    }
+    // A native binding that names an alias of the session's jobId is malformed.
+    const { settlement, proof } = fixture();
+    await expect(verifyFinalizedSessionSettlement(
+      context(), settlement, provider(proof, {
+        revalidateSettlement: (input) => {
+          const pass = nativePass(input);
+          return { ...pass, binding: { ...pass.binding, jobId: JOB.toLowerCase() } };
+        },
+      }),
+    )).resolves.toEqual({
+      disposition: "error",
+      reason: "native settlement verdict is malformed",
+    });
+  });
+
+  // DACS-4 §9.7: the finality echo is optional. Evidence without it is held
+  // to the authenticated rail pin: the native observation must report the
+  // pinned depth, so an adapter that copies the echo-less shape (and so need
+  // not have applied any depth) cannot verify it.
+  it("verifies evidence that omits the optional block-depth echo only at the pinned depth", async () => {
+    const exact = fixture();
+    const evidence = exact.settlement.evidence;
+    replacePaymentEvidence({
+      ...exact,
+      phase: "pay-x402",
+      txRef: evidence.paymentTxRefs![0]!,
+      amount: { amount: "5", currency: "USDC" },
+      finality: { model: "block-depth", finalityObservedAt: 1_777_000_000_000 },
+      settlementId: SETTLEMENT_ID,
+    });
+    expect(isSettlementEvidence(exact.settlement.evidence)).toBe(true);
+    await expect(verifyFinalizedSessionSettlement(
+      context(12),
+      exact.settlement,
+      provider(exact.proof),
+    )).resolves.toMatchObject({ disposition: "verified", value: { outcome: "success" } });
+    const observing = (finalityBlocks?: number) => provider(exact.proof, {
+      revalidateSettlement: (input) => {
+        const pass = nativePassForEvidence(input, SETTLEMENT_ID);
+        return {
+          ...pass,
+          nativeObservation: {
+            ...pass.nativeObservation,
+            finality: {
+              model: "block-depth" as const,
+              ...(finalityBlocks === undefined ? {} : { finalityBlocks }),
+              finalityObservedAt: 1_777_000_000_000,
+            },
+          },
+        };
+      },
+    });
+    // An observation that reports no depth, an under-depth or another depth.
+    for (const finalityBlocks of [undefined, 1, 11, 13]) {
+      await expect(verifyFinalizedSessionSettlement(
+        context(12),
+        exact.settlement,
+        observing(finalityBlocks),
+      ), String(finalityBlocks)).resolves.toEqual({
+        disposition: "rejected",
+        reason: "native settlement observation finality differs from the signed evidence",
+      });
+    }
+    await expect(verifyFinalizedSessionSettlement(
+      context(12),
+      exact.settlement,
+      observing(12),
+    )).resolves.toMatchObject({ disposition: "verified" });
+    // A present echo is still compared too.
+    await expect(verifyFinalizedSessionSettlement(
+      context(12),
+      fixture().settlement,
+      observing(11),
+    )).resolves.toMatchObject({ disposition: "rejected" });
+  });
+
+  it("holds a present commitment echo to the rail pin and accepts an omitted one", async () => {
+    const signature = "1".repeat(64);
+    const settlementId = `solana:devnet:${signature}:2`;
+    const solanaContext = context();
+    solanaContext.rail = {
+      ...solanaContext.rail,
+      railType: "solana-spl",
+      handler: "pay-solana-spl",
+      network: "solana:devnet",
+      finality: { model: "commitment-level", finalityCommitmentLevel: "finalized" },
+    };
+    const omitted: SettlementFinality = {
+      model: "commitment-level",
+      finalityObservedAt: 1_777_000_000_000,
+    };
+    const level = (
+      finalityCommitmentLevel: "processed" | "confirmed" | "finalized",
+    ): SettlementFinality => ({ ...omitted, finalityCommitmentLevel });
+    // [signed finality, natively observed finality, verdict]
+    const cases: Array<[SettlementFinality, SettlementFinality, string]> = [
+      [omitted, level("finalized"), "verified"],
+      [level("finalized"), level("finalized"), "verified"],
+      [level("confirmed"), level("confirmed"), "rejected"],
+      // The echo is omitted, so only the native observation states the level:
+      // a copy of the echo-less shape or a lower level never verifies.
+      [omitted, omitted, "rejected"],
+      [omitted, level("confirmed"), "rejected"],
+      [omitted, level("processed"), "rejected"],
+    ];
+    for (const [finality, observed, disposition] of cases) {
+      const exact = fixture();
+      replacePaymentEvidence({
+        ...exact,
+        phase: "pay-solana-spl",
+        txRef: {
+          kind: "solana-instruction",
+          cluster: "devnet",
+          signature,
+          instructionIndex: 2,
+        },
+        amount: { amount: "5", currency: "USDC" },
+        finality,
+        settlementId,
+      });
+      await expect(verifyFinalizedSessionSettlement(
+        solanaContext,
+        exact.settlement,
+        provider(exact.proof, {
+          revalidateSettlement: (input) => {
+            const pass = nativePassForEvidence(input, settlementId);
+            return {
+              ...pass,
+              nativeObservation: { ...pass.nativeObservation, finality: observed },
+            };
+          },
+        }),
+      ), JSON.stringify([finality, observed])).resolves.toMatchObject({ disposition });
+    }
+  });
+
   it("rejects evidence/proof substitutions and a forged anchor", async () => {
     const { settlement, proof } = fixture();
     const wrongEvidence = structuredClone(settlement);
@@ -510,7 +700,7 @@ describe("verifyFinalizedSessionSettlement", () => {
     const accessorContext = context() as unknown as Record<string, unknown>;
     Object.defineProperty(accessorContext, "jobId", {
       enumerable: true,
-      get: () => "job-settlement-1",
+      get: () => "01JZ0000000000000000000350",
     });
     expect((await verifyFinalizedSessionSettlement(
       accessorContext, settlement, provider(proof),
@@ -666,7 +856,7 @@ describe("verifyFinalizedSessionSettlement", () => {
   it("requires an exact authenticated native job, rail, and phase binding", async () => {
     const { settlement, proof } = fixture();
     const variants: Array<SessionSettlementIdentityBinding> = [
-      { ...settlementBinding(context()), jobId: "other-job" },
+      { ...settlementBinding(context()), jobId: "01JZ0000000000000000000399" },
       { ...settlementBinding(context()), railId: "other-rail" },
       { ...settlementBinding(context()), phaseIndex: 4 },
     ];
@@ -915,9 +1105,9 @@ describe("verifyFinalizedSessionSettlement", () => {
 
   it("authenticates point observations without minting SB-2 count authority", async () => {
     const first = fixture();
-    const second = fixture({ jobId: "job-settlement-2", phaseIndex: 4 });
+    const second = fixture({ jobId: "01JZ0000000000000000000351", phaseIndex: 4 });
     const secondContext = context();
-    secondContext.jobId = "job-settlement-2";
+    secondContext.jobId = "01JZ0000000000000000000351";
     secondContext.paymentPhaseIndex = 4;
 
     const firstResult = await verifyFinalizedSessionSettlement(

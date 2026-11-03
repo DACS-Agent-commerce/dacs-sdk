@@ -33,7 +33,7 @@ import {
 } from "../../src/rails/x402BuyerSettlement.js";
 import { createFsX402BuyerSettlementStore } from "../../src/rails/x402BuyerSettlementFs.js";
 
-const JOB_ID = "job-x402-café";
+const JOB_ID = "01JA9X402CAFEBVYERSETT1E00";
 const PHASE_INDEX = 3;
 const RAIL_ID = "x402-prod-A";
 const NETWORK = "eip155:84532" as const;
@@ -330,43 +330,89 @@ describe("durable buyer x402 intent", () => {
     expect(() => assertX402BuyerSettlementIntent(intent)).not.toThrow();
   });
 
-  test("retains exact job identity while NFC-normalizing only the SB-3 nonce preimage", () => {
-    const decomposedJob = "job-cafe\u0301";
-    const draft = intentDraft();
-    draft.jobId = decomposedJob;
-    draft.authorizationNonce = nonce(decomposedJob);
-    const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
-    ((payload.payload as Record<string, unknown>).authorization as Record<string, unknown>).nonce =
-      nonce(decomposedJob);
-    draft.signedPaymentPayload = payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
-    draft.paymentHeader = {
-      name: "PAYMENT-SIGNATURE",
-      value: encode(payload),
-    };
-    const intent = createX402BuyerSettlementIntent(draft);
-    expect(intent.jobId).toBe(decomposedJob);
-    expect(intent.authorizationNonce).toBe(nonce(decomposedJob.normalize("NFC")));
-    expect(intent.settlementKey).not.toBe(x402BuyerSettlementKey({
-      railId: RAIL_ID,
-      jobId: decomposedJob.normalize("NFC"),
-      phaseIndex: PHASE_INDEX,
-    }));
+  test("refuses an intent whose jobId fails JID-1 even with a self-consistent nonce", () => {
+    // CORE JID-3: NFC in the SB-3 preimage reproduces historical fixtures only;
+    // it must not admit a decomposed or free-form session name.
+    for (const jobId of ["job-cafe\u0301", "job-x402-caf\u00e9", JOB_ID.toLowerCase()]) {
+      const draft = intentDraft();
+      draft.jobId = jobId;
+      draft.authorizationNonce = nonce(jobId);
+      const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+      ((payload.payload as Record<string, unknown>).authorization as Record<string, unknown>)
+        .nonce = nonce(jobId);
+      draft.signedPaymentPayload = payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+      draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+      expect(() => createX402BuyerSettlementIntent(draft), jobId)
+        .toThrow("x402 buyer jobId must be a canonical uppercase ULID");
+    }
   });
 
-  test("rejects non-scalar job IDs before deriving an exact settlement key", () => {
-    const invalidJobIds = ["job-\ud800", "job-\ud801", "job-\udc00"];
-    const replacementKey = x402BuyerSettlementKey({
+  // DACS-4 SB-3 (DACS-4.md:782): the handler MUST NOT substitute a random
+  // nonce. The intent below is otherwise self-consistent: the record, the
+  // signed authorization and the header all carry the same random nonce.
+  test("refuses a self-consistent intent whose nonce is not the SB-3 derivation", () => {
+    const random = `0x${"5a".repeat(32)}` as const;
+    const draft = intentDraft();
+    draft.authorizationNonce = random;
+    const payload = structuredClone(draft.signedPaymentPayload) as Record<string, unknown>;
+    ((payload.payload as Record<string, unknown>).authorization as Record<string, unknown>)
+      .nonce = random;
+    draft.signedPaymentPayload = payload as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+    draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+    expect(() => createX402BuyerSettlementIntent(draft))
+      .toThrow("x402 buyer authorization nonce does not satisfy DACS-4 SB-3");
+    // A retained intent with the same substitution is refused on cold restart.
+    const intent = createX402BuyerSettlementIntent(intentDraft()) as Record<string, unknown>;
+    const { bindingHash: _bindingHash, ...core } = {
+      ...intent,
+      authorizationNonce: random,
+      signedPaymentPayload: payload,
+      paymentHeader: draft.paymentHeader,
+    } as Record<string, unknown>;
+    expect(() => assertX402BuyerSettlementIntent({
+      ...core,
+      bindingHash: sha256Hex(canonicalize(core)),
+    } as never)).toThrow();
+  });
+
+  test("rejects non-JID-1 job IDs before deriving an exact settlement key", () => {
+    expect(x402BuyerSettlementKey({
       railId: RAIL_ID,
-      jobId: "job-\ufffd",
+      jobId: JOB_ID,
       phaseIndex: PHASE_INDEX,
-    });
-    expect(replacementKey).toMatch(/^dacs:x402-buyer:[0-9a-f]{64}$/);
+    })).toMatch(/^dacs:x402-buyer:[0-9a-f]{64}$/);
+    const invalidJobIds = [
+      "job-\ud800",
+      "job-\udc00",
+      "job-\ufffd",
+      JOB_ID.toLowerCase(),
+      `${JOB_ID.slice(0, -1)}L`,
+      `${JOB_ID.slice(0, -1)}U`,
+      `${JOB_ID}\r\n`,
+      JOB_ID.slice(1),
+      `${JOB_ID}0`,
+      `8${JOB_ID.slice(1)}`,
+    ];
     for (const jobId of invalidJobIds) {
       expect(() => x402BuyerSettlementKey({
         railId: RAIL_ID,
         jobId,
         phaseIndex: PHASE_INDEX,
-      })).toThrow(/Unicode scalar values/);
+      }), JSON.stringify(jobId)).toThrow("x402 buyer jobId must be a canonical uppercase ULID");
+    }
+  });
+
+  test("refuses a signed payment payload that is not x402 protocol version 2", () => {
+    for (const x402Version of [1, 3, "2"]) {
+      const draft = intentDraft();
+      const payload = {
+        ...draft.signedPaymentPayload,
+        x402Version,
+      } as unknown as X402BuyerSettlementIntentDraft["signedPaymentPayload"];
+      draft.signedPaymentPayload = payload;
+      draft.paymentHeader = { name: "PAYMENT-SIGNATURE", value: encode(payload) };
+      expect(() => createX402BuyerSettlementIntent(draft), String(x402Version))
+        .toThrow("x402 buyer signedPaymentPayload must be protocol version 2");
     }
   });
 
@@ -902,8 +948,50 @@ describe("advanceX402BuyerSettlement", () => {
         event: signedEvent({ logIndex: 8 }),
         authenticationEvent: signedEvent({ logIndex: 7 }),
       })],
+      // DACS-4 X402-3: the receipt network, the signed event chain and the
+      // intent network must agree, and payer/amount bind the retained intent.
+      // Each case is otherwise self-consistent (receipt hash, authentication).
+      ["signed event resource", (intent) => capturedSettlement(intent, {
+        event: signedEvent({ httpResource: "https://seller.example/other" }),
+      })],
+      ["network agreed by receipt and event but not the intent", (intent) => {
+        const response = receiptResponse({ network: "eip155:8453" });
+        return capturedSettlement(intent, {
+          response,
+          event: signedEvent({
+            chainId: 8453,
+            paymentReceiptHash: sha256Hex(canonicalize(response)),
+          }),
+        });
+      }],
+      ["receipt network", (intent) => capturedSettlement(intent, {
+        response: receiptResponse({ network: "eip155:8453" }),
+      })],
+      ["receipt payer", (intent) => capturedSettlement(intent, {
+        response: receiptResponse({ payer: `0x${"99".repeat(20)}` }),
+      })],
+      ["receipt amount", (intent) => capturedSettlement(intent, {
+        response: receiptResponse({ amount: "999" }),
+      })],
+      ["capture version", (intent) => ({
+        ...capturedSettlement(intent),
+        captureVersion: "2" as "1",
+      })],
+      ["disclosure protocol version", (intent) => ({
+        ...capturedSettlement(intent),
+        protocolVersion: "1" as "2",
+      })],
+      ["response header name", (intent) => ({
+        ...capturedSettlement(intent),
+        headerName: "X-PAYMENT-RESPONSE" as "PAYMENT-RESPONSE",
+      })],
+      // X402-1/X402-4: a well-formed settlement response that does not report
+      // success decodes and hashes like a success, but is never a settlement.
+      ["receipt that does not report success", (intent) => capturedSettlement(intent, {
+        response: receiptResponse({ success: false, errorReason: "insufficient_funds" }),
+      })],
     ];
-    for (const [_label, mutation] of cases) {
+    for (const [label, mutation] of cases) {
       const intent = makeIntent();
       const store = createInMemoryX402BuyerSettlementStore();
       const result = await advanceX402BuyerSettlement({
@@ -920,7 +1008,7 @@ describe("advanceX402BuyerSettlement", () => {
         })),
         now: () => 1_000,
       });
-      expect(result).toEqual({
+      expect(result, label).toEqual({
         status: "indeterminate",
         reason: "settled-same-capture-invalid",
       });
@@ -1039,6 +1127,58 @@ describe("advanceX402BuyerSettlement", () => {
       },
       now: 1_002,
     })).toMatchObject({ status: "existing", outcome: { status: "captured" } });
+  });
+
+  test("refuses unsupported store, intent and outcome versions before any effect", async () => {
+    const intent = makeIntent();
+    const otherIntent = { ...intent, intentVersion: "2" } as unknown as
+      X402BuyerSettlementIntent;
+    expect(() => assertX402BuyerSettlementIntent(otherIntent))
+      .toThrow("unsupported x402 buyer intentVersion");
+    const store = createInMemoryX402BuyerSettlementStore();
+    await expect(store.claim({
+      intent: otherIntent,
+      owner: "worker",
+      now: 1_000,
+      leaseDurationMs: 100,
+    })).rejects.toThrow("unsupported x402 buyer intentVersion");
+    await expect(store.load(intent.settlementKey)).resolves.toEqual({ status: "absent" });
+
+    const claim = await store.claim({
+      intent,
+      owner: "worker",
+      now: 1_000,
+      leaseDurationMs: 100,
+    });
+    if (claim.status !== "acquired") throw new Error("claim failed");
+    await expect(store.recordOutcome({
+      settlementKey: intent.settlementKey,
+      bindingHash: intent.bindingHash,
+      lease: claim.lease,
+      outcome: {
+        outcomeVersion: "2",
+        status: "captured",
+        settlement: capturedSettlement(intent),
+      } as never,
+      now: 1_001,
+    })).rejects.toThrow("unsupported x402 buyer outcomeVersion");
+    const held = await store.load(intent.settlementKey);
+    expect(held).toMatchObject({ status: "held", lease: { generation: 1 } });
+    expect(held).not.toHaveProperty("outcome");
+
+    const stored = {
+      storeVersion: 1,
+      intent,
+      generation: 1,
+      lease: { owner: "worker", generation: 1, stage: "fresh", expiresAt: 1_100 },
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    };
+    expect(() => createInMemoryX402BuyerSettlementStore([stored])).not.toThrow();
+    expect(() => createInMemoryX402BuyerSettlementStore([{ ...stored, storeVersion: 2 }]))
+      .toThrow("unsupported x402 buyer storeVersion");
+    expect(() => createInMemoryX402BuyerSettlementStore([{ ...stored, intent: otherIntent }]))
+      .toThrow("unsupported x402 buyer intentVersion");
   });
 
   test("pending disclosures are exact, no-overwrite, and bind the terminal receipt", async () => {
@@ -1583,6 +1723,23 @@ describe("filesystem x402 buyer settlement recovery", () => {
       generation: 1,
       intent: { bindingHash: intent.bindingHash },
     });
+
+    // Another storeVersion is unsupported (not corrupt) and is left in place.
+    const otherVersion = JSON.stringify({ ...parsed, storeVersion: 2 });
+    await writeFile(recordPath, otherVersion, "utf8");
+    await expect(store.load(intent.settlementKey))
+      .resolves.toEqual({ status: "unsupported", version: 2 });
+    await expect(store.claim({ intent, owner: "next", now: 2_000, leaseDurationMs: 100 }))
+      .resolves.toEqual({ status: "unsupported", version: 2 });
+    await expect(readFile(recordPath, "utf8")).resolves.toBe(otherVersion);
+
+    // A record without a storeVersion is corrupt.
+    const { storeVersion: _storeVersion, ...unversioned } = parsed;
+    await writeFile(recordPath, JSON.stringify(unversioned), "utf8");
+    await expect(store.load(intent.settlementKey)).resolves.toEqual({
+      status: "corrupt",
+      reason: "record is missing storeVersion",
+    });
   });
 });
 
@@ -1600,3 +1757,6 @@ describe("public surface", () => {
     }
   }, 20_000);
 });
+
+// Offline settlement/recovery simulation; separate admission tests use the real gate.
+vi.mock("../../src/negotiate/liveProfile.js", () => ({ requireJid1LiveProfile: vi.fn() }));
