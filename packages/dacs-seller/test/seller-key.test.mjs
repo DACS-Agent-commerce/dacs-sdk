@@ -5,9 +5,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -31,6 +32,17 @@ async function withProcessUserId(userId, run) {
   const original = process.getuid;
   process.getuid = () => userId;
   try { return await run(); } finally { process.getuid = original; }
+}
+/** Opens the key through a symlink to its data directory. The link sits beside the directory in the temp folder and is removed when `t` ends. */
+function openThroughSymlinkedDirectory(t, fixture) {
+  const link = `${fixture.dataDirectory}-link`;
+  symlinkSync(fixture.dataDirectory, link);
+  t.after(() => rmSync(link, { force: true }));
+  return openSellerKey(openOptions(fixture, { dataDirectory: link, filePath: join(link, 'seller.key') }));
+}
+/** Names of this suite's symlinks in the temp folder whose target is gone. */
+function danglingKeyLinks() {
+  return readdirSync(tmpdir()).filter((name) => name.startsWith('TEST-seller-key-') && lstatSync(join(tmpdir(), name)).isSymbolicLink() && !existsSync(join(tmpdir(), name)));
 }
 /** Opens with the DER buffers of the open watched; returns the key or the refusal, plus those buffers. */
 async function openWatched(options) {
@@ -181,12 +193,21 @@ test('the key file must sit in the kit\'s private data directory: real path, own
   (await openSellerKey(openOptions(fixture))).close();
   const refusedPaths = {
     'another owner': () => withProcessUserId(ownerOtherThanThisProcess(), () => openSellerKey(openOptions(fixture))),
-    'a symlinked directory': () => { symlinkSync(fixture.dataDirectory, `${fixture.dataDirectory}-link`); return openSellerKey(openOptions(fixture, { dataDirectory: `${fixture.dataDirectory}-link`, filePath: join(`${fixture.dataDirectory}-link`, 'seller.key') })); },
+    'a symlinked directory': () => openThroughSymlinkedDirectory(t, fixture),
     'a path that is not the real path': () => openSellerKey(openOptions(fixture, { dataDirectory: `${fixture.dataDirectory}/` })),
     'a key file outside the directory': () => { mkdirSync(join(fixture.dataDirectory, 'sub'), { mode: 0o700 }); return openSellerKey(openOptions(fixture, { filePath: join(fixture.dataDirectory, 'sub', 'seller.key') })); },
     'a relative directory': () => openSellerKey(openOptions(fixture, { dataDirectory: '.' })),
   };
   for (const [name, run] of Object.entries(refusedPaths)) assert.equal((await refusalOf(run))?.code, 'seller_key_location_invalid', name);
+});
+
+test('the symlinked-directory case leaves no dangling link in the temp folder, where a later reader that stats every entry would fail on it', async (t) => {
+  assert.deepEqual(danglingKeyLinks(), [], 'no dangling link before the case');
+  await t.test('opening through a symlinked directory refuses', async (inner) => {
+    const refusal = await refusalOf(() => openThroughSymlinkedDirectory(inner, keyFixture(inner)));
+    assert.equal(refusal?.code, 'seller_key_location_invalid');
+  });
+  assert.deepEqual(danglingKeyLinks(), [], 'no dangling link after the case and its cleanup');
 });
 
 test('a runtime below 22.13 or in 23.0–23.3 refuses runtime_unsupported before the key file is opened', async (t) => {
