@@ -5734,6 +5734,22 @@
           "after": "46737251b71eda167149709f7ac8ddb004411861"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P52b root names, call-time guidance and documented method inventory",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "0ab6e982665eead8bfcb054b78822b0a508cfe16",
+          "after": "8eef30db35c285a915231522e0b73a8c407e9384"
+        },
+        {
+          "path": "packages/dacs-client/src/public-guidance.mjs",
+          "before": null,
+          "after": "3e30100bbe51407035a50afcb5f1ef2c991040fa"
+        }
+      ]
     }
   ]
 }
