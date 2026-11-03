@@ -132,6 +132,13 @@ it("returns no header when the participants' authority changes while the signer 
   await refused(() => signWith(f, f.payload, driftingSigner), "tp1_participant_profile_mismatch");
 });
 
+it("a signer that fails returns no header and keeps nothing, so signing again works", async () => {
+  const f = await fixture();
+  const failing = { claim: BUYER, sign: () => { throw new Error("wallet unavailable"); } };
+  await expect(signWith(f, f.payload, failing)).rejects.toThrow("wallet unavailable");
+  expect(await wire.verifyExplicitCreateResume(await signWith(f, f.payload), f.scope())).toEqual(f.payload);
+});
+
 it("a proof claimed before the host acted is refused on resend, and a fresh proof verifies", async () => {
   const f = await fixture();
   const scope = f.scope();
