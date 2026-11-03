@@ -4,6 +4,7 @@
 // rebroadcasts nothing itself. A new export fails the sweep until it is added
 // here. src/index.mjs only re-exports functions classified below.
 export const EXPORT_CLASSIFICATION = Object.freeze({
+  'src/dacs/bounded-reads.mjs': { effect: {  }, pure: ['readFailureCode', 'readRetainedBounded'] },
   'src/dacs/commit-on-signature.mjs': { effect: { signatureCommitmentAnchor: ['signatureCommitmentAnchor'] }, pure: ['commitOnSignatureConfig', 'verifyAgreementCreateAuthorization', 'verifySignatureAgreement'] },
   'src/dacs/deliverable-wallet-journal.mjs': { effect: { createDeliverableWalletJournal: ['guardedCreate'] }, pure: ['deliverableJournalFor'] },
   'src/dacs/delivery-evidence.mjs': { effect: {  }, pure: ['isNativeDeliveryEvidence'] },
@@ -36,7 +37,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/buyer-access.mjs': { effect: {  }, pure: ['createOperatorBuyerAccess', 'operatorBuyerAccessConfig'] },
   'src/devnet-demo/deliverable.mjs': { effect: {  }, pure: ['createDevnetPurchasedReportProducer', 'isDevnetPurchasedReport'] },
   'src/devnet-demo/deployment-qualification.mjs': { effect: {  }, pure: ['assertQualifiedDeployment'] },
-  'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory'] },
+  'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory', 'syncFile'] },
   'src/devnet-demo/listing.mjs': { effect: { createDevnetDemoListingPublisher: ['createDevnetDemoListingPublisher'] }, pure: [] },
   'src/devnet-demo/native-delivery.mjs': { effect: { createDevnetDemoDeliveryCapability: ['createDevnetDemoDeliveryCapability.submit'] }, pure: ['hasDevnetDeliveryEvidenceReader', 'hasDevnetPurchasedReportReader', 'readDevnetDeliveryEvidence', 'readDevnetPurchasedReport'] },
   'src/devnet-demo/operator-approval.mjs': { effect: {  }, pure: ['composeSellerApproval', 'confirmedWriteOs', 'createExactOperatorApproval', 'createSellerContextAdmission', 'decidedFromJournals', 'heldPolicyBudget', 'parsePolicyLedger', 'policyRefusal', 'releaseSellerContextHolds', 'sellerApprovalSettings', 'sellerIssuanceJournalIds', 'sellerPurchaseSource', 'serializedPolicy', 'stillAuthorizedToSign', 'stillOpenBeforePayment', 'withContextHolds'] },
