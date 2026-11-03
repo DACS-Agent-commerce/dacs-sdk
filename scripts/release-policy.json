@@ -7,7 +7,7 @@
       "allow": [
         "package.json", "README.md", "LICENSE", "SECURITY.md",
         "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map",
-        "docs/parser-engine.md", "docs/presence-conformance-adoption.md",
+        "docs/parser-engine.md", "docs/presence-conformance-adoption.md", "docs/pay-dem-execution.md",
         "docs/alternative-payment-projection.md", "docs/demos-cci-identities.md",
         "docs/fixed-price-offline-coordinator.md", "docs/fixed-price-x402-coordinator.md",
         "docs/settlement-verified-reputation.md", "docs/rfq-negotiation-core.md",
