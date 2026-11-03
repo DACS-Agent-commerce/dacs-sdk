@@ -754,7 +754,8 @@ describe("expired session authority at every seller route", () => {
     const opened = (await w.openWireEnvelope(h, "request", { ...x.context, requireDelegation: true }));
     const check = async () => (await w.checkWireRequest(opened, { requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true }));
     let effects = 0;
-    if (route.effect === "effect") await refuses(async () => { (await check()); effects++; }, "peer_delegation_expired");
+    if (route.path === w.DACS_SELLER_HTTP_PATHS.contextChallenge) await refuses(async () => { (await check()); effects++; }, "wire_route_requires_preagreement");
+    else if (route.effect === "effect") await refuses(async () => { (await check()); effects++; }, "peer_delegation_expired");
     else expect((await check())).toMatchObject({ readbackOnly: true, body: {} });
     expect(effects).toBe(0);
   });
