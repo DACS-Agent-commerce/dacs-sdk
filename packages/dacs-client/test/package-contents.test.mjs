@@ -8,6 +8,8 @@ import { spawnSync } from 'node:child_process';
 import { installPackedPair } from './helpers/packed-install.mjs';
 
 const packageDir = fileURLToPath(new URL('..', import.meta.url));
+// Shipped before any entry point imports them; the effect boundary's later PRs wire them in.
+const SHIPPED_NOT_YET_WIRED = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-history.mjs'];
 function entryPointClosure() {
   const files = new Set();
   function visit(path) {
@@ -21,6 +23,7 @@ function entryPointClosure() {
   }
   visit('src/index.mjs');
   visit('src/wallet/durable-journal.mjs');
+  for (const path of SHIPPED_NOT_YET_WIRED) files.add(path);
   return [...files].sort();
 }
 
