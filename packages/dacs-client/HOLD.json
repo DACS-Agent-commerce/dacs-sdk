@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "ce41e8588da8b690a5422a63f7a9569a2bed0659"
+        "blob": "a9831966c05d0622ad7b8b3e6b16fce97c763c38"
       },
       "DELTA-LEDGER.json": {
-        "blob": "5ff0e76dc3594a2a8dd941986bd582ca8d0af3ef"
+        "blob": "60a03794c2e24aa9ca787b254e74090b5ca353c9"
       },
       "DELTA-MAP.md": {
-        "blob": "7f2b2a3f77a0bd5ab2e2826f313256ea584376e9"
+        "blob": "09e6b64ecb0ccfecd06fd0acc629464579a227de"
       },
       "DELTA-NOTES.md": {
-        "blob": "4ae1498ab1b792c28b62d8fbeaa39fdef734007b"
+        "blob": "024f01cab0d9c2f8c0d4e861eca2129172625496"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "0d207a3740aea60b79504faa085292ddc4b5d87f"
+        "blob": "2525ffd756fbce559d9443b52ecae8fba84dbf72"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,10 +1058,10 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "49f24bcbc0ac36166ddb58611fce10175e892449"
+        "blob": "3d56ced5234c37c76c1deffaaf33aec4586b1609"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "e21292ebc0028c6ece9b383d2311b05a085c8d31"
+        "blob": "7f9ce4e683e5db66a6805302d8862c7b463c888e"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1109,7 +1109,7 @@
         "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
       },
       "src/dacs/chain.mjs": {
-        "blob": "d05a744f9b745bd827b022728d1f26f0577411e9"
+        "blob": "4918f9b53808ff1f9311b70ef892155ed5659eef"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
@@ -1301,7 +1301,7 @@
         "blob": "5e2e079c0c7bcb73c0711d0c825f54e6dc72dd6d"
       },
       "test/chain-nonce-slot.test.mjs": {
-        "blob": "97ed7a0cafe0934a0f587f9b1db552e1368da7b1"
+        "blob": "e587e56909e76be617f438ac8d478698cdb3b4da"
       },
       "test/commitment-contradiction-classifier.test.mjs": {
         "blob": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
