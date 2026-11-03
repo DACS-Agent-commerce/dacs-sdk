@@ -871,7 +871,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     const a = await makeDeps(store, { kv, settle });
     const b = await makeDeps(store, { kv, settle });
 
-    const firstRun = runSessionCore(a.listingRef, terms, a.deps, "job-1");
+    const firstRun = runSessionCore(a.listingRef, terms, a.deps);
     await inSettle; // A has persisted intent and is paused inside the payment.
     await expect(
       runSessionCore(b.listingRef, terms, b.deps, "job-1"),
@@ -1796,12 +1796,11 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
 
   test("migrates authenticated pre-store evidence before receipts and never rebuilds it if deleted", async () => {
     const kv = new Map<string, Record<string, unknown>>();
-    const original = await makeDeps(undefined, { kv });
+    const original = await makeDeps(undefined, { kv, newJobId: () => "job-evidence-migration" });
     const completed = await runSessionCore(
       original.listingRef,
       terms,
       original.deps,
-      "job-evidence-migration",
     );
     expect(original.settleCalls.n).toBe(1);
 
@@ -1888,6 +1887,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const kv = new Map<string, Record<string, unknown>>();
       const original = await makeDeps(undefined, {
         kv,
+        newJobId: () => jobId,
         settle: async (req) => ({
           ok: false,
           txHash: "",
@@ -1897,7 +1897,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
         }),
       });
       await expect(
-        runSessionCore(original.listingRef, terms, original.deps, jobId),
+        runSessionCore(original.listingRef, terms, original.deps),
       ).resolves.toMatchObject({ outcome: "failed" });
 
       const store = createInMemorySessionStore();
@@ -1950,13 +1950,13 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
     });
     const original = await makeDeps(undefined, {
       kv,
+      newJobId: () => "job-failure-evidence-migration",
       settle: definitiveFailure,
     });
     const failed = await runSessionCore(
       original.listingRef,
       terms,
       original.deps,
-      "job-failure-evidence-migration",
     );
     expect(failed.outcome).toBe("failed");
 

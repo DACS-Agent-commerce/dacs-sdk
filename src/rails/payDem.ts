@@ -13,6 +13,7 @@ import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
+  assertRecordedForRecovery,
   createIdempotencyStore,
   settlementKey,
   type SettlementBinding,
@@ -2493,6 +2494,11 @@ export function payDemSettle(
             authenticatedResults.set(key, { context, result: captured });
             return captured;
           };
+      // A recovery request never takes a fresh claim: with no retained hash it
+      // proceeds only when the store already holds an outcome for this key.
+      if (req.recoveryOnly === true) {
+        await assertRecordedForRecovery(storeReadOutcome, key, binding, "pay-dem");
+      }
       const result = await storeOnce(
         key,
         binding,

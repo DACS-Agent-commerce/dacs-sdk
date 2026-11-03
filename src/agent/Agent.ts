@@ -436,7 +436,9 @@ export interface RunSessionOptions {
    * artifacts are reused. Crash-safe no-repayment across processes additionally
    * requires both `sessionStore` and a durable/idempotent `resumeSettlement`
    * implementation; a job id alone cannot prove what happened after a lost rail
-   * response. Omit for a new session.
+   * response. A job id the `sessionStore` has no record of (or no `sessionStore`)
+   * settles only through `resumeSettlement`, never through `settle`. Omit for a
+   * new session.
    */
   jobId?: string;
   /** Optional durable buyer-session lifecycle store used for restart recovery. */
@@ -445,6 +447,7 @@ export interface RunSessionOptions {
    * Reconcile a previously claimed payment whose durable session record still
    * has only an intent or ambiguous outcome. Must use the same rail idempotency
    * key and reconcile every ordered `req.priorAttempts` entry before returning.
+   * Every request has `recoveryOnly` set: it must never take a fresh claim.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**

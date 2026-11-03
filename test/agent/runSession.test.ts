@@ -1,10 +1,17 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import {
   runSessionCore,
   type SessionDeps,
   type SessionTerms,
+  type SettleRequest,
+  type SettleResult,
 } from "../../src/agent/runSessionCore.js";
+import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import { createFsSessionStore } from "../../src/agent/sessionStoreFs.js";
 import type {
   CompositeVerificationRecord,
   IdentityBundle,
@@ -1276,8 +1283,7 @@ describe("runSession orchestration (T4)", () => {
     const res = await runSessionCore(
       "stor-listing",
       TERMS,
-      deps,
-      "01J8ME0SXKQ4T9V2RC5HJ6WX7F",
+      { ...deps, newJobId: () => "01J8ME0SXKQ4T9V2RC5HJ6WX7F" },
     );
     expect(res.outcome).toBe("completed");
     expect(res.vetRef).toBe(
@@ -1434,7 +1440,7 @@ describe("runSession orchestration (T4)", () => {
       },
     });
 
-    await runSessionCore("stor-listing", TERMS, deps, "01J8ME0SXKQ4T9V2RC5HJ6WX7J");
+    await runSessionCore("stor-listing", TERMS, { ...deps, newJobId: () => "01J8ME0SXKQ4T9V2RC5HJ6WX7J" });
     await runSessionCore("stor-listing", TERMS, deps, "01J8ME0SXKQ4T9V2RC5HJ6WX7J");
 
     expect(vetCalls).toBe(1);
@@ -1787,7 +1793,7 @@ describe("runSession orchestration (T4)", () => {
       },
     });
 
-    const first = await runSessionCore("stor-listing", TERMS, deps, "job-RESUME");
+    const first = await runSessionCore("stor-listing", TERMS, { ...deps, newJobId: () => "job-RESUME" });
     expect(first.outcome).toBe("completed");
     expect(settleCalls).toBe(1);
 
@@ -1870,7 +1876,7 @@ describe("runSession orchestration (T4)", () => {
     };
 
     await expect(
-      runSessionCore("stor-expiring-listing", terms, deps, "job-EXPIRES"),
+      runSessionCore("stor-expiring-listing", terms, { ...deps, newJobId: () => "job-EXPIRES" }),
     ).rejects.toThrow(/simulated crash/);
     expect(settleCalls).toBe(1);
 
@@ -2004,7 +2010,7 @@ describe("runSession orchestration (T4)", () => {
     });
 
     await expect(
-      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+      runSessionCore("stor-expiring-listing", terms, { ...deps, newJobId: () => jobId }),
     ).rejects.toThrow(/simulated crash/);
     expect(settleCalls).toBe(1);
     expect(store.get(evidenceRef)?.outcome).toBe("failure");
@@ -2073,7 +2079,7 @@ describe("runSession orchestration (T4)", () => {
     });
 
     await expect(
-      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+      runSessionCore("stor-expiring-listing", terms, { ...deps, newJobId: () => jobId }),
     ).rejects.toThrow(/simulated crash/);
     expect(settleCalls).toBe(1);
 
@@ -2147,7 +2153,7 @@ describe("runSession orchestration (T4)", () => {
     });
 
     await expect(
-      runSessionCore("stor-expiring-listing", terms, deps, jobId),
+      runSessionCore("stor-expiring-listing", terms, { ...deps, newJobId: () => jobId }),
     ).rejects.toThrow(/simulated crash/);
     expect(settleCalls).toBe(1);
 
@@ -2214,7 +2220,7 @@ describe("runSession orchestration (T4)", () => {
       });
 
       await expect(
-        runSessionCore("stor-reusable-listing", TERMS, deps, jobId),
+        runSessionCore("stor-reusable-listing", TERMS, { ...deps, newJobId: () => jobId }),
       ).rejects.toThrow(/simulated crash/);
       expect(settleCalls).toBe(1);
 
@@ -2270,8 +2276,7 @@ describe("runSession orchestration (T4)", () => {
     const first = await runSessionCore(
       "stor-normative-v7",
       terms,
-      deps,
-      "job-STALE-BUNDLE-PIN",
+      { ...deps, newJobId: () => "job-STALE-BUNDLE-PIN" },
     );
     expect(settleCalls).toBe(1);
 
@@ -2509,7 +2514,7 @@ describe("runSession orchestration (T4)", () => {
     });
 
     await expect(
-      runSessionCore("stor-listing", mutableTerms, deps, "job-TERMS-SNAPSHOT"),
+      runSessionCore("stor-listing", mutableTerms, { ...deps, newJobId: () => "job-TERMS-SNAPSHOT" }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(settledRequest).toMatchObject({
       rail: TERMS.price.rail,
@@ -2552,7 +2557,7 @@ describe("runSession orchestration (T4)", () => {
     });
 
     await expect(
-      runSessionCore("stor-listing", TERMS, deps, "job-LISTING-SNAPSHOT"),
+      runSessionCore("stor-listing", TERMS, { ...deps, newJobId: () => "job-LISTING-SNAPSHOT" }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(settledPayee).toBe(LISTING.agentId);
   });
@@ -2584,12 +2589,8 @@ describe("runSession orchestration (T4)", () => {
       return LISTING;
     };
 
-    const result = await runSessionCore(
-      "stor-listing",
-      TERMS,
-      deps,
-      "job-DEPS-SNAPSHOT",
-    );
+    deps.newJobId = () => "job-DEPS-SNAPSHOT";
+    const result = await runSessionCore("stor-listing", TERMS, deps);
     expect(result.outcome).toBe("completed");
     expect(originalSettleCalls).toBe(1);
     expect(swappedSettleCalls).toBe(0);
@@ -2648,4 +2649,174 @@ describe("runSession orchestration (T4)", () => {
     expect(settleCalls).toBe(0); // a transient evidence-lookup failure must NOT re-settle
   });
 
+});
+
+describe("runSession settles a resume only through recovery", () => {
+  const PAID: SettleResult = { ok: true, txHash: "0xabc", chainId: "eip155:11155111", payer: "0xbob", payee: "0xalice" };
+  const NO_RECORD = /no recorded settlement/;
+  const counting = () => {
+    const calls = { settle: 0, resume: 0 };
+    const seen: SettleRequest[] = [];
+    const settle = async (): Promise<SettleResult> => {
+      calls.settle += 1;
+      return PAID;
+    };
+    // A bridge with nothing recorded for the job refuses; it never pays on a recovery request.
+    const resumeSettlement = async (req: SettleRequest): Promise<SettleResult> => {
+      calls.resume += 1;
+      seen.push(req);
+      throw new Error("no recorded settlement; refusing a fresh payment");
+    };
+    return { calls, seen, settle, resumeSettlement };
+  };
+  const newSessionDir = () => mkdtempSync(join(tmpdir(), "dacs-session-"));
+
+  test("resume by jobId with no SessionStore never calls settle", async () => {
+    const { calls, seen, settle, resumeSettlement } = counting();
+    const deps = makeDeps({ settle, resumeSettlement, sessionStore: undefined });
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-1")).rejects.toThrow(NO_RECORD);
+    expect(calls.settle).toBe(0);
+    expect(seen.map((r) => r.recoveryOnly)).toEqual([true]);
+  });
+
+  test("resume by jobId with an empty SessionStore never calls settle", async () => {
+    const { calls, seen, settle, resumeSettlement } = counting();
+    const deps = makeDeps({ settle, resumeSettlement, sessionStore: createInMemorySessionStore() });
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-1")).rejects.toThrow(NO_RECORD);
+    expect(calls.settle).toBe(0);
+    expect(seen.map((r) => r.recoveryOnly)).toEqual([true]);
+  });
+
+  test("resume on a SessionStore that did not see the first run never calls settle", async () => {
+    const { calls, settle, resumeSettlement } = counting();
+    const sessionStore = await createFsSessionStore({ dir: newSessionDir() });
+    const deps = makeDeps({ settle, resumeSettlement, sessionStore });
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-1")).rejects.toThrow(NO_RECORD);
+    expect(calls.settle).toBe(0);
+  });
+
+  test("two workers given one jobId with separate SessionStores pay at most once", async () => {
+    const { calls, settle, resumeSettlement } = counting();
+    const a = makeDeps({ settle, resumeSettlement, sessionStore: createInMemorySessionStore() });
+    const b = makeDeps({ settle, resumeSettlement, sessionStore: createInMemorySessionStore() });
+    await Promise.allSettled([
+      runSessionCore("stor-listing", TERMS, a, "job-1"),
+      runSessionCore("stor-listing", TERMS, b, "job-1"),
+    ]);
+    expect(calls.settle).toBe(0);
+  });
+
+  test("two successive missing-session recoveries never turn a recovery-created record into a fresh claim", async () => {
+    const { calls, seen, settle, resumeSettlement } = counting();
+    const dir = newSessionDir();
+    const recover = async () => runSessionCore(
+      "stor-listing",
+      TERMS,
+      makeDeps({ settle, resumeSettlement, sessionStore: await createFsSessionStore({ dir }) }),
+      "job-1",
+    );
+
+    await expect(recover()).rejects.toThrow(NO_RECORD);
+    // The first recovery left a record behind; a restart with a new store handle must still only recover.
+    expect((await (await createFsSessionStore({ dir })).load("job-1")).status).toBe("ok");
+    await expect(recover()).rejects.toThrow(NO_RECORD);
+    expect(calls.settle).toBe(0);
+    expect(seen.map((r) => r.recoveryOnly)).toEqual([true, true]);
+  });
+
+  test("a first run without a jobId still settles through settle", async () => {
+    const { calls, settle } = counting();
+    const res = await runSessionCore("stor-listing", TERMS, makeDeps({ settle, sessionStore: undefined }));
+    expect(res.outcome).toBe("completed");
+    expect(calls.settle).toBe(1);
+  });
+
+  // A first run takes its id from deps.newJobId. Rerunning it with the same id
+  // is a rerun of a job that may have paid, whatever the SessionStore holds.
+  const anchoredSubstrate = (options: { failEvidenceOnce?: boolean; agreementLookupBarrier?: number } = {}) => {
+    const anchors = new Map<string, Record<string, unknown>>();
+    let failEvidence = options.failEvidenceOnce === true;
+    let agreementLookups = 0;
+    let passBarrier!: () => void;
+    const barrierReached = new Promise<void>((resolve) => { passBarrier = resolve; });
+    return {
+      authenticateRecoveredArtifact: () => true,
+      anchor: async (name: string, value: unknown) => {
+        if (failEvidence && name.startsWith("dacs4:evidence:")) {
+          failEvidence = false;
+          throw new Error("crash before the evidence anchor");
+        }
+        const addr = `stor-${name}`;
+        anchors.set(addr, value as Record<string, unknown>);
+        return addr;
+      },
+      resolveAnchor: async (name: string) => {
+        const ref = `stor-${name}`;
+        const value = anchors.get(ref);
+        // Hold the first lookups of the Agreement until every worker has looked, so none sees another's anchor.
+        if (value === undefined && name.startsWith("dacs3:agreement:") && options.agreementLookupBarrier !== undefined &&
+            agreementLookups < options.agreementLookupBarrier) {
+          agreementLookups += 1;
+          if (agreementLookups === options.agreementLookupBarrier) passBarrier();
+          await barrierReached;
+        }
+        return value ? { status: "present" as const, ref, value } : { status: "absent" as const };
+      },
+    };
+  };
+
+  test.each([
+    ["a new in-memory SessionStore", () => createInMemorySessionStore()],
+    ["a SessionStore directory that was not kept", () => createFsSessionStore({ dir: newSessionDir() })],
+    ["no SessionStore", () => undefined],
+  ])("a rerun of a first run whose Agreement is already anchored never calls settle (%s)", async (_label, makeStore) => {
+    const { calls, settle, resumeSettlement } = counting();
+    const substrate = anchoredSubstrate({ failEvidenceOnce: true });
+    const first = makeDeps({ ...substrate, settle, resumeSettlement, sessionStore: undefined });
+    await expect(runSessionCore("stor-listing", TERMS, first)).rejects.toThrow(/crash before the evidence anchor/);
+    expect(calls.settle).toBe(1); // the first run paid, then died
+
+    const rerun = makeDeps({ ...substrate, settle, resumeSettlement, sessionStore: await makeStore() });
+    await expect(runSessionCore("stor-listing", TERMS, rerun)).rejects.toThrow(NO_RECORD);
+    expect(calls.settle).toBe(1);
+  });
+
+  test("a second first run with the same newJobId while the first is paying pays nothing", async () => {
+    const { calls, resumeSettlement } = counting();
+    const substrate = anchoredSubstrate();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const inRail = new Promise<void>((resolve) => { entered = resolve; });
+    const slowSettle = async (): Promise<SettleResult> => {
+      calls.settle += 1;
+      entered();
+      await gate;
+      return PAID;
+    };
+    const a = makeDeps({ ...substrate, settle: slowSettle, resumeSettlement, sessionStore: createInMemorySessionStore() });
+    const b = makeDeps({ ...substrate, settle: slowSettle, resumeSettlement, sessionStore: createInMemorySessionStore() });
+    const firstRun = runSessionCore("stor-listing", TERMS, a);
+    await inRail; // worker A has anchored the Agreement and is inside the rail
+    await expect(runSessionCore("stor-listing", TERMS, b)).rejects.toThrow(NO_RECORD);
+    release();
+    expect((await firstRun).outcome).toBe("completed");
+    expect(calls.settle).toBe(1);
+  });
+
+  test("concurrent first runs sharing newJobId expose R-own with separate stores and serialize with a shared directory", async () => {
+    const runTwoFirstRuns = async (storeFor: (worker: number) => Promise<SessionDeps["sessionStore"]>) => {
+      const { calls, settle, resumeSettlement } = counting();
+      const substrate = anchoredSubstrate({ agreementLookupBarrier: 2 });
+      const workers = await Promise.all([0, 1].map(async (worker) =>
+        makeDeps({ ...substrate, settle, resumeSettlement, sessionStore: await storeFor(worker) })));
+      await Promise.allSettled(workers.map((deps) => runSessionCore("stor-listing", TERMS, deps)));
+      return calls.settle;
+    };
+
+    // Known limit: both runs looked before either anchored, and nothing links separate stores.
+    expect(await runTwoFirstRuns(async () => createInMemorySessionStore())).toBe(2);
+    const sharedDir = newSessionDir();
+    expect(await runTwoFirstRuns(async () => createFsSessionStore({ dir: sharedDir }))).toBe(1);
+  });
 });

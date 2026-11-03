@@ -8,6 +8,7 @@ import type {
   SchemeNetworkClient,
 } from "@x402/core/types";
 import {
+  assertRecordedForRecovery,
   createIdempotencyStore,
   settlementKey,
   type SettlementBinding,
@@ -963,11 +964,10 @@ export function x402Settle(
     // on a reconciled resubmit is the SB-3 work in #33. A durable recovery may
     // replay only when `reconcile` returns an authorization bound to this exact
     // deterministic EIP-3009 nonce; absence alone still fails closed.
-    return store.once(
-      settlementKey(railId, jobId, phaseIndex),
-      binding,
-      submit,
-      reconcile,
-    );
+    const key = settlementKey(railId, jobId, phaseIndex);
+    const once = () => store.once(key, binding, submit, reconcile);
+    if (req.recoveryOnly !== true) return once();
+    return assertRecordedForRecovery(store.readOutcome?.bind(store), key, binding, "x402")
+      .then(once);
   };
 }

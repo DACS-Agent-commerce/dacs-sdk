@@ -151,6 +151,12 @@ export interface SettleRequest {
    * settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
+  /**
+   * Set by `runSession` on every `resumeSettlement` request. A bridge honours it
+   * by never taking a fresh claim: with no retained transaction hash it proceeds
+   * only when its store already holds an outcome for this settlement key.
+   */
+  recoveryOnly?: boolean;
 }
 
 export interface SettlementRecoveryAttempt {
@@ -309,7 +315,10 @@ export interface SessionDeps {
    *
    * `runSessionCore` deliberately does not call the ordinary `settle` seam under
    * an unresolved SessionStore intent because it cannot assume every implementation
-   * is restart-safe.
+   * is restart-safe. It sets `recoveryOnly` on every request to this seam, and
+   * settles only through it when it is given a job id the SessionStore has no
+   * record of (or has no SessionStore), or when a first run finds its Agreement
+   * already anchored and the SessionStore has no record of the job.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -339,7 +348,12 @@ export interface SessionDeps {
   authenticateVetFinality?: (
     request: Readonly<VetFinalityAuthenticationRequest>,
   ) => Promise<FinalizedVetAnchor | null>;
-  /** Fresh canonical uppercase ULID for a new normative session. */
+  /**
+   * Fresh canonical uppercase ULID for a new normative session. It must return a
+   * new id on every call: a first run whose Agreement for the id is already
+   * anchored settles only by recovery. After a crash, pass the id as the resume
+   * argument instead of rerunning the first run.
+   */
   newJobId: () => string;
   /** Current ISO-8601 timestamp (used where the spec field is a string). */
   now: () => string;
@@ -4097,7 +4111,11 @@ async function runSessionCoreWithFence(
   }
 
   // Negotiate (fixed-price): accept the listed terms.
-  const { ref: agreementRef, value: agreementValue } = await anchorOnce(
+  const {
+    ref: agreementRef,
+    value: agreementValue,
+    existing: agreementExisting,
+  } = await anchorOnce(
     legacyMvpSessionAnchorName.agreement(jobId),
     matchAgreement,
     () => {
@@ -4151,6 +4169,11 @@ async function runSessionCoreWithFence(
   // fail CLOSED on untrustworthy durable state, and reject a replayed agreement
   // hash. `create` binds the hash atomically and THROWS on a cross-session reuse,
   // so a replayed deal aborts here — before any call to `settle`.
+  // A caller-supplied jobId requests recovery. Unless a SessionStore already holds
+  // this job's record, nothing proves the job never reached the rail, so its
+  // settlement may only recover (never a fresh claim through `settle`). A first
+  // run whose Agreement is already anchored reruns a job that may have paid.
+  let freshClaimAllowed = resumeJobId === undefined && !agreementExisting;
   const store = fence.protect(runtime.sessionStore);
   if (store) {
     const loaded = await store.load(jobId);
@@ -4162,6 +4185,7 @@ async function runSessionCoreWithFence(
     if (loaded.status === "missing") {
       await store.create({ jobId, agreementHash, phase: "negotiated", now: runtime.nowMs() });
     } else {
+      freshClaimAllowed = true;
       // Resume: enforce that the live record's bound hash is THIS deal's — a
       // mismatch is a replayed/altered agreement under a reused jobId.
       if (loaded.record.agreementHash !== agreementHash) {
@@ -4380,6 +4404,7 @@ async function runSessionCoreWithFence(
     const recoveryRequest: SettleRequest = {
       ...settleRequest,
       ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
+      recoveryOnly: true,
     };
     await fence.assertCurrent();
     const recovered = snapshotSettleResult(
@@ -4556,6 +4581,9 @@ async function runSessionCoreWithFence(
           // the rail proves no payment landed. It is safe where ordinary `settle`
           // would be an unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
+        } else if (!freshClaimAllowed) {
+          // A resume with no durable session record may only recover.
+          settlement = await recoverRailOutcome("resume without a durable session record");
         } else {
           await fence.assertCurrent();
           const pay = snapshotSettleResult(

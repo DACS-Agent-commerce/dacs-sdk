@@ -788,6 +788,32 @@ function captureReplayAuthorization(
   });
 }
 
+/**
+ * Gate a recovery-only request: it proceeds only when the store already holds an
+ * outcome for this key and binding. Resolves when one exists. Throws a
+ * `DacsError` before the rail is reached when the store cannot answer a
+ * read-only lookup, holds no outcome (an intent alone is not one), or the
+ * recorded binding conflicts with these terms.
+ */
+export async function assertRecordedForRecovery(
+  readOutcome: SettlementIdempotencyStore["readOutcome"],
+  key: string,
+  binding: Readonly<SettlementBinding>,
+  label: string,
+): Promise<void> {
+  if (readOutcome === undefined) {
+    throw new DacsError(
+      `${label} recovery requires a store with read-only outcome lookup; refusing a fresh payment`,
+    );
+  }
+  if (await readOutcome(key, binding) === null) {
+    throw new DacsError(
+      `${label} recovery found no recorded settlement for ${key}; refusing a fresh payment ` +
+        "(the payment may have been sent: resolve it from the prepared-transfer record)",
+    );
+  }
+}
+
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),
