@@ -15,7 +15,7 @@ import { randomBytes } from "node:crypto";
 
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
-import { assertEndpointProof, type EndpointProof } from "./discovery.js";
+import { assertEndpointProof, type EndpointProof, type RetainedPurchaseContinuation } from "./discovery.js";
 import {
   admitOutgoingBody, admitWireResponseBody, messageLifetime, openWireEnvelope, signWireEnvelope, wireRequestHash,
   type EnvelopeSigningContext, type SigningContext, type WireRequestPayload, type WireResponsePayload,
@@ -99,6 +99,8 @@ export interface WireRequestInput extends SigningContext {
    * admitted value. Its commit phase, window and deadline are read from it.
    */
   signedListing?: unknown;
+  /** Retained purchase work signed under a `ready: false` proof: the capability retainedPurchaseContinuation returned for this exact request, else `seller_not_ready`. */
+  continuation?: RetainedPurchaseContinuation;
   publicEndpoint: string;
   path: string;
   jobId: string;
@@ -113,7 +115,7 @@ export interface WireRequestInput extends SigningContext {
   nonce?: string;
 }
 
-const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "commitment", "agreement", "signedListing", "publicEndpoint", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
+const REQUEST_INPUT_FIELDS = ["signer", "binding", "local", "endpointProof", "commitment", "agreement", "signedListing", "continuation", "publicEndpoint", "path", "jobId", "text", "seller", "job", "delegation", "now", "lifetimeMs", "nonce"] as const;
 
 /**
  * A wire refusal of the buyer's own delegation keeps its code and detail with
@@ -172,8 +174,8 @@ export async function signWireRequest(supplied: WireRequestInput): Promise<{ pay
   };
   // Validate the complete payload before checking the purchase effect gate.
   wireRequestHash(payload);
-  await assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, request: payload, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing });
-  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing }, delegation) };
+  await assertEndpointProof(input.endpointProof, { binding, seller: input.seller, listingPin: job.listingPin, publicEndpoint: input.publicEndpoint, now, request: payload, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing, continuation: input.continuation });
+  return { payload, header: await signWireEnvelope(payload, { signer, binding, local, purchaseProfile: job.profile, endpointProof: input.endpointProof, publicEndpoint: input.publicEndpoint, now, commitment: input.commitment, agreement: input.agreement, signedListing: input.signedListing, continuation: input.continuation }, delegation) };
 }
 
 export interface WireResponseReceipt {

@@ -38,6 +38,17 @@ it("scopes the discovery and CA-7 contract to its actual keys and routes", () =>
   expect(text).toContain("Read routes enforce retained request scope");
 });
 
+it("A25 documents the challenge route: 10-minute lifetime, context_challenge_expired, no readback, refused by checkWireRequest", () => {
+  const text = readFileSync(resolve(docs, "dacs-seller-http-v1.md"), "utf8");
+  expect(text).toContain("POST /dacs/v1/agreements/context/challenge");
+  expect(text).toContain("600,000 ms");
+  expect(text).toContain("`context_challenge_expired`");
+  expect(text).toContain("never answered as readback");
+  expect(text).toMatch(/`checkWireRequest` refuses[^.]*`wire_route_requires_preagreement`/);
+  expect(text).toContain("| `wire_route_requires_preagreement` (500) |");
+  expect(text).not.toMatch(/declared\s+read\s+routes/);
+});
+
 it("documents receipt reader and owned-input contracts accurately", () => {
   const text = readFileSync(resolve(docs, "dacs-seller-http-v1.md"), "utf8");
   expect(text).not.toContain("at every exported function");
