@@ -627,7 +627,7 @@ configured discriminator. The compatibility defaults remain process-local and
 must not be described as restart-safe.
 
 The inclusion wait is bounded independently of the broadcast response and never
-starts a second SDK broadcast. In demosdk 4.0.16, however, the underlying Axios
+starts a second SDK broadcast. In demosdk (4.0.16–4.0.18 checked), however, the underlying Axios
 requests used by broadcast, status, and nonce reads have no cancellation or
 request timeout. An open transport socket may therefore keep a Node process
 alive after the rail has returned an unresolved result. Terminating that process
@@ -908,16 +908,23 @@ The package ships a read-only preflight command:
 
 ```sh
 dacs doctor --offline
+dacs doctor --offline --rail pay-dem
 dacs doctor --json --rpc https://node2.demos.sh
 dacs doctor --json --rpc-file ./rpc.url
 dacs doctor --json --wallet-secret-file ./wallet.secret --rpc https://node2.demos.sh
 ```
 
 The first slice checks runtime/package state, optional RPC reachability, secret
-redaction, and rail availability without funding, transferring, anchoring, or
+redaction, and rail classification without funding, transferring, anchoring, or
 broadcasting. StorageProgram binding resolution and read-visible anchor
 completion currently report `blocked` until the resolver/completion work lands
 (tracked by dacs-sdk #58 and #57).
+
+The default adapter needs `@kynesyslabs/demosdk` 4.0.17 or later: earlier
+builds use directory imports that Node's ESM loader rejects, which
+`substrate.adapter-load` reports as `fail`. The peer range is bounded to the
+checked releases (`>=4.0.17 <4.0.19`), and `create-dacs-agent --mode live-demos`
+pins 4.0.18 inside that range. The CI package smoke checks the 4.0.17 floor.
 
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.
@@ -929,6 +936,55 @@ credentials, path tokens, query strings, or fragments, use `--rpc-file <path>`,
 `--wallet-secret-file <path>`, `--wallet-secret-file -`, or
 `--wallet-secret-env <name>` so secret material
 does not appear in shell history or process listings.
+
+For file inputs, doctor reports symlink status and the owner and mode of the
+file it inspects, without printing paths or contents. Files must have exactly
+mode `0600` and, where Node reports a user ID, belong to the current user,
+matching the Node host's live secret-file policy. Like the host, doctor applies
+this policy to the path before opening and again to the opened descriptor, on
+every platform. Node reports Windows file modes as `0666` or `0444`, so Windows
+credential files always fail admission, as they do on the host; use stdin or an
+environment variable there. Windows ACLs are not checked. Other modes, owner
+mismatches, and symlinks, including one swapped in after inspection, fail
+admission (exit code `1`); the secret is not read and no adapter is created.
+An ordinary file replaced after inspection produces a usage error (exit code `2`).
+Files are limited to 65,536 bytes, with path and descriptor size checks and
+bounded reads that also reject growth beyond the limit. Content is decoded as
+strict UTF-8 and trimmed, like the host consumer does. Empty, oversized,
+unreadable, whitespace-only, NUL-bearing, or non-UTF-8 files produce path-free
+usage errors (exit code `2`). Unlike the host, doctor also accepts relative
+paths. Stdin input gets the same 65,536-byte bounded read and content rules but
+no file checks, and environment inputs get neither.
+
+The shipped `pay-dem` handler is recognized as a known native DEM rail. Its
+availability and funding are not checked, so it reports `warn`, meaning
+"classified only". `--rail` takes rail profile IDs, not DACS-4 rail IDs:
+`pay-dem` and `x402` are the profiles the Node host can configure, and
+`evm-erc20` and `pay-d402` are doctor-only labels for SDK rails the host does
+not configure. For example, the Standard's `demos-native:DEM` rail is selected
+as `pay-dem`. `pay-d402` reports `fail` with availability `disabled`.
+Funded D402 use and DACS session settlement are unavailable, including with
+`acknowledgeExperimental: true`. The protocol types and terms comparator remain
+available for inspection. Existing D402 payments require independent read-only
+operator reconciliation; do not submit another payment to resolve an uncertain
+outcome. Balance, nonce,
+storage, anchor-completion, and cost checks remain `blocked`, including in
+offline mode, which makes no connections, writes, or payments.
+
+| Check ID | Statuses | `data` |
+| --- | --- | --- |
+| `runtime.node` | pass, fail | `version`, `required` |
+| `runtime.module` | pass, fail | `type` |
+| `package.version` | pass | `version` |
+| `config.secrets` | pass, fail, skip | `walletSecret` (always `[redacted]`) |
+| `config.{rpc,wallet}-file.symlink` | pass, fail | none |
+| `config.{rpc,wallet}-file.mode` | pass, fail, skip (file not opened) | `mode`: 4-digit octal string |
+| `config.{rpc,wallet}-file.owner` | pass, fail, skip (symlink, or no user ID) | `ownerUid`, `currentUid` |
+| `substrate.adapter-load` | pass, fail | none |
+| `rpc.reachable` | pass, fail, skip | `rpc` (redacted) on pass |
+| `wallet.identity` | pass, skip | `address` |
+| `wallet.balance`, `wallet.nonce`, `storage.binding-resolution`, `anchor.completion`, `cost.estimate` | blocked | none |
+| `rail.availability` | warn, fail, skip | `rail`, `known`, or `availability` |
 
 Exit codes are stable:
 
