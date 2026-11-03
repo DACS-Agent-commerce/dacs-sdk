@@ -117,14 +117,26 @@ export async function refusalOf(run) {
   try { await run(); return null; } catch (error) { return { code: error.code, details: error.details, error }; }
 }
 
-/** A TP-1 binding under the SDK's approved record and a test-only authority reader (the wire's own fixture pattern). */
-export async function testBinding() {
+/**
+ * A TP-1 binding under the SDK's approved record and a test-only authority reader (the wire's own fixture pattern).
+ * The reader first awaits `control.answer(scope)`, which a test may replace to refuse, delay or change the answer;
+ * the decision it then returns is `control.decide(admitted)`. Returns `{ binding, control }`.
+ */
+export async function controlledBinding() {
   const record = wire.TP1_APPROVED_IDENTITY_RECORD;
   const profile = { id: wire.TP1_PROFILE_ID, revision: wire.TP1_PROFILE_REVISION, base: wire.TP1_BASE_REVISION, chainIdentity: record.chainIdentity, pinVersion: record.pinVersion };
-  const readAuthority = (scope) => ({ local: { ...scope.local }, chainIdentity: profile.chainIdentity, provenance: 'test-only-independent-authority/v1',
-    sessionId: scope.sessionId, participants: scope.participants.map((claim) => ({ claim, profile, modules: wire.TESTNET_PROFILE_TP1.tuple })) });
-  return wire.bindTp1Profile({ record, local: LOCAL, readAuthority });
+  const control = { answer: () => undefined, decide: (admitted) => admitted, calls: [] };
+  const readAuthority = async (scope) => {
+    control.calls.push(scope);
+    await control.answer(scope);
+    return control.decide({ local: { ...scope.local }, chainIdentity: profile.chainIdentity, provenance: 'test-only-independent-authority/v1',
+      sessionId: scope.sessionId, participants: scope.participants.map((claim) => ({ claim, profile, modules: wire.TESTNET_PROFILE_TP1.tuple })) });
+  };
+  return { binding: await wire.bindTp1Profile({ record, local: LOCAL, readAuthority }), control };
 }
+
+/** A TP-1 binding whose test-only authority reader admits every scope. */
+export const testBinding = async () => (await controlledBinding()).binding;
 
 const LISTING_PIN = Object.freeze({ listingId: 'tp1-vector-listing', version: 1, contentHash: sha256Hex('contracts-vector-listing') });
 

@@ -2,7 +2,9 @@
 // its real cause internally and emits only a fixed code and nonsecret context.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmodSync } from 'node:fs';
+import { inspect } from 'node:util';
 import {
   BUYER, SELLER, capturedLog, derivationDouble, importSellerKey, keyFixture, keyRecordBytes, loaderSpy, mnemonicFor, openOptions, refusalOf,
 } from './helpers/seller-key-fixture.mjs';
@@ -21,9 +23,9 @@ test('a startup failure while the loader is live retains the original cause inte
   const cause = withSecrets('derivation failed');
   const sink = capturedLog();
   const refusal = await refusalOf(() => openSellerKey(openOptions(fixture, { derivation: derivationDouble({ fail: () => cause }), sink })));
-  assert.equal(refusal?.code, 'seller_key_derivation_failed');
-  assert.equal(refusal.error.cause, cause, 'the original failure is kept internally');
-  assert.deepEqual(sink.lines.map((line) => JSON.parse(line)), [{ code: 'seller_key_derivation_failed' }]);
+  assert.deepEqual({ code: refusal?.code, details: refusal?.details }, { code: 'seller_key_derivation_failed', details: 'derive' });
+  assert.equal(refusal.error.cause, undefined, 'a failure of a step that handles the mnemonic keeps no raw cause, which inspect would print');
+  assert.deepEqual(sink.lines.map((line) => JSON.parse(line)), [{ code: 'seller_key_derivation_failed', details: 'derive' }]);
   const { events } = loaderSpy.calls[0];
   assert.ok(events.includes('redact'), 'the diagnostic went through redact');
   assert.ok(events.indexOf('redact') < events.indexOf('destroy'), 'redact ran while the loader was live, before destroy');
@@ -54,4 +56,46 @@ test('no mnemonic, derived secret, key-record object or its hex/base64/base64url
     assert.ok(!Object.keys(refusal.error).includes('cause'), `${name}: the cause is not an enumerable property`);
     assert.ok(sink.lines.length >= 1, `${name} logged its fixed code`);
   }
+});
+
+// V8's JSON errors quote about ten characters of the text, so the mnemonic's first ten are what a leak shows.
+const MNEMONIC_FRAGMENT = mnemonic.slice(0, 10);
+const quotingInput = (step) => (input) => new Error(`${step} refused ${input}`);
+
+test('an error from a step that handles the key record or mnemonic prints no mnemonic text: inspect, String(cause) and an uncaught error show only the fixed code and step, for a bare-mnemonic file, a malformed record, bytes that are not UTF-8, and a validator, derivation or cleanup that quotes its input', async (t) => {
+  const record = keyRecordBytes(mnemonic).toString();
+  const cases = {
+    'a bare-mnemonic file': [{ record: Buffer.from(mnemonic) }, {}, 'seller_key_format_invalid', 'json'],
+    'a record with an unquoted mnemonic': [{ record: Buffer.from(record.replace(`"${mnemonic}"`, mnemonic)) }, {}, 'seller_key_format_invalid', 'json'],
+    'a record that is not UTF-8': [{ record: Buffer.concat([Buffer.from(mnemonic), Buffer.from([0xff])]) }, {}, 'seller_key_format_invalid', 'utf8'],
+    'a validator that throws with its input': [{}, { validateMnemonic: (value) => { throw quotingInput('validate')(value); } }, 'seller_key_format_invalid', 'validate'],
+    'a derivation that throws with its input': [{}, { derivation: derivationDouble({ fail: quotingInput('derive') }) }, 'seller_key_derivation_failed', 'derive'],
+    'a cleanup that throws with the mnemonic': [{}, { derivation: derivationDouble({ cleanupError: quotingInput('cleanup')(mnemonic) }) }, 'seller_key_derivation_failed', 'cleanup'],
+  };
+  for (const [name, [fixtureOptions, overrides, code, details]] of Object.entries(cases)) {
+    loaderSpy.reset();
+    const refusal = await refusalOf(() => openSellerKey(openOptions(keyFixture(t, fixtureOptions), overrides)));
+    assert.deepEqual({ code: refusal?.code, details: refusal?.details }, { code, details }, name);
+    for (const shown of [inspect(refusal.error, { showHidden: true, depth: null }), String(refusal.error.cause)]) {
+      assert.ok(!shown.includes(MNEMONIC_FRAGMENT), `${name} prints mnemonic text: ${shown}`);
+    }
+  }
+  const fixtureUrl = new URL('./helpers/seller-key-fixture.mjs', import.meta.url).href;
+  const script = `
+    const fixture = await import(${JSON.stringify(fixtureUrl)});
+    const { openSellerKey } = await fixture.importSellerKey();
+    const cleanups = [];
+    process.on('exit', () => { for (const cleanup of cleanups) cleanup(); });
+    await openSellerKey(fixture.openOptions(fixture.keyFixture({ after: (cleanup) => cleanups.push(cleanup) }, { record: Buffer.from(fixture.mnemonicFor(2)) })));`;
+  const child = spawnSync(process.execPath, [...process.execArgv, '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 60_000 });
+  assert.notEqual(child.status, 0, 'the open fails uncaught');
+  assert.match(child.stderr, /seller_key_format_invalid/);
+  assert.ok(!child.stderr.includes(MNEMONIC_FRAGMENT), `the uncaught error prints mnemonic text: ${child.stderr}`);
+});
+
+test('a log sink that throws never replaces the custody failure it reports', async (t) => {
+  loaderSpy.reset();
+  const log = () => { throw new Error('TEST sink failed'); };
+  const refusal = await refusalOf(() => openSellerKey(openOptions(keyFixture(t, { record: keyRecordBytes(mnemonic, { extra: 1 }) }), { log })));
+  assert.equal(refusal?.code, 'seller_key_format_invalid');
 });

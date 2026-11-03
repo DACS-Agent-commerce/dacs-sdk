@@ -736,28 +736,15 @@ per-client limiter so one client cannot exhaust the shared request budget.
 
 ### Seller key custody
 
-`src/seller-key.mjs` (`openSellerKey`) loads the seller key only through
-`loadDacsSecretV1` from `@kynesyslabs/dacs-node/secrets`, from one absolute
-file that sits in the host's private data directory (a real path owned by this
-user with mode exactly 0700). The file is the closed record
-`{ format: "dacs-seller-key/v1", algorithm: "ed25519", mnemonic }`; BIP-39
-validation and mnemonic derivation are injected by the composition. The derived
-claim must equal the Listing's seller. Every mutable copy the module owns is
-zeroed, and a failure reports only a fixed code and nonsecret details. The key
-signs through three closed roles and no other way:
-
-- `sign(bytes)` signs an effect. It checks the kit operation guard on every
-  call, so a capability kept from before a re-hold refuses.
-- `readOnlyAnswerSigner({ purpose, binding, local, body })` makes a single-use
-  signer for one read-route answer, one signed refusal or one discovery
-  document. It needs a current TP-1 binding and signs only the exact bytes the
-  wire builds for that purpose, this seller and that binding. It does not
-  consult the guard, and it signs no effect.
-- `integritySigner` signs only bytes that begin with the seller-state journal
-  domain. It does not consult the guard.
-
-Only effect signing is guarded per call. After `close()` every role refuses.
-Nothing in this package calls `openSellerKey` yet.
+`openSellerKey` (`src/seller-key.mjs`; Node ^22.13.0 or >=23.4.0) loads the
+seller key only through `loadDacsSecretV1`, from one file in the exactly-0700
+data directory holding `{ format: "dacs-seller-key/v1", algorithm: "ed25519",
+mnemonic }`, and zeroes every copy it owns. It signs only through three roles:
+`sign(bytes)` for effects, which checks the kit operation guard on every call;
+`readOnlyAnswerSigner(...)`, a single-use signer for one read answer, refusal or
+discovery document, whose async `sign` checks the TP-1 authority for that job
+when it signs; and `integritySigner`, for seller-state journal bytes only.
+After `close()` every role refuses. Nothing in this package calls it yet.
 
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.

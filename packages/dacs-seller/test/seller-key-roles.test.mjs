@@ -4,11 +4,14 @@
 // signer call is counted on node:crypto's sign, under the key object.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  BUYER, LOCAL, SELLER, cryptoCalls, discoveryPayload, importSellerKey, keyFixture, loaderSpy, openOptions, refusalOf, requestPayload, responsePayload, testBinding,
-  verifiesUnder, wire,
+  BUYER, JOB, LOCAL, SELLER, controlledBinding, cryptoCalls, discoveryPayload, importSellerKey, keyFixture, loaderSpy, openOptions, refusalOf, requestPayload,
+  responsePayload, testBinding, verifiesUnder, wire,
 } from './helpers/seller-key-fixture.mjs';
-import { SELLER_STATE_SIGNING_DOMAIN } from '../src/dacs/seller-durable-state.mjs';
+import { SELLER_STATE_SIGNING_DOMAIN, createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 
 const { openSellerKey } = await importSellerKey();
 const guard = await import('../src/kit-operation-guard.mjs');
@@ -85,7 +88,7 @@ test('(round 4) a key opened while admitted, then re-held: through the wire\'s a
   for (const [name, run] of Object.entries(refusedSigners)) assert.equal((await refusalOf(run))?.code, 'seller_key_role_refused', name);
   const once = await readOnlySigner(key, 'read-answer', { body: READ_BODY });
   const answerBytes = responseBytes(PATHS.state, 200, READ_BODY);
-  assert.equal(once.sign(answerBytes).length, 64);
+  assert.equal((await once.sign(answerBytes)).length, 64);
   assert.equal((await refusalOf(() => once.sign(answerBytes)))?.code, 'seller_key_role_refused', 'a read-only signer is single-use');
   assert.equal(cryptoCalls.signs - signsBeforeRefusals, 1, 'only the one valid answer reached the cryptographic signer');
 
@@ -144,4 +147,122 @@ test('(round 4) the integrity role signs only bytes beginning with the seller-st
   key.close();
   assert.equal((await refusalOf(() => integritySigner.sign(record)))?.code, 'seller_key_closed');
   assert.equal(cryptoCalls.signs - signsBefore, 1);
+});
+
+const answerBytesUnder = (scoped, path, status, body) => wire.wireEnvelopeSigningBytes(responsePayload(requestPayload(scoped, path), status, body));
+/** One role of each read-only purpose minted under `scoped`, each with the exact bytes the wire would hand it. */
+async function mintedRoles(key, scoped) {
+  return {
+    discovery: [await key.readOnlyAnswerSigner({ purpose: 'discovery', binding: scoped, local: LOCAL }), wire.discoverySigningBytes(discoveryPayload(scoped))],
+    'read answer': [await key.readOnlyAnswerSigner({ purpose: 'read-answer', binding: scoped, local: LOCAL, body: READ_BODY }), answerBytesUnder(scoped, PATHS.state, 200, READ_BODY)],
+    refusal: [await key.readOnlyAnswerSigner({ purpose: 'refusal', binding: scoped, local: LOCAL, body: REFUSAL_BODY }), answerBytesUnder(scoped, PATHS.proposals, 503, REFUSAL_BODY)],
+  };
+}
+/** A reader answer that waits until the test releases it; `waiting` resolves once the reader is waiting. */
+function heldAnswer() {
+  const held = {};
+  held.waiting = new Promise((resolve) => { held.reached = resolve; });
+  held.answer = () => { held.reached(); return new Promise((resolve) => { held.release = resolve; }); };
+  return held;
+}
+
+test('a minted read-only role signs only for the job or discovery session the authority admits when it signs: a reader that admits the connection but refuses the job or the discovery session leaves every directly signed role refused with zero cryptographic signer calls', async (t) => {
+  const key = await openAdmittedKey(t);
+  const { binding: scoped, control } = await controlledBinding();
+  const refusedSessions = new Set([JOB, wire.DACS_SELLER_DISCOVERY_FORMAT]);
+  control.answer = (scope) => { if (refusedSessions.has(scope.sessionId)) throw new Error('TEST session refused'); };
+  const roles = await mintedRoles(key, scoped);
+  const before = cryptoCalls.signs;
+  for (const [name, [role, bytes]] of Object.entries(roles)) assert.equal((await refusalOf(() => role.sign(bytes)))?.code, 'seller_key_role_refused', name);
+  assert.equal(cryptoCalls.signs - before, 0, 'nothing reached the cryptographic signer for a refused session');
+  const asked = control.calls.filter((scope) => scope.sessionId !== null);
+  assert.deepEqual(asked.map((scope) => [scope.sessionId, scope.participants]), [
+    [wire.DACS_SELLER_DISCOVERY_FORMAT, [SELLER.claim]], [JOB, [BUYER.claim, SELLER.claim]], [JOB, [BUYER.claim, SELLER.claim]],
+  ], 'each role asked for its own session and participants');
+  // Control: the same roles under a reader that admits every session sign, and the signatures verify.
+  for (const [name, [role, bytes]] of Object.entries(await mintedRoles(key, binding))) assert.ok(verifiesUnder(SELLER, bytes, await role.sign(bytes)), `${name} signs when admitted`);
+  assert.equal(cryptoCalls.signs - before, 3);
+});
+
+test('closing custody while a minted role awaits its signing-time authority check refuses it seller_key_closed with zero signer calls; a reader that throws, or is slow and then refuses, refuses the role', async (t) => {
+  const key = await openAdmittedKey(t);
+  const { binding: scoped, control } = await controlledBinding();
+  const bytes = answerBytesUnder(scoped, PATHS.state, 200, READ_BODY);
+  const mint = () => key.readOnlyAnswerSigner({ purpose: 'read-answer', binding: scoped, local: LOCAL, body: READ_BODY });
+  const before = cryptoCalls.signs;
+  const throwing = await mint();
+  control.answer = (scope) => { if (scope.sessionId === JOB) throw new Error('TEST reader failed'); };
+  assert.equal((await refusalOf(() => throwing.sign(bytes)))?.code, 'seller_key_role_refused', 'a reader that throws');
+  const slow = await mint();
+  control.answer = (scope) => (scope.sessionId === JOB ? new Promise((resolve, reject) => setImmediate(() => reject(new Error('TEST refused late')))) : undefined);
+  assert.equal((await refusalOf(() => slow.sign(bytes)))?.code, 'seller_key_role_refused', 'a reader that is slow and then refuses');
+  const pending = await mint();
+  const held = heldAnswer();
+  control.answer = (scope) => (scope.sessionId === JOB ? held.answer() : undefined);
+  const signing = refusalOf(() => pending.sign(bytes));
+  await held.waiting;
+  key.close();
+  held.release();
+  assert.equal((await signing)?.code, 'seller_key_closed', 'the close during the await wins over the late admission');
+  assert.equal(cryptoCalls.signs - before, 0);
+});
+
+test('a minted role signs the bytes it was given when sign was called: changing the caller\'s buffer during the authority await changes nothing it signs', async (t) => {
+  const key = await openAdmittedKey(t);
+  const { binding: scoped, control } = await controlledBinding();
+  const role = await key.readOnlyAnswerSigner({ purpose: 'read-answer', binding: scoped, local: LOCAL, body: READ_BODY });
+  const original = answerBytesUnder(scoped, PATHS.state, 200, READ_BODY);
+  const callerBuffer = Buffer.from(original);
+  const held = heldAnswer();
+  control.answer = (scope) => (scope.sessionId === JOB ? held.answer() : undefined);
+  const signing = role.sign(callerBuffer);
+  await held.waiting;
+  callerBuffer.fill(0x41);
+  held.release();
+  assert.ok(verifiesUnder(SELLER, original, await signing), 'the signature is over the bytes as they were when sign was called');
+});
+
+test('a minted role is single-use: one whose authority check failed cannot be retried, a new mint under a current binding signs, and minting again never revives a used role', async (t) => {
+  const key = await openAdmittedKey(t);
+  const { binding: scoped, control } = await controlledBinding();
+  const bytes = answerBytesUnder(scoped, PATHS.state, 200, READ_BODY);
+  const mint = () => key.readOnlyAnswerSigner({ purpose: 'read-answer', binding: scoped, local: LOCAL, body: READ_BODY });
+  const before = cryptoCalls.signs;
+  const used = await mint();
+  control.answer = (scope) => { if (scope.sessionId === JOB) throw new Error('TEST refused once'); };
+  assert.equal((await refusalOf(() => used.sign(bytes)))?.code, 'seller_key_role_refused');
+  control.answer = () => undefined;
+  const retry = await refusalOf(() => used.sign(bytes));
+  assert.deepEqual([retry?.code, retry?.details], ['seller_key_role_refused', 'single-use'], 'the failed role is spent');
+  assert.equal((await (await mint()).sign(bytes)).length, 64, 'a new mint signs');
+  assert.equal((await refusalOf(() => used.sign(bytes)))?.details, 'single-use', 'the new mint did not revive the used role');
+  assert.equal(cryptoCalls.signs - before, 1);
+});
+
+test('the read-only role refuses a read answer on the pre-agreement route, an answer body past the response limit and discovery under another profile, each with its own detail', async (t) => {
+  const key = await openAdmittedKey(t);
+  const before = cryptoCalls.signs;
+  const preAgreement = await readOnlySigner(key, 'read-answer', { body: READ_BODY });
+  assert.equal((await refusalOf(() => preAgreement.sign(responseBytes(PATHS.contextChallenge, 200, READ_BODY))))?.details, 'not-a-read-answer');
+  const oversized = await refusalOf(() => readOnlySigner(key, 'read-answer', { body: 'x'.repeat(wire.DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes + 1) }));
+  assert.deepEqual([oversized?.code, oversized?.details], ['seller_key_role_refused', 'body']);
+  const discovery = await readOnlySigner(key, 'discovery');
+  const otherProfile = wire.discoverySigningBytes(discoveryPayload(binding, { profile: { ...binding.profile, pinVersion: 'another-pin' } }));
+  assert.equal((await refusalOf(() => discovery.sign(otherProfile)))?.details, 'wrong-binding-or-seller');
+  assert.equal(cryptoCalls.signs - before, 0);
+});
+
+test('the integrity role stays synchronous, so the durable state creates a store over it, writes a record and reads it back after a reopen', async (t) => {
+  const key = await openAdmittedKey(t);
+  const signature = key.integritySigner.sign(withPrefix(SELLER_STATE_SIGNING_DOMAIN, '{}'));
+  assert.ok(signature instanceof Uint8Array && typeof signature.then !== 'function', 'sign returns bytes, not a Promise');
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-seller-key-state-')));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const options = { dir: join(dir, 'state'), signer: key.integritySigner, listingPin: { contentHash: 'a'.repeat(64) } };
+  const store = await createSellerDurableState(options);
+  store.retainContext({ probe: 'integrity role' });
+  store.close();
+  const reopened = await createSellerDurableState(options);
+  t.after(() => reopened.close());
+  assert.deepEqual(reopened.context(), { probe: 'integrity role' });
 });

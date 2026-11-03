@@ -2,12 +2,13 @@
 // comes only from loadDacsSecretV1, from one absolute file in the kit's private
 // data directory, in the closed record `init` writes. Every mutable copy this
 // module owns is zeroed, and the key then signs only through three closed roles:
-// effect signing (guarded at every call), a read-only role bound to validated
-// answers, refusals and discovery, and a local journal-integrity role.
+// effect signing (guarded at every call), a read-only role for one answer, refusal
+// or discovery document whose job the TP-1 authority admits when it signs, and a
+// local journal-integrity role.
 import { createHash, createPrivateKey, createPublicKey, sign as signEd25519 } from 'node:crypto';
 import { dirname, isAbsolute } from 'node:path';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, assertTp1Binding, discoverySigningBytes, isReadRoute, wireEnvelopeSigningBytes } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_DISCOVERY_FORMAT, DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, assertTp1Authority, assertTp1Binding, discoverySigningBytes, isReadRoute, wireEnvelopeSigningBytes } from '@kynesyslabs/dacs/wire';
 import { loadDacsSecretV1 } from '@kynesyslabs/dacs-node/secrets';
 import { SELLER_STATE_SIGNING_DOMAIN } from './dacs/seller-durable-state.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
@@ -20,6 +21,7 @@ const SELLER_KEY_RECORD_FIELDS = ['algorithm', 'format', 'mnemonic'];
 const SELLER_KEY_SECRET_NAME = 'dacs-seller-key';
 const CLAIM_PREFIX = 'did:demos:agent:';
 const ED25519_SEED_BYTES = 32;
+const ED25519_PUBLIC_KEY_BYTES = 32;
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 const PKCS8_ED25519_BYTES = PKCS8_ED25519_PREFIX.length + ED25519_SEED_BYTES;
 const MAX_REFUSAL_BODY_BYTES = 4096;
@@ -30,8 +32,9 @@ const FIXED_CODE = /^[a-z][a-z0-9_-]{0,63}$/;
 /**
  * Every seller key refusal. `code` is a fixed `seller_key_*` or
  * `runtime_unsupported` code. `details` is nonsecret context: a loader reason
- * code, a wire code or a Node version. The original failure is `cause`, which is
- * not enumerable and never serialized.
+ * code, a wire code, a failed step or a Node version. Only a loader or wire
+ * failure is kept as `cause` (not enumerable, never serialized): a step that sees
+ * the key record or mnemonic keeps none, since its error text can quote them.
  */
 export class SellerKeyError extends OperationError {
   constructor(code, details, cause) {
@@ -44,7 +47,17 @@ export class SellerKeyError extends OperationError {
 const fixedCode = (value) => (typeof value === 'string' && FIXED_CODE.test(value) ? value : undefined);
 const isPlainRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const refusedRole = (details, cause) => new SellerKeyError('seller_key_role_refused', details, cause);
+const formatInvalid = (step) => new SellerKeyError('seller_key_format_invalid', step);
 const sha256Hex = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
+
+// Runs one step; its failure becomes `refusal(cause)`. A step that sees the key record or mnemonic passes a refusal that drops the cause, whose text can quote them.
+function refusing(refusal, run) {
+  try {
+    return run();
+  } catch (cause) {
+    throw refusal(cause);
+  }
+}
 
 // K14: the purchase paths admit Node ^22.13.0 || >=23.4.0.
 function runtimeSupported(version) {
@@ -79,33 +92,20 @@ async function loadKeyFile(filePath) {
  * `seller_key_format_invalid` for anything else. The caller zeroes `bytes`.
  */
 export function parseSellerKeyRecord(bytes, validateMnemonic) {
-  const invalid = (cause) => new SellerKeyError('seller_key_format_invalid', undefined, cause);
-  let record;
-  try {
-    record = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } catch (cause) {
-    throw invalid(cause);
-  }
+  const text = refusing(() => formatInvalid('utf8'), () => new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  const record = refusing(() => formatInvalid('json'), () => JSON.parse(text));
   const closed = isPlainRecord(record) && Object.keys(record).sort().join() === SELLER_KEY_RECORD_FIELDS.join();
-  if (!closed || record.format !== SELLER_KEY_FORMAT || record.algorithm !== SELLER_KEY_ALGORITHM || typeof record.mnemonic !== 'string') throw invalid();
-  let accepted;
-  try {
-    accepted = validateMnemonic(record.mnemonic);
-  } catch (cause) {
-    throw invalid(cause);
-  }
-  if (accepted !== true) throw invalid();
+  if (!closed || record.format !== SELLER_KEY_FORMAT || record.algorithm !== SELLER_KEY_ALGORITHM || typeof record.mnemonic !== 'string') throw formatInvalid();
+  if (refusing(() => formatInvalid('validate'), () => validateMnemonic(record.mnemonic)) !== true) throw formatInvalid();
   return record;
 }
 
 async function deriveOwned(derive, mnemonic) {
-  let derived;
   try {
-    derived = await derive(mnemonic);
-  } catch (cause) {
-    throw new SellerKeyError('seller_key_derivation_failed', undefined, cause);
+    return await derive(mnemonic);
+  } catch {
+    throw new SellerKeyError('seller_key_derivation_failed', 'derive');
   }
-  return derived;
 }
 
 const derivationShapeValid = (derived) => isPlainRecord(derived) && typeof derived.claim === 'string' && derived.ed25519PrivateKey instanceof Uint8Array &&
@@ -115,24 +115,20 @@ const derivationShapeValid = (derived) => isPlainRecord(derived) && typeof deriv
 function keyObjectFromSeed(ed25519PrivateKey, der) {
   der.set(PKCS8_ED25519_PREFIX);
   der.set(ed25519PrivateKey.subarray(0, ED25519_SEED_BYTES), PKCS8_ED25519_PREFIX.length);
-  try {
-    return createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
-  } catch (cause) {
-    throw new SellerKeyError('seller_key_derivation_failed', undefined, cause);
-  }
+  return refusing(() => new SellerKeyError('seller_key_derivation_failed', 'pkcs8'), () => createPrivateKey({ key: der, format: 'der', type: 'pkcs8' }));
 }
 
 function claimOfPublicKey(keyObject) {
-  return `${CLAIM_PREFIX}${createPublicKey(keyObject).export({ format: 'der', type: 'spki' }).subarray(-ED25519_SEED_BYTES).toString('hex')}`;
+  return `${CLAIM_PREFIX}${createPublicKey(keyObject).export({ format: 'der', type: 'spki' }).subarray(-ED25519_PUBLIC_KEY_BYTES).toString('hex')}`;
 }
 
-// Runs the derivation's cleanup; returns what it threw so it can never replace the original failure.
+// Runs the derivation's cleanup; answers whether it completed, so its failure can never replace the original one.
 function cleanUpDerivation(derived) {
   try {
     derived?.cleanup?.();
-    return null;
-  } catch (cause) {
-    return cause;
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -155,9 +151,9 @@ async function keyFromKeyFile(loader, { listingSeller, validateMnemonic, derive 
   recordBytes.fill(0);
   der.fill(0);
   if (derived?.ed25519PrivateKey instanceof Uint8Array) derived.ed25519PrivateKey.fill(0);
-  const cleanupFailure = cleanUpDerivation(derived);
+  const cleanedUp = cleanUpDerivation(derived);
   if (failure !== null) throw failure;
-  if (cleanupFailure !== null) throw new SellerKeyError('seller_key_derivation_failed', 'cleanup', cleanupFailure);
+  if (!cleanedUp) throw new SellerKeyError('seller_key_derivation_failed', 'cleanup');
   return { keyObject, claim: derived.claim };
 }
 
@@ -167,22 +163,15 @@ function hasPrefix(bytes, prefix) {
 
 // The bytes the wire's own builder gives for `payload`, or a refusal when it rejects the payload.
 function wireBytesFor(purpose, text) {
-  try {
+  return refusing((cause) => refusedRole('payload-invalid', cause), () => {
     const payload = JSON.parse(text);
     return { payload, bytes: purpose === 'discovery' ? discoverySigningBytes(payload) : wireEnvelopeSigningBytes(payload) };
-  } catch (cause) {
-    throw refusedRole('payload-invalid', cause);
-  }
+  });
 }
 
 function assertClosedRefusalBody(body) {
   if (Buffer.byteLength(body) > MAX_REFUSAL_BODY_BYTES) throw refusedRole('refusal-body-too-large');
-  let parsed;
-  try {
-    parsed = JSON.parse(body);
-  } catch (cause) {
-    throw refusedRole('refusal-body-invalid', cause);
-  }
+  const parsed = refusing((cause) => refusedRole('refusal-body-invalid', cause), () => JSON.parse(body));
   const members = isPlainRecord(parsed) ? Object.keys(parsed) : [];
   if (typeof parsed?.error !== 'string' || members.some((name) => name !== 'error' && name !== 'message') || (members.includes('message') && typeof parsed.message !== 'string')) {
     throw refusedRole('refusal-body-invalid');
@@ -199,35 +188,44 @@ function assertAnswerPurpose(purpose, payload, body) {
   assertClosedRefusalBody(body);
 }
 
-// Accepts `bytes` only when they are exactly the wire's signing bytes for an answer, refusal or discovery document of this seller under this binding.
+// Returns the payload of `bytes` only when they are exactly the wire's signing bytes for an answer, refusal or discovery document of this seller under this binding.
 function assertReadOnlyBytes({ purpose, binding, claim, body }, bytes) {
-  if (!(bytes instanceof Uint8Array)) throw refusedRole('not-bytes');
   const discovery = purpose === 'discovery';
   const domain = discovery ? DACS_SELLER_HTTP_DOMAINS.discovery : DACS_SELLER_HTTP_DOMAINS.response;
   if (bytes.length > (discovery ? DACS_SELLER_HTTP_LIMITS.maxDiscoveryBytes : DACS_SELLER_HTTP_LIMITS.maxHeaderLength)) throw refusedRole('bytes-too-large');
-  let text;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch (cause) {
-    throw refusedRole('not-text', cause);
-  }
+  const text = refusing((cause) => refusedRole('not-text', cause), () => new TextDecoder('utf-8', { fatal: true }).decode(bytes));
   if (!text.startsWith(domain)) throw refusedRole('wrong-domain');
   const { payload, bytes: recomputed } = wireBytesFor(purpose, text.slice(domain.length));
   if (!Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).equals(recomputed)) throw refusedRole('not-the-wire-bytes');
   if (canonicalize(payload.profile) !== canonicalize(binding.profile) || payload.seller !== claim) throw refusedRole('wrong-binding-or-seller');
   if (!discovery) assertAnswerPurpose(purpose, payload, body);
+  return payload;
 }
 
-async function assertReadOnlyRequest(request) {
-  if (!isPlainRecord(request) || !READ_ONLY_PURPOSES.includes(request.purpose)) throw refusedRole('purpose');
-  const { purpose, binding, local, body } = request;
-  if (purpose === 'discovery' ? body !== undefined : typeof body !== 'string' || Buffer.byteLength(body) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) throw refusedRole('body');
+// Runs one of the wire's TP-1 checks; its refusal (or the authority reader's own error) becomes a role refusal.
+async function wireAuthority(check) {
   try {
-    await assertTp1Binding(binding, local);
+    await check();
   } catch (cause) {
     throw refusedRole(fixedCode(cause?.code), cause);
   }
-  return { purpose, binding, body };
+}
+
+// The request's inputs, read once and copied, after the wire's binding check passes for them.
+async function readOnlyScope(request) {
+  const { purpose, binding, local, body } = isPlainRecord(request) ? request : {};
+  if (!READ_ONLY_PURPOSES.includes(purpose)) throw refusedRole('purpose');
+  if (purpose === 'discovery' ? body !== undefined : typeof body !== 'string' || Buffer.byteLength(body) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) throw refusedRole('body');
+  const scope = Object.freeze({ purpose, binding, local: isPlainRecord(local) ? Object.freeze({ ...local }) : local, body });
+  await wireAuthority(() => assertTp1Binding(scope.binding, scope.local));
+  return scope;
+}
+
+// The wire's signing-time check, read fresh from the reader: this seller's discovery session, or the payload's job for its buyer and seller.
+function assertSigningAuthority({ purpose, binding, local }, payload) {
+  const discovery = purpose === 'discovery';
+  return wireAuthority(() => assertTp1Authority(binding, local, discovery ? [payload.seller] : [payload.buyer, payload.seller],
+    discovery ? DACS_SELLER_DISCOVERY_FORMAT : payload.jobId));
 }
 
 // The three signing roles over one key object. `close()` drops the key, after which every role refuses.
@@ -240,24 +238,28 @@ function createSigningRoles(keyObject, claim) {
   return Object.freeze({
     claim,
     sign(bytes) {
-      assertKitOperationAdmitted('sellerKey.sign');
       requireOpen();
+      assertKitOperationAdmitted('sellerKey.sign');
       if (!(bytes instanceof Uint8Array)) throw new TypeError('sign takes bytes');
       return signBytes(bytes);
     },
     async readOnlyAnswerSigner(request) {
       requireOpen();
-      const purposeScope = { ...(await assertReadOnlyRequest(request)), claim };
+      const scope = { ...(await readOnlyScope(request)), claim };
       requireOpen(); // custody may have closed while the binding check was pending
       let used = false;
       return Object.freeze({
         claim,
-        sign(bytes) {
+        // Async, single-use: it signs its own copy of `bytes` only after the authority admits their job when it signs.
+        async sign(bytes) {
           requireOpen();
           if (used) throw refusedRole('single-use');
           used = true;
-          assertReadOnlyBytes(purposeScope, bytes);
-          return signBytes(bytes);
+          if (!(bytes instanceof Uint8Array)) throw refusedRole('not-bytes');
+          const owned = Uint8Array.from(bytes);
+          await assertSigningAuthority(scope, assertReadOnlyBytes(scope, owned));
+          requireOpen(); // custody may have closed while the authority check was pending
+          return signBytes(owned);
         },
       });
     },
@@ -287,15 +289,12 @@ function reportFailure(log, failure, loader) {
 }
 
 /**
- * Opens the seller key and returns `{ claim, sign(bytes), readOnlyAnswerSigner(request), integritySigner, close() }`.
- * Steps, in order: runtime floor (K14), `keyFormat`, key location (the file sits in the private
- * `dataDirectory`), `loadDacsSecretV1`, closed-record parse with the injected `validateMnemonic`,
- * injected `derive(mnemonic)` returning `{ claim, ed25519PrivateKey, cleanup }` (ownership transfers
- * here), and `claim === listingSeller`. Opening is possible while the kit guard is off; `sign` checks
- * the guard at every call, and the read-only and integrity roles do not (they sign no effect).
- * Throws SellerKeyError (`runtime_unsupported`, `seller_key_format_invalid`, `seller_key_location_invalid`,
- * `seller_key_unavailable`, `seller_key_derivation_failed` or `seller_key_claim_mismatch`) and emits
- * only its fixed code and nonsecret details through `log`; the original failure is its `cause`.
+ * Opens the seller key: runtime floor, `keyFormat`, location in the private `dataDirectory`, `loadDacsSecretV1`,
+ * closed-record parse with `validateMnemonic`, `derive(mnemonic)` (which hands over `{ claim, ed25519PrivateKey,
+ * cleanup }`), then `claim === listingSeller`. Returns
+ * `{ claim, sign(bytes), readOnlyAnswerSigner(request), integritySigner, close() }`. Throws TypeError
+ * without the three functions, else SellerKeyError, whose fixed code and nonsecret details alone go to
+ * `log`. The roles throw `seller_key_closed` after close() and `seller_key_role_refused` outside their purpose.
  */
 export async function openSellerKey({ filePath, dataDirectory, keyFormat, listingSeller, validateMnemonic, derive, log = () => {} }) {
   if (typeof validateMnemonic !== 'function' || typeof derive !== 'function' || typeof log !== 'function') throw new TypeError('openSellerKey needs validateMnemonic, derive and log functions');

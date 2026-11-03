@@ -8,13 +8,17 @@ export { DacsSecretLoadError };
 
 /** One entry per loader call: { options, copies, events, error }. */
 export const calls = [];
-/** While set, the real loader sees this user id, so a file owned by this process reads as owned by another user. */
-export const controls = { loaderUserId: null };
+/**
+ * While `loaderUserId` is set, the real loader sees this user id, so a file owned by this process reads as owned by another user.
+ * While `source` is set, the loaded secret reports it as its source.
+ */
+export const controls = { loaderUserId: null, source: null };
 
 /** Forgets every recorded call. */
 export function reset() {
   calls.length = 0;
   controls.loaderUserId = null;
+  controls.source = null;
 }
 
 async function loadAsOtherUser(options) {
@@ -31,7 +35,7 @@ export async function loadDacsSecretV1(options) {
   let secret;
   try { secret = await loadAsOtherUser(options); } catch (error) { call.error = error; throw error; }
   return Object.freeze({
-    get source() { return secret.source; },
+    get source() { return controls.source ?? secret.source; },
     get warningCodes() { return secret.warningCodes; },
     get destroyed() { return secret.destroyed; },
     bytes() { call.events.push('bytes'); const copy = secret.bytes(); call.copies.push(copy); return copy; },

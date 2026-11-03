@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -33,16 +33,13 @@ async function withProcessUserId(userId, run) {
   process.getuid = () => userId;
   try { return await run(); } finally { process.getuid = original; }
 }
-/** Opens the key through a symlink to its data directory. The link sits beside the directory in the temp folder and is removed when `t` ends. */
+/** Opens the key through a symlink to its data directory. The link sits in its own folder, `links`, which is removed with it when `t` ends. */
 function openThroughSymlinkedDirectory(t, fixture) {
-  const link = `${fixture.dataDirectory}-link`;
+  const links = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-seller-key-links-')));
+  const link = join(links, 'data');
   symlinkSync(fixture.dataDirectory, link);
-  t.after(() => rmSync(link, { force: true }));
-  return openSellerKey(openOptions(fixture, { dataDirectory: link, filePath: join(link, 'seller.key') }));
-}
-/** Names of this suite's symlinks in the temp folder whose target is gone. */
-function danglingKeyLinks() {
-  return readdirSync(tmpdir()).filter((name) => name.startsWith('TEST-seller-key-') && lstatSync(join(tmpdir(), name)).isSymbolicLink() && !existsSync(join(tmpdir(), name)));
+  t.after(() => rmSync(links, { recursive: true, force: true }));
+  return { links, opening: openSellerKey(openOptions(fixture, { dataDirectory: link, filePath: join(link, 'seller.key') })) };
 }
 /** Opens with the DER buffers of the open watched; returns the key or the refusal, plus those buffers. */
 async function openWatched(options) {
@@ -193,7 +190,7 @@ test('the key file must sit in the kit\'s private data directory: real path, own
   (await openSellerKey(openOptions(fixture))).close();
   const refusedPaths = {
     'another owner': () => withProcessUserId(ownerOtherThanThisProcess(), () => openSellerKey(openOptions(fixture))),
-    'a symlinked directory': () => openThroughSymlinkedDirectory(t, fixture),
+    'a symlinked directory': () => openThroughSymlinkedDirectory(t, fixture).opening,
     'a path that is not the real path': () => openSellerKey(openOptions(fixture, { dataDirectory: `${fixture.dataDirectory}/` })),
     'a key file outside the directory': () => { mkdirSync(join(fixture.dataDirectory, 'sub'), { mode: 0o700 }); return openSellerKey(openOptions(fixture, { filePath: join(fixture.dataDirectory, 'sub', 'seller.key') })); },
     'a relative directory': () => openSellerKey(openOptions(fixture, { dataDirectory: '.' })),
@@ -201,13 +198,14 @@ test('the key file must sit in the kit\'s private data directory: real path, own
   for (const [name, run] of Object.entries(refusedPaths)) assert.equal((await refusalOf(run))?.code, 'seller_key_location_invalid', name);
 });
 
-test('the symlinked-directory case leaves no dangling link in the temp folder, where a later reader that stats every entry would fail on it', async (t) => {
-  assert.deepEqual(danglingKeyLinks(), [], 'no dangling link before the case');
+test('the symlinked-directory case keeps its link in its own folder and removes that folder, so it leaves nothing in the shared temp folder', async (t) => {
+  let links = null;
   await t.test('opening through a symlinked directory refuses', async (inner) => {
-    const refusal = await refusalOf(() => openThroughSymlinkedDirectory(inner, keyFixture(inner)));
-    assert.equal(refusal?.code, 'seller_key_location_invalid');
+    const symlinked = openThroughSymlinkedDirectory(inner, keyFixture(inner));
+    links = symlinked.links;
+    assert.equal((await refusalOf(() => symlinked.opening))?.code, 'seller_key_location_invalid');
   });
-  assert.deepEqual(danglingKeyLinks(), [], 'no dangling link after the case and its cleanup');
+  assert.equal(existsSync(links), false, 'the link folder is gone after the case and its cleanup');
 });
 
 test('a runtime below 22.13 or in 23.0–23.3 refuses runtime_unsupported before the key file is opened', async (t) => {
@@ -318,9 +316,32 @@ test('custody-reopen-after-rehold: a key reopened after a restart while the guar
   assert.equal(loaderSpy.calls.length, 2, 'the restart loads the key file again');
   assert.equal(reopened.claim, SELLER.claim, 'opening is not an effect, so it works while off');
   assert.equal((await refusalOf(() => reopened.sign(message)))?.code, 'kit_operation_guard_off');
-  assert.equal((await refusalOf(() => earlier.sign(message)))?.code, 'kit_operation_guard_off', 'the closed earlier capability gains nothing from the re-hold');
+  assert.equal((await refusalOf(() => earlier.sign(message)))?.code, 'seller_key_closed', 'the closed earlier capability gains nothing from the re-hold');
   assert.equal(cryptoCalls.signs - before, 0, 'no cryptographic signer call while off');
   guard.setKitOperationGuardForTest('testnet-tp1');
   assert.equal(reopened.sign(message).length, 64, 'the reopened key checks the current admission at each call');
   reopened.close();
+});
+
+test('effect sign checks that custody is open before the guard: after close with the guard off it refuses seller_key_closed with zero signer calls, and given text it throws a TypeError', async (t) => {
+  loaderSpy.reset();
+  const key = await openSellerKey(openOptions(keyFixture(t)));
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  assert.throws(() => key.sign('effect text'), TypeError);
+  const before = cryptoCalls.signs;
+  key.close();
+  guard.setKitOperationGuardForTest('off');
+  assert.equal((await refusalOf(() => key.sign(Buffer.from('effect bytes'))))?.code, 'seller_key_closed');
+  assert.equal(cryptoCalls.signs - before, 0);
+});
+
+test('a loaded secret whose source is not the file refuses seller_key_unavailable secret-source-not-file and destroys the loader before anything is read', async (t) => {
+  loaderSpy.reset();
+  loaderSpy.controls.source = 'environment';
+  t.after(() => loaderSpy.reset());
+  const derivation = derivationDouble();
+  const refusal = await refusalOf(() => openSellerKey(openOptions(keyFixture(t), { derivation })));
+  assert.deepEqual({ code: refusal?.code, details: refusal?.details }, { code: 'seller_key_unavailable', details: 'secret-source-not-file' });
+  assert.deepEqual(loaderSpy.calls[0].events, ['destroy']);
+  assert.deepEqual(derivation.record.received, []);
 });
