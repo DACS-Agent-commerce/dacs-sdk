@@ -10,13 +10,17 @@ import { isProvenUnsignedAbsence, provenUnsignedAbsence } from './native-dem-del
  * bounded copy. Throws a TimeoutError past the deadline, a RangeError coded
  * `REPLY_LIMIT_CODE` for a reply over a limit, or the capability's own error.
  */
+const proofReason = (reason) => (typeof reason === 'string' ? reason : typeof reason?.message === 'string' ? reason.message : 'the reader proved nothing was signed');
+
 export function readRetainedBounded(anchor, query, options = {}) {
   let unsignedProven = false;
   const retained = {
     readRetained: async (input, limits) => {
       const reply = await anchor.readRetained(input, { ...options, ...limits });
       unsignedProven = isProvenUnsignedAbsence(reply);
-      return reply;
+      // The proof is marked again on the bounded copy below, so only its status and a text reason need pass the
+      // plain-JSON bounds: a proof made with no reason, or with an Error, is not lost to the check.
+      return unsignedProven ? { status: 'absent', reason: proofReason(reply.reason) } : reply;
     },
   };
   return readAdmissionCapability(retained, 'readRetained', query).then((reply) => (unsignedProven ? provenUnsignedAbsence(reply.reason) : reply));

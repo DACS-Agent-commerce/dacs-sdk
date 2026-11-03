@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readRetainedBounded, readFailureCode } from '../src/dacs/bounded-reads.mjs';
+import { provenUnsignedAbsence, isProvenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 
 const MAX_BYTES = 64 * 1024, MAX_VALUES = 4096, MAX_LIST_ITEMS = 256;
 const anchorReplying = (reply) => ({ readRetained: async () => reply });
@@ -35,3 +36,15 @@ test('a timeout is a timeout, also when wrapped, and any other error is a reader
   const timeout = new DOMException('TEST deadline', 'TimeoutError');
   assert.deepEqual([readFailureCode(timeout), readFailureCode(new Error('TEST wrapper', { cause: timeout })), readFailureCode(new Error('TEST other'))], ['timeout', 'timeout', 'reader']);
 });
+
+for (const [label, reason, expected] of [
+  ['a text reason', 'TEST nothing signed', 'TEST nothing signed'],
+  ['no reason', undefined, 'the reader proved nothing was signed'],
+  ['an Error as its reason', new Error('TEST shutdown ended the approval'), 'TEST shutdown ended the approval'],
+]) {
+  test(`a proven-unsigned absence with ${label} stays proven through the bounds`, async () => {
+    const reply = await readRetainedBounded(anchorReplying(provenUnsignedAbsence(reason)), { logicalAddress: 'TEST' });
+    assert.equal(isProvenUnsignedAbsence(reply), true);
+    assert.deepEqual({ ...reply }, { status: 'absent', reason: expected });
+  });
+}
