@@ -142,6 +142,48 @@ export {
   type EvmTransferClient,
 } from "./evmErc20.js";
 export {
+  liquidityTankSettlementKey,
+  createLiquidityTankIntent,
+  advanceLiquidityTankSettlement,
+  liquidityTankPhaseOutcome,
+  createInMemoryLiquidityTankStore,
+  type InMemoryLiquidityTankStoreOptions,
+  type LiquidityTankAuthority,
+  type LiquidityTankIntent,
+  type LiquidityTankPreparedSubmission,
+  type LiquidityTankObservation,
+  type LiquidityTankEffectFence,
+  type LiquidityTankAdapter,
+  type LiquidityTankVerifier,
+  type LiquidityTankVerifierAnswer,
+  type LiquidityTankLease,
+  type LiquidityTankSettlement,
+  type LiquidityTankRecoveryCheckpoint,
+  type LiquidityTankRecoveryEvidence,
+  type LiquidityTankStoreClaim,
+  type LiquidityTankStoreWrite,
+  type LiquidityTankStore,
+  type LiquidityTankStoreRestartSafety,
+  type LiquidityTankProgress,
+  type LiquidityTankPhaseOutcome,
+  type AdvanceLiquidityTankInput,
+} from "./liquidityTank.js";
+export {
+  createLiquidityTankEvmFinalityVerifier,
+  LIQUIDITY_TANK_EVM_FINALITY_VERSION,
+  type LiquidityTankEvmFinalityOptions,
+} from "./liquidityTankEvmFinality.js";
+export {
+  runLiquidityTankStoreConformance,
+  type LiquidityTankStoreConformanceOptions,
+  type LiquidityTankStoreConformanceResult,
+} from "./liquidityTankStoreConformance.js";
+export {
+  createFsLiquidityTankStore,
+  LIQUIDITY_TANK_FS_STORE_VERSION,
+  type FsLiquidityTankStoreOptions,
+} from "./liquidityTankFs.js";
+export {
   solanaSplSettlementKey,
   createSolanaSplSettlementIntent,
   advanceSolanaSplSettlement,

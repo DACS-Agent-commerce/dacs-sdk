@@ -6,6 +6,7 @@ import {
   lstat,
   mkdir,
   open,
+  readdir,
   readFile,
   rename,
   statfs,
@@ -468,15 +469,30 @@ async function unlinkTemporaryIfSameIdentity(
   await unlink(path);
 }
 
+const STAGING_RANDOM_BYTES = 24;
+
+/** The staging name of a publication at `finalPath`, in the same directory. */
+function stagingPath(finalPath: string): string {
+  return join(
+    dirname(finalPath),
+    `.${parse(finalPath).base}.${randomBytes(STAGING_RANDOM_BYTES).toString("hex")}.tmp`,
+  );
+}
+
+/** Whether `name` is a staging name `stagingPath` makes for a file called `base`. */
+function isStagingName(name: string, base: string): boolean {
+  const prefix = `.${base}.`;
+  const random = name.slice(prefix.length, -".tmp".length);
+  return name.startsWith(prefix) && name.endsWith(".tmp") &&
+    random.length === STAGING_RANDOM_BYTES * 2 && /^[0-9a-f]+$/u.test(random);
+}
+
 async function createSyncedTemporary(
   finalPath: string,
   value: string | Uint8Array,
   label: string,
 ): Promise<{ temporary: string; identity: FileIdentity }> {
-  const temporary = join(
-    dirname(finalPath),
-    `.${parse(finalPath).base}.${randomBytes(24).toString("hex")}.tmp`,
-  );
+  const temporary = stagingPath(finalPath);
   const handle = await open(temporary, "wx", FILE_MODE);
   let identity: FileIdentity | undefined;
   try {
@@ -601,6 +617,64 @@ export async function exclusiveWritePrivateFile(
         label,
       );
     }
+    await directory.handle.close();
+  }
+}
+
+/**
+ * Finish an `exclusiveWritePrivateFile` publication of `path` that stopped
+ * before it returned, for example because the process was killed. A file
+ * linked at `path` whose only other link is that function's own staging name
+ * for `path`, in the same directory and on the same inode, loses the staging
+ * name, so `readPrivateFile` accepts it; a staging file that was never linked
+ * is removed. Any other extra link is left for `readPrivateFile` to refuse.
+ * The directory is fsynced whenever a publication exists or a name was removed,
+ * including a retry after publication's final directory fsync failed with no
+ * staging name left. The caller must serialize this
+ * with every publisher of `path`: a live publisher's staging name looks the
+ * same as one left by a killed process.
+ */
+export async function completeExclusivePublication(
+  requestedPath: string,
+  label = "durable filesystem exclusive publication",
+): Promise<void> {
+  const path = absoluteFilesystemPath(requestedPath, label);
+  const parent = dirname(path);
+  const base = parse(path).base;
+  await assertExistingChain(parent, label, true, false);
+  await assertLocalFilesystem(parent, label);
+  const directory = await openVerifiedDirectory(parent, label);
+  try {
+    let published: Stats | undefined;
+    try {
+      published = await lstat(path);
+    } catch (error) {
+      if (errno(error) !== "ENOENT") throw error;
+    }
+    let removed = false;
+    for (const name of await readdir(parent)) {
+      if (!isStagingName(name, base)) continue;
+      const staging = join(parent, name);
+      let metadata: Stats;
+      try {
+        metadata = await lstat(staging);
+      } catch (error) {
+        if (errno(error) === "ENOENT") continue;
+        throw error;
+      }
+      if (metadata.isSymbolicLink() || !metadata.isFile()) continue;
+      const linked = published !== undefined && published.isFile() &&
+        !published.isSymbolicLink() && sameIdentity(metadata, published);
+      // Two links are exactly the publication and this staging name.
+      if (linked ? metadata.nlink !== 2 : metadata.nlink !== 1) continue;
+      await unlinkTemporaryIfSameIdentity(staging, identityOf(metadata), label);
+      removed = true;
+    }
+    if (published !== undefined || removed) {
+      await verifyDirectoryIdentity(parent, directory.identity, label);
+      await directory.handle.sync();
+    }
+  } finally {
     await directory.handle.close();
   }
 }
