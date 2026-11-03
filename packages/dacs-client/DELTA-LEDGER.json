@@ -5890,6 +5890,17 @@
           "after": "88abfb10c132141730d27792596b73899fe34400"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a1a record the merged package-contents test blob of two parallel records",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "d0e6acf2d424fe03affaff39805f48f2d49e46eb",
+          "after": "d0e6acf2d424fe03affaff39805f48f2d49e46eb"
+        }
+      ]
     }
   ]
 }

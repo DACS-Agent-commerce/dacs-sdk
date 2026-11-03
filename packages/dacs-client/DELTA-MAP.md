@@ -978,6 +978,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/node-demos-loading.test.mjs:1` | 539d876bf79510f9d3bf9e09d99737131a43fdc1 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 88abfb10c132141730d27792596b73899fe34400 |
+| WF | delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | d0e6acf2d424fe03affaff39805f48f2d49e46eb |
 
 ## Complete commit and file inventory
 
@@ -3073,6 +3075,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/test/node-demos-loading.test.mjs:1` |
 | delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `scripts/release-policy.json:1` |
 | delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `test/scripts/release-checks.test.mjs:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
