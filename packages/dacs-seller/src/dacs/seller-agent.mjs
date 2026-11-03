@@ -42,7 +42,7 @@ import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymen
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
-import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence, PASSIVE_RETAINED_READ } from './native-dem-delivery-consumer.mjs';
+import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isDeadRefusedCreate, mayPublishAgain, PASSIVE_RETAINED_READ } from './native-dem-delivery-consumer.mjs';
 import { deliverableJournalFor } from './deliverable-wallet-journal.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { agreementInput, agreementTerms, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
@@ -1066,7 +1066,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let finalized;
     let nativeCommitmentProjection;
     let readFailure;
-    let commitmentProvenUnsigned = false;
+    let commitmentMayPublishAgain = false;
     try {
       finalized = await commitFixedPriceAgreement(
         {
@@ -1079,9 +1079,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         nativeArtifactAnchor ? {
           resolve: async (logicalAddress) => {
             const read=await readRetainedBounded(nativeArtifactAnchor,{logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true},{resend:!readbackOnly,authorizeResend:heldFor(jobId)}).catch((cause)=>{readFailure=cause;throw cause;});
-            if(read.status==='absent') {
-              commitmentProvenUnsigned = isProvenUnsignedAbsence(read);
-              if (session.commitmentPublishAsked && !commitmentProvenUnsigned) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
+            if(read.status==='absent'||isDeadRefusedCreate(read)) {
+              commitmentMayPublishAgain = mayPublishAgain(read);
+              if (session.commitmentPublishAsked && !commitmentMayPublishAgain) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
               return {disposition:'absent'};
             }
             if(read.status!=='present') return {disposition:read.status==='rejected'?'rejected':'indeterminate',reason:read.reason};
@@ -1091,7 +1091,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           verifyAnchorReceipt: async (anchored) => readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:anchored.anchorReceipt.logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true}),
           submit: async (logicalAddress, commitmentRecord) => {
             if(readbackOnly || retainedNativeCommitment) readbackRequired();
-            if (session.commitmentPublishAsked && !commitmentProvenUnsigned) readbackRequired();
+            if (session.commitmentPublishAsked && !commitmentMayPublishAgain) readbackRequired();
             heldFor(jobId)?.();
             session.commitmentPublishAsked = true;
             persist(session);
@@ -1235,15 +1235,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // command from this seller's retained state plus a fresh native readback. It
   // never signs or publishes to complete an uncertain effect: a finalized (or
   // early held) commitment answers what the same request would answer now.
-  // Only a native read that proves nothing was ever signed may hand the request
-  // back to its ordinary start once, under the same job lock.
+  // Only a native read that proves nothing was ever signed, or that a refused
+  // CREATE can no longer be included, may hand the request back to its
+  // ordinary start once, under the same job lock.
   const COMMITMENT_PATHS = new Set(['/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
   // Answers `{ proven }`; a read that fails is never a proof, and its error is passed out as `failure`.
   const provenUnsignedCommitment = async (jobId) => {
     if (!nativeArtifactAnchor) return { proven: false };
     try {
       const read = await readRetainedBounded(nativeArtifactAnchor, { logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true }, PASSIVE_RETAINED_READ);
-      return { proven: read?.status === 'absent' && isProvenUnsignedAbsence(read) };
+      return { proven: mayPublishAgain(read) };
     } catch (failure) { return { proven: false, failure }; }
   };
   async function reconcileCommitmentTransport({ request, body, readOnly = false } = {}) {
@@ -1456,7 +1457,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (!isDeliverableMiss(error)) return { status: 'held', reason: `native delivery reconciliation readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` };
       read = { status: 'absent' };
     }
-    if (isProvenUnsignedAbsence(read)) return { status: 'askable' };
+    if (mayPublishAgain(read)) return { status: 'askable' };
     if (read?.status === 'absent' && deliverableJournal) {
       const asked = await resumeDeliverableJournal(session, work, result.fulfilmentId);
       return asked.status === 'unsigned' ? { status: 'askable' } : { status: 'held', reason: asked.reason };
@@ -1655,7 +1656,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!isDeliverableMiss(error)) return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.code ?? 'unknown').slice(0, 64)}: ${String(error?.message ?? error).slice(0, 180)}` };
           read = { status: 'absent' };
         }
-        if (isProvenUnsignedAbsence(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved the Deliverable CREATE was never signed' };
+        if (mayPublishAgain(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved nothing signed for the Deliverable can still land' };
         if (read?.status === 'absent' && deliverableJournal) {
           const asked = await resumeDeliverableJournal(session, work, input.fulfilmentId);
           return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason ?? 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
@@ -1856,7 +1857,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // the wallet. A retained intent (sent, lost, denied or unknown) is only
     // ever read back. Only an absence the capability itself proves unsigned (a
     // branded no-intent verdict, as the shipped artifact anchor returns for
-    // proofOfNoIntent) permits the write again; a plain absent (a lagging name
+    // proofOfNoIntent), or a refused CREATE it marks dead (its nonce passed and
+    // it can no longer be included), permits the write again; a plain absent (a lagging name
     // index, or a verdict that lost its proof) does not establish that nothing
     // was signed, so it holds instead of asking a non-idempotent capability for
     // a second CREATE at the same address.
@@ -1870,7 +1872,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         // Only a seller that publishes delivery evidence may send its retained CREATE again,
         // and only while the check that authorized signing it still holds.
         read=await readRetainedBounded(nativeArtifactAnchor,{logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true},{resend:deliveryEvidenceEnabled,authorizeResend:heldFor(session.jobId)});
-        if(read?.status==='absent'&&deliveryEvidenceEnabled&&isProvenUnsignedAbsence(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId)});
+        if(deliveryEvidenceEnabled&&mayPublishAgain(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId)});
       }
     }catch(error){return held(String(error?.message??error).slice(0,240));}
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');

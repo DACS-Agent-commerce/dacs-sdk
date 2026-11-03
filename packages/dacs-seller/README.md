@@ -172,6 +172,23 @@ journals that no signed CREATE for this address can land. A missing name-index
 entry, an RPC failure, or a copied/serialized proof is insufficient. A retained
 attempt from an older version without this marker is conservatively treated as
 already asked. Read-only recovery never initiates publication, even with proof.
+The same holds for a CREATE the node refused: its read stays `rejected`, and once
+the account nonce has passed it and the readback finds it absent the read returns
+the object made by `deadRefusedCreate(reason)` (`isDeadRefusedCreate`, same module;
+`mayPublishAgain` accepts either proof). The seller then publishes the Deliverable,
+the delivery evidence (when publication is on) or the commitment again, once,
+through the same authorization check as the first send, and the anchor records
+the replacement (`supersedes`), so it is never replaced again. If the refused
+bytes were sent again first, the resend may be what took the nonce: a replacement
+then also needs the complete-index rule of the wallet journal's `fate()`. The
+nonce read answers `{ nonce, blockHeight }` and the absent readback reports
+`checkedThroughBlock`, which must reach that height; any other answer stays
+`indeterminate` and signs nothing. The nonce there is a safe integer, not a
+numeric string. The replacement may differ from the refused intent only in the
+fields the seller stamps again on each attempt (the commitment's `createdAt`, and
+the signature over it); any other difference stays a `conflict`, as does a
+different artifact for the address while the refused CREATE is still live or
+uncertain.
 Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.

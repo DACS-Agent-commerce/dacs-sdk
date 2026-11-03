@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {anchorFixture,signSdkCreate} from './helpers/anchor-isolated-fixture.mjs';
+import {isDeadRefusedCreate} from '../src/dacs/native-dem-delivery-consumer.mjs';
 const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX'];
 // A resend is on only where the caller passes the check in.
 const allowResend=()=>({resend:true,authorizeResend:async()=>true});
@@ -18,8 +19,8 @@ const METHODS={
 //  ambiguous: signs, journals the bytes, the outcome is unknown
 //  accepted: signs, journals the bytes, the CREATE is included
 //  crash-unsigned / crash-signed: the process dies before / after signing
-async function refusedWorld(outcomes,{resendLands=false}={}){
- const w=await anchorFixture({signRpc:async()=> 'TEST rpc authentication'}),resends=[],signed=[],included=new Set();
+async function refusedWorld(outcomes,{resendLands=false,now}={}){
+ const w=await anchorFixture({signRpc:async()=> 'TEST rpc authentication',now}),resends=[],signed=[],included=new Set();
  w.source.observeBinding=async()=>{};
  w.source.binding=async({hash})=>({disposition:included.has(hash)?'included':'absent'});
  w.source.recoverStorageWrite=async({signedTransaction})=>{resends.push(structuredClone(signedTransaction));if(resendLands)included.add(signedTransaction.hash);};
@@ -271,4 +272,159 @@ test('a resend that throws counts as sent',async()=>{
  await assert.rejects(w.open().readRetained(w.input(JOBS[0]),allowResend()),/transport died/);
  await w.open().readRetained(w.input(JOBS[0]),allowResend());
  assert.equal(w.resends.length,1);
+});
+
+// A refused CREATE the node can no longer include is answered `rejected` as before, and marked: the marked answer
+// (never a copy of it) is the callers' proof that publishing it again cannot make a second CREATE.
+for(const method of ['read','readRetained'])test(`${method} marks a refused CREATE whose nonce passed and whose readback is absent as dead, and sends nothing`,async()=>{
+ const w=await refusedWorld(['refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);w.controls.nonce=1;
+ const result=await w.open()[method](w.input(JOBS[0]),allowResend());
+ assert.equal(result.status,'rejected');assert.equal(isDeadRefusedCreate(result),true);
+ assert.equal(isDeadRefusedCreate({...result}),false,'a copy confers no proof');
+ assert.equal(w.captured.length,1);assert.equal(w.resends.length,0);assert.equal(w.artifactRow(JOBS[0]).stage,'rejected');
+});
+test('a refused CREATE whose nonce is still free is not marked dead',async()=>{
+ const w=await refusedWorld(['refused']);
+ await w.publish(w.open(),JOBS[0]);
+ const result=await w.open().readRetained(w.input(JOBS[0]),{resend:false});
+ assert.equal(result.status,'rejected');assert.equal(isDeadRefusedCreate(result),false);
+});
+test('a refused CREATE whose nonce passed is not marked dead while its readback is pending',async()=>{
+ const w=await refusedWorld(['refused']);
+ await w.publish(w.open(),JOBS[0]);w.controls.nonce=1;w.source.binding=async()=>({disposition:'pending'});
+ const result=await w.open().readRetained(w.input(JOBS[0]),{resend:false});
+ assert.equal(result.status,'indeterminate');assert.equal(isDeadRefusedCreate(result),false);
+});
+test('a replacement that was refused too is never marked dead: the wallet is asked once',async()=>{
+ const w=await refusedWorld(['refused','refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);w.controls.nonce=1;
+ await w.publish(w.open(),JOBS[0]);w.controls.nonce=2;
+ const result=await w.open().readRetained(w.input(JOBS[0]),{resend:false});
+ assert.equal(result.status,'rejected');assert.equal(isDeadRefusedCreate(result),false);
+ assert.equal(w.captured.length,2);
+});
+
+// The seller re-derives some fields on each attempt (the commitment's createdAt), so a retry's input can differ from the
+// retained intent's. A dead refused CREATE is replaced all the same; a live or uncertain one keeps the conflict.
+const CLOCK_START=1800000000000,LATER_MS=1000;
+const clockedRefusedWorld=async(outcomes)=>{
+ const clock={time:CLOCK_START},w=await refusedWorld(outcomes,{now:()=>clock.time});
+ return {...w,clock,advance:()=>{clock.time+=LATER_MS;}};
+};
+test('a dead refused CREATE is replaced by one signature when the retry input carries a later createdAt',async()=>{
+ const w=await clockedRefusedWorld(['refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);const [original]=w.signed;
+ w.controls.nonce=1;w.advance();
+ assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
+ assert.deepEqual(requestedNonces(w),[1,2]);assert.equal(w.resends.length,0);
+ assert.equal(w.artifactRow(JOBS[0]).supersedes.hash,original.hash);
+ assert.equal(w.artifactRow(JOBS[0]).input.artifact.createdAt,CLOCK_START+LATER_MS);
+ for(let i=0;i<2;i++)assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
+ assert.equal(w.captured.length,2);
+});
+test('a dead refused CREATE whose retry input changed is replaced once the resend left the index complete',async()=>{
+ const w=await clockedRefusedWorld(['refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);
+ await w.open().readRetained(w.input(JOBS[0]),allowResend());
+ w.controls.nonce={nonce:1,blockHeight:10};indexAbsentThrough(w,10);w.advance();
+ assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
+ assert.deepEqual(requestedNonces(w),[1,2]);
+});
+test('a dead refused CREATE is not replaced by an artifact that differs beyond the re-stamped fields',async()=>{
+ const w=await clockedRefusedWorld(['refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);
+ const address=w.input(JOBS[0]).logicalAddress;
+ w.controls.nonce=1;w.advance();
+ // Another job's record, signed by the same seller, at this job's address: only createdAt and the signature may change.
+ await assert.rejects(w.open().publish({logicalAddress:address,artifact:await w.artifact(JOBS[1]),artifactKind:'FinalityCommitmentRecord',authorize:async()=>true}),{code:'conflict'});
+ assert.equal(w.captured.length,1);assert.equal(w.artifactRow(JOBS[0]).supersedes,undefined);
+ assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
+ assert.equal(w.captured.length,2);
+});
+const CHANGED_INPUT_KEPT={
+ 'its nonce is still free':async()=>{},
+ 'its readback is pending':async w=>{w.controls.nonce=1;w.source.binding=async()=>({disposition:'pending'});},
+ 'its refused bytes were sent again and the index is not complete':async w=>{
+  await w.open().readRetained(w.input(JOBS[0]),allowResend());w.controls.nonce=1;
+ },
+};
+for(const [label,arrange] of Object.entries(CHANGED_INPUT_KEPT))test(`a different artifact for the address is a conflict while ${label}`,async()=>{
+ const w=await clockedRefusedWorld(['refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);await arrange(w);w.advance();
+ await assert.rejects(w.publish(w.open(),JOBS[0]),{code:'conflict'});
+ assert.equal(w.captured.length,1);assert.equal(w.artifactRow(JOBS[0]).supersedes,undefined);
+});
+test('a different artifact for the address is a conflict while the signed CREATE is ambiguous, even once its nonce passed',async()=>{
+ const w=await clockedRefusedWorld(['ambiguous','accepted']);
+ await w.publish(w.open(),JOBS[0]);w.controls.nonce=1;w.advance();
+ await assert.rejects(w.publish(w.open(),JOBS[0]),{code:'conflict'});
+ assert.equal(w.captured.length,1);
+});
+test('a replacement that was refused too is not replaced again for a later createdAt',async()=>{
+ const w=await clockedRefusedWorld(['refused','refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);w.controls.nonce=1;w.advance();
+ assert.equal((await w.publish(w.open(),JOBS[0])).status,'indeterminate');
+ w.controls.nonce=2;w.advance();
+ await assert.rejects(w.publish(w.open(),JOBS[0]),{code:'conflict'});
+ assert.equal(w.captured.length,2);
+});
+
+// R1: once the refused bytes were sent again, the account nonce passing the CREATE's nonce no longer proves another
+// transaction took it: the resend may have. A replacement needs the complete-index rule of the wallet journal's fate():
+// the nonce snapshot's block height, and an absence checked through at least that block.
+const indexAbsentThrough=(w,block)=>{w.source.binding=async({hash})=>w.included.has(hash)?{disposition:'included'}:{disposition:'absent',...(block===undefined?{}:{checkedThroughBlock:block})};};
+const resentRefusedWorld=async()=>{
+ const w=await refusedWorld(['refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);
+ await w.open().readRetained(w.input(JOBS[0]),allowResend());
+ assert.equal(w.resends.length,1,'the refused bytes were sent again');
+ return w;
+};
+test('a resend that lands after the replacement check signs no replacement',async()=>{
+ const w=await resentRefusedWorld();
+ w.controls.nonce=1;
+ for(let i=0;i<2;i++)assert.equal((await w.publish(w.open(),JOBS[0])).status,'indeterminate');
+ assert.equal(w.captured.length,1,'no second signature while the index may not show the resend');
+ w.included.add(w.signed[0].hash);
+ assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
+ assert.equal(w.captured.length,1);assert.equal(w.artifactRow(JOBS[0]).supersedes,undefined);
+});
+test('a resent refused CREATE is not marked dead while the index is not proven complete',async()=>{
+ const w=await resentRefusedWorld();
+ w.controls.nonce=1;
+ const result=await w.open().readRetained(w.input(JOBS[0]),{resend:false});
+ assert.equal(result.status,'indeterminate');assert.equal(isDeadRefusedCreate(result),false);
+});
+for(const [label,nonce,through] of [['an index behind the nonce snapshot',{nonce:1,blockHeight:10},9],['an index that reports no height',{nonce:1,blockHeight:10},undefined],['a nonce with no block height',1,10]])
+ test(`a resent refused CREATE is not replaced on ${label}`,async()=>{
+  const w=await resentRefusedWorld();
+  w.controls.nonce=nonce;indexAbsentThrough(w,through);
+  assert.equal((await w.publish(w.open(),JOBS[0])).status,'indeterminate');
+  assert.equal(w.captured.length,1);
+ });
+test('a resent refused CREATE is replaced once when the index is complete past the nonce',async()=>{
+ const w=await resentRefusedWorld();
+ w.controls.nonce={nonce:1,blockHeight:10};indexAbsentThrough(w,10);
+ assert.equal(isDeadRefusedCreate(await w.open().readRetained(w.input(JOBS[0]),{resend:false})),true);
+ assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
+ assert.deepEqual(requestedNonces(w),[1,2]);assert.equal(w.artifactRow(JOBS[0]).supersedes.hash,w.signed[0].hash);
+ assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');assert.equal(w.captured.length,2);
+});
+for(const [label,nonce] of [['an extra field',{nonce:1,blockHeight:10,extra:1}],['a negative height',{nonce:1,blockHeight:-1}],['a height that is not a number',{nonce:1,blockHeight:'10'}],['a nonce that is a numeric string',{nonce:'1',blockHeight:10}],['no nonce',{blockHeight:10}],['a list',[1,10]]])
+ test(`a nonce reply with ${label} proves nothing: the refused CREATE is neither marked dead nor replaced`,async()=>{
+  const w=await refusedWorld(['refused','accepted']);
+  await w.publish(w.open(),JOBS[0]);w.controls.nonce=nonce;
+  await assert.rejects(w.publish(w.open(),JOBS[0]),{code:'indeterminate'});
+  const result=await w.open().readRetained(w.input(JOBS[0]),{resend:false});
+  assert.equal(result.status,'rejected');assert.equal(isDeadRefusedCreate(result),false);
+  assert.equal(w.captured.length,1);
+ });
+test('a resend the transport reported never dispatched leaves the bare absence rule in force',async()=>{
+ const w=await refusedWorld(['refused','accepted']);
+ w.source.recoverStorageWrite=async({signedTransaction})=>{w.resends.push(signedTransaction.hash);return {resent:false};};
+ await w.publish(w.open(),JOBS[0]);
+ await w.open().readRetained(w.input(JOBS[0]),allowResend());
+ w.controls.nonce=1;
+ assert.equal(isDeadRefusedCreate(await w.open().readRetained(w.input(JOBS[0]),{resend:false})),true);
 });
