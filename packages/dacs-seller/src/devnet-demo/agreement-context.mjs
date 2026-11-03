@@ -3,6 +3,7 @@ import { listingPin, protocolSupport } from '../dacs/purchase-protocol.mjs';
 import { attachIdentityPresentation, DEM_RAIL, purchaseSupport, verifyComponent } from '../dacs/listing.mjs';
 import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore, identityBundleHash, partyVetCore, verifyCompositeVerificationRecord, vetPhaseFailureClass } from '@kynesyslabs/dacs';
 import { addressForClaim } from '../dacs/demos-claims.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
 import { OperationError } from '../operations.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -210,6 +211,7 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
 // createSellerContextRecords): the scope of that buyer's completed route step
 // from the seller's durable records, or null.
 export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
+  assertKitOperationAdmitted('createDevnetDemoAgreementContextProvider');
   if(anchor?.writer!==wallet?.claim || listing?.seller?.identity?.presentedBy!==wallet?.claim || typeof wallet?.signBytes!=='function') throw new TypeError('Vet producer and native anchor must belong to the seller');
   if(typeof anchor.hasIntent!=='function') throw new TypeError('the native anchor must answer whether a CREATE intent is retained');
   if(!store || !['read','update','entries'].every((key)=>typeof store[key]==='function')) throw new TypeError('party Vet state requires the seller\'s party Vet store');
