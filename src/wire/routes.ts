@@ -9,6 +9,8 @@
 export const DACS_SELLER_HTTP_V1 = "dacs-seller-http/v1";
 /** Header carrying the base64url signed envelope (the plugin's header name). */
 export const DACS_SELLER_HTTP_HEADER = "x-dacs-seller-peer";
+/** Header carrying the explicit-resume proof of one CREATE (explicitResume.ts). */
+export const DACS_SELLER_RESUME_HEADER = "x-dacs-seller-resume";
 export const DACS_SELLER_DISCOVERY_PATH = "/.well-known/dacs-seller.json";
 
 /**
@@ -23,6 +25,7 @@ export const DACS_SELLER_HTTP_DOMAINS = Object.freeze({
   response: "dacs-seller-http:v1:response:",
   delegation: "dacs-seller-http:v1:delegation:",
   discovery: "dacs-seller-http:v1:discovery:",
+  explicitCreateResume: "dacs-seller-http:v1:explicit-create-resume:",
 });
 
 export const DACS_SELLER_HTTP_PATHS = Object.freeze({
