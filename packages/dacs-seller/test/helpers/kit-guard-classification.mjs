@@ -5,6 +5,7 @@
 // here. src/index.mjs only re-exports functions classified below.
 export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall'] },
+  'src/dacs/bounded-reads.mjs': { effect: {  }, pure: ['readFailureCode', 'readRetainedBounded'] },
   'src/dacs/commit-on-signature.mjs': { effect: { signatureCommitmentAnchor: ['signatureCommitmentAnchor'] }, pure: ['commitOnSignatureConfig', 'verifyAgreementCreateAuthorization', 'verifySignatureAgreement'] },
   'src/dacs/deliverable-wallet-journal.mjs': { effect: { createDeliverableWalletJournal: ['guardedCreate'] }, pure: ['deliverableJournalFor'] },
   'src/dacs/delivery-evidence.mjs': { effect: {  }, pure: ['isNativeDeliveryEvidence'] },
@@ -16,7 +17,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/fixture-settlement.mjs': { effect: {  }, pure: ['createFixtureSettlement'] },
   'src/dacs/kit-data-format.mjs': { effect: {  }, pure: ['assertKitDataFormat'] },
   'src/dacs/listing.mjs': { effect: {  }, pure: ['attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle', 'canonicalize', 'contentHash', 'isReportableTitle', 'listingSigningMessage', 'logicalListingAddress', 'normalizeDemAmount', 'purchaseSupport', 'utf8', 'validateListing', 'verifyComponent'] },
-  'src/dacs/native-dem-delivery-consumer.mjs': { effect: { submitNativeDemDelivery: ['submitNativeDemDelivery'] }, pure: ['createNativeDemDeliveryCapability', 'hasGuardedNativeDemDelivery', 'isProvenUnsignedAbsence', 'nativeDemDeliveryConfig', 'nativeDemDeliverySubmitsOf', 'provenUnsignedAbsence', 'readNativeDemDelivery', 'reconcileNativeDemDelivery', 'verifyNativeDemDeliveryReceipt'] },
+  'src/dacs/native-dem-delivery-consumer.mjs': { effect: { submitNativeDemDelivery: ['submitNativeDemDelivery'] }, pure: ['createNativeDemDeliveryCapability', 'deadRefusedCreate', 'hasGuardedNativeDemDelivery', 'isDeadRefusedCreate', 'isProvenUnsignedAbsence', 'mayPublishAgain', 'nativeDemDeliveryConfig', 'nativeDemDeliverySubmitsOf', 'provenUnsignedAbsence', 'readNativeDemDelivery', 'reconcileNativeDemDelivery', 'verifyNativeDemDeliveryReceipt'] },
   'src/dacs/native-payment-evidence-consumer.mjs': { effect: { createNativePaymentEvidenceConsumer: ['createNativePaymentEvidenceConsumer'] }, pure: ['checkNativePaymentEvidence', 'nativeEvidenceReadOutcome', 'nativePaymentEvidenceConfig', 'usesNativePaymentEvidence'] },
   'src/dacs/payment-evidence-wallet-journal.mjs': { effect: { createPaymentEvidenceWalletJournal: ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence'], createSignedCreateJournal: ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'] }, pure: ['isPaymentEvidenceWalletJournalPair', 'paymentEvidenceWalletJournalOf'] },
   'src/dacs/process-lease.mjs': { effect: {  }, pure: ['ProcessLeaseError', 'leaseFile', 'leaseHolderState', 'leaseState', 'takeLease'] },

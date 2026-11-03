@@ -39,6 +39,7 @@ import {
 import { DEM_RAIL, DEM_DECIMALS, verifyComponent, utf8, purchaseSupport } from './listing.mjs';
 import { addressForClaim, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { canonicalSignature, fixtureRef, fixtureTxRef, verifyFixtureReceipt, verifyFixtureRecord } from './fixture-anchors.mjs';
+import { readAdmissionCapability } from './session-admission.mjs';
 
 export const PROTOCOL_PROFILE = 'dacs-chatgpt-plugin/fixed-price-pay-dem/v1';
 export const ORCHESTRATION = 'seller-as-phase-orchestrator-v1';
@@ -171,14 +172,17 @@ export function commitmentSession(agreement) {
 const recordReadProblem = record => record?.status === 'present' ? null : record?.status === 'absent'
   ? { status: 'absent' } : { status: 'indeterminate', reason: record?.reason ?? 'SR-2 observation is indeterminate' };
 
-// SR-2 lookups in the SDK commitment-gate envelope.
-export function commitmentReader(anchors, orchestrator) {
+// SR-2 lookups in the SDK commitment-gate envelope. Each read has the
+// admission deadline and reply limits; a failed read is indeterminate, and
+// `onReadFailure` receives its real cause (timeout, reply limit or reader error).
+export function commitmentReader(anchors, orchestrator, onReadFailure = () => {}) {
   return {
     resolve: async (logicalAddress) => {
       let record;
       try {
-        record = await anchors.read(logicalAddress);
+        record = await readAdmissionCapability(anchors, 'read', logicalAddress);
       } catch (error) {
+        onReadFailure(error);
         return { disposition: 'indeterminate', reason: `SR-2 read failed: ${error.message}` };
       }
       const problem = recordReadProblem(record);
