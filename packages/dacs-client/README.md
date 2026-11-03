@@ -32,6 +32,40 @@ The factory and operations throw/reject `DurableWalletJournalError` with a `code
 
 Delta records also check parent continuity against the newest ancestor records for each path, or the publication baseline when no earlier record exists. A later record cannot legitimize a stale merge, deletion or restoration. Divergent parallel records require an explicit record of the merge resolution; that choice then constrains descendant records.
 
+## Public API
+
+A plugin composes a purchase from the root names only. Each export's doc comment in `src/index.mjs` names what it returns and what it throws or rejects with; this section lists the factories' methods and the error contract.
+
+The admission option: `admission: { binding, currentLocal }` is required by the three factories below.
+- Construction throws `TypeError('admission_required')` without exactly those two members, `TypeError('admission_input_untrusted')` for a `profile`, `record`, `identityRecord` or `actionsAdmitted` option, and `OperationError('runtime_unsupported')` below the Node floor.
+- An active method returns a Promise. It rejects `OperationError('profile_not_admitted')` while the hold constant is `held`, or when the binding check fails, with the original error as `cause` (`tp1_authority_timeout` after 10,000 ms). Otherwise it resolves to, or rejects with, the original action's own result or error.
+- A passive method keeps its original signature and is never wrapped. `actionsAdmitted` is a construction-time snapshot and never authorizes.
+
+### createProtocolPurchases
+
+Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
+
+Passive: `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`
+
+### createPurchaseService
+
+Active: `prepare`, `issueApprovalChallenge`, `approve`, `prepareHandoff`, `nativePaymentLane`, `reportWalletResult`, `cancel`, `agreementIdentity`, `agreementPlan`, `agreementSubmit`, `completionRequest`, `completionCountersign`, `protocolRecheck`
+
+Passive: `status`, `portalOperation`, `portalEvidence`, `verifyDeal`, `planRunning` (synchronous)
+
+### createListingVerifier
+
+Active: `verify`
+
+Passive: none
+
+### Other exports
+
+- The capability constructors `createDemDeliveryContext`, `createNativeDemDeliveryCapability`, `createNativePaymentEvidenceConsumer`, `createSourceDemoSellerTransport` and `createDevnetNativeCommitmentCapability` return a frozen opaque capability and throw `TypeError` for a missing or malformed input. Their `TEST-` authority labels stay until the testnet authorities are wired.
+- `purchaseNext`, `protocolView` and `PURCHASE_STATUS_HELP` read the hold constant on every call or read: historical held text while held, the full text once admitted.
+- `OFFLINE_AGREEMENT_MODE` and `DEVNET_NATIVE_COMMITMENT_MARKER` are constants. `isOfflineWalletAgreement` returns a boolean; `deriveStorageAddress` returns text and throws `TypeError` for a non-text owner.
+- Every other export states its own contract in its doc comment. Failures are the exported error classes (`OperationError`, `NotWiredError`, `OutboundError`, the seller and wallet errors), which keep their cause. No export hands out a fixture identity, a simulation header or an unqualified chain reader.
+
 ## Factory integration
 
 Supply application inputs through host, including a synchronous operations-store factory. On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
