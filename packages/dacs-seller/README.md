@@ -739,11 +739,13 @@ status) is a simulation contract, not the pinned node's genesis RPC shape.
 
 ## Package checks
 
-From the repository root, build the core, prepare a locked smoke consumer in a
-new directory outside the checkout, then test against it:
+From the repository root, build the core and the Node host kit (the seller
+imports its `./secrets` subpath), prepare a locked smoke consumer in a new
+directory outside the checkout, then test against it:
 
 ```sh
 npm run build
+npm run host:build
 export DACS_SELLER_SMOKE_DIR=/tmp/dacs-seller-consumer   # must not exist yet
 npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
 npm run seller:test

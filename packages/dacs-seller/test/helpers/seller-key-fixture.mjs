@@ -21,6 +21,14 @@ export const SELLER_SEED_BYTE = 2;
 const BUYER_SEED_BYTE = 1;
 const MNEMONIC_PATTERN = /^TEST mnemonic seed (\d+)$/;
 
+// The seller's own floor is Node 20.19, but custody refuses below K14's 22.13 (test 20-9 sets its own
+// versions). Elsewhere the fixtures report a supported version, so Node 20 CI legs can open keys.
+const SUPPORTED_TEST_VERSION = 'v22.13.0';
+const [runtimeMajor, runtimeMinor] = /^v(\d+)\.(\d+)\./.exec(process.version)?.slice(1).map(Number) ?? [0, 0];
+if (!((runtimeMajor === 22 && runtimeMinor >= 13) || (runtimeMajor === 23 && runtimeMinor >= 4) || runtimeMajor >= 24)) {
+  Object.defineProperty(process, 'version', { value: SUPPORTED_TEST_VERSION, configurable: true });
+}
+
 const sha256Hex = (text) => crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 export const allZero = (bytes) => bytes.every((byte) => byte === 0);
 

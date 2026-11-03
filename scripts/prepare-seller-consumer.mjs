@@ -29,8 +29,9 @@ export function sellerPackFiles() {
 }
 
 /**
- * Returns the digest of the given packed seller files, the built core (`dist/`),
- * the root manifest and lock, and the smoke runner: a setup is current only
+ * Returns the digest of the given packed seller files, the built core and Node
+ * host kit (`dist/`, `packages/dacs-node/dist`), the root manifest and lock,
+ * and the smoke runner: a setup is current only
  * while it matches. Throws if a file cannot be read.
  */
 export function sellerSourceFingerprint(sellerFiles) {

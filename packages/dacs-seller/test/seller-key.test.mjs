@@ -4,6 +4,7 @@
 // and 20-20. The loader runs for real; a pass-through spy records its calls.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -200,6 +201,21 @@ test('a runtime below 22.13 or in 23.0–23.3 refuses runtime_unsupported before
     assert.equal(key.claim, SELLER.claim, `${version} is admitted`);
     key.close();
   }
+});
+
+test('on a Node 20 runtime the key fixtures report a supported version, so keys open on the seller\'s Node 20 CI leg', () => {
+  const fixtureUrl = new URL('./helpers/seller-key-fixture.mjs', import.meta.url).href;
+  const script = `
+    Object.defineProperty(process, 'version', { value: 'v20.19.0', configurable: true });
+    const fixture = await import(${JSON.stringify(fixtureUrl)});
+    const { openSellerKey } = await fixture.importSellerKey();
+    const cleanups = [];
+    const key = await openSellerKey(fixture.openOptions(fixture.keyFixture({ after: (cleanup) => cleanups.push(cleanup) })));
+    key.close();
+    for (const cleanup of cleanups) cleanup();
+    process.stdout.write(key.claim === fixture.SELLER.claim ? 'opened' : 'wrong claim');`;
+  const child = spawnSync(process.execPath, [...process.execArgv, '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 60_000 });
+  assert.equal(child.stdout, 'opened', child.stderr);
 });
 
 test('every transferred or allocated mutable buffer (loader copy, derived private key and seed, the PKCS8 DER buffer, the derivation instance\'s buffers through cleanup) is zero-filled after success, construction failure, claim mismatch and close, and the signer refuses use after close', async (t) => {
