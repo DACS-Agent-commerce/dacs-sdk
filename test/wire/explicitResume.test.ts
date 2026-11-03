@@ -180,3 +180,29 @@ it("the in-memory ledger refuses a new claim at capacity, keeps live claims and 
   expect(ledger.claim("live-0", NOW + 10, NOW)).toBe(false);
   expect(ledger.claim("one-more", NOW + 20, NOW + 10)).toBe(true);
 });
+
+it("the in-memory ledger never forgets a claim for a caller whose clock is behind another caller's", () => {
+  const ledger = wire.createExplicitResumeLedger();
+  expect(ledger.claim("used", NOW + 10, NOW)).toBe(true);
+  expect(ledger.claim("later", NOW + 100, NOW + 11)).toBe(true);
+  expect(ledger.claim("used", NOW + 10, NOW + 5)).toBe(false);
+});
+
+it("the in-memory ledger refuses a proof that has expired by the latest clock it has seen, and does not hold it", () => {
+  const ledger = wire.createExplicitResumeLedger();
+  expect(ledger.claim("later", NOW + 100, NOW + 50)).toBe(true);
+  expect(ledger.claim("stale", NOW + 40, NOW)).toBe(false);
+  expect(ledger.claim("boundary", NOW + 50, NOW)).toBe(false);
+  expect(ledger.claim("live", NOW + 51, NOW)).toBe(true);
+});
+
+it("a used proof is refused again when another verification with a later clock came between", async () => {
+  const f = await fixture();
+  const ledger = wire.createExplicitResumeLedger();
+  const used = { ...f.payload, expiresAt: NOW + 10_000 };
+  const other = { ...f.payload, nonce: Buffer.alloc(16, 10).toString("base64url") };
+  const usedHeader = await signWith(f, used);
+  expect(await wire.verifyExplicitCreateResume(usedHeader, { ...f.scope(), ledger })).toEqual(used);
+  expect(await wire.verifyExplicitCreateResume(await signWith(f, other), { ...f.scope(), ledger, time: used.expiresAt + 1 })).toEqual(other);
+  await refused(() => wire.verifyExplicitCreateResume(usedHeader, { ...f.scope(), ledger, time: used.expiresAt - 5 }), "explicit_resume_used");
+});
