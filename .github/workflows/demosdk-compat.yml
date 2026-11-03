@@ -2,6 +2,7 @@ name: demosdk compatibility
 
 # ci.yml already typechecks and tests demosdk 4.0.18 on ordinary PRs.
 # This daily workflow detects new in-range releases before another PR arrives
+# (the demosdk-pin-drift job, scheduled runs only, so it never blocks a PR)
 # and adds build/declaration emit at 4.0.18 and the newest in-range release.
 # Its PR runs cover changes to this workflow or dependency configuration only;
 # source changes already receive the ci.yml compatibility checks.
@@ -21,6 +22,24 @@ permissions:
   contents: read
 
 jobs:
+  demosdk-pin-drift:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    name: newer in-range demosdk than the ci.yml pin
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.21.1"
+
+      # Keep 4.0.18 equal to the version pinned in ci.yml.
+      - name: Compare the ci.yml pin with the newest in-range release
+        run: node scripts/demosdk-pin-drift.mjs 4.0.18 "$(node -p "require('./package.json').peerDependencies['@kynesyslabs/demosdk']")"
+
   demosdk-compat:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
