@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readRetainedBounded, readFailureCode } from '../src/dacs/bounded-reads.mjs';
-import { provenUnsignedAbsence, isProvenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
+import { provenUnsignedAbsence, isProvenUnsignedAbsence, deadRefusedCreate, isDeadRefusedCreate, mayPublishAgain } from '../src/dacs/native-dem-delivery-consumer.mjs';
 
 const MAX_BYTES = 64 * 1024, MAX_VALUES = 4096, MAX_LIST_ITEMS = 256;
 const anchorReplying = (reply) => ({ readRetained: async () => reply });
@@ -48,3 +48,16 @@ for (const [label, reason, expected] of [
     assert.deepEqual({ ...reply }, { status: 'absent', reason: expected });
   });
 }
+
+test('a dead refused CREATE stays dead through the bounds, so the seller may still publish again', async () => {
+  const reply = await readRetainedBounded(anchorReplying(deadRefusedCreate('TEST refused and dead')), { logicalAddress: 'TEST' });
+  assert.equal(isDeadRefusedCreate(reply), true);
+  assert.equal(mayPublishAgain(reply), true);
+  assert.deepEqual({ ...reply }, { status: 'rejected', reason: 'TEST refused and dead', noResend: true });
+});
+
+test('a plain rejected read is not made a dead refused CREATE by the bounds', async () => {
+  const reply = await readRetainedBounded(anchorReplying({ status: 'rejected', reason: 'TEST refused', noResend: true }), { logicalAddress: 'TEST' });
+  assert.equal(isDeadRefusedCreate(reply), false);
+  assert.equal(mayPublishAgain(reply), false);
+});
