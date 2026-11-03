@@ -246,6 +246,7 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
 
   return {
     network,
+    observer: '@kynesyslabs/dacs observePayDemTransferCore (single-node consistent view; not a validator-quorum proof)',
     rpcOrigin: origin,
     // Source-pinned expected chain identity (src/config.mjs), or null.
     pinnedIdentity: chainIdentityOf(pinnedIdentity),

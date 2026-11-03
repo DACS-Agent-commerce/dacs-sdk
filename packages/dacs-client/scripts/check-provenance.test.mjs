@@ -30,8 +30,11 @@ const REVIEWED_SOURCE_HEAD = "02f7070ddff7bf9e94ffd9a953ccc2f0af56caba";
 const SELLER_SOURCE_HEAD = "5274f18541ac0e8c77e3e71463bb6c811f048922";
 const READBACK = "src/dacs/buyer-chain-readback.mjs";
 
+// Synchronous Git commands can still detach maintenance that races teardown.
+const git = (args, options) => execFileSync("git", ["-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], options);
+
 const scratchRoot = mkdtempSync(join(tmpdir(), "check-provenance-"));
-after(() => rmSync(scratchRoot, { recursive: true, force: true }));
+after(() => rmSync(scratchRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
 
 let scratchCount = 0;
 function scratch() {
@@ -61,7 +64,7 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const readManifest = (dir) => JSON.parse(readFileSync(join(dir, "PROVENANCE.json"), "utf8"));
 const writeManifest = (dir, manifest) => writeFileSync(join(dir, "PROVENANCE.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 const entryFor = (manifest, rel) => manifest.files.find((entry) => entry.path === `packages/dacs-client/${rel}`);
-const blob = (commit, path) => execFileSync("git", ["-C", SOURCE, "cat-file", "blob", `${commit}:${path}`], { maxBuffer: 1 << 30 });
+const blob = (commit, path) => git(["-C", SOURCE, "cat-file", "blob", `${commit}:${path}`], { maxBuffer: 1 << 30 });
 
 function check(dir, mode) {
   const args = mode === "source" ? ["--source", SOURCE] : mode === "local" ? ["--local-only"] : mode === "empty-source" ? ["--source", ""] : [];
@@ -185,14 +188,14 @@ test("an edit with its hash updated fails --source; local-only cannot see it", {
 // clone's own config turns replace refs on.
 function replacedSource() {
   const repo = join(scratchRoot, `replaced-${scratchCount += 1}`);
-  execFileSync("git", ["clone", "--quiet", "--shared", "--no-checkout", SOURCE, repo]);
+  git(["clone", "--quiet", "--shared", "--no-checkout", SOURCE, repo]);
   const sourcePath = `http-mcp/${READBACK}`;
-  const original = execFileSync("git", ["-C", repo, "rev-parse", `${STEP1}:${sourcePath}`], { encoding: "utf8" }).trim();
+  const original = git(["-C", repo, "rev-parse", `${STEP1}:${sourcePath}`], { encoding: "utf8" }).trim();
   const bytes = Buffer.concat([blob(STEP1, sourcePath), Buffer.from("// replaced\n")]);
-  const edited = execFileSync("git", ["-C", repo, "hash-object", "-w", "--stdin"], { input: bytes, encoding: "utf8" }).trim();
-  execFileSync("git", ["-C", repo, "replace", original, edited]);
-  execFileSync("git", ["-C", repo, "config", "core.useReplaceRefs", "true"]);
-  assert.deepEqual(execFileSync("git", ["-C", repo, "cat-file", "blob", `${STEP1}:${sourcePath}`]), bytes, "the replace object must be in effect for plain git");
+  const edited = git(["-C", repo, "hash-object", "-w", "--stdin"], { input: bytes, encoding: "utf8" }).trim();
+  git(["-C", repo, "replace", original, edited]);
+  git(["-C", repo, "config", "core.useReplaceRefs", "true"]);
+  assert.deepEqual(git(["-C", repo, "cat-file", "blob", `${STEP1}:${sourcePath}`]), bytes, "the replace object must be in effect for plain git");
   return { repo, bytes };
 }
 
@@ -213,7 +216,7 @@ test("an inherited GIT_DIR does not redirect --source", { skip: NEEDS_SOURCE }, 
   // GIT_DIR names an empty repo; --source names the real repo, which the
   // unmodified copy matches.
   const empty = join(scratchRoot, "git-dir-repo");
-  execFileSync("git", ["init", "--quiet", empty]);
+  git(["init", "--quiet", empty]);
   const env = { ...process.env, GIT_DIR: join(empty, ".git") };
   const result = spawnSync(process.execPath, [CHECKER, "--source", SOURCE, "--package-dir", scratch()], { encoding: "utf8", env });
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -225,18 +228,18 @@ test("an inherited GIT_DIR does not redirect --source", { skip: NEEDS_SOURCE }, 
 // (git does not re-hash objects it reads).
 function forgedStore() {
   const store = join(scratchRoot, `forged-${scratchCount += 1}.git`);
-  execFileSync("git", ["init", "--quiet", "--bare", store]);
-  const ids = execFileSync("git", ["-C", SOURCE, "rev-list", "--objects", "--no-walk", STEP1], { encoding: "utf8", maxBuffer: 1 << 30 })
+  git(["init", "--quiet", "--bare", store]);
+  const ids = git(["-C", SOURCE, "rev-list", "--objects", "--no-walk", STEP1], { encoding: "utf8", maxBuffer: 1 << 30 })
     .split("\n").filter(Boolean).map((line) => line.split(" ")[0]);
-  const pack = execFileSync("git", ["-C", SOURCE, "pack-objects", "--stdout"], { input: `${ids.join("\n")}\n`, maxBuffer: 1 << 30 });
-  execFileSync("git", ["-C", store, "unpack-objects", "-q"], { input: pack });
+  const pack = git(["-C", SOURCE, "pack-objects", "--stdout"], { input: `${ids.join("\n")}\n`, maxBuffer: 1 << 30 });
+  git(["-C", store, "unpack-objects", "-q"], { input: pack });
   const sourcePath = `http-mcp/${READBACK}`;
-  const id = execFileSync("git", ["-C", SOURCE, "rev-parse", `${STEP1}:${sourcePath}`], { encoding: "utf8" }).trim();
+  const id = git(["-C", SOURCE, "rev-parse", `${STEP1}:${sourcePath}`], { encoding: "utf8" }).trim();
   const bytes = Buffer.concat([blob(STEP1, sourcePath), Buffer.from("// forged\n")]);
   const loose = join(store, "objects", id.slice(0, 2), id.slice(2));
   chmodSync(loose, 0o644);
   writeFileSync(loose, deflateSync(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])));
-  assert.deepEqual(execFileSync("git", ["--git-dir", store, "cat-file", "blob", `${STEP1}:${sourcePath}`], { maxBuffer: 1 << 30 }), bytes, "the forged object must be in effect for plain git");
+  assert.deepEqual(git(["--git-dir", store, "cat-file", "blob", `${STEP1}:${sourcePath}`], { maxBuffer: 1 << 30 }), bytes, "the forged object must be in effect for plain git");
   return { store, bytes };
 }
 
@@ -355,7 +358,7 @@ test("the purchase-path hold gate passes on this package", () => {
 
 test("a source repository without the trusted commit fails", () => {
   const empty = join(scratchRoot, "empty-repo");
-  execFileSync("git", ["init", "--quiet", empty]);
+  git(["init", "--quiet", empty]);
   const result = spawnSync(process.execPath, [CHECKER, "--source", empty, "--package-dir", scratch()], { encoding: "utf8" });
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, new RegExp(`source repository has no commit ${STEP1}`));
@@ -364,7 +367,7 @@ test("a source repository without the trusted commit fails", () => {
 
 test("the package-only freeze retains the original purchase prerequisites", () => {
   const sdk = join(PACKAGE_DIR, "../..");
-  const reviewed = (path) => execFileSync("git", ["--no-replace-objects", "-C", sdk, "show", `5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/${path}`], { encoding: "utf8" });
+  const reviewed = (path) => git(["--no-replace-objects", "-C", sdk, "show", `5c7d5e066eed8ebf9b9744b7a44e6cee72abe7f1:packages/dacs-client/${path}`], { encoding: "utf8" });
   const record = JSON.parse(readFileSync(join(PACKAGE_DIR, "HOLD.json"), "utf8"));
   const step1 = JSON.parse(reviewed("HOLD.json"));
   const hold = record.holds[0], original = step1.holds[0];

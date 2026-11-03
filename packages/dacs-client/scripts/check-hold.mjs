@@ -4,7 +4,7 @@
 //   node packages/dacs-client/scripts/check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]
 //
 // HOLD.json pins the complete package file set and the Git blob of every
-// ordinary file, including package.json bytes (exports: {}, no main or bin).
+// ordinary file, including the exact reviewed package.json bytes and explicit public exports.
 // HOLD.json and this gate are the reviewed control pair: changing a pin or
 // lifting the hold requires changing both in the same reviewed commit. The
 // gate pins both the canonical record and its exact bytes, with only its
@@ -12,7 +12,7 @@
 // the actual gate blob; a gate-only or record-only edit fails. The gate itself
 // is trusted executable code, as with any repository check.
 //
-// Only this private package is frozen. Other SDK files, commits and merge
+// Only this package is frozen. Other SDK files, commits and merge
 // commits may evolve without re-pinning these controls. This is a package
 // integrity check; it makes no claim to detect callers outside the package.
 // No package entry point is imported and no live admission is granted.
@@ -31,8 +31,8 @@ const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
 
 export const PINNED = Object.freeze({
-  holdSha256: "91c8c05f40e849329c7e057a399590ee17fd510f481a0626e98924288c555433",
-  holdBytesSha256: "56d66392c8faadef0426f86caef7208eab019de73c1b00f69b0dce8d801d440f",
+  holdSha256: "ea010b577829bd2414b7635b4fa8c75af668bbd71e18982fe18b549cf38b5221",
+  holdBytesSha256: "90b92d6af25326466c1163da9cac5148d05e689a082a32719ca25ce0ee413132",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -41,6 +41,7 @@ export const PINNED = Object.freeze({
   delta: "D15",
   sourceRepository: "DACS-Agent-commerce/frontend",
   sourceCommit: "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+  exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs" }),
   files: Object.freeze([
     Object.freeze({ path: "packages/dacs-client/src/purchases.mjs", sourcePath: "http-mcp/src/purchases.mjs", heldBlob: "ee71c89fcfa2ef7fa44716084a810e546343452c", lines: Object.freeze(["666", "789", "811", "905", "927-934"]) }),
     Object.freeze({ path: "packages/dacs-client/src/dacs/wallet-transactions.mjs", sourcePath: "http-mcp/src/dacs/wallet-transactions.mjs", heldBlob: "948107e13dba08f162dd3f1b27968b2eae96d799", lines: Object.freeze(["114"]) }),
@@ -50,7 +51,7 @@ export const PINNED = Object.freeze({
   probe: "packages/dacs-client/evidence/source-tests/scripts/stale-pointer.probe.test.mjs.txt",
   blockedPrerequisites: Object.freeze([
     Object.freeze({ id: "sdk-ci", what: "Add the freeze gate and its negative tests (npm test --workspace @kynesyslabs/dacs-client) to the SDK CI workflow before any client delta PR. The gate reads files and Git metadata only; it imports no client entry point." }),
-    Object.freeze({ id: "d11-transaction-contract", what: "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls joining the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart." }),
+    Object.freeze({ id: "d11-transaction-contract", what: "D11 must supply a synchronous, re-entrant, serializing transaction (BEGIN IMMEDIATE or equivalent), with nested calls using savepoints and successful writes committing with the outer transaction. Before any live wiring, rerun test/purchase-integrity.test.mjs, test/purchase-review-races.test.mjs and test/readback-review-decisions.test.mjs against the real PurchaseStore adapter, including both completion orders, same-hash terminal decisions, native supersession and restart." }),
     Object.freeze({ id: "dec16-testnet-admission", what: "Before live wiring, D2/D4 must consume the approved immutable DEC-16 testnet identity record, reject missing or fixture pins and non-approved identities before effects, and rerun the instrumented zero-signature and zero-broadcast cases." }),
   ]),
 });
@@ -237,7 +238,7 @@ function main() {
     if (!/^[0-9a-f]{40}$/.test(pin.blob) || gitBlob(readFileSync(join(args.packageDir, path))) !== pin.blob) failures.push(`${PACKAGE_PREFIX}${path}: changed bytes; package is frozen`);
   }
   const pkg = readJson(join(args.packageDir, "package.json"), "package.json", failures);
-  if (!pkg || JSON.stringify(pkg.exports) !== "{}" || Object.hasOwn(pkg, "main") || Object.hasOwn(pkg, "bin")) failures.push("package.json must retain exports: {} and no main or bin");
+  if (!pkg || JSON.stringify(pkg.exports) !== JSON.stringify(PINNED.exports) || Object.hasOwn(pkg, "main") || Object.hasOwn(pkg, "bin")) failures.push("package.json must retain the reviewed explicit exports and no main or bin");
 
   const top = sourceGit(["-C", args.repoRoot, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   if (realpathSync(top) !== args.repoRoot) throw new Error("repo-root is not the Git worktree root");
@@ -252,7 +253,7 @@ function finish(failures, summary) {
     process.exitCode = 1;
     return;
   }
-  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); exports: {}; package HEAD blobs verified against pins; package index and working files match HEAD; outside SDK files are unrestricted; no behavioural imports`);
+  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); reviewed public exports; package HEAD blobs verified against pins; package index and working files match HEAD; outside SDK files are unrestricted; no behavioural imports`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
