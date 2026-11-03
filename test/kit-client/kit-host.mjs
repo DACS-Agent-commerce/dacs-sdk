@@ -13,7 +13,9 @@ export async function composedKitHost(t) {
   const fixture = await commitmentFixture(t);
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-kit-client-host-'));
   // The fixture's agent options that the host does not take (it owns its directory and has no early commit) are left out.
-  const { durableDirectory, commitOnSignature, nativeArtifactAnchor, ...config } = fixture.config;
+  const config = { ...fixture.config };
+  const { nativeArtifactAnchor } = config;
+  for (const key of ['durableDirectory', 'commitOnSignature', 'nativeArtifactAnchor']) delete config[key];
   const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { fixture, host, dataDirectory };
