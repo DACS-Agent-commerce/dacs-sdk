@@ -208,9 +208,12 @@ per-client limiter so one client cannot exhaust the shared request budget.
   work through the agent's retained state. A commitment retry first reads back
   the original CREATE and publishes again only with proof that nothing was signed.
   Every read of a commitment or delivery evidence during such a readback has the
-  10 s and 64 KiB limits; a read past either is an `indeterminate` answer
-  (`causeCode` `timeout` or `reply-limit`, and `reader` for any other read
-  failure, including the proof-of-no-intent read) and the job is released. A replay
+  10 s and 64 KiB limits. For a commitment, a read past either is an
+  `indeterminate` answer (`causeCode` `timeout` or `reply-limit`, and `reader`
+  for any other read failure, including the proof-of-no-intent read) and the job
+  is released. For delivery evidence, any failed read (past a limit or not) holds
+  the delivery as `evidencePublication: 'held-readback-only'` with the failure
+  in `reason`, and the next claim reads it back again. A replay
   admitted only by an expired delegation also signs nothing and saves no
   session or anchor state: it answers for a commitment the seller already retained and holds
   (`commitment_readback_required`) rather than adopting one.
