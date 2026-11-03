@@ -336,9 +336,10 @@ export interface RequestCheck {
    * publish). A buyer's endpoint proof can still say `ready: true` for up to
    * ten minutes after the seller drains, so such a request is refused here
    * (`seller_not_ready`, 503). The payment, delivery and read routes continue
-   * a committed purchase and do not read it. While it is false, those three
-   * routes are still admitted when `retained.allocated` is true or the journal
-   * already holds the route's operation under this request's binding.
+   * a committed purchase and do not read it. While it is false, the proposals,
+   * commitments and commitment signature routes are still admitted when
+   * `retained.allocated` is true, and those three and the context route when
+   * the journal already holds the route's operation under this request's binding.
    */
   ready?: boolean;
 }
@@ -379,17 +380,23 @@ export function messageLifetime(override: unknown, code: string, max: number = D
 
 const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready", "commitment", "agreement", "readCommitmentReceipt", "signedListing"] as const;
 
+/** The stage routes and the context route: the ones a drained seller still admits for work its journal already holds. */
+const isRetainedWorkRoute = (path: string): boolean => isStageRoute(path) || path === DACS_SELLER_HTTP_PATHS.context;
+
 /**
  * A request that starts or commits a purchase (every effect route the buyer
  * does not sign as a continuation) is admitted only while the seller accepts
  * new purchases by its own current state, never a buyer's kept proof. While it
  * does not, a stage is admitted only for a purchase the host retains
- * (`retained.allocated`, or the journal's operation is bound to this request).
+ * (`retained.allocated`, or the journal's operation is bound to this request),
+ * and a context request only when the journal's operation is bound to it: the
+ * context route has no `allocated` member, so a retry of work already begun is
+ * the only way in.
  */
 function admitNewPurchase(request: WireRequestPayload, c: RequestCheck, retained: JsonRecord): void {
   if (isReadRoute(request.path) || isContinuingRoute(request.path)) return;
   if (typeof c.ready !== "boolean") fail("seller_readiness_required", 500);
-  if (c.ready || (isStageRoute(request.path) && (retained.allocated === true || hasBoundOperation(request, c.requestJournal)))) return;
+  if (c.ready || (isStageRoute(request.path) && retained.allocated === true) || (isRetainedWorkRoute(request.path) && hasBoundOperation(request, c.requestJournal))) return;
   fail("seller_not_ready", 503);
 }
 
