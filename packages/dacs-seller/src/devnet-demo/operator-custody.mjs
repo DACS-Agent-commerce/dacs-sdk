@@ -123,8 +123,9 @@ export function createOperatorApprovalAttempt(approve){
     }:approve,
     // The wallet's SDK class with the request's own check run again immediately before each signature: the
     // wallet still reads the network and its nonce after the approval, and the SDK's sign() reads the network
-    // again before its key signs, so the check runs at entry and once more at the key's signature. A stop or
-    // close in that time signs nothing (the wallet answers a throw here as an unsigned sdk_error).
+    // again before its key signs, so the check runs at entry and once more at the key's signature. For a write
+    // that carries its own check (authorizeSigning), a refusal in that time signs nothing (the wallet answers a
+    // throw here as an unsigned sdk_error); a write without one signs as before.
     guardSigning(DemosCtor){
       return class extends DemosCtor{
         async sign(...args){
