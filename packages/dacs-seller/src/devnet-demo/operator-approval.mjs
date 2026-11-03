@@ -106,7 +106,8 @@ export const decidedFromJournals=(row)=>row.policy&&row.decision==='approved'&&r
 // same ledger as admission.
 export function parsePolicyLedger(text){
   const malformed=()=>{throw new Error('seller approval evidence is malformed');};
-  const rows=[],byReservationId=new Map(),attempts=new Map();
+  // refusals: the marked refusal lines of each request hash whose manual answer has not been read yet.
+  const rows=[],byReservationId=new Map(),attempts=new Map(),refusals=new Map();
   let header=null,lineNumber=0,seenEntry=false;
   // A line that fails keeps its error; ledgerLine (1-based) names that line.
   try{for(const line of text.split('\n')){
@@ -172,6 +173,11 @@ export function parsePolicyLedger(text){
       }else if(!attempt||attempt.outcome!==null||attempt.approvalHash!==row.approvalHash||(attempt.reservation&&!(linked&&attempt.reservation===authorized)))malformed();
     }
     const request=JSON.parse(row.requestBytes),declared=request?.content?.debit?.totalOs;
+    // A refusal line marked retained:true records a waivable refusal of a payment-evidence write; the operator's answer to
+    // it is the next manual line for the same bytes, which is no write of its own.
+    const refusal=Object.hasOwn(row,'retained');
+    if(refusal&&(row.retained!==true||!policyRow||row.decision!=='rejected'||Object.hasOwn(row,'attemptId')||Object.hasOwn(row,'reservationId')||Object.hasOwn(row,'policyHold')
+      ||!isPaymentEvidence(request)||!MANUAL_REASONS.after.has(row.policyReason)))malformed();
     // An open attempt holds its declared debit (below).
     if(opened){
       if((typeof declared!=='string'||!OS.test(declared))||!Number.isSafeInteger(row.recordedAt)||row.recordedAt<0)malformed();
@@ -184,7 +190,9 @@ export function parsePolicyLedger(text){
     // The confirmation decides nothing about the hold: the reservation stays
     // one row, counted until its completion line, whatever the decision.
     if(linked){authorized.confirmed=row.decision;if(row.decision==='approved')authorized.totalOs=totalOs;continue;}
-    const entry={decision:row.decision,policy:policyRow,held:Object.hasOwn(row,'policyHold'),jobId:request?.content?.jobId??null,artifactKind:request?.content?.artifactKind??null,totalOs,recordedAt:row.recordedAt,
+    const due=refusals.get(row.approvalHash)??0,answer=!policyRow&&!attempt&&due>0;
+    if(refusal)refusals.set(row.approvalHash,due+1);else if(answer)refusals.set(row.approvalHash,due-1);
+    const entry={decision:row.decision,policy:policyRow,held:Object.hasOwn(row,'policyHold'),...(answer?{retainedAnswer:true}:{}),jobId:request?.content?.jobId??null,artifactKind:request?.content?.artifactKind??null,totalOs,recordedAt:row.recordedAt,
       reservationId:row.decision==='approved'?row.reservationId:null,approvalHash:row.approvalHash,outcome:null,attemptId:attempt?row.attemptId:null,request,originLine:attempt?attempt.originLine:lineNumber};
     rows.push(entry);
     if(typeof entry.reservationId==='string')byReservationId.set(entry.reservationId,entry);
@@ -285,13 +293,14 @@ export function heldPolicyBudget(ledger,at){
 // one limit a manual yes waives; every other limit is still checked.
 function budgetRefusal({jobId,totalOs,at,limits,writes,snapshot,converting=null,waived=null}){
   const{rows:ledger,attempts}=snapshot;
-  // A released attempt counts towards neither limit.
-  const live=withContextHolds(ledger,converting).filter(row=>row.decision==='approved'&&row.outcome!=='released'&&attempts.get(row.attemptId)?.outcome!=='released');
+  // A released attempt counts towards neither limit, nor does the operator's answer to a retained waiver (its write is
+  // the retained sign line, counted by its own outcome).
+  const live=withContextHolds(ledger,converting).filter(row=>row.decision==='approved'&&row.outcome!=='released'&&attempts.get(row.attemptId)?.outcome!=='released'&&!row.retainedAnswer);
   // An attempt (its hold, manual line and reservation) is one write for the
-  // job. Older lines: a held or retained reservation and the manual line for
-  // the same bytes are one write.
+  // job. Older lines: a held reservation and the manual line for the same
+  // bytes are one write.
   const manualLines=new Set(live.filter(row=>!row.policy&&!row.attemptId).map(row=>row.approvalHash));
-  const jobRows=live.filter(row=>row.jobId===jobId&&!((row.held||row.retained)&&!row.attemptId&&manualLines.has(row.approvalHash)));
+  const jobRows=live.filter(row=>row.jobId===jobId&&!(row.held&&!row.attemptId&&manualLines.has(row.approvalHash)));
   if(waived!=='job-write-limit'&&jobRows.filter(row=>!row.attemptId).length+new Set(jobRows.map(row=>row.attemptId).filter(Boolean)).size+writes>SELLER_POLICY_MAX_WRITES)return 'job-write-limit';
   // Old approvals lack completion proof and remain held, as do unknown outcomes.
   const recent=heldPolicyBudget(live,at);
@@ -493,6 +502,7 @@ const closingError=()=>Object.assign(new Error('the operator is closing: this se
  * Retained payment-evidence authorizations (composeSellerApproval's approve.retained) are sign lines marked
  * retained:true, held by ledger id until settleById: authorizeRetained(request) resolves {ledgerId, requestText} (the
  * open one for exactly these bytes, else a new marked sign line), or {waiver} for a refusal manual approval may waive,
+ * (after one refusal line marked retained:true, which the operator's answer line pairs with and counts nothing),
  * which authorizeRetainedWaived(waiver) gates again after the operator's yes, waiving only that reason, and resolves as
  * authorizeRetained does or rejects approval_refused; openRetained(requestText) recovers one by its exact bytes; reopenRetained(ledgerId) rebuilds its frozen request;
  * confirmRetained(ledgerId, validity, requestText) reruns every current check on each call and links one confirmation
@@ -602,8 +612,8 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   const pendingError=()=>Object.assign(new Error('this seller write is already held, for its manual answer or the release of a sign line that could not be retained; nothing more is decided for it until that ends'),{code:'seller_approval_pending'});
   // The open sign line of this wallet nonce, if any: one sign authority exists per transaction identity.
   const openHolder=(rows,c)=>rows.find(row=>row.signAuthorized&&row.outcome===null&&row.request?.content?.wallet===c.wallet&&row.request.content.nonce===c.nonce);
-  const appendRefusal=(bytes,copy,reason,attemptId=null)=>appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:sha(bytes),requestBytes:bytes,method:copy?.method??null,address:copy?.address??null,totalOs:declaredOs(copy)?.toString()??null,
-    decision:'rejected',approvalMode:'policy',policyReason:reason,...(attemptId?{attemptId}:{}),recordedAt:clock()});
+  const appendRefusal=(bytes,copy,reason,attemptId=null,marker={})=>appendApprovalLedgerLine(evidencePath,{format:EVIDENCE_FORMAT,approvalHash:sha(bytes),requestBytes:bytes,method:copy?.method??null,address:copy?.address??null,totalOs:declaredOs(copy)?.toString()??null,
+    decision:'rejected',approvalMode:'policy',policyReason:reason,...(attemptId?{attemptId}:{}),...marker,recordedAt:clock()});
   // decide: the policy's answer for one exact write. A refusal and a hold are logged; only a hold in the manual
   // table opens an attempt (unless attempt is false), which counts its declared debit until it ends.
   const decide=(request,{attempt=true}={})=>locked(async()=>{
@@ -800,10 +810,10 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
   // waivers exist, so no caller can name a refusal it was not given.
   const waivers=new WeakMap();
   // Resolves the open retained authorization for exactly these bytes, else one new marked sign line once every check a
-  // policy write passes allows it, or {waiver} for a definite refusal the operator may waive (nothing appended; the
-  // waiver goes to authorizeRetainedWaived once the operator says yes). Any other open sign line of this wallet
-  // nonce, marked or not, refuses sign-authorization-open, and a refusal that cannot be waived rejects
-  // approval_refused; neither appends anything.
+  // policy write passes allows it, or {waiver} for a definite refusal the operator may waive (one refusal line marked
+  // retained:true is appended, and the waiver goes to authorizeRetainedWaived once the operator says yes). Any other
+  // open sign line of this wallet nonce, marked or not, refuses sign-authorization-open, and a refusal that cannot be
+  // waived rejects approval_refused; neither appends anything.
   const authorizeRetained=(request)=>locked(async()=>{
     if(!isPaymentEvidence(request))throw approvalError('invalid_params','retained approval is for payment-evidence SettlementEvidence writes only');
     const bytes=JSON.stringify(request),copy=JSON.parse(bytes),snapshot=await retainedLedger();
@@ -813,21 +823,24 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     const reason=await signRefusal(copy,snapshot)??await reread(request,{bytes});
     if(!reason)return appendRetainedSign(request,bytes,copy);
     if(!manualReason(copy.content.artifactKind,reason))throw approvalRefusal(reason);
+    // The refusal is logged before the operator is asked, as decide logs every refusal: the operator's yes that follows
+    // it is this refusal's answer, which counts no write however the write ends.
+    appendRefusal(bytes,copy,reason,null,{retained:true});
     const waiver=Object.freeze({});waivers.set(waiver,{request,bytes,reason});
     return{waiver};
   });
   // The sign gate for a waived refusal, once the operator has said yes, as authorizeHeld is for a held attempt: the
   // open authorization of these bytes (a concurrent prepare's), else only the waived reason is waived and every other
   // check runs again, on the ledger and the purchase as they are now, before one marked sign line. Any refusal now,
-  // the waived reason's own included, rejects approval_refused and the operator is not asked again. The operator's own
-  // decision line for these bytes is this write's, not another one the job limit counts.
+  // the waived reason's own included, rejects approval_refused and the operator is not asked again. The operator's
+  // answer line follows the refusal's marker and counts no write, so the write counts once, as its sign line, or not at
+  // all when the sign line is never written or is released.
   const authorizeRetainedWaived=(waiver)=>locked(async()=>{
     const waived=waivers.get(waiver);
     if(!waived)throw approvalError('invalid_params','a retained waiver is one authorizeRetained returned');
     const{request,bytes,reason:waivedReason}=waived,copy=JSON.parse(bytes),snapshot=await retainedLedger();
     const existing=exactRetained(snapshot.rows,bytes);
     if(existing)return retainedHandle(existing);
-    snapshot.rows=snapshot.rows.filter(row=>row.policy||row.attemptId||row.approvalHash!==sha(bytes));
     const reason=await signRefusal(copy,snapshot,waivedReason)??await reread(request,waived);
     if(reason)throw approvalRefusal(reason);
     return appendRetainedSign(request,bytes,copy);
