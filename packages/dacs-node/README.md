@@ -31,6 +31,13 @@ the live doctor will fail closed when that adapter is unavailable, and a live
 role runtime reports `role-database-open-failed` with the driver error as its
 `cause`.
 
+Three more subpaths expose single modules for consumers that need only one
+capability: `@kynesyslabs/dacs-node/secrets` (the role-local secret loader,
+`loadDacsSecretV1`), `@kynesyslabs/dacs-node/public-json` (bounded public JSON
+reads, `readDacsPublicJsonV1`) and `@kynesyslabs/dacs-node/public-fetch` (the
+public HTTPS fetch, `createDacsPublicHttpsFetchV1`). They are the same objects
+the root exports, and none of them loads the SQLite driver.
+
 `@kynesyslabs/dacs-node/demos-loader` is the live host's bounded Node import
 hook for `@kynesyslabs/demosdk@4.0.16`. It resolves only that release's one
 published extensionless `demoswork/operations/` directory import. Generated
