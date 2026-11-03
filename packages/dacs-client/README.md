@@ -17,6 +17,8 @@ Both artifacts must come from the same reviewed SDK revision. Release-set admiss
 
 Both public entry points require Node ^22.13.0 or >=23.4.0. The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal and its format/version constants. Source paths are private.
 
+`createProtocolPurchases`, `createPurchaseService` and `createListingVerifier` require `admission: { binding, currentLocal }`: `binding` is the result of `bindTp1Profile` from `@kynesyslabs/dacs/wire` in the host composition, and `currentLocal` is a synchronous function returning the actor's current `{ endpoint, transportAuthority, connectionId }`. Construction throws `TypeError('admission_required')` without exactly those two members, `TypeError('admission_input_untrusted')` for a `profile`, `record`, `identityRecord` or `actionsAdmitted` option, and `OperationError('runtime_unsupported')` below Node 22.13 (23.0 to 23.3 included), all before any component is built. Every method except the passive readers returns a Promise. While the one hold constant is `held` it rejects `OperationError('profile_not_admitted')` before any binding read or effect; once admitted it rejects the same way, with the original error as `cause` (`tp1_authority_timeout` after 10,000 ms), unless the binding check passes and the hold and `currentLocal()` are unchanged, and only then runs the original once. The passive readers are the protocol's `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment` and `observeReportedPayment`, and the service's `status`, `portalOperation`, `portalEvidence`, `verifyDeal` and `planRunning` (synchronous). While held, the service's readers return the diagnostic projection, chosen on each call. `actionsAdmitted` is a construction-time snapshot and never authorizes.
+
 Portal entries require a nonempty primitive operation id (at most 256 characters) and handoff token (at most 1024). They authenticate the stored purchase capability before the host lookup or private reads: exact token bytes hashed as SHA-256 of `dacs-handoff-hash:` followed by the token, constant-time comparison with its lowercase hex hash, matching id/kind/owner, and a canonical `Date.toISOString()` lifetime later than both the business clock and internal wall clock. Both clocks must be valid nonnegative integer epoch milliseconds; the host may further refuse access.
 
 Before constructing the service, migrate older databases with `ALTER TABLE operations ADD COLUMN handoff_expires_at TEXT` and provision explicit finite lifetimes. Missing columns produce `schema_migration_required`; null, malformed or past lifetimes grant no access, including links returned by status. Capability expiry is independent of approval `expires_at`.
@@ -48,10 +50,10 @@ const ops = host.createOperations(db);
 const coordinates = createCoordinateStore({ db });
 const protocol = createProtocolPurchases({
   db, ops, coordinates, store, dacsProtocol: host.dacsProtocol,
-  buyerAccess: host.buyerAccess,
+  buyerAccess: host.buyerAccess, admission: host.admission,
 });
 const purchases = createPurchaseService({
-  db, ops, coordinates, store, protocol, config: host.config,
+  db, ops, coordinates, store, protocol, config: host.config, admission: host.admission,
   accounts: host.accounts, verifier: host.verifier, chain: host.chain,
   challenges: host.challenges, purposes: { APPROVE_PURCHASE: 'purchase-approval' },
 });

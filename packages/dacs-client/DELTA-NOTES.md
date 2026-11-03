@@ -241,3 +241,9 @@ The chain reader gains `findTransferAtNonce(address, nonce, { limit, signal })`:
 ## D11 — Handed-off cancel
 
 `cancel` for a handed-off payment that is not native stays open until the payment's nonce slot is used, then reads that slot's transaction back; it ends the purchase as cancelled only with `DACS_NONCE_SLOT_PROOF=account` (default `off`, which keeps it open). The change is in `src/purchases.mjs` and `src/config.mjs`; `test/config-nonce-slot-proof.test.mjs` pins the setting, and `test/client/nonce-slot-cancel.test.ts` in the SDK tests the cancel.
+
+## WF — W-finish (W-FINISH §5)
+
+Client commits that move the buyer client onto the new wire and its public API use the id `WF`, with subjects `delta(client): WF <PR id> <summary>`. The earlier D-ids keep their original scope.
+
+- `P52a` — the three purchase factories sit behind one held admission wrapper (`src/public-admission.mjs`) driven by one constant (`src/dacs/purchase-admission-state.mjs`, `held`). Active methods return Promises and reject `profile_not_admitted` while held, or when the wire's binding check, the 10,000 ms deadline or the synchronous re-check fails. The factories refuse Node below 22.13 (23.0 to 23.3 included) before building anything. The purchase service awaits the protocol object it is given, reads plan-flight state through a private registry, and chooses its readback projection on each call. The synchronous re-check compares the canonical text of the connection taken before the authority read, so a host's live connection object that changes while the read is pending is refused. A `profile_not_admitted` from a wrapped protocol call means the original never ran: the service records none of it as a commitment, handoff or native-lane event and does not turn it into a result; it reaches the caller, or `verifyDeal`'s diagnostic readback when the hold is re-held.

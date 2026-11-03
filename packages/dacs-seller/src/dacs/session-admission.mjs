@@ -152,6 +152,9 @@ export function sessionAdmissionProblem(answer, { jobId, buyer, buyerBundleHash,
 // seller clock, read by the check after the surfaces are read, so a reading
 // stamped by the same clock is never taken for one from the future.
 const REVOCATION_READ_LIMITS = Object.freeze({ maxBytes: 64 * 1024, maxValues: 4096, timeoutMs: 10_000 });
+/** `code` of a RangeError raised by an admission bound (reply bytes, value count, list size); no other error carries it. */
+export const REPLY_LIMIT_CODE = 'ADMISSION_REPLY_LIMIT';
+const replyLimitError = (message, options) => Object.assign(new RangeError(message, options), { code: REPLY_LIMIT_CODE });
 const revocationUnavailable = reason => ({ code: 'session_admission_unavailable', status: 503, message: `the Listing revocation check is indeterminate: ${String(reason).slice(0, 160)}` });
 // A decoded answer must already be exactly a JSON value. The bounded
 // serialization below is also its normalization, and JSON silently drops an
@@ -160,7 +163,7 @@ const revocationUnavailable = reason => ({ code: 'session_admission_unavailable'
 // by losing a member it carried: sessionAdmissionProblem checks the original
 // keys and would refuse it.
 function assertJsonMember(value, ancestors = [], seen = { values: 0 }) {
-  if (++seen.values > REVOCATION_READ_LIMITS.maxValues) throw new RangeError('revocation reply exceeds its value limit');
+  if (++seen.values > REVOCATION_READ_LIMITS.maxValues) throw replyLimitError('reply exceeds its value limit');
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
   if (typeof value === 'number' && Number.isFinite(value)) return;
   if (typeof value !== 'object') throw new TypeError('revocation reply contains a non-JSON member');
@@ -181,13 +184,13 @@ function boundedRevocationValue(value) {
   assertJsonMember(value);
   let remaining = REVOCATION_READ_LIMITS.maxBytes, values = 0;
   const text = JSON.stringify(value, (key, child) => {
-    if (++values > REVOCATION_READ_LIMITS.maxValues || key.length > remaining || (typeof child === 'string' && child.length > remaining)) throw new RangeError('revocation reply exceeds its byte or value limit');
+    if (++values > REVOCATION_READ_LIMITS.maxValues || key.length > remaining || (typeof child === 'string' && child.length > remaining)) throw replyLimitError('reply exceeds its byte or value limit');
     remaining -= Buffer.byteLength(JSON.stringify(key)) + 2;
     remaining -= child === null || ['string', 'number', 'boolean'].includes(typeof child) ? Buffer.byteLength(JSON.stringify(child)) : 2;
-    if (remaining < 0) throw new RangeError('revocation reply exceeds its byte limit');
+    if (remaining < 0) throw replyLimitError('reply exceeds its byte limit');
     return child;
   });
-  if (typeof text !== 'string' || Buffer.byteLength(text) > REVOCATION_READ_LIMITS.maxBytes) throw new RangeError('revocation reply exceeds its byte limit');
+  if (typeof text !== 'string' || Buffer.byteLength(text) > REVOCATION_READ_LIMITS.maxBytes) throw replyLimitError('reply exceeds its byte limit');
   return admitRawJson(Buffer.from(text), { maxBytes: REVOCATION_READ_LIMITS.maxBytes });
 }
 
@@ -197,8 +200,13 @@ const ADMISSION_MAX_LIST_ITEMS=256;
 // encoding hides its lists and value count from the outer reply's own shape.
 function boundedAdmissionValue(value, options) {
   const pending=[value];let values=0;
-  while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw new RangeError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
+  while(pending.length){const member=pending.pop();if(++values>options.maxValues||(Array.isArray(member)&&member.length>ADMISSION_MAX_LIST_ITEMS))throw replyLimitError('admission reply exceeds collection limits');if(member&&typeof member==='object')for(const child of Object.values(member))pending.push(child);}
   return value;
+}
+// The raw-bytes bound is admitRawJson's own error; it is a reply limit like the others.
+function boundedReply(value) {
+  try { return boundedRevocationValue(value); }
+  catch (error) { throw error?.code === 'BYTE-LIMIT-EXCEEDED' ? replyLimitError('reply exceeds its byte limit', { cause: error }) : error; }
 }
 // Admission capabilities cap wire bytes before decoding and honor this signal.
 // Returned representations also receive independent byte/value/list bounds. An
@@ -214,7 +222,7 @@ export async function readAdmissionCapability(admission,method,input,parentSigna
     const work=Promise.resolve().then(()=>admission[method](structuredClone(input),options)).then(value=>{
       if(controller.signal.aborted)throw new DOMException('admission read aborted','AbortError');
       if(value===undefined)throw new TypeError('admission capability returned no value');
-      return boundedAdmissionValue(boundedRevocationValue(value),options);
+      return boundedAdmissionValue(boundedReply(value),options);
     });
     return await Promise.race(aborted?[work,deadline,aborted]:[work,deadline]);
   }finally{clearTimeout(timer);if(rejectAborted)parentSignal.removeEventListener('abort',rejectAborted);parentSignal?.removeEventListener('abort',forwardAbort);controller.abort();}

@@ -277,7 +277,9 @@ below):
    commitments and the commitment signature are still admitted for a purchase
    the host retains: when `retained.allocated` is true, or when
    `inspectWireOperation` shows the route's operation bound to this request's
-   binding (`wireOperationBinding`). The context route has no such way in.
+   binding (`wireOperationBinding`). The context route has no `allocated`
+   member; while `ready` is `false` it is admitted only on that journal check,
+   so a retry of a context request the seller already journaled can complete.
    On the payment and delivery routes (`payments`, `bundles/request`,
    `bundles/countersignature`) and `bundles/buyer-copy`, `checkWireRequest` instead requires the job's
    finalized commitment, as the exact bytes the seller read itself
@@ -884,7 +886,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal` |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
-| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a context request, or for a proposal, commitment or commitment-signature request that is neither `retained.allocated` nor bound to an existing operation; a supplied continuation capability lifts the proof's refusal |
+| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a context request not bound to an existing operation, or for a proposal, commitment or commitment-signature request that is neither `retained.allocated` nor bound to an existing operation; a supplied continuation capability lifts the proof's refusal |
 | `continuation_capability_invalid` (500) | a `continuation` that `retainedPurchaseContinuation` did not register for this binding and exactly this request, or given on a route none applies to |
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
 | `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}` (also `allocated: boolean` on proposals, commitments and commitment signature, and no other route), or with a malformed one |
