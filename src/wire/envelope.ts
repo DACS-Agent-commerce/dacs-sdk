@@ -18,9 +18,9 @@ import { inspectWireOperation, journalStore, reserveEffect, type WireEffect, typ
 import { assertEndpointProof, isCommittedRoute, isContinuingRoute, isStageRoute, type EndpointProof, type RetainedPurchaseContinuation } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPreAgreementRoute, isReadRoute } from "./routes.js";
-import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
+import { verifySellerSessionDelegation, type SellerSessionDelegation, type SellerSessionDelegationPayload } from "./delegation.js";
 import {
-  admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
+  admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, withCanonicalClaims,
   isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedBytes, ownedConfig, ownedFields, ownedOrNothing, sameCanonical,
   uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
@@ -224,24 +224,27 @@ export async function openWireEnvelope<K extends WireKind>(header: unknown, kind
   if (lacksProfile(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) fail("tp1_profile_missing", 409);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
   if (hasKeys(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) await assertPeerProfile(p.profile, binding);
-  if (!payloadShape(p, kind)) fail("peer_envelope_invalid");
+  // DACS-1 reader rule: a `DID:` scheme resolves as `did:` and is canonicalised before hashing, signing or comparison (CF-2): every check, the signature and the authentication hash below read the canonical copy.
+  const canonical = withCanonicalClaims(p, ["buyer", "seller"]);
+  if (!payloadShape(canonical, kind)) fail("peer_envelope_invalid");
   if (requireDelegation && !delegated) fail("peer_delegation_required");
-  const payload = p as unknown as Extract<WirePayload, { kind: K }>;
+  const payload = canonical as unknown as Extract<WirePayload, { kind: K }>;
   const actor = kind === "request" ? payload.buyer : payload.seller;
   if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");
   // The opener has no clock: whether the delegation is still live is the admitting caller's decision.
   const delegation = delegated ? await verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin, jobId: payload.jobId, allowExpired: true }) : null;
   const key = delegation?.sessionPublicKey ?? claimKey(actor);
-  if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
+  if (!verifyEd25519(wireEnvelopeSigningBytes(payload as unknown as WirePayload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
   // The trusted reader is asked about these participants and this job only once a signature authenticates them.
   await assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   const normalizedDelegation = delegated ? {
-    payload: (envelope.delegation as SellerSessionDelegation).payload,
+    payload: delegation,
     signature: walletSignatureBytes((envelope.delegation as SellerSessionDelegation).signature).toString("base64url"),
   } : null;
+  // The authenticated header in CF-2 canonical form: its payload and delegation are the canonical copies the signatures cover.
   const normalizedHeader = Buffer.from(canonicalize({ payload, signature: envelopeSignatureBytes(envelope.signature).toString("base64url"),
     ...(normalizedDelegation ? { delegation: normalizedDelegation } : {}) })).toString("base64url");
-  const result = deepFreeze({ payload: cloneJson(payload), delegation: delegated ? cloneJson(envelope.delegation as SellerSessionDelegation) : null,
+  const result = deepFreeze({ payload: cloneJson(payload), delegation: delegated ? cloneJson({ ...(envelope.delegation as SellerSessionDelegation), payload: delegation as SellerSessionDelegationPayload }) : null,
     authenticationHash: sha256Hex(normalizedHeader) });
   recordOpened(opened, result, binding);
   return result;
