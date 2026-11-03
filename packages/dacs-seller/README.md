@@ -73,11 +73,9 @@ const host = await startSellerHost({
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
   tp1Network,            // { connection() -> { endpoint, transportAuthority, connectionId }, readAuthority(scope) }:
                          // this host's own https connection and the trusted reader that confirms it and the
-                         // chain; read within 10,000 ms (tp1_authority_timeout). The host binds the SDK's
-                         // approved TP-1 identity record over it before it opens any state: no option,
-                         // environment variable or file names a record. Before it listens it checks the binding
-                         // against connection() and the reader again, within the same 10,000 ms
-                         // (tp1_local_binding_changed, tp1_authority_timeout)
+                         // chain, read once within 10,000 ms (tp1_authority_timeout; connection() must return
+                         // at once). The host binds the SDK's approved TP-1 identity record over it before
+                         // it opens any state: no option, environment variable or file names a record
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then

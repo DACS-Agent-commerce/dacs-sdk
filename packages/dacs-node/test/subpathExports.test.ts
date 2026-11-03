@@ -69,7 +69,7 @@ describe("dacs-node subpath exports that load no SQLite", () => {
     expect(child.stderr).toBe("");
     const resolved = readFileSync(logPath, "utf8")
       .split("\n")
-      .filter((line) => line !== "")
+      .filter((line) => line.startsWith("{"))
       .map((line) => JSON.parse(line) as ResolveRecord);
     return { result: JSON.parse(child.stdout) as Record<string, unknown>, resolved };
   }
