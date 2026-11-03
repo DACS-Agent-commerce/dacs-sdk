@@ -143,9 +143,13 @@ describe("A22 the context challenge route", () => {
 
     it("A22 checkWireRequest still admits an ordinary proposals request under the same binding and check fields", async () => {
       const { check, journals, reads } = await checking("direct", w.DACS_SELLER_HTTP_PATHS.proposals, "{}", SCOPE_HASH);
-      await expect(check(true)).resolves.toMatchObject({ readbackOnly: false });
+      const checked = await check(true);
+      expect(checked.readbackOnly).toBe(false);
       // The reads the challenge refusal must precede.
       expect(reads.participantReads().map((scope) => scope.participants)).toContainEqual([buyer.claim, seller.claim]);
+      // Admission writes nothing: the reservation is made when the host calls reserve().
+      expect(journals.reservations()).toHaveLength(0);
+      await checked.reserve!();
       expect(journals.reservations()).toHaveLength(1);
     });
   });

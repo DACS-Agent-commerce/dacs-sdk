@@ -10,9 +10,9 @@ own endpoint: the route table, the signed request and response envelopes, the
 seller session delegation, the discovery document and endpoint proof, their
 exact signing bytes, and validators. It has no HTTP server or client. Its one
 store, and its only I/O, is the seller's request journal
-(`openWireRequestJournal`), a local directory: on an effect route
-`checkWireRequest` writes and syncs journal entries synchronously, so it
-blocks the calling thread for those writes. The seller host (`@kynesyslabs/dacs-seller`) and the
+(`openWireRequestJournal`), a local directory: on an effect route the
+`reserve()` that `checkWireRequest` returns writes and syncs journal entries
+synchronously, so it blocks the calling thread for those writes. The seller host (`@kynesyslabs/dacs-seller`) and the
 buyer client (`@kynesyslabs/dacs-client`) are its intended consumers.
 
 It is the wire the buyer plugins run today, ported from the plugin
@@ -239,7 +239,9 @@ below):
    retained for that job before this request (the retained Agreement's hash
    and parties; for an initial proposal, see below; for the context route, the
    exact context-scope hash). It is read once, as data, and never taken from
-   the request's envelope.
+   the request's envelope. The proposals, commitments and commitment signature
+   routes also require `allocated`, a boolean the host computes from its own
+   records (`WireRetainedStage`); every other route refuses it.
    An initial proposal has no earlier retained state: the host admits the
    body bytes with `admitWireRequestBody`, validates the draft Agreement in it
    against its own Listing and offer, and then retains that draft's `jobId`
@@ -271,9 +273,15 @@ below):
    commitment signature, context), `checkWireRequest` then requires the
    seller's own current `ready` and refuses the request while it is `false`
    (`seller_not_ready`, 503), before any reservation; the payment, delivery
-   and read routes do not read it.
+   and read routes do not read it. While `ready` is `false`, proposals,
+   commitments and the commitment signature are still admitted for a purchase
+   the host retains: when `retained.allocated` is true, or when
+   `inspectWireOperation` shows the route's operation bound to this request's
+   binding (`wireOperationBinding`). The context route has no `allocated`
+   member; while `ready` is `false` it is admitted only on that journal check,
+   so a retry of a context request the seller already journaled can complete.
    On the payment and delivery routes (`payments`, `bundles/request`,
-   `bundles/countersignature`), `checkWireRequest` instead requires the job's
+   `bundles/countersignature`) and `bundles/buyer-copy`, `checkWireRequest` instead requires the job's
    finalized commitment, as the exact bytes the seller read itself
    (`commitment`), its SR-2 receipt reader (`readCommitmentReceipt`), the
    retained Agreement both parties signed (`agreement`, as bytes too), and
@@ -288,6 +296,13 @@ below):
    `commitment: null`, the host's own reader having found none,
    refuses the request as `peer_agreement_uncommitted` (409); omitted, it is
    `seller_commitment_required` (500).
+   `checkWireRequest` writes nothing: on an effect route it returns
+   `reserve()`, which re-checks current authority, then the request's expiry,
+   then the delegation's (time counted from the check's start) and reserves,
+   so the host does its own accounting between the two calls. A second call is
+   `peer_request_replayed`. `authorizeWireRequest` makes the same admission and
+   re-check and returns without reserving or recording a nonce key, for a host
+   answering from retained state.
    Before returning a checked body on an effect route, `checkWireRequest`
    requires `requestJournal`: the handle `openWireRequestJournal(directory)`
    returned, the only journal `checkWireRequest` accepts. Any other object, a
@@ -317,8 +332,7 @@ below):
    refused (`peer_operation_mismatch`, 409) and never gets a second effect,
    before or after its outcome and across a restart.
 
-   The operation's state is durable. The checked request's `effect` is one
-   of:
+   The operation's state is durable. `reserve()` resolves one of:
    - `new`: no attempt has run. Run the effect.
    - `recover`: an earlier attempt's lease ended with no outcome, and this
      attempt now holds the operation alone. That earlier attempt may have
@@ -328,6 +342,16 @@ below):
      this request, and run nothing. It is the answer this seller gave, not a
      new reading: where it states chain or delivery state, check that again
      at its source before answering.
+
+   `inspectWireOperation(journal, {seller, jobId, path})` reads an operation
+   without changing it (no publish, no clock, no ending of a lapsed attempt):
+   `none`, `pending` (whatever the lease), `ended` or `completed`. It confers
+   no authority. A `completed` view is the answer this seller gave, revalidated
+   at its source before re-signing. An inspection-only completed answer records
+   no nonce key, so the same signed request can be answered again until it
+   expires and grants no effect authority; requests that reserve keep
+   `peer_request_replayed`. `listWireNonceKeys(journal)` lists every nonce key,
+   those no attempt follows included, and refuses a corrupt or too large journal.
 
    While an attempt's lease (60 s by default) is live, another request for
    the operation is `seller_effect_pending` (503: retry later). Once the
@@ -360,7 +384,7 @@ below):
    its publisher exits before a fresh process checks retained bytes and
    exclusive retry. Failure refuses the open with `seller_replay_guard_invalid`,
    detail `RESTART-NOT-QUALIFIED`, before a handle is issued. Read
-   routes need no reservation and have `effect: null`. All authentication,
+   routes need no reservation and have `reserve: null`. All authentication,
    body, retained-Agreement, commitment, scope and deadline checks precede
    the reservation.
 
@@ -457,6 +481,15 @@ endpoint proof does not retain an authoritative eligibility verdict. A reader
 must return a current decision or throw; a Promise is refused.
 
 `ready: false` and the end of the Listing's window stop new purchases only.
+Retained purchase work still signs under a `ready: false` proof when
+`signWireRequest` or request-kind `signWireEnvelope` is given `continuation`,
+the capability `retainedPurchaseContinuation(binding, scope)` registered for
+exactly that request's seller, endpoint, Listing pin, buyer, job, route (the
+context route or a stage), body hash and kind (`retry` or `next-stage`). It
+lifts only the readiness refusal, never travels in the header, and a supplied
+one that is not registered for the request, at any readiness, is
+`continuation_capability_invalid` (500). `agreements/state` signs at either
+readiness without one; `bundles/buyer-copy` needs the commitment evidence below.
 For a job whose commitment has finalized, the buyer passes the job's finality
 commitment as `commitment`, with the signed Agreement (`agreement`) and the
 signed Listing it pins (`signedListing`), to `signWireRequest`, request-kind
@@ -565,10 +598,10 @@ A buyer's proof can still say `ready: true` for up to ten minutes after the
 seller drains, so the seller enforces its own current state: `checkWireRequest`
 requires `ready` (whether it accepts new purchases now) on the proposal,
 commitment, commitment-signature and context routes and refuses each while it
-is `false` (`seller_not_ready`, 503). On the payment and delivery routes it
+is `false` (`seller_not_ready`, 503), except a retained stage (step 3). On the payment and delivery routes it
 requires the job's finalized commitment instead, checked the same way with
 the seller's own receipt reader. Read routes enforce retained request scope
-without repeating CA-7; successful readback authentication does not attest an Agreement.
+without repeating CA-7, bar `bundles/buyer-copy`, which needs the same commitment evidence; successful readback authentication does not attest an Agreement.
 
 `capabilities` states the TP-1 restrictions: FP-DEM; `negotiate-fixed-price`;
 `pay-dem`; `did:demos:agent` claims; delivery through Demos storage at
@@ -853,9 +886,10 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal` |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
-| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a proposal, commitment, commitment-signature or context request |
+| `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `checkWireRequest` given `ready: false` for a context request not bound to an existing operation, or for a proposal, commitment or commitment-signature request that is neither `retained.allocated` nor bound to an existing operation; a supplied continuation capability lifts the proof's refusal |
+| `continuation_capability_invalid` (500) | a `continuation` that `retainedPurchaseContinuation` did not register for this binding and exactly this request, or given on a route none applies to |
 | `listing_eligibility_required`, `listing_eligibility_mismatch`, `listing_unsupported` | missing authenticated reader, a decision for another Listing scope, or unsupported/currently invalid selected terms |
-| `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}`, or with a malformed one |
+| `seller_retained_agreement_required` (500) | `checkWireRequest` without the host's retained `{jobId, agreementHash, buyer, seller}` (also `allocated: boolean` on proposals, commitments and commitment signature, and no other route), or with a malformed one |
 | `peer_job_mismatch`, `peer_agreement_mismatch` (409) | the signed `jobId` or `agreementHash` is not the one the host retained |
 | `seller_replay_guard_required` (500) | an effect route checked without a `requestJournal` that `openWireRequestJournal` returned, or `completeWireEffect` given another object |
 | `seller_replay_guard_invalid` (500) | a journal directory that is not absolute, missing, a link, owned by another user or writable by others, on which exclusive publishing fails, or holding an entry the journal did not write |
