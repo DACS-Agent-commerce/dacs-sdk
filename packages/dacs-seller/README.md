@@ -178,10 +178,11 @@ then also needs the complete-index rule of the wallet journal's `fate()`. The
 nonce read answers `{ nonce, blockHeight }` and the absent readback reports
 `checkedThroughBlock`, which must reach that height; any other answer stays
 `indeterminate` and signs nothing. The nonce there is a safe integer, not a
-numeric string. The replacement may carry fields the seller stamps again on each
-attempt (the commitment's `createdAt`), as long as it stays in the same
-publication scope; a different artifact for the address while the refused CREATE
-is still live or uncertain stays a `conflict`.
+numeric string. The replacement may differ from the refused intent only in the
+fields the seller stamps again on each attempt (the commitment's `createdAt`, and
+the signature over it); any other difference stays a `conflict`, as does a
+different artifact for the address while the refused CREATE is still live or
+uncertain.
 Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.

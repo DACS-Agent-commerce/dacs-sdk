@@ -331,6 +331,17 @@ test('a dead refused CREATE whose retry input changed is replaced once the resen
  assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
  assert.deepEqual(requestedNonces(w),[1,2]);
 });
+test('a dead refused CREATE is not replaced by an artifact that differs beyond the re-stamped fields',async()=>{
+ const w=await clockedRefusedWorld(['refused','accepted']);
+ await w.publish(w.open(),JOBS[0]);
+ const address=w.input(JOBS[0]).logicalAddress;
+ w.controls.nonce=1;w.advance();
+ // Another job's record, signed by the same seller, at this job's address: only createdAt and the signature may change.
+ await assert.rejects(w.open().publish({logicalAddress:address,artifact:await w.artifact(JOBS[1]),artifactKind:'FinalityCommitmentRecord',authorize:async()=>true}),{code:'conflict'});
+ assert.equal(w.captured.length,1);assert.equal(w.artifactRow(JOBS[0]).supersedes,undefined);
+ assert.equal((await w.publish(w.open(),JOBS[0])).status,'present');
+ assert.equal(w.captured.length,2);
+});
 const CHANGED_INPUT_KEPT={
  'its nonce is still free':async()=>{},
  'its readback is pending':async w=>{w.controls.nonce=1;w.source.binding=async()=>({disposition:'pending'});},

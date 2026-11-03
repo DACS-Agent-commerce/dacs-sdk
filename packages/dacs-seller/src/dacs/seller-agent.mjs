@@ -1222,8 +1222,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // command from this seller's retained state plus a fresh native readback. It
   // never signs or publishes to complete an uncertain effect: a finalized (or
   // early held) commitment answers what the same request would answer now.
-  // Only a native read that proves nothing was ever signed may hand the request
-  // back to its ordinary start once, under the same job lock.
+  // Only a native read that proves nothing was ever signed, or that a refused
+  // CREATE can no longer be included, may hand the request back to its
+  // ordinary start once, under the same job lock.
   const COMMITMENT_PATHS = new Set(['/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
   const provenUnsignedCommitment = async (jobId) => {
     if (!nativeArtifactAnchor) return false;
@@ -1840,7 +1841,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // the wallet. A retained intent (sent, lost, denied or unknown) is only
     // ever read back. Only an absence the capability itself proves unsigned (a
     // branded no-intent verdict, as the shipped artifact anchor returns for
-    // proofOfNoIntent) permits the write again; a plain absent (a lagging name
+    // proofOfNoIntent), or a refused CREATE it marks dead (its nonce passed and
+    // it can no longer be included), permits the write again; a plain absent (a lagging name
     // index, or a verdict that lost its proof) does not establish that nothing
     // was signed, so it holds instead of asking a non-idempotent capability for
     // a second CREATE at the same address.

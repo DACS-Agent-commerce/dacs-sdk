@@ -53,6 +53,15 @@ const exactHash=(v)=>sha256Hex(canonicalize(v));
 // nothing may re-stamp the artifact's provisional time, but the address, kind,
 // writer, verifier and delivery binding stay immutable.
 const publicationScope=(input)=>canonicalize({logicalAddress:input?.logicalAddress??null,artifactKind:input?.artifactKind??null,writer:input?.writer??null,verifier:input?.verifier??null,deliveryBinding:input?.deliveryBinding??null});
+// The fields the seller stamps again on each attempt, with the signature over them. Only these may differ when a dead
+// refused CREATE is replaced; every other artifact field, and every other kind, must match the refused intent exactly.
+const RESTAMPED_FIELDS=Object.freeze({FinalityCommitmentRecord:Object.freeze(['createdAt','signature'])});
+const restampedOnly=(retainedInput,input)=>{
+  const fields=RESTAMPED_FIELDS[input?.artifactKind];
+  if(!fields || retainedInput?.artifactKind!==input.artifactKind) return false;
+  const stable=(value)=>{const kept={...value,artifact:{...value.artifact}};delete kept.receiptContentHash;for(const field of fields)delete kept.artifact[field];return canonicalize(kept);};
+  return stable(retainedInput)===stable(input);
+};
 // The durable wallet outcome is independent of readback stage. Older readers
 // could promote a rejected row to 'issued' while keeping this error marker.
 const broadcastRejected=(row)=>row?.error==='broadcast_rejected';
@@ -424,9 +433,11 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         const sameInput=retained.inputHash===exactHash(input);
         // A retry may carry a new provisional time, which the caller stamps again on each attempt. Only a new publication may
         // carry it, and only within the same scope: a proven unsigned attempt signed nothing, and a dead refused CREATE can
-        // never be included, so no immutable intent is left to contradict. Any other change stays a conflict.
+        // never be included, so no immutable intent is left to contradict. A dead refused CREATE's replacement may differ only
+        // in the re-stamped fields (RESTAMPED_FIELDS). Any other change stays a conflict.
         if(!sameInput&&publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
         if(!unsigned) {
+          if(!sameInput&&!restampedOnly(retained.input,input)) fail('conflict','immutable demo artifact intent differs');
           const deadHash=await deadRefusedCreateHash(input,retained);
           if(deadHash) supersedes={hash:deadHash,transaction:clone(retained.transaction)};
           else if(sameInput) return observe(input,retained,undefined,resendOptions);
