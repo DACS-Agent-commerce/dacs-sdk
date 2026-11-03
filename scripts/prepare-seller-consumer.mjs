@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const SELLER = "@kynesyslabs/dacs-seller";
+const NODE_HOST = "@kynesyslabs/dacs-node";
 const SMOKE_RUNNER = "packages/dacs-seller/test/helpers/installed-seller-host.mjs";
 const NPM_TIMEOUT_MS = 240_000;
 const NPM_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
@@ -41,6 +42,7 @@ export function sellerSourceFingerprint(sellerFiles) {
     }
   };
   walk("dist");
+  walk("packages/dacs-node/dist");
   const hash = createHash("sha256");
   for (const file of files.sort()) hash.update(file).update("\0").update(readFileSync(join(root, file)));
   return hash.digest("hex");
@@ -78,10 +80,11 @@ function packageEntry(manifest, pack) {
 }
 
 // Preserve exact versions, locations and integrity; never resolve a fresh range.
-function consumerLock(lock, manifest, core, seller, corePack, sellerPack) {
+function consumerLock(lock, manifest, core, seller, node, corePack, sellerPack, nodePack) {
   const selected = {
     "": { name: manifest.name, version: manifest.version, dependencies: manifest.dependencies },
     "node_modules/@kynesyslabs/dacs": packageEntry(core, corePack),
+    "node_modules/@kynesyslabs/dacs-node": packageEntry(node, nodePack),
     "node_modules/@kynesyslabs/dacs-seller": packageEntry(seller, sellerPack),
   };
   const queue = Object.keys(selected).filter(Boolean);
@@ -112,13 +115,14 @@ function consumerLock(lock, manifest, core, seller, corePack, sellerPack) {
 // Fills the new directory; prepared.json is written last, so only a complete setup has one.
 function install(app) {
   const cache = join(app, ".npm-cache"), env = { ...process.env, NPM_CONFIG_CACHE: cache, npm_config_cache: cache };
-  const core = json(join(root, "package.json")), seller = json(join(root, "packages/dacs-seller/package.json"));
+  const core = json(join(root, "package.json")), seller = json(join(root, "packages/dacs-seller/package.json")), node = json(join(root, "packages/dacs-node/package.json"));
   const [corePack] = JSON.parse(npm(["pack", "--json", "--ignore-scripts", "--pack-destination", app], root, env));
   const [sellerPack] = JSON.parse(npm(["pack", "--json", "--ignore-scripts", "--pack-destination", app, "--workspace", SELLER], root, env));
-  const dependencies = { [core.name]: "file:" + corePack.filename, [seller.name]: "file:" + sellerPack.filename };
+  const [nodePack] = JSON.parse(npm(["pack", "--json", "--ignore-scripts", "--pack-destination", app, "--workspace", NODE_HOST], root, env));
+  const dependencies = { [core.name]: "file:" + corePack.filename, [seller.name]: "file:" + sellerPack.filename, [node.name]: "file:" + nodePack.filename };
   const manifest = { name: "dacs-seller-locked-smoke", version: "1.0.0", private: true, type: "module", dependencies };
   writeFileSync(join(app, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
-  const lock = consumerLock(json(join(root, "package-lock.json")), manifest, core, seller, corePack, sellerPack);
+  const lock = consumerLock(json(join(root, "package-lock.json")), manifest, core, seller, node, corePack, sellerPack, nodePack);
   const text = JSON.stringify(lock, null, 2) + "\n";
   writeFileSync(join(app, "package-lock.json"), text);
   // Native dependency installation belongs to setup; scripts must run here.
@@ -126,13 +130,14 @@ function install(app) {
   if (digest(readFileSync(join(app, "package-lock.json"))) !== digest(text)) throw new Error("consumer install changed the pinned graph");
   copyFileSync(join(root, SMOKE_RUNNER), join(app, "run.mjs"));
   const sourceFingerprint = sellerSourceFingerprint(sellerPack.files.map((entry) => entry.path));
-  const marker = { runtime: runtimeKey(), sourceFingerprint, lockDigest: digest(text), corePack, sellerPack };
+  const marker = { runtime: runtimeKey(), sourceFingerprint, lockDigest: digest(text), corePack, sellerPack, nodePack };
   writeFileSync(join(app, "prepared.json"), JSON.stringify(marker, null, 2) + "\n");
 }
 
 // Creates the directory (or a fresh temporary one), so an existing path is refused untouched.
 function prepare(directory) {
   if (!existsSync(join(root, "dist", "index.js"))) throw new Error("the core is not built: run npm run build before npm run seller:prepare");
+  if (!existsSync(join(root, "packages/dacs-node/dist", "secrets.js"))) throw new Error("dacs-node is not built: run npm run host:build before npm run seller:prepare");
   const app = directory === undefined ? mkdtempSync(join(tmpdir(), "dacs-seller-consumer-")) : resolve(directory);
   if (directory !== undefined) {
     try {

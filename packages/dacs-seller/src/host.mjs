@@ -25,7 +25,7 @@
 // seller-owned sessionAdmission (session-admission.mjs): both parties' exact
 // profile and the Vet records the Agreement references. It does not mount the
 // context route itself.
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, mkdirSync, openSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
@@ -36,6 +36,7 @@ import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
+import { isPrivateDirectory } from './private-directory.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']);
@@ -135,14 +136,6 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
   };
 }
 
-function privateDirectory(path) {
-  let stat;
-  try { stat = lstatSync(path); } catch { stat = null; }
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.() || realpathSync(path) !== path) {
-    throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
-  }
-}
-
 // Make the entries a directory names durable. SQLite's FULL synchronous mode
 // syncs the database file itself, not the directory entry that names it, so a
 // host that creates seller/ or transport/ and answers an order before the
@@ -174,7 +167,7 @@ export async function startSellerHost(options) {
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
-  privateDirectory(dataDirectory);
+  if (!isPrivateDirectory(dataDirectory)) throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
   if ((observeDemosTransfer !== undefined && typeof observeDemosTransfer !== 'function') || typeof now !== 'function') throw new TypeError('now and any supplied observeDemosTransfer must be functions');
   // DACS-4 PC-7(b): the answers that let the agent sign the same evidence
   // again (`unsigned`) come only from the package's wallet journal,

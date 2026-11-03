@@ -37,6 +37,7 @@ const GUARD_SITES = {
   'src/devnet-demo/listing.mjs': ['createDevnetDemoListingPublisher'],
   'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability.submit'],
   'src/devnet-demo/storage-write-recovery.mjs': ['storageWriteRpcSigner'],
+  'src/seller-key.mjs': ['sellerKey.sign'],
 };
 
 // A probe child's NODE_OPTIONS: whatever the runner passed, minus the guard fixture loader, plus it when asked.
@@ -85,6 +86,7 @@ test('while the guard is off, every directly reachable effect entry under ./src/
   assert.equal(answer.readable.anchorIntentKept, false, 'the refused durable-state anchor kept no intent');
   assert.equal(answer.refusedWithoutInput.anchor?.code, GUARD_CODE, 'the durable-state anchor refuses with no request too');
   assert.equal(answer.signsAtOpen, 1, 'opening a store still signs its own local record once while off');
+  assert.equal(answer.keySignatures, 0, 'the refused seller key sign made no cryptographic signer call');
   assert.equal(answer.walletRequests, 0);
   assert.equal(answer.anchorJournalRows, 0, 'the refused publish stored no intent');
   assert.equal(answer.readable.durableState, 'function', 'the durable store stays readable');
