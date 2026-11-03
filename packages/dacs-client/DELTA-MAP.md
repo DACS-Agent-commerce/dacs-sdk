@@ -940,6 +940,13 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/helpers/public-composition-world.mjs:1` | 6671b70cf3fad1b68f2e4085c67352d4102a04d4 |
 | | `packages/dacs-client/test/public-admission.test.mjs:1` | 76c0d3d351164bb216cab9ef1fb43e23f07580c5 |
 | | `packages/dacs-client/test/public-readback.test.mjs:1` | 6674b54365ccd75f0ec9623205622e85bbfe9a21 |
+| WF | delta(client): WF P21a1a tests for quiet Node demosdk loading | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/fresh-node-child.mjs:1` | a398b50dda2846da3e06e0d9948d99126b47773b |
+| | `packages/dacs-client/test/helpers/no-egress.mjs:1` | d1bf4792843fd904b488c29a0739c5c0663c0f0c |
+| | `packages/dacs-client/test/helpers/packed-install.mjs:1` | aef655a4d572cc793fde0d5f952278371470adc7 |
+| | `packages/dacs-client/test/node-demos-loading.test.mjs:1` | 7b1d41e983d9e07fc272914276a693777a7a298a |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 01874421936787529b34afabfd3ac1ee72782300 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | b95147159f768cec36bd94ad4c274ef01d49e0b4 |
 
 ## Complete commit and file inventory
 
@@ -2957,6 +2964,17 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P52a compare the checked connection text and keep admission refusals out of the purchase record | `packages/dacs-client/test/helpers/public-composition-world.mjs:1` |
 | delta(client): WF P52a compare the checked connection text and keep admission refusals out of the purchase record | `packages/dacs-client/test/public-admission.test.mjs:1` |
 | delta(client): WF P52a compare the checked connection text and keep admission refusals out of the purchase record | `packages/dacs-client/test/public-readback.test.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/helpers/fresh-node-child.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/helpers/no-egress.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/helpers/packed-install.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/node-demos-loading.test.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/public-api.test.mjs:1` |
 
 ## Original moved files
 
