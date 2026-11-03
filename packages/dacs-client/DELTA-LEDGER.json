@@ -5802,6 +5802,17 @@
           "after": "debc333708d0ac77e36addb07640a5fdb2b3be72"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "refactor(client): D11 split cancellation from nonce slot configuration",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "debc333708d0ac77e36addb07640a5fdb2b3be72",
+          "after": "cf5ffa1bcf4e41c741c2a3a89edda7b3de31740b"
+        }
+      ]
     }
   ]
 }

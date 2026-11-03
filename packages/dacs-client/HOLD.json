@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "2df00406f08001f15d68f7cdbc566edcd0b63f05"
+        "blob": "be4e9b788be53545e9bce70d70c68ccddac2b421"
       },
       "DELTA-LEDGER.json": {
-        "blob": "12052741752f62cfb32ea92d7c2d8d350b7b8b49"
+        "blob": "7a0b7b06fd5a60dc7151049d2d1ed0f2a181751f"
       },
       "DELTA-MAP.md": {
-        "blob": "d2825ce0fda830804345225a8fde50a4d15a5140"
+        "blob": "1d5a55b99267e9787bbd9e7f320c5bf1265902a6"
       },
       "DELTA-NOTES.md": {
-        "blob": "14e0f036609a4bf43eb6b4618e4832a96c875286"
+        "blob": "0e99c8fd434f51a56ca922f4f21e91fa8da0e29b"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "20c2ad13803bcbc4fe42d69b1769f55f34012690"
+        "blob": "4f8bed0f3674cbf849180100b42e78441eac8c27"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1247,7 +1247,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "debc333708d0ac77e36addb07640a5fdb2b3be72"
+        "blob": "cf5ffa1bcf4e41c741c2a3a89edda7b3de31740b"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
