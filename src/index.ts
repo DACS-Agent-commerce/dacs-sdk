@@ -311,6 +311,7 @@ export {
   demosWriteEvidenceBindsReceiptContent,
   demosTransactionContentMatches,
   demosWriteEvidenceToAnchorReceipt,
+  NonFinalDemosEvidenceError,
   type DemosAnchorReceiptProof,
   type DemosPortableAnchorReceiptInput,
 } from "./substrate/demosWriteEvidence.js";
