@@ -9,13 +9,14 @@
 // the TP-1 restrictions as its capabilities.
 import { types } from "node:util";
 import { snapshotWireJsonRead } from "../canonical/snapshot.js";
+import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { canonicalize } from "../canonical/jcs.js";
 import { commitmentReceiptTime, MAX_WIRE_ARTIFACT_BYTES, TP1_COMMIT_PHASE, type CommitmentReceiptReader } from "./commitment.js";
 import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, TP1_CAPABILITIES, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_HTTP_V1, isReadRoute } from "./routes.js";
 import {
-  admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isListingPin, isRecord, isUint,
-  lacksProfile, ownedArtifact, ownedBytes, deepFreeze, ownedFields, uncurry, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
+  admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isRecord, isUint,
+  lacksProfile, ownedArtifact, ownedBytes, ownedConfig, deepFreeze, ownedFields, uncurry, sameCanonical, verifyEd25519, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
 export const DACS_SELLER_DISCOVERY_FORMAT = "dacs-seller-discovery/v1";
@@ -167,8 +168,8 @@ const proofs = new WeakMap<object, KeptProof>();
 const proofGet = uncurry(WeakMap.prototype.get) as (map: typeof proofs, key: object) => KeptProof | undefined;
 const proofSet = uncurry(WeakMap.prototype.set) as (map: typeof proofs, key: object, value: KeptProof) => unknown;
 
-/** The signed request a continuation is checked against. */
-interface ContinuedRequest { path: string; jobId: string; agreementHash: string; buyer: string }
+/** The signed request a continuation is checked against. `bodyHash` is the one a continuation capability names. */
+interface ContinuedRequest { path: string; jobId: string; agreementHash: string; buyer: string; bodyHash?: string }
 
 /**
  * Effect routes that continue a committed purchase: its payment and delivery.
@@ -180,6 +181,53 @@ interface ContinuedRequest { path: string; jobId: string; agreementHash: string;
 export const CONTINUING_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature]);
 const listHas = uncurry(Array.prototype.includes) as (list: readonly string[], value: string) => boolean;
 export const isContinuingRoute = (path: string): boolean => listHas(CONTINUING_PATHS, path);
+
+/** Every route that needs the job's full commitment evidence: the continuing effect routes, and the buyer's copy of the bundle (a read of the committed result). */
+export const isCommittedRoute = (path: string): boolean => isContinuingRoute(path) || path === DACS_SELLER_HTTP_PATHS.bundleBuyerCopy;
+
+/** The effect routes that start or commit a purchase: later stages of one the seller retains, which it still admits while it drains. */
+const STAGE_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature]);
+export const isStageRoute = (path: string): boolean => listHas(STAGE_PATHS, path);
+
+/** The routes a continuation capability can be minted for: the stages, and the context route that opens a purchase. */
+const CONTINUATION_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_PATHS.context, ...STAGE_PATHS]);
+const CONTINUATION_SCOPE = ["seller", "publicEndpoint", "listingPin", "buyer", "jobId", "path", "bodyHash", "kind"];
+
+/** The exact request a continuation capability lets the buyer sign: `bodyHash` is SHA-256 of its body bytes; `kind`, work already dispatched or the next stage. */
+export interface RetainedPurchaseScope { seller: string; publicEndpoint: string; listingPin: ListingPin; buyer: string; jobId: string; path: string; bodyHash: string; kind: "retry" | "next-stage" }
+
+/** A capability retainedPurchaseContinuation registered; a copy, a clone or a literal is not one. */
+export interface RetainedPurchaseContinuation { readonly kind: RetainedPurchaseScope["kind"] }
+
+type KeptContinuation = { binding: Tp1Binding; scope: RetainedPurchaseScope };
+// The capabilities made, with the binding and scope each was made for; membership is the only proof (see profile.ts).
+const continuations = new WeakMap<object, KeptContinuation>();
+const continuationGet = uncurry(WeakMap.prototype.get) as (map: typeof continuations, key: object) => KeptContinuation | undefined;
+const continuationSet = uncurry(WeakMap.prototype.set) as (map: typeof continuations, key: object, value: KeptContinuation) => unknown;
+
+/**
+ * Buyer side: the capability to sign one retained purchase request under a `ready: false` proof. The scope must be exactly a RetainedPurchaseScope, on
+ * the context route or a stage (`wire_input_invalid`, 500, otherwise). It lifts the readiness refusal only: proof expiry, the Listing window and
+ * current authority still apply.
+ */
+export function retainedPurchaseContinuation(binding: Tp1Binding, suppliedScope: RetainedPurchaseScope): RetainedPurchaseContinuation {
+  const scope = ownedConfig(suppliedScope, "wire_input_invalid") as RetainedPurchaseScope;
+  if (typeof binding !== "object" || binding === null || !hasKeys(scope, CONTINUATION_SCOPE) || !isClaim(scope.seller) || !isClaim(scope.buyer) ||
+      !isPublicEndpoint(scope.publicEndpoint) || !isListingPin(scope.listingPin) || !isCanonicalJobId(scope.jobId) || !isHash(scope.bodyHash) ||
+      !listHas(CONTINUATION_PATHS, scope.path) || (scope.kind !== "retry" && scope.kind !== "next-stage")) fail("wire_input_invalid", 500);
+  const capability = deepFreeze({ kind: scope.kind });
+  continuationSet(continuations, capability, { binding, scope: deepFreeze(scope) });
+  return capability;
+}
+
+/** A supplied capability must be registered for this binding and exactly this request, at any readiness; anything else is the buyer's own fault. */
+function assertContinuation(continuation: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; request: ContinuedRequest }): void {
+  const kept = typeof continuation === "object" && continuation !== null ? continuationGet(continuations, continuation) : undefined;
+  const { request } = scope, held = kept?.scope;
+  if (kept === undefined || held === undefined || kept.binding !== scope.binding || !listHas(CONTINUATION_PATHS, request.path) || held.seller !== scope.seller ||
+      held.publicEndpoint !== scope.publicEndpoint || !sameCanonical(held.listingPin, scope.listingPin) || held.buyer !== request.buyer || held.jobId !== request.jobId ||
+      held.path !== request.path || held.bodyHash !== request.bodyHash) fail("continuation_capability_invalid", 500);
+}
 
 /**
  * The time that continues a committed purchase: the receipt time of the job's
@@ -200,7 +248,7 @@ export const isContinuingRoute = (path: string): boolean => listHas(CONTINUING_P
  */
 async function commitmentTime(commitment: unknown, agreement: unknown, listing: unknown, reader: unknown, scope: { seller: string; listingPin: ListingPin; publicEndpoint: string; now: number; binding: Tp1Binding; request?: ContinuedRequest }): Promise<number | undefined> {
   const { request } = scope;
-  if (commitment === undefined && request && isContinuingRoute(request.path)) fail("continuation_commitment_invalid", 500, "CONTINUATION-EVIDENCE-REQUIRED");
+  if (commitment === undefined && request && isCommittedRoute(request.path)) fail("continuation_commitment_invalid", 500, "CONTINUATION-EVIDENCE-REQUIRED");
   if (commitment === undefined || (request && !isContinuingRoute(request.path) && !isReadRoute(request.path))) return undefined;
   if (!request) fail("continuation_commitment_invalid", 500, "CONTINUATION-REQUEST-REQUIRED");
   // Verify and compare the endpoint from the same admitted, frozen Listing.
@@ -253,9 +301,11 @@ function assertListingWindow(decision: VerifiedListingEligibility, now: number):
  * Purchase signing accepts only a proof this module verified for the buyer's
  * binding. `ready: false` and the Listing's window ending stop new purchases
  * only: neither refuses a continuing request given the job's finalized
- * commitment (commitmentTime).
+ * commitment (commitmentTime). A `ready: false` proof also signs a stage of
+ * retained purchase work given its `continuation` capability, and reads
+ * `agreements/state` with none. A supplied capability is always checked.
  */
-export async function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number; request: ContinuedRequest; commitment?: unknown; agreement?: unknown; signedListing?: unknown }): Promise<void> {
+export async function assertEndpointProof(proof: unknown, scope: { binding: Tp1Binding; seller: string; listingPin: ListingPin; publicEndpoint: string; now: number; request: ContinuedRequest; commitment?: unknown; agreement?: unknown; signedListing?: unknown; continuation?: unknown }): Promise<void> {
   const kept = typeof proof === "object" && proof !== null ? proofGet(proofs, proof) : undefined;
   if (!kept || kept.binding !== scope.binding) fail("endpoint_proof_required", 500);
   const p = proof as EndpointProof;
@@ -263,10 +313,11 @@ export async function assertEndpointProof(proof: unknown, scope: { binding: Tp1B
       !sameCanonical(kept.listing.listingPin, scope.listingPin)) fail("endpoint_proof_mismatch", 500);
   // The buyer's own kept proof has lapsed: fetching discovery again clears it (transient), not the seller's fault.
   if (!isUint(scope.now) || p.payload.issuedAt > scope.now + ISSUED_SKEW_MS || p.payload.expiresAt <= scope.now) fail("discovery_expired", 503);
+  if (scope.continuation !== undefined) assertContinuation(scope.continuation, scope);
   const committedAt = await commitmentTime(scope.commitment, scope.agreement, scope.signedListing, kept.readCommitmentReceipt, scope);
   if (committedAt === undefined) {
     const decision = await readListingDecision(kept.readListingEligibility, kept.listing, scope.now);
-    if (!p.ready) fail("seller_not_ready", 503);
+    if (!p.ready && scope.continuation === undefined && !isReadRoute(scope.request.path)) fail("seller_not_ready", 503);
     assertListingWindow(decision, scope.now);
   }
   await assertTp1Authority(scope.binding, scope.binding.local, [p.payload.seller], DACS_SELLER_DISCOVERY_FORMAT);

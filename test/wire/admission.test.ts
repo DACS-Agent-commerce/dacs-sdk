@@ -2,6 +2,7 @@ import * as fixtureWire from "../../src/wire/index.js";
 import { fixtureBinder } from "./authorityFixture.js";
 import { journalFixture } from "./requestJournalFixture.js";
 import { agreementFixture, retainedFixture } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 import { acceptedPurchase, commitPurchase, ed25519KeyPair, received, seededParty, signedAgreement, tp1Listing, validReceipt, wireCommitment, type AcceptedPurchase } from "./commitmentFixture.js";
 
 /** A commitment or Agreement in `extra`, as the bytes it is received as (CF-5). */
@@ -12,7 +13,7 @@ import { describe, expect, it } from "vitest";
 import { canonicalize } from "../../src/canonical/index.js";
 import * as w from "../../src/wire/index.js";
 import { isListingPin } from "../../src/wire/validate.js";
-import { isContinuingRoute } from "../../src/wire/discovery.js";
+import { isCommittedRoute } from "../../src/wire/discovery.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { testJournal, testJournals } = journalFixture(fixtureWire);
@@ -302,8 +303,8 @@ describe("a purchase the buyer already committed continues while the seller drai
   const COMMITTED = NOW + 1000, ENDED = NOW + 120_000;
   const VALIDITY = { notBefore: NOW - 1000, notAfter: NOW + 60_000 };
   const CONTINUING = ["/dacs/v1/payments", "/dacs/v1/bundles/request", "/dacs/v1/bundles/countersignature", "/dacs/v1/agreements/state", "/dacs/v1/bundles/buyer-copy"] as const;
-  /** The routes among them that need the job's commitment to be signed at all; the others are readback. */
-  const EVIDENCE_ROUTES = CONTINUING.filter(isContinuingRoute), READBACK = CONTINUING.filter((path) => !isContinuingRoute(path));
+  /** The routes among them that need the job's commitment to be signed at all (the buyer's copy of the bundle included); the other is state, readable before one. */
+  const EVIDENCE_ROUTES = CONTINUING.filter(isCommittedRoute), READBACK = CONTINUING.filter((path) => !isCommittedRoute(path));
   /** Routes that start or commit a purchase: never continued, with or without the job's commitment. */
   const STARTING = ["/dacs/v1/agreements/proposals", "/dacs/v1/commitments", "/dacs/v1/commitments/signature", "/dacs/v1/agreements/context"] as const;
   const windowed: w.ListingEligibilityReader = (scope) => ({ ...(readFixtureListingEligibility(scope) as object), notBefore: VALIDITY.notBefore, expiresAt: VALIDITY.notAfter });
@@ -332,14 +333,14 @@ describe("a purchase the buyer already committed continues while the seller drai
   /** The seller opens and checks the request against its own copy of the commitment and answers it; the buyer verifies the answer. */
   async function reachesSeller(x: Awaited<ReturnType<typeof world>>, sent: { payload: w.WireRequestPayload; header: string }, now: number, commitment: unknown) {
     const opened = (await w.openWireEnvelope(sent.header, "request", x.context));
-    expect((await w.checkWireRequest(opened, { requestJournal: testJournal(), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now,
+    expect((await checkAndReserve(opened, { requestJournal: testJournal(), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: x.pin, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now,
       commitment: received(commitment), agreement: received(x.agreement), readCommitmentReceipt: validReceipt, signedListing: received(x.listing) })).readbackOnly).toBe(false);
     const answer = await w.signWireResponse(sent.payload, 200, "{}", { ...x.context, signer: x.seller, now });
     expect((await w.verifyWireResponse(sent.payload, { ...x.context, header: answer, status: 200, body: Buffer.from("{}"), now })).principal).toBe(x.seller.claim);
   }
   it("ready: false refuses a new purchase as before, and a committed one is signed on every continuing route, checked and answered", async () => {
     const { x, commitment } = await committed(), endpointProof = await proof(x, false), now = NOW + 5000;
-    for (const path of [...STARTING, ...READBACK]) {
+    for (const path of STARTING) {
       await expect(w.signWireRequest({ ...x.input, path, endpointProof, now })).rejects.toMatchObject({ code: "seller_not_ready", status: 503, category: "transient" });
     }
     // A payment or delivery request without the commitment is refused for it, before readiness is looked at.
@@ -351,9 +352,12 @@ describe("a purchase the buyer already committed continues while the seller drai
     }
     await refuses(() => w.signWireEnvelope({ ...x.request, path: STARTING[0] }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now }), "seller_not_ready", 503);
     expect(x.buyer.calls).toBe(0);
+    // State is readable before any commitment, whatever the seller's readiness.
+    for (const path of READBACK) await w.signWireRequest({ ...x.input, path, endpointProof, now });
+    expect(x.buyer.calls).toBe(READBACK.length);
     for (const path of CONTINUING) await reachesSeller(x, await w.signWireRequest({ ...x.input, path, endpointProof, commitment: received(commitment), agreement: received(x.agreement), signedListing: received(x.listing), now }), now, commitment);
     await w.signWireEnvelope({ ...x.request, path: CONTINUING[0] }, { ...x.context, signer: x.buyer, endpointProof, publicEndpoint: ENDPOINT, now, commitment: received(commitment), agreement: received(x.agreement), signedListing: received(x.listing) });
-    expect(x.buyer.calls).toBe(CONTINUING.length + 1);
+    expect(x.buyer.calls).toBe(READBACK.length + CONTINUING.length + 1);
   });
   it("an ended Listing window refuses a new purchase as before, and one committed inside it is signed, checked and answered", async () => {
     const { x, commitment } = await committed(), kept = await proof(x, true);
@@ -470,7 +474,7 @@ describe("the seller's own drain state at a new purchase", { timeout: 60_000 }, 
     const counter = { get reservations() { return journals.reservations().length; } };
     const atSeller = async (sent: { payload: w.WireRequestPayload; header: string }, extra: object) => {
       const opened = (await w.openWireEnvelope(sent.header, "request", x.context));
-      return async (ready: unknown) => (await w.checkWireRequest(opened, { requestJournal: journals.open(), artifacts: agreementFixture(opened), retained: retainedFixture(opened),
+      return async (ready: unknown) => (await checkAndReserve(opened, { requestJournal: journals.open(), artifacts: agreementFixture(opened), retained: retainedFixture(opened),
         ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: sent.payload.path, rawBody: Buffer.from("{}"), now, ...extra, ...(ready === missing ? {} : { ready }) } as w.RequestCheck));
     };
     const delegation = signed(x.delegation, w.DACS_SELLER_HTTP_DOMAINS.delegation, x.buyer);
@@ -620,7 +624,7 @@ describe("request and response byte budgets and the discovery Listing count", ()
     for (const n of [maxRequestBodyBytes, maxRequestBodyBytes + 1]) {
       const text = body(n);
       const opened = (await w.openWireEnvelope(header(signed({ ...x.request, bodyHash: sha(text) }, w.DACS_SELLER_HTTP_DOMAINS.request, x.buyer)), "request", x.context));
-      const check = async () => (await w.checkWireRequest(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW }));
+      const check = async () => (await checkAndReserve(opened, { requestJournal: testJournal(), ready: true, artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody: Buffer.from(text), now: NOW }));
       if (n === maxRequestBodyBytes) expect(Object.keys((await check()).body)).toEqual(["p"]);
       else await expect(Promise.resolve().then(async () => { (await check()); effects++; })).rejects.toMatchObject({ code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" });
     }
@@ -648,7 +652,7 @@ describe("request and response byte budgets and the discovery Listing count", ()
     const x = (await world());
     const overRequest = Buffer.from(body(maxRequestBodyBytes + 1)), overResponse = Buffer.from(body(maxResponseBodyBytes + 1));
     // Not an opened envelope, and not a signed header: the size is refused first, so neither is examined.
-    const seller = (rawBody: Uint8Array) => async () => (await w.checkWireRequest({} as never, { requestJournal: testJournal(), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody, now: NOW, retained: { jobId: JOB, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } }));
+    const seller = (rawBody: Uint8Array) => async () => (await checkAndReserve({} as never, { requestJournal: testJournal(), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: x.request.path, rawBody, now: NOW, retained: { jobId: JOB, agreementHash: x.request.agreementHash, buyer: x.buyer.claim, seller: x.seller.claim } }));
     const buyer = (b: Uint8Array) => async () => (await w.verifyWireResponse(x.request, { ...x.context, header: "not a header", status: 200, body: b, now: NOW }));
     const overRequestError = { code: "bad_json", status: 400, detail: "BYTE-LIMIT-EXCEEDED" };
     const overResponseError = { code: "response_json_rejected", status: 502, detail: "BYTE-LIMIT-EXCEEDED" };
@@ -752,7 +756,7 @@ describe("expired session authority at every seller route", () => {
     const request = { ...x.request, path: route.path };
     const h = header({ ...signed(request, w.DACS_SELLER_HTTP_DOMAINS.request, x.session), delegation });
     const opened = (await w.openWireEnvelope(h, "request", { ...x.context, requireDelegation: true }));
-    const check = async () => (await w.checkWireRequest(opened, { requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true }));
+    const check = async () => (await checkAndReserve(opened, { requestJournal: testJournal(), artifacts: agreementFixture(opened), retained: retainedFixture(opened), ...x.context, seller: x.seller.claim, listingPin: PIN, method: "POST", path: route.path, rawBody: Buffer.from("{}"), now: NOW, requireDelegation: true }));
     let effects = 0;
     if (route.path === w.DACS_SELLER_HTTP_PATHS.contextChallenge) await refuses(async () => { (await check()); effects++; }, "wire_route_requires_preagreement");
     else if (route.effect === "effect") await refuses(async () => { (await check()); effects++; }, "peer_delegation_expired");
