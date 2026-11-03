@@ -122,10 +122,22 @@ export function createOperatorApprovalAttempt(approve){
       return accepted;
     }:approve,
     // The wallet's SDK class with the request's own check run again immediately before each signature: the
-    // wallet still reads the network and its nonce after the approval, and a stop or close in that time must
-    // sign nothing (the wallet answers a throw here as an unsigned sdk_error).
+    // wallet still reads the network and its nonce after the approval, and the SDK's sign() reads the network
+    // again before its key signs, so the check runs at entry and once more at the key's signature. A stop or
+    // close in that time signs nothing (the wallet answers a throw here as an unsigned sdk_error).
     guardSigning(DemosCtor){
-      return class extends DemosCtor{sign(...args){checkWrite('before it was signed');return super.sign(...args);}};
+      return class extends DemosCtor{
+        async sign(...args){
+          checkWrite('before it was signed');
+          const crypto=this.crypto;
+          if(!crypto)return super.sign(...args);
+          const guarded=new Proxy(crypto,{get:(target,key)=>key==='sign'?(...signArgs)=>{checkWrite('before it was signed');return target.sign(...signArgs);}
+            :typeof target[key]==='function'?target[key].bind(target):target[key]});
+          this.crypto=guarded;
+          try{return await super.sign(...args);}
+          finally{if(this.crypto===guarded)this.crypto=crypto;}
+        }
+      };
     },
     issuing(value){if(value?.stage==='broadcast-started'){const attempt=scope.getStore();if(attempt)attempt.sent=true;}},
     run(work,authorize){return scope.run({sent:false,closing:false,requests:[],authorize},async()=>{

@@ -144,3 +144,30 @@ test('the guarded SDK class signs as before outside a guarded write', async () =
  const Demos=attempt.guardSigning(class{async sign(tx){return {...tx,signed:true};}});
  assert.deepEqual(await new Demos().sign({TEST:'plain'}),{TEST:'plain',signed:true});
 });
+
+test('a guarded write withdrawn during the SDK signature\'s own network read is not signed by the real SDK', async () => {
+ const {register}=await import('node:module');
+ register(new URL('./helpers/demosdk-operations-resolve.mjs',import.meta.url));
+ const {Demos}=await import('@kynesyslabs/demosdk/websdk');
+ for (const contested of [false, true]) {
+  const attempt=createOperatorApprovalAttempt(async()=>true);
+  const demos=new (attempt.guardSigning(Demos))();
+  await demos.connectWallet(demos.newMnemonic(128),{algorithm:'ed25519'});
+  demos.rpc_url='http://TEST.invalid';
+  let withdrawn=false;
+  // Stand-ins for the node's answers to the reads the SDK makes inside sign(), after its entry; the write is
+  // withdrawn while the fee read is pending.
+  demos.nodeCall=async(message)=>{
+   if(message==='getNetworkParameters'){await new Promise(resolve=>setImmediate(resolve));withdrawn=contested;return {networkFee:1,rpcFee:0};}
+   return message==='getNetworkInfo'?{forks:{osDenomination:{activated:true}}}:null;
+  };
+  const to='0x'+'ab'.repeat(32);
+  const tx={content:{type:'native',to,amount:'1',data:['native',{nativeOperationType:'send',args:[to,'1']}],nonce:1,timestamp:1,gcr_edits:[],transaction_fee:{}}};
+  const result=await attempt.run(async()=>{
+   try{const signed=await demos.sign(tx,{nonce:1});return {signed:Boolean(signed.signature?.data)};}catch(error){return {code:error.code};}
+  },()=>withdrawn?'TEST withdrawn during the SDK read':true);
+  assert.equal(withdrawn,contested,'the SDK made its fee read inside sign()');
+  assert.deepEqual(result,contested?{code:'not-authorized'}:{signed:true},`contested ${contested}`);
+  assert.ok(demos.crypto&&typeof demos.crypto.sign==='function','the wallet keeps its own key after a guarded signature');
+ }
+});
