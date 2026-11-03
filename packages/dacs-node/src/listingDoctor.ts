@@ -352,7 +352,7 @@ async function authenticatedDiscoverySurface(
   }
   const indexUrl = safeHttpsUrl(cardRaw.dacs.listings.indexUrl);
   const indexHash = cardRaw.dacs.listings.indexHash;
-  if (indexUrl === undefined || indexUrl.origin !== endpoint.origin ||
+  if (indexUrl === undefined ||
       typeof indexHash !== "string" || !/^sha256-[0-9a-f]{64}$/.test(indexHash)) {
     return undefined;
   }
