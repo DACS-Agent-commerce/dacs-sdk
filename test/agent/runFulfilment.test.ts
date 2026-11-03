@@ -1275,6 +1275,23 @@ describe("runFulfilmentCore", () => {
     }
   });
 
+  test("completes delivery with required Vet coverage from this job's deal-specific results", async () => {
+    const f = fixture();
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+    invocation.dealSpecific = invocation.freshness.splice(0);
+    expect(invocation.freshness).toHaveLength(0);
+    expect(invocation.dealSpecific).toHaveLength(1);
+    expect(invocation.dealSpecific[0]!.sourceJobId).toBe(f.authorization.jobId);
+    expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "completed",
+    });
+    expect(f.store.consumed).toBe(true);
+    expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
+  });
+
   test("requires the authenticated orchestrator as the Vet verifier authority", async () => {
     const distinctVetter = fixture();
     distinctVetter.auditSource.artifacts.vetRequirements[0]!.verifier =

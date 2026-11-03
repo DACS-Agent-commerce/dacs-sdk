@@ -18,7 +18,7 @@ import {
   isChainTxRef,
   isPhaseStep,
 } from "../artifacts/index.js";
-import { canonicalize, sha256Hex } from "../canonical/index.js";
+import { canonicalize, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
 
 /** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
 export const SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR =
@@ -413,6 +413,154 @@ export function isSellerFulfilmentAuditSource(
     return true;
   } catch {
     return false;
+  }
+}
+
+/** One distinct party Vet reference of the authenticated SessionRecord roster. */
+export interface SellerFulfilmentVetBinding {
+  primaryClaim: string;
+  roles: ReadonlySet<string>;
+}
+
+const sameJcs = (left: unknown, right: unknown): boolean => {
+  try {
+    return canonicalize(left) === canonicalize(right);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * True when one Vet requirement invocation is not the one the fulfilment core
+ * accepts for its party's record: the evaluated party, the counterparty
+ * verifier, the composite address, the Listing-owned buyer requirement, the
+ * coverage of every required/oneOf member, this job's deal-specific results
+ * and each result's address. The fulfilment core runs it over the audit
+ * source at delivery; `sellerFulfilmentVetRequirementsViolation` runs the same
+ * predicate before a seller signs, so the two cannot drift.
+ */
+export function isSellerFulfilmentVetInvocationMismatch(
+  invocation: SellerFulfilmentVetRequirementInvocation,
+  context: {
+    jobId: string;
+    buyerClaim: string;
+    sellerClaim: string;
+    buyerRequirement: unknown;
+    bindings: ReadonlyMap<string, SellerFulfilmentVetBinding>;
+  },
+): boolean {
+  const key = canonicalize(invocation.vetRecordRef);
+  const binding = context.bindings.get(key);
+  const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];
+  const requirementCandidates = [
+    ...invocation.requirement.required,
+    ...(invocation.requirement.oneOf ?? []).flat(),
+  ];
+  const seenResultRefs = new Set<string>();
+  const seenResultHashes = new Set<string>();
+  const listingOwned = binding?.roles.has("buyer") === true;
+  const expectedVerifier = listingOwned
+    ? context.sellerClaim
+    : binding?.roles.has("seller") === true
+      ? context.buyerClaim
+      : undefined;
+  const expectedCompositeAddress =
+    `dacs2:composite:${context.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
+  const uncoveredRequired = invocation.requirement.required.some(
+    (required) => !expectedResults.some((result) =>
+      result.scheme === required.scheme && sameJcs(result.requirement, required)),
+  );
+  const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
+    (group) => group.length === 0 || !group.some((alternative) =>
+      expectedResults.some((result) =>
+        result.scheme === alternative.scheme && sameJcs(result.requirement, alternative))),
+  );
+  return !binding || expectedVerifier === undefined ||
+    invocation.evaluatedParty !== binding.primaryClaim ||
+    invocation.verifier !== expectedVerifier ||
+    invocation.vetRecordRef.anchor.kind !== "storage-program" ||
+    invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
+    (invocation.vetRecordRef.signer !== undefined &&
+      invocation.vetRecordRef.signer !== invocation.verifier) ||
+    (listingOwned && !sameJcs(invocation.requirement, context.buyerRequirement)) ||
+    invocation.dealSpecific.some((result) => result.sourceJobId !== context.jobId) ||
+    uncoveredRequired || uncoveredOneOf ||
+    expectedResults.some((result) => {
+      const refKey = canonicalize(result.ref);
+      const expectedResultAddress =
+        `dacs2:${result.sourceJobId}:${result.scheme}:` +
+        `${encodeAddressSegment(result.identifier)}:v${result.ref.recipeVersion}`;
+      const duplicate = seenResultRefs.has(refKey) ||
+        seenResultHashes.has(result.ref.contentHash);
+      seenResultRefs.add(refKey);
+      seenResultHashes.add(result.ref.contentHash);
+      return duplicate || result.scheme !== result.requirement.scheme ||
+        result.ref.anchor.kind !== "storage-program" ||
+        result.ref.anchor.locator !== expectedResultAddress ||
+        !requirementCandidates.some((candidate) => sameJcs(candidate, result.requirement)) ||
+        (result.requirement.recipeVersion !== undefined &&
+          result.ref.recipeVersion !== result.requirement.recipeVersion);
+    });
+}
+
+/**
+ * Why the Vet requirement invocations a seller would carry into its delivery
+ * audit source are not ones the fulfilment core accepts, or null: the strict
+ * invocation shape, exactly one invocation per distinct party Vet record, and
+ * `isSellerFulfilmentVetInvocationMismatch` for each. A seller runs this
+ * before it signs the Agreement, so a context the delivery runner would refuse
+ * after payment is refused before it.
+ */
+export function sellerFulfilmentVetRequirementsViolation(
+  vetRequirements: unknown,
+  input: {
+    jobId: string;
+    buyer: { primaryClaim: string; vetRecordRef: AttestationRef };
+    seller: { primaryClaim: string; vetRecordRef: AttestationRef };
+    buyerRequirement: unknown;
+  },
+): string | null {
+  if (!Array.isArray(vetRequirements) || !vetRequirements.every(isVetRequirementInvocation)) {
+    return "the Vet requirement invocations are not the strict audit-source shape";
+  }
+  try {
+    const bindings = new Map<string, { primaryClaim: string; roles: Set<string> }>();
+    for (const [role, party] of [["buyer", input.buyer], ["seller", input.seller]] as const) {
+      if (!isAttestationRef(party.vetRecordRef) || !isNonEmpty(party.primaryClaim)) {
+        return `the ${role} Vet reference or claim is malformed`;
+      }
+      const key = canonicalize(party.vetRecordRef);
+      const existing = bindings.get(key);
+      if (existing && existing.primaryClaim !== party.primaryClaim) {
+        return "one Vet record cannot represent different authenticated party identities";
+      }
+      if (existing) existing.roles.add(role);
+      else bindings.set(key, { primaryClaim: party.primaryClaim, roles: new Set([role]) });
+    }
+    const partyRefs = [...new Map([input.buyer, input.seller].map((party) =>
+      [canonicalize(party.vetRecordRef), party.vetRecordRef])).values()];
+    if (!hasNoDuplicateContentHashes(partyRefs)) {
+      return "distinct party Vet references share one content hash";
+    }
+    const invocationRefs = vetRequirements.map((entry) => entry.vetRecordRef);
+    if (vetRequirements.length !== bindings.size || !hasNoDuplicateRefs(invocationRefs) ||
+        !invocationRefs.every((ref) => bindings.has(canonicalize(ref)))) {
+      return "the Vet requirement invocations are not exactly one per party Vet record";
+    }
+    const context = {
+      jobId: input.jobId,
+      buyerClaim: input.buyer.primaryClaim,
+      sellerClaim: input.seller.primaryClaim,
+      buyerRequirement: input.buyerRequirement,
+      bindings,
+    };
+    if (vetRequirements.some((entry) => isSellerFulfilmentVetInvocationMismatch(entry, context))) {
+      return "a Vet requirement invocation differs from its party, counterparty verifier, " +
+        "address, requirement or covered results";
+    }
+    return null;
+  } catch {
+    return "the Vet requirement invocations are not canonicalizable";
   }
 }
 
