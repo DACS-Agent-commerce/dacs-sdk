@@ -3036,6 +3036,8 @@ for (const hung of ['retained read', 'receipt verification']) test(`a delivery e
       let text = ''; res.setEncoding('utf8'); res.on('data', (chunk) => { text += chunk; });
       res.on('end', () => { try { resolve({ status: res.statusCode, body: JSON.parse(text) }); } catch (error) { reject(error); } });
     });
+    // A real deadline: the socket timeout runs on Node's own timer list, which the mocked setTimeout leaves alone.
+    req.setTimeout(30_000, () => req.destroy(new Error('held payment request did not settle within 30 s')));
     req.on('error', reject); req.end(signed.rawBody);
   });
   const pending = post();
