@@ -160,6 +160,7 @@ export function createDacsFixedPricePayDemBuyerCommerceV1(
         if (request.evidence.phase !== "pay-dem" ||
             request.evidence.outcome !== "success" || txRef?.kind !== "demos" ||
             finality?.model !== "bft-final" || observed.status !== "included" ||
+            observed.execution !== "executed" ||
             txRef.txHash !== settlement.txHash ||
             txRef.blockNumber !== settlement.blockNumber ||
             observed.txHash !== settlement.txHash ||
