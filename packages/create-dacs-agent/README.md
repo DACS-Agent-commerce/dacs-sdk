@@ -39,7 +39,34 @@ funding, signed registries, endpoints or reviewed effect adapters are absent.
 It does not start services, publish or pay. Generated Docker services use the
 same reviewed host image with separate non-root buyer/seller processes, secret
 mounts and data volumes; the template contains only configuration, command
-wiring and the seller fulfilment callback.
+wiring and the seller fulfilment callback. With `--deploy docker` the project
+directory's name starts its compose project name, so it must already be a
+compose project name: lower-case letters, digits, `_` and `-`, starting with a
+letter or digit. A digest of a random identity generated for the project and
+the directory's full path completes the name, so directories with the same
+name never share a project, and nor does a new project generated where a
+moved one used to be. Its lifecycle commands
+refuse a compose project with containers from another directory, and, after
+the directory is moved, refuse to run until the project started from the old
+location has no containers left. While the project has containers they run
+only from the directory whose `dacs:up` started them, identified by its device
+and inode. A changed device after a remount also fails closed; the generated
+README gives explicit container removal and restart recovery. The binding
+assumes an ordinary directory: a file-system snapshot, clone or rollback at
+the same path with the same device and inode counts as this directory.
+
+The supported toolchain is Docker CLI and Engine 24 or later and Compose
+2.10 or later, without upper version bounds. Doctor checks the CLI, Engine and
+Compose versions; each lifecycle invocation also checks the plugin version.
+CI builds the unmodified generated Dockerfile and runs its zero-spend image
+smoke for both x402 and
+pay-dem, using Docker 24.0.9 / Compose 2.10.2, Docker 28.5.1 / Compose 2.40.3
+and Docker 29.9.1 / Compose 5.6.0.
+The CI lock uses this checkout's packed release set, served over loopback during
+the build, so unpublished packages do not block image verification. The smoke
+checks the image's Node.js release, production dependencies, better-sqlite3
+native binding and service command's missing-role exit. Unit tests also cover
+failure paths with a test-only Docker CLI and production-tree stand-in.
 
 The live bootstrap currently supervises buyer and seller services. Its
 `--role` default is therefore restricted to `buyer` or `seller`; the generated

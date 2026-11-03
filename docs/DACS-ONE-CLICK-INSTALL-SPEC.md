@@ -227,6 +227,8 @@ blocked doctor is a successful bootstrap but MUST prevent readiness and writes.
 The generated application then exposes:
 
 ```bash
+docker build -t my-agent:local .
+npm run dacs:image:smoke
 npm run dacs:doctor -- --phase pre-start --for start
 npm run dacs:up
 npm run dacs:doctor -- --phase post-start --for start
@@ -245,6 +247,68 @@ npm run dacs:smoke:offline
 processes are running, readiness MUST remain false until the post-start doctor
 has tested service endpoints and authenticated loopback messaging. Starting
 services MUST NOT publish a Listing or purchase a service.
+
+`dacs:image:smoke` MUST resolve the locally built `DACS_IMAGE` to one immutable
+image ID, check that image's configured user, working directory, entrypoint,
+command and environment, and run its containers from that ID as the compose
+runtime user, with no network, secrets or serving role. Its probe MUST check the
+exact version of every generated production dependency, import the entry points
+the service loads, including those of each enabled payment rail, open a
+SQLite database, and report the image's Node.js release, which MUST be the
+release the generated Dockerfile's digest-pinned base image provides. The
+image's configured command, run with no role, MUST load and exit 1 at its
+missing-role check, which reports a reason code that no other service failure
+reports. An unset entrypoint MUST be accepted whether Docker reports it as absent, `null` or empty. Only a pass may record the image ID and runtime
+user, and a new attempt MUST withdraw the previous record first. In a Docker
+deployment, `dacs:up` MUST then, in one step after the pre-start doctor:
+
+- refuse to start unless `DACS_IMAGE` still resolves to the recorded image ID and
+  the runtime user is unchanged;
+- start compose with the recorded image ID rather than the tag, the generated
+  `compose.yaml` as its only file, the project's own directory, no build or
+  pull, and exactly the `buyer` and `seller` services. The compose project name
+  MUST be the directory's name, which MUST already be a compose project name and
+  is used without normalisation, followed by a digest of a random identity the
+  generator gives the project and the directory's full path, so that
+  directories with the same name never share a project, and nor does a new
+  project generated at a path another project was moved from;
+- record the project it starts inside the project directory, with the
+  directory's device and inode. A changed device after reboot or remount MUST
+  fail closed and require explicit removal of the recorded containers before
+  restarting;
+- ignore `COMPOSE_*` environment variables and compose override files, and
+  refuse to run while `.env` mentions `COMPOSE_`, while Compose is older than
+  v2.10 or its version is unreadable, while the compose project has a container
+  created for another project directory, while a project recorded from another directory still
+  has containers, or while the compose project has containers and the record
+  does not name this project, path, device and inode (as for a copy put at a
+  path the project was moved from), as the generated `dacs:down` and
+  maintenance stops also MUST, and name that project and the recovery; and
+- stop both roles and fail unless compose started and created each from the
+  recorded image ID and the started containers could be checked, stop nothing
+  once the project has a container created for another directory, and report a
+  failure to stop them or confirm that they stopped.
+
+The supported toolchain is Docker CLI and Engine 24 or later, and
+Compose 2.10 or later. Doctor MUST check both Docker versions and the
+Compose version. These checks MUST NOT impose upper version bounds, including
+on stop, down and maintenance. Each lifecycle invocation also checks Compose
+before its first compose call.
+CI builds the generated Dockerfile and runs its zero-spend image smoke for
+x402 and pay-dem on Docker 24.0.9 / Compose 2.10.2, Docker 28.5.1 / Compose
+2.40.3 and Docker 29.9.1 / Compose 5.6.0. It uses this checkout's packed release
+set in the build lock while keeping the generated manifest and Dockerfile
+unchanged. The image smoke
+checks Node.js, production dependencies, the native SQLite binding and the
+service command's missing-role exit. Unit tests use a Docker CLI model for
+failure paths.
+
+The directory binding assumes an ordinary directory. A file-system snapshot,
+clone or rollback restored at the same path with the same device and inode
+counts as this directory. After a changed device or an older inode-only record,
+remove the recorded containers explicitly with
+`docker compose --project-name <project> down` (data directories are kept), then
+rerun `dacs:up` to bind the new identity.
 
 `dacs:setup` owns bounded setup writes such as Listing and binding publication.
 Without live-write confirmation it MUST print a read-only plan and exit without
@@ -276,6 +340,8 @@ my-agent/
     config.ts
   test/
     offline-lifecycle.test.ts
+  scripts/
+    docker-runtime-smoke.mjs
   data/
     .gitkeep
   secrets/
