@@ -76,8 +76,8 @@ export const canonicalClaim = (v: unknown): unknown =>
   typeof v === "string" && RECEIVED_CLAIM.test(v) ? `did${v.slice(3)}` : v;
 /**
  * A copy of a received payload with the named claim members in canonical
- * spelling, for every check, comparison and hash after the signature. The
- * signature itself is verified over the payload as received.
+ * spelling (CORE CF-2 (a)). Every check, comparison, hash and signature
+ * verification reads this copy, never the received spelling.
  */
 export function withCanonicalClaims<T>(p: T, fields: readonly string[]): T {
   if (!isRecord(p)) return p;

@@ -355,14 +355,13 @@ export async function verifyEndpointProof(bytes: Uint8Array, options: {
   if (lacksProfile(asReceived, FIELDS)) fail("tp1_profile_missing", 502);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
   if (hasKeys(asReceived, FIELDS)) await assertPeerProfile(asReceived.profile, binding as Tp1Binding, 502);
-  // DACS-1 reader rule: a `DID:` scheme resolves as `did:`. Checks read the canonical copy; the signature covers the payload as received.
+  // DACS-1 reader rule: a `DID:` scheme resolves as `did:` and is canonicalised before hashing, signing or comparison (CF-2), so the signature is verified over the canonical copy.
   const p = withCanonicalClaims(asReceived, ["seller"]);
   if (!payloadValid(p)) fail("discovery_invalid", 502);
   if (!hasKeys(listing, ["seller", "publicEndpoint", "listingPin"]) || !isClaim(listing.seller) ||
       !isPublicEndpoint(listing.publicEndpoint) || !isListingPin(listing.listingPin)) fail("wire_input_invalid", 500);
   if (p.seller !== listing.seller) fail("discovery_signer_wrong", 502);
-  const signedBytes = Buffer.from(`${DACS_SELLER_HTTP_DOMAINS.discovery}${canonicalize(asReceived)}`, "utf8");
-  if (!verifyEd25519(signedBytes, envelopeSignatureBytes(document.signature, "discovery_signature_invalid"), claimKey(p.seller))) {
+  if (!verifyEd25519(discoverySigningBytes(p as unknown as DiscoveryPayload), envelopeSignatureBytes(document.signature, "discovery_signature_invalid"), claimKey(p.seller))) {
     fail("discovery_signature_invalid", 502);
   }
   // The trusted reader is asked only about the verified Listing's seller, once its signature verified.
