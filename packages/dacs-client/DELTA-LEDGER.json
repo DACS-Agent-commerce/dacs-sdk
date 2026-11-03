@@ -5791,6 +5791,17 @@
           "after": "eaa78ba0cb607ed12ef8a6f9a2410f574b624a4d"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the merged purchases.mjs blob of the handed-off cancel and the held admission wrapper",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "debc333708d0ac77e36addb07640a5fdb2b3be72",
+          "after": "debc333708d0ac77e36addb07640a5fdb2b3be72"
+        }
+      ]
     }
   ]
 }
