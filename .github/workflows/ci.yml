@@ -61,12 +61,13 @@ jobs:
           DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
         run: npm run seller:test
 
+      # The client suite imports @kynesyslabs/dacs-node/demos-loader, which is dist/demosLoader.js.
+      - name: Build Node host kit
+        run: npm run host:build
+
       - name: Check held client snapshot and native authorization contracts
         if: matrix.node-version == '22'
         run: npm test --workspace @kynesyslabs/dacs-client
-
-      - name: Build Node host kit
-        run: npm run host:build
 
       - name: Build project generator
         run: npm run generator:build
