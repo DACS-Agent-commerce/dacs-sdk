@@ -82,3 +82,5 @@ export * from "./walletSpendRemote.js";
 export * from "./x402SellerEvm.js";
 export * from "./x402Http.js";
 export * from "./evmRuntime.js";
+
+export * from "./demosCompatibility.js";

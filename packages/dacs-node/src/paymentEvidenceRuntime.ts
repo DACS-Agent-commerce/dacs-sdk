@@ -1,9 +1,12 @@
+import { createSellerPaymentEvidenceReceiptVerifier } from "./paymentEvidenceReceipt.js";
+
 import {
   demosWriteEvidenceToAnchorReceipt,
   type ProtocolAnchorReceipt,
 } from "@kynesyslabs/dacs";
 import { isReadableAnchorReceipt } from "@kynesyslabs/dacs/artifacts";
 import { canonicalize, contentHash, sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { sameCanonicalClaimIdentity } from "@kynesyslabs/dacs/identity";
 import {
   createBuyerPaymentEvidenceHandshake,
   createSellerPaymentEvidenceHandshake,
@@ -719,23 +722,8 @@ export function createDacsSellerPaymentEvidenceRuntimeV1(
   const context = options.context;
   const store = context.database.createPaymentEvidenceHandshakeStore();
   const retryDelayMs = timing(options.retryDelayMs, DEFAULT_RETRY_DELAY_MS);
-  const verifyAnchorReceipt = options.verifyAnchorReceipt ?? (async ({ completion }) => {
-    try {
-      return await context.demos.adapter.verifyDemosAnchorReceipt(
-        completion.anchorReceipt,
-      ) === true
-        ? { disposition: "valid" as const }
-        : {
-            disposition: "indeterminate" as const,
-            reason: "seller payment-evidence receipt is unverified",
-          };
-    } catch {
-      return {
-        disposition: "indeterminate" as const,
-        reason: "seller payment-evidence receipt verification failed",
-      };
-    }
-  });
+  const verifyAnchorReceipt = options.verifyAnchorReceipt ??
+    createSellerPaymentEvidenceReceiptVerifier(context);
 
   const createHandshake = (
     order: Pick<DacsLiveOrderRecordV1, "seller" | "buyer" | "protocol">,

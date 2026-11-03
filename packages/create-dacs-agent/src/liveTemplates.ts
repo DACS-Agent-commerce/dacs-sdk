@@ -545,6 +545,7 @@ import {
   establishDacsRoleServiceReadinessV1,
   estimateDacsFixedPriceDemosCostV1,
   inspectDacsDemosBalanceHeadroomV1,
+  inspectDacsDemosNodeCompatibilityV1,
   inspectDacsNodePackageIntegrityV1,
   inspectDacsX402AssetBalanceV1,
   inspectDacsX402GasBalanceV1,
@@ -1276,10 +1277,49 @@ function baseProbes(
     },
     "local.deployment-runtime": dockerRuntime,
     "demos.rpc-chain": actors === undefined ? actorUnavailable : async () => {
+      // Generated profiles support public testnet operation. A production
+      // deployment needs authenticated build provenance; self-reported node
+      // metadata and an operator-set revision string cannot establish it.
+      const deploymentPolicy = process.env.DACS_DEMOS_DEPLOYMENT_POLICY || "testnet";
+      if (deploymentPolicy !== "testnet" && deploymentPolicy !== "production") {
+        return fail("demos-deployment-policy-invalid");
+      }
+      if (deploymentPolicy === "production") {
+        return blocked("demos-deployment-pin-unverified");
+      }
+      if ([actors.buyer.runtime, actors.seller.runtime].some(
+        (runtime) => typeof runtime.adapter.raw.nodeCall !== "function",
+      )) return fail("demos-adapter-raw-reader-missing");
+      // demosdk's getNetworkInfo() keeps its first success for the client's
+      // lifetime, so a later outage would still look healthy. Ask each node.
+      let infos: unknown[];
       try {
-        await Promise.all([actors.buyer.runtime.networkInfo(), actors.seller.runtime.networkInfo()]);
-        return pass({ actorCount: 2 });
+        infos = await Promise.all([actors.buyer.runtime, actors.seller.runtime].map(
+          (runtime) => runtime.adapter.raw.nodeCall?.("getNetworkInfo", {}),
+        ));
       } catch { return fail("demos-rpc-unavailable"); }
+      // demosdk preserves transport-failure envelopes, but unwraps node replies
+      // to their response body, losing the node's result code. A string error
+      // body therefore reaches the malformed-response branch below.
+      if (infos.some((info) => info === null || info === undefined ||
+          (typeof info === "object" && !Array.isArray(info) && !("forks" in info) &&
+            (typeof (info as { result?: unknown }).result === "number" ||
+             typeof (info as { error?: unknown }).error === "string")))) {
+        return fail("demos-rpc-unavailable");
+      }
+      // A node reply carries the fork status demosdk itself requires.
+      if (infos.some((info) => typeof info !== "object" || Array.isArray(info) ||
+          typeof (info as { forks?: { osDenomination?: { activated?: unknown } } | null })
+            .forks?.osDenomination?.activated !== "boolean")) {
+        return fail("demos-rpc-response-malformed");
+      }
+      // Build metadata is self-reported by the node: report it, never gate on it.
+      return pass({
+        actorCount: 2,
+        deploymentPolicy: "testnet",
+        buyerNodeBuild: inspectDacsDemosNodeCompatibilityV1(infos[0]).reasonCode,
+        sellerNodeBuild: inspectDacsDemosNodeCompatibilityV1(infos[1]).reasonCode,
+      });
     },
     "demos.storage-read": actors === undefined ? actorUnavailable
       : stewardPublicKey === null ? () => blocked("rail-steward-authority-missing")
@@ -2926,7 +2966,8 @@ export async function checkGeneratedUpgradeV1(
         "Run dacs:backup to preserve one authenticated two-role snapshot and its printed ID.",
         "Record the exact generated project, package lock and three installed package versions.",
         "Regenerate the replacement project from one exact reviewed three-package release set.",
-        "Use dacs:restore with the authenticated backup ID while both services remain stopped.",
+        "Cross-release actor-data migration is unsupported; keep retained data on its creating SDK release.",
+        "Use dacs:restore only with the exact creating SDK version and authenticated backup ID while both services remain stopped.",
         "For rollback, reinstall the recorded generated project and exact package lock before restore.",
         "Refuse rollback when that runtime does not support the restored store schema.",
         "Run pre-start doctor before restarting either role service.",
@@ -4187,6 +4228,13 @@ test("authenticated lifecycle backup restores both roles and rejects tampering",
     paths,
   });
   assert.equal(backup.backupId, "11111111-1111-4111-8111-111111111111");
+  assert.doesNotThrow(() => assertGeneratedBackupRestorableV1(backup));
+  for (const sdkVersion of ["0.0.0", "999.0.0", "invalid", ""]) {
+    assert.throws(() => assertGeneratedBackupRestorableV1({
+      ...backup,
+      release: { ...backup.release, sdkVersion },
+    }), /restore-backup-release-incompatible/);
+  }
   assert.equal((await inspectGeneratedBackupV1({
     backupDirectory,
     authKeyFile,
@@ -4660,6 +4708,8 @@ function compose(options: LiveProjectTemplateOptions): string {
 function envExample(options: LiveProjectTemplateOptions): string {
   const template = `# Public configuration only. Never put secret values in this file.
 DACS_DEPLOYMENT=${options.deployment}
+# Generated readiness supports testnet only; production needs authenticated deployment provenance.
+DACS_DEMOS_DEPLOYMENT_POLICY=testnet
 DACS_RUNTIME_UID=${options.runtimeUid}
 DACS_RUNTIME_GID=${options.runtimeGid}
 DACS_BUYER_DATA_DIRECTORY=./data/buyer
@@ -4834,6 +4884,22 @@ readiness runtime when their prerequisites exist. Commerce remains blocked until
 the exact Listing, signed rail authority and operation graph pass doctor. Never
 bypass that gate.
 
+The \`demos.rpc-chain\` check reports each node's self-described build as the
+\`buyerNodeBuild\` and \`sellerNodeBuild\` facts. The default public testnet RPC
+reports a dirty build (\`demos-node-build-dirty\`). This is informational and does
+not block start, setup or purchase; settlement is still verified from
+transaction and block evidence. Each run asks both nodes directly instead of
+reusing an earlier answer. With the testnet policy, RPC failures include an
+unreachable endpoint or a malformed reply. Generated readiness supports public testnet operation
+only. An unset or empty \`DACS_DEMOS_DEPLOYMENT_POLICY\` defaults to \`testnet\`;
+other values must be exactly \`testnet\` or \`production\` (case-sensitive, no
+surrounding spaces), or doctor fails with \`demos-deployment-policy-invalid\`.
+Set \`DACS_DEMOS_DEPLOYMENT_POLICY=production\` to declare production
+intent: readiness blocks with \`demos-deployment-pin-unverified\` for every build,
+including clean self-reported metadata. Production integration must authenticate
+the deployed artifact and RPC endpoint against the reviewed pin before enabling
+commerce; this template supplies no deployment attestation verifier.
+
 Payment capability: **${options.rails}**. Dual-rail mode publishes two separately
 signed sibling Listings for the same offer. Setup and purchase select one exact
 rail explicitly; a failed or indeterminate attempt is reconciled on that rail and
@@ -4916,7 +4982,12 @@ Backup stops both services and writes separate buyer/seller data trees plus a
 keyed manifest into a new directory. Restore is plan-only unless
 \`DACS_RESTORE_CONFIRM=1\` is supplied for that invocation; it authenticates and
 rehashes every file, creates a separate safety backup, then replaces both actor
-directories with rollback on partial failure. Example:
+directories with rollback on partial failure. Restore requires the exact creating
+SDK release, including build metadata: actor databases bind to that version.
+Cross-release actor-data migration is unsupported. It also refuses a different
+Standard revision, configuration schema or unsupported SQLite schema; the error
+names both SDK versions. For rollback, reinstall the retained project and exact lockfile with \`npm ci\`
+first. Example:
 
 \`\`\`bash
 npm run dacs:restore -- --from ../backups/agent-YYYYMMDD \\

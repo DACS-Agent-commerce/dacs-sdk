@@ -102,6 +102,14 @@ while the buyer owns the PC-7 Demos write. The track becomes final only after
 the exact evidence, buyer-written receipt and independently resolved readback
 have all passed the SDK publisher's checks.
 
+A payment-evidence reference may omit its signer or name a signer with the
+evidence author's CORE CF-3 identity. Advisory ClaimReference parameters do not
+change that identity; their exact canonical bytes remain in messages and
+retained references. Any other signer is rejected by the core handshake,
+settlement publication and settlement verifier before a `verifyAnchorReceipt`
+callback runs (DACS-2 §7.5.2(3)), so a custom callback cannot admit a distinct
+issuer. The built-in Demos receipt verifiers repeat the same check.
+
 Live buyer and seller databases also expose `createHttpInboxStore()` and
 `createHttpOutboxStore()`. The inbox atomically retains the complete canonical
 signed envelope, authentication and identity-evidence hashes before an action
@@ -252,6 +260,23 @@ The admitted Demos runtime also exposes a role-bound component signer. It signs
 only `ed25519` contexts naming the runtime's exact canonical authority, so
 agreement, evidence, delivery and bundle builders can share the wallet without
 receiving its secret or substituting another signer identity.
+
+`addressNonce()` uses the uncoerced `raw.nodeCall("getAddressNonce", { address })`
+response and accepts only a safe non-negative integer or its canonical decimal
+string. Custom Demos adapters must expose `raw.nodeCall` for this probe and for
+the generated doctor's network check; an unavailable method or malformed
+response fails readiness. The demosdk convenience method's fallback zero is
+never treated as a successful read. A custom adapter that wraps a demosdk
+`Demos` instance forwards its reader unchanged:
+
+```ts
+raw: {
+  getNetworkInfo: () => demos.getNetworkInfo(),
+  getAddressNonce: (address) => demos.getAddressNonce(address),
+  getAddressInfo: (address) => demos.getAddressInfo(address),
+  nodeCall: (message, args) => demos.nodeCall(message, args),
+},
+```
 
 `createDacsFixedPriceX402OperationSetV1()` admits only the complete set of
 role-owned coordinator tracks. Core coordinators continue to support partial
@@ -471,3 +496,82 @@ identity resolver must use verified Demos identity material and retain its
 evidence hash; the payload validator must invoke the corresponding public SDK
 validator/verifier with independently resolved session facts. Neither callback
 may trust the HTTP body as identity or authorization evidence.
+
+### Demos RPC compatibility
+
+`DACS_NODE_DEMOS_RPC_COMPATIBILITY_V1` identifies the source-reviewed contract:
+Demos node `0.9.8` at
+[`61b8e75aa8db5e408c49e1c3a89db4d673f45578`](https://github.com/kynesyslabs/node/tree/61b8e75aa8db5e408c49e1c3a89db4d673f45578),
+with source-reviewed demosdk `4.0.16` at published source revision
+[`d3620ae24f657ae7442e63e7adaefef7094b22e2`](https://github.com/kynesyslabs/sdks/tree/d3620ae24f657ae7442e63e7adaefef7094b22e2).
+`contractVersion` names this response contract and `sdkVersion` records the
+reviewed SDK source; neither authenticates the installed SDK. Generated projects
+pin demosdk exactly. The core package's optional demosdk peer requires exactly
+`4.0.16` as well; later versions require a reviewed contract update.
+`inspectDacsDemosNodeCompatibilityV1()` reports `demos-node-compatible` only for
+this exact node revision and version, the `demos-node-software` identity, and
+`dirty: false`; otherwise it reports `demos-node-build-unidentified`,
+`demos-node-build-dirty` or `demos-node-revision-unsupported`. A node reports
+this metadata about itself and nothing authenticates it. In testnet policy the generated
+`demos.rpc-chain` doctor check reports it as the `buyerNodeBuild` and
+`sellerNodeBuild` facts and does not block start, setup or purchase. Each run
+asks both nodes through the uncached `raw.nodeCall("getNetworkInfo", {})`,
+because demosdk's `getNetworkInfo()` keeps its first success for the client's
+lifetime and would hide a later outage. With the testnet policy, the check fails when the RPC is
+unreachable or demosdk preserves an error/transport-failure envelope
+(`demos-rpc-unavailable`). Successful HTTP node calls are unwrapped to their
+response body, discarding the node's result code: a string node error such as
+`No address specified` is therefore `demos-rpc-response-malformed`, as is any
+reply lacking the boolean `forks.osDenomination.activated` status. Both
+classifications block readiness; the unwrapped body cannot distinguish an
+explicit node error from another malformed response. Missing `raw.nodeCall` reports
+`demos-adapter-raw-reader-missing`. The endpoint URL is not a
+compatibility pin. Independently verified transaction and block evidence, not
+build metadata, establish settlement.
+
+Generated readiness supports public testnet only. Declare production intent with
+`DACS_DEMOS_DEPLOYMENT_POLICY=production`: the doctor blocks start, setup and
+purchase with `demos-deployment-pin-unverified`, even for a clean matching
+self-reported build. No environment revision string can override that result.
+A production host integration must authenticate the deployed artifact and endpoint
+against the reviewed pin and retain provenance and contract-probe results; the
+generated project supplies no deployment attestation verifier.
+
+An unset or empty `DACS_DEMOS_DEPLOYMENT_POLICY` defaults to `testnet`. Otherwise
+the value must be exactly `testnet` or `production` (case-sensitive, without
+surrounding spaces); invalid values fail with `demos-deployment-policy-invalid`.
+
+The read-only capture from node2, the generated default RPC, on 2026-10-16
+reports `dirty: true`, so the doctor reports `demos-node-build-dirty` for it on
+the public testnet. It is a response-shape reference, **not an approved
+reproducible deployment**. Before a production launch, operators must build the pinned source from a clean tree, retain its build inputs and
+artifact digest, configure both roles to that node, rerun read-only doctor and
+contract probes, and retain those results before launch. A change to the node
+revision requires reviewing and updating the contract and fixtures together;
+a same-version rebuild with another commit is not automatically compatible.
+
+The pinned response contract is:
+
+| Read | Required interpretation |
+| --- | --- |
+| `getNetworkInfo` | SDK-unwrapped object with boolean `forks.osDenomination.activated` and exact `nodeVersion` build identity; the doctor reads it uncached on every run, and the denomination fork value is evaluated separately. |
+| `getAddressNonce` | SDK-unwrapped nonnegative safe integer or canonical decimal integer string. No partial parsing, fallback zero, or RPC error envelope is accepted. This is the retained nonce; the SDK reserves the next nonce separately. |
+| Transaction nonce admission | The pinned node's active `nonceEnforcement` fork (`src/forks/forkConfig.ts`) requires exactly `account.nonce + 1 + pending_mempool_count`; a merely larger nonce is insufficient. Wallet writes must be serialized and pending writes reconciled. |
+| `getTransactionStatus` | `included` plus a block number is inclusion. `unknown` is not evidence of payment. Transport errors remain unavailable. |
+| `getTxByHash` | Native send payload contains canonical OS amount and matching payer/payee. A numeric outer amount may be a projection; `confirmed` in the transaction body alone does not prove payment. |
+| `getBlockByNumber` | A confirmed block must contain the selected transaction. Block timestamps are seconds and are converted to milliseconds. Native inclusion uses `bft-final`, without waiting for depth. |
+| Denomination and fees | One DEM is `1000000000` OS after the denomination fork. Fee components in transaction evidence are OS; observed fee values are not fixed future fee quotes. Spending remains bounded by the configured limits. |
+
+Sanitized response fixtures are retained in
+`test/fixtures/demos-rpc-v1.json`; tests replay nonce/error handling and native
+inclusion/unknown-state responses through the production runtime and observer.
+They omit signatures, peer inventories and unrelated transaction data. The
+synthetic clean metadata used in admission tests tests policy only; it does
+not claim that node2 has been redeployed.
+
+The x402 integration's reviewed standards snapshots are
+[EIP-712 at `0b06de5e1203b35f1338d9e61d1ccc6965face91`](https://github.com/ethereum/EIPs/blob/0b06de5e1203b35f1338d9e61d1ccc6965face91/EIPS/eip-712.md)
+and
+[ERC-3009 at `7c9338feb41279b037700259c631ff6f51b0df3d`](https://github.com/ethereum/ERCs/blob/7c9338feb41279b037700259c631ff6f51b0df3d/ERCS/erc-3009.md).
+DACS-specific signing and session-binding rules remain governed by the
+Standard revision in the package release metadata.

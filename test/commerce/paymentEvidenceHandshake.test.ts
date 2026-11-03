@@ -19,6 +19,7 @@ import {
   FIXED_PRICE_X402_STANDARD_REVISION,
   fixedPriceX402ProtocolBindingHash,
   fixedPricePayDemProtocolBindingHash,
+  paymentEvidenceAnchorCompletionHash,
   paymentEvidenceHandshakeScopeHash,
   type BuyerPaymentEvidenceHandshakeOptions,
   type FixedPriceX402ProtocolBinding,
@@ -27,6 +28,7 @@ import {
   type PaymentEvidenceAnchorFence,
   type PaymentEvidenceAnchorRequest,
   type PaymentEvidenceAuthenticatedPeer,
+  type SellerPaymentEvidenceHandshakeOptions,
 } from "../../src/commerce/index.js";
 
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7D";
@@ -204,6 +206,8 @@ function seller(
     disposition: "authenticated" as const,
     peer: completionPeer(candidate),
   }),
+  verifyAnchorReceipt: SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"] =
+    () => ({ disposition: "valid" }),
 ) {
   return createSellerPaymentEvidenceHandshake({
     store,
@@ -212,7 +216,7 @@ function seller(
     workerId: "seller-transport-worker",
     protocol: PROTOCOL,
     authenticateCompletion,
-    verifyAnchorReceipt: () => ({ disposition: "valid" }),
+    verifyAnchorReceipt,
   });
 }
 
@@ -294,6 +298,71 @@ async function queueRequest(
 }
 
 describe("actor-separated payment-evidence handshake", () => {
+  it.each([`${SELLER}?role=seller`, undefined])(
+    "accepts a reference signer with the evidence signer's identity (%s) on both completion paths",
+    async (signer) => {
+      const verifySeller = vi.fn<SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(
+        () => ({ disposition: "valid" }),
+      );
+      const sellerHandshake = seller(undefined, undefined, verifySeller);
+      const candidate = await queueRequest(sellerHandshake);
+      const anchored = finalAnchor(candidate);
+      if (signer === undefined) delete anchored.evidenceRef.signer;
+      else anchored.evidenceRef.signer = signer;
+      const { handshake } = buyer({ anchor: vi.fn(() => ({ disposition: "anchored", ...anchored })) });
+      await handshake.receiveRequest(candidate, {});
+      expect((await handshake.runPending()).items).toEqual([{
+        messageId: candidate.messageId, status: "completed",
+      }]);
+      const completion = (await handshake.claimOutboundCompletions()).items[0]!.completion;
+      expect(completion.evidenceRef.signer).toBe(signer);
+      await expect(sellerHandshake.receiveCompletion(completion, {})).resolves.toBe("accepted");
+      expect(verifySeller).toHaveBeenCalledOnce();
+    },
+  );
+
+  // DACS-2 §7.5.2(3): the referenced attestation is the seller-signed evidence,
+  // so a reference naming any other signer is rejected even when the
+  // integrator's receipt verifier would pass it.
+  it.each(["did:example:independent-issuer", BUYER])(
+    "rejects a reference signer %s that did not sign the evidence on both completion paths",
+    async (issuer) => {
+      const verifySeller = vi.fn<SellerPaymentEvidenceHandshakeOptions["verifyAnchorReceipt"]>(
+        () => ({ disposition: "valid" }),
+      );
+      const sellerHandshake = seller(undefined, undefined, verifySeller);
+      const candidate = await queueRequest(sellerHandshake);
+      const forged = finalAnchor(candidate);
+      forged.evidenceRef.signer = issuer;
+      const verifyReceipt = vi.fn(() => ({ disposition: "valid" as const }));
+      const forgedBuyer = buyer({
+        anchor: vi.fn(() => ({ disposition: "anchored", ...forged })), verifyReceipt,
+      });
+      await forgedBuyer.handshake.receiveRequest(candidate, {});
+      const run = await forgedBuyer.handshake.runPending().then(
+        (page) => page.items, (error: unknown) => error,
+      );
+      expect(run).not.toEqual([expect.objectContaining({ status: "completed" })]);
+      expect(verifyReceipt).not.toHaveBeenCalled();
+      expect((await forgedBuyer.handshake.claimOutboundCompletions()).items).toEqual([]);
+
+      // A peer that builds the completion itself still cannot get the seller
+      // to accept the substituted signer.
+      const honest = buyer();
+      await honest.handshake.receiveRequest(candidate, {});
+      await honest.handshake.runPending();
+      const completion = structuredClone(
+        (await honest.handshake.claimOutboundCompletions()).items[0]!.completion,
+      ) as { -readonly [K in keyof PaymentEvidenceAnchorCompletion]: PaymentEvidenceAnchorCompletion[K] };
+      completion.evidenceRef = { ...completion.evidenceRef, signer: issuer };
+      completion.completionHash = paymentEvidenceAnchorCompletionHash(completion);
+      completion.messageId =
+        `dacs-sdk:x402:payment-evidence-anchor-completion:${completion.completionHash}`;
+      await expect(sellerHandshake.receiveCompletion(completion, {})).rejects.toThrow();
+      expect(verifySeller).not.toHaveBeenCalled();
+    },
+  );
+
   it("anchors through buyer authority and durably acknowledges both transport outboxes", async () => {
     const sellerHandshake = seller();
     const { handshake: buyerHandshake, anchor } = buyer();

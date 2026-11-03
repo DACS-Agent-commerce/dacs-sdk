@@ -4,7 +4,7 @@ import { types as nodeTypes } from "node:util";
 import { isComponentSignature } from "../artifacts/signatures.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import type { ChainTxRef } from "../artifacts/types.js";
-import { isSettlementEvidence } from "../artifacts/validators.js";
+import { isCanonicalJobId, isSettlementEvidence } from "../artifacts/validators.js";
 import {
   canonicalizeDecimal,
   contentHash,
@@ -121,7 +121,7 @@ export interface SettlementEventIdentityContext {
   ledgerEvents?: readonly AuthenticatedSettlementLedgerEvent[] | null;
   /** Independently verified X402-1..X402-4 receipt facts. */
   x402Receipt?: Readonly<VerifiedX402ReceiptBinding>;
-  /** Consumer-local SB-2 index. Undefined means uniqueness is unavailable. */
+  /** @deprecated Arrival-order claims supply no SB-2 authority. Use the complete-set resolver. */
   priorClaims?: Readonly<
     Record<string, Readonly<{ jobId: string; phaseIndex: number }>>
   >;
@@ -519,7 +519,7 @@ function parsePaymentAnchor(
   const jobId = parts[2]!;
   const encodedRailId = parts[3]!;
   const phaseText = parts[4]!;
-  if (jobId.length === 0 || encodedRailId.length === 0 ||
+  if (!isCanonicalJobId(jobId) || encodedRailId.length === 0 ||
       !/^(0|[1-9][0-9]*)$/.test(phaseText)) return null;
   const phaseIndex = Number(phaseText);
   if (!isSafeUint(phaseIndex)) return null;
@@ -588,13 +588,11 @@ async function authenticateEvidence(
 }
 
 /**
- * Resolve a signed DACS-4 v0.6 event reference, or safely replay a frozen
- * legacy envelope reference. `ledgerEvents` must already be independently
- * authenticated; caller annotations and out-of-band indexes are deliberately
- * absent from the API. Legacy projection succeeds only for exactly one
- * semantically matching event.
+ * Project a signed event reference using independently authenticated ledger
+ * events. An envelope-only reference projects only when exactly one event
+ * matches. Projection alone supplies no SB-2 counting authority.
  */
-export async function resolveSettlementEventIdentity(
+async function projectSettlementEventIdentity(
   evidenceValue: unknown,
   context: Readonly<SettlementEventIdentityContext>,
   deps: SettlementEventIdentityDeps,
@@ -604,7 +602,7 @@ export async function resolveSettlementEventIdentity(
       evidenceValue,
       "settlement evidence",
     );
-    if (!isRecord(evidence) || !isSettlementEvidence(evidence)) {
+    if (!isRecord(evidence) || !isCanonicalJobId(evidence.jobId) || !isSettlementEvidence(evidence)) {
       return { decision: "error", reason: "settlement evidence is malformed" };
     }
     const capturedContext = snapshotExactJson(
@@ -649,7 +647,7 @@ async function resolveCapturedSettlementEventIdentity(
     };
   }
   if (evidenceValue.outcome !== "success" ||
-      typeof evidenceValue.jobId !== "string" || evidenceValue.jobId.length === 0 ||
+      !isCanonicalJobId(evidenceValue.jobId) ||
       !Array.isArray(evidenceValue.paymentTxRefs) ||
       evidenceValue.paymentTxRefs.length !== 1) {
     return { decision: "error", reason: "success evidence has no singular transaction ref" };
@@ -740,18 +738,178 @@ async function resolveCapturedSettlementEventIdentity(
   if (!isCanonicalSettlementIdentity(settlementId)) {
     return { decision: "error", reason: "projected settlement identity is non-canonical" };
   }
-  if (context.priorClaims === undefined) {
-    return { decision: "indeterminate", reason: "SB-2 uniqueness index unavailable" };
-  }
-  const previous = context.priorClaims[settlementId];
-  if (previous !== undefined &&
-      (previous.jobId !== evidenceValue.jobId ||
-        previous.phaseIndex !== context.phaseIndex)) {
-    return { decision: "fail", reason: "settlement event is already bound to another phase" };
-  }
   return {
     decision: "pass",
     settlementId,
     replay: current ? "current" : "legacy",
   };
+}
+
+
+/** One member of the consumer's complete presented evidence set. */
+export interface SettlementEventIdentityRecord {
+  evidence: unknown;
+  context: Readonly<SettlementEventIdentityContext>;
+  /** Exact RailDefinition hash and registered binding profile from authenticated agreement context. */
+  railProfile?: Readonly<{ definitionHash: string; bindingProfile: string }>;
+}
+
+export interface SettlementCollisionAuthority {
+  settlementId: string;
+  railId: string;
+  definitionHash: string;
+  bindingProfile: string;
+  jobId: string;
+  phaseIndex: number;
+}
+
+/**
+ * Trusted verifier capability. Resolve independently authenticated, finalized
+ * settlement-side relations, never outer evidence signatures or caller hints.
+ * Return every relation for this group; conflicting authority selects nobody.
+ * Job-only Permit2/AP2 proofs cannot supply a phaseIndex in this revision.
+ */
+export type AuthenticateSettlementCollision = (input: Readonly<{
+  settlementId: string;
+  claims: readonly Readonly<{
+    jobId: string; phaseIndex: number; railId: string;
+    railProfile?: Readonly<{ definitionHash: string; bindingProfile: string }>;
+  }>[];
+}>) => Promise<readonly SettlementCollisionAuthority[] | null> |
+  readonly SettlementCollisionAuthority[] | null;
+
+export interface SettlementEventIdentitySetResolution {
+  records: SettlementEventIdentityResolution[];
+  /** Unique countable events. Recompute this list whenever the presented set changes. */
+  countable: { settlementId: string; jobId: string; phaseIndex: number }[];
+}
+
+/**
+ * SB-1 point inspection cannot establish SB-2 count authority. In particular an
+ * empty priorClaims index cannot authorize the first claimant. Use the complete
+ * presented-set API below for countable decisions.
+ */
+export async function resolveSettlementEventIdentity(
+  evidence: unknown,
+  context: Readonly<SettlementEventIdentityContext>,
+  deps: SettlementEventIdentityDeps,
+): Promise<SettlementEventIdentityResolution> {
+  const result = await projectSettlementEventIdentity(evidence, context, deps);
+  return result.decision === "pass"
+    ? { decision: "indeterminate", reason: "SB-2 requires the complete presented evidence set" }
+    : result;
+}
+
+/** DACS-4 §9.5.8 SB-2: authenticate all records, then decide entire groups. */
+export async function resolveSettlementEventIdentities(
+  records: readonly SettlementEventIdentityRecord[],
+  deps: SettlementEventIdentityDeps,
+  authenticateCollision?: AuthenticateSettlementCollision,
+): Promise<SettlementEventIdentitySetResolution> {
+  // Own the entire set and capture capabilities before the first await. Mutation
+  // during one signature check cannot hide another claimant or switch authority.
+  const captured = snapshotExactJson(records, "settlement evidence set");
+  const capturedDeps = captureSettlementIdentityDeps(deps);
+  if (!Array.isArray(captured) || capturedDeps === null ||
+      (authenticateCollision !== undefined &&
+        (typeof authenticateCollision !== "function" || nodeTypes.isProxy(authenticateCollision)))) {
+    throw new TypeError("settlement evidence set dependencies are malformed");
+  }
+  for (const record of captured) {
+    if (!isRecord(record) || !exactKeys(record, ["evidence", "context"], ["railProfile"]) ||
+        !isSettlementIdentityContext(record.context) ||
+        (record.railProfile !== undefined && (!isRecord(record.railProfile) ||
+          !exactKeys(record.railProfile, ["definitionHash", "bindingProfile"]) ||
+          typeof record.railProfile.definitionHash !== "string" ||
+          !/^[0-9a-f]{64}$/.test(record.railProfile.definitionHash) ||
+          !isNonEmptyString(record.railProfile.bindingProfile)))) {
+      throw new TypeError("settlement evidence set record is malformed");
+    }
+  }
+  const owned = captured as unknown as SettlementEventIdentityRecord[];
+  const results: SettlementEventIdentityResolution[] = [];
+  const groups = new Map<string, number[]>();
+  for (const [index, record] of owned.entries()) {
+    const result = await projectSettlementEventIdentity(record.evidence, record.context, capturedDeps);
+    results.push(result);
+    if (result.decision === "pass") {
+      const members = groups.get(result.settlementId) ?? [];
+      members.push(index);
+      groups.set(result.settlementId, members);
+    }
+  }
+  const countable: SettlementEventIdentitySetResolution["countable"] = [];
+  for (const [settlementId, members] of groups) {
+    const claims = members.map((index) => {
+      const record = owned[index]!;
+      return {
+        jobId: (record.evidence as { jobId: string }).jobId,
+        phaseIndex: record.context.phaseIndex,
+        railId: record.context.railId,
+        ...(record.railProfile === undefined ? {} : { railProfile: record.railProfile }),
+      };
+    });
+    const tupleKey = (claim: { jobId: string; phaseIndex: number }) =>
+      `${claim.jobId}:${claim.phaseIndex}`;
+    const tuples = new Set(claims.map(tupleKey));
+    // A retained first-claim index can reveal omitted evidence, but cannot
+    // select its winner. The complete records must be presented for a decision.
+    const omitted = members.some((index) => Object.entries(owned[index]!.context.priorClaims ?? {})
+      .some(([id, claim]) => id === settlementId && !tuples.has(tupleKey(claim))));
+    let winner: string | undefined;
+    let winningAuthority: SettlementCollisionAuthority[] | undefined;
+    if (tuples.size === 1 && !omitted) winner = tupleKey(claims[0]!);
+    else if (!omitted && authenticateCollision !== undefined) {
+      let authority: unknown;
+      try {
+        const input = snapshotExactJson({ settlementId, claims }, "collision verifier input");
+        const freeze = (value: unknown): void => {
+          if (value !== null && typeof value === "object") {
+            for (const child of Object.values(value)) freeze(child);
+            Object.freeze(value);
+          }
+        };
+        freeze(input);
+        authority = snapshotExactJson(await authenticateCollision(
+          input as Parameters<AuthenticateSettlementCollision>[0],
+        ), "collision authority");
+      } catch { authority = null; }
+      // Do not discard a conflicting or incomplete relation and then select
+      // the remaining one. Every authenticated relation must establish the
+      // same exact tuple and applicable rail/profile in this collision group.
+      if (Array.isArray(authority) && authority.length > 0 && authority.every((binding) =>
+        isRecord(binding) && exactKeys(binding, ["settlementId", "railId", "definitionHash", "bindingProfile", "jobId", "phaseIndex"]) &&
+        binding.settlementId === settlementId && isCanonicalJobId(binding.jobId) &&
+        isSafeUint(binding.phaseIndex) && claims.some((claim) =>
+          binding.jobId === claim.jobId && binding.phaseIndex === claim.phaseIndex &&
+          binding.railId === claim.railId && binding.definitionHash === claim.railProfile?.definitionHash &&
+          binding.bindingProfile === claim.railProfile?.bindingProfile))) {
+        const selected = new Set(authority.map((binding) => tupleKey(binding as unknown as { jobId: string; phaseIndex: number })));
+        if (selected.size === 1) {
+          winner = [...selected][0];
+          winningAuthority = authority as SettlementCollisionAuthority[];
+        }
+      }
+    }
+    if (winner === undefined) {
+      for (const index of members) results[index] = {
+        decision: "indeterminate", reason: "SB-2 collision has no exact finalized settlement-side authority",
+      };
+    } else {
+      const selected = claims.find((claim) => tupleKey(claim) === winner)!;
+      countable.push({ settlementId, jobId: selected.jobId, phaseIndex: selected.phaseIndex });
+      for (let offset = 0; offset < members.length; offset += 1) {
+        const claim = claims[offset]!;
+        if (tupleKey(claim) !== winner) results[members[offset]!] = {
+          decision: "fail", reason: "SB-2 settlement-side authority binds another tuple",
+        };
+        else if (winningAuthority !== undefined && !winningAuthority.some((binding) =>
+          binding.railId === claim.railId && binding.definitionHash === claim.railProfile?.definitionHash &&
+          binding.bindingProfile === claim.railProfile?.bindingProfile)) results[members[offset]!] = {
+          decision: "indeterminate", reason: "SB-2 authority does not authenticate this record's pinned rail/profile",
+        };
+      }
+    }
+  }
+  return { records: results, countable };
 }

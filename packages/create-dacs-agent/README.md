@@ -36,7 +36,10 @@ explicit `--rail x402` or `--rail pay-dem` for guarded setup and purchase.
 Live generation runs the complete read-only pre-start doctor after install.
 Exit 5 is retained as a successful, visibly blocked bootstrap when credentials,
 funding, signed registries, endpoints or reviewed effect adapters are absent.
-It does not start services, publish or pay. Generated Docker services use the
+It does not start services, publish or pay. The `demos.rpc-chain` check reports
+the configured nodes' self-described build compatibility as facts; it does not
+block on it, because the default public testnet RPC reports a dirty build.
+Generated Docker services use the
 same reviewed host image with separate non-root buyer/seller processes, secret
 mounts and data volumes; the template contains only configuration, command
 wiring and the seller fulfilment callback.
@@ -62,7 +65,13 @@ npm run dacs:uninstall -- --backup ../backups/final-YYYYMMDD
 
 Backup manifests are HMAC-authenticated by a separate operator key, contain
 independent buyer/seller trees, and are rehashed before restore. Restore checks
-the Standard, configuration and SQLite migration compatibility, requires its
+that the backup was created by the exact running SDK release, including build
+metadata, and checks Standard, configuration and SQLite migration compatibility.
+Actor databases bind to the creating SDK version; cross-release actor-data
+migration is unsupported. Restore refuses other or unparseable SDK versions and
+names both versions in the error. For rollback, reinstall the retained project
+and its exact lockfile with `npm ci`
+first. Restore requires its
 own ephemeral confirmation, creates a safety backup, and rolls both role trees
 back on a partial replacement. Uninstall is deliberately a non-destructive
 decommission: it stops the deployment and backs it up but retains the actor

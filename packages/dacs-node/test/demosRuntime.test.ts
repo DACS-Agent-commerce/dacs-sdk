@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -98,6 +98,7 @@ describe("role-owned Demos runtime", () => {
       raw: {
         getNetworkInfo: vi.fn(async () => ({ chain: "test" })),
         getAddressNonce: vi.fn(async () => 7),
+        nodeCall: vi.fn(async () => 7),
         getAddressInfo: vi.fn(async () => ({ balance: "10" })),
       },
       connect: vi.fn(async () => undefined),
@@ -200,6 +201,61 @@ describe("role-owned Demos runtime", () => {
     expect(existsSync(join(directory, "demos-write-journal"))).toBe(false);
     await expect(journal!.acquire({ chainIdentity: "test", wallet: "0xactor" }))
       .rejects.toMatchObject({ reasonCode: "demos-write-disabled" });
+  });
+
+  it("replays the captured nonce contract through the raw SDK boundary", async () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("./fixtures/demos-rpc-v1.json", import.meta.url), "utf8",
+    ));
+    const mock = adapter();
+    const opened = await runtime(root(), mock);
+    vi.mocked(mock.raw.nodeCall!).mockResolvedValue(fixture.nonce.response);
+    await expect(opened.addressNonce()).resolves.toBe(0);
+    for (const response of [fixture.nonceError.response, fixture.nonceError]) {
+      vi.mocked(mock.raw.nodeCall!).mockResolvedValue(response);
+      await expect(opened.addressNonce()).rejects.toMatchObject({ reasonCode: "demos-nonce-unavailable" });
+    }
+    expect(mock.raw.getAddressNonce).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 7, Number.MAX_SAFE_INTEGER, "0", "7", "9007199254740991"])(
+    "checks the raw nonce response %j without the SDK's fallback",
+    async (response) => {
+      const mock = adapter();
+      vi.mocked(mock.raw.nodeCall!).mockResolvedValue(response);
+      const opened = await runtime(root(), mock);
+      await expect(opened.addressNonce()).resolves.toBe(Number(response));
+      expect(mock.raw.nodeCall).toHaveBeenCalledWith("getAddressNonce", {
+        address: "0xactor",
+      });
+      expect(mock.raw.getAddressNonce).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    undefined, null, {}, { result: 500, response: "error" }, "unknown method",
+    "7junk", "7.5", " 7", "", "01", "-1", -1, 0.5,
+    Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1,
+    "9007199254740992",
+  ])("refuses malformed or failed raw nonce data %j", async (response) => {
+    const mock = adapter();
+    vi.mocked(mock.raw.nodeCall!).mockResolvedValue(response);
+    const opened = await runtime(root(), mock);
+    await expect(opened.addressNonce()).rejects.toMatchObject({
+      reasonCode: "demos-nonce-unavailable",
+    });
+    expect(mock.raw.getAddressNonce).not.toHaveBeenCalled();
+  });
+
+  it("does not report nonce readiness without an uncoerced read", async () => {
+    const mock = adapter();
+    const opened = await runtime(root(), {
+      ...mock,
+      raw: { ...mock.raw, nodeCall: undefined },
+    });
+    await expect(opened.addressNonce()).rejects.toMatchObject({
+      reasonCode: "demos-adapter-raw-reader-missing",
+    });
   });
 
   it("creates and binds the native buyer rail before destroying wallet material", async () => {

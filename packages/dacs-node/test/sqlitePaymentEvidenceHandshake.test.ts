@@ -270,6 +270,185 @@ describe("SQLite payment-evidence handshake store", () => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
+  it.each(["buyer", "seller"] as const)(
+    "distinguishes exact %s completion replay from a conflicting second completion", async (role) => {
+      const path = join(temporaryRoot(), "completion-replay.sqlite");
+      let database = await open(path, role);
+      let store = database.createPaymentEvidenceHandshakeStore();
+      const candidate = request();
+      expect(await store.putRequest({ role, scopeHash: SCOPE_HASH, request: candidate,
+        ...(role === "buyer" ? { requestAuthentication: requestPeer(candidate) } : {}),
+      })).toMatchObject({ status: "created" });
+      const claim = role === "buyer" ? await store.claimBuyer({
+        scopeHash: SCOPE_HASH, messageId: candidate.messageId, requestHash: candidate.requestHash,
+        owner: "buyer-worker", leaseDurationMs: 60_000,
+      }) : undefined;
+      if (claim !== undefined && claim.status !== "acquired") throw new Error("expected buyer claim");
+      const completed = completion(candidate);
+      const write = (value: PaymentEvidenceAnchorCompletion) => {
+        const input = { scopeHash: SCOPE_HASH, messageId: candidate.messageId,
+          requestHash: candidate.requestHash, completion: value };
+        return role === "buyer" ? store.recordBuyerCompletion({ ...input,
+          lease: claim!.status === "acquired" ? claim!.lease : {} as never,
+        }) : store.recordSellerCompletion({ ...input,
+          completionAuthentication: completionPeer(value),
+        });
+      };
+      expect(await write(completed)).toMatchObject({ status: "recorded" });
+      close(database);
+      database = await open(path, role);
+      store = database.createPaymentEvidenceHandshakeStore();
+      const before = await store.load(role, candidate.messageId, SCOPE_HASH);
+      expect(await write(completed)).toMatchObject({ status: "existing" });
+      const anchor = finalAnchor(candidate);
+      const conflicting = createPaymentEvidenceAnchorCompletion({ request: candidate,
+        ...anchor, anchorReceipt: { ...anchor.anchorReceipt, nativeAddress: "native:other" },
+      });
+      expect(await write(conflicting)).toEqual({ status: "conflict" });
+      expect(await store.load(role, candidate.messageId, SCOPE_HASH)).toEqual(before);
+      if (role === "seller") {
+        expect(await store.recordSellerCompletion({
+          scopeHash: SCOPE_HASH, messageId: candidate.messageId, requestHash: candidate.requestHash,
+          completion: completed, completionAuthentication: {
+            ...completionPeer(completed), authenticationHash: "9".repeat(64),
+          },
+        })).toEqual({ status: "conflict" });
+      }
+    },
+  );
+
+  it.each(["buyer", "seller"] as const)(
+    "refuses a valid %s history retained under a different actor authority", async (role) => {
+      const path = join(temporaryRoot(), "authority.sqlite");
+      const database = await open(path, role);
+      const store = database.createPaymentEvidenceHandshakeStore();
+      const candidate = request();
+      expect(await store.putRequest({ role, scopeHash: SCOPE_HASH, request: candidate,
+        ...(role === "buyer" ? { requestAuthentication: requestPeer(candidate) } : {}),
+      })).toMatchObject({ status: "created" });
+      database.checkpoint();
+      close(database);
+      const raw = new BetterSqlite3(path);
+      raw.prepare("UPDATE dacs_store_metadata SET authority = ? WHERE singleton = 1")
+        .run(OTHER_SELLER);
+      raw.close();
+      await expect(open(path, role, OTHER_SELLER)).rejects.toMatchObject({
+        reasonCode: "database-logical-corruption",
+      });
+    },
+  );
+
+  it("retains immutable request and authentication bytes across caller mutations and updates", async () => {
+    const database = await open(join(temporaryRoot(), "immutable-request.sqlite"));
+    const store = database.createPaymentEvidenceHandshakeStore();
+    const candidate = request();
+    const expected = structuredClone(candidate);
+    const authentication = requestPeer(candidate);
+    const retained = await store.putRequest({ role: "buyer", scopeHash: SCOPE_HASH,
+      request: candidate, requestAuthentication: authentication });
+    if (retained.status !== "created") throw new Error("expected request");
+    (candidate.evidence as { observedAt: number }).observedAt += 1;
+    authentication.authenticationHash = "9".repeat(64);
+    (retained.record.request as { evidenceHash: string }).evidenceHash = "0".repeat(64);
+    expect(await store.claimBuyer({ scopeHash: SCOPE_HASH, messageId: expected.messageId,
+      requestHash: expected.requestHash, owner: "worker", leaseDurationMs: 60_000,
+    })).toMatchObject({ status: "acquired" });
+    expect(await store.load("buyer", expected.messageId, SCOPE_HASH)).toMatchObject({
+      status: "ok", record: { request: expected, requestAuthentication: requestPeer(expected) },
+    });
+    expect(await putBuyer(store, candidate)).toMatchObject({ status: "corrupt" });
+  });
+
+  it.each([
+    ["buyer", "generation"], ["buyer", "attempts"], ["buyer", "lease"],
+    ["seller", "generation"], ["seller", "attempts"], ["seller", "lease"],
+  ] as const)("rejects a hash-consistent %s history with a forged %s transition", async (role, field) => {
+    const path = join(temporaryRoot(), "transition.sqlite");
+    const database = await open(path, role);
+    const store = database.createPaymentEvidenceHandshakeStore();
+    const candidate = request();
+    expect(await store.putRequest({ role, scopeHash: SCOPE_HASH, request: candidate,
+      ...(role === "buyer" ? { requestAuthentication: requestPeer(candidate) } : {}),
+    })).toMatchObject({ status: "created" });
+    const identity = { scopeHash: SCOPE_HASH, messageId: candidate.messageId,
+      requestHash: candidate.requestHash };
+    if (role === "buyer") {
+      const claim = await store.claimBuyer({ ...identity,
+        owner: "buyer-worker", leaseDurationMs: 60_000 });
+      if (claim.status !== "acquired") throw new Error("expected buyer claim");
+      expect(await store.recordBuyerAttempt({ ...identity, lease: claim.lease,
+        state: "reconciliation-required", reasonCode: "anchor-unavailable",
+      })).toMatchObject({ status: "recorded" });
+    } else {
+      const claim = (await store.claimSellerRequests({ scopeHash: SCOPE_HASH,
+        owner: "seller-worker", leaseDurationMs: 60_000, limit: 1 })).items[0]!;
+      expect(await store.releaseSellerRequest({ ...identity, lease: claim.lease,
+        reasonCode: "transport-unavailable",
+      })).toMatchObject({ status: "recorded" });
+    }
+    database.checkpoint();
+    close(database);
+    const raw = new BetterSqlite3(path);
+    try {
+      const rows = raw.prepare(`SELECT * FROM dacs_payment_evidence_history
+        WHERE role = ? AND message_id = ? ORDER BY revision`).all(role, candidate.messageId) as {
+          revision: number; record_json: string; occurred_at: number;
+        }[];
+      expect(rows).toHaveLength(3);
+      let previousEntryHash: string | null = null;
+      for (const row of rows) {
+        const value = JSON.parse(row.record_json);
+        if (row.revision === 2) {
+          const work = value[role === "buyer" ? "buyerWork" : "requestOutbox"];
+          if (field === "lease") work.lease.generation += 1;
+          else work[field] += 1;
+        }
+        const recordJson = canonicalize(value);
+        const recordHash = sha256Hex(recordJson);
+        const entryHash = sha256Hex(canonicalize({
+          historyVersion: "1", role, messageId: candidate.messageId,
+          revision: row.revision, occurredAt: row.occurred_at, recordHash, previousEntryHash,
+        }));
+        raw.prepare(`UPDATE dacs_payment_evidence_history SET record_json = ?, record_hash = ?,
+          previous_entry_hash = ?, entry_hash = ? WHERE role = ? AND message_id = ? AND revision = ?`)
+          .run(recordJson, recordHash, previousEntryHash, entryHash, role, candidate.messageId, row.revision);
+        previousEntryHash = entryHash;
+      }
+    } finally { raw.close(); }
+    await expect(open(path, role)).rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
+  });
+
+  it("fences a released buyer completion outbox claim after another worker takes it", async () => {
+    const database = await open(join(temporaryRoot(), "completion-outbox.sqlite"));
+    const store = database.createPaymentEvidenceHandshakeStore();
+    const candidate = request();
+    await putBuyer(store, candidate);
+    const identity = { scopeHash: SCOPE_HASH, messageId: candidate.messageId,
+      requestHash: candidate.requestHash };
+    const buyer = await store.claimBuyer({ ...identity, owner: "buyer", leaseDurationMs: 60_000 });
+    if (buyer.status !== "acquired") throw new Error("expected buyer claim");
+    const completed = completion(candidate);
+    expect(await store.recordBuyerCompletion({ ...identity,
+      lease: buyer.lease, completion: completed,
+    })).toMatchObject({ status: "recorded" });
+    const query = { scopeHash: SCOPE_HASH, owner: "sender", limit: 1, leaseDurationMs: 60_000 };
+    const first = (await store.claimBuyerCompletions(query)).items[0]!;
+    const outbound = { scopeHash: SCOPE_HASH, messageId: candidate.messageId,
+      completionHash: completed.completionHash };
+    expect(await store.releaseBuyerCompletion({ ...outbound, lease: first.lease,
+      reasonCode: "transport-unavailable",
+    })).toMatchObject({ status: "recorded" });
+    const second = (await store.claimBuyerCompletions({ ...query, owner: "recovery-sender" })).items[0]!;
+    expect(second.lease.generation).toBe(first.lease.generation + 1);
+    expect(await store.acknowledgeBuyerCompletion({ ...outbound, lease: first.lease }))
+      .toEqual({ status: "stale" });
+    expect(await store.releaseBuyerCompletion({ ...outbound, lease: first.lease,
+      reasonCode: "late-failure",
+    })).toEqual({ status: "stale" });
+    expect(await store.acknowledgeBuyerCompletion({ ...outbound, lease: second.lease }))
+      .toMatchObject({ status: "recorded" });
+  });
+
   it("persists buyer intent, recovery, completion, and durable outbox acknowledgement", async () => {
     const databasePath = join(temporaryRoot(), "buyer.sqlite");
     let database = await open(databasePath);

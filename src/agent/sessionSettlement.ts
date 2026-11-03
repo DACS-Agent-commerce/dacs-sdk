@@ -14,6 +14,7 @@ import type {
   SettlementFinalityModel,
 } from "../artifacts/types.js";
 import {
+  isCanonicalJobId,
   isAnchorReceipt,
   isAttestationRef,
   isSettlementEvidence,
@@ -21,8 +22,10 @@ import {
 import {
   verifySettlementEvidence,
   type EvidenceDeps,
+  type AuthenticatedEvidenceContext,
 } from "./verifySettlementEvidence.js";
 import { isCanonicalSettlementIdentity } from "./settlementIdentity.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 
 /** Four-valued trust-boundary decision used by settlement providers. */
 export type SessionSettlementDisposition =
@@ -138,6 +141,8 @@ export interface SessionSettlementContext {
   };
   paymentAmount: PaymentAmount;
   rail: SessionSettlementRailPin;
+  /** Exact authenticated handler result when retained; required for failures. */
+  phaseResult?: AuthenticatedEvidenceContext["result"];
 }
 
 /**
@@ -177,7 +182,11 @@ export interface SessionSettlementVerificationProvider {
   authenticateContext: (
     context: Readonly<SessionSettlementContext>,
   ) => Promise<SessionSettlementDisposition> | SessionSettlementDisposition;
-  /** Cryptographically authenticate the evidence's finalized SR-2 publication. */
+  /**
+   * Cryptographically authenticate the evidence's finalized SR-2 publication.
+   * The core has already required any `evidenceRef.signer` to have the
+   * evidence signer's CF-3 identity; this callback cannot admit another issuer.
+   */
   verifyEvidenceAnchor: (input: {
     context: Readonly<SessionSettlementContext>;
     evidence: Readonly<SettlementEvidence>;
@@ -478,7 +487,10 @@ function isContext(value: unknown): value is SessionSettlementContext {
     "payee",
     "paymentAmount",
     "rail",
-  ]) && value.contextVersion === "1" && isNonEmpty(value.jobId) &&
+  ], ["phaseResult"]) && value.contextVersion === "1" && isCanonicalJobId(value.jobId) &&
+    (value.phaseResult === undefined ||
+      (isRecord(value.phaseResult) && exactKeys(value.phaseResult, ["ok"], ["errorClass", "txRefs"]) &&
+        typeof value.phaseResult.ok === "boolean")) &&
     isAttestationRef(value.agreementRef) && isHash(value.agreementHash) &&
     value.agreementRef.contentHash === value.agreementHash &&
     isUint(value.paymentPhaseIndex) && isNonEmpty(value.orchestrator) &&
@@ -640,12 +652,16 @@ function contextMatchesEvidence(
   if (evidenceAddress !== paymentAddress && evidenceAddress !== `${paymentAddress}:resolved`) {
     return "settlement evidence anchor does not bind the authenticated payment phase";
   }
+  // DACS-2 §7.5.2(3): the referenced attestation is the signed evidence, so a
+  // named reference signer must have the evidence signer's CF-3 identity.
+  if (settlement.evidenceRef.signer !== undefined &&
+      !sameCanonicalClaimIdentity(settlement.evidenceRef.signer, evidence.signature.signer)) {
+    return "settlement evidence reference signer did not sign the evidence";
+  }
   const authenticatedWriter = settlement.anchorReceipt.writer === context.orchestrator ||
     settlement.anchorReceipt.writer === context.payer.primaryClaim;
   if (!authenticatedWriter ||
       settlement.anchorReceipt.logicalAddress !== evidenceAddress ||
-      (settlement.evidenceRef.signer !== undefined &&
-        settlement.evidenceRef.signer !== evidence.signature.signer) ||
       settlement.anchorReceipt.state !== "finalized" ||
       settlement.anchorReceipt.observationDisposition !== "established") {
     return "settlement evidence lacks an exact finalized authenticated-actor receipt";
@@ -867,6 +883,12 @@ export async function verifyFinalizedSessionSettlement(
     return rejected("error", "settlement verification provider is incomplete or unsafe");
   }
 
+  // CORE JID-3/JID-4: a malformed operand is error, before comparison or any
+  // authentication callback. Different well-formed IDs remain a mismatch.
+  if (!isCanonicalJobId(settlement.evidence.jobId)) {
+    return rejected("error", "settlement evidence jobId is malformed (CORE JID-1)");
+  }
+
   let contextDisposition: SessionSettlementDisposition | null;
   try {
     contextDisposition = captureDisposition(await provider.authenticateContext(context));
@@ -885,6 +907,12 @@ export async function verifyFinalizedSessionSettlement(
   }
   if (mismatch) return rejected("rejected", mismatch);
 
+  // A signed reason is free text, not a PC-4 classification. Do not invent
+  // a handler result for a failure when the authenticated context lacks it.
+  // The caller omitted a required input, so a retry cannot succeed.
+  if (settlement.outcome === "failure" && context.phaseResult === undefined) {
+    return rejected("error", "authenticated failure phase result is unavailable");
+  }
   let evidenceVerification: Awaited<ReturnType<typeof verifySettlementEvidence>>;
   try {
     evidenceVerification = await verifySettlementEvidence(
@@ -908,9 +936,7 @@ export async function verifyFinalizedSessionSettlement(
           phaseIndex: context.paymentPhaseIndex,
           resolved: settlement.evidenceRef.anchor.locator.endsWith(":resolved"),
         },
-        result: settlement.outcome === "success"
-          ? { ok: true }
-          : { ok: false, errorClass: settlement.evidence.reason },
+        result: context.phaseResult ?? { ok: true },
       },
       provider.evidence,
     );

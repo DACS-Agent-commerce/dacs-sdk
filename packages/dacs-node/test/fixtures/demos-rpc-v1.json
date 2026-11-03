@@ -1,0 +1,126 @@
+{
+  "capturedAt": "2026-10-16T15:19:21Z",
+  "endpoint": "https://node2.demos.sh",
+  "provenance": "Sanitized read-only captures; observed dirty build is not an approved deployment.",
+  "networkInfo": {
+    "forks": {
+      "osDenomination": {
+        "activationHeight": 0,
+        "activated": true,
+        "currentHeight": 546147
+      }
+    },
+    "nodeVersion": {
+      "name": "demos-node-software",
+      "version": "0.9.8",
+      "commit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+      "commitShort": "61b8e75",
+      "commitMessage": "verify anchor peer pairing signature",
+      "branch": "stabilisation",
+      "dirty": true,
+      "builtAt": "2026-10-14T16:45:24Z"
+    }
+  },
+  "nonce": {
+    "result": 200,
+    "response": 0,
+    "require_reply": false,
+    "extra": null
+  },
+  "nonceError": {
+    "result": 400,
+    "response": "No address specified",
+    "require_reply": false,
+    "extra": null
+  },
+  "statusUnknown": {
+    "result": 200,
+    "response": {
+      "state": "unknown"
+    },
+    "extra": "",
+    "require_reply": false
+  },
+  "statusIncluded": {
+    "result": 200,
+    "response": {
+      "state": "included",
+      "blockNumber": 26341
+    },
+    "extra": "",
+    "require_reply": false
+  },
+  "transaction": {
+    "result": 200,
+    "response": {
+      "hash": "ec117d2a0ec5c76f5de26dcc3378f45bdf603a089f264b02ed5ea4937c60e870",
+      "status": "confirmed",
+      "blockNumber": 26341,
+      "content": {
+        "type": "native",
+        "from": "0xdefab33f8f5040b329819c3cc2e6f926b4b17de246dfba6b4e08e169d798fc2d",
+        "from_ed25519_address": "0xdefab33f8f5040b329819c3cc2e6f926b4b17de246dfba6b4e08e169d798fc2d",
+        "to": "0x95b14062c13219fe20c721af6202d62b1106ea96b0ca5731cda30ea4e4f00130",
+        "amount": 2400000000000,
+        "timestamp": "1785719036462",
+        "transaction_fee": {
+          "network_fee": 1000000000,
+          "rpc_fee": 1000000000,
+          "additional_fee": 0,
+          "rpc_address": null
+        },
+        "data": [
+          "native",
+          {
+            "nativeOperation": "send",
+            "args": [
+              "0x95b14062c13219fe20c721af6202d62b1106ea96b0ca5731cda30ea4e4f00130",
+              "2400000000000"
+            ]
+          }
+        ]
+      }
+    },
+    "require_reply": false,
+    "extra": null
+  },
+  "block": {
+    "result": 200,
+    "response": {
+      "number": 26341,
+      "status": "confirmed",
+      "content": {
+        "timestamp": 1785719206,
+        "ordered_transactions": [
+          "ec117d2a0ec5c76f5de26dcc3378f45bdf603a089f264b02ed5ea4937c60e870"
+        ]
+      }
+    },
+    "require_reply": false,
+    "extra": ""
+  },
+  "networkParameters": {
+    "result": 200,
+    "response": {
+      "blockTimeMs": 1000,
+      "shardSize": 2,
+      "minValidatorStake": "1000000000000",
+      "networkFee": 1,
+      "rpcFee": 1,
+      "additionalFee": 0,
+      "networkFeeBurnPct": 50,
+      "networkFeeTreasuryPct": 50,
+      "additionalFeeBurnPct": 25,
+      "additionalFeeTreasuryPct": 75,
+      "specialOpsBurnPct": 25,
+      "specialOpsTreasuryPct": 25,
+      "specialOpsRpcPct": 50,
+      "featureFlags": {
+        "l2ps": true,
+        "tlsn": true
+      }
+    },
+    "require_reply": false,
+    "extra": null
+  }
+}

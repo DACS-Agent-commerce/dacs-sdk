@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import BetterSqlite3 from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   VERSION,
@@ -697,6 +697,60 @@ describe("DACS Node SQLite durability foundation", () => {
     });
   });
 
+  it("blocks both upgrade projections for an operator-action effect after restart", async () => {
+    const databasePath = join(temporaryRoot(), "upgrade-operator.sqlite");
+    const database = await open(databasePath);
+    const effect = {
+      kind: "payment" as const, effectId: "payment:operator",
+      bindingHash: BINDING_HASH, input: { amount: "1" },
+      idempotencyKey: "payment:operator", jobId: JOB_ID,
+    };
+    expect(database.putEffectIntent(effect)).toMatchObject({ status: "created" });
+    const identity = { kind: effect.kind, effectId: effect.effectId,
+      bindingHash: effect.bindingHash };
+    const claim = database.claimEffect({ ...identity, owner: "worker", leaseDurationMs: 60_000 });
+    if (claim.status !== "acquired") throw new Error("expected effect claim");
+    expect(database.requireEffectOperatorAction({ ...identity, lease: claim.lease,
+      reasonCode: "manual-reconciliation-required" })).toMatchObject({ status: "recorded" });
+    const expected = {
+      safe: false, intentEffects: 0, activeEffects: 0, reconciliationEffects: 0,
+      operatorActionEffects: 1, incompleteOrders: 0,
+    };
+    expect(database.upgradeSafety()).toEqual(expected);
+    database.close();
+    databases.splice(databases.indexOf(database), 1);
+    expect(inspectDacsNodeSqliteUpgradeSafetyV1(options(databasePath)))
+      .toMatchObject({ status: "pass", safety: expected });
+    const reopened = await open(databasePath);
+    expect(reopened.upgradeSafety()).toEqual(expected);
+  });
+
+  it.each(["identical", "binding", "payload", "job"])(
+    "authenticates a pre-existing payment-effect reservation: %s", async (variant) => {
+      const database = await open(join(temporaryRoot(), "effect-reservation.sqlite"));
+      const intent = {
+        kind: "payment" as const, effectId: "payment:reserved", bindingHash: BINDING_HASH,
+        input: { amount: "1", asset: "USDC" },
+        idempotencyKey: "payment:reserved", jobId: JOB_ID,
+      };
+      expect(database.reserveIdentity({
+        kind: "payment-effect", identity: intent.effectId,
+        bindingHash: variant === "binding" ? OTHER_BINDING_HASH : BINDING_HASH,
+        payloadHash: sha256Hex(canonicalize(variant === "payload"
+          ? { ...intent.input, amount: "2" } : intent.input)),
+        jobId: variant === "job" ? OTHER_JOB_ID : JOB_ID,
+      })).toMatchObject({ status: "created" });
+      expect(database.putEffectIntent(intent)).toMatchObject({
+        status: variant === "identical" ? "created" : "conflict",
+      });
+      if (variant === "identical") {
+        expect(database.loadEffect(intent.kind, intent.effectId)).toBeDefined();
+      } else {
+        expect(database.loadEffect(intent.kind, intent.effectId)).toBeUndefined();
+      }
+    },
+  );
+
   it("inspects an existing actor store without creating or mutating it", async () => {
     const root = temporaryRoot();
     const missingPath = join(root, "missing.sqlite");
@@ -1378,6 +1432,77 @@ describe("DACS Node SQLite durability foundation", () => {
     await expect(openDacsNodeSqliteDatabase(options(databasePath)))
       .rejects.toMatchObject({ reasonCode: "database-logical-corruption" });
   });
+
+  it.each(["corrupt-backup", "concurrent-write"])(
+    "refuses migration after %s and removes the unusable backup", async (variant) => {
+      const root = temporaryRoot();
+      const path = join(root, "migration.sqlite");
+      await createV1Database(path);
+      const original = BetterSqlite3.prototype.backup;
+      let injected = false;
+      const backup = vi.spyOn(BetterSqlite3.prototype, "backup").mockImplementation(
+        async function (this: BetterSqlite3.Database, destination, settings) {
+          const result = await original.call(this, destination, settings);
+          const target = new BetterSqlite3(variant === "corrupt-backup" ? destination : path);
+          try {
+            if (variant === "corrupt-backup") {
+              target.exec("DELETE FROM dacs_migrations WHERE version = 1");
+            } else {
+              target.exec("UPDATE dacs_store_metadata SET created_at = created_at + 1");
+            }
+            injected = true;
+          } finally { target.close(); }
+          return result;
+        },
+      );
+      try {
+        await expect(open(path)).rejects.toMatchObject({ reasonCode: variant === "corrupt-backup"
+          ? "database-migration-history-invalid" : "database-version-raced" });
+      } finally { backup.mockRestore(); }
+      expect(injected).toBe(true);
+      const source = new BetterSqlite3(path, { readonly: true });
+      try { expect(source.pragma("user_version", { simple: true })).toBe(1); }
+      finally { source.close(); }
+      expect(readdirSync(root).filter((name) => name.includes(".backup-v1-"))).toEqual([]);
+      // After the failed admission, a fresh backup and migration still work.
+      expect((await open(path)).diagnostics().schemaVersion).toBe(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    },
+  );
+
+  it.each(["backup-journal", "post-migration-schema"])(
+    "refuses %s before committing a migration", async (variant) => {
+      const root = temporaryRoot();
+      const path = join(root, "migration-check.sqlite");
+      await createV1Database(path);
+      const original = BetterSqlite3.prototype.pragma;
+      let injected = false;
+      const pragma = vi.spyOn(BetterSqlite3.prototype, "pragma").mockImplementation(
+        function (this: BetterSqlite3.Database, source, settings) {
+          if (variant === "backup-journal" && this.name.includes(".backup-v1-") &&
+              source === "journal_mode = DELETE") {
+            injected = true;
+            return "wal";
+          }
+          const result = original.call(this, source, settings);
+          if (variant === "post-migration-schema" && this.name === path &&
+              source === `user_version = ${DACS_NODE_SQLITE_SCHEMA_VERSION}`) {
+            injected = true;
+            this.exec("DROP INDEX dacs_effects_runnable_idx");
+          }
+          return result;
+        },
+      );
+      try {
+        await expect(open(path)).rejects.toMatchObject({ reasonCode: variant === "backup-journal"
+          ? "database-backup-failed" : "database-schema-invalid" });
+      } finally { pragma.mockRestore(); }
+      expect(injected).toBe(true);
+      const source = new BetterSqlite3(path, { readonly: true });
+      try { expect(source.pragma("user_version", { simple: true })).toBe(1); }
+      finally { source.close(); }
+      expect((await open(path)).diagnostics().schemaVersion).toBe(DACS_NODE_SQLITE_SCHEMA_VERSION);
+    },
+  );
 
   it("does not mutate or back up unauthenticated or corrupt v1 sources", async () => {
     const root = temporaryRoot();

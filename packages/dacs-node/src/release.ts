@@ -1,6 +1,7 @@
 import { FIXED_PRICE_X402_STANDARD_REVISION } from "@kynesyslabs/dacs/commerce";
 
-import { DACS_NODE_SQLITE_SCHEMA_VERSION } from "./sqlite.js";
+// Keep compatibility metadata independent of the optional native SQLite backend.
+import { DACS_NODE_SQLITE_SCHEMA_VERSION } from "./sqliteMetadata.js";
 
 export const DACS_NODE_RELEASE_METADATA_VERSION = 1 as const;
 export const DACS_NODE_CONFIG_SCHEMA_VERSION = 1 as const;
