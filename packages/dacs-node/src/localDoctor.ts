@@ -20,11 +20,11 @@ import type {
   DacsLiveDoctorProbesV1,
 } from "./doctor.js";
 import type { DacsLoadedSecretV1 } from "./secrets.js";
+import type { DacsNodeSqliteDatabase } from "./sqlite.js";
 import {
   DACS_NODE_SQLITE_APPLICATION_ID,
   DACS_NODE_SQLITE_SCHEMA_VERSION,
-  type DacsNodeSqliteDatabase,
-} from "./sqlite.js";
+} from "./sqliteConstants.js";
 
 const MINIMUM_DISK_BYTES = 256 * 1024 * 1024;
 
