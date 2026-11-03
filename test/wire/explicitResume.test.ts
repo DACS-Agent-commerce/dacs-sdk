@@ -101,6 +101,13 @@ it("the longest legal proof still fits the header limit and verifies", async () 
   expect(await wire.verifyExplicitCreateResume(header, f.scope())).toEqual(f.payload);
 });
 
+it("a delegation without a session key never falls back to the buyer's key", async () => {
+  const f = await fixture();
+  const { sessionPublicKey: _sessionPublicKey, ...keyless } = f.delegation;
+  const delegation = keyless as unknown as wire.SellerSessionDelegationPayload;
+  await refused(async () => wire.verifyExplicitCreateResume(await signWith(f, f.payload), { ...f.scope(), delegation }), "explicit_resume_signature_invalid");
+});
+
 it("refuses to sign for a signer that is not the payload's buyer", async () => {
   const f = await fixture();
   await refused(() => signWith(f, f.payload, { claim: SELLER, sign: f.buyerSigner.sign }), "explicit_resume_invalid");
