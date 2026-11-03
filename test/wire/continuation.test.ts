@@ -20,6 +20,8 @@ import { fixtureBinder } from "./authorityFixture.js";
 import { acceptedPurchase, commitPurchase, fixedParty, received, signedAgreement, tp1Listing, validReceipt, wireCommitment } from "./commitmentFixture.js";
 import { readFixtureListingEligibility } from "./listingEligibilityFixture.js";
 import { journalDirectory, journalFixture } from "./requestJournalFixture.js";
+import { stageAllocation } from "./agreementFixture.js";
+import { checkAndReserve } from "./checkAndReserve.js";
 
 const bindTp1Fixture = fixtureBinder(fixtureWire);
 const { testJournal, testJournals } = journalFixture(fixtureWire);
@@ -79,7 +81,7 @@ async function world(l: ReturnType<typeof tp1Listing> = { listing: LISTING, pin:
   const retained = { jobId: JOB, agreementHash, buyer: buyer.claim, seller: seller.claim };
   const commitment = (options: Partial<Parameters<typeof wireCommitment>[0]> = {}) =>
     wireCommitment({ seller, buyer: buyer.claim, jobId: JOB, agreementHash, listingPin: PIN, committedAt: NOW - 5000, ...options });
-  const check = (path: string, body = "{}") => ({ ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from(body), now: NOW, retained,
+  const check = (path: string, body = "{}") => ({ ...context, seller: seller.claim, listingPin: PIN, method: "POST", path, rawBody: Buffer.from(body), now: NOW, retained: { ...retained, ...stageAllocation(path) },
     ready: true, readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), commitment: received(commitment()), agreement: received(agreement), signedListing: received(l.listing) });
   return { buyer, seller, binding, context, agreement, agreementHash, request, direct, delegated, artifact, retained, commitment, check, pin: PIN, listing: l.listing };
 }
@@ -175,19 +177,19 @@ describe("the seller checks the job's finalized commitment on every payment and 
         const opened = change.retained ? await (mode === "direct" ? x.direct : x.delegated)({ ...x.request(path), agreementHash: retained.agreementHash }) : await open();
         // Each refusal is given as received bytes, so it is refused for its own fault, never for not being admitted.
         const given = { ...change, ..."commitment" in change ? { commitment: received(change.commitment) } : {}, ..."agreement" in change ? { agreement: received(change.agreement) } : {} };
-        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(opened, { ...await x.check(path), ...extra, requestJournal: journal, ...given } as wire.RequestCheck)), `${mode}: ${name}`).rejects
+        await expect(Promise.resolve().then(async () => await checkAndReserve(opened, { ...await x.check(path), ...extra, requestJournal: journal, ...given } as wire.RequestCheck)), `${mode}: ${name}`).rejects
           .toThrowError(expect.objectContaining({ code, status }));
       }
       // The reader's own failure keeps its cause.
       const timeout = new Error("receipt lookup timed out");
-      await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await open(), { ...await x.check(path), ...extra, requestJournal: journal, readCommitmentReceipt: Object.assign(() => { throw timeout; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) } as wire.RequestCheck))).rejects.toThrow(timeout);
+      await expect(Promise.resolve().then(async () => await checkAndReserve(await open(), { ...await x.check(path), ...extra, requestJournal: journal, readCommitmentReceipt: Object.assign(() => { throw timeout; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) } as wire.RequestCheck))).rejects.toThrow(timeout);
     }
     expect(journals.reservations()).toHaveLength(0);
     // The seller's own records, read again as bytes, continue the purchase; so do the values the wire admitted from them.
     for (const [mode, open, extra] of modes(x, path)) {
       const given = mode === "direct" ? { commitment: received(x.commitment()), agreement: received(x.agreement) }
         : { commitment: wire.admitWireArtifact(received(x.commitment()) as Buffer), agreement: wire.admitWireArtifact(received(x.agreement) as Buffer) };
-      expect((await wire.checkWireRequest(await open(), { ...await x.check(path), ...extra, requestJournal: await journals.open(), ...given } as wire.RequestCheck)).readbackOnly).toBe(false);
+      expect((await checkAndReserve(await open(), { ...await x.check(path), ...extra, requestJournal: await journals.open(), ...given } as wire.RequestCheck)).readbackOnly).toBe(false);
     }
     expect(journals.reservations()).toHaveLength(2);
   });
@@ -196,7 +198,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     const x = await world();
     const seen: unknown[] = [];
     const reader = (anchored: unknown) => { seen.push(anchored); return "valid"; };
-    for (const path of CONTINUING) await wire.checkWireRequest(await x.direct(x.request(path)), { ...await x.check(path), requestJournal: testJournal(), readCommitmentReceipt: Object.assign(reader, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) });
+    for (const path of CONTINUING) await checkAndReserve(await x.direct(x.request(path)), { ...await x.check(path), requestJournal: testJournal(), readCommitmentReceipt: Object.assign(reader, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) });
     expect(seen).toHaveLength(3);
     for (const anchored of seen) {
       expect(Object.keys(anchored as object).sort()).toEqual(["anchorReceipt", "anchorTxRef", "nativeAddress", "record"]);
@@ -206,8 +208,9 @@ describe("the seller checks the job's finalized commitment on every payment and 
 
   it("routes that start a purchase and read routes need no commitment", async () => {
     const x = await world();
-    for (const path of [P.proposals, P.commitments, P.commitmentSignature, P.context, P.state, P.bundleBuyerCopy]) {
-      expect((await wire.checkWireRequest(await x.direct(x.request(path)), { ...await x.check(path), commitment: undefined, agreement: undefined, readCommitmentReceipt: undefined, requestJournal: testJournal() })).readbackOnly).toBe(false);
+    // The buyer's copy of the bundle reads a committed result, so it needs the commitment too (continuationEvidence.test.ts).
+    for (const path of [P.proposals, P.commitments, P.commitmentSignature, P.context, P.state]) {
+      expect((await checkAndReserve(await x.direct(x.request(path)), { ...await x.check(path), commitment: undefined, agreement: undefined, readCommitmentReceipt: undefined, requestJournal: testJournal() })).readbackOnly).toBe(false);
     }
   });
 
@@ -229,16 +232,16 @@ describe("the seller checks the job's finalized commitment on every payment and 
     for (const path of CONTINUING) {
       for (const mode of ["direct", "delegated"] as const) {
         const extra = mode === "delegated" ? { requireDelegation: true, artifacts: [x.artifact] } : {};
-        expect((await wire.checkWireRequest(await x[mode](x.request(path)), { ...await x.check(path), ...extra,
+        expect((await checkAndReserve(await x[mode](x.request(path)), { ...await x.check(path), ...extra,
           requestJournal: testJournal(), readCommitmentReceipt: Object.assign(reader, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) })).effect).toMatchObject({ state: "new" });
         // A plain artifact is refused even when signed under its own domain and anchored by the seller.
-        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await x[mode]({ ...x.request(path), agreementHash: hash }), { ...await x.check(path), ...extra,
+        await expect(Promise.resolve().then(async () => await checkAndReserve(await x[mode]({ ...x.request(path), agreementHash: hash }), { ...await x.check(path), ...extra,
           requestJournal: testJournal(), retained: { ...x.retained, agreementHash: hash }, agreement: received(document),
           commitment: received(x.commitment({ agreementHash: hash })), readCommitmentReceipt: Object.assign(reader, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) }))).rejects
           .toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid" }));
       }
       // The pinned Listing selects the artifact before any signature, regardless of a host's phase label.
-      await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await plain.direct(plain.request(path)), { ...await plain.check(path),
+      await expect(Promise.resolve().then(async () => await checkAndReserve(await plain.direct(plain.request(path)), { ...await plain.check(path),
         requestJournal: testJournal(), commitment: received(resigned(plain, { value: "A".repeat(86) })),
         commitPhase: "commit-payee-bound-agreement" } as wire.RequestCheck))).rejects
         .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported" }));
@@ -249,7 +252,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
   it("a wire-accepted TP-1 purchase passes seller payment intake's Agreement-type check", async () => {
     const x = await world();
     const committed = x.commitment();
-    expect((await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal() })).effect)
+    expect((await checkAndReserve(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal() })).effect)
       .toMatchObject({ state: "new" });
     let listingReads = 0;
     const unexpected = async (): Promise<never> => { throw new Error("unexpected downstream intake call"); };
@@ -275,7 +278,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     const x = await world();
     const listingRefused = (detail?: string) => expect.objectContaining({ code: "continuation_listing_invalid", status: 500, ...detail ? { detail } : {} });
     const check = (w: Awaited<ReturnType<typeof world>>, signedListing: unknown, path: string = P.payments) => async () =>
-      await wire.checkWireRequest(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: testJournal(), signedListing });
+      await checkAndReserve(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: testJournal(), signedListing });
     const other = party();
     const cases: Array<[string, Awaited<ReturnType<typeof world>>, unknown]> = [
       ["no Listing", x, undefined],
@@ -338,7 +341,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
       expect(contentHash(listing as never), name).toBe(w.pin.contentHash);
       for (const path of CONTINUING) {
         for (const [mode, open, extra] of [["direct", async () => await w.direct(w.request(path)), {}], ["delegated", async () => await w.delegated(w.request(path)), { requireDelegation: true, artifacts: [w.artifact] }]] as const) {
-          await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await open(), { ...await w.check(path), ...extra, requestJournal: await journals.open(), signedListing: given, readCommitmentReceipt: Object.assign(() => { receipts++; return "valid"; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) })), `${name} ${mode} ${path}`).rejects.toThrowError(refused);
+          await expect(Promise.resolve().then(async () => await checkAndReserve(await open(), { ...await w.check(path), ...extra, requestJournal: await journals.open(), signedListing: given, readCommitmentReceipt: Object.assign(() => { receipts++; return "valid"; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) })), `${name} ${mode} ${path}`).rejects.toThrowError(refused);
         }
       }
     }
@@ -348,12 +351,12 @@ describe("the seller checks the job's finalized commitment on every payment and 
     for (const path of CONTINUING) {
       for (const [open, extra] of [[async () => await authorized.direct(authorized.request(path)), {}],
         [async () => await authorized.delegated(authorized.request(path)), { requireDelegation: true, artifacts: [authorized.artifact] }]] as const) {
-        expect((await wire.checkWireRequest(await open(), { ...await authorized.check(path), ...extra, requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
+        expect((await checkAndReserve(await open(), { ...await authorized.check(path), ...extra, requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
       }
     }
     // The primary key remains valid too.
     expect(journals.reservations()).toEqual([]);
-    expect((await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: await journals.open() })).effect).toMatchObject({ state: "new" });
+    expect((await checkAndReserve(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: await journals.open() })).effect).toMatchObject({ state: "new" });
     expect(journals.reservations()).toHaveLength(1);
   }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
@@ -369,7 +372,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
     for (const [name, options, want] of cases) {
       const w = await world(undefined, options);
       for (const path of CONTINUING) {
-        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() })), `${name} ${path}`).rejects
+        await expect(Promise.resolve().then(async () => await checkAndReserve(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() })), `${name} ${path}`).rejects
           .toThrowError(expect.objectContaining({ code: "continuation_agreement_invalid", status: 500, ...(want === "continuation_agreement_invalid" ? {} : { detail: want }) }));
       }
     }
@@ -386,7 +389,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
         .rejects.toMatchObject({ code: "peer_envelope_invalid" });
       // A host that serves the alias and passes its raw path is refused for the signed route's path.
       for (const route of CONTINUING) {
-        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await x.direct(x.request(route)), { ...await x.check(alias), requestJournal: await journals.open(), commitment: undefined })), `${alias} for ${route}`).rejects
+        await expect(Promise.resolve().then(async () => await checkAndReserve(await x.direct(x.request(route)), { ...await x.check(alias), requestJournal: await journals.open(), commitment: undefined })), `${alias} for ${route}`).rejects
           .toThrowError(expect.objectContaining({ code: "peer_request_mismatch" }));
       }
     }
@@ -415,8 +418,8 @@ describe("the seller checks the job's finalized commitment on every payment and 
       const w = await world({ listing: LISTING, pin: PIN }, change);
       for (const path of CONTINUING) {
         const journals = testJournals();
-        const direct = async () => await wire.checkWireRequest(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() });
-        const delegated = async () => await wire.checkWireRequest(await w.delegated(w.request(path)), { ...await w.check(path), requireDelegation: true, artifacts: [w.artifact], requestJournal: await journals.open() } as wire.RequestCheck);
+        const direct = async () => await checkAndReserve(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() });
+        const delegated = async () => await checkAndReserve(await w.delegated(w.request(path)), { ...await w.check(path), requireDelegation: true, artifacts: [w.artifact], requestJournal: await journals.open() } as wire.RequestCheck);
         await expect(Promise.resolve().then(direct), `${name} ${path} direct`).rejects.toThrowError(termsRefused);
         await expect(Promise.resolve().then(delegated), `${name} ${path} delegated`).rejects.toThrowError(termsRefused);
         expect(journals.reservations(), `${name} ${path}`).toHaveLength(0);
@@ -425,11 +428,11 @@ describe("the seller checks the job's finalized commitment on every payment and 
     // The SDK verifier's own reason is kept as the cause.
     const w = await world({ listing: LISTING, pin: PIN }, cases[0]![1]);
     let thrown: unknown;
-    try { await wire.checkWireRequest(await w.direct(w.request(P.payments)), { ...await w.check(P.payments), requestJournal: testJournal() }); } catch (error) { thrown = error; }
+    try { await checkAndReserve(await w.direct(w.request(P.payments)), { ...await w.check(P.payments), requestJournal: testJournal() }); } catch (error) { thrown = error; }
     expect((thrown as Error).cause).toEqual(expect.objectContaining({ message: expect.stringMatching(/price/) }));
     // The Agreement derived from the Listing continues.
     const derived = await world();
-    expect((await wire.checkWireRequest(await derived.direct(derived.request(P.payments)), { ...await derived.check(P.payments), requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
+    expect((await checkAndReserve(await derived.direct(derived.request(P.payments)), { ...await derived.check(P.payments), requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
   }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
   it("continues only a TP-1 Listing: fixed DEM pricing, one pay-dem phase, and deliver-storage-program with a storage-program deliverable (DACS-4 §9.6.1)", async () => {
@@ -451,9 +454,9 @@ describe("the seller checks the job's finalized commitment on every payment and 
       const w = await world(l);
       for (const path of CONTINUING) {
         const journals = testJournals();
-        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() })), `${name} ${path} direct`).rejects
+        await expect(Promise.resolve().then(async () => await checkAndReserve(await w.direct(w.request(path)), { ...await w.check(path), requestJournal: await journals.open() })), `${name} ${path} direct`).rejects
           .toThrowError(expect.objectContaining({ code, status: 500, detail }));
-        await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await w.delegated(w.request(path)), { ...await w.check(path), requireDelegation: true, artifacts: [w.artifact], requestJournal: await journals.open() } as wire.RequestCheck)),
+        await expect(Promise.resolve().then(async () => await checkAndReserve(await w.delegated(w.request(path)), { ...await w.check(path), requireDelegation: true, artifacts: [w.artifact], requestJournal: await journals.open() } as wire.RequestCheck)),
           `${name} ${path} delegated`).rejects.toThrowError(expect.objectContaining({ code, status: 500, detail }));
         expect(journals.reservations(), `${name} ${path}`).toHaveLength(0);
       }
@@ -477,7 +480,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
       ["delegated", async () => await x.delegated(x.request(path)), { requireDelegation: true, artifacts: [{ ...x.artifact, listingRef: x.pin }] }],
     ] as const;
     const run = (x: Awaited<ReturnType<typeof world>>, path: string, committedAt: number) => modes(x, path).map(([mode, open, extra]) => [mode, async () =>
-      await wire.checkWireRequest(await open(), { ...await x.check(path), ...extra, requestJournal: testJournal(), commitment: received(x.commitment({ committedAt })) } as wire.RequestCheck)] as const);
+      await checkAndReserve(await open(), { ...await x.check(path), ...extra, requestJournal: testJournal(), commitment: received(x.commitment({ committedAt })) } as wire.RequestCheck)] as const);
     // An Agreement generated before the Listing opened (a hand-built one): its commitment before notBefore is refused.
     // Its deadline is within the limit, so only notBefore refuses it.
     const early = await world(ended, { generatedAt: notBefore, patch: { generatedAt: notBefore - 2000 }, terms: { deadline: notBefore + 590_000 } });
@@ -517,7 +520,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
         seller: purchase.seller.claim, listingPin: purchase.pin, agreementHash: purchase.agreementHash, nonce: nonce(), expiresAt: at + 30_000, profile: binding.profile };
       const signature = Buffer.from(purchase.buyer.signBytes(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.request + canonicalize(payload)))).toString("base64url");
       const opened = await wire.openWireEnvelope(header({ payload, signature }), "request", { binding, local: LOCAL, purchaseProfile: binding.profile });
-      await expect(Promise.resolve().then(async () => await wire.checkWireRequest(opened, { binding, local: LOCAL, purchaseProfile: binding.profile, seller: purchase.seller.claim, listingPin: purchase.pin, method: "POST", path,
+      await expect(Promise.resolve().then(async () => await checkAndReserve(opened, { binding, local: LOCAL, purchaseProfile: binding.profile, seller: purchase.seller.claim, listingPin: purchase.pin, method: "POST", path,
         rawBody: Buffer.from("{}"), now: at, retained: { jobId: JOB, agreementHash: purchase.agreementHash, buyer: purchase.buyer.claim, seller: purchase.seller.claim },
         requestJournal: testJournal(), commitment: received(record), agreement: received(purchase.agreement), signedListing: received(purchase.listing), readCommitmentReceipt: Object.assign(validReceipt, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }) })), path).rejects
         .toThrowError(expect.objectContaining({ code: "continuation_commitment_invalid", status: 500 }));
@@ -527,7 +530,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
   it("admits the commitment and Agreement from their exact received bytes (CF-5): a caller's object or a copy is refused", async () => {
     const x = await world();
     const journals = testJournals();
-    const check = (given: Record<string, unknown>) => async () => await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: await journals.open(), ...given });
+    const check = (given: Record<string, unknown>) => async () => await checkAndReserve(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: await journals.open(), ...given });
     const refused = (code: string, detail: string) => expect.objectContaining({ code, status: 500, detail });
     const commitmentText = JSON.stringify(x.commitment()), agreementText = JSON.stringify(x.agreement);
     const record = x.commitment().record;
@@ -577,11 +580,11 @@ describe("the seller checks the job's finalized commitment on every payment and 
       ["a receipt time before the Agreement was generated", x.commitment({ committedAt: generatedAt - 1 })],
     ];
     for (const [name, commitment] of cases) {
-      await expect(Promise.resolve().then(async () => await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal(), commitment: received(commitment) })), name).rejects
+      await expect(Promise.resolve().then(async () => await checkAndReserve(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal(), commitment: received(commitment) })), name).rejects
         .toThrowError(expect.objectContaining({ code: "continuation_commitment_invalid", status: 500 }));
     }
     // At the Agreement's own time, it continues.
-    expect((await wire.checkWireRequest(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal(), commitment: received(x.commitment({ committedAt: generatedAt })) })).effect)
+    expect((await checkAndReserve(await x.direct(x.request(P.payments)), { ...await x.check(P.payments), requestJournal: testJournal(), commitment: received(x.commitment({ committedAt: generatedAt })) })).effect)
       .toMatchObject({ state: "new" });
   });
 
@@ -797,12 +800,12 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     const opened = wire.openWireRequestJournal(directory);
     for (const journal of [{ durable: true, reserve }, { qualified: true }, { directory }, { ...opened }, Object.freeze({ directory }), () => true, null, undefined]) {
       for (const path of [P.proposals, ...CONTINUING]) {
-        await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.direct(x.request(path))), { ...x.check(path), requestJournal: journal as never })))).rejects
+        await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.direct(x.request(path))), { ...x.check(path), requestJournal: journal as never })))).rejects
           .toThrowError(expect.objectContaining({ code: "seller_replay_guard_required", status: 500 }));
       }
     }
     expect(held.size).toBe(0);
-    expect((await wire.checkWireRequest((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: opened })).effect).toMatchObject({ state: "new", attempt: 0 });
+    expect((await checkAndReserve((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: opened })).effect).toMatchObject({ state: "new", attempt: 0 });
     expect("qualifyWireRequestJournal" in wire).toBe(false);
   });
 
@@ -833,7 +836,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     const x = (await world());
     const journals = testJournals();
     const journal = (await journals.open());
-    const at = async (path: string, body: string) => (await wire.checkWireRequest((await x.direct(x.request(path, body))), { ...x.check(path, body), requestJournal: journal }));
+    const at = async (path: string, body: string) => (await checkAndReserve((await x.direct(x.request(path, body))), { ...x.check(path, body), requestJournal: journal }));
     const payload = x.request(P.payments);
     const { seller, jobId, path } = payload;
     // Only the seller, job and route: no body, nonce, Agreement hash, buyer or tuple.
@@ -850,8 +853,8 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     // The same signed request again is a replay.
     const once = x.request(P.payments);
     const opened = async () => (await x.direct(once));
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await opened()), { ...x.check(P.payments), requestJournal: journal })))).rejects.toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
-    await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await opened()), { ...x.check(P.payments), requestJournal: journal })))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await opened()), { ...x.check(P.payments), requestJournal: journal })))).rejects.toThrowError(expect.objectContaining({ code: "seller_effect_pending" }));
+    await expect(Promise.resolve().then(async () => (await checkAndReserve((await opened()), { ...x.check(P.payments), requestJournal: journal })))).rejects.toThrowError(expect.objectContaining({ code: "peer_request_replayed", status: 409 }));
     expect(new Set(journals.reservations().map((r) => r.operationId)).size).toBe(4);
   }, 60_000); // several cases on every route, direct and delegated, each with its own journal: load-sensitive under the 5 s default
 
@@ -861,10 +864,10 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     const another = signedAgreement({ buyer: x.buyer, seller: x.seller, jobId: JOB, listingPin: PIN, generatedAt: NOW - 30_000 });
     expect(another.agreementHash).not.toBe(x.agreementHash);
     /** The same job and route under the Agreement the host retained first, or under another one it retained later. */
-    const at = async (path: string, journal: wire.WireRequestJournal, changed: boolean) => (await wire.checkWireRequest(
+    const at = async (path: string, journal: wire.WireRequestJournal, changed: boolean) => (await checkAndReserve(
       (await x.direct({ ...x.request(path), ...(changed ? { agreementHash: another.agreementHash } : {}) })),
       { ...x.check(path), requestJournal: journal, ...(changed ? {
-        retained: { ...x.retained, agreementHash: another.agreementHash }, agreement: received(another.agreement),
+        retained: { ...x.retained, agreementHash: another.agreementHash, ...stageAllocation(path) }, agreement: received(another.agreement),
         commitment: received(x.commitment({ agreementHash: another.agreementHash })),
       } : {}) }));
     const mismatch = expect.objectContaining({ code: "peer_operation_mismatch", status: 409 });
@@ -890,7 +893,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     const x = (await world());
     const directory = journalDirectory();
     const journal = wire.openWireRequestJournal(directory);
-    const at = async () => (await wire.checkWireRequest((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal }));
+    const at = async () => (await checkAndReserve((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal }));
     const first = (await at()).effect!;
     const file = join(directory, `o-${first.operationId}-0`);
     const kept = JSON.parse(readFileSync(file, "utf8"));
@@ -906,7 +909,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
   it("answers a repeat of a completed operation with its outcome and runs no second effect", async () => {
     const x = (await world());
     const journal = testJournal();
-    const at = async (body: string) => (await wire.checkWireRequest((await x.direct(x.request(P.payments, body))), { ...x.check(P.payments, body), requestJournal: journal }));
+    const at = async (body: string) => (await checkAndReserve((await x.direct(x.request(P.payments, body))), { ...x.check(P.payments, body), requestJournal: journal }));
     const first = (await at('{"tx":"1"}'));
     expect(first.effect?.state).toBe("new");
     const outcome = { status: 200, text: '{"paid":true}' };
@@ -922,7 +925,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     const x = (await world());
     const directory = journalDirectory();
     const journal = wire.openWireRequestJournal(directory);
-    const at = async (j: wire.WireRequestJournal, body: string) => (await wire.checkWireRequest((await x.direct(x.request(P.payments, body))), { ...x.check(P.payments, body), requestJournal: j }));
+    const at = async (j: wire.WireRequestJournal, body: string) => (await checkAndReserve((await x.direct(x.request(P.payments, body))), { ...x.check(P.payments, body), requestJournal: j }));
     // CF-5 preserves received values; canonical JSON would rewrite these body bytes.
     expect(Buffer.from(text).toString("utf8")).toBe(text);
     expect(canonicalize(JSON.parse(text))).not.toBe(text);
@@ -944,7 +947,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
   it("refuses an outcome whose text is not well-formed UTF-8 (a lone surrogate would be stored as another character) before anything is published", async () => {
     const x = (await world());
     const journal = testJournal();
-    const { effect } = (await wire.checkWireRequest((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal }));
+    const { effect } = (await checkAndReserve((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal }));
     for (const text of ["\ud800", '{"a":"\udc00"}', "ok\ud83d"]) {
       expect(() => wire.completeWireEffect(journal, effect!, { status: 200, text }), text).toThrowError(expect.objectContaining({ code: "wire_input_invalid", detail: "OUTCOME-INVALID" }));
     }
@@ -954,7 +957,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
   it("refuses an outcome whose text the wire could never sign (CF-5 admission of a response body), before anything is published: no answer is left unanswerable", async () => {
     const x = (await world());
     const journal = testJournal();
-    const at = async (body: string) => (await wire.checkWireRequest((await x.direct(x.request(P.payments, body))), { ...x.check(P.payments, body), requestJournal: journal }));
+    const at = async (body: string) => (await checkAndReserve((await x.direct(x.request(P.payments, body))), { ...x.check(P.payments, body), requestJournal: journal }));
     const { effect } = (await at('{"tx":"1"}'));
     const refused = expect.objectContaining({ code: "wire_input_invalid", status: 500, detail: "OUTCOME-INVALID" });
     const unsignable: Array<[string, string]> = [
@@ -981,7 +984,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
   it("refuses to complete an effect it did not issue, on another journal, or with a malformed outcome", async () => {
     const x = (await world());
     const journal = testJournal(), other = testJournal();
-    const { effect } = (await wire.checkWireRequest((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal }));
+    const { effect } = (await checkAndReserve((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal }));
     const code = (f: () => void) => { try { f(); return "ok"; } catch (error) { return (error as wire.WireError).detail ?? (error as wire.WireError).code; } };
     expect(code(() => wire.completeWireEffect(journal, { ...effect! }, null))).toBe("EFFECT-NOT-ISSUED");
     expect(code(() => wire.completeWireEffect(other, effect!, null))).toBe("EFFECT-NOT-ISSUED");
@@ -998,7 +1001,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     const directory = journalDirectory();
     const worker = () => wire.openWireRequestJournal(directory, { leaseMs: 1000, clock: () => clock });
     const a = worker(), b = worker();
-    const at = async (journal: wire.WireRequestJournal, body = "{}") => (await wire.checkWireRequest((await x.direct(x.request(P.bundleRequest, body))), { ...x.check(P.bundleRequest, body), requestJournal: journal }));
+    const at = async (journal: wire.WireRequestJournal, body = "{}") => (await checkAndReserve((await x.direct(x.request(P.bundleRequest, body))), { ...x.check(P.bundleRequest, body), requestJournal: journal }));
     const first = (await at(a)).effect!;
     expect(first).toMatchObject({ state: "new", attempt: 0, leaseUntil: NOW + 1000 });
     clock = NOW + 999;
@@ -1018,7 +1021,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     const x = (await world());
     const directory = journalDirectory();
     const open = () => wire.openWireRequestJournal(directory, { leaseMs: 600_000 });
-    const at = async (journal: wire.WireRequestJournal) => (await wire.checkWireRequest((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal })).effect!;
+    const at = async (journal: wire.WireRequestJournal) => (await checkAndReserve((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal })).effect!;
     for (let attempt = 0; attempt < wire.MAX_EFFECT_ATTEMPTS + 4; attempt++) {
       const journal = (await open());
       const effect = (await at(journal));
@@ -1037,7 +1040,7 @@ describe("an effect is reserved only in the SDK's durable journal", { timeout: 6
     let clock = NOW;
     const directory = journalDirectory();
     const open = () => wire.openWireRequestJournal(directory, { leaseMs: 1000, clock: () => clock });
-    const at = async (journal: wire.WireRequestJournal) => (await wire.checkWireRequest((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal })).effect!;
+    const at = async (journal: wire.WireRequestJournal) => (await checkAndReserve((await x.direct(x.request(P.payments))), { ...x.check(P.payments), requestJournal: journal })).effect!;
     let attempt = 0;
     for (let crashes = 0; crashes < wire.MAX_EFFECT_ATTEMPTS; crashes++) {
       // Interleave clean retries, advancing the fencing token without consuming the crash budget.
@@ -1096,7 +1099,7 @@ it("signed Agreement job, buyer and signature algorithm are independent of the r
     let reads = 0;
     const journals = testJournals();
     const request = { ...x.request(path), agreementHash: a.agreementHash };
-    const invoke = async () => (await wire.checkWireRequest((await x.direct(request)), { ...x.check(path),
+    const invoke = async () => (await checkAndReserve((await x.direct(request)), { ...x.check(path),
       retained: { ...x.retained, agreementHash: a.agreementHash }, agreement: received(a.agreement),
       commitment: received(x.commitment({ agreementHash: a.agreementHash })),
       readCommitmentReceipt: Object.assign(() => { reads++; return "valid"; }, { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity }), requestJournal: (await journals.open()) }));
@@ -1110,7 +1113,7 @@ it("non-DEM payment phase fails PAY-PHASE with otherwise coherent signed terms",
     { kind: "pay-x402", parameters: { rail: "demos-native:DEM" } }, { kind: "deliver-storage-program" },
   ] } });
   const x = (await world(l));
-  for (const path of CONTINUING) await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.direct(x.request(path))), { ...x.check(path), requestJournal: testJournal() })))).rejects
+  for (const path of CONTINUING) await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.direct(x.request(path))), { ...x.check(path), requestJournal: testJournal() })))).rejects
     .toThrowError(expect.objectContaining({ code: "continuation_phase_unsupported", detail: "PAY-PHASE" }));
 }, 60_000);
 it("a fully signed open-ended Listing continues at seller and buyer", async () => {
@@ -1126,7 +1129,7 @@ it("a fully signed open-ended Listing continues at seller and buyer", async () =
     const signed = await wire.signWireRequest({ ...x.context, signer: x.buyer, endpointProof: proof, publicEndpoint: ENDPOINT, path,
       jobId: JOB, text: "{}", seller: SELLER.claim, now: NOW, job: { listingPin: l.pin, agreementHash: x.agreementHash, profile: x.binding.profile },
       commitment: received(x.commitment()), agreement: received(x.agreement), signedListing: received(l.listing) });
-    expect((await wire.checkWireRequest((await wire.openWireEnvelope(signed.header, "request", x.context)), { ...x.check(path), requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
+    expect((await checkAndReserve((await wire.openWireEnvelope(signed.header, "request", x.context)), { ...x.check(path), requestJournal: testJournal() })).effect).toMatchObject({ state: "new" });
   }
 }, 60_000);
 it("a structurally complete indeterminate finalized receipt never authorizes continuation", async () => {
@@ -1134,7 +1137,7 @@ it("a structurally complete indeterminate finalized receipt never authorizes con
   const c = x.commitment({ receipt: { observationDisposition: "indeterminate", preservedReceiptHash: "e".repeat(64) } });
   expect(isReadableAnchorReceipt(c.anchorReceipt)).toBe(true);
   const journals = testJournals();
-  for (const path of CONTINUING) await expect(Promise.resolve().then(async () => (await wire.checkWireRequest((await x.direct(x.request(path))), { ...x.check(path), commitment: received(c), requestJournal: (await journals.open()) })))).rejects
+  for (const path of CONTINUING) await expect(Promise.resolve().then(async () => (await checkAndReserve((await x.direct(x.request(path))), { ...x.check(path), commitment: received(c), requestJournal: (await journals.open()) })))).rejects
     .toThrowError(expect.objectContaining({ code: "continuation_commitment_invalid" }));
   expect(journals.reservations()).toEqual([]);
 }, 60_000);

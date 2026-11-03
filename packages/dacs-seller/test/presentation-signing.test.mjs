@@ -304,3 +304,15 @@ for(const [name,answer] of [['without its identity',()=>({status:'unsigned'})],[
  f.config.wallet.reconcilePresentationSignature=async request=>reply(answer(request));
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);assert.equal((await f.row()).presentation.signing.state,'pending');
 });
+// The purchase check that runs right before the signer is the one inside authorizeEffect (its durable read is
+// awaited first). Here the purchase closes in the next microtask, so only a check made after that await sees it.
+const CHECKS_BEFORE_SIGNER=6;
+test('a purchase that closes after the last awaited check signs no presentation and restores the reservation',async t=>{
+ const f=await sessionFixture(t);let checks=0,closed=false;
+ f.job.open=()=>{const open=!closed;if(++checks===CHECKS_BEFORE_SIGNER)queueMicrotask(()=>{closed=true;});return open;};
+ await assert.rejects(f.run(),error=>error.code==='not-pending');
+ assert.equal(f.controls.signs,0);assert.equal(checks,CHECKS_BEFORE_SIGNER+1,'a check after the closing ran right before the signer');
+ const kept=(await f.row()).presentation.signing;assert.equal(kept.state,'prepared');assert.equal(kept.reservation,undefined);
+ f.job.open=()=>true;
+ await f.run();assert.equal(f.controls.signs,1);
+});

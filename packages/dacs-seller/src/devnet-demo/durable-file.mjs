@@ -5,8 +5,13 @@ import { dirname } from 'node:path';
 const PRIVATE_FILE_MODE=0o600;
 const TEMPORARY_SUFFIX_BYTES=6;
 
+async function syncPath(path){const handle=await open(path,'r');try{await handle.sync();}finally{await handle.close();}}
+
 /** Flushes the entries of a directory to disk. Throws if it cannot be opened or synced. */
-export async function syncDirectory(path){const handle=await open(path,'r');try{await handle.sync();}finally{await handle.close();}}
+export const syncDirectory=syncPath;
+
+/** Flushes the contents of an existing file to disk without changing it. Throws if it cannot be opened or synced. */
+export const syncFile=syncPath;
 
 /**
  * Writes `text` to a new mode-0600 file at `path` so that the file is there whole or not at all.
