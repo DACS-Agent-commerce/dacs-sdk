@@ -675,7 +675,9 @@ test('a declined waiver is approval_refused manual-declined and a stop during th
  assert.equal(typeof (await next.retained.prepare(waivable())).ledgerId,'string');
 });
 
-// The operator's yes is the answer to a marked refusal line: it counts nothing itself, the write is its sign line.
+// The operator's yes is the answer to a refusal line it names by waiverId: it counts nothing itself, the write is its
+// sign line. A manual line that names no refusal is a write of its own.
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const sha256=(value)=>createHash('sha256').update(value).digest('hex');
 const waivedAndReleased=async(approval,count)=>{
  for(let nonce=1;nonce<=count;nonce++)await approval.retained.settle(bindingOf(await approval.retained.prepare(waivable({nonce}))),'released');
@@ -684,6 +686,18 @@ const answeringFixture=async(t)=>{
  const fixture=await ledgerFixture(t),manual=manualApprover(fixture,{authorize:async()=>{await fixture.state.answering();return true;}});
  fixture.state.answering=async()=>{};
  return {fixture,manual,approval:fixture.compose(fixture.restart(),manual)};
+};
+
+// Five ordinary writes after the one already on the ledger (nonce 1) make six, the job's limit: a seventh is refused
+// job-write-limit, which a manual yes may waive, so it comes back as a waiver instead of a sign line.
+const seventhWriteIsRefused=async(fixture,why)=>{
+ const later=fixture.compose(fixture.restart());
+ for(let nonce=2;nonce<=6;nonce++)assert.equal(typeof (await later.retained.prepare(evidence({nonce}))).ledgerId,'string',`${why}: write ${nonce} is signed`);
+ assert.ok((await fixture.restart().authorizeRetained(evidence({nonce:7}))).waiver,`${why}: the seventh write of the job is refused`);
+};
+const refusalsAndAnswers=async(path)=>{
+ const waiverLines=(await lines(path)).filter(line=>line.waiverId);
+ return {refusals:waiverLines.filter(line=>line.approvalMode==='policy'),answers:waiverLines.filter(line=>!line.approvalMode)};
 };
 
 test('six waived writes of a job, each released, free its job write limit: a later ordinary write, from a restart, is signed without a waiver or a prompt, and the next six are signed and the thirteenth is refused',async t=>{
@@ -718,14 +732,18 @@ test('the same bytes waived, released and waived again count one write, not two:
  assert.ok((await fixture.restart().authorizeRetained(evidence({nonce:7}))).waiver);
 });
 
-test('an operator yes whose process stops before the sign line counts no write after a restart, six times',async t=>{
+test('an operator yes linked to its refusal, whose process stops before the sign line, counts no write after a restart, six times; the same yes without the link counts one write',async t=>{
  const {fixture,manual}=await answeringFixture(t);
  for(let nonce=1;nonce<=6;nonce++){
-  assert.ok((await fixture.restart().authorizeRetained(waivable({nonce}))).waiver);
-  assert.equal(await manual(waivable({nonce})),true,'the operator said yes; no sign line follows');
+  const {waiver,waiverId}=await fixture.restart().authorizeRetained(waivable({nonce}));
+  assert.ok(waiver);assert.match(waiverId,UUID);
+  assert.equal(await manual(waivable({nonce}),undefined,{waiverId}),true,'the operator said yes; no sign line follows');
  }
  assert.equal((await signLines(fixture.evidencePath)).length,0);
  assert.equal(typeof (await fixture.compose(fixture.restart()).retained.prepare(evidence({nonce:7}))).ledgerId,'string');
+ const unlinked=await answeringFixture(t);
+ assert.equal(await unlinked.manual(waivable({nonce:1})),true);
+ await seventhWriteIsRefused(unlinked.fixture,'an unlinked answer is a write of its own');
 });
 
 test('released waived writes do not refuse a session write or a context hold of the job at the job write limit',async t=>{
@@ -746,25 +764,28 @@ test('a waived write settled spent counts one write: with five more the job is a
  assert.ok((await fixture.restart().authorizeRetained(evidence({nonce:7}))).waiver);
 });
 
-test('a waivable refusal writes one marked unlinked refusal line that counts nothing and opens nothing; the operator\'s line counts only after its marker',async t=>{
+test('a waivable refusal writes one unlinked refusal line with a waiverId that counts nothing and opens nothing; only the operator\'s line that names that waiverId is its answer',async t=>{
  const {fixture,manual,approval}=await answeringFixture(t),policy=fixture.restart(),request=waivable();
  assert.equal(await manual(waivable()),true,'an earlier manual line for the bytes, with no marker before it');
  const before=(await lines(fixture.evidencePath)).length;
  assert.ok((await policy.authorizeRetained(request)).waiver);
  const written=(await lines(fixture.evidencePath)).slice(before);
  assert.equal(written.length,1);
- assert.deepEqual([written[0].decision,written[0].approvalMode,written[0].policyReason,written[0].retained,written[0].reservationId,written[0].attemptId],['rejected','policy','write-fee-cap',true,undefined,undefined]);
+ assert.deepEqual([written[0].decision,written[0].approvalMode,written[0].policyReason,written[0].retained,written[0].reservationId,written[0].attemptId],['rejected','policy','write-fee-cap',undefined,undefined,undefined]);
+ assert.match(written[0].waiverId,UUID);
  const answered=await approval.retained.prepare(waivable());
  const ledger=await parsed(fixture.evidencePath),manualRows=ledger.rows.filter(row=>!row.policy);
- assert.deepEqual(manualRows.map(row=>row.retainedAnswer??false),[false,true],'only the line after the marker is the answer');
+ assert.deepEqual(manualRows.map(row=>row.retainedAnswer??false),[false,true],'only the line that names the refusal is the answer');
+ assert.equal((await lines(fixture.evidencePath)).filter(line=>line.waiverId&&!line.approvalMode).length,1);
  assert.deepEqual(ledger.rows.filter(row=>row.retained===true).map(row=>row.reservationId),[answered.ledgerId],'the refusal line is no authorization');
  assert.equal(await approval.retained.open(JSON.stringify(request)).then(found=>found.ledgerId),answered.ledgerId);
 });
 
-test('a marked refusal line is read strictly: retained must be true on a policy rejected payment-evidence line without a link, and never opens an authorization',async t=>{
+test('a refusal line and its answer are read strictly: waiverId is a uuid on a policy rejected payment-evidence line without a link, the answer names one unanswered refusal of the same bytes, and neither opens an authorization',async t=>{
  const {fixture,approval}=await answeringFixture(t),request=waivable();
- assert.ok((await fixture.restart().authorizeRetained(request)).waiver);
- const marker=(await lines(fixture.evidencePath)).find(line=>line.retained===true),encode=(row)=>`${JSON.stringify(row)}\n`;
+ const {waiverId}=await fixture.restart().authorizeRetained(request);
+ assert.ok(waiverId);
+ const marker=(await lines(fixture.evidencePath)).find(line=>line.waiverId),encode=(...rows)=>rows.map(row=>`${JSON.stringify(row)}\n`).join('');
  assert.doesNotThrow(()=>parsePolicyLedger(encode(marker)));
  assert.equal(await approval.retained.open(JSON.stringify(request)),null,'a refusal is no open authorization');
  const unknownId='00000000-0000-4000-8000-000000000001';
@@ -772,11 +793,100 @@ test('a marked refusal line is read strictly: retained must be true on a policy 
  await rejectsWith(approval.retained.settle({ledgerId:unknownId,requestText:JSON.stringify(request)},'released'),'approval_reservation_unavailable');
  const artifact=JSON.stringify(artifactWrite());
  const mutations={
-  'retained as a string':{retained:'true'},'retained as a number':{retained:1},'retained false':{retained:false},
-  'on an approved line':{decision:'approved',policyReason:null,recordedAt:T0},'on a manual line':{approvalMode:undefined,policyReason:undefined},
+  'waiverId as a number':{waiverId:1},'waiverId not a uuid':{waiverId:'waiver'},'waiverId empty':{waiverId:''},
+  'on an approved line':{decision:'approved',policyReason:null,recordedAt:T0},
   'with an attemptId':{attemptId:randomUUID()},'with a reservationId':{reservationId:randomUUID()},'with a hold marker':{policyHold:'write-fee-cap'},
   'a reason no waiver has':{policyReason:'purchase-closed'},
   'on a request that is not payment evidence':{requestBytes:artifact,approvalHash:sha256(artifact)},
  };
  for(const [name,change] of Object.entries(mutations))assert.throws(()=>parsePolicyLedger(encode({...marker,...change})),/malformed/,name);
+ assert.throws(()=>parsePolicyLedger(encode(marker,marker)),/malformed/,'a refusal waiverId seen twice');
+ // The answer: a manual line (no approvalMode) that names the refusal.
+ const answer={format:marker.format,approvalHash:marker.approvalHash,requestBytes:marker.requestBytes,method:marker.method,address:marker.address,totalOs:marker.totalOs,decision:'approved',waiverId,recordedAt:T0};
+ const answered=parsePolicyLedger(encode(marker,answer));
+ assert.deepEqual(answered.rows.map(row=>row.retainedAnswer??false),[false,true]);
+ const otherBytes=JSON.stringify(waivable({nonce:2})),otherId=randomUUID();
+ const answerMutations={
+  'an answer naming an unknown id':[marker,{...answer,waiverId:otherId}],
+  'an answer naming an id of another request':[marker,{...answer,requestBytes:otherBytes,approvalHash:sha256(otherBytes)}],
+  'an answer before the refusal it names':[answer,marker],
+  'a second answer for the same id':[marker,answer,answer],
+  'an answer on a policy line':[marker,{...answer,approvalMode:'policy',policyReason:'write-fee-cap',decision:'rejected'}],
+  'an answer with an attemptId':[marker,{...answer,attemptId:randomUUID()}],
+  'an answer with a reservationId':[marker,{...answer,reservationId:randomUUID()}],
+  'a manual confirmation naming a refusal':[marker,{...answer,manualApproved:true,confirmation:{}}],
+  'a held line naming a refusal':[marker,{...answer,approvalMode:'policy',policyHold:'write-fee-cap',confirmation:{}}],
+  'an answer with no request bytes':[marker,{format:answer.format,approvalHash:answer.approvalHash,decision:'approved',waiverId}],
+ };
+ for(const [name,rows] of Object.entries(answerMutations))assert.throws(()=>parsePolicyLedger(encode(...rows)),/malformed/,name);
+ assert.doesNotThrow(()=>parsePolicyLedger(encode(marker,{...answer,decision:'rejected'})),'a declined answer also answers its refusal');
+});
+
+// An unanswered refusal (the operator was never asked, or never answered) must not swallow a later manual approval of the
+// same bytes: that approval is a write of its own, counted against the job's limit.
+test('a refusal that was never answered counts no write and swallows no later manual approval of the same bytes: a stopped prompt, a throwing prompt, and a restart before the prompt followed by a session approval or a manual-mode retained.prepare each leave the job one write nearer its limit',async t=>{
+ const stopped=await ledgerFixture(t);let reached;
+ const asking=new Promise(done=>{reached=done;}),hanging=manualApprover(stopped,{authorize:()=>{reached();return new Promise(()=>{});}});
+ const stopping=stopped.compose(stopped.restart(),hanging).retained.prepare(waivable({nonce:1}));await asking;await hanging.stop();
+ await rejectsWith(stopping,'operator_closing');
+ assert.equal((await refusalsAndAnswers(stopped.evidencePath)).refusals.length,1);assert.equal((await refusalsAndAnswers(stopped.evidencePath)).answers.length,0);
+ assert.equal(await manualApprover(stopped)(waivable({nonce:1})),true);
+ await seventhWriteIsRefused(stopped,'stopped prompt');
+
+ const throwing=await ledgerFixture(t);
+ const failing=manualApprover(throwing,{authorize:async()=>{throw new Error('prompt crashed');}});
+ await assert.rejects(throwing.compose(throwing.restart(),failing).retained.prepare(waivable({nonce:1})),/prompt crashed/);
+ assert.equal(await manualApprover(throwing)(waivable({nonce:1})),true);
+ await seventhWriteIsRefused(throwing,'throwing prompt');
+
+ const crashed=await ledgerFixture(t);
+ assert.ok((await crashed.restart().authorizeRetained(waivable({nonce:1}))).waiver,'the refusal is written, then the process ends before the prompt');
+ assert.equal(await manualApprover(crashed)(waivable({nonce:1})),true,'a manual-mode session approval after the restart');
+ await seventhWriteIsRefused(crashed,'restart then session approval');
+
+ const crashedRetained=await ledgerFixture(t);
+ assert.ok((await crashedRetained.restart().authorizeRetained(waivable({nonce:1}))).waiver);
+ const manualMode=composeSellerApproval({mode:'manual',policy:crashedRetained.restart(),manual:manualApprover(crashedRetained)});
+ assert.equal((await manualMode.retained.prepare(waivable({nonce:1}))).ledgerId,null);
+ await seventhWriteIsRefused(crashedRetained,'restart then manual-mode retained.prepare');
+});
+
+test('two concurrent prepares of the same waived bytes share one prompt: exactly one answer line, carrying the first refusal\'s waiverId, and the second refusal stays unanswered and swallows no later manual approval',async t=>{
+ const fixture=await ledgerFixture(t);let open;const answered=new Promise(done=>{open=done;});
+ const approval=fixture.compose(fixture.restart(),manualApprover(fixture,{authorize:async()=>{await answered;return true;}})),probe=fixture.restart();
+ const [one,two]=[approval.retained.prepare(waivable()),approval.retained.prepare(waivable())];
+ await probe.openRetained(JSON.stringify(waivable()));open();
+ const [first]=await Promise.all([one,two]);
+ const {refusals,answers}=await refusalsAndAnswers(fixture.evidencePath);
+ assert.equal(refusals.length,2);assert.equal(answers.length,1);assert.equal(answers[0].waiverId,refusals[0].waiverId,'the answer names the first refusal');
+ assert.notEqual(refusals[0].waiverId,refusals[1].waiverId);
+ await approval.retained.settle(bindingOf(first),'released');
+ assert.equal(await manualApprover(fixture)(waivable()),true);
+ await seventhWriteIsRefused(fixture,'after the shared prompt');
+});
+
+test('a manual approval written while a waiver prompt is pending is a write of its own, also when the prompt then stops',async t=>{
+ const fixture=await ledgerFixture(t);let reached;
+ const asking=new Promise(done=>{reached=done;}),hanging=manualApprover(fixture,{authorize:()=>{reached();return new Promise(()=>{});}});
+ const stopping=fixture.compose(fixture.restart(),hanging).retained.prepare(waivable({nonce:1}));await asking;
+ assert.equal(await manualApprover(fixture)(waivable({nonce:1})),true,'an unrelated approval of the same bytes, while the prompt is pending');
+ await hanging.stop();await rejectsWith(stopping,'operator_closing');
+ assert.equal((await parsed(fixture.evidencePath)).rows.some(row=>row.retainedAnswer),false);
+ await seventhWriteIsRefused(fixture,'pending prompt then stop');
+});
+
+test('a manual answer that names a waiverId is recorded only for an open, unanswered refusal of the same bytes: an unknown, malformed, other-request, repeated or attemptId-combined id writes nothing and answers false, and the ledger still parses',async t=>{
+ const {fixture,manual}=await answeringFixture(t),{waiverId}=await fixture.restart().authorizeRetained(waivable());
+ const unchanged=async(work,why)=>{const before=await text(fixture.evidencePath);assert.equal(await work(),false,why);assert.equal(await text(fixture.evidencePath),before,`${why}: nothing written`);};
+ await unchanged(()=>manual(waivable(),undefined,{waiverId:randomUUID()}),'an unknown waiverId');
+ await unchanged(()=>manual(waivable(),undefined,{waiverId:'waiver'}),'a malformed waiverId');
+ await unchanged(()=>manual(waivable({nonce:2}),undefined,{waiverId}),'a refusal of other bytes');
+ await unchanged(()=>manual(waivable(),undefined,{waiverId,attemptId:randomUUID()}),'a waiverId with an attemptId');
+ const before=(await lines(fixture.evidencePath)).length;
+ assert.equal(await manual(waivable(),undefined,{waiverId}),true);
+ const added=(await lines(fixture.evidencePath)).slice(before);
+ assert.equal(added.length,1);assert.equal(added[0].waiverId,waiverId);assert.equal(added[0].decision,'approved');
+ await unchanged(()=>manual(waivable(),undefined,{waiverId}),'a second answer for the same waiverId');
+ assert.doesNotThrow(()=>parsePolicyLedger(readFileSync(fixture.evidencePath,'utf8')));
+ assert.equal((await parsed(fixture.evidencePath)).rows.filter(row=>row.retainedAnswer).length,1);
 });
