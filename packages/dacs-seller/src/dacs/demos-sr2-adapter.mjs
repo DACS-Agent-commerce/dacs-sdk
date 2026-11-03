@@ -1,7 +1,9 @@
 // Offline SR-2 fixture readback authenticates exact CREATE authorization,
 // confirmed inclusion and native contents. Literal marked loopback replies
 // establish simulated-fixture evidence only, never real consensus or finality:
-// their receipts carry the DEMOS_SR2_FIXTURE_RECEIPT labels, not Demos ones.
+// their receipts carry the DEMOS_SR2_FIXTURE_RECEIPT labels, not Demos ones,
+// and the demosEvidence a fixture read returns carries the same state and
+// finality labels, which the core receipt converter refuses.
 // The adapter owns no key and never broadcasts.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
@@ -358,7 +360,14 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     return authenticate(logicalAddress, expectedWriter, native, expectedHash, saved, projection);
   }
 
-  const read = (logicalAddress, options) => boundedRead(() => readCurrent(logicalAddress, options));
+  const readAuthenticated = (logicalAddress, options) => boundedRead(() => readCurrent(logicalAddress, options));
+
+  // Fixture evidence leaves this adapter only with the fixture labels, so the
+  // core converter and verifier refuse it as chain evidence. Receipt checks
+  // below use the unmarked read, which stays internal.
+  const markFixtureEvidence = (record) => sourceCapability ? record
+    : { ...record, demosEvidence: { ...record.demosEvidence, state: DEMOS_SR2_FIXTURE_RECEIPT.state, finalityProfile: DEMOS_SR2_FIXTURE_RECEIPT.finalityProfile } };
+  const read = async (logicalAddress, options) => markFixtureEvidence(await readAuthenticated(logicalAddress, options));
 
   // A receipt is decoded only after it carries this adapter's labels; the
   // proof codec reads Demos labels, so it gets a relabelled copy.
@@ -374,7 +383,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   // labelled receipt field while retaining the original observation timestamp.
   // Returns the fresh authenticated read.
   async function reauthenticate(receipt, { expectedWriter, signedProjection, ...readOptions }) {
-    const fresh = await read(receipt.logicalAddress, { ...readOptions, expectedWriter, signedProjection, nativeAddress: receipt.nativeAddress });
+    const fresh = await readAuthenticated(receipt.logicalAddress, { ...readOptions, expectedWriter, signedProjection, nativeAddress: receipt.nativeAddress });
     fresh.demosEvidence.nativeRead.observedAt = receipt.observedAt;
     if (!demosWriteEvidenceBindsReceiptContent(fresh.demosEvidence, receipt.logicalAddress, receipt.contentHash)) reject('invalid', 'receipt content hash differs');
     const expected = labelReceipt(demosWriteEvidenceToAnchorReceipt({ logicalAddress: receipt.logicalAddress, contentHash: receipt.contentHash, writer: expectedWriter, evidence: fresh.demosEvidence }), receiptLabels);
