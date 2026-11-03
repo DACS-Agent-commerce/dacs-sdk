@@ -107,6 +107,7 @@ answered as readback, under an expired delegation or otherwise
 | Signer's lifetime (`expiresAt - now` by the signer's clock) | **new:** at most 30 s (`maxSignedLifetimeMs`), default 30 s, for requests (`signWireRequest`'s `lifetimeMs`; above it is a `TypeError`) and answers (`signWireResponse`'s `lifetimeMs`; above it, or a `maxLifetimeMs` given to `signWireResponse`, fails with `seller_configuration_invalid`) |
 | Clock difference tolerated (`maxClockSkewMs`) | **new:** 30 s. A signer's 30 s lifetime inside a receiver's 60 s window passes with the signer's clock up to 30 s ahead of or behind the receiver's (less transit time); a buyer backdates a delegation's `notBefore` by 30 s; the request journal never drops a reservation, so no journal clock can release one a worker still accepts. The plugin signed 60 s answers into a 60 s window, so any seller clock lead refused every answer after the seller had acted |
 | Envelope header | at most 4,096 base64url characters |
+| Explicit-resume header (`x-dacs-seller-resume`) | at most 4,096 base64url characters, checked before decoding; its `expiresAt` is after the verifier's clock and at most 60 s ahead of it, and at most 30 s ahead of the signer's clock |
 | Seller session delegation | at most 24 h (`expiresAt - notBefore`) |
 | Discovery document | at most 16 KiB, valid at most 10 minutes (new) |
 
@@ -121,6 +122,7 @@ The signed bytes of every wire message are its domain followed by the RFC 8785
 | Response | `dacs-seller-http:v1:response:` | the same request domain (the plugin signed both kinds under one domain) |
 | Seller session delegation | `dacs-seller-http:v1:delegation:` | `dacs-chatgpt-plugin:seller-session-delegation:v1:` |
 | Discovery document | `dacs-seller-http:v1:discovery:` | none (new) |
+| Explicit-resume proof | `dacs-seller-http:v1:explicit-create-resume:` | none (new) |
 
 **These are SDK wire domains, not DACS-Standard artifact domains.** The
 Standard's signature domain separators (the registry of CORE §B.7,
@@ -431,6 +433,49 @@ base64url signature that itself begins with `0x` is read as written. The
 delegation always carries the canonical base64url form. Producing the bytes to sign
 (`sellerSessionDelegationSigningBytes`) already requires the wallet side's TP-1
 binding, so a wallet with no approved identity is never asked to sign.
+
+## Explicit resume proof (new)
+
+Header `x-dacs-seller-resume` carries the buyer's proof that it asks the seller
+to resume one CREATE. It is the base64url (no padding) encoding of the
+canonical JSON `{payload, signature}`, at most 4,096 characters (checked before
+it is decoded), signed over `dacs-seller-http:v1:explicit-create-resume:`
+followed by the canonical payload. The verifier also refuses a header that is
+not exactly its canonical encoding (padding, member order, hex signature).
+
+The payload has exactly these members:
+`{version: "1", kind: "explicit-create-resume", buyer, seller, listingPin, jobId, path, agreementHash, requestHash, nonce, expiresAt, profile}`.
+`path` is the lane: one of the signed effect routes. `requestHash` is
+`wireRequestHash` of the request that carries the header. The signer is the
+request's buyer, or the session key of the request's delegation when it has
+one; the other never verifies.
+
+`verifyExplicitCreateResume(header, {binding, local, request, delegation, time, ledger})`
+takes the request and delegation payload `openWireEnvelope` returned (`null`
+for a request without a delegation, never omitted), the verifier's clock and
+an `ExplicitResumeLedger`. It checks, in this order, the binding, the header
+size and encoding, CF-5 admission, the profile, the exact members, the
+signature, the buyer's and seller's authority for the job, that buyer, seller,
+Listing pin, job, lane, Agreement hash, profile and request hash are the
+request's (and the delegation's, when there is one), that
+`time < expiresAt <= time + 60,000`, and then claims the proof in the ledger.
+A refused proof is never claimed, so a mismatched request does not use it up;
+a proof the ledger already holds is refused (`explicit_resume_used`), and a
+ledger that cannot record the claim refuses it (`explicit_resume_ledger_failed`).
+`signExplicitCreateResume` signs one owned copy of a payload for the buyer's own
+signer, under the signer's TP-1 binding and authority (checked before and after
+the signature, as `signWireEnvelope` does), with `expiresAt` after its clock and
+at most 30,000 ms ahead of it. The longest payload the members allow is well
+under the 4,096-character header limit.
+
+`ExplicitResumeLedger.claim(key, expiresAt, time)` returns, or resolves to,
+whether the proof was unused; the verifier awaits it. `createExplicitResumeLedger()`
+keeps claims in process memory until they expire by the latest `time` it has
+been given (so overlapping verifications on different clocks cannot release a
+claim another still treats as live) and refuses past 4,096 live ones; it does not survive a restart, so a proof can verify again after one until
+its `expiresAt` (at most 60 s). A host that must keep one-use across a restart
+supplies a durable ledger. The proof never starts an effect by itself: the
+request that carries it still passes `checkWireRequest` and the journal.
 
 ## Discovery document and endpoint proof (new)
 
@@ -911,6 +956,13 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
 | `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |
 | `peer_envelope_too_large`, `peer_response_too_large`, `body_too_large` (500) | a signer given a header, response body or request body over the limits: its own input, never the peer's fault; nothing is signed |
+| `explicit_resume_invalid` (401; 500 when signing) | a resume header over the limit, not canonical, failing admission, with other than the proof's members, or with an `expiresAt` outside the lifetime bound |
+| `explicit_resume_signature_invalid` (401) | the resume proof's signature is malformed, under another domain, or not the request's buyer's or delegation's key |
+| `explicit_resume_mismatch` (409) | a resume proof whose buyer, seller, Listing pin, job, lane, Agreement hash, profile or request hash differs from the request carrying it |
+| `explicit_resume_expired` (408) | a resume proof whose `expiresAt` is not after the verifier's clock |
+| `explicit_resume_used` (409) | the ledger already holds this proof |
+| `explicit_resume_ledger_full` (503) | the in-memory ledger holds 4,096 live claims |
+| `explicit_resume_ledger_failed` (503) | the host's ledger threw or rejected while recording the claim; the ledger's error is the cause and the proof is refused |
 | `peer_signer_wrong` | a response signed by someone other than the expected seller, or a signer whose claim is not the answer's seller |
 
 The plugin capture does not contain the codes in the rows above from
