@@ -600,8 +600,7 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
         },
       );
       const input = rfqCommitmentInput(value, rfqSession, agreement);
-      const frozen = { ...input, [frozenInput]: deepFreeze(structuredClone(input[frozenInput])),
-      };
+      const frozen = { ...input, [frozenInput]: deepFreeze(structuredClone(input[frozenInput])) };
       let submits = 0;
       const result = await commitRfqAgreement(
         frozen,
