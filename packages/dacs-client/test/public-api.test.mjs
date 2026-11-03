@@ -37,27 +37,34 @@ const ROOT = {
     'deliveryEvidenceAddress', 'sellerFailureCause', 'usesNativePaymentEvidence', 'isOperatorContextAuthority',
     'demDeliveryContextUsage', 'isDemDeliveryContextAuthority',
     'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
-    'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence'],
+    'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
+    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport',
+    'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
   values: ['PURCHASE_STATE_SCHEMA', 'PURCHASE_STATUS_HELP', 'DEM_DECIMAL', 'OS_INTEGER', 'vetNotPerformedRef', 'AGREEMENT_CONTEXT_SOURCE', 'DEM_DELIVERY_CONTEXT_SOURCE',
-    'SR2_WALLET_KIND', 'DEVNET_AGREEMENT_KIND', 'DEVNET_AGREEMENT_PROFILE', 'DEVNET_NATIVE_BINDING_PATH', 'DEVNET_NATIVE_RPC_PATH', 'SDK_PROVENANCE'],
+    'SR2_WALLET_KIND', 'DEVNET_AGREEMENT_KIND', 'DEVNET_AGREEMENT_PROFILE', 'DEVNET_NATIVE_BINDING_PATH', 'DEVNET_NATIVE_RPC_PATH', 'SDK_PROVENANCE',
+    'OFFLINE_AGREEMENT_MODE', 'DEVNET_NATIVE_COMMITMENT_MARKER'],
 };
+const GUIDANCE_NAMES = ['purchaseNext', 'PURCHASE_STATUS_HELP', 'protocolView'];
 const modules = {
   "purchase-state-schema.mjs": "PURCHASE_STATE_SCHEMA",
   "seams/purchase-store-not-wired.mjs": "createSqlitePurchaseStore",
   "purchases.mjs": "createPurchaseService purchaseNext PURCHASE_STATUS_HELP networkIdentityLabel",
-  "dacs/protocol-purchases.mjs": "createProtocolPurchases protocolView usesAgreementContext usesNativeDemDelivery StaleProtocolCheck",
+  "dacs/protocol-purchases.mjs": "createProtocolPurchases protocolView usesAgreementContext usesNativeDemDelivery StaleProtocolCheck OFFLINE_AGREEMENT_MODE isOfflineWalletAgreement",
   "dacs/delivery-deadline-watch.mjs": "createDeliveryDeadlineWatch",
-  "dacs/wallet-transactions.mjs": "createCoordinateStore",
+  "dacs/wallet-transactions.mjs": "createCoordinateStore deriveStorageAddress",
   "dacs/directory.mjs": "createDirectoryClient",
   "public-verification.mjs": "createListingVerifier NotConfiguredError",
   "dacs/chain.mjs": "DEM_DECIMAL OS_INTEGER",
   "dacs/purchase-protocol.mjs": "deliveryEvidenceAddress vetNotPerformedRef",
   "dacs/seller-http.mjs": "sellerFailureCause SellerRefusedError SellerUnavailableError SellerTlsUnusableError",
-  "dacs/native-payment-evidence-consumer.mjs": "usesNativePaymentEvidence",
+  "dacs/native-payment-evidence-consumer.mjs": "usesNativePaymentEvidence createNativePaymentEvidenceConsumer",
   "dacs/agreement-context-consumer.mjs": "AGREEMENT_CONTEXT_SOURCE isOperatorContextAuthority",
-  "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority",
+  "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority createDemDeliveryContext",
+  "dacs/native-dem-delivery-consumer.mjs": "createNativeDemDeliveryCapability",
+  "dacs/source-demo-seller-transport.mjs": "createSourceDemoSellerTransport",
+  "devnet-demo/commitment-consumer.mjs": "createDevnetNativeCommitmentCapability DEVNET_NATIVE_COMMITMENT_MARKER",
   "dacs/demos-sr2-wallet-bridge.mjs": "SR2_WALLET_KIND DemosSr2BridgeError",
   "wallet/devnet-native-transport.mjs": "rpcAuthRefusal transferRefusal DEVNET_AGREEMENT_KIND DEVNET_AGREEMENT_PROFILE DEVNET_NATIVE_BINDING_PATH DEVNET_NATIVE_RPC_PATH",
   "dacs/seller-session-lifecycle.mjs": "sellerSessionTransitionState",
@@ -79,10 +86,10 @@ for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
     if (ROOT.functions.includes(name) || ROOT.classes.includes(name)) assert.equal(typeof client[name], 'function');
     const module = Object.keys(modules).find(path => modules[path].split(' ').includes(name));
     const original = await import(new URL(module, import.meta.resolve('@kynesyslabs/dacs-client')));
-    const alias = { createPurchaseService: 'createPublicPurchaseService', purchaseNext: 'diagnosticPurchaseNext', PURCHASE_STATUS_HELP: 'DIAGNOSTIC_PURCHASE_STATUS_HELP', protocolView: 'diagnosticProtocolView' };
     if (name === 'createProtocolPurchases') assert.notEqual(client[name], original[name], 'public protocol uses a held facade');
-    else if (name === 'createPurchaseService') assert.notEqual(client[name], original[alias[name]], 'public service is the admission wrapper over the diagnostic service');
-    else assert.equal(client[name], original[alias[name] ?? name], 'export retains its defining identity');
+    else if (name === 'createPurchaseService') assert.notEqual(client[name], original.createPublicPurchaseService, 'public service is the admission wrapper over the diagnostic service');
+    else if (GUIDANCE_NAMES.includes(name)) assert.notEqual(client[name], original[name], 'guidance is chosen on each call, not the admitted form itself');
+    else assert.equal(client[name], original[name], 'export retains its defining identity');
   });
 }
 
@@ -267,4 +274,31 @@ test('every purchase-service member outside the passive list (status, portalOper
   for (const [name, member] of active) await refusesAsPromise(member, name);
   assert.equal(writes.count, 0);
   assert.equal(rows(), before);
+});
+
+// The wrapper names the functions it wraps; a passive member is the original, so it carries its own name.
+const WRAPPED_ACTION_NAME = 'admittedAction';
+const publicApiSection = () => (readFileSync(new URL('../README.md', import.meta.url), 'utf8').split('\n## Public API\n')[1] ?? '').split(/\n## /)[0];
+function readmeInventory(factory) {
+  const body = publicApiSection().split(`\n### ${factory}\n`)[1]?.split(/\n### /)[0] ?? '';
+  const names = (label) => [...(new RegExp(`^${label}: (.+)$`, 'm').exec(body)?.[1] ?? '').matchAll(/`([^`]+)`/g)].map(([, name]) => name).sort();
+  return { active: names('Active'), passive: names('Passive') };
+}
+
+test('the README method inventory equals each factory\'s own method list and its active and passive split (K6-W20, documentation half)', async (t) => {
+  const { service, protocol, verifier, close } = await heldPublicObjects();
+  t.after(close);
+  for (const [factory, object] of [['createProtocolPurchases', protocol], ['createPurchaseService', service], ['createListingVerifier', verifier]]) {
+    const methods = Object.entries(object).filter(([, member]) => typeof member === 'function');
+    const namesWhere = (wrapped) => methods.filter(([, method]) => (method.name === WRAPPED_ACTION_NAME) === wrapped).map(([name]) => name).sort();
+    assert.deepEqual(readmeInventory(factory), { active: namesWhere(true), passive: namesWhere(false) }, factory);
+  }
+});
+
+test('the README documents the admission option and each construction and call refusal', () => {
+  const section = publicApiSection();
+  assert.match(section, /admission: \{ binding, currentLocal \}/);
+  for (const code of ['admission_required', 'admission_input_untrusted', 'runtime_unsupported', 'profile_not_admitted', 'tp1_authority_timeout']) {
+    assert.ok(section.includes(code), code);
+  }
 });
