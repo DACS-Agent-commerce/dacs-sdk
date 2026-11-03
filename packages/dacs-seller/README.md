@@ -68,6 +68,11 @@ const host = await startSellerHost({
                          // [PROFILE.json](PROFILE.json) profile: standardRevision
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
+  tp1Network,            // { connection() -> { endpoint, transportAuthority, connectionId }, readAuthority(scope) }:
+                         // this host's own https connection and the trusted reader that confirms it and the
+                         // chain; read within 10,000 ms (tp1_authority_timeout). The host binds the SDK's
+                         // approved TP-1 identity record over it before it opens any state: no option,
+                         // environment variable or file names a record
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
@@ -78,6 +83,16 @@ const host = await startSellerHost({
 // host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
 // host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
 ```
+
+The host keeps three state directories under `dataDirectory`: `seller/`,
+`transport/` and `wire-journal/`, the wire request journal, opened with a 300 s
+lease. `kit-format.json` (`{"format":"dacs-kit-data/tp1-1"}`) is written first, on
+a directory that holds none of them. A directory that holds any of them without
+that marker, or with another one, is from an older kit format and is refused
+with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
+or `unreadable`); nothing is migrated. A new transport store over a
+`wire-journal/` that already holds `k-` or `o-` files is refused with
+`kit_journal_accounting_mismatch`, and nothing in the journal is changed.
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`

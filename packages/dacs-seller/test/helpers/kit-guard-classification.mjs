@@ -4,6 +4,7 @@
 // rebroadcasts nothing itself. A new export fails the sweep until it is added
 // here. src/index.mjs only re-exports functions classified below.
 export const EXPORT_CLASSIFICATION = Object.freeze({
+  'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall'] },
   'src/dacs/commit-on-signature.mjs': { effect: { signatureCommitmentAnchor: ['signatureCommitmentAnchor'] }, pure: ['commitOnSignatureConfig', 'verifyAgreementCreateAuthorization', 'verifySignatureAgreement'] },
   'src/dacs/deliverable-wallet-journal.mjs': { effect: { createDeliverableWalletJournal: ['guardedCreate'] }, pure: ['deliverableJournalFor'] },
   'src/dacs/delivery-evidence.mjs': { effect: {  }, pure: ['isNativeDeliveryEvidence'] },
@@ -13,6 +14,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/devnet-source.mjs': { effect: {  }, pure: ['isDevnetAgreementTransport', 'isDevnetDemoTransport', 'isDevnetSettlementTransport'] },
   'src/dacs/fixture-anchors.mjs': { effect: { signAnchorWrite: ['signAnchorWrite'] }, pure: ['anchorWriteMessage', 'canonicalSignature', 'fixtureRef', 'fixtureTxRef', 'fixtureWriteHash', 'verifyFixtureReceipt', 'verifyFixtureRecord'] },
   'src/dacs/fixture-settlement.mjs': { effect: {  }, pure: ['createFixtureSettlement'] },
+  'src/dacs/kit-data-format.mjs': { effect: {  }, pure: ['assertKitDataFormat'] },
   'src/dacs/listing.mjs': { effect: {  }, pure: ['attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle', 'canonicalize', 'contentHash', 'isReportableTitle', 'listingSigningMessage', 'logicalListingAddress', 'normalizeDemAmount', 'purchaseSupport', 'utf8', 'validateListing', 'verifyComponent'] },
   'src/dacs/native-dem-delivery-consumer.mjs': { effect: { submitNativeDemDelivery: ['submitNativeDemDelivery'] }, pure: ['createNativeDemDeliveryCapability', 'hasGuardedNativeDemDelivery', 'isProvenUnsignedAbsence', 'nativeDemDeliveryConfig', 'nativeDemDeliverySubmitsOf', 'provenUnsignedAbsence', 'readNativeDemDelivery', 'reconcileNativeDemDelivery', 'verifyNativeDemDeliveryReceipt'] },
   'src/dacs/native-payment-evidence-consumer.mjs': { effect: { createNativePaymentEvidenceConsumer: ['createNativePaymentEvidenceConsumer'] }, pure: ['checkNativePaymentEvidence', 'nativeEvidenceReadOutcome', 'nativePaymentEvidenceConfig', 'usesNativePaymentEvidence'] },
@@ -36,7 +38,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/buyer-access.mjs': { effect: {  }, pure: ['createOperatorBuyerAccess', 'operatorBuyerAccessConfig'] },
   'src/devnet-demo/deliverable.mjs': { effect: {  }, pure: ['createDevnetPurchasedReportProducer', 'isDevnetPurchasedReport'] },
   'src/devnet-demo/deployment-qualification.mjs': { effect: {  }, pure: ['assertQualifiedDeployment'] },
-  'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory'] },
+  'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory', 'syncFile'] },
   'src/devnet-demo/listing.mjs': { effect: { createDevnetDemoListingPublisher: ['createDevnetDemoListingPublisher'] }, pure: [] },
   'src/devnet-demo/native-delivery.mjs': { effect: { createDevnetDemoDeliveryCapability: ['createDevnetDemoDeliveryCapability.submit'] }, pure: ['hasDevnetDeliveryEvidenceReader', 'hasDevnetPurchasedReportReader', 'readDevnetDeliveryEvidence', 'readDevnetPurchasedReport'] },
   'src/devnet-demo/operator-approval.mjs': { effect: {  }, pure: ['composeSellerApproval', 'confirmedWriteOs', 'createExactOperatorApproval', 'createSellerContextAdmission', 'decidedFromJournals', 'heldPolicyBudget', 'parsePolicyLedger', 'policyRefusal', 'releaseSellerContextHolds', 'sellerApprovalSettings', 'sellerIssuanceJournalIds', 'sellerPurchaseSource', 'serializedPolicy', 'stillAuthorizedToSign', 'stillOpenBeforePayment', 'withContextHolds'] },
