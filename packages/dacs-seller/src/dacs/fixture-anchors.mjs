@@ -5,6 +5,7 @@
 import { canonicalize, contentHash, sha256Hex, storAddress, isAnchorReceipt } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 import { decodeSignature } from './demos-claims.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
 export const FIXTURE_SUBSTRATE = 'dacs-chatgpt-plugin:loopback-sr2-fixture';
 export const FIXTURE_FINALITY = 'fixture-immediate-no-chain';
@@ -71,5 +72,6 @@ export function fixtureTxRef(receipt) {
 // Local signer helper: a writer authorization from raw signing bytes, in the
 // wallet's 0x-hex form (unambiguous for every signature decoder here).
 export function signAnchorWrite(signBytes, logicalAddress, hash) {
+  assertKitOperationAdmitted('signAnchorWrite');
   return `0x${Buffer.from(signBytes(Buffer.from(anchorWriteMessage(logicalAddress, hash), 'utf8'))).toString('hex')}`;
 }

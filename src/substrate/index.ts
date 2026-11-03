@@ -49,6 +49,7 @@ export {
   demosTransactionContentMatches,
   demosWriteEvidenceBindsReceiptContent,
   demosWriteEvidenceToAnchorReceipt,
+  NonFinalDemosEvidenceError,
   type DemosAnchorReceiptProof,
   type DemosPortableAnchorReceiptInput,
 } from "./demosWriteEvidence.js";

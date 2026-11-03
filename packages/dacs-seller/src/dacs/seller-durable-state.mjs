@@ -1,4 +1,5 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 // Opt-in host-local recovery for the SIMULATED seller adapter. This retains
 // seller-authenticated application context beside the pinned SDK stores. It
 // never obtains a buyer key or reconstructs facts from a cached HTTP answer.
@@ -606,6 +607,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // under the same fence. Without that, one signer failure would refuse
       // these bytes for good, a paid order's evidence included.
       signOnce(id, bytes) {
+        assertKitOperationAdmitted('signOnce');
         const bytesHash = sha256Hex(bytes), jobId = scopedJob();
         return transaction(() => {
           fence(jobId);
@@ -649,7 +651,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // address, the artifact size and the writer authorization. A kept intent
       // is never sent again: after it, any failure (a write refused before it
       // left this process included) holds the anchor, and recovery only reads.
-      async anchor({ jobId, logicalAddress, artifact, anchors, authorize }) {
+      async anchor(request) {
+        assertKitOperationAdmitted('anchor');
+        const { jobId, logicalAddress, artifact, anchors, authorize } = request;
         if (!isCanonicalJobId(jobId) || typeof logicalAddress !== 'string' || logicalAddress.length < 1 || logicalAddress.length > MAX_ANCHOR_ADDRESS_LENGTH) fail('seller_state_binding_invalid');
         const id = `anchor:${logicalAddress}`;
         const prior = transaction(() => { fence(jobId); return anchorRow(logicalAddress); });
