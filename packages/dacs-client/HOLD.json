@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "d65d8ce7c523b0119d55d9335ffdee5c4d066a27"
+        "blob": "fab7e9651c33d31dae25280753bc48c3199b8fce"
       },
       "DELTA-LEDGER.json": {
-        "blob": "4d7d44d172235707b0c08491e931b12df522f26c"
+        "blob": "8203f2fb0f6f0780caff0e170311890b27334153"
       },
       "DELTA-MAP.md": {
-        "blob": "f625530ad7d26638d3b4f16ba53899e4e2fb881c"
+        "blob": "824b8c8f4fc5dbcff55fb827aea2a621770c093a"
       },
       "DELTA-NOTES.md": {
         "blob": "e171e4b8784185dd04d2dbb2a4bed7a7782aecd0"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "7fce4e8b5f0486e7eb48be2d189e31ce47227ead"
+        "blob": "c62e206ff17ce8af55d89927853d60dd31bd6453"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1377,6 +1377,9 @@
       },
       "test/fixtures/mcp-seller-content.mjs": {
         "blob": "25aeae4a3110d73fa3ad3b61f9c3551ffe1bd46a"
+      },
+      "test/fixtures/plugin-import-inventory.json": {
+        "blob": "653d6a10cd366ea8f71d7d82fd5940c16447b6af"
       },
       "test/fixtures/publication-base-digests.json": {
         "blob": "55d655b69b4f8474a4764163f3020881e9270d50"
@@ -1726,11 +1729,17 @@
       "test/public-admission.test.mjs": {
         "blob": "76c0d3d351164bb216cab9ef1fb43e23f07580c5"
       },
+      "test/public-api-inventory.test.mjs": {
+        "blob": "f83e3553639f67784ef7eb8c68a902ba2aa543a6"
+      },
       "test/public-api.test.mjs": {
-        "blob": "87ebc3dd347a0a505eb5e3227627b71551c22bda"
+        "blob": "3c6de00345482168eef1b5261fc5fbd103a437f5"
       },
       "test/public-composition.test.mjs": {
         "blob": "a1a3b50c91d405fc00d7a92fc7ff75de650d1a32"
+      },
+      "test/public-guidance.test.mjs": {
+        "blob": "46737251b71eda167149709f7ac8ddb004411861"
       },
       "test/public-readback.test.mjs": {
         "blob": "6674b54365ccd75f0ec9623205622e85bbfe9a21"

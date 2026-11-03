@@ -5708,6 +5708,32 @@
           "after": "6674b54365ccd75f0ec9623205622e85bbfe9a21"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P52b tests for the root names, call-time guidance and plugin import inventory",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/fixtures/plugin-import-inventory.json",
+          "before": null,
+          "after": "653d6a10cd366ea8f71d7d82fd5940c16447b6af"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api-inventory.test.mjs",
+          "before": null,
+          "after": "f83e3553639f67784ef7eb8c68a902ba2aa543a6"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "87ebc3dd347a0a505eb5e3227627b71551c22bda",
+          "after": "3c6de00345482168eef1b5261fc5fbd103a437f5"
+        },
+        {
+          "path": "packages/dacs-client/test/public-guidance.test.mjs",
+          "before": null,
+          "after": "46737251b71eda167149709f7ac8ddb004411861"
+        }
+      ]
     }
   ]
 }

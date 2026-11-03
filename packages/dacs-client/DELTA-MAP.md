@@ -940,6 +940,11 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/helpers/public-composition-world.mjs:1` | 6671b70cf3fad1b68f2e4085c67352d4102a04d4 |
 | | `packages/dacs-client/test/public-admission.test.mjs:1` | 76c0d3d351164bb216cab9ef1fb43e23f07580c5 |
 | | `packages/dacs-client/test/public-readback.test.mjs:1` | 6674b54365ccd75f0ec9623205622e85bbfe9a21 |
+| WF | delta(client): WF P52b tests for the root names, call-time guidance and plugin import inventory | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/fixtures/plugin-import-inventory.json:1` | 653d6a10cd366ea8f71d7d82fd5940c16447b6af |
+| | `packages/dacs-client/test/public-api-inventory.test.mjs:1` | f83e3553639f67784ef7eb8c68a902ba2aa543a6 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 3c6de00345482168eef1b5261fc5fbd103a437f5 |
+| | `packages/dacs-client/test/public-guidance.test.mjs:1` | 46737251b71eda167149709f7ac8ddb004411861 |
 
 ## Complete commit and file inventory
 
