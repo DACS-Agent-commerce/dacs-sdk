@@ -1,10 +1,11 @@
 // The kit's operation guard (K11): while it is off, nothing in this package
 // signs, sends or rebroadcasts. It imports nothing and reads no environment
 // variable, file, argument or option, so nothing a caller supplies can admit.
-// One signing stays allowed while off: opening a durable store authenticates
-// its own local records with the seller key. Those signatures never leave the
-// process and are neither transactions nor writer or counterparty signatures;
-// the store stays readable for read-only commands. Every method that signs for
+// One kind of signing stays allowed while off: a durable store authenticates
+// its own local records with the seller key, on open and on each local write.
+// Those signatures never leave the local store and are neither transactions nor
+// writer or counterparty signatures; nothing is signed for, or sent to, anyone
+// else. The store stays readable for read-only commands. Every method that signs for
 // a send (signOnce) or sends (anchor) is guarded.
 
 /** The kit's operation switch. Only the exact string 'testnet-tp1' admits; every other value, 'off' included, refuses. */

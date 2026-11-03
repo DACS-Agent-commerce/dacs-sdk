@@ -12,6 +12,7 @@ import { seller } from './protocol-fixture.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
 
 const WATCHED_FS_CALLS = ['openSync', 'mkdirSync', 'lstatSync', 'realpathSync', 'writeFileSync', 'readFileSync', 'readdirSync', 'statSync'];
+const LOCAL_RECORD_DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
 const ARTIFACT_JOB = '01ARZ3NDEKTSV4RRFFQ69G5FAW';
 const SECOND_JOB = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
 const [caseName, ...caseArguments] = process.argv.slice(2);
@@ -134,8 +135,13 @@ async function effectEntries() {
   const delivery = { authority: 'TEST-native', writer: seller.claim, publish: async () => { effects.sends++; }, read: async () => ({ status: 'absent' }), readRetained: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
   await attempt('createDevnetDemoDeliveryCapability.submit', () => nativeDemDeliverySubmitsOf(createDevnetDemoDeliveryCapability({ authority: delivery.authority, anchor: delivery })).submit({}));
 
-  const store = await createSellerDurableState({ dir: directory, signer: { claim: seller.claim, sign: signBytes }, listingPin: { contentHash: 'a'.repeat(64) } });
-  const signsAtOpen = effects.signs; // opening the store signs its own local records, which stays allowed while off
+  // The store keeps signing its own local records while off; record what it signs so the test can show those are local-only.
+  const storeSignatures = [];
+  const storeSign = (bytes) => { storeSignatures.push(Buffer.from(bytes).toString().startsWith(LOCAL_RECORD_DOMAIN)); return signBytes(bytes); };
+  const store = await createSellerDurableState({ dir: directory, signer: { claim: seller.claim, sign: storeSign }, listingPin: { contentHash: 'a'.repeat(64) } });
+  const storeSignaturesAtOpen = [...storeSignatures];
+  store.retainContext({ probe: 'local write while off' });
+  const storeSignaturesAfterWrite = [...storeSignatures];
   effects.signs = 0; // the refusals below must add none
   readable.durableState = typeof store.retainContext;
   await attempt('signOnce', () => store.signOnce('signature:probe', Buffer.from('bytes')));
@@ -164,7 +170,7 @@ async function effectEntries() {
   const anchors = await anchorFixture();
   await attempt('publish', () => anchors.publish(anchors.open(), ARTIFACT_JOB));
   readable.anchorRead = (await anchors.open().read({ logicalAddress: 'dacs4:probe', artifactKind: 'FinalityCommitmentRecord', artifact: {} }).catch((error) => ({ error: error.code ?? error.name }))).error ?? 'answered';
-  return { refused, refusedWithoutInput, signsAtOpen, readable, effects, walletRequests: anchors.captured.length, anchorJournalRows: anchors.journal.rows.size };
+  return { refused, refusedWithoutInput, storeSignaturesAtOpen, storeSignaturesAfterWrite, readable, effects, walletRequests: anchors.captured.length, anchorJournalRows: anchors.journal.rows.size };
 }
 
 const CASES = { startWithHostileOptions, concurrentStarts, namedGuardInputs, guardValues, fixtureAdmits, artifactReadRecovery, effectEntries };
