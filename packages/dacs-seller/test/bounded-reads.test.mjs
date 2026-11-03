@@ -61,3 +61,16 @@ test('a plain rejected read is not made a dead refused CREATE by the bounds', as
   assert.equal(isDeadRefusedCreate(reply), false);
   assert.equal(mayPublishAgain(reply), false);
 });
+
+for (const [label, marked] of [['proven-unsigned absence', provenUnsignedAbsence], ['dead refused CREATE', deadRefusedCreate]]) {
+  for (const [bound, extra] of [
+    ['bytes', { padding: 'x'.repeat(MAX_BYTES + 1) }],
+    ['list items', { items: Array.from({ length: MAX_LIST_ITEMS + 1 }, (_, i) => i) }],
+    ['values', { values: Object.fromEntries(Array.from({ length: MAX_VALUES + 1 }, (_, i) => [`k${i}`, i])) }],
+  ]) {
+    test(`a ${label} carrying data over the ${bound} limit is refused, not passed on as a proof`, async () => {
+      const failure = await failureOf(Object.assign(marked('TEST'), extra));
+      assert.equal(readFailureCode(failure), 'reply-limit');
+    });
+  }
+}

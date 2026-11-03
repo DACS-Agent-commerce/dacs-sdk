@@ -20,11 +20,9 @@ export function readRetainedBounded(anchor, query, options = {}) {
       const reply = await anchor.readRetained(input, { ...options, ...limits });
       unsignedProven = isProvenUnsignedAbsence(reply);
       deadRefused = isDeadRefusedCreate(reply);
-      // Both proofs are marked again on the bounded copy below, so only their status and a text reason need pass the
-      // plain-JSON bounds: a proof made with no reason, or with an Error, is not lost to the check.
-      if (unsignedProven) return { status: 'absent', reason: proofReason(reply.reason) };
-      if (deadRefused) return { status: 'rejected', reason: proofReason(reply.reason), noResend: true };
-      return reply;
+      // Both proofs are marked again on the bounded copy below. The whole reply still passes the plain-JSON bounds;
+      // only its reason becomes text, so a proof made with no reason, or with an Error, is not lost to the check.
+      return unsignedProven || deadRefused ? { ...reply, reason: proofReason(reply.reason) } : reply;
     },
   };
   return readAdmissionCapability(retained, 'readRetained', query).then((reply) => (unsignedProven ? provenUnsignedAbsence(reply.reason) : deadRefused ? deadRefusedCreate(reply.reason) : reply));
