@@ -12,6 +12,7 @@ import { provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.
 
 const READ_DEADLINE_MS = 10_000, OVERSIZED_REPLY_CHARS = 70 * 1024, TX_HASH = 'a'.repeat(64);
 const never = () => new Promise(() => {});
+const readerRangeError = () => { throw new RangeError('TEST the reader failed on its own'); };
 const oversized = row => (row.status === 'present' ? { ...row, artifact: { ...row.artifact, padding: 'x'.repeat(OVERSIZED_REPLY_CHARS) } } : row);
 const command = (w, jobId, path, body) => {
   const rawBody = Buffer.from(JSON.stringify(body));
@@ -68,7 +69,7 @@ const nativeCommitmentRequest = (agent) => {
   const session = agent.durableSessionOf(JOB), body = { jobId: JOB }, rawBody = Buffer.from(JSON.stringify(body));
   return { body, rawBody, request: { method: 'POST', path: '/dacs/v1/commitments', jobId: JOB, buyer: session.buyerBundle.presentedBy, seller: agent.claim, listingPin: agent.listingPin, agreementHash: session.agreementHash, bodyHash: core.sha256Hex(rawBody) } };
 };
-for (const [reply, causeCode, answer] of [['never answers', 'timeout', never], ['is larger than the reply limit', 'reply-limit', async (read, input) => oversized(await read(input))]]) {
+for (const [reply, causeCode, answer] of [['never answers', 'timeout', never], ['is larger than the reply limit', 'reply-limit', async (read, input) => oversized(await read(input))], ['throws its own RangeError', 'reader', readerRangeError]]) {
   test(`read-only native commitment readback is indeterminate when the retained-artifact reader ${reply}`, async t => {
     const f = await commitmentFixture(t), { agent } = await f.prepare(), read = f.native.readRetained;
     assert.equal((await agent.commit({ jobId: JOB })).status, 'committed');
@@ -82,13 +83,17 @@ for (const [reply, causeCode, answer] of [['never answers', 'timeout', never], [
   });
 }
 
-test('a retry decision whose proof-of-no-intent read never answers stays indeterminate and publishes nothing', async t => {
-  const f = await commitmentFixture(t), { agent } = await f.prepare(), read = f.native.readRetained;
-  let reads = 0;
-  f.native.readRetained = input => (++reads === 1 ? read(input) : never());
-  const out = await expireDeadline(t, () => agent.reconcileTransport(nativeCommitmentRequest(agent)));
-  assert.deepEqual([out.disposition, reads, f.local.writes.length], ['indeterminate', 2, 0]);
-});
+const padded = async (read, input) => ({ ...(await read(input)), padding: 'x'.repeat(OVERSIZED_REPLY_CHARS) });
+for (const [reply, causeCode, answer] of [['never answers', 'timeout', never], ['is larger than the reply limit', 'reply-limit', padded], ['throws its own RangeError', 'reader', readerRangeError]]) {
+  test(`a retry decision whose proof-of-no-intent read ${reply} is held with the ${causeCode} cause and publishes nothing`, async t => {
+    const f = await commitmentFixture(t), { agent } = await f.prepare(), read = f.native.readRetained;
+    let reads = 0;
+    f.native.readRetained = input => (++reads === 1 ? read(input) : answer(read, input));
+    const start = () => agent.reconcileTransport(nativeCommitmentRequest(agent));
+    const out = await (causeCode === 'timeout' ? expireDeadline(t, start) : start());
+    assert.deepEqual([out.disposition, out.causeCode, reads, f.local.writes.length], ['indeterminate', causeCode, 2, 0]);
+  });
+}
 
 test('bounding a retained read keeps the proof that nothing was signed, so a live retry still publishes once', async t => {
   const f = await commitmentFixture(t), { agent } = await f.prepare(), read = f.native.readRetained;

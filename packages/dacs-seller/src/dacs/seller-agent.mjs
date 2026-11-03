@@ -1234,12 +1234,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // Only a native read that proves nothing was ever signed may hand the request
   // back to its ordinary start once, under the same job lock.
   const COMMITMENT_PATHS = new Set(['/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
+  // Answers `{ proven }`; a read that fails is never a proof, and its error is passed out as `failure`.
   const provenUnsignedCommitment = async (jobId) => {
-    if (!nativeArtifactAnchor) return false;
+    if (!nativeArtifactAnchor) return { proven: false };
     try {
       const read = await readRetainedBounded(nativeArtifactAnchor, { logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true }, PASSIVE_RETAINED_READ);
-      return read?.status === 'absent' && isProvenUnsignedAbsence(read);
-    } catch { return false; }
+      return { proven: read?.status === 'absent' && isProvenUnsignedAbsence(read) };
+    } catch (failure) { return { proven: false, failure }; }
   };
   async function reconcileCommitmentTransport({ request, body, readOnly = false } = {}) {
     if (!COMMITMENT_PATHS.has(request?.path)) return undefined;
@@ -1248,7 +1249,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (cause) { out.causeCode = readFailureCode(cause); Object.defineProperty(out, 'cause', { value: cause }); }
       return out;
     };
-    const failed = (error) => held(typeof error?.code === 'string' ? error.code : 'seller_commitment_readback_indeterminate', error);
+    const failed = (error, cause = error) => held(typeof error?.code === 'string' ? error.code : 'seller_commitment_readback_indeterminate', cause);
     const bound = () => {
       try {
         return request.method === 'POST' && isCanonicalJobId(request.jobId) && Boolean(body) && typeof body === 'object' && !Array.isArray(body) &&
@@ -1271,7 +1272,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let answer;
     try { answer = await commit(input, options); }
     catch (error) {
-      if (readOnly || early || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return failed(error);
+      if (readOnly || early || session.commitment || session.signatureCommitmentHeld) return failed(error);
+      const unsigned = await provenUnsignedCommitment(request.jobId);
+      if (!unsigned.proven) return failed(error, unsigned.failure ?? error);
       try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
       catch (retryError) { return failed(retryError); }
     }

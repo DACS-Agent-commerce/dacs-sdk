@@ -1,4 +1,4 @@
-import { readAdmissionCapability } from './session-admission.mjs';
+import { readAdmissionCapability, REPLY_LIMIT_CODE } from './session-admission.mjs';
 import { isProvenUnsignedAbsence, provenUnsignedAbsence } from './native-dem-delivery-consumer.mjs';
 
 /**
@@ -7,8 +7,8 @@ import { isProvenUnsignedAbsence, provenUnsignedAbsence } from './native-dem-del
  * `options` are the capability's own read options (`resend`, `authorizeResend`);
  * the bounds' limits and abort signal are added to them. A proven-unsigned
  * absence is recognised on the capability's own reply and stays proven on the
- * bounded copy. Throws a TimeoutError past the deadline, a RangeError for a
- * reply over a limit, or the capability's own error.
+ * bounded copy. Throws a TimeoutError past the deadline, a RangeError coded
+ * `REPLY_LIMIT_CODE` for a reply over a limit, or the capability's own error.
  */
 export function readRetainedBounded(anchor, query, options = {}) {
   let unsignedProven = false;
@@ -22,9 +22,9 @@ export function readRetainedBounded(anchor, query, options = {}) {
   return readAdmissionCapability(retained, 'readRetained', query).then((reply) => (unsignedProven ? provenUnsignedAbsence(reply.reason) : reply));
 }
 
-const failureKind = (failure) => (failure?.name === 'TimeoutError' || failure?.code === 'ETIMEDOUT' ? 'timeout' : failure instanceof RangeError ? 'reply-limit' : 'reader');
+const failureKind = (failure) => (failure?.name === 'TimeoutError' || failure?.code === 'ETIMEDOUT' ? 'timeout' : failure?.code === REPLY_LIMIT_CODE ? 'reply-limit' : 'reader');
 
-/** Why a read failed, looking through one wrapping error: 'timeout', 'reply-limit' (reply over a limit) or 'reader' (the capability's own error). */
+/** Why a read failed, looking through one wrapping error: 'timeout', 'reply-limit' (reply over an admission limit) or 'reader' (the capability's own error). */
 export function readFailureCode(failure) {
   return [failure, failure?.cause].map(failureKind).find((kind) => kind !== 'reader') ?? 'reader';
 }
