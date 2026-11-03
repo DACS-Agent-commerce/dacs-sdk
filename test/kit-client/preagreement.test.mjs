@@ -10,7 +10,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, checkWireRequest, openWireEnvelope, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { LOCAL } from '../../packages/dacs-client/test/fixtures/tp1-authority-reader.mjs';
 import { BUYER, JOB, LISTING_PIN, SELLER, SESSION, T0, bindWireProfile, contextScope, contextScopeHash, publicKeyHex } from './fixtures.mjs';
-import { clientAuthFor, composedKitHost, postSigned } from './kit-host.mjs';
+import { clientAuthFor, composedKitHost, postHeader, postSigned, wireSignedRequest } from './kit-host.mjs';
 
 const K1_JOB = '01M5YKPJG0248H248H248H248H';
 const K1_S1_HASH_PREFIX = '6f6eef0286377afa';
@@ -78,7 +78,9 @@ test('K12-H4-host today: the composed kit host has no mounted wire context handl
 
 test('K12-H4-host control: the composed host authenticates and answers a signed state request', async (t) => {
   const { host } = await composedKitHost(t);
-  const answer = await postSigned(host, clientAuthFor(host), DACS_SELLER_HTTP_PATHS.state, { transportIdentity: { jobId: JOB } });
+  // The state route is on the wire (P11a1a): the request is signed under the wire domain, and a job the host holds nothing for is a signed 404 (SA-10), not the unmounted route's.
+  const { header, text } = await wireSignedRequest(host, DACS_SELLER_HTTP_PATHS.state, { transportIdentity: { jobId: JOB } }, { jobId: JOB, agreementHash: sha256Hex('kit-client-host-agreement') });
+  const answer = await postHeader(host, DACS_SELLER_HTTP_PATHS.state, header, text);
   assert.equal(answer.signed, true, 'the answer carries the seller signature');
-  assert.notEqual(answer.status, 404);
+  assert.equal(JSON.parse(answer.text).error, 'peer_unknown_job');
 });

@@ -28,6 +28,7 @@ import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/d
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { SELLER_TRANSPORT_HEADER, sellerSessionDelegationSigningBytes } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
+import { mixedAuthentication } from './helpers/wire-buyer.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
 import { testNetwork } from './helpers/wire-authority-fixture.mjs';
@@ -589,8 +590,10 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
     const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
     const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
-    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, authentication: seller.createSellerTransportClientAuth({
-      buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock }) });
+    // The proposal, state and commitment routes are on the wire; the payment and bundle routes still use the old server auth.
+    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, authentication: mixedAuthentication(
+      { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock }, () => plan.agreementHash, seller.createSellerTransportClientAuth({
+        buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock })) });
     const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) });
     if (!expectSigned) return answer;
     assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);

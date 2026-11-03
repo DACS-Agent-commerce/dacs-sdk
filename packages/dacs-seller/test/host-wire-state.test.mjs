@@ -352,7 +352,7 @@ test('P10-T08 the host wire context refuses a changed connection and a copied bi
   await f.start({ tp1Network: testNetwork({ connection: () => ({ ...TEST_CONNECTION, connectionId }) }) });
   const [wire] = f.wires;
   assert.equal(Object.isFrozen(wire), true);
-  assert.deepEqual(Object.keys(wire).sort(), ['assertCurrentBinding', 'binding', 'connection', 'journal']);
+  assert.deepEqual(Object.keys(wire).sort(), ['assertCurrentBinding', 'binding', 'connection', 'journal', 'now', 'ready', 'requireDelegation', 'retainedFor', 'signer', 'store']);
   await wire.assertCurrentBinding();
   await assertTp1Binding(wire.binding, wire.connection());
   await assert.rejects(assertTp1Binding({ ...wire.binding }, wire.connection()), { code: 'tp1_binding_required' });
@@ -655,11 +655,11 @@ test('P10-T13 a tuple kept before a crash is present after restart; one not kept
   const legacy = jobId('t13-legacy');
   const refused = jobId('t13-refused');
   w.store.reserve(w.request(kept), {}, { keepProfile: PROFILE });
-  w.store.reserve(w.request(legacy), {}, {});
+  assert.throws(() => w.store.reserve(w.request(legacy), {}, {}), MISMATCH, 'a route the signed wire opens refuses an absent tuple');
   assert.throws(() => w.store.reserve(w.request(refused), {}, { keepProfile: { ...PROFILE, extra: 1 } }), MISMATCH);
   const reopened = w.reopen();
   assert.deepEqual(reopened.purchaseProfile(kept), PROFILE);
-  assert.equal(reopened.purchaseProfile(legacy), null, 'a legacy reservation keeps no tuple');
+  assert.equal(reopened.purchaseProfile(legacy), null, 'a reservation with no tuple keeps none');
   assert.equal(reopened.purchaseProfile(refused), null, 'a refused reservation kept none');
   assert.equal(w.tuples(), 1);
 });
@@ -747,13 +747,16 @@ test('P10-T18 through the real guarded store\'s classify, its dry-run reserve an
   assert.equal(replay.text, first.text, 'and replays its answer');
   assert.equal(w.effects().writes, 1, 'without new work');
 
-  w.store.reserve(await proposal(other), {}, {});
+  // A job bound before tuples were kept (an upgraded store) has none: no reservation can create one without its tuple any more.
+  const bound = await proposal(other), planted = new DatabaseSync(w.path);
+  planted.prepare('INSERT INTO peer_jobs VALUES (?, ?)').run(other, canonicalize({ jobId: other, buyer: bound.buyer, seller: bound.seller, listingPin: bound.listingPin, agreementHash: bound.agreementHash }));
+  planted.close();
   const dryRuns = async (store, label) => {
     const [matching, different, untupled, legacy, brandNew] = await Promise.all([proposal(job), proposal(job), proposal(other), proposal(other), proposal(jobId('t18-new'))]);
     assert.equal(store.classify(matching, {}, { keepProfile: PROFILE }), 'known', `${label}: the matching tuple answers as reserve would`);
     assert.throws(() => store.classify(different, {}, { keepProfile: OTHER_PROFILE }), MISMATCH, `${label}: a different tuple is refused`);
     assert.throws(() => store.classify(untupled, {}, { keepProfile: PROFILE }), MISMATCH, `${label}: an existing job with no kept tuple is refused`);
-    assert.equal(store.classify(legacy, {}), 'known', `${label}: an absent tuple is the legacy path`);
+    assert.throws(() => store.classify(legacy, {}, { keepProfile: undefined }), MISMATCH, `${label}: an absent tuple is refused on a route the signed wire opens`);
     assert.equal(store.classify(brandNew, {}, { keepProfile: PROFILE }), 'start', `${label}: a new job classifies start`);
     assert.equal(tuples(), 1, `${label}: a dry run keeps no tuple`);
   };

@@ -74,7 +74,7 @@ test('the seller pack ships every source module but the operator ones, and every
 test('P10-T15 the packed archive contains no authority fixture', () => {
   const packed = sellerPackFiles().sort();
   assert.deepEqual(packed.filter((path) => /authority-fixture/.test(path)), []);
-  for (const file of ['src/dacs/bounded-call.mjs', 'src/dacs/kit-data-format.mjs']) assert.ok(packed.includes(file), `${file} ships`);
+  for (const file of ['src/dacs/bounded-call.mjs', 'src/dacs/kit-data-format.mjs', 'src/dacs/seller-wire-requests.mjs']) assert.ok(packed.includes(file), `${file} ships`);
 });
 
 test('the import scan sees static, side-effect, re-export and literal dynamic imports', () => {

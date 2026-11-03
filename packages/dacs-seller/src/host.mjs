@@ -29,8 +29,11 @@
 // record over the operator's `tp1Network` ({ connection(), readAuthority }); no
 // option, environment variable or file names a record. It then checks the data
 // directory's format marker (kit-format.json), keeps the wire request journal at
-// <dataDirectory>/wire-journal under a 300 s lease, and holds the binding and
-// the journal in a wire context for the signed routes.
+// <dataDirectory>/wire-journal under a 300 s lease, and holds the binding, the
+// journal and the seller's signer in a wire context for the signed routes. The
+// Agreement proposal, state and commitment routes open every request and sign
+// every answer through that context (seller-wire-requests.mjs), with the transport
+// store as their journal; the payment and bundle routes still use the old server auth.
 import { existsSync, lstatSync, mkdirSync, opendirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
@@ -43,6 +46,7 @@ import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
+import { retainedFor } from './dacs/seller-wire-requests.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
@@ -275,10 +279,15 @@ export async function startSellerHost(options) {
     // file or a directory others can write, with their detail.
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
-    // The context the signed routes on `./wire` use (P11a1); until they are mounted the host itself re-checks the binding with it before it listens.
+    let stopping = false;
+    // The seller takes new purchases until it stops; every later readiness term is ANDed in by the PR that owns it (SA-7).
+    const sellerReady = () => !stopping;
+    // The context the signed routes on `./wire` use: the proposals, state and commitment routes (the transport store is their
+    // journal), and the host's own re-check of the binding before it listens.
     // The check reads the reader again, so it has the same 10,000 ms deadline as the first read.
     const assertCurrentBinding = () => withinAuthorityDeadline(() => assertTp1Binding(binding, tp1Network.connection()));
-    const wire = Object.freeze({ binding, connection: tp1Network.connection, journal, assertCurrentBinding });
+    const wire = Object.freeze({ binding, connection: tp1Network.connection, signer, journal, store, ready: sellerReady, now, requireDelegation: false,
+      retainedFor: (request) => retainedFor(agent, request), assertCurrentBinding });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before
@@ -291,7 +300,7 @@ export async function startSellerHost(options) {
     // The connection the binding was read for must still be the operator's before anything is served.
     await wire.assertCurrentBinding();
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
-    const handler = createSellerHttpHandler(agent, { authentication });
+    const handler = createSellerHttpHandler(agent, { authentication, wire });
     const active = new Set();
     // Connections with no dispatched request cannot be drained: a buyer that
     // stops after a partial request line would hold server.close() forever,
@@ -302,7 +311,6 @@ export async function startSellerHost(options) {
     // connection whose last response has been handed off.
     const sockets = new Set();
     const owed = new Map();
-    let stopping = false;
     const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, (req, res) => {
       if (stopping) { res.writeHead(503, { connection: 'close' }); res.end(); return; }
       const socket = req.socket;

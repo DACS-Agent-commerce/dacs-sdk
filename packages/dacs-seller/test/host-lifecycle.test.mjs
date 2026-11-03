@@ -17,7 +17,8 @@ import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
-import {createSellerTransportClientAuth,createSellerTransportStore,SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore,SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
+import {wireAuthentication} from './helpers/wire-buyer.mjs';
 import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent}={}){
@@ -27,7 +28,7 @@ async function fixture(t,{wrap=agent=>agent}={}){
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,tp1Network:testNetwork()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
- const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW}),timeoutMs:60000});
+ const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:wireAuthentication({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW},()=>request.proposal.plan.agreementHash),timeoutMs:60000});
  return{...f,start,options,dataDirectory,client,setKeepAliveTimeout:api.setTestKeepAliveTimeout,setReadbackTimeout:api.setTestReadbackTimeout};
 }
 async function anchorAgreement(f,request,answer){
