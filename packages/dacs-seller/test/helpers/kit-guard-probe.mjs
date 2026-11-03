@@ -135,7 +135,7 @@ async function effectEntries() {
   const delivery = { authority: 'TEST-native', writer: seller.claim, publish: async () => { effects.sends++; }, read: async () => ({ status: 'absent' }), readRetained: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
   await attempt('createDevnetDemoDeliveryCapability.submit', () => nativeDemDeliverySubmitsOf(createDevnetDemoDeliveryCapability({ authority: delivery.authority, anchor: delivery })).submit({}));
 
-  // The store keeps signing its own local records while off; record what it signs so the test can show those are local-only.
+  // The store keeps signing its own local records while off (a new store, and each authenticated record it creates or updates); record what it signs so the test can show those carry the local-record domain and that the kit sends nothing.
   const storeSignatures = [];
   const storeSign = (bytes) => { storeSignatures.push(Buffer.from(bytes).toString().startsWith(LOCAL_RECORD_DOMAIN)); return signBytes(bytes); };
   const store = await createSellerDurableState({ dir: directory, signer: { claim: seller.claim, sign: storeSign }, listingPin: { contentHash: 'a'.repeat(64) } });

@@ -28,8 +28,10 @@ durable stores use the native `better-sqlite3` module. Use the same version of
 The private package uses a core tarball built from the same checkout.
 This build refuses to start (`kit_operation_guard_off`) until the testnet
 switch, and every other entry that signs for a send or sends refuses too. A
-durable store keeps signing its own local records on open and on each local
-write; nothing is signed for, or sent to, anyone else.
+durable store still signs its own local records through the signer you give it:
+when it creates a new store and when it creates or updates an authenticated
+record (reopening a store or taking a lock signs nothing). The kit publishes
+none of these signatures; what your own signer does with them is up to it.
 
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
