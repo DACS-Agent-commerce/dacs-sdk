@@ -5744,6 +5744,22 @@
           "after": "b95147159f768cec36bd94ad4c274ef01d49e0b4"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/demos-quiet-hooks.mjs",
+          "before": null,
+          "after": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-demos-loading.mjs",
+          "before": null,
+          "after": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
+        }
+      ]
     }
   ]
 }

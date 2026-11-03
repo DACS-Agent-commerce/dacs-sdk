@@ -240,6 +240,7 @@ Payment evidence shape: `checkNativePaymentEvidence` in `src/dacs/native-payment
 Client commits that move the buyer client onto the new wire and its public API use the id `WF`, with subjects `delta(client): WF <PR id> <summary>`. The earlier D-ids keep their original scope.
 
 - `P52a` — the three purchase factories sit behind one held admission wrapper (`src/public-admission.mjs`) driven by one constant (`src/dacs/purchase-admission-state.mjs`, `held`). Active methods return Promises and reject `profile_not_admitted` while held, or when the wire's binding check, the 10,000 ms deadline or the synchronous re-check fails. The factories refuse Node below 22.13 (23.0 to 23.3 included) before building anything. The purchase service awaits the protocol object it is given, reads plan-flight state through a private registry, and chooses its readback projection on each call. The synchronous re-check compares the canonical text of the connection taken before the authority read, so a host's live connection object that changes while the read is pending is refused. A `profile_not_admitted` from a wrapped protocol call means the original never ran: the service records none of it as a commitment, handoff or native-lane event and does not turn it into a result; it reaches the caller, or `verifyDeal`'s diagnostic readback when the hold is re-held.
+- `P21a1a` — quiet Node demosdk loading for the client's Node wallet session. The internal `src/wallet/node-demos-loading.mjs` (no package export, not reached from the root) imports `@kynesyslabs/dacs-node/demos-loader`, registers the reviewed load transform in `src/wallet/demos-quiet-hooks.mjs`, then imports demosdk's websdk and the English BIP-39 wordlist. The transform checks the source SHA-256 against a reviewed table (demosdk 4.0.16 and 4.0.18), empties only the listed diagnostic statements of `GCRGeneration.js` and `demosclass.js`, and checks the output SHA-256. The client gains runtime dependencies on demosdk (`^4.0.16`), `@kynesyslabs/dacs-node` (exact) and `@scure/bip39` (exact), and every packed client consumer packs `dacs-node`. Nothing calls the loader yet.
 
 ## Commit register
 
@@ -947,6 +948,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-demos-loading.test.mjs:1` | 7b1d41e983d9e07fc272914276a693777a7a298a |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 01874421936787529b34afabfd3ac1ee72782300 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | b95147159f768cec36bd94ad4c274ef01d49e0b4 |
+| WF | delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/demos-quiet-hooks.mjs:1` | 323ba838b4f2abe9189f84d6688cdaf0914b1972 |
+| | `packages/dacs-client/src/wallet/node-demos-loading.mjs:1` | 6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1 |
 
 ## Complete commit and file inventory
 
@@ -2975,6 +2979,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/node-demos-loading.test.mjs:1` |
 | delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `.github/workflows/ci.yml:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `package-lock.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/README.md:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/package.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/src/wallet/demos-quiet-hooks.mjs:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/src/wallet/node-demos-loading.mjs:1` |
 
 ## Original moved files
 
