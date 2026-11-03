@@ -5764,6 +5764,22 @@
           "after": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a0 refuse an owned lane reuse or append that the lock row does not back",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "39b829559547b7567fbeab5746d4239b703a43d3",
+          "after": "a284092528a7f3564c8def91dd5fee530ae04b93"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-owned-append.test.mjs",
+          "before": "1df73fe136ac98d597f1509c074d8da73b74087e",
+          "after": "8136201c3d57264ab3fe16d2ccacbef4035fdd49"
+        }
+      ]
     }
   ]
 }

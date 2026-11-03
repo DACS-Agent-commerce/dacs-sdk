@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "0f10cbefdb763d47f6b0dae67e27789bbbceb908"
+        "blob": "72e5f5e632fe775cfceecfb345bf3d915db13730"
       },
       "DELTA-LEDGER.json": {
-        "blob": "79b3ae7587cc47f6eff9b2184f9b44012434e332"
+        "blob": "a6da161aba9fec05be7544e3d46c240c7b4820e6"
       },
       "DELTA-MAP.md": {
-        "blob": "59b2e6f3de7206b15fe70362883f5eb79fdc6f5d"
+        "blob": "4bbb75f447a8f1acaa2291f2e61b91629eaf0456"
       },
       "DELTA-NOTES.md": {
-        "blob": "e29b7485dd64fcfa4be91f99bb1d2fd61e4ca20a"
+        "blob": "e39db5c93bef30ca6cb371afcd5f83d820c0d438"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "707178ec0553cd1ee9304dc36a50e8e95443f49d"
+        "blob": "5f9c4a5eca1a8859901880bab467152ef6b9182f"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "2444468961dbf08d2742bd28298c75ca93e1850e"
+        "blob": "c0f017a212b66fb00e994fb886a45709aa819e61"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1298,7 +1298,7 @@
         "blob": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
       },
       "src/wallet/durable-journal.mjs": {
-        "blob": "39b829559547b7567fbeab5746d4239b703a43d3"
+        "blob": "a284092528a7f3564c8def91dd5fee530ae04b93"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1346,7 +1346,7 @@
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
       },
       "test/durable-journal-owned-append.test.mjs": {
-        "blob": "1df73fe136ac98d597f1509c074d8da73b74087e"
+        "blob": "8136201c3d57264ab3fe16d2ccacbef4035fdd49"
       },
       "test/durable-journal-recovery.test.mjs": {
         "blob": "9e0eea8347fa209477848f388b17d7b4218d733a"

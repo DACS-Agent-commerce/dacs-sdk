@@ -73,3 +73,62 @@ test('appendUnderLock writes once inside an owned lane with zero lane reacquisit
   assert.equal(await full.get('history/2'), undefined);
   assert.equal((await full.entries()).length, 1);
 });
+
+test('withOwnedOrAcquiredLane refuses journal-fenced and never runs its work when the lane context outlives its lock: after release, or while another holder owns the lane', async (t) => {
+  const { journal, open } = tempJournal(t);
+  const other = open();
+  let ran = 0;
+  const retain = () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const call = (async () => { await gate; return journal.withOwnedOrAcquiredLane(LANE, async () => { ran += 1; }); })();
+    call.catch(() => {});
+    return { release, call };
+  };
+
+  let first;
+  await journal.withWalletLock(LANE, async () => { first = retain(); });
+  assert.deepEqual(journal.inspectLocks(), []);
+  first.release();
+  await assert.rejects(first.call, { code: 'journal-fenced' }, 'a retained context with no lock row is refused');
+  assert.equal(ran, 0);
+
+  let second;
+  await journal.withWalletLock(LANE, async () => { second = retain(); });
+  await other.withWalletLock(LANE, async () => {
+    second.release();
+    await assert.rejects(second.call, { code: 'journal-fenced' }, 'another holder owns the lane');
+    assert.equal(ran, 0);
+  });
+  assert.deepEqual(other.inspectLocks(), []);
+
+  assert.equal(await journal.withWalletLock(LANE, () => journal.withOwnedOrAcquiredLane(LANE, async () => 'ok')), 'ok', 'a context that still owns its lane reuses it');
+});
+
+test('appendUnderLock refuses journal-fenced for a key another holder locks, as put does, and writes nothing; its own lane or nested lane key still appends', async (t) => {
+  const { journal, open } = tempJournal(t);
+  const other = open();
+  const target = 'history/1';
+
+  await other.withWalletLock(target, async () => {
+    await journal.withWalletLock(LANE, async () => {
+      await assert.rejects(journal.appendUnderLock(LANE, target, { n: 1 }), { code: 'journal-fenced' });
+      await assert.rejects(journal.put(target, { n: 1 }), { code: 'journal-fenced' });
+    });
+  });
+  assert.equal(await journal.get(target), undefined, 'nothing was written under the foreign lock');
+
+  await journal.withWalletLock(LANE, async () => {
+    await journal.appendUnderLock(LANE, target, { n: 1 });
+    await journal.withWalletLock('history/nested', async () => {
+      await journal.appendUnderLock(LANE, 'history/nested', { n: 2 });
+    });
+  });
+  assert.deepEqual(await journal.get(target), { n: 1 });
+  assert.deepEqual(await journal.get('history/nested'), { n: 2 });
+
+  await journal.withWalletLock('history/self', async () => {
+    await journal.appendUnderLock('history/self', 'history/self', { n: 3 });
+  });
+  assert.deepEqual(await journal.get('history/self'), { n: 3 });
+});

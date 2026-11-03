@@ -216,9 +216,14 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     checkKey(laneKey); checkKey(key);
     const { text, bytes } = checkedRecord(value);
     const mine = held.getStore()?.get(laneKey);
+    const mineAtKey = held.getStore()?.get(key);
     tx('BEGIN IMMEDIATE', () => {
       const m = meta();
       if (!mine || db.prepare('SELECT token FROM locks WHERE key = ?').get(laneKey)?.token !== mine) fail('journal-fenced', 'this context does not own the wallet lane lock; nothing was written');
+      // As `put`: a key another holder locks is not written (a key this context
+      // locks itself, such as the lane, passes with its own token).
+      const keyLock = db.prepare('SELECT token FROM locks WHERE key = ?').get(key);
+      if (keyLock && keyLock.token !== mineAtKey) fail('journal-fenced', 'another holder owns this key; nothing was written');
       if (db.prepare('SELECT 1 FROM records WHERE key = ?').get(key)) fail('journal-key-exists', 'the record already exists and is never overwritten; nothing was written');
       writeRecord(m, key, text, bytes);
     });
@@ -272,12 +277,17 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     return outcome.value;
   }
 
-  // The lane when this context already holds it, else acquired once through
+  // The lane when this context already holds it and its lock row is still this
+  // holder's (journal-fenced otherwise: a context kept past its release, or a
+  // removed or taken lock, never runs `work`), else acquired once through
   // withWalletLock. `work` must not take the same lane again.
   async function withOwnedOrAcquiredLane(laneKey, work) {
     checkKey(laneKey);
     if (typeof work !== 'function') fail('journal-invalid', 'lock work must be a function');
-    return held.getStore()?.has(laneKey) ? work() : withWalletLock(laneKey, work);
+    const mine = held.getStore()?.get(laneKey);
+    if (mine === undefined) return withWalletLock(laneKey, work);
+    if (tx('BEGIN', () => db.prepare('SELECT token FROM locks WHERE key = ?').get(laneKey)?.token) !== mine) fail('journal-fenced', 'this context no longer owns the wallet lane lock; nothing was started');
+    return work();
   }
 
   // Each lock row with its holder class (holder-incarnation.mjs): only 'exited'
