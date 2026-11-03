@@ -265,24 +265,25 @@ test('retained.prepare refuses with no ledger line, as approve.prepare does for 
  assert.equal((await openSigns(fixture.evidencePath)).length,1);assert.equal(prepared.requestText,JSON.stringify(evidence()));
 });
 
-test('manual approval runs the same checks as policy approval, table {purchase closed, purchase unpaid, fee cap manually overridden, debit mismatch} × {retained.prepare, retained.confirm}: retained.prepare after a definite policy refusal falls back to manual approval with ledgerId null; the manual confirm is true only with the exact-debit and fresh purchase checks passing, false when the purchase closes or becomes unpaid during the manual callback or the debit does not match, and not refused by the policy fee cap that was manually overridden while the debit is within K9\'s 50 DEM ceiling (above it the confirm stays false); the hold is unchanged on false and no second write is counted',async t=>{
+test('manual approval runs the same checks as policy approval, table {purchase closed, purchase unpaid, fee cap manually overridden, debit mismatch} × {retained.prepare, retained.confirm}: retained.prepare after a waivable policy refusal asks the operator and gates again after the yes, so a waived write is a ledger authorization with a ledgerId that counts one write; its confirm is true only with the exact-debit and fresh purchase checks passing, false when the debit does not match, and not refused by the policy fee cap that was manually overridden while the debit is within K9\'s 50 DEM ceiling (above it prepare stays refused); a purchase that closes or becomes unpaid during the manual callback refuses the prepare with no sign line',async t=>{
  // The policy's fee cap (3 DEM) is below the request's 4 DEM debit: a definite refusal the operator may waive.
  const fixture=await ledgerFixture(t,{limits:{maxWriteTotalOs:'3000000000'}});let asked=0,during=()=>{};
  const manual=manualApprover(fixture,{authorize:async()=>{asked++;during();return true;}}),approval=fixture.compose(fixture.restart(),manual);
- const request=evidence(),zeroWrites=async()=>assert.equal((await budget(fixture.evidencePath)).writes,0,'a manual decision counts no policy write');
+ const request=evidence(),writes=async(count,why)=>assert.equal((await budget(fixture.evidencePath)).writes,count,why);
  const prepared=await approval.retained.prepare(request);
- assert.equal(prepared.ledgerId,null);assert.equal(asked,1);assert.equal((await signLines(fixture.evidencePath)).length,0);
+ assert.equal(typeof prepared.ledgerId,'string');assert.equal(asked,1);assert.equal((await signLines(fixture.evidencePath)).length,1);
+ await writes(1,'the waived write counts one policy write');
  assert.equal(await approval.retained.confirm(bindingOf(prepared),executed(request)),true,'the overridden fee cap does not refuse the confirm');
  const mismatched=executed(request);mismatched.response.data.transaction.content.transaction_fee.network_fee='2000000000';
  assert.equal(await approval.retained.confirm(bindingOf(prepared),mismatched),false,'debit mismatch');
+ await writes(1,'a false confirm leaves the hold unchanged and counts no second write');
+ // A purchase that ends while the operator answers is refused after the yes, with no sign line.
  for(const [index,[name,changed]] of [['purchase closes during the manual callback',false],['purchase becomes unpaid during the manual callback',unpaid()]].entries()){
-  const other=evidence({job:JOBS[1],nonce:2+index});during=()=>{fixture.state.purchase=changed;};
-  const decision=await approval.retained.prepare(other);during=()=>{};
-  assert.equal(await approval.retained.confirm(bindingOf(decision),executed(other)),false,name);
-  fixture.state.purchase=purchase();assert.equal(await approval.retained.confirm(bindingOf(decision),executed(other)),true,`${name}: the decision was kept`);
-  await approval.retained.settle(bindingOf(decision),'spent');
+  const other=evidence({job:JOBS[1],nonce:2+index}),signs=(await signLines(fixture.evidencePath)).length;during=()=>{fixture.state.purchase=changed;};
+  await rejectsWith(approval.retained.prepare(other),'approval_refused');during=()=>{};fixture.state.purchase=purchase();
+  assert.equal((await signLines(fixture.evidencePath)).length,signs,`${name}: no sign line`);assert.equal(await approval.retained.open(JSON.stringify(other)),null,name);
  }
- await zeroWrites();
+ await writes(1,'a refused waiver counts nothing');
  // Definite policy refusals that no manual answer may waive never reach the operator (an open generation of the same
  // bytes would be returned as it is, so the first is released).
  await approval.retained.settle(bindingOf(prepared),'released');
@@ -296,7 +297,7 @@ test('manual approval runs the same checks as policy approval, table {purchase c
  const aboveCeiling=evidence({rpcFeeDem:'47.000000001',nonce:6});
  await rejectsWith(approval.retained.prepare(aboveCeiling),'approval_refused');
  await rejectsWith(approval.retained.confirm({ledgerId:null,requestText:JSON.stringify(aboveCeiling)},executed(aboveCeiling)),'approval_reservation_unavailable');
- await zeroWrites();
+ await writes(1,'only the ceiling write is held');
 });
 
 test('confirmRetained refuses an otherwise valid executed confirmation whose fee members disagree with the declared debit, and one carrying a 2 MB unrelated member; it returns false and the ledger grows by 0 bytes',async t=>{
@@ -494,13 +495,13 @@ test('a session sign row is never adopted by another approval object on the same
  // A second live approval object over the same ledger, while the owner holds the row.
  await assertNotRetainable(fixture,request,signed.reservationId);
  const other=fixture.restart();
- assert.equal(await other.authorizeRetained(secondEvidence()),null,'the hourly write limit still counts the session row');
+ assert.ok((await other.authorizeRetained(secondEvidence())).waiver,'the hourly write limit still counts the session row');
  assert.equal((await signLines(fixture.evidencePath)).length,1);
  assert.equal(await session.confirm(executed(request)),true,'the owner confirms its own write');
  // A restart: the owner's memory is gone, and the ledger still says the row is the session's.
  await owner.stop();
  await assertNotRetainable(fixture,request,signed.reservationId);
- assert.equal(await fixture.restart().authorizeRetained(secondEvidence()),null);assert.equal((await budget(fixture.evidencePath)).writes,1);
+ assert.ok((await fixture.restart().authorizeRetained(secondEvidence())).waiver);assert.equal((await budget(fixture.evidencePath)).writes,1);
  const retainedFixture=await ledgerFixture(t),prepared=await retainedFixture.compose(retainedFixture.restart()).retained.prepare(evidence());
  const recovering=retainedFixture.compose(retainedFixture.restart());
  assert.deepEqual(await recovering.retained.open(prepared.requestText),bindingOf(prepared));
@@ -582,4 +583,94 @@ test('settle(id, unknown) needs an open retained authorization, and a confirm or
  await rejectsWith(approval.retained.settle(foreign,'released'),'approval_reservation_unavailable');
  await approval.retained.settle(bindingOf(prepared),'unknown');
  assert.equal(await text(fixture.evidencePath),before);
+});
+
+// A refusal the operator may waive: 5 DEM against the default 4 DEM fee cap, so the policy refuses only write-fee-cap.
+const waivable=(options={})=>evidence({rpcFeeDem:'2',...options});
+
+test('a waived refusal is gated again after the operator\'s yes: a purchase that closes or becomes unpaid, or another limit reached during the answer, refuses approval_refused with its own reason, asks the operator once and appends no sign line; a waiver no caller was given is invalid_params',async t=>{
+ const fixture=await ledgerFixture(t,{limits:{maxWritesPerHour:1}});let asked=0,during=async()=>{};
+ const manual=manualApprover(fixture,{authorize:async()=>{asked++;await during();return true;}}),approval=fixture.compose(fixture.restart(),manual);
+ const refusedWith=async(request,reason,why,otherSigns=0)=>{
+  const before=asked,signs=(await signLines(fixture.evidencePath)).length;
+  await assert.rejects(approval.retained.prepare(request),error=>error.code==='approval_refused'&&error.reason===reason,why);
+  assert.equal(asked,before+1,`${why}: the operator is asked once`);assert.equal((await signLines(fixture.evidencePath)).length,signs+otherSigns,`${why}: no sign line of its own`);
+  assert.equal(await approval.retained.open(JSON.stringify(request)),null,why);
+ };
+ during=async()=>{fixture.state.purchase=false;};await refusedWith(waivable(),'purchase-closed','purchase closed');
+ fixture.state.purchase=purchase();
+ during=async()=>{fixture.state.purchase=unpaid();};await refusedWith(waivable(),'payment-not-observed','purchase unpaid');
+ fixture.state.purchase=purchase();
+ // The fee cap is what the operator waived; the hourly write limit another write fills meanwhile is not.
+ during=async()=>{await fixture.restart().authorizeRetained(evidence({job:JOBS[1],nonce:2}));};
+ await refusedWith(waivable(),'hourly-write-limit','another write fills the hourly limit',1);
+ assert.equal((await budget(fixture.evidencePath)).writes,1);
+ await rejectsWith(fixture.restart().authorizeRetainedWaived({}),'invalid_params');
+});
+
+test('a waived write is a ledger authorization: it counts against maxWritesPerHour, holds its wallet nonce against another request and a session approval, and after a restart open, reopen, prepare and confirm find it without asking the operator',async t=>{
+ const fixture=await ledgerFixture(t,{limits:{maxWritesPerHour:1}});let asked=0;
+ const manual=manualApprover(fixture,{authorize:async()=>{asked++;return true;}}),approval=fixture.compose(fixture.restart(),manual),policy=fixture.restart();
+ const first=await approval.retained.prepare(evidence()),second=secondEvidence();
+ assert.equal(asked,0);
+ const waived=await approval.retained.prepare(second);
+ assert.equal(asked,1);assert.equal(typeof waived.ledgerId,'string');assert.equal((await signLines(fixture.evidencePath)).length,2);
+ assert.equal((await budget(fixture.evidencePath)).writes,2,'the waived write counts beside the first');
+ // Released, the first no longer holds a slot: the waived write still does, so a third write is held, not signed.
+ await approval.retained.settle(bindingOf(first),'released');
+ assert.equal((await budget(fixture.evidencePath)).writes,1);
+ assert.ok((await policy.authorizeRetained(evidence({job:JOBS[2],nonce:3}))).waiver,'the waived write still holds the hourly slot');
+ // Its wallet nonce is held: no other request for it is signed, by a retained or a session approval.
+ const sameNonce=evidence({job:JOBS[4],nonce:2}),signs=(await signLines(fixture.evidencePath)).length;
+ await assert.rejects(policy.authorizeRetained(sameNonce),error=>error.code==='approval_refused'&&error.reason==='sign-authorization-open');
+ assert.equal(await fixture.compose(fixture.restart())(sameNonce),false);assert.equal((await signLines(fixture.evidencePath)).length,signs);
+ // After a restart nothing is lost with the process.
+ const restarted=fixture.compose(fixture.restart(),()=>assert.fail('the operator was asked after a restart'));
+ assert.deepEqual(await restarted.retained.open(waived.requestText),bindingOf(waived));
+ assert.equal((await restarted.retained.reopen(waived.ledgerId)).requestText,waived.requestText);
+ assert.deepEqual(await restarted.retained.prepare(second),bindingOf(waived));
+ assert.equal(await restarted.retained.confirm(bindingOf(waived),executed(second)),true);
+ await restarted.retained.settle(bindingOf(waived),'spent');assert.equal((await completions(fixture.evidencePath,waived.ledgerId)).length,1);
+});
+
+test('the job write limit counts a waived write once: five live writes and a sixth waived is signed at the limit, a seventh is refused job-write-limit after the yes, and a released write frees the seventh',async t=>{
+ const fixture=await ledgerFixture(t);let asked=0;
+ const manual=manualApprover(fixture,{authorize:async()=>{asked++;return true;}}),approval=fixture.compose(fixture.restart(),manual);
+ const live=[];for(let nonce=1;nonce<=5;nonce++)live.push(await approval.retained.prepare(evidence({nonce})));
+ assert.equal(asked,0);
+ const sixth=await approval.retained.prepare(waivable({nonce:6}));
+ assert.equal(typeof sixth.ledgerId,'string','the sixth write of the job, with the operator\'s own decision line for it, is within the limit');
+ await assert.rejects(approval.retained.prepare(waivable({nonce:7})),error=>error.code==='approval_refused'&&error.reason==='job-write-limit');
+ await approval.retained.settle(bindingOf(live[0]),'released');
+ assert.equal(typeof (await approval.retained.prepare(waivable({nonce:7}))).ledgerId,'string','the waived sixth and its decision line count as one write');
+ assert.equal(asked,3);
+});
+
+test('two retained.prepare calls for the same waived refusal share one operator answer and one sign line; two different requests for one wallet nonce, both waived, sign one and refuse the other sign-authorization-open',async t=>{
+ const fixture=await ledgerFixture(t);let asked=0,open;const answered=new Promise(done=>{open=done;});
+ const manual=manualApprover(fixture,{authorize:async()=>{asked++;await answered;return true;}}),approval=fixture.compose(fixture.restart(),manual),probe=fixture.restart();
+ const [one,two]=[approval.retained.prepare(waivable()),approval.retained.prepare(waivable())];
+ // Both gate reads were queued ahead of this one, so both callers are waiting on the operator's answer.
+ await probe.openRetained(JSON.stringify(waivable()));open();
+ const [first,second]=await Promise.all([one,two]);
+ assert.equal(asked,1);assert.equal(first.ledgerId,second.ledgerId);assert.equal((await signLines(fixture.evidencePath)).length,1);
+ const other=await ledgerFixture(t);asked=0;let release;const held=new Promise(done=>{release=done;});
+ const racing=composeSellerApproval({mode:'policy',policy:other.restart(),manual:manualApprover(other,{authorize:async()=>{asked++;await held;return true;}})});
+ const pair=[racing.retained.prepare(waivable()),racing.retained.prepare(waivable({job:JOBS[1]}))];
+ await other.restart().openRetained(JSON.stringify(waivable()));release();
+ const settled=await Promise.allSettled(pair);
+ assert.equal(asked,2);assert.equal(settled.filter(entry=>entry.status==='fulfilled').length,1);
+ assert.equal(settled.find(entry=>entry.status==='rejected').reason.reason,'sign-authorization-open');assert.equal((await openSigns(other.evidencePath)).length,1);
+});
+
+test('a declined waiver is approval_refused manual-declined and a stop during the answer is operator_closing, each with no sign line, and the next prepare completes',async t=>{
+ const fixture=await ledgerFixture(t);let answer=async()=>false;
+ const manual=manualApprover(fixture,{authorize:()=>answer()}),approval=fixture.compose(fixture.restart(),manual);
+ await assert.rejects(approval.retained.prepare(waivable()),error=>error.code==='approval_refused'&&error.reason==='manual-declined');
+ let reached;const asking=new Promise(done=>{reached=done;});answer=()=>{reached();return new Promise(()=>{});};
+ const stopping=approval.retained.prepare(waivable());await asking;await manual.stop();
+ await rejectsWith(stopping,'operator_closing');
+ assert.deepEqual(await signLines(fixture.evidencePath),[]);
+ const next=composeSellerApproval({mode:'policy',policy:fixture.restart(),manual:manualApprover(fixture)});
+ assert.equal(typeof (await next.retained.prepare(waivable())).ledgerId,'string');
 });
