@@ -95,10 +95,26 @@ describe("retained-stage admission under ready:false", { timeout: TIMEOUT_MS }, 
   it("CAP the context route keeps its ready rule and its four retained members until P03b", async () => {
     const x = await world();
     const j = journalWithFiles();
-    await reserveFirst(x, P.context, j.journal);
-    // Even with an operation already bound to this binding, a drained seller refuses the context route.
+    // No operation yet: a drained seller refuses a new context request.
     await expect(admit(x, P.context, j.journal, { retained: x.retained })).rejects.toMatchObject(NOT_READY);
+    await reserveFirst(x, P.context, j.journal);
+    // `allocated` is not a context member, so it cannot admit the route.
+    await expect(admit(x, P.context, j.journal, { retained: { ...x.retained, allocated: true } })).rejects.toMatchObject(RETAINED_REQUIRED);
     expect((await wire.checkWireRequest(await x.open(P.context), { ...x.check(P.context), requestJournal: j.journal })).reserve).toBeTypeOf("function");
+  });
+
+  it("CAP under ready:false, a context retry is admitted when the journal already holds its operation under this request's binding, and another binding is seller_not_ready", async () => {
+    const x = await world(), other = await world();
+    for (const state of ["pending", "ended", "completed"]) {
+      const j = journalWithFiles();
+      const first = await reserveFirst(x, P.context, j.journal);
+      if (state === "ended") wire.completeWireEffect(j.journal, first, null);
+      if (state === "completed") wire.completeWireEffect(j.journal, first, { status: 200, text: "{}" });
+      const files = j.files();
+      expect((await admit(x, P.context, j.journal, { retained: x.retained })).reserve, state).toBeTypeOf("function");
+      await expect(admit(other, P.context, j.journal, { retained: other.retained }), `${state}, another binding`).rejects.toMatchObject(NOT_READY);
+      expect(j.files(), state).toEqual(files);
+    }
   });
 
   it("CAP K5-S8 wire slice: a proposals stage admitted under ready:false after 8 nonce-only cuts reserves new attempt 0 (files 8 to 10)", async () => {

@@ -110,7 +110,28 @@ jobs:
           npm pack --ignore-scripts --pack-destination "$client_smoke"
           npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_smoke"
           npm install --prefix "$client_smoke/app" --no-audit --ignore-scripts --omit=optional "$client_smoke"/*.tgz
-          (cd "$client_smoke/app" && node --input-type=module -e "const c = await import('@kynesyslabs/dacs-client'); if (typeof c.createPurchaseService !== 'function' || typeof c.NotWiredError !== 'function') process.exit(1)")
+          (cd "$client_smoke/app" && node --input-type=module -e "const c = await import('@kynesyslabs/dacs-client'); if (typeof c.createPurchaseService !== 'function' || typeof c.NotWiredError !== 'function' || c.canonicalize({ b: 1, a: 2 }) !== '{\"a\":2,\"b\":1}') process.exit(1)")
+
+      # Only the Node 20 floor leg expects the refusal; the floating 22 leg runs the read-only smoke above.
+      - name: Package smoke (buyer purchase factories refuse Node 20 with runtime_unsupported)
+        if: matrix.node-version == '20.19.0'
+        run: |
+          cd "$RUNNER_TEMP/dacs-client-smoke/app"
+          node --input-type=module <<'NODE'
+          const c = await import('@kynesyslabs/dacs-client');
+          const admission = { binding: {}, currentLocal: () => ({}) };
+          for (const [name, make] of Object.entries({
+            createProtocolPurchases: () => c.createProtocolPurchases({ admission }),
+            createPurchaseService: () => c.createPurchaseService({ admission }),
+            createListingVerifier: () => c.createListingVerifier({ admission }),
+          })) {
+            try { make(); } catch (error) {
+              if (error.code === 'runtime_unsupported' && error.message.includes(process.version)) continue;
+              throw error;
+            }
+            throw new Error(`${name} was not refused on ${process.version}`);
+          }
+          NODE
 
       - name: Package smoke (Node host kit boundary)
         run: |
@@ -542,6 +563,20 @@ jobs:
           npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_minimum"
           npm install --prefix "$client_minimum/app" --no-audit --ignore-scripts --omit=optional "$client_minimum"/*.tgz
           (cd "$client_minimum/app" && node --input-type=module -e "await import('@kynesyslabs/dacs-client'); await import('@kynesyslabs/dacs-client/wallet/durable-journal')")
+          cd "$client_minimum/app"
+          node --input-type=module <<'NODE'
+          import { DatabaseSync } from 'node:sqlite';
+          const c = await import('@kynesyslabs/dacs-client');
+          const admission = { binding: {}, currentLocal: () => ({}) };
+          const db = new DatabaseSync(':memory:');
+          db.exec('PRAGMA foreign_keys=ON');
+          db.exec(c.PURCHASE_STATE_SCHEMA);
+          const store = c.createSqlitePurchaseStore(), coordinates = c.createCoordinateStore({ db });
+          // Each factory gets past the runtime check and finishes construction at the floor.
+          c.createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission });
+          c.createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission });
+          c.createListingVerifier({ directory: {}, chain: {}, admission });
+          NODE
       # Transaction and crash coverage runs in build-test on current Node 22.
       # Its engine-floor implementation and portable fixtures are separate changes.
       - run: node --test --test-concurrency=1 --test-reporter=tap packages/dacs-client/test/public-api.test.mjs
