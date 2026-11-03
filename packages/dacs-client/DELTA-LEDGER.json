@@ -5536,6 +5536,33 @@
       ]
     },
     {
+      "delta": "D16",
+      "subject": "delta(client): D16 fail a malformed payment reference on scope instead of throwing",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/native-payment-evidence-consumer.mjs",
+          "before": "7083a9147813ea400ad40e17491ceb9d2f9de3c2",
+          "after": "b10ec778520587c7d49045ae569b9742b05c097a"
+        },
+        {
+          "path": "packages/dacs-client/test/native-payment-evidence-shape.test.mjs",
+          "before": null,
+          "after": "834d1cf7f501c8302919700b77891d11fc00dd48"
+        }
+      ]
+    },
+    {
+      "delta": "D16",
+      "subject": "delta(client): D16 drop an unused binding in the payment-reference shape test",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/native-payment-evidence-shape.test.mjs",
+          "before": "834d1cf7f501c8302919700b77891d11fc00dd48",
+          "after": "bb761efa71a4b511c65d6796798861a6ad40c7d3"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P52a held admission wrapper, runtime floor and awaited protocol consumers",
       "files": [

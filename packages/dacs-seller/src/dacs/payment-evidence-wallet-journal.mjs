@@ -91,6 +91,7 @@ import DatabaseSync from 'better-sqlite3';
 import { setTimeout as delay } from 'node:timers/promises';
 import { canonicalize, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
 import { addressForClaim, verifyDemosSignature } from './demos-claims.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from './wallet-transactions.mjs';
 
 // Bounds on what signCreate answers before it is kept.
@@ -377,6 +378,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return { ...signed, applied };
   }
   async function anchorCreate(input) {
+    assertKitOperationAdmitted('anchorEvidence');
     const signed = await locked(() => prepareAnchor(input));
     if (!signed.applied) await sendSigned(signed);
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
@@ -416,6 +418,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     if (expectedJournalId !== journalId) throw Object.assign(new Error('the original wallet journal is required'), { code: 'wallet_journal_changed' });
   };
   async function ensureEvidence({expectedJournalId,attempt,authorize,...input}) {
+    assertKitOperationAdmitted('ensureEvidence');
     if(authorize!==undefined&&typeof authorize!=='function')throw new TypeError('evidence authorization must be a function');
     // Asked synchronously with the wallet effect it guards. A refusal the caller throws (a lost job fence) keeps its own
     // code; any other answer than `true` is wallet_not_authorized.
@@ -436,6 +439,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   }
 
   async function reconcileCreate(input) {
+    assertKitOperationAdmitted('reconcilePaymentEvidence');
     // An attempt whose answer names a transaction this journal never kept was
     // anchored through another journal (a lost or replaced file): its fate is
     // not this journal's to answer, and `unsigned` would allow a second CREATE.
@@ -471,6 +475,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   // wallet_not_authorized; a kept row stays). `resume` never signs and answers
   // as reconcileCreate; otherwise it answers { status: 'submitted' | 'applied', txHash }.
   async function guardedCreate({ expectedJournalId, authorize, ...input }, { resume }) {
+    assertKitOperationAdmitted('guardedCreate');
     if (typeof authorize !== 'function') throw new TypeError('a guarded wallet journal call needs its authorization callback');
     const permit = () => permitted(authorize);
     const kept = await locked(async () => {
