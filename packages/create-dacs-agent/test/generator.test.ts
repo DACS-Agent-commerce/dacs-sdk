@@ -283,6 +283,18 @@ describe("create-dacs-agent", () => {
       }
     }
     const compose = await readFile(join(target, "compose.yaml"), "utf8");
+    expect(compose).toContain("DACS_SESSION_PROFILE_ADMISSION_FILE: /run/dacs/session-profile/admission.json");
+    expect(compose.match(/target: \/run\/dacs\/session-profile/g)).toHaveLength(2);
+    expect(compose).toContain("source: ${DACS_SESSION_PROFILE_ADMISSION_DIRECTORY:-./session-profile}");
+    // Long-form bind mounts require their host directory to exist before up.
+    const bindSources = [...compose.matchAll(/- type: bind\n\s+source: ([^\n]+)/g)];
+    expect(bindSources).toHaveLength(2);
+    for (const [, source] of bindSources) {
+      const defaultSource = source!.replace(/^\$\{[^}]+:-(.+)\}$/, "$1");
+      if (defaultSource.startsWith("./")) {
+        expect((await lstat(join(target, defaultSource))).isDirectory()).toBe(true);
+      }
+    }
     expect(compose).toContain("DACS_BUYER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_SELLER_DATA_DIRECTORY");
     expect(compose).toContain("DACS_BUYER_DEMOS_SECRET_FILE");
@@ -403,8 +415,31 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("DACS_X402_TOKEN_NAME=USDC");
     expect(combined).not.toContain("DACS_X402_TOKEN_NAME=USD Coin");
     expect(combined).not.toContain('status: "not-configured"');
-    expect(combined).toContain("createCommerceGraph: async");
     expect(combined).not.toContain("createOperations: () => Object.freeze({})");
+    // The live factories refuse to build without session profile admission:
+    // the service wires the operator's admission source and builds its graph
+    // only through the gate, which blocks commerce with a named reason.
+    const serviceSource = await readFile(join(target, "src/service.ts"), "utf8");
+    const gate = serviceSource.indexOf(
+      "createCommerceGraph: createDacsSessionProfileGatedCommerceGraphV1(async (context) => {");
+    expect(gate).toBeGreaterThan(0);
+    expect(serviceSource.match(/createCommerceGraph:/g)).toHaveLength(1);
+    for (const factory of [
+      "createDacsFixedPriceMultirailBuyerLiveV1", "createDacsFixedPriceMultirailSellerLiveV1",
+      "createDacsFixedPriceX402BuyerLiveV1", "createDacsFixedPriceX402SellerLiveV1",
+      "createDacsFixedPricePayDemBuyerLiveV1", "createDacsFixedPricePayDemSellerLiveV1",
+    ]) {
+      expect(serviceSource.indexOf(`return ${factory}(`)).toBeGreaterThan(gate);
+    }
+    expect(serviceSource).toContain("createDacsFileSessionProfileAdmissionV1({");
+    expect(serviceSource).toContain(
+      "...(authenticateSessionProfile === undefined ? {} : { authenticateSessionProfile }),");
+    expect(serviceSource).toContain(
+      "commerce: dacsLiveSessionProfileAvailabilityV1(authenticateSessionProfile)");
+    expect(combined).toContain("process.env.DACS_SESSION_PROFILE_ADMISSION_FILE");
+    expect(environmentExample).toContain("\nDACS_SESSION_PROFILE_ADMISSION_FILE=\n");
+    expect(combined).toContain(
+      "DACS_SESSION_PROFILE_ADMISSION_FILE: /run/dacs/session-profile/admission.json");
     expect(combined).toContain("post-start-doctor-required");
     expect(combined).toContain("DACS_SETUP_WRITE_CONFIRM=1");
     expect(combined).toContain("DACS_PURCHASE_CONFIRM=1");

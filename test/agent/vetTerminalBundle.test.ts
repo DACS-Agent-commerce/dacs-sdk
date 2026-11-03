@@ -194,15 +194,91 @@ describe("terminal Vet bundle preparation", () => {
     })).toThrow(/only an abort authority/i);
   });
 
-  test.each(["indeterminate", "error"] as const)(
-    "keeps an authenticated %s decision non-terminal and blameless",
-    async (decision) => {
-      const result = await prepareVetTerminalBundle(input(decision), authentication());
-      expect(result).toMatchObject({ status: "retry", decision });
-      expect(result).not.toHaveProperty("authority");
-      expect(result).not.toHaveProperty("faultedParty");
-    },
-  );
+  // DACS-2 VPC-4/VP-R4: never retried; the phase fails as `permanent`, the
+  // verifier's own failure, so the verifier's copy reads `failed-perm`.
+  test.each([
+    ["indeterminate", "authenticated-vet-indeterminate"],
+    ["error", "authenticated-vet-error"],
+  ] as const)("ends an authenticated %s decision as the verifier's permanent failure", async (decision, reason) => {
+    const candidate = input(decision);
+    const result = await prepareVetTerminalBundle(candidate, authentication({ status: "valid", cause: {
+      kind: "verifier", jobId: candidate.jobId,
+      recordHash: candidate.production.recordRef.contentHash,
+      evaluatedIdentityHash: identityBundleHash(candidate.parties[1]!.identityBundle),
+      verifierIdentityHash: identityBundleHash(candidate.parties[0]!.identityBundle),
+    } }));
+    expect(result).toMatchObject({
+      status: "terminal",
+      state: "vet-failed",
+      faultedParty: "buyer",
+      sessionRecord: {
+        state: "vet-failed",
+        phaseResults: [{ result: { ok: false, reason, errorClass: "permanent" } }],
+      },
+      authority: {
+        terminalClass: "failure",
+        faultedParty: "buyer",
+        terminalPhase: { kind: "vet-credentials", state: "failed", errorClass: "permanent" },
+        phaseSummary: [{ index: 0, kind: "vet-credentials", outcome: "fail",
+          errorClass: "permanent", attestationRef: input(decision).production.recordRef }],
+        vetRecords: [input(decision).production.recordRef],
+      },
+    });
+    if (result.status !== "terminal") throw new Error();
+    // The evaluated seller's copy names the buyer: failed-counterparty there,
+    // failed-perm in the buyer's own copy (DACS-5 §10.4.1).
+    const plan = createTerminalBundlePlan(result.authority, { kind: "co-signed" });
+    const outcomes = Object.fromEntries(plan.copies.map((entry) => [entry.role, entry.outcome]));
+    expect(outcomes).toEqual({ buyer: "failed-perm", seller: "failed-counterparty" });
+  });
+
+  test.each(["error", "indeterminate"] as const)(
+    "attributes parse-caused %s to the counterparty on both copies", async (decision) => {
+      const candidate = input(decision);
+      const cause = {
+        kind: "counterparty-presentation-parse" as const, jobId: candidate.jobId,
+        recordHash: candidate.production.recordRef.contentHash,
+        evaluatedIdentityHash: identityBundleHash(candidate.parties[1]!.identityBundle),
+        verifierIdentityHash: identityBundleHash(candidate.parties[0]!.identityBundle),
+      };
+      const result = await prepareVetTerminalBundle(candidate, authentication({ status: "valid", cause }));
+      expect(result).toMatchObject({ status: "terminal", faultedParty: "seller",
+        sessionRecord: { phaseResults: [{ result: { errorClass: "counterparty" } }] } });
+      if (result.status !== "terminal") throw new Error();
+      expect(createTerminalBundlePlan(result.authority, { kind: "co-signed" }).copies
+        .map(({ role, outcome }) => [role, outcome]))
+        .toEqual([["buyer", "failed-counterparty"], ["seller", "failed-perm"]]);
+      // Without the proven parse cause the VPC-4 default applies: the verifier's fault.
+      await expect(prepareVetTerminalBundle(candidate, authentication()))
+        .resolves.toMatchObject({ status: "terminal", faultedParty: "buyer" });
+      // A cause bound to another production is malformed authority: refuse it.
+      const otherJob = candidate.jobId.slice(0, -1) + (candidate.jobId.endsWith("F") ? "G" : "F");
+      for (const misbound of [{ recordHash: "00".repeat(32) }, { jobId: otherJob },
+        { evaluatedIdentityHash: cause.verifierIdentityHash }, { verifierIdentityHash: cause.evaluatedIdentityHash }]) {
+        await expect(prepareVetTerminalBundle(candidate, authentication({ status: "valid",
+          cause: { ...cause, ...misbound } })))
+          .resolves.toMatchObject({ status: "indeterminate", reason: "Vet cause authentication is not bound to this production" });
+      }
+    });
+
+  // DACS-2 VPC-4: `permanent` is the default and needs no cause provenance.
+  test.each(["error", "indeterminate"] as const)(
+    "ends an authenticated %s decision without a cause as the verifier's permanent failure", async (decision) => {
+      const candidate = input(decision);
+      const result = await prepareVetTerminalBundle(candidate, authentication({ status: "valid" }));
+      expect(result).toMatchObject({
+        status: "terminal",
+        state: "vet-failed",
+        faultedParty: "buyer",
+        sessionRecord: { state: "vet-failed", phaseResults: [{ result: { ok: false, errorClass: "permanent" } }] },
+        authority: { terminalClass: "failure", faultedParty: "buyer",
+          terminalPhase: { kind: "vet-credentials", state: "failed", errorClass: "permanent" } },
+      });
+      if (result.status !== "terminal") throw new Error();
+      const plan = createTerminalBundlePlan(result.authority, { kind: "co-signed" });
+      expect(Object.fromEntries(plan.copies.map((entry) => [entry.role, entry.outcome])))
+        .toEqual({ buyer: "failed-perm", seller: "failed-counterparty" });
+    });
 
   test("passes an authenticated passing record without producing terminal state", async () => {
     const result = await prepareVetTerminalBundle(input("pass"), authentication());
@@ -304,4 +380,36 @@ describe("terminal Vet bundle preparation", () => {
     )).rejects.toThrow(/stable authenticator/i);
     expect(getterCalls).toBe(0);
   });
+});
+
+// The available opposite-direction record must be in both the inventory and receipt closure.
+test("authenticates and commits the complete two-role Vet set", async () => {
+  const fail = input();
+  const pass = production("pass");
+  pass.record = { ...pass.record, evaluatedParty: BUYER, bundleHash: identityBundleHash(identity("buyer")),
+    signature: { ...pass.record.signature, signer: SELLER } };
+  const hash = contentHash(pass.record as unknown as Record<string, unknown>);
+  pass.recordRef = { ...pass.recordRef, signer: SELLER, contentHash: hash,
+    anchor: { kind: "storage-program", locator: `stor-${"99".repeat(32)}` } };
+  pass.anchorReceipt = { ...pass.anchorReceipt, writer: SELLER, contentHash: hash,
+    nativeAddress: pass.recordRef.anchor.locator,
+    logicalAddress: compositeVerificationAddress(JOB_ID, BUYER) };
+  const calls: unknown[] = [];
+  const result = await prepareVetTerminalBundle({ ...fail, complementaryProduction: pass }, {
+    authenticateProduction: (value) => { calls.push(value); return { status: "valid" }; },
+  });
+  expect(result.status).toBe("terminal");
+  if (result.status !== "terminal") throw new Error();
+  expect(calls).toHaveLength(2);
+  expect(result.authority.vetRecords).toEqual([pass.recordRef, fail.production.recordRef]);
+  const single = await prepareVetTerminalBundle(fail, authentication());
+  if (single.status !== "terminal") throw new Error();
+  expect(single.authority.dependencySetHash).not.toBe(result.authority.dependencySetHash);
+  const wrong = structuredClone(pass);
+  wrong.anchorReceipt.contentHash = "00".repeat(32);
+  await expect(prepareVetTerminalBundle({ ...fail, complementaryProduction: wrong }, authentication())).rejects.toThrow(/session roles and anchor/);
+  await expect(prepareVetTerminalBundle({ ...fail, complementaryProduction: pass }, {
+    authenticateProduction: ({ production }) => production.record.overallDecision === "pass"
+      ? { status: "invalid", reason: "opposite record rejected" } : { status: "valid" },
+  })).resolves.toMatchObject({ status: "invalid" });
 });

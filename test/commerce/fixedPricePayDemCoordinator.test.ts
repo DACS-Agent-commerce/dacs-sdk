@@ -93,6 +93,18 @@ describe("fixed-price pay-dem coordinator", () => {
     })).toThrow(/unsupported/);
   });
 
+  it("refuses historical orders before starting any track or rebinding stored bytes", async () => {
+    const historical = { ...order("buyer"), protocol: { ...PROTOCOL,
+      standardRevision: "965df755aba4ff392f1fb37a93d287242b177ba4" } };
+    expect(() => captureFixedPricePayDemProtocolBinding(historical.protocol)).toThrow(/unsupported/);
+    const store = createInMemoryFixedPricePayDemCoordinatorStore({ now: () => 1000 });
+    const operations = { agreement: success("agreement") };
+    const buyer = createFixedPricePayDemBuyerCoordinator({ store, workerId: "native-current", operations });
+    await expect(buyer.startOrder(historical as never)).rejects.toThrow(/unsupported/);
+    expect(await buyer.getOrderStatus(JOB_ID)).toBeNull();
+    expect(historical.protocol.standardRevision).toBe("965df755aba4ff392f1fb37a93d287242b177ba4");
+  });
+
   it("runs the existing durable two-role DAG under a distinct native binding", async () => {
     const store = createInMemoryFixedPricePayDemCoordinatorStore({ now: () => 1_000 });
     const buyer = createFixedPricePayDemBuyerCoordinator({

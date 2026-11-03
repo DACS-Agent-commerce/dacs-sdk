@@ -64,6 +64,8 @@ import type {
 } from "./transport/envelope.js";
 
 export interface DacsLiveRoleRuntimeOptionsV1 {
+  /** Trusted deployment admission; never derive this result from peer artifacts. */
+  authenticateSessionProfile?(jobId: string): Promise<unknown> | unknown;
   config: unknown;
   role: "buyer" | "seller";
   authority: string;
@@ -155,6 +157,7 @@ export interface DacsLiveRoleCommerceGraphV1 {
  */
 export interface DacsLiveRoleOperationContextV1
   extends DacsLiveRoleRuntimeContextV1 {
+  readonly authenticateSessionProfile?: (jobId: string) => Promise<unknown> | unknown;
   readonly config: Readonly<DacsLiveAgentConfig>;
   readonly database: DacsNodeSqliteDatabase;
   readonly demos: Readonly<DacsDemosActorRuntimeV1>;
@@ -443,6 +446,9 @@ export async function createDacsLiveRoleRuntimeV1(
       demos,
       sessionStore,
       commerceStores,
+      ...(rawOptions.authenticateSessionProfile === undefined ? {} : {
+        authenticateSessionProfile: rawOptions.authenticateSessionProfile,
+      }),
       ...(evm === undefined ? {} : { evm }),
     });
     const inboundOperationContext = (
@@ -454,6 +460,9 @@ export async function createDacsLiveRoleRuntimeV1(
       demos,
       sessionStore,
       commerceStores,
+      ...(rawOptions.authenticateSessionProfile === undefined ? {} : {
+        authenticateSessionProfile: rawOptions.authenticateSessionProfile,
+      }),
       ...(evm === undefined ? {} : { evm }),
     });
     let establishedOperationContext: Readonly<DacsLiveRoleOperationContextV1> | undefined;

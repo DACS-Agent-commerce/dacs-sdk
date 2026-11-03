@@ -35,6 +35,7 @@ describe("native DEM live commerce graph", () => {
     const agreementTransport = runtime();
     const paymentEvidence = Object.freeze({ ...runtime(), operation: operation() });
     const bundleTransport = runtime();
+    const terminalBundleTransport = runtime();
     const graph = createDacsBuyerPayDemLiveCommerceGraphV1({
       sessionBootstrap: sessionBootstrap as never,
       agreement: operation(),
@@ -44,11 +45,18 @@ describe("native DEM live commerce graph", () => {
       audit: operation(),
       agreementTransport: agreementTransport as never,
       bundleTransport: bundleTransport as never,
+      terminalBundleTransport: terminalBundleTransport as never,
     });
 
     expect(Object.keys(graph.payDemOperations).sort()).toEqual([
       "agreement", "audit", "buyer-received", "payment", "payment-evidence",
     ]);
+    expect(graph.terminalBundles).toBe(terminalBundleTransport);
+    await expect(graph.handleMessage(
+      authenticated("terminal-bundle-proposal-seller"),
+      { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,
+    )).resolves.toEqual({ disposition: "accepted" });
+    expect(terminalBundleTransport.handleMessage).toHaveBeenCalledOnce();
     await expect(graph.handleMessage(
       authenticated("payment-evidence-request"),
       { role: "buyer" } as DacsLiveRoleInboundOperationContextV1,

@@ -221,6 +221,10 @@ const payloads = {
       evidence: { kind: "demos-bft-write-proof-v1", value: "vector-proof" },
     },
   },
+  "terminal-bundle-proposal-buyer": { vector: "buyer-terminal-proposal" },
+  "terminal-bundle-proposal-seller": { vector: "seller-terminal-proposal" },
+  "terminal-bundle-contribution-buyer": { vector: "buyer-terminal-contribution" },
+  "terminal-bundle-contribution-seller": { vector: "seller-terminal-contribution" },
 };
 
 const cases = [];

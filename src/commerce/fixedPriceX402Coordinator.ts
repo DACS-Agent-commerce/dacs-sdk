@@ -182,6 +182,12 @@ interface FixedPriceCoordinatorTrackRecord<
   withdrawnBy?: FixedPriceX402CoordinatorRole;
   reasonCode?: string;
   lease?: Readonly<FixedPriceX402TrackLease>;
+  /**
+   * DACS-5 ST-7: when the track's current unbroken run of `indeterminate`
+   * (substrate-unanswered) results began. Carried through the `running` state
+   * of each retry and dropped by any other result.
+   */
+  pausedSince?: number;
 }
 
 export interface FixedPriceX402TrackRecord
@@ -633,6 +639,13 @@ interface FixedPriceCoordinatorOptions<
     OperationResult
   >;
   leaseDurationMs?: number;
+  /**
+   * Sustained substrate-pause alert threshold, in milliseconds (default 3600 s).
+   * The SDK retains retryable work after this threshold; it has no post-agreement
+   * failed-substrate publication runtime. This operational alert does not claim
+   * the normative DACS-5 ST-7 terminal transition or change settled tracks.
+   */
+  maximumSubstratePauseMs?: number;
 }
 
 interface FixedPriceCoordinatorOrderStatusBase<
@@ -1462,6 +1475,7 @@ function validTrackRecord<
       "withdrawnBy",
       "reasonCode",
       "lease",
+      "pausedSince",
     ],
   ) || ![
     "not-started",
@@ -1488,7 +1502,10 @@ function validTrackRecord<
       (value.withdrawnBy !== undefined && value.withdrawnBy !== "buyer" &&
         value.withdrawnBy !== "seller") ||
       (value.reasonCode !== undefined && !validReasonCode(value.reasonCode)) ||
-      (value.lease !== undefined && !validLease(value.lease))) return false;
+      (value.lease !== undefined && !validLease(value.lease)) ||
+      (value.pausedSince !== undefined && (!safeUint(value.pausedSince) ||
+        value.pausedSince > value.updatedAt ||
+        (value.state !== "running" && value.state !== "indeterminate")))) return false;
   if (value.state === "not-started") {
     return value.generation === 0 && value.lease === undefined &&
       value.nextAttemptAt === undefined && value.reference === undefined &&
@@ -2187,6 +2204,7 @@ function createInMemoryFixedPriceCoordinatorStore<
         attempts: retained.attempts + 1,
         updatedAt: stamp(current, now),
         lease,
+        ...fixedPriceCarriedSubstratePause(retained),
       };
       const next: FixedPriceCoordinatorOrderRecord<
         Protocol,
@@ -2301,6 +2319,7 @@ function createInMemoryFixedPriceCoordinatorStore<
             updatedAt,
             reasonCode: result.reasonCode,
             ...(result.retryAt === undefined ? {} : { nextAttemptAt: result.retryAt }),
+            ...fixedPriceRecordedSubstratePause(retained, result.status, updatedAt),
           };
       const tracks = clone(current.tracks) as Partial<
         Record<
@@ -2412,6 +2431,33 @@ export function createInMemoryFixedPriceOfflineCoordinatorStore(
     FixedPriceOfflineSimulationMilestone,
     FixedPriceOfflineSimulationAuthority
   >(OFFLINE_PROFILE_POLICY, options);
+}
+
+/** DACS-5 ST-7 default per-listing maximum substrate pause. */
+export const FIXED_PRICE_DEFAULT_MAXIMUM_SUBSTRATE_PAUSE_MS = 3_600_000;
+
+/**
+ * The pause a claimed track carries into `running` (DACS-5 ST-7). Shared by
+ * every coordinator store so the pause clock survives each retry and restart.
+ */
+export function fixedPriceCarriedSubstratePause(
+  retained: Readonly<{ state: string; updatedAt: number; pausedSince?: number }>,
+): { pausedSince?: number } {
+  if (retained.state === "indeterminate") {
+    return { pausedSince: retained.pausedSince ?? retained.updatedAt };
+  }
+  return retained.state === "running" && retained.pausedSince !== undefined
+    ? { pausedSince: retained.pausedSince } : {};
+}
+
+/** The pause a non-final result records: kept for `indeterminate`, else ended. */
+export function fixedPriceRecordedSubstratePause(
+  running: Readonly<{ pausedSince?: number }>,
+  status: string,
+  updatedAt: number,
+): { pausedSince?: number } {
+  return status === "indeterminate"
+    ? { pausedSince: running.pausedSince ?? updatedAt } : {};
 }
 
 function captureOperationResult<
@@ -2751,11 +2797,12 @@ function captureOptions<
     >
   >;
   leaseDurationMs: number;
+  maximumSubstratePauseMs: number;
 } {
   if (!plainRecord(value) || !exactKeys(
     value,
     ["role", "store", "workerId", "operations"],
-    ["leaseDurationMs"],
+    ["leaseDurationMs", "maximumSubstratePauseMs"],
   ) || (value.role !== "buyer" && value.role !== "seller") ||
       !nonEmpty(value.workerId) || !storeObject(value.store) ||
       !plainRecord(value.operations)) {
@@ -2812,12 +2859,20 @@ function captureOptions<
   if (!safeUint(leaseDurationMs) || leaseDurationMs === 0) {
     throw new DacsError(`${policy.label} coordinator leaseDurationMs must be positive`);
   }
+  const maximumSubstratePauseMs = value.maximumSubstratePauseMs ??
+    FIXED_PRICE_DEFAULT_MAXIMUM_SUBSTRATE_PAUSE_MS;
+  if (!safeUint(maximumSubstratePauseMs) || maximumSubstratePauseMs === 0) {
+    throw new DacsError(
+      `${policy.label} coordinator maximumSubstratePauseMs must be positive`,
+    );
+  }
   return {
     role: value.role,
     store,
     workerId: value.workerId,
     operations,
     leaseDurationMs,
+    maximumSubstratePauseMs,
   };
 }
 
@@ -3348,6 +3403,22 @@ function createFixedPriceCommerceCoordinator<
             reasonCode: "operation-threw",
             retryAt,
           } as OperationResult;
+        }
+        // Keep the sustained-pause alert retryable. Until a durable substrate
+        // terminal/publication runtime exists, stopping work here strands paid
+        // sessions permanently. Recovery must still reconcile only this track.
+        const pausedSince = record.tracks[track]?.pausedSince;
+        if ((result as { status?: unknown }).status === "indeterminate" &&
+            pausedSince !== undefined) {
+          const observed = await captured.store.readTime();
+          if (!safeUint(observed)) throw new DacsError("coordinator pause time is invalid");
+          if (observed - pausedSince >= captured.maximumSubstratePauseMs) {
+            result = {
+              ...result,
+              status: "indeterminate",
+              reasonCode: "substrate-pause-exceeded",
+            } as OperationResult;
+          }
         }
         const written = clone(await captured.store.record({
           role: captured.role,

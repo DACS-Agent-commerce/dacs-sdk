@@ -1275,6 +1275,45 @@ describe("runFulfilmentCore", () => {
     }
   });
 
+  test.each([
+    "valid", "wrong-logical", "wrong-native", "wrong-hash", "wrong-writer", "included", "indeterminate",
+  ] as const)(
+    "checks %s native Vet reference receipt bindings before fulfilment",
+    async (binding) => {
+      const f = fixture();
+      for (const role of ["buyer", "seller"] as const) {
+        const ref = f.agreement[role].vetRecordRef;
+        const logicalAddress = ref.anchor.locator;
+        const receipt = anchorReceipt(logicalAddress, ref.contentHash, "finalized");
+        receipt.writer = role === "buyer" ? SELLER : BUYER;
+        const nativeAddress = receipt.nativeAddress;
+        ref.anchor.locator = nativeAddress;
+        f.session.parties.find((party) => party.role === role)!.vetRecordRef!.anchor.locator = nativeAddress;
+        f.auditSource.session.parties.find((party) => party.role === role)!.vetRecordRef!.anchor.locator = nativeAddress;
+        const index = role === "buyer" ? 0 : 1;
+        f.auditSource.artifacts.vetRecords[index]!.anchor.locator = nativeAddress;
+        const invocation = f.auditSource.artifacts.vetRequirements[index]!;
+        invocation.vetRecordRef.anchor.locator = nativeAddress;
+        invocation.anchorReceipt = receipt;
+      }
+      const receipt = f.auditSource.artifacts.vetRequirements[0]!.anchorReceipt!;
+      if (binding === "wrong-logical") receipt.logicalAddress += ":other";
+      if (binding === "wrong-native") receipt.nativeAddress += ":other";
+      if (binding === "wrong-hash") receipt.contentHash = "f".repeat(64);
+      if (binding === "wrong-writer") receipt.writer = BUYER;
+      // DACS-2 VPC-5: only a finalized, established Vet record authorizes delivery.
+      if (binding === "included") receipt.state = "included";
+      if (binding === "indeterminate") {
+        receipt.observationDisposition = "indeterminate";
+        receipt.preservedReceiptHash = "9".repeat(64);
+      }
+      const result = await runFulfilmentCore(f.request, f.deps);
+      expect(result).toMatchObject(binding === "valid"
+        ? { decision: "completed" }
+        : { decision: "rejected", code: "audit-source-mismatch" });
+    },
+  );
+
   test("requires the authenticated orchestrator as the Vet verifier authority", async () => {
     const distinctVetter = fixture();
     distinctVetter.auditSource.artifacts.vetRequirements[0]!.verifier =

@@ -1,5 +1,7 @@
 import {
+  COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
   type BundleVerification,
+  type CompletedTwoSidedSessionDeadline,
   type DemosAdapterConfig,
   type DemosWriteJournal,
   evaluateClaimRequirementQualification,
@@ -126,6 +128,13 @@ const solanaAdvance: typeof advanceSolanaSplSettlement = advanceSolanaSplSettlem
 const solanaIntent: typeof createSolanaSplSettlementIntent = createSolanaSplSettlementIntent;
 const ap2Advance: typeof advanceAp2Settlement = advanceAp2Settlement;
 const ap2IdempotencyKey: string = deriveAp2IdempotencyKey("consumer-job", 0);
+const completionDeadline: CompletedTwoSidedSessionDeadline = {
+  timeoutMs: COMPLETED_TWO_SIDED_SESSION_DEADLINE_MS,
+  start: (expire, timeoutMs) => {
+    const timer = setTimeout(expire, timeoutMs);
+    return () => clearTimeout(timer);
+  },
+};
 
 declare const adapter: SubstrateAdapter;
 declare const journal: DemosWriteJournal;
@@ -186,6 +195,7 @@ void solanaAdapter;
 void solanaStore;
 void ap2Advance;
 void ap2IdempotencyKey;
+void completionDeadline;
 void ap2Store;
 void ap2Verifier;
 void ap2Provider;

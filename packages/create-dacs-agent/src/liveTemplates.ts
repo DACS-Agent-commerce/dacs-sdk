@@ -224,6 +224,12 @@ export function configuredRailStewardAuthority(): string | undefined {
   return value === undefined || value.trim() === "" ? undefined : value;
 }
 
+/** Local profile statement for diagnostics; peer/session admission needs a verifier. */
+export function configuredSessionProfileAdmissionFile(): string | undefined {
+  const value = process.env.DACS_SESSION_PROFILE_ADMISSION_FILE;
+  return value === undefined || value.trim() === "" ? undefined : resolve(value);
+}
+
 export function configuredX402RailId(): string {
   return process.env.DACS_X402_RAIL_ID ?? "x402:default";
 }
@@ -1222,8 +1228,16 @@ function baseProbes(
       : fail("node-version-unsupported"),
     "local.package-integrity": inspectDacsNodePackageIntegrityV1,
     "local.version-bindings": versionBindings,
-    "local.configuration": () => {
+    "local.configuration": async () => {
       try {
+        const admissionFile = process.env.DACS_SESSION_PROFILE_ADMISSION_FILE;
+        if (admissionFile) {
+          try {
+            const file = await open(admissionFile, constants.O_RDONLY);
+            try { if (!(await file.stat()).isFile()) return fail("session-profile-admission-unavailable"); }
+            finally { await file.close(); }
+          } catch { return fail("session-profile-admission-unavailable"); }
+        }
         const [buyer, seller] = ROLES.map((role) => loadRoleConfig(role));
         if (buyer === undefined || seller === undefined ||
             buyer.rail.registryIndexRef !== RAIL_REGISTRY_INDEX_ADDRESS ||
@@ -3697,10 +3711,13 @@ import {
   createDacsX402ExactRetainedReplayConfirmerV1,
   createDacsFixedPriceX402BuyerLiveV1,
   createDacsFixedPriceX402SellerLiveV1,
+  createDacsFileSessionProfileAdmissionV1,
   createDacsListingDiscoveryRequestHandlerV1,
   createDacsLiveRoleRuntimeV1,
   createDacsRemoteWalletSpendAuthorityV2,
+  createDacsSessionProfileGatedCommerceGraphV1,
   dacsLiveRailProfiles,
+  dacsLiveSessionProfileAvailabilityV1,
   installDacsRoleServiceProcessHooksV1,
   openDacsListingDiscoveryStoreV1,
   type DacsX402HttpResultObservationV1,
@@ -3716,6 +3733,7 @@ import {
   configuredPayDemRailId,
   configuredRailStewardAuthority,
   configuredSellerEvmPayee,
+  configuredSessionProfileAdmissionFile,
   configuredX402AuthorizationSearchFromBlock,
   configuredX402FacilitatorUrl,
   configuredX402RailId,
@@ -3783,6 +3801,16 @@ async function main(): Promise<void> {
         sellerPublicEndpoint: config.publicBaseUrl,
       })
     : undefined;
+  // Every live action is admitted against this operator-owned statement and
+  // the configured role authorities. Without it, or while the pinned Standard
+  // profile is unreleased, the service runs with commerce blocked and says why.
+  const sessionProfileAdmissionFile = configuredSessionProfileAdmissionFile();
+  const authenticateSessionProfile = sessionProfileAdmissionFile === undefined
+    ? undefined : createDacsFileSessionProfileAdmissionV1({
+        filePath: sessionProfileAdmissionFile,
+        buyerAuthority: role === "buyer" ? authority : peerAuthority,
+        sellerAuthority: role === "seller" ? authority : peerAuthority,
+      });
 
   const runtime = await createDacsLiveRoleRuntimeV1({
     config,
@@ -3798,7 +3826,8 @@ async function main(): Promise<void> {
     // head here so that policy, rather than the host runtime's safe default,
     // determines the required confirmation depth.
     evmFinalityTag: "latest",
-    createCommerceGraph: async (context) => {
+    ...(authenticateSessionProfile === undefined ? {} : { authenticateSessionProfile }),
+    createCommerceGraph: createDacsSessionProfileGatedCommerceGraphV1(async (context) => {
       const provider = createDacsDemosRailRegistryProviderV1({
         runtime: context.demos,
         stewardAuthority: railStewardAuthority,
@@ -3963,7 +3992,7 @@ async function main(): Promise<void> {
       if (x402 !== undefined) return createDacsFixedPriceX402SellerLiveV1(x402);
       if (payDem !== undefined) return createDacsFixedPricePayDemSellerLiveV1(payDem);
       throw new Error("no generated seller payment rail is enabled");
-    },
+    }),
     ...(discovery === undefined ? {} : {
       handlePublicRequest: createDacsListingDiscoveryRequestHandlerV1(discovery),
     }),
@@ -3977,6 +4006,7 @@ async function main(): Promise<void> {
       event: "dacs.live-service.started",
       role,
       endpoint: runtime.service.endpoint,
+      commerce: dacsLiveSessionProfileAvailabilityV1(authenticateSessionProfile),
       readiness: "post-start-doctor-required",
     }) + "\\n");
     const result = await hooks.waitForShutdown();
@@ -4353,6 +4383,20 @@ test("malformed configuration still produces the complete fail-closed report", a
   }
 });
 
+test("doctor reports a missing configured profile admission file", async () => {
+  const previous = process.env.DACS_SESSION_PROFILE_ADMISSION_FILE;
+  process.env.DACS_SESSION_PROFILE_ADMISSION_FILE = "./missing-profile-admission.json";
+  try {
+    const report = await runGeneratedDoctor("pre-start", "start");
+    const configuration = report.checks.find((item) => item.id === "local.configuration");
+    assert.equal(configuration?.status, "fail");
+    assert.equal(configuration?.reasonCode, "session-profile-admission-unavailable");
+  } finally {
+    if (previous === undefined) delete process.env.DACS_SESSION_PROFILE_ADMISSION_FILE;
+    else process.env.DACS_SESSION_PROFILE_ADMISSION_FILE = previous;
+  }
+});
+
 test("doctor rejects a shared buyer and seller data directory", async () => {
   const previousDeployment = process.env.DACS_DEPLOYMENT;
   const previousBuyerDirectory = process.env.DACS_BUYER_DATA_DIRECTORY;
@@ -4532,6 +4576,7 @@ const COMPOSE = `x-dacs-public-environment: &dacs-public-environment
   DACS_DEMOS_STORAGE_READ_URL: \${DACS_DEMOS_STORAGE_READ_URL:-}
   DACS_RAIL_REGISTRY_INDEX_REF: \${DACS_RAIL_REGISTRY_INDEX_REF:-dacs4:registry:v0.1}
   DACS_RAIL_STEWARD_AUTHORITY: \${DACS_RAIL_STEWARD_AUTHORITY:-}
+  DACS_SESSION_PROFILE_ADMISSION_FILE: /run/dacs/session-profile/admission.json
   DACS_X402_RAIL_ID: \${DACS_X402_RAIL_ID:-x402:default}
   DACS_PAY_DEM_RAIL_ID: \${DACS_PAY_DEM_RAIL_ID:-demos-native:DEM}
   DACS_X402_FACILITATOR_URL: \${DACS_X402_FACILITATOR_URL:-}
@@ -4602,6 +4647,10 @@ services:
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
     volumes:
+      - type: bind
+        source: \${DACS_SESSION_PROFILE_ADMISSION_DIRECTORY:-./session-profile}
+        target: /run/dacs/session-profile
+        read_only: true
       - \${DACS_BUYER_DATA_DIRECTORY:?set DACS_BUYER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_BUYER_DEMOS_SECRET_FILE:?set DACS_BUYER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_BUYER_EVM_SECRET_FILE:?set DACS_BUYER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
@@ -4620,6 +4669,10 @@ services:
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
     volumes:
+      - type: bind
+        source: \${DACS_SESSION_PROFILE_ADMISSION_DIRECTORY:-./session-profile}
+        target: /run/dacs/session-profile
+        read_only: true
       - \${DACS_SELLER_DATA_DIRECTORY:?set DACS_SELLER_DATA_DIRECTORY}:/var/lib/dacs
       - \${DACS_SELLER_DEMOS_SECRET_FILE:?set DACS_SELLER_DEMOS_SECRET_FILE}:/run/secrets/demos-identity:ro
       - \${DACS_SELLER_EVM_SECRET_FILE:?set DACS_SELLER_EVM_SECRET_FILE}:/run/secrets/evm-wallet:ro
@@ -4667,6 +4720,13 @@ DACS_SELLER_DATA_DIRECTORY=./data/seller
 DACS_DEMOS_RPC_URL=https://node2.demos.sh
 DACS_RAIL_REGISTRY_INDEX_REF=dacs4:registry:v0.1
 DACS_RAIL_STEWARD_AUTHORITY=
+# Operator-owned session profile admission statement (releasePin, profileStatus,
+# moduleVersions). This file cannot authenticate peers or sessions; services
+# remain blocked until a verifier-owned admission provider is configured.
+DACS_SESSION_PROFILE_ADMISSION_FILE=
+# Local deployment uses the file path above.
+# Docker uses this host directory mounted read-only; place admission.json in it.
+DACS_SESSION_PROFILE_ADMISSION_DIRECTORY=./session-profile
 DACS_X402_RAIL_ID=x402:default
 DACS_PAY_DEM_RAIL_ID=demos-native:DEM
 DACS_X402_FACILITATOR_URL=
@@ -4831,8 +4891,16 @@ Doctor exit 5 means **blocked**, not failed: no credential, balance, signed rail
 Listing or reviewed adapter was guessed and no write occurred. Buyer and seller
 services open the SDK's role-owned SQLite, Demos identity, authenticated HTTP and
 readiness runtime when their prerequisites exist. Commerce remains blocked until
-the exact Listing, signed rail authority and operation graph pass doctor. Never
-bypass that gate.
+the exact Listing, signed rail authority and operation graph pass doctor.
+For local deployment, set \`DACS_SESSION_PROFILE_ADMISSION_FILE\` to the operator
+statement. For Docker, put \`admission.json\` inside
+\`DACS_SESSION_PROFILE_ADMISSION_DIRECTORY\` (default \`./session-profile\`);
+Compose mounts that directory read-only for both roles at
+\`/run/dacs/session-profile\`. The services remain blocked until the pinned
+profile is released and a verifier-owned admission provider authenticates every
+participant's exact pin for the exact session. The local statement alone cannot
+enable commerce, including after release. Configure that provider in the role
+runtime and restart the service.
 
 Payment capability: **${options.rails}**. Dual-rail mode publishes two separately
 signed sibling Listings for the same offer. Setup and purchase select one exact
@@ -4976,6 +5044,7 @@ export function liveProjectTemplates(
     "test/live-bootstrap.test.ts": TEST_SOURCE,
     "data/buyer/.gitkeep": "",
     "data/seller/.gitkeep": "",
+    "session-profile/.gitkeep": "",
     "secrets/README.md": secretsReadme(options),
   });
 }

@@ -11,7 +11,22 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "paths": {
+      "@kynesyslabs/dacs": ["./src/index.ts"],
+      "@kynesyslabs/dacs/canonical": ["./src/canonical/index.ts"],
+      "@kynesyslabs/dacs/crypto": ["./src/crypto/index.ts"],
+      "@kynesyslabs/dacs/artifacts": ["./src/artifacts/index.ts"],
+      "@kynesyslabs/dacs/identity": ["./src/identity/index.ts"],
+      "@kynesyslabs/dacs/discovery": ["./src/discovery/index.ts"],
+      "@kynesyslabs/dacs/negotiate": ["./src/negotiate/index.ts"],
+      "@kynesyslabs/dacs/rails": ["./src/rails/index.ts"],
+      "@kynesyslabs/dacs/seller": ["./src/seller/index.ts"],
+      "@kynesyslabs/dacs/commerce": ["./src/commerce/index.ts"],
+      "@kynesyslabs/dacs/registry": ["./src/registry/index.ts"],
+      "@kynesyslabs/dacs/cli": ["./src/cli/index.ts"],
+      "@kynesyslabs/dacs/substrate": ["./src/substrate/index.ts"]
+    }
   },
   "include": ["src", "test"],
   "exclude": ["test/package-consumer"]

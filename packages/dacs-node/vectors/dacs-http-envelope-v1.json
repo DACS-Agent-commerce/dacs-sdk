@@ -412,6 +412,58 @@
       "envelopeHash": "df130129050df13e9fb0f6b2b4d14fb8ad05adf576193a59e577c5cfb63ed361",
       "signedBytesHex": "646163732d687474702d6d6573736167653a76313adf130129050df13e9fb0f6b2b4d14fb8ad05adf576193a59e577c5cfb63ed361",
       "signature": "93b5awvsPmORuHTdWuzNjDG_H3UWAYvpBO1kmuAG4I5bzheEMSrWyHz8aAPKGwiKcKXMBd63hIR8m4_5kVRkAw"
+    },
+    {
+      "type": "terminal-bundle-proposal-buyer",
+      "nonce": "Dw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8",
+      "payload": {
+        "vector": "buyer-terminal-proposal"
+      },
+      "payloadCanonical": "{\"vector\":\"buyer-terminal-proposal\"}",
+      "payloadHash": "39a9dd709929c842de7cbd98142a21e27703d21a2a36234c805b21ed8d0c7afb",
+      "envelopeId": "19ddff7a876d230e742ed9ed8420e1186b4873bcb817633a0d81f22af3dc6e19",
+      "envelopeHash": "f2c1d32936cae4b938e8361ae24a80fad62b79e189aaeee77df15acba929928d",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313af2c1d32936cae4b938e8361ae24a80fad62b79e189aaeee77df15acba929928d",
+      "signature": "SfD9QVCP2-dRGk3FDvJHMBJfXxjwm5qvGCGKSC4jYnh5BQXGc8if7AAH7UwDHPdx06JYNFVyG1dLsJYsfMB4Bg"
+    },
+    {
+      "type": "terminal-bundle-proposal-seller",
+      "nonce": "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
+      "payload": {
+        "vector": "seller-terminal-proposal"
+      },
+      "payloadCanonical": "{\"vector\":\"seller-terminal-proposal\"}",
+      "payloadHash": "64e660fa8e174a97106aeb5b2b251d6696a79626ff9a1c0b47f23c2b7764beed",
+      "envelopeId": "8b76439ff66cb41418e773ac677e7db11df3c9083ce43f71fc4af0f2d531f01a",
+      "envelopeHash": "4481620f3ce4a061001b69d5b8a0473e3efb798cb114f388f53e185b9bd575f5",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a4481620f3ce4a061001b69d5b8a0473e3efb798cb114f388f53e185b9bd575f5",
+      "signature": "cuLgzokULVAxwwFHdg_JW3BZwArBqGiV-6DJotKJ95Lz0Z4M3yFjIFR0H_AM8QF8CvaK22Wrh60gbmweQrS-CQ"
+    },
+    {
+      "type": "terminal-bundle-contribution-buyer",
+      "nonce": "ERERERERERERERERERERERERERERERERERERERERERE",
+      "payload": {
+        "vector": "buyer-terminal-contribution"
+      },
+      "payloadCanonical": "{\"vector\":\"buyer-terminal-contribution\"}",
+      "payloadHash": "2d295491500af228b0548e62de86e18dea98ded8fb07056bbfb37cbafbba35e6",
+      "envelopeId": "fc439d2f466be1f39866e380fc36c79ef5b096e248f67bfeabaf330c70309866",
+      "envelopeHash": "a6298472355be3b105ef109783a7107c3cae68ae13b4d5cf58a9b14963e82183",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313aa6298472355be3b105ef109783a7107c3cae68ae13b4d5cf58a9b14963e82183",
+      "signature": "I4troePS6iR6TaLQelLt7ATJ_bIBQAdR46Vhv9FUoYRNm4tbFQwuslIMU9fk6ZInQVENKK1vtIaFxsSNcEUoCg"
+    },
+    {
+      "type": "terminal-bundle-contribution-seller",
+      "nonce": "EhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhI",
+      "payload": {
+        "vector": "seller-terminal-contribution"
+      },
+      "payloadCanonical": "{\"vector\":\"seller-terminal-contribution\"}",
+      "payloadHash": "d9d3d22c8e2f658047ff0fbfb44a070c130f3ad7a880355c0f84786a40abd5f3",
+      "envelopeId": "f6337de11ec75646ef83a7cf41ddeecc95d3f96f243f4e8c58cce35e1b97d5cf",
+      "envelopeHash": "4b39c8683d877d7868e025194166f4399d53b519734c4ade513a235836afdec6",
+      "signedBytesHex": "646163732d687474702d6d6573736167653a76313a4b39c8683d877d7868e025194166f4399d53b519734c4ade513a235836afdec6",
+      "signature": "RBiu9sM2RucPAbUwVUfWHLfUqMyo6Zs2wMcF0SBPnOc0PyeuZBfpPt7lnNdbcwKjtLEY68tmi8e3TotYbKSUAA"
     }
   ],
   "negativeCases": [

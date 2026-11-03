@@ -827,6 +827,22 @@ copy gets the matching role-relative `outcome` and signs under
 legacy, fault-aware, and mixed pairs. The helper is not yet wired into
 `runSessionCore`.
 
+`verifyCompletedTwoSidedSession(input, deps)` is the production completion
+boundary shared by fixed-price x402 and native DEM. It accepts no signer and
+performs no publication: the seller process supplies its already-finalized
+ST-11 closure, while buyer and seller retain their independently published
+role copies. The gate re-authenticates the complete seller dependency graph,
+both exact native readbacks, finalized receipts, mapping/BB-1 bindings, the
+full signer set, the buyer/seller identities, and the unified signed scope.
+Only then does it return `state: "audit-complete"` with separate buyer and
+seller logical/native references. The v1 fixed-price topology is exactly two
+parties with the seller acting as phase orchestrator; a distinct orchestrator
+requires its own reviewed profile and role-owned publication.
+`verifyFixedPriceX402AuditCompletion(...)` and
+`verifyFixedPricePayDemAuditCompletion(...)` additionally bind that proof to
+the exact successful buyer/seller coordinator audit references for their
+respective rail before projecting the combined `audit-complete` milestone.
+
 For DACS-5 v0.4 exact settlement-evidence closure, use
 `verifyEvidenceBoundFaultBundle(authority, deps)`. It authenticates the distinct
 EBFAB and Listing domains, derives the executed evidence phase keys from their
@@ -1034,6 +1050,21 @@ tarballs at one version with identical compatibility metadata. It emits exact
 checksums, one CycloneDX SBOM per package and combined release provenance. These
 are qualified package candidates, not evidence that the packages were published
 to npm.
+
+Registry/container acceptance writes evidence to the new directory passed to
+`--output-dir`, including partial evidence when a run fails. Use a directory
+under the ignored `registry-container-artifacts/` path, or a directory outside
+the repository; other in-repository paths will appear as untracked files.
+The acceptance audits the generated consumer's tree by advisory ID against
+`scripts/registry-container-audit-baseline.json`. On pull requests an advisory
+ID outside that baseline is a warning, unless it is high or critical on a
+direct dependency of the consumer; the scheduled drift job, manual runs and
+release paths fail on it (see the audit policy in [SECURITY.md](./SECURITY.md)).
+`Publish gated npm prerelease` publishes only after that acceptance passes with
+drift enforced. It replaces `publish-prerelease.yml`, which older refs still
+contain, so publication credentials must belong only to the new workflow and its
+`npm-prerelease-gated` environment (owner steps in the runbook below).
+Production publication remains blocked by #191.
 
 Maintainer-controlled prerelease publication and first-release credential
 bootstrap are documented in

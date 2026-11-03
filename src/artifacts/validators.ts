@@ -2248,8 +2248,13 @@ export function isEvidenceBoundFaultBundleExtendedPointer(
   );
 }
 
-/** DACS-5 §10.4.2 BB-4/BB-5 structural and self-consistency gate. */
-export function isBundleBinding(v: unknown): v is BundleBinding {
+/**
+ * @internal Wire envelope safe to authenticate before checking signed jobId
+ * semantics. A malformed signed jobId is an error only after BB-4 succeeds.
+ */
+export function hasBundleBindingEnvelope(
+  v: unknown,
+): v is Omit<BundleBinding, "jobId"> & { jobId: unknown } {
   return (
     isObj(v) &&
     hasOnlyKeys(v, [
@@ -2264,7 +2269,7 @@ export function isBundleBinding(v: unknown): v is BundleBinding {
       "signature",
     ]) &&
     v.bindingVersion === "1" &&
-    isNonEmptyStr(v.jobId) &&
+    Object.hasOwn(v, "jobId") &&
     isOneOf(["buyer", "seller", "orchestrator"], v.role) &&
     isNonEmptyStr(v.logicalAddress) &&
     isNonEmptyStr(v.nativeAddress) &&
@@ -2272,10 +2277,14 @@ export function isBundleBinding(v: unknown): v is BundleBinding {
     (v.anchorTx === undefined || isNonEmptyStr(v.anchorTx)) &&
     isNonEmptyStr(v.signer) &&
     isComponentSignature(v.signature) &&
-    v.signature.signer === v.signer &&
-    v.logicalAddress ===
-      bundleAddress(v.jobId as string, v.role as "buyer" | "seller" | "orchestrator")
+    v.signature.signer === v.signer
   );
+}
+
+/** DACS-5 §10.4.2 BB-4/BB-5 structural and self-consistency gate. */
+export function isBundleBinding(v: unknown): v is BundleBinding {
+  return hasBundleBindingEnvelope(v) && isNonEmptyStr(v.jobId) &&
+    v.logicalAddress === bundleAddress(v.jobId, v.role);
 }
 
 export function isAnyAttestationBundle(v: unknown): v is AnyAttestationBundle {

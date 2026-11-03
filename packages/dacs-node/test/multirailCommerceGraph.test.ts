@@ -30,7 +30,7 @@ function operations(role: "buyer" | "seller") {
 function graph(
   role: "buyer" | "seller",
   profile: "x402" | "pay-dem",
-  validation: "valid" | "invalid" | "authentication-failure",
+  validation: "valid" | "invalid" | "authentication-failure" | "unavailable",
 ) {
   const handleMessage = vi.fn(async () => Object.freeze({
     disposition: "accepted" as const,
@@ -230,6 +230,37 @@ describe("strict multirail live commerce graph", () => {
       sender: "seller",
       audience: "buyer",
     })).resolves.toEqual({ status: "valid" });
+    await expect(combined.handleMessage(
+      authenticated(),
+      context("buyer", "pay-dem"),
+    )).rejects.toMatchObject({
+      reasonCode: "multirail-message-validation-unavailable",
+    });
+    expect(x402.handleMessage).not.toHaveBeenCalled();
+    expect(payDem.handleMessage).not.toHaveBeenCalled();
+  });
+
+  // Final re-review 1: a rail that cannot read its state now decides nothing,
+  // so the message is retried and kept pending, never rejected.
+  it("answers a rail that cannot read its state as unavailable and keeps the message pending", async () => {
+    const x402 = graph("buyer", "x402", "invalid");
+    const payDem = graph("buyer", "pay-dem", "unavailable");
+    const combined = createDacsMultirailLiveCommerceGraphV1({
+      role: "buyer",
+      x402: x402.value as never,
+      payDem: payDem.value as never,
+    });
+
+    await expect(combined.validatePayload({
+      type: "agreement-response",
+      payload: {},
+      jobId: JOB_ID,
+      sender: "seller",
+      audience: "buyer",
+    })).resolves.toEqual({
+      status: "unavailable",
+      reasonCode: "multirail-message-validation-unavailable",
+    });
     await expect(combined.handleMessage(
       authenticated(),
       context("buyer", "pay-dem"),

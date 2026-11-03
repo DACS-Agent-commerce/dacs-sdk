@@ -6,6 +6,25 @@ import {
 } from "../src/publicJson.js";
 
 describe("public JSON reader", () => {
+  it("passes cancellation to the pinned request before returning an aborted read", async () => {
+    const controller = new AbortController();
+    let observed: AbortSignal | undefined;
+    const result = readDacsPublicJsonV1("https://seller.example/index.json", {
+      signal: controller.signal,
+      dependencies: {
+        resolveHost: async () => ["8.8.8.8"],
+        request: async ({ signal }) => {
+          observed = signal;
+          controller.abort();
+          throw signal!.reason;
+        },
+      },
+    });
+    await expect(result).rejects.toThrow("public-json-request-unavailable");
+    expect(observed).toBe(controller.signal);
+    expect(observed!.aborted).toBe(true);
+  });
+
   it.each([
     "2001:200::1",
     "2001:4860:4860::8888",

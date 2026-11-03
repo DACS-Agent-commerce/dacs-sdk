@@ -17,7 +17,7 @@ import {
   publicKeyFromSeed,
   rawPublicKey,
 } from "../crypto/index.js";
-import { DacsError, SubstrateError } from "../errors.js";
+import { DacsError, IndeterminateSubstrateError, SubstrateError } from "../errors.js";
 import {
   assertDemosCciResponseBounds,
   parseClaimRef,
@@ -388,8 +388,100 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+/**
+ * Whether a Demos nodeCall read returned no record to compare a receipt with.
+ * demosdk 4.0.16's `call` returns only `response.data.response` for a
+ * nodeCall answered over HTTP 2xx, dropping the RPC `result`, and
+ * `{ result: 500, response: TransportError }` for a failed POST. The node
+ * source cited below answers an unknown transaction, a block it has not indexed
+ * and an internal error alike, with a bare string such as `"error"` or
+ * `"Error in nodeCall: "` over HTTP 200, and its HTTP 400 also covers rate-limiter and catch-all
+ * failures. None of those shapes says anything about the receipt's subject,
+ * whatever the node version, so none of them is an answer: only a fetched
+ * transaction or block record that contradicts the receipt is.
+ *
+ * Checked against demosdk 4.0.16 (gitHead d3620ae24f657ae7442e63e7adaefef7094b22e2)
+ * and kynesyslabs/node testnet ac8f45f02fc9c25082ce9b83595c2e3916b49c5a
+ * (`manageNodeCall.ts`, `getBlockByNumber.ts`, `server_rpc.ts`). The repo pins
+ * no node build. The node2 read-only fixture (2026-10-22) instead returns
+ * `{result:404,response:null,extra:{reason:"not_found",checkedThroughBlock}}`
+ * for a missing transaction; demosdk exposes only its null response. Neither
+ * shape supplies authenticated absence evidence. This reads the body, never
+ * the HTTP status: a reply without an identifiable record stays retryable.
+ */
+function demosObservationUnanswered(value: unknown): boolean {
+  if (!isRecord(value) || Array.isArray(value)) return true;
+  if (typeof value.result === "number" && value.result !== 200) return true;
+  // A retained RPC envelope is never itself the transaction/block record.
+  const record = typeof value.result === "number" || Object.hasOwn(value, "response")
+    ? value.response : value;
+  return !isRecord(record) || Array.isArray(record);
+}
+
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return isRecord(value) && !Array.isArray(value);
+}
+
+type DemosObservationBindings = Pick<DemosWriteEvidence,
+  "transactionRef" | "signedTransactionHash" | "blockNumber" | "blockHash" |
+  "blockTimestamp" | "finalityProofHash" | "nativeAddress" | "writer" |
+  "operation" | "nativeRead">;
+
+// Use the same comparisons for full evidence and compact receipts. Partial
+// records can establish a binding contradiction, but cannot establish a valid
+// receipt. A pending lifecycle view can lag finality; require confirmed status
+// only when authenticating the complete set of observations.
+function demosTransactionMatchesBindings(
+  expected: DemosObservationBindings,
+  transaction: Record<string, unknown>,
+  partial = false,
+): boolean {
+  if (transaction.hash !== expected.transactionRef ||
+      !partial && transaction.status !== "confirmed" ||
+      (!partial || transaction.blockNumber !== undefined && transaction.blockNumber !== null) &&
+        transaction.blockNumber !== expected.blockNumber) {
+    return false;
+  }
+  if (partial && transaction.content === undefined) return true;
+  return isJsonObject(transaction.content) &&
+    demosSignedTransactionProofHash(transaction) === expected.signedTransactionHash;
+}
+
+function demosBlockMatchesBindings(
+  expected: DemosObservationBindings,
+  block: Record<string, unknown>,
+  partial = false,
+): boolean {
+  const content = isJsonObject(block.content) ? block.content : undefined;
+  if (block.hash !== expected.blockHash ||
+      !partial && block.status !== "confirmed" ||
+      (!partial || block.number !== undefined && block.number !== null) && block.number !== expected.blockNumber ||
+      (!partial || content?.timestamp !== undefined) &&
+        demosBlockTimestampMs(content?.timestamp) !== expected.blockTimestamp ||
+      (!partial || content?.ordered_transactions !== undefined) &&
+        (!Array.isArray(content?.ordered_transactions) || !content.ordered_transactions.includes(expected.transactionRef))) {
+    return false;
+  }
+  if (partial && block.validation_data === undefined) return true;
+  return block.validation_data !== undefined &&
+    sha256Hex(serializeSignedTransaction(block.validation_data)) === expected.finalityProofHash;
+}
+
+function demosNativeMatchesBindings(
+  expected: DemosObservationBindings,
+  native: Record<string, unknown>,
+): boolean {
+  if (native.success !== true || native.storageAddress !== expected.nativeAddress ||
+      typeof native.owner !== "string" || native.owner.toLowerCase() !== expected.writer.toLowerCase() ||
+      native.programName !== expected.nativeRead.programName || !isJsonObject(native.data) ||
+      exactJsonHash(native.data) !== expected.nativeRead.valueHash) return false;
+  const metadataHash = native.metadata === undefined || native.metadata === null
+    ? undefined : isJsonObject(native.metadata) ? exactJsonHash(native.metadata) : null;
+  if (metadataHash === null || metadataHash !== expected.nativeRead.metadataHash) return false;
+  const provenance = expected.operation === "create" ? native.createdByTx : native.lastModifiedByTx;
+  const interactions = Array.isArray(native.interactionTxs) ? native.interactionTxs : [];
+  return provenance === expected.transactionRef || interactions.includes(expected.transactionRef) ||
+    (provenance === undefined && interactions.length === 0);
 }
 
 function httpStatus(error: unknown): number | undefined {
@@ -1111,10 +1203,6 @@ export class DemosAdapter implements SubstrateAdapter {
     const signedContent = isRecord(signed) && isRecord(signed.content)
       ? signed.content
       : undefined;
-    const blockContent = isRecord(block.content) ? block.content : undefined;
-    const orderedTransactions = Array.isArray(blockContent?.ordered_transactions)
-      ? blockContent.ordered_transactions
-      : [];
     const contentDifferences = isRecord(transaction.content) && signedContent
       ? demosTransactionContentDifferencePaths(
           signedContent,
@@ -1122,48 +1210,10 @@ export class DemosAdapter implements SubstrateAdapter {
           evidence.transactionRef,
         )
       : ["content"];
-    if (
-      transaction.status !== "confirmed" ||
-      transaction.hash !== evidence.transactionRef ||
-      transaction.blockNumber !== evidence.blockNumber ||
-      !isRecord(transaction.content) ||
-      !signedContent ||
-      contentDifferences.length > 0 ||
-      block.status !== "confirmed" ||
-      block.number !== evidence.blockNumber ||
-      block.hash !== evidence.blockHash ||
-      demosBlockTimestampMs(blockContent?.timestamp) !== evidence.blockTimestamp ||
-      !orderedTransactions.includes(evidence.transactionRef) ||
-      block.validation_data === undefined ||
-      serializeSignedTransaction(block.validation_data) !== evidence.finalityProof ||
-      nativeResult.success !== true ||
-      nativeResult.storageAddress !== evidence.nativeAddress ||
-      typeof nativeResult.owner !== "string" ||
-      nativeResult.owner.toLowerCase() !== evidence.writer.toLowerCase() ||
-      nativeResult.programName !== evidence.nativeRead.programName ||
-      !isJsonObject(nativeResult.data) ||
-      exactJsonHash(nativeResult.data) !== evidence.nativeRead.valueHash
-    ) {
-      return false;
-    }
-    const metadataHash = nativeResult.metadata === undefined ||
-        nativeResult.metadata === null
-      ? undefined
-      : isJsonObject(nativeResult.metadata)
-        ? exactJsonHash(nativeResult.metadata)
-        : null;
-    if (metadataHash === null || metadataHash !== evidence.nativeRead.metadataHash) {
-      return false;
-    }
-    const provenance = evidence.operation === "create"
-      ? nativeResult.createdByTx
-      : nativeResult.lastModifiedByTx;
-    const interactions = Array.isArray(nativeResult.interactionTxs)
-      ? nativeResult.interactionTxs
-      : [];
-    return provenance === evidence.transactionRef ||
-      interactions.includes(evidence.transactionRef) ||
-      (provenance === undefined && interactions.length === 0);
+    return contentDifferences.length === 0 &&
+      demosTransactionMatchesBindings(evidence, transaction) &&
+      demosBlockMatchesBindings(evidence, block) &&
+      demosNativeMatchesBindings(evidence, nativeResult);
   }
 
   /** Re-authenticate full adapter-produced Demos evidence against this node. */
@@ -1200,13 +1250,22 @@ export class DemosAdapter implements SubstrateAdapter {
     if (await this.resolveChainIdentity() !== proof.chainIdentity) return false;
     const nonce = Number(receipt.nonce);
     const blockNumber = Number(receipt.blockRef!.height);
-    const observations = await Promise.all([
+    const replies = await Promise.allSettled([
       this.#demos.getTxByHash(receipt.transactionRef.value),
       this.#demos.getBlockByNumber(blockNumber),
       this.#demos.storagePrograms.read(receipt.nativeAddress),
-    ]) as unknown[];
+    ]);
+    const observations = replies.map((reply) => reply.status === "fulfilled" ? reply.value : undefined);
+    // An unanswered observation cannot establish that a receipt is invalid:
+    // CORE §5.1 keeps it from demoting the receipt, so retry it. A storage
+    // read without the program, or a block without its validation data, is a
+    // node that has not caught up, not a record that contradicts the receipt.
+    // A reply without a record's identifying fields (a transaction's hash, a
+    // block's hash and number), such as `{ "error": "not found" }` from an
+    // unpinned node build, is no record either.
     const transactionResult = observations[0];
     const blockResult = observations[1];
+    const nativeResult = observations[2];
     const transaction = isRecord(transactionResult) &&
         isRecord(transactionResult.response)
       ? transactionResult.response
@@ -1214,9 +1273,34 @@ export class DemosAdapter implements SubstrateAdapter {
     const block = isRecord(blockResult) && isRecord(blockResult.response)
       ? blockResult.response
       : blockResult;
-    if (!isRecord(transaction) || !isRecord(block) ||
-        block.validation_data === undefined) {
-      return false;
+    const bindings: DemosObservationBindings = {
+      transactionRef: receipt.transactionRef.value,
+      signedTransactionHash: proof.signedTransactionHash,
+      blockNumber,
+      blockHash: receipt.blockRef!.id,
+      blockTimestamp: receipt.blockRef!.timestamp!,
+      finalityProofHash: proof.finalityProofHash,
+      nativeAddress: receipt.nativeAddress,
+      writer: proof.writer,
+      operation: proof.operation,
+      nativeRead: { owner: proof.writer, ...proof.nativeRead },
+    };
+    // CORE §5.1 SR2-5: an unanswered read cannot erase a contradiction
+    // established by another independently answered record. Check every
+    // available binding with the full-evidence comparators before retrying.
+    if (!demosObservationUnanswered(transactionResult) && isRecord(transaction) &&
+        typeof transaction.hash === "string" && !demosTransactionMatchesBindings(bindings, transaction, true)) return false;
+    if (!demosObservationUnanswered(blockResult) && isRecord(block) &&
+        typeof block.hash === "string" && !demosBlockMatchesBindings(bindings, block, true)) return false;
+    if (!demosObservationUnanswered(nativeResult) && isRecord(nativeResult) &&
+        nativeResult.success === true && !demosNativeMatchesBindings(bindings, nativeResult)) return false;
+    if (observations.some(demosObservationUnanswered) || !isRecord(transaction) ||
+        typeof transaction.hash !== "string" || transaction.status !== "confirmed" || !isRecord(block) ||
+        block.status !== "confirmed" ||
+        typeof block.hash !== "string" || block.number === undefined ||
+        block.number === null || block.validation_data === undefined ||
+        !isRecord(nativeResult) || nativeResult.success !== true) {
+      throw new IndeterminateSubstrateError("Demos anchor receipt observation unavailable");
     }
     const evidence: DemosWriteEvidence = {
       evidenceVersion: "1",

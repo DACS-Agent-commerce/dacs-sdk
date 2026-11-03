@@ -207,6 +207,7 @@ export {
   TransientError,
   CounterpartyError,
   SubstrateError,
+  IndeterminateSubstrateError,
   UnsupportedCapabilityError,
   faultCategory,
   type FaultCategory,
@@ -467,6 +468,13 @@ export {
   type ScanPage,
   type ScanOptions,
   type ScanSeen,
+  BUNDLE_BINDING_FETCH_BUDGET,
+  BUNDLE_BINDING_NON_OBSERVATION_REASONS,
+  isBundleBindingNonObservation,
+  resolveBundleBindingCandidates,
+  type BundleBindingCandidateResolution,
+  type BundleBindingNonObservationReason,
+  type ResolveBundleBindingCandidatesInput,
 } from "./discovery/index.js";
 
 // Deterministic identityTier derivation (DACS-1 §6.3.2.1, IT-1..IT-3).
@@ -1041,6 +1049,7 @@ export {
   type DurableBuyerBundleFinalizationProvider,
   type AuthenticatedBundleRolePublication,
   type DurableFinalizedBuyerBundle,
+  type DurableBuyerSessionCompletion,
   type BuyerBundleTransportIdentity,
   type BuyerBundleTransportResolution,
   type BuyerCounterSignaturePublication,
@@ -1887,4 +1896,6 @@ export {
   type VerifyComponentSignatureDeps,
 } from "./artifacts/index.js";
 
+export { authenticateSessionProfile, requireAuthenticatedSessionProfile } from "./discovery/sessionProfileAdmission.js";
+export type { AuthenticateSessionProfile } from "./discovery/sessionProfileAdmission.js";
 export { jid1AttestationAddress, jid1PaymentEvidenceAddress, jid1RatingAddress, jid1BundleAddress } from "./canonical/jid1Addressing.js";

@@ -38,6 +38,8 @@ import type {
   DacsHttpPayloadValidatorV1,
 } from "./transport/envelope.js";
 import type { DacsHttpInboundDispositionV1 } from "./transport/http.js";
+import type { DacsVetTerminalBundleTransportRuntimeV1 } from
+  "./terminalBundleTransportRuntime.js";
 
 export interface DacsBuyerLiveCommerceGraphOptionsV1 {
   sessionBootstrap: Readonly<DacsBuyerSessionBootstrapTransportRuntimeV1>;
@@ -48,6 +50,7 @@ export interface DacsBuyerLiveCommerceGraphOptionsV1 {
   audit: FixedPriceX402TrackOperation;
   agreementTransport: Readonly<DacsBuyerAgreementTransportRuntimeV1>;
   bundleTransport: Readonly<DacsBuyerBundleTransportRuntimeV1>;
+  terminalBundleTransport?: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
 }
 
 export interface DacsSellerLiveCommerceGraphOptionsV1<T = unknown> {
@@ -59,6 +62,7 @@ export interface DacsSellerLiveCommerceGraphOptionsV1<T = unknown> {
   agreementTransport: Readonly<DacsSellerAgreementTransportRuntimeV1>;
   paymentEvidenceTransport: Readonly<DacsSellerPaymentEvidenceRuntimeV1>;
   bundleTransport: Readonly<DacsSellerBundleTransportRuntimeV1>;
+  terminalBundleTransport?: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
 }
 
 export interface DacsBuyerLiveCommerceGraphV1 {
@@ -68,6 +72,7 @@ export interface DacsBuyerLiveCommerceGraphV1 {
     Readonly<FixedPriceX402Operations>;
   readonly router: Readonly<DacsLiveRoleMessageRouterV1>;
   readonly validatePayload: DacsHttpPayloadValidatorV1;
+  readonly terminalBundles?: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
     context: Readonly<DacsLiveRoleInboundOperationContextV1>,
@@ -81,6 +86,7 @@ export interface DacsSellerLiveCommerceGraphV1 {
     Readonly<FixedPriceX402Operations>;
   readonly router: Readonly<DacsLiveRoleMessageRouterV1>;
   readonly validatePayload: DacsHttpPayloadValidatorV1;
+  readonly terminalBundles?: Readonly<DacsVetTerminalBundleTransportRuntimeV1>;
   readonly handleApplicationRequest: DacsLiveRoleApplicationRequestHandlerV1;
   handleMessage(
     authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
@@ -117,6 +123,28 @@ function exactFields(value: Readonly<Record<string, unknown>>, fields: readonly 
   return keys.length === fields.length && fields.every((field) =>
     Object.hasOwn(value, field));
 }
+
+function exactOptionalFields(
+  value: Readonly<Record<string, unknown>>,
+  required: readonly string[],
+  optional: readonly string[],
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  const keys = Reflect.ownKeys(value);
+  return required.every((field) => Object.hasOwn(value, field)) &&
+    keys.every((field) => typeof field === "string" && allowed.has(field));
+}
+
+const unavailableTerminalTransport = Object.freeze({
+  validatePayload: () => Object.freeze({
+    status: "invalid" as const,
+    reasonCode: "vet-terminal-runtime-unavailable",
+  }),
+  handleMessage: async () => Object.freeze({
+    disposition: "rejected" as const,
+    reasonCode: "vet-terminal-runtime-unavailable",
+  }),
+});
 
 function operation(value: unknown): value is FixedPriceX402TrackOperation {
   return typeof value === "function";
@@ -222,7 +250,11 @@ export function createDacsBuyerLiveCommerceGraphV1(
     "agreement", "payment", "paymentEvidence", "buyerReceived", "audit",
     "agreementTransport", "bundleTransport",
   ] as const;
-  if (!plainObject(options) || !exactFields(options, fields) ||
+  if (!plainObject(options) || !exactOptionalFields(
+    options,
+    fields,
+    ["terminalBundleTransport"],
+  ) ||
       !operation(options.agreement) || !operation(options.payment) ||
       !plainObject(options.paymentEvidence) ||
       !operation(options.paymentEvidence.operation) ||
@@ -230,7 +262,9 @@ export function createDacsBuyerLiveCommerceGraphV1(
       !transportRuntime(options.sessionBootstrap) ||
       !transportRuntime(options.agreementTransport) ||
       !transportRuntime(options.paymentEvidence) ||
-      !transportRuntime(options.bundleTransport)) {
+      !transportRuntime(options.bundleTransport) ||
+      (options.terminalBundleTransport !== undefined &&
+        !transportRuntime(options.terminalBundleTransport))) {
     throw new TypeError("buyer live commerce graph options are invalid");
   }
   const operations = createDacsFixedPriceX402OperationSetV1({
@@ -244,6 +278,8 @@ export function createDacsBuyerLiveCommerceGraphV1(
     },
   }) as Readonly<DacsFixedPriceX402BuyerOperationsV1> &
     Readonly<FixedPriceX402Operations>;
+  const terminalBundleTransport = options.terminalBundleTransport ??
+    unavailableTerminalTransport;
   const router = createDacsLiveRoleMessageRouterV1({
     role: "buyer",
     routes: {
@@ -272,6 +308,16 @@ export function createDacsBuyerLiveCommerceGraphV1(
         handle: (authenticated, context) =>
           options.bundleTransport.handleMessage(authenticated, context),
       },
+      "terminal-bundle-proposal-seller": {
+        validate: terminalBundleTransport.validatePayload,
+        handle: (authenticated, context) =>
+          terminalBundleTransport.handleMessage(authenticated, context),
+      },
+      "terminal-bundle-contribution-seller": {
+        validate: terminalBundleTransport.validatePayload,
+        handle: (authenticated, context) =>
+          terminalBundleTransport.handleMessage(authenticated, context),
+      },
     },
   });
   return Object.freeze({
@@ -280,6 +326,8 @@ export function createDacsBuyerLiveCommerceGraphV1(
     operations,
     router,
     validatePayload: router.validatePayload,
+    ...(options.terminalBundleTransport === undefined
+      ? {} : { terminalBundles: options.terminalBundleTransport }),
     handleMessage: (
       authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
       context: Readonly<DacsLiveRoleInboundOperationContextV1>,
@@ -302,7 +350,11 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
     "agreement", "x402", "paymentEvidence", "audit", "agreementTransport",
     "paymentEvidenceTransport", "bundleTransport",
   ] as const;
-  if (!plainObject(options) || !exactFields(options, fields) ||
+  if (!plainObject(options) || !exactOptionalFields(
+    options,
+    fields,
+    ["terminalBundleTransport"],
+  ) ||
       !operation(options.agreement) || !plainObject(options.x402) ||
       !operation(options.x402.payment) || !operation(options.x402.delivery) ||
       !operation(options.x402.deliveryEvidence) ||
@@ -311,7 +363,9 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
       !transportRuntime(options.sessionBootstrap) ||
       !transportRuntime(options.agreementTransport) ||
       !transportRuntime(options.paymentEvidenceTransport) ||
-      !transportRuntime(options.bundleTransport)) {
+      !transportRuntime(options.bundleTransport) ||
+      (options.terminalBundleTransport !== undefined &&
+        !transportRuntime(options.terminalBundleTransport))) {
     throw new TypeError("seller live commerce graph options are invalid");
   }
   const operations = createDacsFixedPriceX402OperationSetV1({
@@ -326,6 +380,8 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
     },
   }) as Readonly<DacsFixedPriceX402SellerOperationsV1> &
     Readonly<FixedPriceX402Operations>;
+  const terminalBundleTransport = options.terminalBundleTransport ??
+    unavailableTerminalTransport;
   const router = createDacsLiveRoleMessageRouterV1({
     role: "seller",
     routes: {
@@ -364,6 +420,16 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
         handle: (authenticated, context) =>
           options.bundleTransport.handleMessage(authenticated, context),
       },
+      "terminal-bundle-proposal-buyer": {
+        validate: terminalBundleTransport.validatePayload,
+        handle: (authenticated, context) =>
+          terminalBundleTransport.handleMessage(authenticated, context),
+      },
+      "terminal-bundle-contribution-buyer": {
+        validate: terminalBundleTransport.validatePayload,
+        handle: (authenticated, context) =>
+          terminalBundleTransport.handleMessage(authenticated, context),
+      },
     },
   });
   return Object.freeze({
@@ -372,6 +438,8 @@ export function createDacsSellerLiveCommerceGraphV1<T = unknown>(
     operations,
     router,
     validatePayload: router.validatePayload,
+    ...(options.terminalBundleTransport === undefined
+      ? {} : { terminalBundles: options.terminalBundleTransport }),
     handleMessage: (
       authenticated: Readonly<DacsHttpAuthenticatedEnvelopeV1>,
       context: Readonly<DacsLiveRoleInboundOperationContextV1>,
