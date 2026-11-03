@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { packages as policyPackages } from "./release-checks.mjs";
 
 const args = process.argv.slice(2);
 if (args.length !== 4 || args[0] !== "--artifact-dir" || !args[1] ||
@@ -24,16 +25,29 @@ if (provenance?.schema !== "dacs-release-set/v1" ||
     typeof provenance.packages !== "object" || provenance.packages === null) {
   throw new Error("release provenance is absent, dirty or not a prerelease");
 }
+const packages = policyPackages.map(({ name }) => name);
+assertStrictFivePackageProvenance(provenance);
 if (process.env.DACS_NPM_PUBLISH_CONFIRM !==
     `publish:${provenance.version}:${tag}`) {
   throw new Error("exact release publication confirmation is absent");
 }
 
-const packages = [
-  "@kynesyslabs/dacs",
-  "@kynesyslabs/dacs-node",
-  "create-dacs-agent",
-];
+// The publisher accepts only a set that strict admission produced: exactly the
+// policy's packages, in policy order. It runs before any registry read.
+function assertStrictFivePackageProvenance({ admission, packages: recorded }) {
+  if (admission !== "strict-five") {
+    throw new Error("release provenance was not produced by strict five-package admission");
+  }
+  const names = Object.keys(recorded);
+  const missing = packages.filter((name) => !names.includes(name));
+  const unknown = names.filter((name) => !packages.includes(name));
+  if (missing.length > 0) throw new Error(`release provenance is missing ${missing.join(", ")}`);
+  if (unknown.length > 0) throw new Error(`release provenance names unknown ${unknown.join(", ")}`);
+  if (names.some((name, index) => name !== packages[index])) {
+    throw new Error(`release provenance packages are not in policy order: ${names.join(", ")}`);
+  }
+}
+
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 async function registryRelease(name) {

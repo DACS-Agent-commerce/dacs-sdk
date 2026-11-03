@@ -85,10 +85,22 @@ jobs:
           case "$version" in *-*) ;; *) exit 1 ;; esac
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-          node -e 'const fs=require("node:fs"); const manifests=["package.json","packages/dacs-node/package.json","packages/create-dacs-agent/package.json"].map(f=>JSON.parse(fs.readFileSync(f))); if(manifests.some(p=>p.version!==process.argv[1]||p.publishConfig?.access!=="public"||p.publishConfig?.provenance!==true)) process.exit(1)' "$version"
+          node -e 'const fs=require("node:fs"); const {packages}=JSON.parse(fs.readFileSync("scripts/release-policy.json")); const manifests=packages.map(p=>JSON.parse(fs.readFileSync(p.directory+"/package.json"))); if(manifests.some(p=>p.version!==process.argv[1]||p.publishConfig?.access!=="public"||p.publishConfig?.provenance!==true)) process.exit(1)' "$version"
 
       - name: Install exact source lock
         run: npm ci
+
+      - name: Require a clean build tree
+        run: |
+          test ! -e dist
+          test ! -e packages/dacs-node/dist
+          test ! -e packages/create-dacs-agent/dist
+
+      - name: Build workspace packages
+        run: |
+          npm run build
+          npm run host:build
+          npm run generator:build
 
       - name: Conformance, types and tests
         run: |
@@ -99,12 +111,26 @@ jobs:
           npm test
           npm run host:test
           npm run generator:test
+          npm test --workspace @kynesyslabs/dacs-client
+
+      - name: Prepare locked seller consumer
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
+
+      - name: Test seller internal primitives and journals
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:test
+
+      - name: Test release gate regressions
+        run: npm run release:test
 
       - name: Verify package lifecycle and exact release set
         run: |
           npm run package:lifecycle:verify
           mkdir -p package-artifacts
-          npm run release:set:verify -- --output-dir package-artifacts/release-set
+          npm run release:set:verify -- --output-dir package-artifacts/release-set --strict
 
       - name: Upload exact reviewed release set
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
