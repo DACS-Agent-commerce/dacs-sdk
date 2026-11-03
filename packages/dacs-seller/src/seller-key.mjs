@@ -3,8 +3,8 @@
 // data directory, in the closed record `init` writes. Every mutable copy this
 // module owns is zeroed, and the key then signs only through three closed roles:
 // effect signing (guarded at every call), a read-only role for one answer, refusal
-// or discovery document whose job the TP-1 authority admits when it signs, and a
-// local journal-integrity role.
+// or discovery document (the TP-1 authority admits its job when it signs; a ready
+// one also needs the kit guard), and a local journal-integrity role.
 import { createHash, createPrivateKey, createPublicKey, sign as signEd25519 } from 'node:crypto';
 import { dirname, isAbsolute } from 'node:path';
 import { canonicalize } from '@kynesyslabs/dacs';
@@ -136,9 +136,7 @@ function cleanUpDerivation(derived) {
 async function keyFromKeyFile(loader, { listingSeller, validateMnemonic, derive }) {
   const recordBytes = loader.bytes();
   const der = Buffer.alloc(PKCS8_ED25519_BYTES);
-  let derived = null;
-  let keyObject = null;
-  let failure = null;
+  let derived = null, keyObject = null, failure = null;
   try {
     derived = await deriveOwned(derive, parseSellerKeyRecord(recordBytes, validateMnemonic).mnemonic);
     if (!derivationShapeValid(derived)) throw new SellerKeyError('seller_key_derivation_failed');
@@ -228,12 +226,13 @@ function assertSigningAuthority({ purpose, binding, local }, payload) {
     discovery ? DACS_SELLER_DISCOVERY_FORMAT : payload.jobId));
 }
 
+// A discovery document that says ready lets buyers start purchases, so it signs only while the kit operation guard admits.
+const assertReadyAdmitted = ({ purpose }, { ready }) => { if (purpose === 'discovery' && ready !== false) assertKitOperationAdmitted('sellerKey.readOnlyAnswerSigner'); };
+
 // The three signing roles over one key object. `close()` drops the key, after which every role refuses.
 function createSigningRoles(keyObject, claim) {
   let key = keyObject;
-  const requireOpen = () => {
-    if (key === null) throw new SellerKeyError('seller_key_closed');
-  };
+  const requireOpen = () => { if (key === null) throw new SellerKeyError('seller_key_closed'); };
   const signBytes = (bytes) => signEd25519(null, bytes, key);
   return Object.freeze({
     claim,
@@ -250,16 +249,19 @@ function createSigningRoles(keyObject, claim) {
       let used = false;
       return Object.freeze({
         claim,
-        // Async, single-use: it signs its own copy of `bytes` only after the authority admits their job when it signs.
+        // Async (always await it), single-use: it signs its own copy of `bytes` only after the authority admits their job when it signs.
         async sign(bytes) {
           requireOpen();
           if (used) throw refusedRole('single-use');
           used = true;
           if (!(bytes instanceof Uint8Array)) throw refusedRole('not-bytes');
           const owned = Uint8Array.from(bytes);
-          await assertSigningAuthority(scope, assertReadOnlyBytes(scope, owned));
+          const payload = assertReadOnlyBytes(scope, owned);
+          assertReadyAdmitted(scope, payload);
+          await assertSigningAuthority(scope, payload);
           requireOpen(); // custody may have closed while the authority check was pending
-          return signBytes(owned);
+          assertReadyAdmitted(scope, payload); // and the guard may have re-held
+          return signBytes(owned); // no await between the two rechecks and the signature
         },
       });
     },
@@ -271,9 +273,7 @@ function createSigningRoles(keyObject, claim) {
         return signBytes(bytes);
       },
     }),
-    close() {
-      key = null;
-    },
+    close() { key = null; },
   });
 }
 
@@ -291,9 +291,9 @@ function reportFailure(log, failure, loader) {
 /**
  * Opens the seller key: runtime floor, `keyFormat`, location in the private `dataDirectory`, `loadDacsSecretV1`,
  * closed-record parse with `validateMnemonic`, `derive(mnemonic)` (which hands over `{ claim, ed25519PrivateKey,
- * cleanup }`), then `claim === listingSeller`. Returns
- * `{ claim, sign(bytes), readOnlyAnswerSigner(request), integritySigner, close() }`. Throws TypeError
- * without the three functions, else SellerKeyError, whose fixed code and nonsecret details alone go to
+ * cleanup }`), then `claim === listingSeller`. Returns `{ claim, sign(bytes), readOnlyAnswerSigner(request), integritySigner, close() }`;
+ * `readOnlyAnswerSigner` returns a Promise of `{ claim, sign(bytes) }` whose `sign` returns a Promise of the signature: await both.
+ * Throws TypeError without the three functions, else SellerKeyError, whose fixed code and nonsecret details alone go to
  * `log`. The roles throw `seller_key_closed` after close() and `seller_key_role_refused` outside their purpose.
  */
 export async function openSellerKey({ filePath, dataDirectory, keyFormat, listingSeller, validateMnemonic, derive, log = () => {} }) {

@@ -266,3 +266,94 @@ test('the integrity role stays synchronous, so the durable state creates a store
   t.after(() => reopened.close());
   assert.deepEqual(reopened.context(), { probe: 'integrity role' });
 });
+
+const READY_ENTRY = 'sellerKey.readOnlyAnswerSigner';
+const readyBytes = (scoped, ready = true) => wire.discoverySigningBytes(discoveryPayload(scoped, { ready }));
+const discoveryRole = (key, scoped = binding) => key.readOnlyAnswerSigner({ purpose: 'discovery', binding: scoped, local: LOCAL });
+const refusedByGuard = (refusal) => [refusal?.code, refusal?.error?.entry];
+const GUARD_REFUSAL = ['kit_operation_guard_off', READY_ENTRY];
+
+test('a key opened while admitted, then re-held, signs a ready:false discovery document and refuses a ready:true one with kit_operation_guard_off and zero signer calls, directly and through the wire\'s signDiscoveryDocument', async (t) => {
+  const key = await openAdmittedKey(t);
+  guard.setKitOperationGuardForTest('off');
+  const before = cryptoCalls.signs;
+  const served = JSON.parse(Buffer.from(await wire.signDiscoveryDocument(discoveryPayload(binding), await discoveryRole(key), binding, LOCAL)).toString());
+  assert.equal(served.payload.ready, false);
+  assert.ok(verifiesUnder(SELLER, wire.discoverySigningBytes(served.payload), Buffer.from(served.signature, 'base64url')), 'ready:false signs and verifies');
+  assert.equal(cryptoCalls.signs - before, 1);
+  const viaWire = await refusalOf(async () => wire.signDiscoveryDocument(discoveryPayload(binding, { ready: true }), await discoveryRole(key), binding, LOCAL));
+  assert.deepEqual(refusedByGuard(viaWire), GUARD_REFUSAL, 'through the wire');
+  const direct = await refusalOf(async () => (await discoveryRole(key)).sign(readyBytes(binding)));
+  assert.deepEqual(refusedByGuard(direct), GUARD_REFUSAL, 'directly');
+  assert.equal(cryptoCalls.signs - before, 1, 'the ready:true documents made no signer call');
+});
+
+test('a discovery role minted while admitted refuses a ready:true document once the guard re-holds, because the check is at signing and not at minting', async (t) => {
+  const key = await openAdmittedKey(t);
+  const role = await discoveryRole(key);
+  guard.setKitOperationGuardForTest('off');
+  const before = cryptoCalls.signs;
+  assert.deepEqual(refusedByGuard(await refusalOf(() => role.sign(readyBytes(binding)))), GUARD_REFUSAL);
+  assert.equal(cryptoCalls.signs - before, 0);
+});
+
+test('the guard re-holding while a ready:true discovery role awaits its authority check refuses it with zero signer calls; the same sequence with no re-hold signs once', async (t) => {
+  const key = await openAdmittedKey(t);
+  const { binding: scoped, control } = await controlledBinding();
+  const before = cryptoCalls.signs;
+  for (const reHold of [true, false]) {
+    guard.setKitOperationGuardForTest('testnet-tp1');
+    const role = await discoveryRole(key, scoped);
+    const held = heldAnswer();
+    control.answer = (scope) => (scope.sessionId === wire.DACS_SELLER_DISCOVERY_FORMAT ? held.answer() : undefined);
+    const signing = refusalOf(() => role.sign(readyBytes(scoped)));
+    await held.waiting;
+    if (reHold) guard.setKitOperationGuardForTest('off');
+    held.release();
+    const outcome = await signing;
+    if (reHold) assert.deepEqual(refusedByGuard(outcome), GUARD_REFUSAL, 'a re-hold during the await refuses');
+    else assert.equal(outcome, null, 'control: no re-hold signs');
+    assert.equal(cryptoCalls.signs - before, reHold ? 0 : 1);
+  }
+});
+
+test('a key that was never admitted (the shipped off guard) refuses a ready:true discovery document and still signs ready:false and a read answer', async (t) => {
+  loaderSpy.reset();
+  guard.setKitOperationGuardForTest('off');
+  const key = await openSellerKey(openOptions(keyFixture(t)));
+  t.after(() => { guard.setKitOperationGuardForTest('testnet-tp1'); key.close(); });
+  const before = cryptoCalls.signs;
+  assert.deepEqual(refusedByGuard(await refusalOf(async () => (await discoveryRole(key)).sign(readyBytes(binding)))), GUARD_REFUSAL);
+  assert.equal(cryptoCalls.signs - before, 0);
+  assert.ok(verifiesUnder(SELLER, readyBytes(binding, false), await (await discoveryRole(key)).sign(readyBytes(binding, false))), 'ready:false signs');
+  const answer = await readOnlySigner(key, 'read-answer', { body: READ_BODY });
+  assert.equal((await answer.sign(responseBytes(PATHS.state, 200, READ_BODY))).length, 64, 'a read answer signs');
+  assert.equal(cryptoCalls.signs - before, 2);
+});
+
+test('while admitted a ready:true discovery document signs and verifies; a role the guard refused is spent', async (t) => {
+  const key = await openAdmittedKey(t);
+  const before = cryptoCalls.signs;
+  const bytes = readyBytes(binding);
+  assert.ok(verifiesUnder(SELLER, bytes, await (await discoveryRole(key)).sign(bytes)), 'ready:true signs while admitted');
+  const role = await discoveryRole(key);
+  guard.setKitOperationGuardForTest('off');
+  assert.deepEqual(refusedByGuard(await refusalOf(() => role.sign(bytes))), GUARD_REFUSAL);
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  assert.equal((await refusalOf(() => role.sign(bytes)))?.details, 'single-use', 'the refused role cannot be retried');
+  assert.equal(cryptoCalls.signs - before, 1);
+});
+
+test('a caller who forgets to await the read-only signer fails loudly: sign returns a Promise, which no signature consumer accepts as signature bytes', async (t) => {
+  const key = await openAdmittedKey(t);
+  const bytes = responseBytes(PATHS.state, 200, READ_BODY);
+  const role = await readOnlySigner(key, 'read-answer', { body: READ_BODY });
+  const minted = readOnlySigner(key, 'discovery');
+  assert.ok(minted instanceof Promise, 'minting a role returns a Promise too');
+  await minted;
+  const unawaited = role.sign(bytes);
+  assert.ok(unawaited instanceof Promise && !(unawaited instanceof Uint8Array), 'sign returns a Promise');
+  assert.throws(() => Buffer.from(unawaited), TypeError, 'a sync consumer copying the result');
+  assert.throws(() => verifiesUnder(SELLER, bytes, unawaited), TypeError, 'a verifier handed the Promise');
+  assert.ok(verifiesUnder(SELLER, bytes, await unawaited), 'awaited, the same call yields verifying signature bytes');
+});

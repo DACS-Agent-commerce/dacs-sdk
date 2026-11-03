@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { contentHash } from '@kynesyslabs/dacs';
 import { seller } from './protocol-fixture.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
-import { KEY_FORMAT, SELLER_SEED_BYTE, cryptoCalls, derivationDouble, importSellerKey, keyRecordBytes, mnemonicFor, validateMnemonic, walletFor } from './seller-key-fixture.mjs';
+import { KEY_FORMAT, LOCAL, SELLER_SEED_BYTE, cryptoCalls, derivationDouble, discoveryPayload, importSellerKey, keyRecordBytes, mnemonicFor, testBinding, validateMnemonic, walletFor, wire } from './seller-key-fixture.mjs';
 
 const WATCHED_FS_CALLS = ['openSync', 'mkdirSync', 'lstatSync', 'realpathSync', 'writeFileSync', 'readFileSync', 'readdirSync', 'statSync'];
 const LOCAL_RECORD_DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
@@ -177,7 +177,13 @@ async function effectEntries() {
     validateMnemonic, derive: derivationDouble().derive });
   const keySignaturesBefore = cryptoCalls.signs;
   await attempt('sellerKey.sign', () => sellerKey.sign(Buffer.from('bytes')));
+  // A read-only discovery role refuses a `ready: true` document while off, and still signs `ready: false` (the control).
+  const discoveryBinding = await testBinding();
+  const discoveryRole = () => sellerKey.readOnlyAnswerSigner({ purpose: 'discovery', binding: discoveryBinding, local: LOCAL });
+  await attempt('sellerKey.readOnlyAnswerSigner', async () => (await discoveryRole()).sign(wire.discoverySigningBytes(discoveryPayload(discoveryBinding, { ready: true }))));
   const keySignatures = cryptoCalls.signs - keySignaturesBefore;
+  await (await discoveryRole()).sign(wire.discoverySigningBytes(discoveryPayload(discoveryBinding)));
+  readable.readyFalseSigned = cryptoCalls.signs - keySignaturesBefore - keySignatures;
   sellerKey.close();
 
   const anchors = await anchorFixture();
