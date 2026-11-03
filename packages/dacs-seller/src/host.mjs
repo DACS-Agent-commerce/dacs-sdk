@@ -209,7 +209,8 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // startup error as `cause` when that error cannot carry the property).
 // The startup errors include the binding's own (`tp1_*`, with the reader's
 // error kept as the cause; `tp1_authority_timeout` after 10,000 ms), which come
-// before the state lock and any file; `kit_store_format_unsupported` for a data
+// before the state lock and any file, and `tp1_local_binding_changed` when the
+// connection no longer matches the binding just before the host listens; `kit_store_format_unsupported` for a data
 // directory from an older kit format; `kit_journal_accounting_mismatch` for a
 // new kit store over a journal that already holds reservations; and the
 // journal's own `seller_replay_guard_invalid` with its detail.
@@ -269,7 +270,7 @@ export async function startSellerHost(options) {
     // file or a directory others can write, with their detail.
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
-    // The context the signed routes on `./wire` use; nothing reads it until they are mounted (P11a1).
+    // The context the signed routes on `./wire` use (P11a1); until they are mounted the host itself re-checks the binding with it before it listens.
     const wire = Object.freeze({ binding, connection: tp1Network.connection, journal, assertCurrentBinding: () => assertTp1Binding(binding, tp1Network.connection()) });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
@@ -280,6 +281,8 @@ export async function startSellerHost(options) {
     // has been synced yet.
     await DURABLE_SYNC.directory(transport);
     await DURABLE_SYNC.directory(dataDirectory);
+    // The connection the binding was read for must still be the operator's before anything is served.
+    await wire.assertCurrentBinding();
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
     const handler = createSellerHttpHandler(agent, { authentication });
     const active = new Set();

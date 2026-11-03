@@ -24,9 +24,9 @@ import { privateModule } from './helpers/private-module.mjs';
 import { NOW } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
 import { DURABLE_SYNC, syncDirectory } from '../src/devnet-demo/durable-file.mjs';
-import { assertKitDataFormat, KIT_DATA_FORMAT } from '../src/dacs/kit-data-format.mjs';
+import { KIT_DATA_FORMAT } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall } from '../src/dacs/bounded-call.mjs';
-import { createSellerTransportClientAuth, createSellerTransportServerAuth, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportClientAuth, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
 
 const HOST_URL = new URL('../src/host.mjs', import.meta.url);
 const PACKAGE_DIRECTORY = fileURLToPath(new URL('../', import.meta.url));
@@ -63,7 +63,9 @@ const sub = (source, from, to) => {
 async function hostFixture(t) {
   const f = await commitmentFixture(t);
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-host-wire-state-'));
-  const { durableDirectory, commitOnSignature, nativeArtifactAnchor, ...config } = f.config;
+  const { nativeArtifactAnchor, ...config } = f.config;
+  delete config.durableDirectory;
+  delete config.commitOnSignature;
   const api = await privateModule(HOST_URL, ['setTestSync', 'setTestWire'], (source) => {
     let text = sub(source, "import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';",
       "import { DURABLE_SYNC as REAL_DURABLE_SYNC } from './devnet-demo/durable-file.mjs';\nlet DURABLE_SYNC = REAL_DURABLE_SYNC; function setTestSync(value) { DURABLE_SYNC = value; }");
@@ -90,7 +92,6 @@ async function hostFixture(t) {
 }
 
 const lockReleased = (f) => assert.deepEqual(namesIn(f.dataDirectory).filter((name) => name.startsWith(LOCK_FILE_PREFIX)), [], 'the state lock is released');
-const noState = (f) => assert.deepEqual(namesIn(f.dataDirectory).filter((name) => STATE_ENTRIES.includes(name) || name === MARKER_FILE), [], 'no state entry or marker exists');
 const writeMarker = (f) => writeFileSync(f.path(MARKER_FILE), MARKER_TEXT, { mode: 0o600 });
 const makePrivateDirectory = (path) => { mkdirSync(path, { mode: 0o700 }); chmodSync(path, 0o700); return path; };
 const rejection = async (promise) => { try { await promise; } catch (error) { return error; } return assert.fail('expected a rejection'); };
@@ -357,6 +358,15 @@ test('P10-T08 the host wire context refuses a changed connection and a copied bi
   await assert.rejects(assertTp1Binding({ ...wire.binding }, wire.connection()), { code: 'tp1_binding_required' });
   connectionId = 'vector-conn-2';
   await assert.rejects(wire.assertCurrentBinding(), { code: 'tp1_local_binding_changed' });
+});
+
+test('P10-T08 a connection that changes while the host starts refuses before it listens and releases the lock', async (t) => {
+  const f = await hostFixture(t);
+  let reads = 0;
+  const connection = () => ({ ...TEST_CONNECTION, connectionId: ++reads === 1 ? TEST_CONNECTION.connectionId : 'vector-conn-2' });
+  const error = await rejection(f.start({ tp1Network: testNetwork({ connection }) }));
+  assert.equal(error.code, 'tp1_local_binding_changed');
+  lockReleased(f);
 });
 
 test('P10-T09 a plain-HTTP endpoint or a revision-1 chain refuses before the lock and before any file', async (t) => {

@@ -72,7 +72,8 @@ const host = await startSellerHost({
                          // this host's own https connection and the trusted reader that confirms it and the
                          // chain; read within 10,000 ms (tp1_authority_timeout). The host binds the SDK's
                          // approved TP-1 identity record over it before it opens any state: no option,
-                         // environment variable or file names a record
+                         // environment variable or file names a record, and checks the binding against
+                         // connection() again before it listens (tp1_local_binding_changed)
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
