@@ -84,6 +84,7 @@ test('while the guard is off, every directly reachable effect entry under ./src/
   assert.deepEqual(answer.effects, { signs: 0, sends: 0 });
   assert.equal(answer.readable.anchorIntentKept, false, 'the refused durable-state anchor kept no intent');
   assert.equal(answer.refusedWithoutInput.anchor?.code, GUARD_CODE, 'the durable-state anchor refuses with no request too');
+  assert.equal(answer.signsBeforeStore, 0, 'the entries refused before the store opened signed nothing');
   assert.ok(answer.storeSignaturesAtOpen.length >= 1 && answer.storeSignaturesAfterWrite.length > answer.storeSignaturesAtOpen.length, 'the store keeps signing its own local records while off: when it creates a new store and when it updates an authenticated record');
   assert.ok(answer.storeSignaturesAfterWrite.every(Boolean), 'every store signature carries the local-record domain prefix');
   assert.equal(answer.walletRequests, 0);

@@ -136,6 +136,7 @@ async function effectEntries() {
   await attempt('createDevnetDemoDeliveryCapability.submit', () => nativeDemDeliverySubmitsOf(createDevnetDemoDeliveryCapability({ authority: delivery.authority, anchor: delivery })).submit({}));
 
   // The store keeps signing its own local records while off (a new store, and each authenticated record it creates or updates); record what it signs so the test can show those carry the local-record domain and that the kit sends nothing.
+  const signsBeforeStore = effects.signs; // every refusal above must have signed nothing
   const storeSignatures = [];
   const storeSign = (bytes) => { storeSignatures.push(Buffer.from(bytes).toString().startsWith(LOCAL_RECORD_DOMAIN)); return signBytes(bytes); };
   const store = await createSellerDurableState({ dir: directory, signer: { claim: seller.claim, sign: storeSign }, listingPin: { contentHash: 'a'.repeat(64) } });
@@ -170,7 +171,7 @@ async function effectEntries() {
   const anchors = await anchorFixture();
   await attempt('publish', () => anchors.publish(anchors.open(), ARTIFACT_JOB));
   readable.anchorRead = (await anchors.open().read({ logicalAddress: 'dacs4:probe', artifactKind: 'FinalityCommitmentRecord', artifact: {} }).catch((error) => ({ error: error.code ?? error.name }))).error ?? 'answered';
-  return { refused, refusedWithoutInput, storeSignaturesAtOpen, storeSignaturesAfterWrite, readable, effects, walletRequests: anchors.captured.length, anchorJournalRows: anchors.journal.rows.size };
+  return { refused, refusedWithoutInput, signsBeforeStore, storeSignaturesAtOpen, storeSignaturesAfterWrite, readable, effects, walletRequests: anchors.captured.length, anchorJournalRows: anchors.journal.rows.size };
 }
 
 const CASES = { startWithHostileOptions, concurrentStarts, namedGuardInputs, guardValues, fixtureAdmits, artifactReadRecovery, effectEntries };
