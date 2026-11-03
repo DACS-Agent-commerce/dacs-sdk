@@ -333,7 +333,7 @@ describe("registry/container workflow wiring", () => {
   it("publishes a prerelease only after the acceptance job passes with drift enforced", () => {
     const publish = join(repoRoot, ".github/workflows/publish-prerelease-gated.yml");
     expect(workflowBlockKeys(publish, "on")).toEqual(["workflow_dispatch"]);
-    expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish-environment", "publish"]);
+    expect(workflowBlockKeys(publish, "jobs")).toEqual(["registry-container-acceptance", "publish-environment", "verify", "publish"]);
     const gate = workflowJob(publish, "registry-container-acceptance");
     expect(gate).toEqual({ permissions: "\ncontents: read", uses: "./.github/workflows/registry-container-acceptance.yml",
       with: "\nenforce-audit-drift: true" });
@@ -341,7 +341,7 @@ describe("registry/container workflow wiring", () => {
     expect(job.steps).toContain("node scripts/publish-release-set.mjs");
     // No job-level `if:`: always(), failure() or !cancelled() there would run
     // the publish job after the acceptance job failed.
-    expect(job).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
+    expect(job).toMatchObject({ needs: "[registry-container-acceptance, publish-environment, verify]",
       environment: "npm-prerelease-gated", permissions: "\ncontents: read\nactions: read\nid-token: write" });
     expect(job).not.toHaveProperty("if");
     // The OIDC permission is the publish job's alone; the called acceptance
@@ -373,7 +373,7 @@ describe("registry/container workflow wiring", () => {
     expect(files).not.toContain("publish-prerelease.yml");
     expect(files).toContain(gatedName);
     const gated = join(directory, gatedName);
-    expect(workflowJob(gated, "publish")).toMatchObject({ needs: "[registry-container-acceptance, publish-environment]",
+    expect(workflowJob(gated, "publish")).toMatchObject({ needs: "[registry-container-acceptance, publish-environment, verify]",
       environment: "npm-prerelease-gated" });
     expect(workflowJob(gated, "registry-container-acceptance"))
       .toMatchObject({ uses: "./.github/workflows/registry-container-acceptance.yml", with: "\nenforce-audit-drift: true" });

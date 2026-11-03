@@ -34,11 +34,13 @@ findings are recorded in the #191 baseline (exit 4) passes that job, as
 it does on every other acceptance run, so baseline-only findings do not stop a
 prerelease. The baseline waives transitive findings only: an advisory that is
 high or critical on a direct dependency of the consumer fails the job even when
-the baseline lists it. The publish job installs a pinned
-release toolchain without a dependency cache and requires a clean build tree. It
-builds core, the host and the generator, then runs conformance, types, the
-suites of all five packages and the release-gate regressions (`release:test`).
-It creates the release set twice with `--strict`, which refuses unless all
+the baseline lists it. The `verify` job, which has a 120-minute limit and no
+environment, OIDC token or secret, requires a clean build tree, builds core, the
+host and the generator, then runs conformance, types, the suites of all five
+packages and the release-gate regressions (`release:test`). The publish job needs
+the `verify` job, so none of those suites runs inside its 45-minute limit. The
+publish job installs a pinned release toolchain without a dependency cache,
+requires a clean build tree and builds again. It creates the release set twice with `--strict`, which refuses unless all
 five packages are releasable at the planned version and each package's internal
 dependencies come earlier in the order below. It uploads the five exact
 tarballs, SHA-256 receipts, combined source provenance (recording `strict-five`
@@ -107,7 +109,9 @@ and the run ends 40 minutes after it starts or 2 minutes before the job's
 - `dist_tag_conflict`: `next` points elsewhere. Fix it on npm by hand, rerun.
 - `existing_release_conflict`, `published_integrity_conflict`: the registry holds
   this version with other bytes. Stop and prepare a new version.
-- `publish_budget_exhausted`: too little job time was left. Rerun.
+- `publish_budget_exhausted`: too little job time was left. Use "Re-run failed jobs" (not "Re-run all jobs"):
+  only the `publish` job runs again, with a new 45-minute clock, and the
+  `verify` job's result stays.
 - `registry_*`: a read stopped; the cause says why. Rerun after a timeout or
   `registry_unavailable`, investigate the others first.
 

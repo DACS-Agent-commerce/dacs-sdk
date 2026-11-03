@@ -52,8 +52,67 @@ jobs:
         run: |
           bash scripts/require-publish-environment.sh
 
-  publish:
+  # Every suite that must pass on the tagged commit runs here, with a limit of
+  # its own, so the publish job's 45 minutes, which the publisher's deadline
+  # counts from, hold only the release set and the publish. This job has no
+  # environment, no OIDC token and no secret. A rerun of only the failed
+  # `publish` job keeps this job's result.
+  verify:
     needs: [registry-container-acceptance, publish-environment]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.21.1"
+
+      - name: Install exact source lock
+        run: npm ci
+
+      - name: Require a clean build tree
+        run: |
+          test ! -e dist
+          test ! -e packages/dacs-node/dist
+          test ! -e packages/create-dacs-agent/dist
+
+      - name: Build workspace packages
+        run: |
+          npm run build
+          npm run host:build
+          npm run generator:build
+
+      - name: Conformance, types and tests
+        run: |
+          npm run conformance:sync
+          npm run typecheck
+          npm run host:typecheck
+          npm run generator:typecheck
+          npm test
+          npm run host:test
+          npm run generator:test
+          npm test --workspace @kynesyslabs/dacs-client
+
+      - name: Prepare locked seller consumer
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
+
+      - name: Test seller internal primitives and journals
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:test
+
+      - name: Test release gate regressions
+        run: npm run release:test
+
+  publish:
+    needs: [registry-container-acceptance, publish-environment, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: npm-prerelease-gated
@@ -104,30 +163,6 @@ jobs:
           npm run build
           npm run host:build
           npm run generator:build
-
-      - name: Conformance, types and tests
-        run: |
-          npm run conformance:sync
-          npm run typecheck
-          npm run host:typecheck
-          npm run generator:typecheck
-          npm test
-          npm run host:test
-          npm run generator:test
-          npm test --workspace @kynesyslabs/dacs-client
-
-      - name: Prepare locked seller consumer
-        env:
-          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
-        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
-
-      - name: Test seller internal primitives and journals
-        env:
-          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
-        run: npm run seller:test
-
-      - name: Test release gate regressions
-        run: npm run release:test
 
       - name: Verify package lifecycle and exact release set
         run: |
