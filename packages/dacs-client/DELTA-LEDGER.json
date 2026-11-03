@@ -5753,6 +5753,78 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF P16a0 durable wallet-lock recovery, owned append and fence-first lock order",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "6215d34787c361a4c056c2a78fcb2dccda823ff0",
+          "after": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "8917eac7303f718f2fb1ec4dad47235c0364c4cb",
+          "after": "39b829559547b7567fbeab5746d4239b703a43d3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/holder-incarnation.mjs",
+          "before": null,
+          "after": "0d50723061fa03dc704eb75965fc5db36f79ac72"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-owned-append.test.mjs",
+          "before": null,
+          "after": "1df73fe136ac98d597f1509c074d8da73b74087e"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-recovery.test.mjs",
+          "before": null,
+          "after": "9e0eea8347fa209477848f388b17d7b4218d733a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/journal-child-process.mjs",
+          "before": null,
+          "after": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": null,
+          "after": "e8eb401ca45efce0cc79b1f5b2cc8f8cee657015"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-lock-order-child.mjs",
+          "before": null,
+          "after": "f808491afd7a868398cad255e96315ebda2c0b89"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": null,
+          "after": "37e944e9f1b36e944b7af495fe532ba43b208aaa"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "d65da09f23b12c15b976cc640c9cbef7be5e894a",
+          "after": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a0 refuse an owned lane reuse or append that the lock row does not back",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "39b829559547b7567fbeab5746d4239b703a43d3",
+          "after": "a284092528a7f3564c8def91dd5fee530ae04b93"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-owned-append.test.mjs",
+          "before": "1df73fe136ac98d597f1509c074d8da73b74087e",
+          "after": "8136201c3d57264ab3fe16d2ccacbef4035fdd49"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a1a tests for quiet Node demosdk loading",
       "files": [
         {

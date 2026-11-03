@@ -70,6 +70,40 @@ test('the packed archive offers no admission bypass and every packed module sees
   run(process.execPath, ['held.mjs'], app, { DACS_PURCHASE_ADMISSION: 'testnet-tp1' });
 });
 
+test('the packed client includes the incarnation module, ships no lease fixture, and its installed ./wallet/durable-journal entry reclaims a dead holder outside the checkout', t => {
+  const { app, run } = installPackedPair(t);
+  const entry = "import { openDurableWalletJournal } from '@kynesyslabs/dacs-client/wallet/durable-journal';";
+  writeFileSync(join(app, 'crash.mjs'), `${entry}
+    const journal = openDurableWalletJournal({ path: process.argv[2], mode: 'open' });
+    await journal.withWalletLock('TEST-lane', async () => {
+      await journal.put('TEST-lane', { stage: 'broadcast-started' });
+      console.log('locked');
+      process.kill(process.pid, 'SIGKILL');
+      await new Promise(() => {});
+    });
+  `);
+  writeFileSync(join(app, 'reclaim.mjs'), `${entry}
+    import assert from 'node:assert/strict';
+    import { readdirSync } from 'node:fs';
+    import { spawnSync } from 'node:child_process';
+    const installed = new URL('./node_modules/@kynesyslabs/dacs-client/', import.meta.url);
+    assert.ok(readdirSync(new URL('src/wallet/', installed)).includes('holder-incarnation.mjs'));
+    const shipped = readdirSync(installed, { recursive: true });
+    assert.deepEqual(shipped.filter(path => /(?:^|\\/)holders(?:\\/|$)|\\.sqlite$/.test(path)), [], 'no lease fixture ships');
+    const path = new URL('./TEST-journal.sqlite', import.meta.url).pathname;
+    openDurableWalletJournal({ path, mode: 'create' }).close();
+    const crashed = spawnSync(process.execPath, ['crash.mjs', path], { encoding: 'utf8' });
+    assert.equal(crashed.signal, 'SIGKILL', crashed.stderr);
+    assert.match(crashed.stdout, /locked/);
+    const journal = openDurableWalletJournal({ path, mode: 'open', lockTimeoutMs: 0 });
+    assert.deepEqual(journal.inspectLocks().map(lock => lock.holder), ['exited']);
+    await journal.withWalletLock('TEST-lane', async () => assert.deepEqual(await journal.get('TEST-lane'), { stage: 'broadcast-started' }));
+    assert.deepEqual(journal.inspectLocks(), []);
+    journal.close();
+  `);
+  run(process.execPath, ['reclaim.mjs'], app);
+});
+
 test('paired packed artifacts with dacs-node supply the schema needed by every buyer factory, and dacs-node resolves to its packed archive', async t => {
   const { app, run, nodeArchive } = installPackedPair(t);
   await t.test('installed dacs-node is the candidate archive and exports the demos loader', () => {
