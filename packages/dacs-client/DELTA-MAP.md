@@ -960,6 +960,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/demos-quiet-hooks.mjs:1` | 323ba838b4f2abe9189f84d6688cdaf0914b1972 |
 | | `packages/dacs-client/src/wallet/node-demos-loading.mjs:1` | 6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1 |
+| WF | delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-demos-loading.test.mjs:1` | 539d876bf79510f9d3bf9e09d99737131a43fdc1 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 88abfb10c132141730d27792596b73899fe34400 |
 
 ## Complete commit and file inventory
 
@@ -3019,6 +3022,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/src/wallet/demos-quiet-hooks.mjs:1` |
 | delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/src/wallet/node-demos-loading.mjs:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/test/node-demos-loading.test.mjs:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `scripts/release-policy.json:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `test/scripts/release-checks.test.mjs:1` |
 
 ## Original moved files
 

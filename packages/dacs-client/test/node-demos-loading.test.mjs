@@ -19,6 +19,8 @@ const REVIEWED_LINES = {
   '4.0.16': { 'GCRGeneration.js': [173, 246, 249, 250], 'demosclass.js': [719, 1547] },
   '4.0.18': { 'GCRGeneration.js': [178, 302, 305, 306], 'demosclass.js': [738, 1775, 1781] },
 };
+// 4.0.16's websdk has an extensionless directory import that plain Node refuses; 4.0.18 has none.
+const PLAIN_IMPORT_NEEDS_LOADER = { '4.0.16': true, '4.0.18': false };
 
 const noEgress = installNoEgress();
 test.after(() => noEgress.restore());
@@ -71,8 +73,10 @@ test('loads Node demosdk websdk after the dacs-node demos loader; globalThis win
     try { await import(urls.websdk); report({ imported: true }); } catch (error) { report({ imported: false, ...caught(error) }); }
   `);
   assert.equal(unloaded.status, 0, failure(unloaded));
-  assert.deepEqual(unloaded.result.imported, false, 'plain Node cannot import the websdk without the demos loader');
-  assert.equal(unloaded.result.code, 'ERR_UNSUPPORTED_DIR_IMPORT');
+  const needsLoader = PLAIN_IMPORT_NEEDS_LOADER[installedVersion];
+  assert.equal(typeof needsLoader, 'boolean', `demosdk ${installedVersion} needs a plain-import expectation in this test`);
+  assert.equal(unloaded.result.imported, !needsLoader, `plain Node ${needsLoader ? 'cannot' : 'can'} import the websdk without the demos loader under ${installedVersion}`);
+  if (needsLoader) assert.equal(unloaded.result.code, 'ERR_UNSUPPORTED_DIR_IMPORT');
 });
 
 test('the installed Demos class exposes connectWallet, getAddress, signMessage, sign, confirm, broadcast, disconnect and the post seam the session overrides', t => {

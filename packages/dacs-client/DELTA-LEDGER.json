@@ -5802,6 +5802,22 @@
           "after": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-demos-loading.test.mjs",
+          "before": "7b1d41e983d9e07fc272914276a693777a7a298a",
+          "after": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "88abfb10c132141730d27792596b73899fe34400",
+          "after": "88abfb10c132141730d27792596b73899fe34400"
+        }
+      ]
     }
   ]
 }
