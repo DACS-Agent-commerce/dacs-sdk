@@ -1,0 +1,393 @@
+(node:5) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:12) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# (node:12) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# Subtest: readAgreement: adapter invalid
+ok 1 - readAgreement: adapter invalid
+  ---
+  duration_ms: 2.84606
+  type: 'test'
+  ...
+# Subtest: recheckAgreement: adapter invalid
+ok 2 - recheckAgreement: adapter invalid
+  ---
+  duration_ms: 0.443323
+  type: 'test'
+  ...
+# Subtest: readAgreement: foreign invalid
+ok 3 - readAgreement: foreign invalid
+  ---
+  duration_ms: 0.269181
+  type: 'test'
+  ...
+# Subtest: recheckAgreement: foreign invalid
+ok 4 - recheckAgreement: foreign invalid
+  ---
+  duration_ms: 0.225249
+  type: 'test'
+  ...
+# Subtest: readAgreement: permanent
+ok 5 - readAgreement: permanent
+  ---
+  duration_ms: 0.396326
+  type: 'test'
+  ...
+# Subtest: recheckAgreement: permanent
+ok 6 - recheckAgreement: permanent
+  ---
+  duration_ms: 0.220039
+  type: 'test'
+  ...
+# Subtest: readAgreement: unavailable
+ok 7 - readAgreement: unavailable
+  ---
+  duration_ms: 0.250104
+  type: 'test'
+  ...
+# Subtest: recheckAgreement: unavailable
+ok 8 - recheckAgreement: unavailable
+  ---
+  duration_ms: 0.211944
+  type: 'test'
+  ...
+# Subtest: readAgreement: marked contradiction
+ok 9 - readAgreement: marked contradiction
+  ---
+  duration_ms: 0.703218
+  type: 'test'
+  ...
+# Subtest: recheckAgreement: marked contradiction
+ok 10 - recheckAgreement: marked contradiction
+  ---
+  duration_ms: 0.626995
+  type: 'test'
+  ...
+# Subtest: payment gate carries adapter invalid classification, cache false
+ok 11 - payment gate carries adapter invalid classification, cache false
+  ---
+  duration_ms: 2.444893
+  type: 'test'
+  ...
+# Subtest: payment gate carries foreign invalid classification, cache false
+ok 12 - payment gate carries foreign invalid classification, cache false
+  ---
+  duration_ms: 0.89268
+  type: 'test'
+  ...
+# Subtest: payment gate carries permanent classification, cache false
+ok 13 - payment gate carries permanent classification, cache false
+  ---
+  duration_ms: 0.7644
+  type: 'test'
+  ...
+# Subtest: payment gate carries unavailable classification, cache false
+ok 14 - payment gate carries unavailable classification, cache false
+  ---
+  duration_ms: 0.71011
+  type: 'test'
+  ...
+# Subtest: payment gate carries marked contradiction classification, cache false
+ok 15 - payment gate carries marked contradiction classification, cache false
+  ---
+  duration_ms: 0.777575
+  type: 'test'
+  ...
+# Subtest: payment gate carries adapter invalid classification, cache true
+ok 16 - payment gate carries adapter invalid classification, cache true
+  ---
+  duration_ms: 0.988066
+  type: 'test'
+  ...
+# Subtest: payment gate carries foreign invalid classification, cache true
+ok 17 - payment gate carries foreign invalid classification, cache true
+  ---
+  duration_ms: 0.859738
+  type: 'test'
+  ...
+# Subtest: payment gate carries permanent classification, cache true
+ok 18 - payment gate carries permanent classification, cache true
+  ---
+  duration_ms: 0.839289
+  type: 'test'
+  ...
+# Subtest: payment gate carries unavailable classification, cache true
+ok 19 - payment gate carries unavailable classification, cache true
+  ---
+  duration_ms: 1.318461
+  type: 'test'
+  ...
+# Subtest: payment gate carries marked contradiction classification, cache true
+ok 20 - payment gate carries marked contradiction classification, cache true
+  ---
+  duration_ms: 0.942301
+  type: 'test'
+  ...
+# Subtest: payment evidence: adapter invalid
+ok 21 - payment evidence: adapter invalid
+  ---
+  duration_ms: 1.607278
+  type: 'test'
+  ...
+# Subtest: payment evidence: foreign invalid
+ok 22 - payment evidence: foreign invalid
+  ---
+  duration_ms: 0.400734
+  type: 'test'
+  ...
+# Subtest: payment evidence: permanent
+ok 23 - payment evidence: permanent
+  ---
+  duration_ms: 0.351443
+  type: 'test'
+  ...
+# Subtest: payment evidence: unavailable
+ok 24 - payment evidence: unavailable
+  ---
+  duration_ms: 0.281533
+  type: 'test'
+  ...
+# Subtest: payment evidence: marked contradiction
+ok 25 - payment evidence: marked contradiction
+  ---
+  duration_ms: 0.307361
+  type: 'test'
+  ...
+# Subtest: unmarked invalid evidence result is indeterminate
+ok 26 - unmarked invalid evidence result is indeterminate
+  ---
+  duration_ms: 0.25253
+  type: 'test'
+  ...
+# Subtest: unmarked rejected evidence result is indeterminate
+ok 27 - unmarked rejected evidence result is indeterminate
+  ---
+  duration_ms: 0.124802
+  type: 'test'
+  ...
+# Subtest: unmarked unknown evidence result is indeterminate
+ok 28 - unmarked unknown evidence result is indeterminate
+  ---
+  duration_ms: 0.118059
+  type: 'test'
+  ...
+# Subtest: delivery evidence: adapter invalid
+ok 29 - delivery evidence: adapter invalid
+  ---
+  duration_ms: 5.173655
+  type: 'test'
+  ...
+# Subtest: delivery evidence: foreign invalid
+ok 30 - delivery evidence: foreign invalid
+  ---
+  duration_ms: 3.728149
+  type: 'test'
+  ...
+# Subtest: delivery evidence: permanent
+ok 31 - delivery evidence: permanent
+  ---
+  duration_ms: 3.59982
+  type: 'test'
+  ...
+# Subtest: delivery evidence: unavailable
+ok 32 - delivery evidence: unavailable
+  ---
+  duration_ms: 3.297719
+  type: 'test'
+  ...
+# Subtest: delivery evidence: marked contradiction
+ok 33 - delivery evidence: marked contradiction
+  ---
+  duration_ms: 3.505454
+  type: 'test'
+  ...
+# Subtest: delivered purchase recheck: adapter invalid
+ok 34 - delivered purchase recheck: adapter invalid
+  ---
+  duration_ms: 121.060145
+  type: 'test'
+  ...
+# Subtest: delivered purchase recheck: foreign invalid
+ok 35 - delivered purchase recheck: foreign invalid
+  ---
+  duration_ms: 101.463658
+  type: 'test'
+  ...
+# Subtest: delivered purchase recheck: permanent
+ok 36 - delivered purchase recheck: permanent
+  ---
+  duration_ms: 98.09091
+  type: 'test'
+  ...
+# Subtest: delivered purchase recheck: unavailable
+ok 37 - delivered purchase recheck: unavailable
+  ---
+  duration_ms: 95.115421
+  type: 'test'
+  ...
+# Subtest: delivered purchase recheck: marked contradiction
+ok 38 - delivered purchase recheck: marked contradiction
+  ---
+  duration_ms: 152.141015
+  type: 'test'
+  ...
+# Subtest: malformed seller CREATE pointer cannot terminate the purchase
+ok 39 - malformed seller CREATE pointer cannot terminate the purchase
+  ---
+  duration_ms: 128.694684
+  type: 'test'
+  ...
+# Subtest: buyer receipt verification: unmarked error
+ok 40 - buyer receipt verification: unmarked error
+  ---
+  duration_ms: 1.178149
+  type: 'test'
+  ...
+# Subtest: buyer receipt verification: unknown verdict
+ok 41 - buyer receipt verification: unknown verdict
+  ---
+  duration_ms: 0.524275
+  type: 'test'
+  ...
+# Subtest: buyer receipt verification: marked contradiction
+ok 42 - buyer receipt verification: marked contradiction
+  ---
+  duration_ms: 0.642855
+  type: 'test'
+  ...
+# Subtest: fresh transfer time mismatch is indeterminate
+ok 43 - fresh transfer time mismatch is indeterminate
+  ---
+  duration_ms: 2.62024
+  type: 'test'
+  ...
+# Subtest: fresh transfer time mismatch: first read stays held
+ok 44 - fresh transfer time mismatch: first read stays held
+  ---
+  duration_ms: 161.806278
+  type: 'test'
+  ...
+# Subtest: fresh transfer time mismatch: preserve delivery
+ok 45 - fresh transfer time mismatch: preserve delivery
+  ---
+  duration_ms: 91.312313
+  type: 'test'
+  ...
+# Subtest: fresh transfer transaction mismatch is indeterminate
+ok 46 - fresh transfer transaction mismatch is indeterminate
+  ---
+  duration_ms: 1.882449
+  type: 'test'
+  ...
+# Subtest: fresh transfer transaction mismatch: first read stays held
+ok 47 - fresh transfer transaction mismatch: first read stays held
+  ---
+  duration_ms: 69.361539
+  type: 'test'
+  ...
+# Subtest: fresh transfer transaction mismatch: preserve delivery
+ok 48 - fresh transfer transaction mismatch: preserve delivery
+  ---
+  duration_ms: 81.289328
+  type: 'test'
+  ...
+# Subtest: fresh transfer block mismatch is indeterminate
+ok 49 - fresh transfer block mismatch is indeterminate
+  ---
+  duration_ms: 1.232731
+  type: 'test'
+  ...
+# Subtest: fresh transfer block mismatch: first read stays held
+ok 50 - fresh transfer block mismatch: first read stays held
+  ---
+  duration_ms: 65.721625
+  type: 'test'
+  ...
+# Subtest: fresh transfer block mismatch: preserve delivery
+ok 51 - fresh transfer block mismatch: preserve delivery
+  ---
+  duration_ms: 75.596477
+  type: 'test'
+  ...
+# Subtest: fresh transfer payer mismatch is indeterminate
+ok 52 - fresh transfer payer mismatch is indeterminate
+  ---
+  duration_ms: 1.462568
+  type: 'test'
+  ...
+# Subtest: fresh transfer payer mismatch: first read stays held
+ok 53 - fresh transfer payer mismatch: first read stays held
+  ---
+  duration_ms: 117.988306
+  type: 'test'
+  ...
+# Subtest: fresh transfer payer mismatch: preserve delivery
+ok 54 - fresh transfer payer mismatch: preserve delivery
+  ---
+  duration_ms: 109.490346
+  type: 'test'
+  ...
+# Subtest: fresh transfer payee mismatch is indeterminate
+ok 55 - fresh transfer payee mismatch is indeterminate
+  ---
+  duration_ms: 1.170595
+  type: 'test'
+  ...
+# Subtest: fresh transfer payee mismatch: first read stays held
+ok 56 - fresh transfer payee mismatch: first read stays held
+  ---
+  duration_ms: 95.575536
+  type: 'test'
+  ...
+# Subtest: fresh transfer payee mismatch: preserve delivery
+ok 57 - fresh transfer payee mismatch: preserve delivery
+  ---
+  duration_ms: 83.876203
+  type: 'test'
+  ...
+# Subtest: fresh transfer amount mismatch is indeterminate
+ok 58 - fresh transfer amount mismatch is indeterminate
+  ---
+  duration_ms: 1.011269
+  type: 'test'
+  ...
+# Subtest: fresh transfer amount mismatch: first read stays held
+ok 59 - fresh transfer amount mismatch: first read stays held
+  ---
+  duration_ms: 89.067091
+  type: 'test'
+  ...
+# Subtest: fresh transfer amount mismatch: preserve delivery
+ok 60 - fresh transfer amount mismatch: preserve delivery
+  ---
+  duration_ms: 94.974619
+  type: 'test'
+  ...
+# Subtest: matching fresh transfer remains present
+ok 61 - matching fresh transfer remains present
+  ---
+  duration_ms: 1.717342
+  type: 'test'
+  ...
+# Subtest: authenticated payment evidence contradiction still rejects
+ok 62 - authenticated payment evidence contradiction still rejects
+  ---
+  duration_ms: 1.07647
+  type: 'test'
+  ...
+# Subtest: present native payment evidence records the source outcome
+ok 63 - present native payment evidence records the source outcome
+  ---
+  duration_ms: 98.181659
+  type: 'test'
+  ...
+1..63
+# tests 63
+# suites 0
+# pass 63
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2631.87258

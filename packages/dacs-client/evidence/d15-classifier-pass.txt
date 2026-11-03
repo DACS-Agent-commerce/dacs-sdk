@@ -1,0 +1,22 @@
+Pre-D15 source: f10db24 (for *first files); destination D15 source: current commit (for *pass files).
+ok 1 - commitmentContradicted: null
+ok 2 - commitmentContradicted: undefined
+ok 3 - commitmentContradicted: a string
+ok 4 - commitmentContradicted: a number
+ok 5 - commitmentContradicted: TypeError("fetch failed")
+ok 6 - commitmentContradicted: a plain Error
+ok 7 - commitmentContradicted: a {category:"permanent"} look-alike
+ok 8 - commitmentContradicted: a {category:"counterparty"} look-alike
+ok 9 - commitmentContradicted: an adapter contradiction (not an SDK fault)
+ok 10 - commitmentContradicted: DacsError (permanent)
+ok 11 - commitmentContradicted: TransientError
+ok 12 - commitmentContradicted: SubstrateError
+ok 13 - commitmentContradicted: UnsupportedCapabilityError (permanent)
+ok 14 - commitmentContradicted: NotImplementedError (permanent)
+ok 15 - commitmentContradicted: CounterpartyError
+ok 16 - commitmentContradicted: only a literal true mark counts
+ok 17 - isDemosSr2Contradiction: only the adapter's marked invalid error
+# tests 17
+# pass 17
+# fail 0
+# skipped 0

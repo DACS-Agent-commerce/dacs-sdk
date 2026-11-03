@@ -15,6 +15,9 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 - **Optionally integrates with** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
 - **Tested against** the canonical conformance vectors in [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard) — the normative source of truth.
 - **Presence oracle update:** see [adoption scope and remaining runtime boundary](./docs/presence-conformance-adoption.md).
+- **Testnet release:** see [About the DACS testnet release](./docs/about-the-testnet-release.md) for what it is in plain
+  terms, and the [TP-1 declaration](./docs/testnet-profile-tp1.md) for the ways it is known to fall short of the
+  Standard so far (composition checks qualify and complete that list).
 
 ## Layering
 
@@ -243,6 +246,15 @@ const seller = await createAgent({
   // and performs the DACS-4 semantic and cryptographic verification itself.
   resolveSettlementEvidenceContext: (input) =>
     resolveAuthenticatedSettlementContext(input),
+  // Also required for DACS-4 PC-2 SettlementEvidence references (CORE §5.1).
+  // Without this callback every PC-2 reference resolves as `unresolved`.
+  // Verify retained receipt evidence and its logical/native addresses,
+  // content hash, transaction, writer and nonce against the same Demos chain
+  // this Agent reads. The host can connect its own DemosAdapter to that chain
+  // and call verifyDemosAnchorReceipt; false/throw alone is indeterminate.
+  // The SDK binds and reads the receipt but does not authenticate it itself.
+  resolveAttestationAnchorReceipt: (input) =>
+    resolveVerifiedAttestationReceipt(input),
   bindings: { index: bindings, publisher: bindings },
 });
 
@@ -556,8 +568,14 @@ state remains the finality authority; an `included`, `confirmed`, or `finalized`
 transaction-body label is accepted only when that status and confirmed-block
 membership agree. RPC time and decoded JSON size are bounded (15 seconds and
 64 MiB by default, both configurable), including the potentially larger
-confirmed-block response. The native-send payload disambiguates the denomination
-fork:
+confirmed-block response.
+
+For TP-1, this description does not establish rejection of an `included`
+transfer whose execution failed: [L2 in the TP-1 declaration](docs/testnet-profile-tp1.md#live-use-rules-tp-1-does-not-meet)
+currently covers the buyer rail only, and a composition review must separately
+qualify the seller observer before delivery.
+
+The native-send payload disambiguates the denomination fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
 are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
@@ -609,18 +627,44 @@ record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. The bridge adds the exact
+`settlementStore`, and `reconcile`. The rail's timing bounds
+`inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
+`nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
+`payDem` to `createPayDemRail` unchanged; see
+[the pay-dem execution gate](./docs/pay-dem-execution.md) for what the rail
+requires of the node's transaction record after inclusion. The bridge adds the exact
 `(railId, jobId, phaseIndex)`, settlement key, network, payer, payee and OS
 amount to every prepared-transfer record, allowing the journal and durable
 settlement log to authenticate the same PC-7 effect. `reconcile` receives that
-`PayDemSettlementRecoveryContext` and must return either an exact
-`PayDemReconciledSettlement` (including the observed `amountOs`) or `null` only
-when authoritative observation proves no transfer for that tuple landed. A
-non-final observation must throw. Even authoritative absence does not revoke a
+`PayDemSettlementRecoveryContext` and returns one of three outcomes: an exact
+`PayDemReconciledSettlement` (including the observed `amountOs` and
+`execution: "executed"` after authenticating the confirmed record and its
+`gcr_edits` debiting the payer and crediting the payee that amount); a bound
+`PayDemReconciledFailure` with `ok: false`, `errorClass: "permanent"`, the exact
+`amountOs` and `failureProof` after authenticating a terminal failed record; or
+`null` only when authoritative observation proves no transfer for that tuple
+landed. Each terminal record must bind the retained hash, signed nonce,
+inclusion block, payer, payee and OS amount. Status-index `included` alone is
+not enough (#338), and neither is a `confirmed` record with absent or empty
+`gcr_edits`, which the node applies as a no-op. Unproven, non-final or
+conflicting observations must throw. Even authoritative absence does not revoke a
 possibly-live old process or signed transaction and therefore does not authorize
 an automatic native-DEM rebroadcast. Cached durable success is reauthenticated
 after every process restart before reuse; missing, absent, or contradictory
 recovery fails closed and never authorizes a broadcast. Every pay-DEM settlement request
+carrying `priorAttempts` bypasses the submit-capable idempotency claim entirely,
+even when its rail log is empty. All retained native attempts must name the same
+hash and network (at most 256 entries). The reconciler receives that canonical
+hash as `context.txHash`; it must load the original prepared-transfer journal and
+authenticate its signed nonce and payment tuple, throwing if the journal is
+missing or conflicting. Retained recovery also requires `readOutcome(key, binding)`
+on the settlement store (and `readOutcome(key)` on its backing log). This read
+must return the immutable recorded outcome or `null` without claiming or renewing
+a generation. The bridge checks the exact payment binding and transaction
+identity before and after the execution read. Conflicting history, cached
+identities, blocks or permanent proofs withhold a result without an outcome write
+or another debit. Missing lookup support fails closed; `null` never grants submit
+authority. Repeat audits always reread execution. Every request
 must carry its exact `phaseIndex`; if `payment.phaseIndex` is also configured,
 the two values must match rather than silently defaulting or dropping the
 configured discriminator. The compatibility defaults remain process-local and
@@ -885,8 +929,35 @@ Public `AttestationRef` values use the DACS-2 §7.5.2
 (`TxRef`) is the DACS-4 §9.3 discriminated union, and `SettlementEvidence`
 contains no signed `phaseIndex` (SB-1 derives it from the evidence anchor).
 `verifyBundleCore` resolves normative references through
-`resolveAttestationRef(ref, jobId, parties)` so the signed locator is never
-discarded.
+`resolveAttestationRef(ref, jobId, parties, outcome?)` so the signed locator is
+never discarded. `verifyBundleCore` always passes the bundle's `outcome`, for
+outcome-dependent SR-2 lifecycle gates (DACS-5 SEB-1). The outcome has been
+checked against the supported outcomes but is not authenticated at that point:
+refs resolve even when the bundle signatures fail, and such a bundle is never
+`ok`. It is optional in the type, so existing three-parameter resolvers and
+direct three-argument calls still compile; a resolver called without it must
+apply its strictest gate (`finalized` only). A `null` result is reported
+`missing`. To classify a refusal instead, throw `AttestationRefRejection` with
+disposition `"fail"` (`invalid-binding`), `"error"` (`invalid-shape`) or
+`"indeterminate"` (`unresolved`); any other error propagates.
+
+```ts
+import { AttestationRefRejection, type VerifyBundleDeps } from "@kynesyslabs/dacs";
+
+const resolveAttestationRef: VerifyBundleDeps["resolveAttestationRef"] = async (
+  ref,
+  jobId,
+  parties,
+  outcome, // undefined on a direct three-argument call: use the strictest gate
+) => {
+  const artifact = await myVerifiedStore.read(ref.anchor.locator, outcome);
+  // No qualifying carrier is indeterminate, not absence (CORE §5.1 SR2-12).
+  if (artifact === undefined) {
+    throw new AttestationRefRejection("indeterminate", "no verified carrier");
+  }
+  return artifact; // null only when absence is established
+};
+```
 
 Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
 `{ rail, txHash, kind }` transaction refs are exposed only through the
@@ -1029,11 +1100,47 @@ the consumer's `node_modules`, performs a frozen rematerialization with an empty
 cache and an unreachable loopback registry, and reruns the substrate-free
 `canonical` and `artifacts` imports. CI uploads the
 core tarball and `provenance.json` for the exact checkout SHA. The release-set
-verifier additionally requires byte-identical core, Node host and generator
-tarballs at one version with identical compatibility metadata. It emits exact
+verifier additionally requires byte-identical tarballs at one version, with
+identical compatibility metadata, for every package of the five-package policy
+that is ready; a private or absent package is reported "not ready" and skipped.
+With `--strict`, which only the gated publish workflow passes, it refuses unless
+all five are releasable at the planned version and every package's internal
+dependencies come earlier in the policy order. It emits exact
 checksums, one CycloneDX SBOM per package and combined release provenance. These
 are qualified package candidates, not evidence that the packages were published
 to npm.
+
+Registry/container acceptance writes evidence to the new directory passed to
+`--output-dir`. Handled failures after preflight (an exit, SIGINT or SIGTERM)
+retain partial evidence in that directory. Power loss or SIGKILL can leave the
+reserved directory empty, and the temporary copies staged under the runner's
+temporary directory may not survive a reboot. Run on a host with Docker/Compose,
+curl 8.4+ and GNU mv. Create the parent first and choose a fresh output
+directory for each run:
+
+```sh
+mkdir -p registry-container-artifacts
+review_parent=$(mktemp -d registry-container-artifacts/review.XXXXXX)
+npm run acceptance:registry-container -- --output-dir "$review_parent/evidence"
+```
+
+The ignored `registry-container-artifacts/` path keeps evidence out of the Git
+worktree. A directory outside the repository also works; other in-repository
+paths appear as untracked files.
+Acceptance requires explicit completion and consistent policy outcomes. npm HTTP
+responses have byte and time limits. Commands wrapped with `run_bounded` have
+deadlines. Failed runs retain collected evidence, including structured
+`doctor.json`, `doctor.log` and the recorded exit status when available.
+The acceptance audits the generated consumer's tree by advisory ID against
+`scripts/registry-container-audit-baseline.json`. On pull requests an advisory
+ID outside that baseline is a warning, unless it is high or critical on a
+direct dependency of the consumer; the scheduled drift job, manual runs and
+release paths fail on it (see the audit policy in [SECURITY.md](./SECURITY.md)).
+`Publish gated npm prerelease` publishes only after that acceptance passes with
+drift enforced. It replaces `publish-prerelease.yml`, which older refs still
+contain, so publication credentials must belong only to the new workflow and its
+`npm-prerelease-gated` environment (owner steps in the runbook below).
+Production publication remains blocked by #191.
 
 Maintainer-controlled prerelease publication and first-release credential
 bootstrap are documented in

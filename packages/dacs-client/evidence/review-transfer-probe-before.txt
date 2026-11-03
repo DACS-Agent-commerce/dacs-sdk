@@ -1,0 +1,62 @@
+(node:6) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:13) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# \# consumer result {"disposition":"rejected","authenticated":true,"reason":"native-evidence-observed-tuple-time-or-commitment-mismatch"}
+# \# control result present
+# \# stored {"status":"settled_verified","stage":"native-payment-evidence-held","delivery":null,"lastEvent":"protocol_native-evidence","outcome":"held","reason":"native-evidence-observed-tuple-time-or-commitment-mismatch"}
+# (node:13) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+# Subtest: evidence consumer: a fresh transfer read whose time differs is reported as an authenticated rejection
+not ok 1 - evidence consumer: a fresh transfer read whose time differs is reported as an authenticated rejection
+  ---
+  duration_ms: 11.066924
+  type: 'test'
+  location: 'reviewer-probes/tuple-lowering.test.mjs:66:1'
+  failureType: 'testCodeFailure'
+  error: 'a single-node transfer read is not an authenticated contradiction'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: true
+  operator: 'notStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://reviewer-probes/tuple-lowering.test.mjs:75:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: delivered purchase: recheck with a differing fresh transfer time keeps delivered
+not ok 2 - delivered purchase: recheck with a differing fresh transfer time keeps delivered
+  ---
+  duration_ms: 213.852853
+  type: 'test'
+  location: 'reviewer-probes/tuple-lowering.test.mjs:78:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    an unauthenticated transfer read does not lower verified delivery
+    + actual - expected
+
+    + 'native-payment-evidence-held'
+    - 'delivered'
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 'delivered'
+  actual: 'native-payment-evidence-held'
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://reviewer-probes/tuple-lowering.test.mjs:98:10)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 0
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1422.706698

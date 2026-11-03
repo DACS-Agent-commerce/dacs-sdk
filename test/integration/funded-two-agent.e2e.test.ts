@@ -1135,7 +1135,7 @@ async function runNoWritePreflight(env: LiveEnv, funded = false): Promise<Prefli
   });
   const listingId = `funded-${env.LIVE_E2E_RUN_ID}`;
   const listingPrefix = logicalToStorageProgramName(
-    listingAddress(env.SELLER_DID, listingId, "v"),
+    listingAddress(env.SELLER_DID, listingId, 0).slice(0, -1),
   );
   const listingName = logicalToStorageProgramName(
     listingAddress(env.SELLER_DID, listingId, 1),

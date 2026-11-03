@@ -77,7 +77,9 @@ describe("CORE CF-5 exact-byte admission", () => {
     expect(() => admitRawJson(Buffer.from("null"), { maxBytes: 3 }))
       .toThrow(/BYTE-LIMIT-EXCEEDED/);
     expect(admitRawJson(Buffer.from("null"), { maxBytes: 2_097_152 })).toBeNull();
-    for (const maxBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_097_153]) {
+    expect(admitRawJson(Buffer.from("null"), { maxBytes: 4_194_304 })).toBeNull();
+    expect(admitRawJson(Buffer.from("null"), { maxBytes: 10_000_000 })).toBeNull();
+    for (const maxBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 10_000_001]) {
       expect(() => admitRawJson(Buffer.from("0"), { maxBytes })).toThrow(TypeError);
     }
     for (const options of [null, "", [], { maxBytes: "1" }]) {
@@ -86,6 +88,13 @@ describe("CORE CF-5 exact-byte admission", () => {
         options as unknown as Readonly<RootAdmissionOptions>,
       )).toThrow(TypeError);
     }
+  });
+  it("applies the largest explicit byte budget at its exact boundary", () => {
+    const atLimit = Buffer.from(`"${"a".repeat(9_999_998)}"`);
+    expect(atLimit.byteLength).toBe(10_000_000);
+    expect(admitRawJson(atLimit, { maxBytes: 10_000_000 })).toBe("a".repeat(9_999_998));
+    expect(() => admitRawJson(Buffer.concat([atLimit, Buffer.from(" ")]), { maxBytes: 10_000_000 }))
+      .toThrow(/BYTE-LIMIT-EXCEEDED/);
   });
   it("charges a Buffer subview rather than its backing allocation", () => {
     const backing = Buffer.alloc(1_048_577, 0x20);

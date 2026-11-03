@@ -1,0 +1,25 @@
+# Subtest: late same-hash failed cannot overwrite settled_verified
+not ok 1 - late same-hash failed cannot overwrite settled_verified
+# Subtest: late same-hash unknown cannot overwrite settled_verified
+not ok 2 - late same-hash unknown cannot overwrite settled_verified
+# Subtest: late same-hash failed cannot overwrite payment_mismatch
+not ok 3 - late same-hash failed cannot overwrite payment_mismatch
+# Subtest: late same-hash unknown cannot overwrite payment_mismatch
+not ok 4 - late same-hash unknown cannot overwrite payment_mismatch
+# Subtest: late same-hash failed cannot overwrite superseded
+not ok 5 - late same-hash failed cannot overwrite superseded
+# Subtest: late same-hash unknown cannot overwrite superseded
+not ok 6 - late same-hash unknown cannot overwrite superseded
+# Subtest: native competing-lane marker persists through retry and restart
+not ok 7 - native competing-lane marker persists through retry and restart
+# Subtest: native supersession remains unresolved after pointer
+not ok 8 - native supersession remains unresolved after pointer
+# Subtest: native supersession remains unresolved after owner
+not ok 9 - native supersession remains unresolved after owner
+# Subtest: native supersession remains unresolved after write-refused
+not ok 10 - native supersession remains unresolved after write-refused
+1..10
+# tests 10
+# pass 0
+# fail 10
+# skipped 0
