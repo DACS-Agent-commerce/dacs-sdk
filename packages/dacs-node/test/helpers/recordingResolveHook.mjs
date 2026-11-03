@@ -1,35 +1,36 @@
-// Test-only `node --import` hook. It appends one JSON line per module
-// resolution to the file named by DACS_RESOLVE_LOG and refuses `better-sqlite3`
-// with ERR_MODULE_NOT_FOUND, so a test can prove which specifiers an import
-// requests and that the optional SQLite driver is never needed.
 import { appendFileSync } from "node:fs";
 import { register } from "node:module";
 import { isMainThread } from "node:worker_threads";
 
+/**
+ * Test-only module hook. Load it with `node --import <this file>` and set
+ * `DACS_RESOLVE_LOG` to a file path. Every import resolution is appended as
+ * `resolve <specifier>` and as one JSON line `{"specifier","parentURL"}`;
+ * every module actually loaded is appended as `load <url>`. Resolving
+ * `better-sqlite3` throws `ERR_MODULE_NOT_FOUND`, as in an install that
+ * omitted optional dependencies, so a test can prove which specifiers an
+ * import requests and that the optional SQLite driver is never needed.
+ */
 const REFUSED_SPECIFIER = "better-sqlite3";
 
-if (isMainThread) {
-  register(import.meta.url, {
-    data: { logPath: process.env.DACS_RESOLVE_LOG },
-  });
-}
-
-let logPath;
-
-export function initialize(data) {
-  logPath = data.logPath;
+function record(line) {
+  appendFileSync(process.env.DACS_RESOLVE_LOG, `${line}\n`);
 }
 
 export async function resolve(specifier, context, nextResolve) {
-  appendFileSync(
-    logPath,
-    `${JSON.stringify({ specifier, parentURL: context.parentURL ?? null })}\n`,
-  );
+  record(`resolve ${specifier}`);
+  record(JSON.stringify({ specifier, parentURL: context.parentURL ?? null }));
   if (specifier === REFUSED_SPECIFIER) {
-    throw Object.assign(
-      new Error(`Cannot find package '${REFUSED_SPECIFIER}' (refused by test hook)`),
-      { code: "ERR_MODULE_NOT_FOUND" },
-    );
+    const error = new Error(`Cannot find package '${REFUSED_SPECIFIER}'`);
+    error.code = "ERR_MODULE_NOT_FOUND";
+    throw error;
   }
   return nextResolve(specifier, context);
 }
+
+export async function load(url, context, nextLoad) {
+  record(`load ${url}`);
+  return nextLoad(url, context);
+}
+
+if (isMainThread) register(import.meta.url);
