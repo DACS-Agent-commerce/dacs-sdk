@@ -403,7 +403,7 @@ function captureCommitmentBindingInput(
   const agreement = ownDataProperty(value, "agreement", label);
   const verifiedListing = ownDataProperty(value, "verifiedListing", label);
   const session = ownDataProperty(value, "session", label);
-  const captured = snapshotCanonicalJson(
+  const captured = snapshotCanonicalJsonRead(
     { agreement, verifiedListing, session },
     `${label} artifacts`,
   ) as CapturedCommitmentBindingInput;
