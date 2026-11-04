@@ -315,6 +315,8 @@ test('host refuses malformed options before opening any state',async t=>{
  const loose=await mkdtemp(join(tmpdir(),'TEST-host-loose-'));await chmod(loose,0o755);
  const link=join(root,'link');await symlink(dataDirectory,link);
  const file=join(root,'regular');await writeFile(file,'TEST');
+ // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
+ const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
  const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},tp1Network:testNetwork()});
  const cases=[
@@ -331,6 +333,7 @@ test('host refuses malformed options before opening any state',async t=>{
   ['non-private dataDirectory',{...base(),dataDirectory:loose},/existing private \(mode 0700\) directory/],
   ['symbolic link dataDirectory',{...base(),dataDirectory:link},/existing private \(mode 0700\) directory/],
   ['regular file dataDirectory',{...base(),dataDirectory:file},/existing private \(mode 0700\) directory/],
+  ...notExactly0700.map(([mode,directory])=>[`dataDirectory with mode ${mode.toString(8)}`,{...base(),dataDirectory:directory},/existing private \(mode 0700\) directory/]),
   ['observeDemosTransfer is not a function',{...base(),observeDemosTransfer:5},/must be functions/],
   ['now is not a function',{...base(),now:5},/must be functions/],
   ['mismatched payment evidence pair',{...base(),nativePaymentEvidence:{anchorEvidence:()=>{}}},/payment-evidence anchor and reconcilePaymentEvidence/],
