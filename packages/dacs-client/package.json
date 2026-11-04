@@ -7,7 +7,5 @@
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
   },
-  "files": [
-    "src/util/guarded-sqlite.mjs"
-  ]
+  "files": []
 }
