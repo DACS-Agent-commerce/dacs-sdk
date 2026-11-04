@@ -850,6 +850,8 @@ Part 07's earlier iteration commits stay reachable and their inventory rows are 
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) | deleted |
 | D11 | fix(client): D11 rebuild part 07 package pins from one manifest | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 4c8be31a5c5efea2b63374e7d3af501003e92c3d |
+| D11 | fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 90d7c74c97c9d236baf685c7481a4b0f8c3d1300 |
 
 ## Complete commit and file inventory
 
@@ -2491,6 +2493,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/scripts/import-cut-map.mjs:1` |
 | fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | fix(client): D11 rebuild part 07 package pins from one manifest | `scripts/release-policy.json:1` |
+| fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
