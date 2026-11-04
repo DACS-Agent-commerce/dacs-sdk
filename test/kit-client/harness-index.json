@@ -25,7 +25,7 @@
     "today": "checkWireRequest refuses a delegated context request with no Agreement: peer_delegation_agreement_required 409 (K2-PRE-1)",
     "target": "checkWireRequest refuses wire_route_requires_preagreement 500 (K2-T8) and admitPreAgreementRequest admits the valid request with no journal mutation until reserve() (K2-T1)",
     "owner": "P03b",
-    "flippedBy": null
+    "flippedBy": "P03b"
   },
   {
     "id": "K12-H4-host",

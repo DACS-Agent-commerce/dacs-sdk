@@ -7,7 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, checkWireRequest, openWireEnvelope, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, admitPreAgreementRequest, checkWireRequest, openWireEnvelope, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { LOCAL } from '../../packages/dacs-client/test/fixtures/tp1-authority-reader.mjs';
 import { BUYER, JOB, LISTING_PIN, SELLER, SESSION, T0, bindWireProfile, contextScope, contextScopeHash, publicKeyHex } from './fixtures.mjs';
 import { clientAuthFor, composedKitHost, postHeader, postSigned, wireSignedRequest } from './kit-host.mjs';
@@ -45,13 +45,18 @@ async function journalDirectory(t) {
   return directory;
 }
 
-test('K12-H4-wire today: checkWireRequest refuses a delegated context request with no Agreement (peer_delegation_agreement_required, K2-PRE-1)', async (t) => {
+test('K12-H4-wire target: checkWireRequest refuses the delegated context request (wire_route_requires_preagreement) and admitPreAgreementRequest admits it with no journal mutation until reserve()', async (t) => {
   assert.equal(JOB, K1_JOB);
   assert.ok(contextScopeHash.startsWith(K1_S1_HASH_PREFIX), 'the retained hash is K1-S1\'s');
   const directory = await journalDirectory(t);
   const { opened, check } = await delegatedRequest(DACS_SELLER_HTTP_PATHS.context, { scope: contextScope, buyerIdentityBundle: { presentedBy: BUYER.claim } });
-  await assert.rejects(checkWireRequest(opened, { ...check, requestJournal: openWireRequestJournal(directory) }), { code: 'peer_delegation_agreement_required', status: 409 });
-  assert.deepEqual(reservationFiles(directory), [], 'nothing was reserved');
+  const preAgreement = { ...check, route: 'context', retained: { ...check.retained, accepted: false }, requestJournal: openWireRequestJournal(directory) };
+  await assert.rejects(checkWireRequest(opened, preAgreement), { code: 'wire_route_requires_preagreement', status: 500 });
+  const admitted = await admitPreAgreementRequest(opened, preAgreement);
+  assert.deepEqual(reservationFiles(directory), [], 'nothing was reserved during admission');
+  assert.equal(typeof admitted.reserve, 'function');
+  assert.equal((await admitted.reserve()).state, 'new');
+  assert.equal(reservationFiles(directory).filter((name) => name.startsWith('k-')).length, 1);
 });
 
 test('K12-H4-wire control: the same delegated request on proposals with a host-owned draft is admitted', async (t) => {

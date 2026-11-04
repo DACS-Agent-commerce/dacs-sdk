@@ -123,6 +123,9 @@ export async function admitWireRoute(wire, agent, { header, method, path, rawBod
   const checked = await admit(opened, check());
   if (invalidDraft !== null) throw invalidDraft;
   if (records === null) throw new SellerTransportError('peer_unknown_job', 404);
+  // A read reserves nothing, so the store's refusal of an absent tuple never meets it: a job the agent holds without a kept
+  // tuple (one retained before tuples were kept) is not answered, as the effect routes refuse it at their reservation.
+  if (isReadRoute(path) && wire.store.purchaseProfile(request.jobId) === null) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
   validateBody(request, checked.body);
   return { body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, recheck: () => authorizeWireRequest(opened, check()) };
 }

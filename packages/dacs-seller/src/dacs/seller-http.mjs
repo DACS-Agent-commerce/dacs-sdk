@@ -366,7 +366,7 @@ export class SellerRefusedError extends Error {
  * an unhandled rejection. A synchronous adapter that throws is the same refusal as an asynchronous one.
  */
 function verifiedWithin(verify, timeLeftMs) {
-  return boundedCall(verify, { timeoutMs: Math.max(1, Math.ceil(timeLeftMs)) }).result;
+  return boundedCall(verify, { timeoutMs: Math.max(1, Math.ceil(timeLeftMs)) });
 }
 
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {

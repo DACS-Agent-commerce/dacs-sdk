@@ -15,7 +15,7 @@ import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
-  admitWireJson, isAdmittedValue, ownedBytes, claimKey, cloneJson, fail, hasKeys, HASH, isClaim, isListingPin, isUint, lacksProfile, ownedArtifact, ownedConfig, ownedFields,
+  admitWireJson, isAdmittedValue, ownedBytes, claimKey, cloneJson, fail, hasKeys, HASH, isClaim, isListingPin, isUint, lacksProfile, ownedArtifact, ownedConfig, ownedFields, withCanonicalClaims,
   sameCanonical, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
 
@@ -130,10 +130,12 @@ export async function verifySellerSessionDelegation(supplied: unknown, scope: De
   const delegation = ownedArtifact(admitted, "peer_delegation_invalid");
   await assertTp1Binding(binding, local);
   if (!hasKeys(delegation, ["payload", "signature"])) return fail("peer_delegation_invalid");
-  const p = delegation.payload as SellerSessionDelegationPayload;
-  if (lacksProfile(p, FIELDS)) fail("tp1_profile_missing", 409);
+  const received = delegation.payload as SellerSessionDelegationPayload;
+  if (lacksProfile(received, FIELDS)) fail("tp1_profile_missing", 409);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
-  if (hasKeys(p, FIELDS)) await assertPeerProfile(p.profile, binding as Tp1Binding);
+  if (hasKeys(received, FIELDS)) await assertPeerProfile(received.profile, binding as Tp1Binding);
+  // DACS-1 reader rule: a `DID:` scheme resolves as `did:` and is canonicalised before hashing, signing or comparison (CF-2), so the signature is verified over the canonical copy.
+  const p = withCanonicalClaims(received, ["buyer", "seller"]);
   const bytes = payloadBytes(p);
   if (!verifyEd25519(bytes, walletSignatureBytes(delegation.signature), claimKey(p.buyer))) fail("peer_delegation_signature_invalid");
   // The trusted reader is asked only about a delegation the buyer's wallet signed.
