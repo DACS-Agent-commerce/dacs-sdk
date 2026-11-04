@@ -89,14 +89,20 @@ const normaliseAttempt = ({ nonce, jobId, buyer, challengeScopeHash, presentatio
   nonce, jobId, buyer, path, challengeScopeHash: challengeScopeHash ?? null, presentationHash: isHash(presentationHash) ? presentationHash : null,
 });
 
-// Whether the attempt is the row's own party: its job, scope and canonical buyer, on the path of the row's origin.
-const ORIGIN_PATHS = Object.freeze({ route: 'context', operator: 'proposal' });
-const isRowParty = (row, input) => input.path === ORIGIN_PATHS[row.origin] && input.jobId === row.jobId
+// Whether the attempt is the row's own party: its job, scope and canonical buyer.
+const isRowParty = (row, input) => input.jobId === row.jobId
   && input.challengeScopeHash === row.challengeScopeHash && sameCanonicalClaimIdentity(row.buyer, input.buyer);
+
+// The path a row is attempted and answered on: that of its origin. The one other path is a continuation: the context
+// step of a route row, read on `proposal` while it validates (`attempted`) or once it is `accepted`, and never written.
+const ORIGIN_PATHS = Object.freeze({ route: 'context', operator: 'proposal' });
+const CONTINUED_STATES = Object.freeze(['attempted', 'accepted']);
+const onOriginPath = (row, input) => input.path === ORIGIN_PATHS[row.origin];
+const isContinuation = (row, input) => row.origin === 'route' && input.path === 'proposal' && CONTINUED_STATES.includes(row.state);
 
 // K1 attempt step 7 on an `issued` row: the code the first attempt fails with, or null when it may validate.
 function firstAttemptRefusal(row, input, time) {
-  if (!isRowParty(row, input)) return 'context_challenge_mismatch';
+  if (!onOriginPath(row, input) || !isRowParty(row, input)) return 'context_challenge_mismatch';
   if (time >= row.expiresAt) return 'context_challenge_expired';
   return input.presentationHash === null ? 'context_challenge_attempt_invalid' : null;
 }
@@ -112,9 +118,11 @@ const REPLAY_ANSWERS = Object.freeze({
   failed: (row) => refused('context_challenge_failed', 409, row.failure?.code),
 });
 
-// A row past `issued` answers only its own party presenting the stored presentation hash; anyone else, or a state with no answer, finds it consumed.
+// A row past `issued` answers only its own party presenting the stored presentation hash, on its origin path or its one continuation;
+// anyone else, any other path, or a state with no answer, finds it consumed.
 function replayAnswer(row, input) {
-  const matched = isRowParty(row, input) && input.presentationHash === row.presentationHash && Object.hasOwn(REPLAY_ANSWERS, row.state);
+  const matched = isRowParty(row, input) && (onOriginPath(row, input) || isContinuation(row, input))
+    && input.presentationHash === row.presentationHash && Object.hasOwn(REPLAY_ANSWERS, row.state);
   return matched ? REPLAY_ANSWERS[row.state](row) : refused('context_challenge_consumed');
 }
 
@@ -131,10 +139,12 @@ function replayAnswer(row, input) {
  * it, the guard and the stop check also run before a reused live nonce is returned.
  * `attempt(input)` returns `{ kind: 'validate', owner }`, `{ kind: 'continuation', accepted }` or
  * `{ kind: 'refused', code, status, cause? }`. The row's party is its job, scope (absent counts as null) and
- * canonical buyer on the path of its origin (`context` for a route row, `proposal` for an operator row).
+ * canonical buyer, with the presentation hash it stored. A row's path is that of its origin (`context` for a
+ * route row, `proposal` for an operator row), plus one continuation: a route row read on `proposal`, only while
+ * `attempted` or once `accepted`, so the proposal continues the context step's acceptance.
  * An `accepted`, `attempted` or `failed` row answers its continuation, `context_attempt_pending` or
- * `context_challenge_failed` with the stored cause only to its party with the stored presentation hash;
- * anyone else gets `context_challenge_consumed` and nothing is written. A first attempt by anyone but the
+ * `context_challenge_failed` with the stored cause only to its party on one of its paths;
+ * anyone else, or any other path or state, gets `context_challenge_consumed` and nothing is written. A first attempt by anyone but the
  * party fails the row as `context_challenge_mismatch`, except a route row on `proposal`, which is refused
  * unchanged. Throws if the row changed under the lock. `accept` and `recordFailed` return whether the row was
  * `attempted` by that owner and changed; their `Within` forms need an open transaction and open none.
