@@ -71,7 +71,7 @@ function boundedReceiptReader(reader) {
   const chain = typeof reader === 'function' && !types.isProxy(reader) ? Object.getOwnPropertyDescriptor(reader, 'chainIdentity') : undefined;
   if (chain === undefined || !Object.hasOwn(chain, 'value')) return reader;
   const bounded = async (...args) => {
-    try { return await boundedCall(() => reader(...args), { timeoutMs: COMMITMENT_RECEIPT_TIMEOUT_MS }).result; } catch (cause) { throw new WireError('commitment_unverified', 503, undefined, cause); }
+    try { return await boundedCall(() => reader(...args), { timeoutMs: COMMITMENT_RECEIPT_TIMEOUT_MS }); } catch (cause) { throw new WireError('commitment_unverified', 503, undefined, cause); }
   };
   return Object.assign(bounded, { chainIdentity: chain.value });
 }

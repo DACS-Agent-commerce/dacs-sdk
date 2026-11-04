@@ -188,7 +188,6 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
         }
         // Payment evidence is taken only on an assembled settlement profile, whichever auth opened the request.
-        // Payment evidence is taken only on an assembled settlement profile, whichever auth opened the request.
         if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
         // The context step reads the journal first and runs its admission only
         // for new work, recording the start in the reserve transaction. A wire request's
