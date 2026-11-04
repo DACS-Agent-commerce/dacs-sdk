@@ -279,6 +279,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     return canonicalize(profile);
   };
   const keptProfileText = (jobId) => get('SELECT profile FROM kit_purchase_profiles WHERE job = ?', jobId)?.profile ?? null;
+  // A new wire job's row and its kept tuple, in the caller's transaction: the tuple references its job row,
+  // and the row carries the identity the old reserve path compares a later request against.
+  const keepJobWithin = (p, profile, time) => {
+    const profileText = purchaseProfileText(profile);
+    run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, canonicalize(requestIdentity(p)));
+    run('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)', p.jobId, profileText, time);
+  };
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
   transaction(() => {
@@ -365,7 +372,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // A job is retained once it has a kept tuple, an old-path job row or a context admission.
   const retainedJobs = () => `SELECT job FROM kit_purchase_profiles UNION SELECT job FROM peer_jobs${admissions() ? ' UNION SELECT job FROM peer_context_admissions' : ''}`;
   const reservationAccounting = createReservationAccounting({
-    store: { get, run, transaction, keptProfileText,
+    store: { get, run, transaction, keptProfileText, keepJobWithin,
       hasJobWithin: jobId => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
       jobCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${retainedJobs()})`).n },
     now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow, nonceWindowMs },

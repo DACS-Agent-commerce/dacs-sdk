@@ -69,7 +69,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     run(`INSERT INTO kit_reservations (key, buyer, jobId, operationId, route, allocationId, class, requestHash, at, state, rev)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserving', 1)`, key, payload.buyer, payload.jobId, operationId, route,
     capacity.allocationId, capacity.class, requestHash, at);
-    if (fresh) store.keepPurchaseProfileWithin(payload.jobId, keepProfile, at);
+    if (fresh) store.keepJobWithin(payload, keepProfile, at);
   }
 
   // Compare-and-swap on the inserted revision: a slower or repeated path cannot overwrite a newer result.
@@ -101,7 +101,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
 
   return {
     /**
-     * Charge once, commit the tuple and payment claim, then call checked.reserve and record its result.
+     * Charge once, commit a new job's row with its tuple and the payment claim, then call checked.reserve and record its result.
      * Returns the wire effect (state new, recover or completed). Throws the reservation's own refusal, after
      * recording it as refused{code}; any other failure leaves the charged row `reserving`, never refunded.
      * Throws before any row on an absent keepProfile, an unsafe clock, a full buyer window, job or context

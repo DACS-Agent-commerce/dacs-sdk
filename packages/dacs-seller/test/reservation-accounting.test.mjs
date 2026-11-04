@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect, inspectWireOperation, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
 import { createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
@@ -192,9 +192,36 @@ test('P11b1-T12 the ported job and nonce capacity cases pass at accounting level
 test('accounting admits a context retry for a job whose context record is already counted', async t => {
   const f = await accountingFixture(t, { maxContextRecords: 1 });
   admitContextRecord(f, JOB);
-  f.store().keepPurchaseProfileWithin(JOB, FIXTURE_PROFILE, T0);
+  f.db.prepare('INSERT INTO peer_jobs VALUES (?, ?)').run(JOB, canonicalize({ retained: 'TEST job context' }));
+  f.db.prepare('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)').run(JOB, canonicalize(FIXTURE_PROFILE), T0);
   assert.equal((await f.reserve(f.args(f.payload({ path: CONTEXT }), { contextStart: true }))).state, 'new');
-  assert.equal(f.rows().length, 1);
+  assert.equal(f.rows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.jobRows().length, 1);
+});
+
+test('accounting keeps a fresh job row and its tuple together, with the identity the old reserve path compares', async t => {
+  const f = await accountingFixture(t);
+  const payload = f.payload();
+  await f.reserve(f.args(payload, { newJob: true }));
+  const { jobId, buyer, seller, listingPin, agreementHash } = payload;
+  assert.deepEqual(f.jobRows(), [{ job: JOB, context: canonicalize({ jobId, buyer, seller, listingPin, agreementHash }) }]);
+  assert.equal(f.tuples(), 1);
+  f.reopen();
+  await f.reserve(f.args(f.payload({ path: PAYMENTS })));
+  assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
+});
+
+test('accounting leaves no job row when the tuple write after it fails', async t => {
+  const f = await accountingFixture(t);
+  f.db.exec("CREATE TRIGGER no_tuple BEFORE INSERT ON kit_purchase_profiles BEGIN SELECT RAISE(ABORT, 'TEST tuple write failed'); END");
+  await assert.rejects(f.reserve(f.args(undefined, { newJob: true })), /TEST tuple write failed/);
+  f.reopen(); f.assertEmpty();
+});
+
+test('accounting leaves no tuple or reservation when the job row write fails', async t => {
+  const f = await accountingFixture(t);
+  f.db.exec("CREATE TRIGGER no_job BEFORE INSERT ON peer_jobs BEGIN SELECT RAISE(ABORT, 'TEST job write failed'); END");
+  await assert.rejects(f.reserve(f.args(undefined, { newJob: true })), /TEST job write failed/);
+  f.reopen(); f.assertEmpty();
 });
 
 test('accounting refuses a newJob that disagrees with the store before any row', async t => {
