@@ -5824,6 +5824,17 @@
       ]
     },
     {
+      "delta": "D18",
+      "subject": "delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/bound-terms-mismatch.test.mjs",
+          "before": null,
+          "after": "065eeb0112947f2736a21250173b49ecac6e0393"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P16a1a dispatch history on the durable journal and the actor fence",
       "files": [
