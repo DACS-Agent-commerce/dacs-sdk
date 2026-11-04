@@ -62,11 +62,6 @@
       "count": 2
     }
   },
-  "packages/dacs-client/src/dacs/seller-transport-auth.mjs": {
-    "no-unused-vars": {
-      "count": 4
-    }
-  },
   "packages/dacs-client/src/devnet-demo/native-delivery.mjs": {
     "no-unused-vars": {
       "count": 2

@@ -68,6 +68,12 @@ Passive: none
 - `OFFLINE_AGREEMENT_MODE` and `DEVNET_NATIVE_COMMITMENT_MARKER` are constants. `isOfflineWalletAgreement` returns a boolean; `deriveStorageAddress` returns text and throws `TypeError` for a non-text owner.
 - Every other export states its own contract in its doc comment. Failures are the exported error classes (`OperationError`, `NotWiredError`, `OutboundError`, the seller and wallet errors), which keep their cause. No export hands out a fixture identity, a simulation header or an unqualified chain reader.
 
+## Seller transport composition
+
+`createSourceDemoSellerTransport({authority, sessionSignerFor, sessionPolicyFor, endpointProofFor})` takes three functions of the purchase: the session signer `{claim, sign}`, the expiry policy `{expiresAt}` and the endpoint proof that the wire's `verifyEndpointProof` returned (verified with the buyer's own commitment receipt reader). The authority still needs a `TEST-` label.
+Requests, delegation bytes and received response bytes go through `@kynesyslabs/dacs/wire` under the purchase's kept TP-1 profile. The client saves the delegation payload before it returns the wallet message, stores the wallet signature as canonical base64url, and refuses a purchase prepared under the old transport declaration with `seller_transport_changed`.
+Payment and bundle requests do not carry the finalized commitment yet, so the wire refuses them before signing.
+
 ## Factory integration
 
 Supply application inputs through host, including a synchronous operations-store factory. On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.

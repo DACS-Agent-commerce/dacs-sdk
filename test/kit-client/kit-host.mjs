@@ -6,7 +6,8 @@ import { sha256Hex } from '@kynesyslabs/dacs';
 import { commitmentFixture } from '../../packages/dacs-seller/test/helpers/commitment-fixture.mjs';
 import { NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { startSellerHost } from '../../packages/dacs-seller/src/host.mjs';
-import { createSellerTransportClientAuth, SELLER_TRANSPORT_HEADER } from '../../packages/dacs-client/src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
+import { SELLER_TRANSPORT_HEADER } from '../../packages/dacs-client/src/dacs/seller-transport-auth.mjs';
 
 /** Starts the kit's composed host over the kit's fixture capabilities; both are released when the test ends, whether it passes or fails. */
 export async function composedKitHost(t) {
@@ -21,7 +22,7 @@ export async function composedKitHost(t) {
   return { fixture, host, dataDirectory };
 }
 
-/** The client's request signer for the fixture's buyer, addressed to `host`'s seller and Listing. */
+/** Legacy buyer signing fixture for the unflipped kit host cases. */
 export const clientAuthFor = (host) => createSellerTransportClientAuth({ buyerSigner: { claim: buyer.claim, sign: buyer.signBytes }, seller: seller.claim,
   resolveJob: () => ({ listingPin: host.listingPin, agreementHash: sha256Hex('kit-client-host-agreement') }), now: () => NOW });
 

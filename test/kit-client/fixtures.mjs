@@ -10,7 +10,7 @@ import { testWallet } from '../../packages/dacs-seller/test/helpers/protocol-fix
 import { fixtureListing } from '../../packages/dacs-seller/test/fixtures/listings.mjs';
 import { agreementInput } from '../../packages/dacs-seller/src/dacs/purchase-protocol.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore, sellerContextScopeHash } from '../../packages/dacs-seller/src/dacs/seller-transport-auth.mjs';
-import { createSellerTransportClientAuth } from '../../packages/dacs-client/src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportClientAuth } from '../../packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs';
 
 export const T0 = Date.UTC(2026, 9, 27, 12);
 export const BUYER = testWallet(0x01);
@@ -96,7 +96,7 @@ export async function sellerTransportPair(t) {
   const serverAuth = createSellerTransportServerAuth({ sellerSigner: { claim: SELLER.claim, sign: SELLER.signBytes }, listingPin: LISTING_PIN, store, now: () => T0 });
   const clientAuth = createSellerTransportClientAuth({ buyerSigner: { claim: BUYER.claim, sign: BUYER.signBytes }, seller: SELLER.claim,
     resolveJob: () => ({ listingPin: LISTING_PIN, agreementHash: sha256Hex('kit-client-agreement') }), now: () => T0, nonce: () => REQUEST_NONCE });
-  /** A signed state request from the client's real signer: its payload and header. */
+  /** A legacy signed state fixture for the unflipped kit server cases. */
   const stateRequest = () => {
     const body = { transportIdentity: { jobId: JOB } };
     return clientAuth.request(STATE_PATH, body, JSON.stringify(body));
