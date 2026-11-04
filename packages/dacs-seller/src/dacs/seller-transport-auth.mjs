@@ -264,8 +264,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS peer_nonces (nonce TEXT PRIMARY KEY, request_hash TEXT NOT NULL, effect TEXT NOT NULL, status INTEGER, response TEXT);
     CREATE TABLE IF NOT EXISTS peer_nonce_retention (nonce TEXT PRIMARY KEY, buyer TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS kit_context_reservations (effect TEXT PRIMARY KEY, nonce TEXT NOT NULL UNIQUE, accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)));
-    CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
-    CREATE TRIGGER IF NOT EXISTS kit_purchase_profiles_leave_with_job AFTER DELETE ON peer_jobs BEGIN DELETE FROM kit_purchase_profiles WHERE job = OLD.job; END;
+    CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY REFERENCES peer_jobs(job) ON DELETE CASCADE, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
     CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
     CREATE INDEX IF NOT EXISTS peer_nonces_effect ON peer_nonces(effect);`);
@@ -282,15 +281,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     return canonicalize(profile);
   };
   const keptProfileText = (jobId) => get('SELECT profile FROM kit_purchase_profiles WHERE job = ?', jobId)?.profile ?? null;
-  // No transaction of its own (SA-4): the caller's admitting transaction decides whether the tuple stays.
-  function keepPurchaseProfileWithin(jobId, profile, time = now()) {
-    requireJobId(jobId);
-    const text = purchaseProfileText(profile);
-    if (!uint(time)) fail('peer_clock_invalid', 503);
-    const kept = keptProfileText(jobId);
-    if (kept === null) run('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)', jobId, text, time);
-    else if (kept !== text) fail('tp1_purchase_profile_mismatch', 500);
-  }
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
   transaction(() => {
@@ -418,12 +408,17 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // admission records newer than `since`. It returns the admission time or
     // throws a refusal, which rolls back every row of this request.
     // keepProfile is the TP-1 tuple of a wire reservation. Absent, nothing about the tuple is
-    // read or kept (the old-auth context route). Supplied, its shape is checked, an existing job
-    // must hold exactly that tuple (a dry run included), and a new job keeps it in this
-    // transaction once every capacity and rate check has passed.
+    // read or kept. Supplied, its shape is checked and the context step, which carries no
+    // purchase, is refused. Once the nonce is known not to conflict, and before any answer
+    // (cached, uncertain, retained, dry run or classify), an existing job must hold exactly that
+    // tuple; a job with none is refused too. A new job keeps it with its own row, in this
+    // transaction, once every capacity, rate and admission check has passed. Every refusal is
+    // tp1_purchase_profile_mismatch and rolls back the whole reservation. The kept tuple leaves
+    // with its job.
     reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, keepProfile, challengeNonce = null } = {}) {
       requireJobId(p?.jobId);
       const profileText = keepProfile === undefined ? null : purchaseProfileText(keepProfile);
+      if (profileText !== null && p.path === CONTEXT) fail('tp1_purchase_profile_mismatch', 500);
       if (p.path === CONTEXT) {
         if (challengeNonce !== null && !isHash(challengeNonce)) fail('context_challenge_attempt_invalid', 409);
         requireJobId(body?.scope?.jobId);
@@ -435,8 +430,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const requestHash = sha256Hex(canonicalize(p));
         const nonce = `${p.buyer}:${p.nonce}`;
         const previous = get('SELECT * FROM peer_nonces WHERE nonce = ?', nonce);
+        if (previous && previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
+        const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
+        // The tuple is not part of the request hash, so this comes before a repeated nonce's answer.
+        if (profileText !== null && job && keptProfileText(p.jobId) !== profileText) fail('tp1_purchase_profile_mismatch', 500);
         if (previous) {
-          if (previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
           // A definite earlier no-effect answer belongs to its own nonce,
           // even if a fresh attempt of the same command later succeeds.
           if (previous.response !== null && (previous.status < 500 || previous.effect === NO_EFFECT_KEY)) return { disposition: 'cached', status: previous.status, text: previous.response };
@@ -447,7 +445,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           return { disposition: 'uncertain' };
         }
         const context = canonicalize(requestIdentity(p));
-        const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
         const contextStep = p.path === CONTEXT;
         // The context step is checked against the job's parties and pin only:
         // its agreementHash slot is the context scope hash, not the Agreement.
@@ -456,7 +453,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         // Before the Agreement the job belongs to the buyer of its admission record.
         const admitted = admissions() ? get('SELECT buyer, seller, listing_pin FROM peer_context_admissions WHERE job = ?', p.jobId) : null;
         if (admitted && (admitted.buyer !== p.buyer || admitted.seller !== p.seller || admitted.listing_pin !== canonicalize(p.listingPin))) fail('peer_job_conflict', 409);
-        if (profileText !== null && job && keptProfileText(p.jobId) !== profileText) fail('tp1_purchase_profile_mismatch', 500);
         const effectKey = effectIdentity(p);
         if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
         // The SDK buyer coordinator reconciles before publishing a proposal.
@@ -528,7 +524,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         reclaimNonces();
         if (creates) db.exec(CONTEXT_ADMISSIONS);
         if (newJob) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
-        if (newJob && profileText !== null) keepPurchaseProfileWithin(p.jobId, keepProfile, time);
+        if (newJob && profileText !== null) run('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)', p.jobId, profileText, time);
         run('INSERT INTO peer_nonces VALUES (?, ?, ?, NULL, NULL)', nonce, requestHash, effectKey);
         run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)', nonce, p.buyer, time, p.expiresAt);
         if (retained) {
@@ -560,7 +556,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       const text = keptProfileText(jobId);
       return text === null ? null : JSON.parse(text);
     },
-    keepPurchaseProfileWithin,
     // The context step's pre-Agreement admission record for a job, or null:
     // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.
     contextAdmission(jobId) {

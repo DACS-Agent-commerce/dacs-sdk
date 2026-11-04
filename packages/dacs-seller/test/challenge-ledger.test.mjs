@@ -66,7 +66,7 @@ const guard = await import('../src/kit-operation-guard.mjs');
 function world(t, { limits = {} } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'challenge-ledger-'));
   const path = join(directory, 'store.sqlite');
-  const control = { now: T0, fault: null, sessionState: () => null, ready: true, stopped: false, ports: 0, counts: { contextRecords: 0, starts: 0, buyerStarts: 0 } };
+  const control = { now: T0, fault: null, sessionState: () => null, ready: true, stopped: false, ports: 0, countReads: 0, counts: { contextRecords: 0, starts: 0, buyerStarts: 0 } };
   const statements = [];
   const handles = [];
   let current;
@@ -94,7 +94,7 @@ function world(t, { limits = {} } = {}) {
     const ledger = createSellerChallengeLedger({
       db, transaction, generation, limits, now: () => control.now,
       sessionState: ({ jobId }) => { control.ports++; return control.sessionState(jobId); },
-      admissionCounts: () => { control.ports++; return { contextRecords: control.counts.contextRecords, starts: control.counts.starts, buyerStarts: () => control.counts.buyerStarts }; },
+      admissionCounts: () => { control.ports++; control.countReads++; return { contextRecords: control.counts.contextRecords, starts: control.counts.starts, buyerStarts: () => control.counts.buyerStarts }; },
       ready: () => control.ready,
       stopped: () => control.stopped,
     });
@@ -369,7 +369,8 @@ cardTest('T13', (t) => {
     w.control.now = T0 + LIFETIME + 1;
     if (reopened) w.reopen('generation-two');
     for (const buyer of [BUYER, EQUIVALENT]) assert.deepEqual(w.quiet(() => w.attempt(first.sessionNonce, { ...route, buyer })), { kind: 'continuation', accepted: record }, label);
-    for (const change of [{ buyer: OTHER }, { jobId: job('other') }, { challengeScopeHash: hash('other scope') }, { presentationHash: hash('other bundle') }]) {
+    const otherPath = operator ? 'context' : 'proposal';
+    for (const change of [{ buyer: OTHER }, { jobId: job('other') }, { challengeScopeHash: hash('other scope') }, { presentationHash: hash('other bundle') }, { path: otherPath }]) {
       assert.deepEqual(w.quiet(() => w.attempt(first.sessionNonce, { ...route, ...change })), refused('context_challenge_consumed'), `${label} ${Object.keys(change)}`);
     }
     for (const buyer of [BUYER, EQUIVALENT, OTHER]) quietRefusal(w, () => issue(buyer), 'context_job_closed', 409);
@@ -384,7 +385,8 @@ cardTest('T13', (t) => {
     assert.deepEqual([EQUIVALENT, BUYER, OTHER].map((buyer) => sameCanonicalClaimIdentity(retained.buyer, buyer)), [true, true, false]);
   }
 
-  // A first attempt that names another job, buyer or scope fails once; the identical retry gets that cause.
+  // A first attempt that names another job, buyer or scope fails once. Only the row's own party gets that cause
+  // back; the stranger repeating its identical attempt finds the nonce consumed.
   const changes = [{ jobId: job('other') }, { buyer: OTHER }, { challengeScopeHash: hash('other scope') }];
   for (const operator of [false, true]) for (const change of changes) {
     const w = world(t);
@@ -393,6 +395,7 @@ cardTest('T13', (t) => {
     w.statements.length = 0;
     assert.deepEqual(w.attempt(sessionNonce, { ...route, ...change }), refused('context_challenge_mismatch'));
     assert.equal(w.mutations().length, 1);
+    assert.deepEqual(w.quiet(() => w.attempt(sessionNonce, { ...route, ...change })), refused('context_challenge_consumed'), `stranger ${Object.keys(change)}`);
     assert.deepEqual(w.quiet(() => w.attempt(sessionNonce, route)), refused('context_challenge_failed', 409, 'context_challenge_mismatch'));
   }
 });
@@ -546,10 +549,11 @@ cardTest('T20', (t) => {
 
   w.reopen('generation-two');
   assert.equal(w.ledger.closeLostValidations(), 2);
-  for (const { nonce } of lost) {
+  for (const [label, { nonce }] of [['lost one', lost[0]], ['lost two', lost[1]]]) {
     const row = w.ledger.retained(nonce);
     assert.deepEqual([row.state, row.failure.code, row.failure.status], ['failed', 'validator_lost', 409]);
-    assert.deepEqual(w.quiet(() => w.attempt(nonce, { jobId: job('lost one') })), refused('context_challenge_failed', 409, 'validator_lost'));
+    assert.deepEqual(w.quiet(() => w.attempt(nonce, { jobId: job(label) })), refused('context_challenge_failed', 409, 'validator_lost'), label);
+    assert.deepEqual(w.quiet(() => w.attempt(nonce, { jobId: job('another job') })), refused('context_challenge_consumed'), `${label} for another job`);
   }
   assert.deepEqual(settled(), before);
   // A validation this generation owns is not closed, and closing again finds nothing.
@@ -661,6 +665,10 @@ cardTest('T27', (t) => {
   assert.deepEqual(operator.attempt(sessionNonce, { path: 'context', challengeScopeHash: null }), refused('context_challenge_mismatch'));
   assert.equal(operator.mutations().length, 1);
   assert.equal(operator.ledger.retained(sessionNonce).failure.code, 'context_challenge_mismatch');
+  // A replay on `context`, by its buyer or any other, is not the row's party and finds the nonce consumed.
+  for (const buyer of [BUYER, OTHER]) {
+    assert.deepEqual(operator.quiet(() => operator.attempt(sessionNonce, { path: 'context', challengeScopeHash: null, buyer })), refused('context_challenge_consumed'), buyer);
+  }
 
   const proposal = world(t);
   const second = proposal.ledger.issueForOperator({ jobId: job('one'), buyer: BUYER });
@@ -760,6 +768,139 @@ test('challenge-final-liveness-barrier', (t) => {
   assert.equal(calls.includes('liveness'), false);
 });
 
+test('challenge-reused-nonce-passes-the-final-barrier', (t) => {
+  const calls = [];
+  const closure = (error) => ({ assertStillLive() { calls.push('liveness'); if (error) throw error; } });
+  const expired = Object.assign(new Error('peer_expired'), { code: 'peer_expired', status: 408 });
+  const request = { jobId: job('one'), buyer: BUYER };
+  const entries = {
+    route: (w, authorization = LIVE) => w.ledger.issue(request, SCOPE, authorization),
+    operator: (w) => w.ledger.issueForOperator(request),
+  };
+  for (const [origin, issue] of Object.entries(entries)) for (const reopened of [false, true]) {
+    const label = `${origin} ${reopened ? 'reopened' : 'live'}`;
+    const w = world(t);
+    const first = issue(w);
+    if (reopened) w.reopen();
+    // Every count at its limit and no stop: the reused nonce still comes back with no count read, no write and no second charge.
+    Object.assign(w.control.counts, { contextRecords: CHALLENGE_LIMIT_DEFAULTS.maxContextRecords, starts: CHALLENGE_LIMIT_DEFAULTS.maxStartsPerHour });
+    w.control.countReads = 0;
+    assert.deepEqual(w.quiet(() => issue(w)), first, label);
+    assert.equal(w.control.countReads, 0, `${label}: a reused nonce reads no counts`);
+    w.control.counts.contextRecords = 0;
+    w.control.counts.starts = 0;
+    // A stop, or a stop value that is not exactly false, refuses the reused nonce too.
+    for (const stopped of [true, 'yes', undefined]) {
+      w.control.stopped = stopped;
+      quietRefusal(w, () => issue(w), 'seller_stopped', 503);
+    }
+    w.control.stopped = false;
+    // So does the guard switched off once the transaction is open, and, on the route, its final liveness refusal.
+    w.control.sessionState = () => { guard.setKitOperationGuardForTest('off'); return null; };
+    try {
+      w.quiet(() => assert.throws(() => issue(w), { code: 'kit_operation_guard_off', name: 'KitOperationGuardError' }), label);
+    } finally { guard.setKitOperationGuardForTest('testnet-tp1'); }
+    w.control.sessionState = () => null;
+    if (origin === 'route') w.quiet(() => assert.throws(() => issue(w, closure(expired)), expired));
+    assert.deepEqual(w.quiet(() => issue(w)), first, `${label}: answered again once the stop is lifted`);
+    assert.equal(w.rows().length, 1);
+  }
+
+  // The route's closure runs once, last, on a reused nonce; its refusal is not swallowed and a stop answers before it.
+  const w = world(t);
+  const first = entries.route(w);
+  calls.length = 0;
+  Object.defineProperty(w.control.counts, 'starts', { get() { calls.push('counts'); return 0; } });
+  w.quiet(() => assert.throws(() => entries.route(w, closure(expired)), expired));
+  assert.deepEqual(calls, ['liveness'], 'a reused nonce reads no counts');
+  calls.length = 0;
+  w.control.stopped = true;
+  quietRefusal(w, () => entries.route(w, closure(expired)), 'seller_stopped', 503);
+  assert.deepEqual(calls, [], 'a stop answers before the liveness closure');
+  w.control.stopped = false;
+  w.quiet(() => assert.throws(() => entries.route(w, { assertStillLive: async () => {} }), TypeError));
+  assert.deepEqual(w.quiet(() => entries.route(w, closure())), first);
+});
+
+// Builds a row of `origin` for job `label` in one past-`issued` state; returns its nonce and the answer its party gets back.
+function rowInState(w, origin, state, label) {
+  const party = { jobId: job(label), buyer: BUYER, ...(origin === 'route' ? { path: 'context', challengeScopeHash: SCOPE } : { path: 'proposal', challengeScopeHash: null }) };
+  const { sessionNonce: nonce, expiresAt } = origin === 'route' ? w.issue(label) : w.ledger.issueForOperator({ jobId: job(label), buyer: BUYER });
+  const attempt = (overrides = {}) => w.ledger.attempt({ nonce, ...party, presentationHash: PRESENTATION, ...overrides });
+  const failed = (cause) => refused('context_challenge_failed', 409, cause);
+  if (state === 'failed as mismatch') attempt({ buyer: OTHER });
+  if (state === 'failed as attempt_invalid') attempt({ presentationHash: null });
+  if (state === 'failed as expired') { w.control.now = expiresAt; attempt(); w.control.now = T0; }
+  if (['failed as mismatch', 'failed as attempt_invalid', 'failed as expired'].includes(state)) return { nonce, party, answer: failed(`context_challenge_${state.slice(10)}`) };
+  const { owner } = attempt();
+  if (state === 'attempted' || state === 'failed as validator_lost') return { nonce, party, answer: state === 'attempted' ? refused('context_attempt_pending', 503) : failed('validator_lost') };
+  if (state === 'failed by the validator') return w.ledger.recordFailed(owner, nonce, 'session_not_admitted') && { nonce, party, answer: failed('session_not_admitted') };
+  const record = w.record(nonce, label);
+  return w.ledger.accept(owner, nonce, record) && { nonce, party, answer: { kind: 'continuation', accepted: record } };
+}
+
+test('challenge-replay-answers-only-the-row-party', (t) => {
+  const states = ['failed as validator_lost', 'accepted', 'attempted', 'failed by the validator', 'failed as mismatch', 'failed as expired', 'failed as attempt_invalid'];
+  for (const origin of ['route', 'operator']) for (const reopened of [false, true]) {
+    const w = world(t, { limits: { maxPerHour: 100, maxPerBuyerPerHour: 100 } });
+    // The lost validation is left by an earlier generation; the startup pass of this one closes it.
+    const rows = [rowInState(w, origin, states[0], states[0])];
+    w.reopen('generation-two');
+    assert.equal(w.ledger.closeLostValidations(), 1);
+    rows.push(...states.slice(1).map((state) => rowInState(w, origin, state, state)));
+    if (reopened) w.reopen('generation-two');
+    rows.forEach(({ nonce, party, answer }, index) => {
+      const stored = w.ledger.retained(nonce).presentationHash ?? undefined;
+      const presenters = {
+        'its party': [{}, true],
+        'an equivalent buyer': [{ buyer: EQUIVALENT }, true],
+        'its party with the scope absent': [{ challengeScopeHash: undefined }, origin === 'operator'],
+        'another buyer': [{ buyer: OTHER }, false],
+        'another job': [{ jobId: job('another job') }, false],
+        'another scope': [{ challengeScopeHash: hash('another scope') }, false],
+        'the other path': [{ path: origin === 'route' ? 'proposal' : 'context' }, false],
+        'another presentation': [{ presentationHash: hash('another presentation') }, false],
+        'no presentation': [{ presentationHash: undefined }, stored === undefined],
+      };
+      for (const [name, [change, answered]] of Object.entries(presenters)) {
+        const label = `${origin} ${reopened ? 'reopened' : 'live'} ${states[index]}: ${name}`;
+        const before = w.rows();
+        const result = w.quiet(() => w.ledger.attempt({ nonce, ...party, presentationHash: stored, ...change }));
+        assert.deepEqual(result, answered ? answer : refused('context_challenge_consumed'), label);
+        assert.deepEqual(w.rows(), before, `${label} changes nothing`);
+      }
+    });
+  }
+});
+
+test('challenge-operator-scope-absent-is-null', (t) => {
+  const withoutScope = (input) => Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'challengeScopeHash'));
+  for (const absent of [(input) => ({ ...input, challengeScopeHash: undefined }), withoutScope]) {
+    const w = world(t);
+    const { sessionNonce } = w.ledger.issueForOperator({ jobId: job('one'), buyer: BUYER });
+    const proposal = absent(w.input(sessionNonce, { path: 'proposal' }));
+    const { kind, owner } = w.ledger.attempt(proposal);
+    assert.equal(kind, 'validate', 'the first attempt with no scope is the party');
+    const record = w.record(sessionNonce);
+    assert.equal(w.ledger.accept(owner, sessionNonce, record), true);
+    for (const input of [proposal, { ...proposal, challengeScopeHash: null }]) assert.deepEqual(w.quiet(() => w.ledger.attempt(input)), { kind: 'continuation', accepted: record });
+  }
+});
+
+test('challenge-first-attempt-must-change-its-row', (t) => {
+  for (const change of [{}, { buyer: OTHER }]) {
+    const w = world(t);
+    const { sessionNonce } = w.issue();
+    // A store whose row does not move under the lock: the transition changes 0 rows, so the attempt throws and rolls back.
+    w.db.exec("CREATE TRIGGER hold_issued BEFORE UPDATE ON kit_challenges WHEN OLD.state = 'issued' BEGIN SELECT RAISE(IGNORE); END");
+    assert.throws(() => w.attempt(sessionNonce, change), /changed under the ledger lock/, JSON.stringify(change));
+    assert.equal(w.db.inTransaction, false);
+    assert.equal(w.ledger.retained(sessionNonce).state, 'issued', 'no owner is answered for a row it does not hold');
+    w.db.exec('DROP TRIGGER hold_issued');
+    assert.equal(w.attempt(sessionNonce).kind, 'validate');
+  }
+});
+
 test('challenge-drain-state-table', (t) => {
   const w = world(t);
   const acceptedRow = w.accepted();
@@ -831,6 +972,79 @@ test('challenge-accept-commit-cuts-retain-exact-bytes', (t) => {
   assert.equal(retained.accepted.buyerBundleText, record.buyerBundleText, 'the complete bundle text is kept byte for byte');
   assert.deepEqual(w.quiet(() => w.attempt(nonce)), { kind: 'continuation', accepted: record });
   assert.deepEqual(w.quiet(() => w.attempt(nonce, { presentationHash: hash('another bundle') })), refused('context_challenge_consumed'));
+});
+
+// A second ledger on the same store whose transaction waits `waitMs` for the lock, as a busy store does, before it runs the callback.
+function waitingLedger(w, waitMs, generation = 'generation-one') {
+  const { db, control } = w;
+  return createSellerChallengeLedger({
+    db, generation, now: () => control.now,
+    transaction(run) {
+      control.now += waitMs;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const result = run();
+        db.exec('COMMIT');
+        return result;
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+    sessionState: () => null, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false,
+  });
+}
+
+test('challenge-issue-reads-the-clock-once-the-lock-is-held', (t) => {
+  const w = world(t);
+  const first = w.issue();
+  const waiting = waitingLedger(w, 20);
+  // A nonce still live once the lock is held is reused with no write.
+  w.control.now = first.expiresAt - 30;
+  assert.deepEqual(w.quiet(() => waiting.issue({ jobId: job('one'), buyer: BUYER }, SCOPE, LIVE)), first);
+  // A nonce that expires while the transaction waits is not reused, and the new row is stamped with the time it was written.
+  w.control.now = first.expiresAt - 10;
+  const second = waiting.issue({ jobId: job('one'), buyer: BUYER }, SCOPE, LIVE);
+  assert.notEqual(second.sessionNonce, first.sessionNonce);
+  assert.equal(second.expiresAt, first.expiresAt + 10 + LIFETIME);
+  assert.equal(waiting.retained(second.sessionNonce).issuedAt, first.expiresAt + 10);
+});
+
+test('challenge-attempt-decides-expiry-once-the-lock-is-held', (t) => {
+  const w = world(t);
+  const { sessionNonce, expiresAt } = w.issue();
+  const waiting = waitingLedger(w, 20);
+  w.control.now = expiresAt - 10;
+  assert.deepEqual(waiting.attempt(w.input(sessionNonce)), refused('context_challenge_expired'));
+  assert.equal(waiting.retained(sessionNonce).attemptedAt, expiresAt + 10);
+});
+
+test('challenge-startup-stamps-the-closure-once-the-lock-is-held', (t) => {
+  const w = world(t);
+  const lost = w.attempted();
+  w.control.now = T0 + 5;
+  assert.equal(waitingLedger(w, 20, 'generation-two').closeLostValidations(), 1);
+  assert.equal(w.ledger.retained(lost.nonce).failure.at, T0 + 25);
+});
+
+test('challenge-unusable-clock-once-the-lock-is-held-writes-nothing', (t) => {
+  const w = world(t);
+  const { sessionNonce } = w.issue();
+  w.attempted('lost');
+  // The clock passes the read before the lock and fails the read once it is held.
+  const broken = (clock) => createSellerChallengeLedger({
+    db: w.db, generation: 'generation-two', now: () => w.control.now,
+    transaction(run) { w.control.now = clock; w.db.exec('BEGIN IMMEDIATE'); try { return run(); } catch (error) { w.db.exec('ROLLBACK'); throw error; } finally { w.control.now = T0; } },
+    sessionState: () => null, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false,
+  });
+  const before = w.rows();
+  const entries = {
+    issue: () => broken(MAX_SAFE).issue({ jobId: job('two'), buyer: BUYER }, SCOPE, LIVE),
+    attempt: () => broken(-1).attempt(w.input(sessionNonce)),
+    closeLostValidations: () => broken(1.5).closeLostValidations(),
+  };
+  for (const [name, run] of Object.entries(entries)) w.quiet(() => assert.throws(run, { code: 'peer_clock_invalid', status: 503 }, name));
+  assert.deepEqual(w.rows(), before);
 });
 
 test('challenge-snapshot-isolation', (t) => {
