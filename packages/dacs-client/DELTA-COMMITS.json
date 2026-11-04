@@ -615,5 +615,88 @@
       "packages/dacs-client/test/price-bound.test.mjs",
       "packages/dacs-client/test/storage-read-nonobservation.test.mjs"
     ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 01 allow D11 delta records",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/delta-map.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "delta(client): D11 split 02 isolate buyer runtime imports",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/dacs/seller-agent-error.mjs",
+      "packages/dacs-client/src/dacs/seller-agent.mjs",
+      "packages/dacs-client/src/dacs/seller-http.mjs",
+      "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+      "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "packages/dacs-client/src/wallet/payload-helpers.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 cover provenance acceptance and repair records",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/delta-map.mjs",
+      "packages/dacs-client/scripts/delta-provenance.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 share wallet payload identity and test import isolation",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "packages/dacs-client/src/wallet/payload-helpers.mjs",
+      "packages/dacs-client/test/d11-import-boundary.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 restore standalone provider and strengthen import vectors",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "packages/dacs-client/test/d11-import-boundary.test.mjs",
+      "packages/dacs-client/test/d11-seam-parameters.test.mjs"
+    ]
+  },
+  {
+    "sha": null,
+    "subject": "fix(client): D11 generate pure payload helpers from provider",
+    "files": [
+      "packages/dacs-client/DELTA-COMMITS.json",
+      "packages/dacs-client/DELTA-LEDGER.json",
+      "packages/dacs-client/DELTA-MAP.md",
+      "packages/dacs-client/HOLD.json",
+      "packages/dacs-client/scripts/check-hold.mjs",
+      "packages/dacs-client/scripts/generate-payload-helpers.mjs",
+      "packages/dacs-client/src/wallet/payload-helpers.mjs",
+      "packages/dacs-client/test/d11-import-boundary.test.mjs"
+    ]
   }
 ]
