@@ -57,3 +57,9 @@ it("documents receipt reader and owned-input contracts accurately", () => {
   expect(text).toContain("`commitment_reader_chain_mismatch`");
   expect(text).not.toContain("that only `profile.ts` imports the approval module");
 });
+
+it("documents pre-Agreement admission: both routes, live delegation, no readback, the host's retained.accepted duty", () => {
+  const text = readFileSync(resolve(docs, "dacs-seller-http-v1.md"), "utf8").replace(/\s+/g, " ");
+  for (const phrase of ["Pre-Agreement admission (challenge and context routes)", "Hosts admit challenge and context requests through `admitPreAgreementRequest`; `checkWireRequest` refuses both routes with `wire_route_requires_preagreement`","requireDelegation: true", "direct requests", "no readback", "retained.accepted", "inspectWireOperation", "no Agreement", "no deadline"]) expect(text).toContain(phrase);
+  expect(text).not.toContain("No host can admit the route yet");
+});

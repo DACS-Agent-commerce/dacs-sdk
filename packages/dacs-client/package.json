@@ -39,9 +39,9 @@
     "src/util/http.mjs", "src/util/ids.mjs",
     "src/util/immutable-readbacks.mjs", "src/util/purchase-readback-cache.mjs",
     "src/util/text.mjs", "src/wallet/devnet-native-transport.mjs",
-    "src/wallet/durable-journal.mjs", "src/wallet/payload-helpers.mjs",
+    "src/wallet/durable-journal.mjs", "src/wallet/holder-incarnation.mjs", "src/wallet/payload-helpers.mjs",
     "README.md", "LICENSE",
-    "src/public-admission.mjs", "src/public-verification.mjs"
+    "src/public-admission.mjs", "src/public-guidance.mjs", "src/public-verification.mjs"
   ],
   "engines": {
     "node": "^22.13.0 || >=23.4.0"

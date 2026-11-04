@@ -105,6 +105,11 @@ async function runtime(publicOrigin){
 // which the caller keeps askable.
 export function createOperatorApprovalAttempt(approve){
   const scope=new AsyncLocalStorage();
+  const checkWrite=(when)=>{
+    const authorize=scope.getStore()?.authorize;if(!authorize)return;
+    let allowed;try{allowed=authorize();}catch(error){allowed=error;}
+    if(allowed!==true)throw Object.assign(new Error(`the write was withdrawn ${when}; nothing was signed`),{code:'not-authorized'});
+  };
   return{
     approve:typeof approve==='function'?async(request)=>{
       let accepted;
@@ -113,10 +118,28 @@ export function createOperatorApprovalAttempt(approve){
       if(accepted&&approve.settle)scope.getStore()?.requests.push(request);
       // The request's own check runs after the operator's answer, before anything is signed (a throw is the
       // wallet's unsigned internal_error). The settled approval above is released, as for any unsent request.
-      const authorize=scope.getStore()?.authorize;
-      if(accepted===true&&authorize){let allowed;try{allowed=authorize();}catch(error){allowed=error;}if(allowed!==true)throw Object.assign(new Error('the write was withdrawn after its approval; nothing was signed'),{code:'not-authorized'});}
+      if(accepted===true)checkWrite('after its approval');
       return accepted;
     }:approve,
+    // The wallet's SDK class with the request's own check run again immediately before each signature: the
+    // wallet still reads the network and its nonce after the approval, and the SDK's sign() reads the network
+    // again before its key signs, so the check runs at entry and once more at the key's signature. For a write
+    // that carries its own check (authorizeSigning), a refusal in that time signs nothing (the wallet answers a
+    // throw here as an unsigned sdk_error); a write without one signs as before.
+    guardSigning(DemosCtor){
+      return class extends DemosCtor{
+        async sign(...args){
+          checkWrite('before it was signed');
+          const crypto=this.crypto;
+          if(!crypto)return super.sign(...args);
+          const guarded=new Proxy(crypto,{get:(target,key)=>key==='sign'?(...signArgs)=>{checkWrite('before it was signed');return target.sign(...signArgs);}
+            :typeof target[key]==='function'?target[key].bind(target):target[key]});
+          this.crypto=guarded;
+          try{return await super.sign(...args);}
+          finally{if(this.crypto===guarded)this.crypto=crypto;}
+        }
+      };
+    },
     issuing(value){if(value?.stage==='broadcast-started'){const attempt=scope.getStore();if(attempt)attempt.sent=true;}},
     run(work,authorize){return scope.run({sent:false,closing:false,requests:[],authorize},async()=>{
       const attempt=scope.getStore();let result;
@@ -257,7 +280,7 @@ export async function openTestWalletCustody({directory,role,publicOrigin,transac
       },
       withWalletLock:(key,work)=>route().withWalletLock(key,work),
     }:undefined;
-    session=createSdkWalletSession({DemosCtor:Demos,IdentitiesCtor:Identities,validateMnemonic,transactionTransport:createDevnetAgreementWalletTransport(transactionTransport),anchorJournal:routedJournal,approve:approvalAttempt.approve});
+    session=createSdkWalletSession({DemosCtor:approvalAttempt.guardSigning(Demos),IdentitiesCtor:Identities,validateMnemonic,transactionTransport:createDevnetAgreementWalletTransport(transactionTransport),anchorJournal:routedJournal,approve:approvalAttempt.approve});
     await session.importMnemonic(mnemonic);if(session.getPublicAccount()?.address!==address)throw new Error(`${role} packaged wallet address differs from custody`);
     const facade=(selectedJournal)=>Object.freeze({
       getPublicAccount:()=>session.getPublicAccount(),

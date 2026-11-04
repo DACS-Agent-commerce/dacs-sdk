@@ -57,6 +57,21 @@ test('seller manifest declares its pinned native dependency', () => {
   assert.equal(lock.packages['packages/dacs-seller'].dependencies?.['better-sqlite3'], manifest.dependencies['better-sqlite3']);
 });
 
+test('seller manifest and lock depend on dacs-node at the release version, for the key loader', () => {
+  const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8')), lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  const { version } = JSON.parse(readFileSync(join(root, 'packages', 'dacs-node', 'package.json'), 'utf8'));
+  assert.equal(manifest.dependencies['@kynesyslabs/dacs-node'], version);
+  assert.equal(lock.packages['packages/dacs-seller'].dependencies['@kynesyslabs/dacs-node'], version);
+});
+
+test('operator-custody.mjs stays out of the packed files and no shipped module imports it', () => {
+  const packed = sellerPackFiles();
+  assert.ok(!packed.includes('src/devnet-demo/operator-custody.mjs'), 'operator-custody.mjs is not packed');
+  for (const file of packed.filter((path) => path.endsWith('.mjs'))) {
+    assert.deepEqual(relativeImports(file).filter((target) => target.endsWith('operator-custody.mjs')), [], `${file} imports operator-custody.mjs`);
+  }
+});
+
 test('the seller pack ships every source module but the operator ones, and everything each shipped module imports', () => {
   const packed = sellerPackFiles().sort();
   assert.deepEqual(packed, [...shippedModules(), ...DOCUMENTS].sort());
@@ -69,6 +84,12 @@ test('the seller pack ships every source module but the operator ones, and every
       assert.ok(packed.includes(target), `${file} imports ${target}, which ships`);
     }
   }
+});
+
+test('P10-T15 the packed archive contains no authority fixture', () => {
+  const packed = sellerPackFiles().sort();
+  assert.deepEqual(packed.filter((path) => /authority-fixture/.test(path)), []);
+  for (const file of ['src/dacs/bounded-call.mjs', 'src/dacs/kit-data-format.mjs']) assert.ok(packed.includes(file), `${file} ships`);
 });
 
 test('the import scan sees static, side-effect, re-export and literal dynamic imports', () => {
@@ -173,6 +194,45 @@ test('the packed seller installs outside the repository, refuses to start while 
   assert.deepEqual(out.reached, [], 'negotiation reached no operator capability but the Vet context');
   assert.deepEqual(out.vetContextJobs, ['vetted', 'unvetted', 'fabricated'], 'every admitted proposal takes its Agreement input from the Vet context');
   assert.deepEqual(out.admittedJobs, ['vetted', 'unvetted', 'fabricated'], 'every session with an issued challenge asks the session admission; the replayed job has none, so the seller refuses it before asking');
+});
+
+test('from the packed archive with no hooks, a key opened while off yields its claim, and its returned sign refuses kit_operation_guard_off with zero cryptographic signer calls. (Round 4.) Its read-only role, given no current binding, signs nothing', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+  const preparedPath = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(preparedPath, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
+  const app = realpathSync(preparedPath);
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-key-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const script = `
+    import crypto from 'node:crypto';
+    import { writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
+    // Custody refuses below Node 22.13 (K14); the seller's own floor is Node 20.19, so report a supported version.
+    const [major, minor] = process.version.slice(1).split('.').map(Number);
+    if (!((major === 22 && minor >= 13) || (major === 23 && minor >= 4) || major >= 24)) Object.defineProperty(process, 'version', { value: 'v22.13.0', configurable: true });
+    let signs = 0;
+    const realSign = crypto.sign;
+    crypto.sign = (...args) => { signs += 1; return realSign(...args); };
+    syncBuiltinESMExports();
+    const { openSellerKey } = await import('@kynesyslabs/dacs-seller/src/seller-key.mjs');
+    const { KIT_OPERATION_GUARD } = await import('@kynesyslabs/dacs-seller/src/kit-operation-guard.mjs');
+    const seed = Buffer.alloc(32, 2);
+    const privateKey = crypto.createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]), format: 'der', type: 'pkcs8' });
+    const publicKey = crypto.createPublicKey(privateKey).export({ format: 'der', type: 'spki' }).subarray(-32);
+    const claim = 'did:demos:agent:' + publicKey.toString('hex');
+    const dataDirectory = process.argv[1];
+    const filePath = join(dataDirectory, 'seller.key');
+    writeFileSync(filePath, JSON.stringify({ format: 'dacs-seller-key/v1', algorithm: 'ed25519', mnemonic: 'TEST mnemonic' }), { mode: 0o600 });
+    const key = await openSellerKey({ filePath, dataDirectory, keyFormat: 'dacs-seller-key/v1', listingSeller: claim, validateMnemonic: (value) => value === 'TEST mnemonic',
+      derive: async () => ({ claim, ed25519PrivateKey: new Uint8Array(Buffer.concat([seed, publicKey])), cleanup() {} }) });
+    const codeOf = async (run) => { try { await run(); return null; } catch (error) { return error.code; } };
+    const effect = await codeOf(() => key.sign(Buffer.from('bytes')));
+    const readOnly = await codeOf(() => key.readOnlyAnswerSigner({ purpose: 'discovery', binding: undefined, local: undefined }));
+    key.close();
+    process.stdout.write(JSON.stringify({ claim: key.claim === claim, effect, readOnly, signs, guard: KIT_OPERATION_GUARD, nodeOptions: process.env.NODE_OPTIONS ?? null }) + '\\n');`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script, work], { cwd: app, env: { PATH: process.env.PATH, TMPDIR: work }, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 });
+  assert.equal(child.status, 0, `the packed key custody run failed\n${child.stdout}\n${child.stderr}`);
+  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)), { claim: true, effect: 'kit_operation_guard_off', readOnly: 'seller_key_role_refused', signs: 0, guard: 'off', nodeOptions: null });
 });
 
 test('importing every ./src/* path from the packed archive yields no guard bypass', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
