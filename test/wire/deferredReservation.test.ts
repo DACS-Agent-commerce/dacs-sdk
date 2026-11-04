@@ -6,7 +6,7 @@ import * as wire from "../../src/wire/index.js";
 import { journalDirectory } from "./requestJournalFixture.js";
 import { JOB, NOW, P, world } from "./reservationFixture.js";
 
-const EFFECT_ROUTES = wire.DACS_SELLER_HTTP_ROUTES.filter((r) => r.auth === "signed" && r.effect === "effect").map((r) => r.path);
+const EFFECT_ROUTES = wire.DACS_SELLER_HTTP_ROUTES.filter((r) => r.auth === "signed" && r.effect === "effect" && r.path !== wire.DACS_SELLER_HTTP_PATHS.context).map((r) => r.path);
 const READ_ROUTES = [P.state, P.bundleBuyerCopy];
 const TIMEOUT_MS = 60_000;
 
@@ -22,7 +22,7 @@ async function withElapsed<T>(elapsedMs: () => number, run: () => Promise<T>): P
 }
 
 describe("deferred reservation", { timeout: TIMEOUT_MS }, () => {
-  it("CAP checkWireRequest returns reserve() on every effect route and publishes no journal file until it is called; read routes return reserve: null", async () => {
+  it("CAP checkWireRequest returns reserve() on every ordinary effect route and publishes no journal file until it is called; read routes return reserve: null; the context route's reserve() comes from admitPreAgreementRequest", async () => {
     const x = await world();
     for (const path of EFFECT_ROUTES) {
       const j = journalWithFiles();
@@ -32,6 +32,13 @@ describe("deferred reservation", { timeout: TIMEOUT_MS }, () => {
       expect(await checked.reserve!(), path).toMatchObject({ state: "new", operationId: wire.wireOperationId(x.request(path)), attempt: 0 });
       expect(j.files(), path).toHaveLength(2);
     }
+    const j = journalWithFiles(), context = await x.open(P.context);
+    const check = { ...x.check(P.context), route: "context" as const, retained: { ...x.retained, accepted: false }, requestJournal: j.journal };
+    await expect(wire.checkWireRequest(context, check)).rejects.toMatchObject({ code: "wire_route_requires_preagreement" });
+    const admitted = await wire.admitPreAgreementRequest(context, check);
+    expect(j.files()).toEqual([]);
+    if (!admitted.reserve) throw new Error("context reserve missing");
+    expect(await admitted.reserve()).toMatchObject({ state: "new", attempt: 0 });
     for (const path of READ_ROUTES) {
       expect(await wire.checkWireRequest(await x.open(path), x.check(path))).toEqual({ body: {}, readbackOnly: false, reserve: null });
     }
