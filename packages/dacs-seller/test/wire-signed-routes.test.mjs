@@ -498,6 +498,31 @@ test('P11a1-T19: no request creates a wire journal file in this PR. Non-pre-Agre
   assert.deepEqual(w.journalFiles(), [], 'no wire journal file exists');
 });
 
+test('a state read for a job the agent holds with no kept tuple is refused tp1_purchase_profile_mismatch (missing), signed, with no agent call and nothing written; a read for a job with its tuple is answered, also after restart', async (t) => {
+  const w = await world(t);
+  const kept = await proposeJob(w, 'tuple-kept'), untupled = await proposeJob(w, 'tuple-missing');
+  assert.equal((await kept.post()).status, 200);
+  // The agent retained this job without the store ever keeping its tuple, as a job retained before tuples were kept.
+  await w.agent.receiveProposal(untupled.body);
+  assert.equal(w.handle.store.purchaseProfile(untupled.jobId), null);
+  const read = (job, options) => w.post(PATHS.state, identityBody(job.jobId, job.agreementHash), { jobId: job.jobId, agreementHash: job.agreementHash, ...options });
+  const expired = () => ({ delegation: w.delegationFor({ jobId: untupled.jobId, expiresAt: NOW - 1 }), signer: SESSION });
+  const live = () => ({ delegation: w.delegationFor({ jobId: untupled.jobId, expiresAt: untupled.deadline }), signer: SESSION });
+  for (const reopen of [false, true]) {
+    if (reopen) w.reopen();
+    const rowsBefore = w.rows(), statesBefore = w.agent.calls.states;
+    for (const [label, options] of [['a plain read', {}], ['a live delegation', live()], ['an expired delegation read back', expired()]]) {
+      const refused = await read(untupled, options);
+      assert.deepEqual({ status: refused.status, error: refused.body.error, signed: refused.signed }, { status: 500, error: 'tp1_purchase_profile_mismatch', signed: true }, `${label}${reopen ? ' after restart' : ''}`);
+      await w.verified(refused);
+    }
+    assert.equal(w.agent.calls.states, statesBefore, 'the agent answered none of them');
+    assert.deepEqual(w.rows(), rowsBefore, 'nothing was written');
+    assert.equal((await read(kept)).status, 200, 'a job with its kept tuple is answered');
+  }
+  assert.equal(w.handle.store.purchaseProfile(untupled.jobId), null, 'the refused read kept no tuple');
+});
+
 test('P11a1-T20: the harness\'s old-domain proposal is refused; only the wire domain is accepted', async (t) => {
   const w = await world(t);
   const job = await proposeJob(w, 't20');

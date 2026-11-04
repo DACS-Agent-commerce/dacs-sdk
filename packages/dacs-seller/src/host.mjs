@@ -174,15 +174,19 @@ function checkTp1Network(tp1Network) {
   if (TP1_NETWORK_KEYS.some((key) => typeof tp1Network[key] !== 'function')) throw new TypeError('tp1Network needs a connection() and a readAuthority function');
 }
 
-// The binding over the SDK's approved record and the operator's current connection, read once and
-// within 10,000 ms. Only this deadline is `tp1_authority_timeout` (the timeout is its cause); any
-// other failure, a reader's own TimeoutError included, is the reader's or the binding's own error.
+// The operator's authority reader, each read within 10,000 ms. The wire keeps the reader it is bound with and calls it on
+// every signed request, so the deadline is on the reader itself: a stalled read ends as `tp1_authority_timeout` (the
+// timeout is its cause) instead of holding a request slot for good. Only this deadline is that error; any other failure,
+// a reader's own TimeoutError included, is the reader's own error.
+const withinAuthorityDeadline = (work) => boundedCall(work, { timeoutMs: TP1_AUTHORITY_TIMEOUT_MS }).catch((error) => {
+  if (isBoundedCallTimeout(error)) throw new WireError('tp1_authority_timeout', 500, undefined, error);
+  throw error;
+});
+
+// The binding over the SDK's approved record and the operator's current connection, read once and within the same deadline.
 async function bindApprovedProfile(tp1Network) {
-  const bind = () => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: tp1Network.connection(), readAuthority: tp1Network.readAuthority });
-  try { return await boundedCall(bind, { timeoutMs: TP1_AUTHORITY_TIMEOUT_MS }); } catch (error) {
-    if (isBoundedCallTimeout(error)) throw new WireError('tp1_authority_timeout', 500, undefined, error);
-    throw error;
-  }
+  const readAuthority = (input) => withinAuthorityDeadline(() => tp1Network.readAuthority(input));
+  return withinAuthorityDeadline(() => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: tp1Network.connection(), readAuthority }));
 }
 
 const journalAccountingMismatch = (detail, cause) => Object.assign(

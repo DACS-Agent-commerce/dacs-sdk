@@ -16,7 +16,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
+import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, assertTp1Authority, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { JOBS, T, exchange, presentContext, world } from './helpers/d5-http-fixture.mjs';
@@ -446,6 +446,44 @@ test('P10-T10 a rejecting reader keeps its cause, a stalled one times out at 10,
         process.off('unhandledRejection', onUnhandled);
       }
     });
+  }
+});
+
+test('the reader the signed routes call on every request is bounded too: after startup a stalled read ends tp1_authority_timeout at 10,000 ms with the deadline as its cause, a late result is ignored and never unhandled, and a reader that answers still passes', async (t) => {
+  const f = await hostFixture(t);
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  const reader = authorityReader();
+  let stall = false, settleLate;
+  const readAuthority = (scope) => (stall ? new Promise((resolve) => { settleLate = () => resolve(reader(scope)); }) : reader(scope));
+  try {
+    await f.start({ tp1Network: testNetwork({ readAuthority }) });
+    const [binding] = f.bindings;
+    await assertTp1Authority(binding, TEST_CONNECTION, [], null);
+    stall = true;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    let outcome = 'pending';
+    const reading = assertTp1Authority(binding, TEST_CONNECTION, [], null).then(() => { outcome = 'passed'; }, (error) => { outcome = error; });
+    mock.timers.tick(AUTHORITY_DEADLINE_MS - 1);
+    await flush();
+    assert.equal(outcome, 'pending', 'still waiting at 9,999 ms');
+    mock.timers.tick(1);
+    await flush();
+    await flush();
+    assert.notEqual(outcome, 'pending', 'the stalled read ended at its deadline');
+    await reading;
+    assert.deepEqual({ code: outcome.code, status: outcome.status }, { code: 'tp1_authority_timeout', status: 500 });
+    assert.equal(isBoundedCallTimeout(outcome.cause), true, 'the deadline is the cause');
+    settleLate();
+    await flush();
+    await flush();
+    assert.deepEqual(unhandled, []);
+    stall = false;
+    await assertTp1Authority(binding, TEST_CONNECTION, [], null);
+  } finally {
+    mock.timers.reset();
+    process.off('unhandledRejection', onUnhandled);
   }
 });
 
