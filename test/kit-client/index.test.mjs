@@ -23,11 +23,11 @@ test('K12 index: every case id has exactly one harness test, every harness test 
   assert.deepEqual(parsed.filter((entry) => !indexed.has(entry.id)).map((entry) => entry.title), [], 'every harness test belongs to an indexed case');
   for (const entry of index) {
     const id = entry.id.replace(/^K12-/, '');
-    const active = entry.flippedBy === null ? 'today' : 'target';
-    const activeTests = count(id, active);
-    assert.equal(activeTests, id === 'H3' ? 2 : 1, `${entry.id} has one ${active} test per part`);
-    assert.equal(count(id, active === 'today' ? 'target' : 'today'), 0, `${entry.id} asserts only its current behaviour`);
-    assert.equal(count(id, 'control'), CASES_WITHOUT_SEPARATE_CONTROL.has(id) ? 0 : activeTests, `${entry.id} has a control for each active assertion`);
+    const activeKind = entry.flippedBy === null ? 'today' : 'target';
+    const activeTests = count(id, activeKind);
+    assert.equal(activeTests, id === 'H3' ? 2 : 1, `${entry.id} has ${id === 'H3' ? 'one test per part' : 'exactly one test'} of its ${activeKind} behaviour`);
+    assert.equal(count(id, activeKind === 'today' ? 'target' : 'today'), 0, `${entry.id} keeps no assertion of its ${activeKind === 'today' ? 'target' : 'today'} behaviour`);
+    assert.equal(count(id, 'control'), CASES_WITHOUT_SEPARATE_CONTROL.has(id) ? 0 : activeTests, `${entry.id} has a positive control for each assertion`);
   }
 });
 

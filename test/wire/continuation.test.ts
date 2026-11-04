@@ -209,7 +209,7 @@ describe("the seller checks the job's finalized commitment on every payment and 
   it("routes that start a purchase and read routes need no commitment", async () => {
     const x = await world();
     // The buyer's copy of the bundle reads a committed result, so it needs the commitment too (continuationEvidence.test.ts).
-    for (const path of [P.proposals, P.commitments, P.commitmentSignature, P.context, P.state]) {
+    for (const path of [P.proposals, P.commitments, P.commitmentSignature, P.state]) {
       expect((await checkAndReserve(await x.direct(x.request(path)), { ...await x.check(path), commitment: undefined, agreement: undefined, readCommitmentReceipt: undefined, requestJournal: testJournal() })).readbackOnly).toBe(false);
     }
   });
