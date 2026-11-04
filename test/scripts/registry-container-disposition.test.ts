@@ -492,8 +492,9 @@ async function runToConsumerStage(complete = false, failStart = false, hooks: Co
   const phase = (name: keyof ConsumerHooks, steps: string[]) => [`  *-${name})`, ...steps, hooks[name] ?? "", `  exit ${name === "doctor" ? complete ? 5 : 1 : 0} ;;`];
   const PATH = stubBin(directory, {
     curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  */-/ping*) printf \'{}\' ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
-    npm: ['case "$1" in', `  install) case "$*" in *npm@11.19.0*) touch '${pinned}' ;; *) exit 92 ;; esac ;;`,
-      `  --version) if [ -f '${pinned}' ]; then echo 11.19.0; else echo 10.9.9; fi ;;`, `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
+    // The host npm models the bootstrapped client: it is already 11.19.0 and any host-side install fails.
+    npm: ['case "$1" in', `  install) touch '${pinned}'; exit 92 ;;`,
+      '  --version) echo 11.19.0 ;;', `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
       `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),
     docker: [`printf '%s\\n' "$*" | tr '\\n' ' ' >> '${commands}'`, `echo >> '${commands}'`, ...(failStart ? ['if [ "$1 $2" = "run --detach" ]; then exit 17; fi'] : []), `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
       // The build context's lock as the image would install it.
@@ -1132,7 +1133,7 @@ describe("registry/container evidence", () => {
   it("traverses consumer policy, image build, evidence assembly and disposition with pinned npm", async () => {
     const { directory, output, result, commands } = await runToConsumerStage(true);
     expect(result.status, result.stdout + result.stderr).toBe(0);
-    expect(existsSync(join(directory, "npm-pinned"))).toBe(true);
+    expect(existsSync(join(directory, "npm-pinned"))).toBe(false);
     const invoked = readFileSync(commands, "utf8");
     expect(invoked).toMatch(/^build .*--tag /m);
     expect(invoked).toContain("--file "); expect(invoked).toContain("Dockerfile.acceptance");
