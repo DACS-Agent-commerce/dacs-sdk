@@ -821,6 +821,9 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | D11 | fix(client): D11 remove the unused guarded SQLite lease and pack no client files | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) | deleted |
+| D11 | fix(client): D11 record the deleted guarded SQLite files after the 06e merge | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/util/guarded-sqlite.mjs` (deleted) | deleted |
+| | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) | deleted |
 
 ## Complete commit and file inventory
 
@@ -2358,6 +2361,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 remove the unused guarded SQLite lease and pack no client files | `packages/dacs-client/src/util/guarded-sqlite.mjs` (deleted) |
 | fix(client): D11 remove the unused guarded SQLite lease and pack no client files | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) |
 | fix(client): D11 remove the unused guarded SQLite lease and pack no client files | `scripts/release-policy.json:1` |
+| fix(client): D11 record the deleted guarded SQLite files after the 06e merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the deleted guarded SQLite files after the 06e merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the deleted guarded SQLite files after the 06e merge | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the deleted guarded SQLite files after the 06e merge | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the deleted guarded SQLite files after the 06e merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
