@@ -191,7 +191,7 @@ These records add no runtime behavior. SQL callbacks remain allowed inside a lea
 
 D11 transaction adapter dependency split:
 
-The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
+The purchase transaction adapter requires the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs` for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
 
 D11 SQLite transaction split:
 
@@ -2291,6 +2291,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 remove the unused guarded SQLite lease and pack no client files | `packages/dacs-client/src/util/guarded-sqlite.mjs` (deleted) |
 | fix(client): D11 remove the unused guarded SQLite lease and pack no client files | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) |
 | fix(client): D11 remove the unused guarded SQLite lease and pack no client files | `scripts/release-policy.json:1` |
+| fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
