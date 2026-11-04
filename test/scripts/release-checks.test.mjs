@@ -67,6 +67,15 @@ test("file policy rejects extra files and requires every export, type and binary
   assert.throws(() => validateFiles(core, { ...p, exports: { ...p.exports, "./bad": "../outside.js" } }, files), /target/);
 });
 
+test("every document the root manifest ships is on the core allow-list", () => {
+  const shipped = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).files;
+  const documents = shipped.filter(file => file.startsWith("docs/"));
+  assert.ok(documents.includes("docs/pay-dem-execution.md"));
+  const p = manifest(); const files = members(p);
+  for (const document of documents) assert.doesNotThrow(() => validateFiles(core, p, [...files, document]), document);
+  assert.throws(() => validateFiles(core, p, [...files, "docs/not-shipped.md"]), /outside allow-list/);
+});
+
 test("wildcard exports enumerate packed files, JSON exports carry their type, empty patterns fail", () => {
   const p = { exports: { ".": "./src/index.mjs", "./src/*": "./src/*", "./package.json": "./package.json" } };
   const files = ["src/index.mjs", "src/nested/helper.mjs", "src/schema.json", "package.json"];
