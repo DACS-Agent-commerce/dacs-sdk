@@ -47,7 +47,7 @@ import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
-import { continuationFor, retainedFor } from './dacs/seller-wire-requests.mjs';
+import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
@@ -281,12 +281,11 @@ export async function startSellerHost(options) {
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
-    // The seller takes new purchases until it stops; every later readiness term is ANDed in by the PR that owns it (SA-7).
+    // The seller takes new purchases until it stops.
     const sellerReady = () => !stopping;
-    // The context every signed route on `./wire` uses (the transport store is their journal). The binding is read once at
-    // startup; a later connection is never compared.
-    const wire = Object.freeze({ binding, connection: tp1Network.connection, signer, journal, store, ready: sellerReady, now, requireDelegation: false,
-      retainedFor: (request) => retainedFor(agent, request), continuationFor: (request) => continuationFor(agent, request, signedListing), readCommitmentReceipt });
+    // The one context every signed route on `./wire` uses, with the transport store as their journal. Each signed request and
+    // answer reads the operator's connection again through it.
+    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before
