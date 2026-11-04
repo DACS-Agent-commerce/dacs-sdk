@@ -12,7 +12,8 @@ import { admitRawJson, canonicalize, contentHash, createFsFencedSessionStore, cr
 import { anchorWriteMessage, canonicalSignature, verifyFixtureRecord } from './fixture-anchors.mjs';
 import { leaseFile, leaseHolderState, PROCESS_LEASE_ID as PROCESS, PROCESS_NAMESPACE as NAMESPACE, ProcessLeaseError, takeLease as takeProcessLease } from './process-lease.mjs';
 
-const DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
+/** The domain every local journal-integrity signature starts with. */
+export const SELLER_STATE_SIGNING_DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const same = (a, b) => canonicalize(a) === canonicalize(b);
 const droppedByJson = (v) => v === undefined || typeof v === 'function' || typeof v === 'symbol';
@@ -177,7 +178,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   }
   function authenticated(kind, id, body) {
     const payload = { version: '1', kind, id, seller: signer.claim, listingPin: pin, body: clone(body) };
-    const bytes = Buffer.from(`${DOMAIN}${canonicalize(payload)}`);
+    const bytes = Buffer.from(`${SELLER_STATE_SIGNING_DOMAIN}${canonicalize(payload)}`);
     const signature = Buffer.from(signer.sign(bytes));
     if (signature.length !== 64 || !verify(null, bytes, key, signature)) fail('seller_state_signer_invalid');
     return JSON.stringify({ payload, signature: signature.toString('base64url') });
@@ -188,7 +189,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       const { payload: p, signature } = envelope;
       if (Object.keys(envelope).sort().join(',') !== 'payload,signature' || Object.keys(p).sort().join(',') !== 'body,id,kind,listingPin,seller,version' || p.version !== '1' || p.kind !== kind || p.id !== id || p.seller !== signer.claim || !same(p.listingPin, pin) || typeof signature !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(signature)) fail('seller_state_corrupt');
       const sig = Buffer.from(signature, 'base64url');
-      if (sig.toString('base64url') !== signature || !verify(null, Buffer.from(`${DOMAIN}${canonicalize(p)}`), key, sig)) fail('seller_state_corrupt');
+      if (sig.toString('base64url') !== signature || !verify(null, Buffer.from(`${SELLER_STATE_SIGNING_DOMAIN}${canonicalize(p)}`), key, sig)) fail('seller_state_corrupt');
       return clone(p.body);
     } catch { fail('seller_state_corrupt'); }
   }

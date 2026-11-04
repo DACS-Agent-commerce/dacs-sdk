@@ -25,6 +25,9 @@ const OPEN_CLEANUP = `json_extract(record, '$.cleanup.releasePending') = 1 OR js
   OR json_extract(record, '$.cleanup.cause') IS NOT NULL`;
 const HASH = /^[0-9a-f]{64}$/;
 
+// Per transaction instance: the live-begin reader below, kept off the frozen API so that nothing outside the module can take it for authority.
+const instanceReaders = new WeakMap();
+
 const isHash = (value) => typeof value === 'string' && HASH.test(value);
 const isUint = (value) => Number.isSafeInteger(value) && value >= 0;
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -33,12 +36,13 @@ const fail = (code, status = 409, cause) => { throw new SellerTransportError(cod
 const refusalOf = (error) => (typeof error?.code === 'string' && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599
   ? { code: error.code, status: error.status } : { code: 'operation_uncertain', status: 503 });
 const storedCause = (cause) => ({ ...refusalOf(cause), message: cause?.message ?? String(cause) });
-// The deadline helper answers with the work's own promise and stops waiting at the deadline. D3 and the lease acquisition also need the
-// work's own end, which the deadline does not cancel: `settled` is that end, `{ status, value | reason }`, and never rejects.
-function boundedWork(work, timeoutMs) {
-  const end = new Promise((resolve) => resolve(work()));
-  return { result: boundedCall(() => end, { timeoutMs }),
-    settled: end.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason })) };
+// boundedCall answers at the deadline or at the work's end, whichever is first. A late hold or lease needs the work's own end too, so
+// that is kept beside it: `result` is the bounded answer, `settled` the work's status object (it never rejects, and is no proof of success).
+function boundedWork(work, options) {
+  let started;
+  const result = boundedCall(() => { started = new Promise((resolve) => resolve(work())); return started; }, options);
+  const settled = started.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
+  return { result, settled };
 }
 // The presenter of a retained bundle text, only when the text is the very presentation that was attempted.
 function bundlePresenter(text, presentationHash, nonce) {
@@ -91,8 +95,12 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     || (capacity !== null && !['fitsNewPurchase', 'allocateWithin'].every((name) => typeof capacity?.[name] === 'function'))) {
     throw new TypeError('admission needs the store, policy, evidence, completion, clock, readiness and deadline ports');
   }
-  // The begins this process is running, by job: registered when D2 commits and removed by that begin alone, once its D3, D4 and compensation end.
-  const mutexes = new Map(), leases = new WeakMap(), acceptanceHooks = [], liveBegins = new Map();
+  const mutexes = new Map(), leases = new WeakMap(), acceptanceHooks = [];
+  // The live-begin owners: the one `begin` per job that is between D2's commit and the end of its D3/D4 work, late policy settlement and
+  // failure recording included. Closure-private: only `ownedIntent`, which P09bb's sweep reads from inside this closure, answers from it,
+  // and no age or lease stands in for it. `admissionTransactionInternals` hands the same reader to this package's tests only.
+  const liveBegins = new Map();
+  const ownedIntent = (jobId, rev) => liveBegins.get(jobId)?.rev === rev;
   let hooksSealed = false;
   if (capacity !== null) acceptanceHooks.push(({ jobId, buyer, seller, listingPin }) => { capacity.allocateWithin({ jobId, buyer, seller, listingPin }); });
 
@@ -283,7 +291,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     try {
       markHoldCall(input.jobId, intent.rev);
       call = boundedWork(() => policy.reserve({ jobId: input.jobId, effect: wireOperationId({ seller: input.seller, jobId: input.jobId, path: SELLER_CONTEXT_PATH }),
-        writes: POLICY_HOLD_WRITES, hold: intent.holdId }), deadlines.policyMs);
+        writes: POLICY_HOLD_WRITES, hold: intent.holdId }), { timeoutMs: deadlines.policyMs });
       await awaitHold(call);
       answer.resolve(acceptAdmission(input, intent.rev));
     } catch (error) {
@@ -299,16 +307,17 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     hooksSealed = true;
     const { input, row } = startRow(request, clock());
     commitIntent(input, row);
-    const owner = Object.freeze({ rev: row.rev });
-    liveBegins.set(row.jobId, owner);
+    // Registered in the turn the intent commits, with no await between; only this begin's own compare-and-delete removes it.
+    const owner = { rev: row.rev, token: Symbol('live begin') };
+    liveBegins.set(input.jobId, owner);
     return new Promise((resolve, reject) => {
       void jobEffectMutex(input.jobId).run(() => admit(input, row, { resolve, reject })).catch(reject)
-        .finally(() => { if (liveBegins.get(row.jobId) === owner) liveBegins.delete(row.jobId); });
+        .finally(() => { if (liveBegins.get(input.jobId)?.token === owner.token) liveBegins.delete(input.jobId); });
     });
   }
 
   async function acquireBounded(mutex) {
-    const acquisition = boundedWork(() => mutex.acquire(), ACQUIRE_TIMEOUT_MS);
+    const acquisition = boundedWork(() => mutex.acquire(), { timeoutMs: ACQUIRE_TIMEOUT_MS });
     try { return await acquisition.result; } catch (cause) {
       void acquisition.settled.then((late) => { if (late.status === 'fulfilled') late.value.release(); });
       return fail('seller_effect_pending', 503, cause);
@@ -473,7 +482,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     await jobEffectMutex(jobId).run(() => settleRow(jobId, false));
   }
 
-  const ownedByLiveBegin = (row) => row?.state === 'intent' && liveBegins.get(row.jobId)?.rev === row.rev;
+  const ownedByLiveBegin = (row) => row?.state === 'intent' && ownedIntent(row.jobId, row.rev);
   // Step 2: an intent nobody is working on is fenced. A periodic pass re-reads it and checks the registry in the one transaction that fences it.
   function fenceOrphanedIntent(jobId, startup) {
     transaction(() => {
@@ -508,9 +517,21 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       nonce: row.nonce, presentationHash: row.presentationHash, state: row.state, rev: row.rev, admittedAt: row.admittedAt, contextOutcome: row.contextOutcome });
   }
 
-  return Object.freeze({ begin, reserveContext, runningCheck, jobEffectMutex, compensate, sweep, cleanupPending, admissionRecord,
+  const api = Object.freeze({ begin, reserveContext, runningCheck, jobEffectMutex, compensate, sweep, cleanupPending, admissionRecord,
     addAcceptanceHook(hook) {
       if (hooksSealed || typeof hook !== 'function') throw new TypeError('an acceptance hook is a synchronous function registered before the first begin');
       acceptanceHooks.push(hook);
     } });
+  instanceReaders.set(api, Object.freeze({ ownedIntent }));
+  return api;
+}
+
+/**
+ * Seller-internal, not a root export and not on the transaction: the private readers of one transaction instance, for this package's tests.
+ * `ownedIntent(jobId, rev)` is true only while the one `begin` that committed that intent revision is still working on it.
+ */
+export function admissionTransactionInternals(transaction) {
+  const readers = instanceReaders.get(transaction);
+  if (readers === undefined) throw new TypeError('admissionTransactionInternals needs a transaction made by createContextAdmissionTransaction');
+  return readers;
 }

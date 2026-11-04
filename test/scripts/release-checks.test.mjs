@@ -267,6 +267,17 @@ test("wildcard exports pair every condition with the same concrete subpath", () 
   assert.throws(() => validateFiles(core, p, ["package.json", "dist/a.d.ts"]), /missing|no packed/);
 });
 
+test("each pinned preparation manifest hash matches its package's current manifest", () => {
+  const snapshot = value => createHash("sha256").update(JSON.stringify(value, (_, member) => member && typeof member === "object" && !Array.isArray(member) ?
+    Object.fromEntries(Object.entries(member).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : member)).digest("hex");
+  const pinned = packages.filter(definition => definition.preparationManifestSha256);
+  assert.ok(pinned.some(definition => definition.name === "@kynesyslabs/dacs-seller"));
+  for (const definition of pinned) {
+    const source = JSON.parse(readFileSync(new URL(`../../${definition.directory}/package.json`, import.meta.url), "utf8"));
+    assert.equal(snapshot(source), definition.preparationManifestSha256, `${definition.name}: update preparationManifestSha256`);
+  }
+});
+
 test("nested internal lock entries must resolve to supplied tarballs", () => {
   const name = `node_modules/${packages[1].name}/node_modules/${core.name}`;
   for (const resolved of ["https://registry.npmjs.org/@kynesyslabs/dacs/-/dacs-0.1.0-alpha.0.tgz", undefined, "file:/tmp/other.tgz"]) {

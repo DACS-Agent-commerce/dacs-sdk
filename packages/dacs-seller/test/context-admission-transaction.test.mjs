@@ -40,9 +40,9 @@ const deferred = () => {
   return { promise, resolve };
 };
 const flush = () => new Promise(resolve => setImmediate(resolve));
-let createContextAdmissionTransaction, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
+let createContextAdmissionTransaction, admissionTransactionInternals, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
 try {
-  ({ createContextAdmissionTransaction } = await import('../src/dacs/seller-admission-transaction.mjs'));
+  ({ createContextAdmissionTransaction, admissionTransactionInternals } = await import('../src/dacs/seller-admission-transaction.mjs'));
   ({ createSellerTransportStore, sellerStoreInternals, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs'));
   if (typeof sellerStoreInternals !== 'function') throw new Error('sellerStoreInternals is not exported');
 } catch (error) { importFailure = error; }
@@ -143,6 +143,16 @@ function world(t, config = {}) {
   return { directory, holds, calls, wire, control, options, prepare, reserveWire, legacyStart, row, compensating, cut, kill, reopen, wireEnds: wire.ends, evidenceOf,
     get store() { return store; }, get admission() { return admission; }, get internals() { return internals; }, get db() { return internals.db; },
     get policy() { return options.policy ?? defaultPolicy; }, changes: () => internals.db.prepare('SELECT total_changes() AS n').get().n };
+}
+// The live-begin registry is closure-private (the sweep of P09bb reads it from inside the module); the shipped module hands the same reader
+// of one transaction instance to this package's tests through `admissionTransactionInternals`, and not through the transaction's API.
+const owned = (w, jobId, rev) => admissionTransactionInternals(w.admission).ownedIntent(jobId, rev);
+// A policy whose `reserve` for a gated job waits on that job's barrier (and answers its value, default a granted hold).
+function gatedPolicy(w) {
+  const gates = new Map();
+  w.options.policy = { reserve: async request => { w.calls.reserve++; const gate = gates.get(request.jobId); if (gate) { gate.entered.resolve(); return gate.barrier.promise; } return null; },
+    release: async () => { w.calls.release++; } };
+  return jobId => { const gate = { entered: deferred(), barrier: deferred() }; gates.set(jobId, gate); return gate; };
 }
 const reject = (promise, code, status) => assert.rejects(promise, { code, ...(status ? { status } : {}) });
 async function running(w, p) { await w.admission.begin(p.input); return w.admission.reserveContext(p.input.jobId, w.reserveWire); }
@@ -1020,3 +1030,60 @@ test('admission-periodic-sweep-spares-live-begin', async t => {
   assert.equal(operator.row(s.input.jobId).state, 'compensating'); gate.resolve(); await lease; await operatorStart; await abort; assert.equal(operator.row(s.input.jobId).state, 'aborted');
 });
 
+test('admission-live-begin-owner-registered-in-the-commit-turn-and-kept-through-d3-and-d4', async t => {
+  const w = world(t), gateFor = gatedPolicy(w); w.reopen();
+  const p = w.prepare(), { jobId } = p.input, gate = gateFor(jobId);
+  assert.equal(owned(w, jobId, 1), false);
+  const begun = w.admission.begin(p.input);
+  // No await since the call: the intent is committed and its owner is already registered, for that revision only.
+  assert.equal(w.row(jobId).state, 'intent'); assert.equal(owned(w, jobId, 1), true);
+  assert.equal(owned(w, jobId, 2), false); assert.equal(owned(w, job(0x77), 1), false);
+  await gate.entered.promise;
+  assert.equal(w.row(jobId).cleanup.holdCall, 'pending'); assert.equal(owned(w, jobId, 1), true);
+  gate.barrier.resolve(null); await begun;
+  assert.equal(w.row(jobId).state, 'admitted');
+  await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
+  assert.equal(owned(w, jobId, 1), false);
+  w.reopen(); assert.equal(owned(w, jobId, 1), false);
+});
+
+test('admission-live-begin-owner-reader-is-off-the-api-and-refuses-a-foreign-object', async t => {
+  const w = world(t);
+  assert.equal('ownedIntent' in w.admission, false); assert.equal(Object.keys(admissionTransactionInternals(w.admission)).join(), 'ownedIntent');
+  for (const foreign of [{}, { ...w.admission }, null, undefined]) assert.throws(() => admissionTransactionInternals(foreign), TypeError);
+});
+
+test('admission-live-begin-owner-is-not-registered-for-a-refused-or-uncommitted-intent', async t => {
+  const w = world(t), p = w.prepare(), q = w.prepare(0x12); w.control.ready = false;
+  await reject(w.admission.begin(p.input), 'seller_not_ready', 503);
+  assert.equal(w.row(p.input.jobId), null); assert.equal(owned(w, p.input.jobId, 1), false);
+  w.control.ready = true; w.cut('before-commit', () => w.row(q.input.jobId)?.state === 'intent');
+  await assert.rejects(w.admission.begin(q.input), /cut-before-commit/);
+  assert.equal(owned(w, q.input.jobId, 1), false);
+});
+
+test('admission-live-begin-owner-is-kept-through-the-late-policy-settlement', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const w = world(t), gateFor = gatedPolicy(w); w.reopen();
+  const p = w.prepare(), { jobId } = p.input, gate = gateFor(jobId);
+  const begun = w.admission.begin(p.input), rejected = reject(begun, 'seller_budget_unavailable', 503);
+  await gate.entered.promise; t.mock.timers.tick(POLICY_MS); await rejected; await flush();
+  // The outward answer is the deadline; the policy call has not ended, so the failure is recorded but the owner stays.
+  assert.equal(w.row(jobId).state, 'compensating'); assert.equal(owned(w, jobId, 1), true); assert.equal(w.calls.release, 0);
+  gate.barrier.resolve(null); await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
+  assert.equal(owned(w, jobId, 1), false); assert.equal(w.calls.release, 1);
+});
+
+test('admission-live-begin-owner-is-removed-only-by-its-own-begin', async t => {
+  const w = world(t), gateFor = gatedPolicy(w); w.reopen();
+  const a = w.prepare(0x11), b = w.prepare(0x12), gate = gateFor(a.input.jobId);
+  const first = w.admission.begin(a.input), firstRejected = reject(first, 'context_admission_closed', 409);
+  await gate.entered.promise;
+  // Another job's begin ends, a repeated begin of the same job is refused, and C1 lands from outside: none of them touches the owner.
+  await w.admission.begin(b.input); await w.admission.jobEffectMutex(b.input.jobId).run(() => {}); await flush();
+  assert.equal(owned(w, b.input.jobId, 1), false); assert.equal(owned(w, a.input.jobId, 1), true);
+  await reject(w.admission.begin(a.input), 'context_job_closed', 409); assert.equal(owned(w, a.input.jobId, 1), true);
+  w.compensating(a.input.jobId); await flush(); assert.equal(owned(w, a.input.jobId, 1), true);
+  gate.barrier.resolve(null); await firstRejected; await w.admission.jobEffectMutex(a.input.jobId).run(() => {}); await flush();
+  assert.equal(owned(w, a.input.jobId, 1), false); assert.equal(w.row(a.input.jobId).state, 'aborted');   // P09bb's C2-C4 settle it under the same lease
+});
