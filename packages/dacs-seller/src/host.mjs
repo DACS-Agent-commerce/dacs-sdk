@@ -19,7 +19,9 @@
 // is still authorized, instead of holding the paid order for good.
 // Each new session is opened only for a presentation that carries a
 // challenge this host issued for its job and buyer (`issueSessionChallenge`,
-// which the operator hands to the buyer; the first attempt consumes it), on a
+// which the operator hands to the buyer; the first attempt consumes it) into
+// the transport store's one challenge ledger, an interim entry until the host
+// mounts the context routes (SA-3), on a
 // Listing the agent's own revocation check (core checkListingRevocation over
 // the operator's readings) finds not revoked, and under the operator's
 // seller-owned sessionAdmission (session-admission.mjs): both parties' exact
@@ -270,14 +272,8 @@ export async function startSellerHost(options) {
     const transport = join(dataDirectory, 'transport');
     const journalDirectory = join(dataDirectory, JOURNAL_DIRECTORY);
     if (!existsSync(join(dataDirectory, TRANSPORT_STORE_FILE))) assertJournalHoldsNoAccounting(journalDirectory);
-    const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
-    const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
-      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
-    opened.push(() => agent.close());
-    // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
-    for (const { job, reason } of agent.releaseStaleLocks()) {
-      process.stderr.write(`seller-state: released the lock on job ${job} left by a holder that is gone (${reason})\n`);
-    }
+    // The store comes first: its one challenge ledger is the agent's only challenge store, and the agent checks the
+    // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, generation, stopped: stopRequested, contextSessionState: sessionState });
     opened.push(() => store.close());
@@ -285,6 +281,14 @@ export async function startSellerHost(options) {
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
     store.recoverLostContextReservations();
+    const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
+    const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
+      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
+    opened.push(() => agent.close());
+    // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
+    for (const { job, reason } of agent.releaseStaleLocks()) {
+      process.stderr.write(`seller-state: released the lock on job ${job} left by a holder that is gone (${reason})\n`);
+    }
     // An existing path is left to the journal's own checks, which refuse a symlink, a
     // file or a directory others can write, with their detail.
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
@@ -297,9 +301,9 @@ export async function startSellerHost(options) {
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before
     // the parents are synced could come back, after power loss, to state the host
-    // believes was never created and start again empty: seller/ was created by
-    // the durable state, transport/ and wire-journal/ here, and no parent entry
-    // has been synced yet.
+    // believes was never created and start again empty: transport/ and
+    // wire-journal/ were created here, seller/ by the durable state, and no
+    // parent entry has been synced yet.
     await DURABLE_SYNC.directory(transport);
     await DURABLE_SYNC.directory(dataDirectory);
     // The connection the binding was read for must still be the operator's before anything is served.
@@ -384,7 +388,8 @@ export async function startSellerHost(options) {
       seller: agent.claim,
       timeouts: { ...TIMEOUTS },
       // CORE SN-1..SN-4: { jobId, buyer, sessionNonce, issuedAt, expiresAt },
-      // kept durably before it is returned; the buyer's bundle presents it.
+      // kept in the one challenge ledger before it is returned; the buyer's bundle presents it.
+      // The agent's refusals are forwarded, `session_admission_unavailable` when it has no session admission.
       // Once shutdown has begun the host refuses to issue, even while the
       // agent itself is still open for the requests that are draining.
       issueSessionChallenge: (input) => {

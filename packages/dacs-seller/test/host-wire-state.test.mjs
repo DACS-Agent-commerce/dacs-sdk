@@ -64,6 +64,7 @@ async function hostFixture(t) {
   const f = await commitmentFixture(t);
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-host-wire-state-'));
   const { nativeArtifactAnchor, ...config } = f.config;
+  delete config.challengeLedger; // the host builds its own ledger
   delete config.durableDirectory;
   delete config.commitOnSignature;
   const api = await privateModule(HOST_URL, ['setTestSync', 'setTestWire'], (source) => {

@@ -1,9 +1,8 @@
 // The kit's one durable challenge ledger (K1). It issues seller challenge nonces, consumes a nonce on
 // its first authenticated presentation attempt, records which attempt owns the validation, and keeps
 // either the one accepted presentation with its admission or the definite refusal.
-// The transport store builds it on its own SQLite handle for the host and the context route (the agent keeps its own
-// ledgers until it moves here). The caller owns the SQLite handle, the immediate-transaction helper, the startup lock
-// and the terminal-state view.
+// The transport store builds it on its own SQLite handle for the host, the context route and the seller agent. The
+// caller owns the SQLite handle, the immediate-transaction helper, the startup lock and the terminal-state view.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
@@ -97,6 +96,9 @@ function acceptedText(record, row) {
  * `attempt(input)` returns `{ kind: 'validate', owner }`, `{ kind: 'continuation', accepted }` or
  * `{ kind: 'refused', code, status, cause? }`. `accept` and `recordFailed` return whether the row was
  * `attempted` by that owner and changed; their `Within` forms need an open transaction and open none.
+ * `accept` also binds the job to the accepted presentation in the same transaction and throws
+ * SellerTransportError `seller_job_bound` when another nonce already bound the job. `jobBinding(jobId)`
+ * returns the detached frozen `{ jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt }` or null.
  * `closeLostValidations()` returns how many earlier-generation attempts it closed. `retained(nonce)`
  * returns a detached frozen row or null; its caller compares the buyer and the exact bundle bytes.
  * Construction throws TypeError for an unusable port, generation or limit.
@@ -113,7 +115,10 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     origin TEXT NOT NULL CHECK (origin IN ('route', 'operator')), issuedAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('issued', 'attempted', 'accepted', 'failed')),
     presentationHash TEXT, owner TEXT, attemptedAt INTEGER, failure TEXT, accepted TEXT);
-    CREATE INDEX IF NOT EXISTS kit_challenges_job ON kit_challenges(jobId)`);
+    CREATE INDEX IF NOT EXISTS kit_challenges_job ON kit_challenges(jobId);
+    CREATE TABLE IF NOT EXISTS kit_job_bindings (
+    jobId TEXT PRIMARY KEY, nonce TEXT NOT NULL, buyer TEXT NOT NULL, presentationHash TEXT NOT NULL,
+    buyerBundleHash TEXT NOT NULL, admittedAt INTEGER NOT NULL)`);
   const one = (sql, ...args) => db.prepare(sql).get(...args);
   const all = (sql, ...args) => db.prepare(sql).all(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args).changes;
@@ -259,7 +264,17 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (row === null) return false;
     const text = acceptedText(record, row);
     if (text === null) fail('context_challenge_attempt_invalid');
-    return run("UPDATE kit_challenges SET state = 'accepted', accepted = ? WHERE nonce = ? AND state = 'attempted' AND owner = ?", text, nonce, row.owner) === 1;
+    if (one('SELECT 1 FROM kit_job_bindings WHERE jobId = ?', row.jobId)) fail('seller_job_bound');
+    if (run("UPDATE kit_challenges SET state = 'accepted', accepted = ? WHERE nonce = ? AND state = 'attempted' AND owner = ?", text, nonce, row.owner) !== 1) return false;
+    const { buyerBundleHash, admittedAt } = JSON.parse(text);
+    run('INSERT INTO kit_job_bindings (jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt) VALUES (?, ?, ?, ?, ?, ?)',
+      row.jobId, nonce, row.buyer, row.presentationHash, buyerBundleHash, admittedAt);
+    return true;
+  }
+
+  function jobBinding(jobId) {
+    const binding = typeof jobId === 'string' ? one('SELECT * FROM kit_job_bindings WHERE jobId = ?', jobId) : undefined;
+    return binding ? deepFreeze({ ...binding }) : null;
   }
 
   function recordFailedWithin(owner, nonce, code, status = 409) {
@@ -286,5 +301,6 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     recordFailedWithin,
     closeLostValidations,
     retained,
+    jobBinding,
   });
 }

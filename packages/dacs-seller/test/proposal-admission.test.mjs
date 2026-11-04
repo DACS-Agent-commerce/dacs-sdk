@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {identityBundleHash,canonicalize,sha256Hex} from '@kynesyslabs/dacs';
+import Database from 'better-sqlite3';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
 import {testWallet,NOW,JOB,buyer,seller} from './helpers/protocol-fixture.mjs';
 import {fixtureIdentityBundle} from './fixtures/listings.mjs';
@@ -8,28 +9,28 @@ import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {SESSION_CHALLENGE_LIFETIME_MS} from '../src/dacs/session-admission.mjs';
 import {listingPin} from '../src/dacs/purchase-protocol.mjs';
 import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
+import {admittedSession} from './helpers/challenge-api.mjs';
 const staged=error=>error.code==='proposal_not_assembled';
 test('accepted presentation and exact admission are atomically retained and replay after restart',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)}),kept=state.attemptChallenge(input.buyerIdentityBundle.sessionNonce,{presentationHash:'b'.repeat(64)});state.close();
- assert.deepEqual(kept.attempt.accepted.buyerBundle,input.buyerIdentityBundle);assert.equal(kept.attempt.accepted.buyerBundleHash,identityBundleHash(input.buyerIdentityBundle));
- assert.equal(kept.attempt.accepted.admission.disposition,'admitted');assert.equal(kept.attempt.admitted,true);
+ const kept=f.store.challenges.retained(input.buyerIdentityBundle.sessionNonce);
+ assert.equal(kept.accepted.buyerBundleText,canonicalize(input.buyerIdentityBundle));assert.equal(kept.accepted.buyerBundleHash,identityBundleHash(input.buyerIdentityBundle));
+ assert.equal(kept.accepted.admission.disposition,'admitted');assert.equal(kept.state,'accepted');
  const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),staged);assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,1);assert.equal(f.signed.some(text=>text.startsWith('dacs-agreement:')),false);
 });
-for(const change of ['buyer','challenge'])test(`a job accepted before a restart refuses another ${change} without admitting it again`,async t=>{
- const f=await proposalAdmissionFixture(t),agent=await f.open();await assert.rejects(agent.stagedProposal(await f.input(agent)),staged);agent.close();
- const fresh=await f.open(),party=change==='buyer'?testWallet(44):buyer;
- await assert.rejects(fresh.stagedProposal(await f.input(fresh,JOB,party)),error=>error.code==='job_taken');
+test('a job accepted before a restart refuses another buyer without admitting it again',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open();
+ const first=await f.input(agent),second=await f.input(agent,JOB,testWallet(44));
+ await assert.rejects(agent.stagedProposal(first),staged);agent.close();
+ const fresh=await f.open();
+ await assert.rejects(fresh.stagedProposal(second),error=>error.code==='job_taken');
  assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,1);
 });
-test('the durable job binding refuses another admitted bundle atomically',async t=>{
- const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
- const other=testWallet(44),nonce='c'.repeat(64),otherBundle=fixtureIdentityBundle(other,NOW),hash=sha256Hex(canonicalize(otherBundle));
- state.issueChallenge(nonce,{jobId:JOB,buyer:other.claim,sessionNonce:nonce,issuedAt:NOW,expiresAt:NOW+1000});
- state.attemptChallenge(nonce,{jobId:JOB,presentationHash:hash});
- assert.throws(()=>state.admitChallenge(nonce,hash,{buyerBundle:otherBundle,buyerBundleHash:identityBundleHash(otherBundle),admission:{},admittedAt:NOW}),error=>error.code==='seller_job_bound');
- state.close();
+test('a job accepted before a restart is closed to another challenge',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open();await assert.rejects(agent.stagedProposal(await f.input(agent)),staged);agent.close();
+ const fresh=await f.open();
+ await assert.rejects(fresh.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='context_job_closed');
+ assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,1);
 });
 test('failed proof consumes its challenge before validation and stays consumed after restart',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),good=await f.input(agent),bad=structuredClone(good);bad.buyerIdentityBundle.presentation.signatures[0].signature='A'.repeat(86);
@@ -61,20 +62,23 @@ test('a stalled admission is aborted at its deadline without proposal signing',a
  f.admission.sessionAdmission.admit=(_input,options)=>{limits=options;entered();return new Promise(()=>{});};t.mock.timers.enable({apis:['setTimeout']});const waiting=assert.rejects(agent.stagedProposal(input),error=>error.code==='session_admission_unavailable'&&error.cause?.name==='TimeoutError');await started;t.mock.timers.tick(10001);await waiting;assert.equal(limits.signal.aborted,true);assert.equal(limits.maxBytes,65536);
 });
 
-test('legacy admitted flags without the exact retained presentation hold without readmitting',async t=>{
- const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)}),hash=sha256Hex(canonicalize(input.buyerIdentityBundle));state.attemptChallenge(input.buyerIdentityBundle.sessionNonce,{presentationHash:hash});state.admitChallenge(input.buyerIdentityBundle.sessionNonce,hash);state.close();
- const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),e=>e.code==='session_admission_unavailable');assert.equal(f.admission.calls.some(([method])=>method==='admit'),false);
+test('an accepted row without its exact retained presentation holds without readmitting',async t=>{
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
+ const db=new Database(f.storePath);try{db.prepare("UPDATE kit_challenges SET accepted = '{}' WHERE state = 'accepted'").run();}finally{db.close();}
+ const fresh=await f.open();await assert.rejects(fresh.stagedProposal(input),e=>e.code==='session_admission_unavailable');assert.equal(f.admission.calls.filter(([method])=>method==='admit').length,1);
 });
 
 // A proposal stage session has no Vet evidence to authenticate it, so the
 // accepted presentation and its validated admission answer are the only proof
-// this seller admitted it. A bare legacy `admitted` flag is not enough.
+// this seller admitted it. A row accepted for other bytes is not enough.
 test('a saved proposal stage session without its accepted presentation does not restore',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)}),hash=sha256Hex(canonicalize(input.buyerIdentityBundle));
- state.attemptChallenge(input.buyerIdentityBundle.sessionNonce,{presentationHash:hash});state.admitChallenge(input.buyerIdentityBundle.sessionNonce,hash);
- await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));state.close();
+ const bundle=input.buyerIdentityBundle,hash=sha256Hex(canonicalize(bundle)),other=fixtureIdentityBundle(buyer,NOW+1);
+ const {owner}=f.store.challenges.attempt({path:'proposal',nonce:bundle.sessionNonce,jobId:JOB,buyer:buyer.claim,challengeScopeHash:null,presentationHash:hash});
+ const admission=admittedSession({jobId:JOB,bundle:other,bundleHash:identityBundleHash(other),seller:seller.claim,listingPin:listingPin(f.listing)});
+ assert.equal(f.store.challenges.accept(owner,bundle.sessionNonce,{buyerBundleText:canonicalize(other),buyerBundleHash:identityBundleHash(other),admission,admittedAt:NOW,firstAdmission:{challengeExpiresAt:NOW,generatedAt:NOW,checkedAt:NOW}}),true);
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:identityBundleHash(bundle),stage:'proposed'}));state.close();
  await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/accepted presentation/.test(error.message));
 });
 
@@ -127,9 +131,9 @@ test('a closed agent refuses proposal admission before it consumes the challenge
 test('the native profile issues no challenge without its session admission',async t=>{
  const f=await proposalAdmissionFixture(t);
  const missing=await createSellerAgent({...f.config,maxJobs:1,sessionAdmission:null});t.after(()=>missing.close());
- await assert.rejects(missing.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_admission_required'&&error.status===503);
+ await assert.rejects(missing.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_admission_unavailable'&&error.status===503);
  missing.close();
- // A refused issuance retains nothing: the one live issuance slot is still free.
+ // A refused issuance retains nothing: the same job and buyer still issue.
  const agent=await createSellerAgent({...f.config,maxJobs:1});t.after(()=>agent.close());
  assert.ok((await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim})).sessionNonce);
 });

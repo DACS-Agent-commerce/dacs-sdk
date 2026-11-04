@@ -854,3 +854,40 @@ test('challenge-snapshot-isolation', (t) => {
   assert.throws(() => { continuation.accepted.admission.jobId = 'changed'; }, TypeError);
   assert.equal(w.ledger.retained(nonce).accepted.admission.jobId, job('one'));
 });
+
+test('ledger-accept-job-binding-atomic-cut', (t) => {
+  const w = world(t), { sessionNonce } = w.issue(), { owner } = w.attempt(sessionNonce), record = w.record(sessionNonce);
+  const cuts = {
+    'binding insert': "CREATE TRIGGER TEST_cut BEFORE INSERT ON kit_job_bindings BEGIN SELECT RAISE(ABORT, 'TEST cut'); END",
+    'acceptance update': "CREATE TRIGGER TEST_cut BEFORE UPDATE OF state ON kit_challenges WHEN NEW.state = 'accepted' BEGIN SELECT RAISE(ABORT, 'TEST cut'); END",
+  };
+  for (const [point, trigger] of Object.entries(cuts)) {
+    w.db.exec(trigger);
+    assert.throws(() => w.ledger.accept(owner, sessionNonce, record), /TEST cut/, point);
+    w.db.exec('DROP TRIGGER TEST_cut');
+    w.reopen();
+    assert.equal(w.ledger.retained(sessionNonce).state, 'attempted', point);
+    assert.deepEqual(w.ledger.retained(sessionNonce).owner, owner, point);
+    assert.equal(w.ledger.jobBinding(job('one')), null, point);
+  }
+  assert.equal(w.ledger.accept(owner, sessionNonce, record), true);
+  w.reopen();
+  assert.equal(w.ledger.retained(sessionNonce).state, 'accepted');
+  assert.deepEqual(w.ledger.jobBinding(job('one')), { jobId: job('one'), nonce: sessionNonce, buyer: BUYER, presentationHash: PRESENTATION,
+    buyerBundleHash: record.buyerBundleHash, admittedAt: record.admittedAt });
+});
+
+test('a job already bound to one accepted presentation refuses a second acceptance and keeps the binding', (t) => {
+  const w = world(t), first = w.issue();
+  w.control.now += 1;
+  const second = w.ledger.issueForOperator({ jobId: job('one'), buyer: BUYER });
+  const firstOwner = w.attempt(first.sessionNonce).owner;
+  const secondOwner = w.attempt(second.sessionNonce, { path: 'proposal', challengeScopeHash: null, presentationHash: hash('another presentation') }).owner;
+  assert.equal(w.ledger.accept(firstOwner, first.sessionNonce, w.record(first.sessionNonce)), true);
+  const kept = w.ledger.jobBinding(job('one'));
+  refusal(() => w.ledger.accept(secondOwner, second.sessionNonce, w.record(second.sessionNonce)), 'seller_job_bound');
+  assert.deepEqual(w.ledger.jobBinding(job('one')), kept);
+  assert.equal(w.ledger.retained(second.sessionNonce).state, 'attempted');
+  assert.equal(w.ledger.recordFailed(secondOwner, second.sessionNonce, 'job_taken'), true);
+  assert.equal(w.ledger.jobBinding(job('two')), null);
+});
