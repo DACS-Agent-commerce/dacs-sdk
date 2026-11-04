@@ -24,11 +24,14 @@ export function party(seed) {
 }
 export const encode = (payload, signer, domain) => Buffer.from(canonicalize({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url') })).toString('base64url');
 export const code = (expected) => (error) => error.code === expected;
-export async function world(t) {
+export const PUBLIC_ENDPOINT = 'https://127.0.0.1:19001';
+export const validReceipt =Object.assign(async () => 'valid', { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
+// pin, agreementHash, ready and readCommitmentReceipt (null: a proof without a receipt reader) let a test commit a real purchase.
+export async function world(t, { pin: committedPin, agreementHash = sha256Hex('agreement'), ready = true, readCommitmentReceipt = validReceipt } = {}) {
   setPurchaseAdmission('testnet-tp1');
   t.after(() => setPurchaseAdmission('held'));
   const buyer = party(1), seller = party(2), session = party(3), other = party(4), local = { ...LOCAL };
-  const state = { time: T0, gate: null, failure: null, signs: [] };
+  const state = { time: T0, gate: null, failure: null, signs: [], listingReaderFailure: null, listingExpiresAt: Number.MAX_SAFE_INTEGER };
   const binding = await wire.bindTp1Profile({
     record: wire.TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: async (scope) => {
       if (state.gate)
@@ -41,23 +44,27 @@ export async function world(t) {
       };
     }
   });
-  const admission = { binding, currentLocal: () => ({ ...local }) }, pin = { listingId: 'tp1-vector-listing', version: 1, contentHash: sha256Hex('contracts-vector-listing') };
-  const publicEndpoint = 'https://127.0.0.1:19001';
+  const admission = { binding, currentLocal: () => ({ ...local }) }, pin = committedPin ?? { listingId: 'tp1-vector-listing', version: 1, contentHash: sha256Hex('contracts-vector-listing') };
+  const publicEndpoint = PUBLIC_ENDPOINT;
   const document = await wire.signDiscoveryDocument({
     format: 'dacs-seller-discovery/v1', profile: binding.profile, seller: seller.claim, publicEndpoint,
-    transport: ['dacs-seller-http/v1'], listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: T0, expiresAt: T0 + 120000
+    transport: ['dacs-seller-http/v1'], listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready, issuedAt: T0, expiresAt: T0 + 120000
   }, seller, binding, local);
   const endpointProof = await wire.verifyEndpointProof(document, {
-    binding, local, now: T0, listing: { seller: seller.claim, publicEndpoint, listingPin: pin }, readCommitmentReceipt: async () => 'valid',
-    readListingEligibility: async (scope) => ({
-      seller: scope.seller, publicEndpoint: scope.publicEndpoint, listingPin: scope.listingPin, pricingKind: 'fixed', negotiation: 'negotiate-fixed-price', commitPhase: 'commit-payee-bound-agreement', rail: 'pay-dem', delivery: { channel: 'demos-storage', address: 'dacs4:deliverable:{jobId}' }, service: { kind: 'fixed-text' }, output: { envelope: 'dacs-chatgpt-plugin/devnet-purchased-report', reportVersion: '1', mediaType: 'text/plain; charset=utf-8', maxCharacters: 16384, synchronous: true }, buyerRequestInput: false, notBefore: 0, expiresAt: Number.MAX_SAFE_INTEGER
-    })
+    binding, local, now: T0, listing: { seller: seller.claim, publicEndpoint, listingPin: pin }, ...(readCommitmentReceipt ? { readCommitmentReceipt } : {}),
+    readListingEligibility: async (scope) => {
+      if (state.listingReaderFailure)
+        throw state.listingReaderFailure;
+      return {
+        seller: scope.seller, publicEndpoint: scope.publicEndpoint, listingPin: scope.listingPin, pricingKind: 'fixed', negotiation: 'negotiate-fixed-price', commitPhase: 'commit-payee-bound-agreement', rail: 'pay-dem', delivery: { channel: 'demos-storage', address: 'dacs4:deliverable:{jobId}' }, service: { kind: 'fixed-text' }, output: { envelope: 'dacs-chatgpt-plugin/devnet-purchased-report', reportVersion: '1', mediaType: 'text/plain; charset=utf-8', maxCharacters: 16384, synchronous: true }, buyerRequestInput: false, notBefore: 0, expiresAt: state.listingExpiresAt
+      };
+    }
   });
   const payload = {
     version: '1', kind: 'seller-session-delegation', buyer: buyer.claim, sessionPublicKey: session.raw, seller: seller.claim, listingPin: pin, jobId: JOB, notBefore: T0 - 30000, expiresAt: T0 + 1800000, profile: binding.profile
   };
   const delegation = { payload, signature: buyer.sign(await wire.sellerSessionDelegationSigningBytes(payload, binding, local)).toString('base64url') };
-  const job = { jobId: JOB, listingPin: pin, agreementHash: sha256Hex('agreement'), deadline: T0 + 3600000, profile: binding.profile };
+  const job = { jobId: JOB, listingPin: pin, agreementHash, deadline: T0 + 3600000, profile: binding.profile };
   const sessionSigner = { claim: session.claim, sign(bytes) {
       state.signs.push(Buffer.from(bytes));
       return session.sign(bytes);
@@ -68,7 +75,7 @@ export async function world(t) {
   return { buyer, seller, session, other, local, state, binding, admission, pin, endpointProof, publicEndpoint, payload, delegation, job, options, auth, createSellerWireAuthentication };
 }
 export const request = (w, path = wire.DACS_SELLER_HTTP_PATHS.state) => w.auth.request(path, { transportIdentity: { jobId: JOB } }, JSON.stringify({ transportIdentity: { jobId: JOB } }));
-export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false } = {}) {
+export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing } = {}) {
   const { createSourceDemoSellerTransport } = await import('../../src/dacs/source-demo-seller-transport.mjs');
   const { createProtocolPurchases } = await import('../../src/index.mjs');
   let policies = 0;
@@ -78,7 +85,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
       return policy(op);
     }, endpointProofFor: () => w.endpointProof
   });
-  const listing = fixtureListing(w.seller, { now: T0 });
+  const listing = signedListing ?? fixtureListing(w.seller, { now: T0 });
   const terms = {
     buyer: { wallet: w.buyer.address }, seller: { claim: w.seller.claim, payee: w.seller.address }, listing: { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) }, price: { amount: '2.5', currency: 'DEM', amountOs: '2500000000' }, rail: 'demos-native:DEM', protocol: {
       jobId: JOB, profile: 'dacs-chatgpt-plugin/sr2-wallet-agreement/v1', sellerAgent: w.publicEndpoint, sellerTransport: declaration ?? transport.declaration, wireProfile: w.binding.profile
