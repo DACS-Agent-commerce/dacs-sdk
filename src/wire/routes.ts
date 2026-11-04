@@ -83,12 +83,12 @@ export function findDacsSellerHttpRoute(method: string, target: string): DacsSel
   return DACS_SELLER_HTTP_ROUTES.find((r) => r.method === method && r.path === target) ?? null;
 }
 
-const PRE_AGREEMENT_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_PATHS.contextChallenge]);
+const PRE_AGREEMENT_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_PATHS.contextChallenge, DACS_SELLER_HTTP_PATHS.context]);
 
 /**
  * Whether a route is used before any Agreement exists. Its request issues or
  * consumes a seller nonce, so `checkWireRequest` refuses it and it is never
- * answered as readback. Not exported from the package index.
+ * answered as readback.
  */
 export const isPreAgreementRoute = (path: string): boolean => PRE_AGREEMENT_PATHS.includes(path);
 
