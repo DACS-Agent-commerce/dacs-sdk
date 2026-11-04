@@ -1,6 +1,7 @@
 import { types as nodeTypes } from "node:util";
 
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
+import { readBoundedDemosJson } from "../rails/demosRpc.js";
 import { normalizeDemosNativeAddress } from "../rails/payDem.js";
 import type { DemosTransferObservation } from "./paymentIntake.js";
 
@@ -128,6 +129,14 @@ function safeUint(value: unknown): number | null {
       !Object.is(value, -0)
     ? value
     : null;
+}
+
+function recordNonce(value: unknown): number | null {
+  if (typeof value === "string" && INTEGER_RE.test(value)) {
+    const parsed = Number(value);
+    return safeUint(parsed);
+  }
+  return safeUint(value);
 }
 
 function positiveIntegerString(value: string): string | null {
@@ -399,8 +408,17 @@ export async function observePayDemTransferCore(
     return invalid("confirmed block timestamp is malformed");
   }
 
+  const nonce = recordNonce(content.nonce);
+  if (transaction.status === "confirmed" && nonce === null) {
+    return invalid("confirmed transaction has no valid signed nonce");
+  }
+
   return {
     status: "included",
+    // Only the confirmed transaction record proves execution. The other
+    // accepted inclusion labels retain their legacy observation shape.
+    ...(transaction.status === "confirmed" && nonce !== null
+      ? { execution: "executed" as const, nonce } : {}),
     txHash: requestedHash,
     payer,
     payee,
@@ -426,64 +444,6 @@ function validMaxResponseBytes(value: number | undefined): number {
     );
   }
   return value;
-}
-
-/** Decode JSON with a hard post-decompression byte limit. */
-async function readBoundedJson(
-  response: Response,
-  maxResponseBytes: number,
-  signal: AbortSignal,
-): Promise<unknown> {
-  const contentLength = response.headers.get("content-length");
-  if (contentLength !== null) {
-    if (!INTEGER_RE.test(contentLength) ||
-        BigInt(contentLength) > BigInt(maxResponseBytes)) {
-      const error = new Error("Demos RPC response exceeds maxResponseBytes");
-      // A response can already be available even when an injected fetch does
-      // not associate its body with the request AbortSignal. Cancel it here,
-      // before a reader is acquired, so a rejected declaration cannot leave
-      // an unbounded producer running in the background.
-      if (response.body !== null) {
-        void response.body.cancel(error).catch(() => undefined);
-      }
-      throw error;
-    }
-  }
-  if (response.body === null) {
-    throw new Error("Demos RPC returned an empty response body");
-  }
-
-  const reader = response.body.getReader();
-  const cancelReader = () => {
-    void reader.cancel(signal.reason).catch(() => undefined);
-  };
-  signal.addEventListener("abort", cancelReader, { once: true });
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  let decoded = "";
-  let bytesRead = 0;
-  try {
-    while (true) {
-      const item = await reader.read();
-      if (item.done) break;
-      bytesRead += item.value.byteLength;
-      if (bytesRead > maxResponseBytes) {
-        throw new Error("Demos RPC response exceeds maxResponseBytes");
-      }
-      decoded += decoder.decode(item.value, { stream: true });
-    }
-    decoded += decoder.decode();
-    return JSON.parse(decoded) as unknown;
-  } catch (cause) {
-    // Do not rely on nodeCall's later controller.abort(): this reader removes
-    // its abort listener and releases its lock in finally. Cancel while the
-    // reader still owns the stream so size, UTF-8, and JSON failures cannot
-    // leak a late body producer.
-    void reader.cancel(cause).catch(() => undefined);
-    throw cause;
-  } finally {
-    signal.removeEventListener("abort", cancelReader);
-    reader.releaseLock();
-  }
 }
 
 /**
@@ -557,7 +517,7 @@ export function createPayDemSellerObserver(
           if (!response.ok) {
             throw new Error(`Demos RPC returned HTTP ${response.status}`);
           }
-          const payload = await readBoundedJson(
+          const payload = await readBoundedDemosJson(
             response,
             maxResponseBytes,
             controller.signal,
