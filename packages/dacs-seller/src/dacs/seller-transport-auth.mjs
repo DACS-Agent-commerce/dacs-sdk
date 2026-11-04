@@ -312,12 +312,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       ${jobId === undefined ? '' : 'j.job = ? AND '}
       NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_transactions t WHERE t.job = j.job)
+      AND NOT EXISTS (SELECT 1 FROM kit_reservations k WHERE k.jobId = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_slots s WHERE s.slot >= j.job || ':' AND s.slot < j.job || ';')
       ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
       LIMIT ?`).all(...(jobId === undefined ? [] : [jobId]), needed).map(row => row.job);
     if (time === undefined || jobs.length === needed) return jobs;
     // Complete terminal jobs retire only after every nonce and context retention window.
-    for (const { job } of db.prepare(`SELECT job FROM peer_jobs j WHERE NOT EXISTS (
+    for (const { job } of db.prepare(`SELECT job FROM peer_jobs j WHERE NOT EXISTS (SELECT 1 FROM kit_reservations k WHERE k.jobId = j.job) AND NOT EXISTS (
       SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = j.job
       AND (e.state IS NULL OR e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n
         LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = m.effect

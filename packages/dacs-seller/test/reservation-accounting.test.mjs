@@ -210,6 +210,14 @@ test('accounting keeps a fresh job row and its tuple together, with the identity
   assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
 });
 
+test('a charged accounting job is not reclaimed by the old reserve path at job capacity', async t => {
+  const f = await accountingFixture(t, { maxJobs: 1 });
+  await f.reserve(f.args());
+  assert.throws(() => f.store().reserve(f.payload({ jobId: JOB2 }), {}, { keepProfile: FIXTURE_PROFILE }), refused('peer_job_capacity', 503));
+  f.reopen();
+  assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.rows().length, 1);
+});
+
 test('accounting leaves no job row when the tuple write after it fails', async t => {
   const f = await accountingFixture(t);
   f.db.exec("CREATE TRIGGER no_tuple BEFORE INSERT ON kit_purchase_profiles BEGIN SELECT RAISE(ABORT, 'TEST tuple write failed'); END");
