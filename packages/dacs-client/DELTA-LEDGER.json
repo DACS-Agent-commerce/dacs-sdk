@@ -5833,6 +5833,22 @@
           "after": "065eeb0112947f2736a21250173b49ecac6e0393"
         }
       ]
+    },
+    {
+      "delta": "D19",
+      "subject": "delta(client): D19 pin every scope clause of native payment evidence with the real SDK verifier",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/readback-review-loader.mjs",
+          "before": "0fd55490fb08991a2c021ccc4e48679f0a2b00b6",
+          "after": "62c46293df16bbd4ffc8fbddde460a12406dbda2"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52",
+          "after": "aa0be667f8a71c8b7a687588757106bef3ca3cd8"
+        }
+      ]
     }
   ]
 }
