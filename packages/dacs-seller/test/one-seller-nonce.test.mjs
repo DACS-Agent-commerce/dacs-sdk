@@ -184,7 +184,9 @@ test(card('T11'), async t => {
 
 async function hostFixture(t) {
   const f = await commitmentFixture(t), dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-one-nonce-host-'));
-  const { durableDirectory, commitOnSignature, nativeArtifactAnchor, ...config } = f.config;
+  const config = { ...f.config };
+  const { nativeArtifactAnchor } = config;
+  for (const key of ['durableDirectory', 'commitOnSignature', 'nativeArtifactAnchor']) delete config[key];
   let current;
   const api = await privateModule(new URL('../src/host.mjs', import.meta.url), ['testStore', 'setStartupFailure'], source =>
     source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', 'const journal = Object.freeze({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());'));

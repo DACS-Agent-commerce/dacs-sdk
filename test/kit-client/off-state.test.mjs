@@ -48,9 +48,21 @@ test('P06 CI wiring: ci.yml gains exactly one `run: npm run kit-client:test` ste
   assert.ok(position(HARNESS_STEP) > position(SELLER_STEP), 'runs after the seller tests');
 });
 
+test('P06 runner wiring: the kit-client:test script names the harness test files, so the repository file-selection check finds every one', () => {
+  const command = JSON.parse(repositoryFile('package.json')).scripts['kit-client:test'];
+  assert.deepEqual(command.match(/\S+\.test\.mjs/gu), ['test/kit-client/*.test.mjs']);
+});
+
+test('P06 runner wiring: the runner refuses to start without test files instead of running every test in the repository', () => {
+  const child = spawnSync(process.execPath, ['scripts/run-kit-client-tests.mjs'], { cwd: REPOSITORY_ROOT, encoding: 'utf8', timeout: CHILD_DEADLINE_MS });
+  assert.equal(child.status, 1);
+  assert.match(child.stderr, /no test files given/);
+});
+
 /** Runs node on `args` in a child with this process's environment plus `env`, minus the test runner's own context, so a child `--test` run is a runner of its own. */
 function spawnNode(args, env) {
-  const { NODE_TEST_CONTEXT, ...inherited } = process.env;
+  const inherited = { ...process.env };
+  delete inherited.NODE_TEST_CONTEXT;
   return spawnSync(process.execPath, ['--experimental-vm-modules', ...args], { cwd: REPOSITORY_ROOT, encoding: 'utf8', timeout: CHILD_DEADLINE_MS, env: { ...inherited, ...env } });
 }
 

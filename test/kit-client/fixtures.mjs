@@ -41,7 +41,8 @@ export const buyerBundle = () => presentedBundle(BUYER, { presentedAt: T0, nonce
 
 /** A Listing signed by SELLER whose seller identity is K4-B1. */
 export async function k4Listing() {
-  const { signature, ...draft } = fixtureListing(SELLER, { now: T0 });
+  const draft = { ...fixtureListing(SELLER, { now: T0 }) };
+  delete draft.signature;
   draft.seller.identity = listingSellerBundle();
   return signComponentArtifact(draft, ARTIFACT_SEPARATORS.Listing, { signer: SELLER.claim, algorithm: 'ed25519', sign: SELLER.signBytes });
 }
