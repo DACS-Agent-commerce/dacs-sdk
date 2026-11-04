@@ -25,21 +25,40 @@
 // seller-owned sessionAdmission (session-admission.mjs): both parties' exact
 // profile and the Vet records the Agreement references. It does not mount the
 // context route itself.
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync } from 'node:fs';
+// Before it opens anything the host binds the SDK's approved TP-1 identity
+// record over the operator's `tp1Network` ({ connection(), readAuthority }); no
+// option, environment variable or file names a record. It then checks the data
+// directory's format marker (kit-format.json) and opens the wire request journal
+// at <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
+// refuses startup. No route signs or reserves through the binding or the journal yet.
+import { existsSync, lstatSync, mkdirSync, opendirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
+import { TP1_APPROVED_IDENTITY_RECORD, WireError, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
+import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
+import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
-  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission']);
+  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network']);
 const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
+const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
+// The startup binding read is bounded; a later answer grants nothing.
+const TP1_AUTHORITY_TIMEOUT_MS = 10000;
+// One journal for every seller route; its lease must exceed the 240 s context step.
+const KIT_JOURNAL_LEASE_MS = 300000;
+const JOURNAL_DIRECTORY = 'wire-journal';
+const TRANSPORT_STORE_FILE = join('transport', 'transport.sqlite');
+// The journal's nonce-key (`k-`) and operation (`o-`) files: reservations a fresh kit store knows nothing of.
+const JOURNAL_ACCOUNTING_FILE = /^[ko]-/;
 const LOOPBACK = new Set(['127.0.0.1', '::1']);
 // Deadlines for reading a request; the handler bounds the body itself.
 const TIMEOUTS = Object.freeze({ headersTimeout: 10000, requestTimeout: 15000, keepAliveTimeout: 5000 });
@@ -143,14 +162,45 @@ function privateDirectory(path) {
   }
 }
 
-// Make the entries a directory names durable. SQLite's FULL synchronous mode
-// syncs the database file itself, not the directory entry that names it, so a
-// host that creates seller/ or transport/ and answers an order before the
-// parents are synced can come back, after power loss, to a directory it
-// believes was never created and start again with empty state.
-function syncDirectory(path) {
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY);
-  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+function checkTp1Network(tp1Network) {
+  if (tp1Network === null || typeof tp1Network !== 'object' || Array.isArray(tp1Network)) throw new TypeError('tp1Network must be an object');
+  const unknown = Object.keys(tp1Network).filter((key) => !TP1_NETWORK_KEYS.includes(key));
+  if (unknown.length) throw new TypeError(`unknown tp1Network option: ${unknown.join(', ')}`);
+  if (TP1_NETWORK_KEYS.some((key) => typeof tp1Network[key] !== 'function')) throw new TypeError('tp1Network needs a connection() and a readAuthority function');
+}
+
+// The binding over the SDK's approved record and the operator's current connection, read once and
+// within 10,000 ms. Only this deadline is `tp1_authority_timeout` (the timeout is its cause); any
+// other failure, a reader's own TimeoutError included, is the reader's or the binding's own error.
+async function bindApprovedProfile(tp1Network) {
+  const bind = () => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: tp1Network.connection(), readAuthority: tp1Network.readAuthority });
+  try { return await boundedCall(bind, { timeoutMs: TP1_AUTHORITY_TIMEOUT_MS }); } catch (error) {
+    if (isBoundedCallTimeout(error)) throw new WireError('tp1_authority_timeout', 500, undefined, error);
+    throw error;
+  }
+}
+
+const journalAccountingMismatch = (detail, cause) => Object.assign(
+  new Error(`kit_journal_accounting_mismatch: ${detail}`, cause === undefined ? undefined : { cause }), { code: 'kit_journal_accounting_mismatch' });
+
+// Until startup reconciles the journal with the store, a fresh kit store must not meet a journal
+// that already holds reservations. Stops at the first such entry; nothing is deleted. A journal that
+// cannot be listed refuses with its cause. A missing or non-directory path is left to the journal's own checks.
+function assertJournalHoldsNoAccounting(journalDirectory) {
+  let directory;
+  try { directory = opendirSync(journalDirectory); } catch (cause) {
+    if (cause.code === 'ENOENT' || cause.code === 'ENOTDIR') return;
+    throw journalAccountingMismatch('the wire journal cannot be listed', cause);
+  }
+  let held = null;
+  try {
+    try {
+      for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+        if (JOURNAL_ACCOUNTING_FILE.test(entry.name)) { held = entry.name; break; }
+      }
+    } finally { directory.closeSync(); }
+  } catch (cause) { throw journalAccountingMismatch('the wire journal cannot be listed', cause); }
+  if (held !== null) throw journalAccountingMismatch(`${JOURNAL_DIRECTORY}/${held} exists but the kit store is new`);
 }
 
 // Resolves once the host listens: { url, listingPin, seller, timeouts,
@@ -161,6 +211,12 @@ function syncDirectory(path) {
 // unknown, malformed or not private, and with the startup error otherwise
 // (carrying `cleanupError` when cleanup fails; an AggregateError with the
 // startup error as `cause` when that error cannot carry the property).
+// The startup errors include the binding's own (`tp1_*`, with the reader's
+// error kept as the cause; `tp1_authority_timeout` after 10,000 ms), which come
+// before the state lock and any file; `kit_store_format_unsupported` for a data
+// directory from an older kit format; `kit_journal_accounting_mismatch` for a
+// new kit store over a journal that already holds reservations; and the
+// journal's own `seller_replay_guard_invalid` with its detail.
 export async function startSellerHost(options) {
   assertKitOperationAdmitted('startSellerHost');
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('seller host options must be an object');
@@ -169,7 +225,7 @@ export async function startSellerHost(options) {
   const missing = REQUIRED.filter((key) => options[key] == null);
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
-    nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS,
+    nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS,
     host = '127.0.0.1', port = 0, now = () => Date.now() } = options;
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
@@ -184,6 +240,9 @@ export async function startSellerHost(options) {
   }
   // CORE §5.1: the Deliverable resume, when there is one, comes only from the journal whose guarded submit the capability is.
   deliverableJournalFor(nativeDemDelivery, resumeDeliverableCreate);
+  checkTp1Network(tp1Network);
+  // Refuses an unbindable connection before the lock and any file; the signed routes keep the binding when they are mounted.
+  await bindApprovedProfile(tp1Network);
   // One live process owns the state for its lifetime (this one too, for a
   // second start); taken before anything is opened, released after all of it.
   const lock = await acquireSellerStateLock(dataDirectory);
@@ -195,6 +254,10 @@ export async function startSellerHost(options) {
   };
   const shutdown = new AbortController();
   try {
+    await assertKitDataFormat(dataDirectory, DURABLE_SYNC);
+    const transport = join(dataDirectory, 'transport');
+    const journalDirectory = join(dataDirectory, JOURNAL_DIRECTORY);
+    if (!existsSync(join(dataDirectory, TRANSPORT_STORE_FILE))) assertJournalHoldsNoAccounting(journalDirectory);
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
       agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
@@ -203,16 +266,24 @@ export async function startSellerHost(options) {
     for (const { job, reason } of agent.releaseStaleLocks()) {
       process.stderr.write(`seller-state: released the lock on job ${job} left by a holder that is gone (${reason})\n`);
     }
-    const transport = join(dataDirectory, 'transport');
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     // Likewise a context step still pending in the journal has no run left: it opens as uncertain.
-    const store = createSellerTransportStore({ path: join(transport, 'transport.sqlite'), maxJobs, now, markPendingContextEffectsUncertain: true });
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, markPendingContextEffectsUncertain: true });
     opened.push(() => store.close());
-    // Both child directories and the new transport database entry are durable
-    // before listen permits an answer: seller/ was created by the durable state
-    // and transport/ here, and neither parent entry has been synced yet.
-    syncDirectory(transport);
-    syncDirectory(dataDirectory);
+    // An existing path is left to the journal's own checks, which refuse a symlink, a
+    // file or a directory others can write, with their detail.
+    try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle when they are mounted.
+    openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
+    // The state directories and the new transport database entry are durable
+    // before listen permits an answer. SQLite's FULL synchronous mode syncs the
+    // database file, not the directory entry naming it, so an answer sent before
+    // the parents are synced could come back, after power loss, to state the host
+    // believes was never created and start again empty: seller/ was created by
+    // the durable state, transport/ and wire-journal/ here, and no parent entry
+    // has been synced yet.
+    await DURABLE_SYNC.directory(transport);
+    await DURABLE_SYNC.directory(dataDirectory);
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
     const handler = createSellerHttpHandler(agent, { authentication });
     const active = new Set();
