@@ -591,7 +591,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   }
   async function readback(address, hash, writeProof, failedNonceFence, consumedByHash) {
     if (!ADDRESS.test(address ?? '') || !HASH.test(hash ?? '')) fail('invalid_params','a public native writer and hash are required');
-    return journal.withWalletLock(lane(address), async () => {
+    return fenced(() => journal.withWalletLock(lane(address), async () => {
       const latest=await journal.get(lane(address));
       const r=await journal.get(intent(hash)) ?? (latest?.hash === hash ? latest : null);
       if (!r || r.hash !== hash || r.signedTransaction?.content?.from !== address) fail('not_issued','this hash is not the retained native transfer by this writer');
@@ -610,7 +610,6 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           return {disposition:'failed',hash,nonce:r.nonce,noResend:true,resolved:true,consumedByHash};
         }
       }
-      return fenced(async () => {
         const binding=await binder.recover(r.networkBinding);
         if(consumedByHash!==undefined){
           const status=await node('getTransactionStatus',{hash:consumedByHash});
@@ -664,8 +663,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         if(latest?.hash === hash)await retain(lane(address),observed);
         if(agreement) await pruneClaims(address,r.nonce);
         return { disposition:'included',receipt,noResend:true };
-      });
-    });
+    }));
   }
   // Server-only recovery: never exposed through binding() or the wallet RPC.
   // The original operator authority supplies fresh RPC auth, not a new CREATE.
@@ -675,7 +673,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const sellerEvidence=settlement && op?.metadata?.artifactKind==='SettlementEvidence' && op?.data?.phase==='pay-dem';
     if(tx?.content?.type!=='storageProgram' || (!operatorArtifact&&!sellerEvidence) || typeof signRpc!=='function'
       || !ADDRESS.test(address ?? '') || !HASH.test(hash ?? '')) fail('storage_recovery_only','only an original operator storage CREATE may be recovered');
-    return journal.withWalletLock(lane(address),async()=>{
+    return fenced(()=>journal.withWalletLock(lane(address),async()=>{
       let r=await journal.get(intent(hash));
       const latest=await journal.get(lane(address));
       if(!r || JSON.stringify(r.signedTransaction)!==JSON.stringify(tx) || latest?.hash!==hash
@@ -683,7 +681,6 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         || r.stage!=='broadcast-accepted' || r.storageWriteSubmission!=='accepted'
         || r.storageWriteSubmissionProfile!==STORAGE_WRITE_SUBMISSION_PROFILE
         || (r.storageWriteResends ?? 0)!==0 || !Object.hasOwn(r,'storageWriteGas')) return {disposition:'pending',hash,noResend:true};
-      return fenced(async()=>{
         let binding;
         const originalContext=await context();
         const readNonce=async()=>{
@@ -737,8 +734,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           if(error?.code?.startsWith('journal')) throw error;
           return {disposition:'pending',hash,noResend:true};
         }
-      });
-    });
+    }));
   }
   const implementation = {
     profile(publicOrigin) { return { profile:agreement?DEVNET_AGREEMENT_PROFILE:DEVNET_NATIVE_PROFILE,network:pinned.network,
