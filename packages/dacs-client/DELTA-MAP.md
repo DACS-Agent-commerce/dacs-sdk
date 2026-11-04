@@ -242,6 +242,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 - `P52a` — the three purchase factories sit behind one held admission wrapper (`src/public-admission.mjs`) driven by one constant (`src/dacs/purchase-admission-state.mjs`, `held`). Active methods return Promises and reject `profile_not_admitted` while held, or when the wire's binding check, the 10,000 ms deadline or the synchronous re-check fails. The factories refuse Node below 22.13 (23.0 to 23.3 included) before building anything. The purchase service awaits the protocol object it is given, reads plan-flight state through a private registry, and chooses its readback projection on each call. The synchronous re-check compares the canonical text of the connection taken before the authority read, so a host's live connection object that changes while the read is pending is refused. A `profile_not_admitted` from a wrapped protocol call means the original never ran: the service records none of it as a commitment, handoff or native-lane event and does not turn it into a result; it reaches the caller, or `verifyDeal`'s diagnostic readback when the hold is re-held.
 - `P52b` — the root exports the five capability constructors and four pure names a plugin composes a purchase from, and `purchaseNext`, `protocolView` and `PURCHASE_STATUS_HELP` choose held or admitted guidance on every call (`src/public-guidance.mjs`). The README lists each factory's active and passive methods and the error contract. The plugin import inventory is recorded as names, dispositions and owners in `test/fixtures/plugin-import-inventory.json`.
 - `P16a0` — the durable wallet journal recovers a lane lock left by our own crashed process only when its holder is provably dead (`src/wallet/holder-incarnation.mjs`: a per-process lease in a private `holders` directory plus boot, PID namespace and start identity; only the `exited` class is reclaimed, by compare-and-set inside the acquiring transaction, with no record changed). It adds `appendUnderLock` and `withOwnedOrAcquiredLane`, and native readback and CREATE recovery take the connection fence before the wallet lane. `withOwnedOrAcquiredLane` checks that a retained lane context still owns its lock row before reusing it, and `appendUnderLock` refuses a key another holder has locked, as `put` does; both report `journal-fenced`.
+- `P16a1a` — the client's effect boundary gets its state before its passes: `src/wallet/effect-history.mjs` keeps an artifact's authorization and dispatch records append-only under `eb/<lane>/<artifactHash>/<seq>` in the durable wallet journal (through `appendUnderLock`, inside the lane frame that already owns the lane; an identical retry is idempotent, a conflicting record, a gap, a full journal or a fenced owner refuses `eb_persist_failed`), and `src/wallet/effect-fence.mjs` is the actor fence (acquisition within 10,000 ms, an owner capability that nested steps reuse, the connection generation, `replaceConnection`). Both ship in the package but nothing calls them yet.
 
 ## Commit register
 
@@ -966,6 +967,16 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/durable-journal-owned-append.test.mjs:1` | 8136201c3d57264ab3fe16d2ccacbef4035fdd49 |
 | D18 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/bound-terms-mismatch.test.mjs:1` | 065eeb0112947f2736a21250173b49ecac6e0393 |
+| WF | delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-fence.mjs:1` | 5e899dc36581ead321d1ddd6597497965ad46af5 |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | 52d0f92199a96da74567b9b78107fdd5c275cfad |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 0c406f1b30b33f1011df654f7d67282b99309148 |
+| | `packages/dacs-client/test/effect-history.test.mjs:1` | fad10bcd3acfcb4076653f885de9c4fdcdd14d41 |
+| | `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:4`, `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:7`, `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:33` | e3987c120fb08295aa49ab436c627c2823ebe846 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 8f8757994d69d512ccbf145bcd2180b622acc962 |
+| WF | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-fence.mjs:1` | 4919d146fb62f67705ae52f4fb553e165a9dfebe |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6402003588457f0340179859466e374237f7fd6 |
 
 ## Complete commit and file inventory
 
@@ -3037,6 +3048,27 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/test/bound-terms-mismatch.test.mjs:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/package.json:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/src/wallet/effect-fence.mjs:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/src/wallet/effect-history.mjs:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/test/effect-history.test.mjs:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:4`, `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:7`, `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs:33` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF P16a1a dispatch history on the durable journal and the actor fence | `scripts/release-policy.json:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/src/wallet/effect-fence.mjs:1` |
+| delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
 
 ## Original moved files
 
@@ -3236,7 +3268,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/test/helpers/devnet-purchase-harness.mjs` | `http-mcp/test/helpers/devnet-purchase-harness.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/test/helpers/durable-wallet-journal-broker.mjs` | `http-mcp/test/helpers/durable-wallet-journal-broker.mjs` | e4c756c43fd64a7d0d654e1ad2372fd0da4ab046 | unchanged | e4c756c43fd64a7d0d654e1ad2372fd0da4ab046 |
 | `packages/dacs-client/test/helpers/durable-wallet-journal-browser.mjs` | `http-mcp/test/helpers/durable-wallet-journal-browser.mjs` | 6aaf563599fcc9d34f30baf9afeb0dc6caa5b813 | unchanged | 6aaf563599fcc9d34f30baf9afeb0dc6caa5b813 |
-| `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs` | `http-mcp/test/helpers/durable-wallet-journal-child.mjs` | e40dec6bf6740d4b0bb55e84e38d5428b7d26937 | unchanged | e40dec6bf6740d4b0bb55e84e38d5428b7d26937 |
+| `packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs` | `http-mcp/test/helpers/durable-wallet-journal-child.mjs` | e40dec6bf6740d4b0bb55e84e38d5428b7d26937 | changed by WF | e3987c120fb08295aa49ab436c627c2823ebe846 |
 | `packages/dacs-client/test/helpers/durable-wallet-journal-sr2-fixture.mjs` | `http-mcp/test/helpers/durable-wallet-journal-sr2-fixture.mjs` | c35e7affc754a58a39a4dfc983733fed171cbb21 | unchanged | c35e7affc754a58a39a4dfc983733fed171cbb21 |
 | `packages/dacs-client/test/helpers/embedded-wallet-fixtures.mjs` | `http-mcp/test/helpers/embedded-wallet-fixtures.mjs` | c8083057ae6b2a507d5cf009b2d2b54a153f6bc4 | unchanged | c8083057ae6b2a507d5cf009b2d2b54a153f6bc4 |
 | `packages/dacs-client/test/helpers/embedded-wallet-flow-fixtures.mjs` | `http-mcp/test/helpers/embedded-wallet-flow-fixtures.mjs` | 6d56789eff25bb9549a5d74a446981a2245a4d5a | unchanged | 6d56789eff25bb9549a5d74a446981a2245a4d5a |

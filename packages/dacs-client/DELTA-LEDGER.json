@@ -5833,6 +5833,58 @@
           "after": "065eeb0112947f2736a21250173b49ecac6e0393"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a dispatch history on the durable journal and the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": null,
+          "after": "5e899dc36581ead321d1ddd6597497965ad46af5"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": null,
+          "after": "52d0f92199a96da74567b9b78107fdd5c275cfad"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": null,
+          "after": "0c406f1b30b33f1011df654f7d67282b99309148"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": null,
+          "after": "fad10bcd3acfcb4076653f885de9c4fdcdd14d41"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/durable-wallet-journal-child.mjs",
+          "before": "e40dec6bf6740d4b0bb55e84e38d5428b7d26937",
+          "after": "e3987c120fb08295aa49ab436c627c2823ebe846"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026",
+          "after": "8f8757994d69d512ccbf145bcd2180b622acc962"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "5e899dc36581ead321d1ddd6597497965ad46af5",
+          "after": "4919d146fb62f67705ae52f4fb553e165a9dfebe"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "0c406f1b30b33f1011df654f7d67282b99309148",
+          "after": "b6402003588457f0340179859466e374237f7fd6"
+        }
+      ]
     }
   ]
 }
