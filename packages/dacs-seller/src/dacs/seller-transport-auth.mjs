@@ -365,7 +365,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // A job is retained once it has a kept tuple, an old-path job row or a context admission.
   const retainedJobs = () => `SELECT job FROM kit_purchase_profiles UNION SELECT job FROM peer_jobs${admissions() ? ' UNION SELECT job FROM peer_context_admissions' : ''}`;
   const reservationAccounting = createReservationAccounting({
-    store: { get, run, transaction, keptProfileText, keepPurchaseProfileWithin,
+    store: { get, run, transaction, keptProfileText,
       hasJobWithin: jobId => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
       jobCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${retainedJobs()})`).n },
     now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow, nonceWindowMs },
