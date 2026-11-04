@@ -12,6 +12,7 @@ import { createSellerChallengeLedger } from './seller-challenge-ledger.mjs';
 import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { createReservationAccounting } from './seller-reservation-accounting.mjs';
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
 export const SELLER_TRANSPORT_MAX_RESPONSE = 512 * 1024;
@@ -178,7 +179,11 @@ const effectIdentity = (p) => sha256Hex(canonicalize({ ...requestIdentity(p), me
 // The journal's effect key for an authenticated request (the context route ties its write reservation to it).
 export const sellerTransportEffect = effectIdentity;
 
-function validateBody(p, body) {
+/**
+ * The seller's own checks of an authenticated request's body against the request's payload (the wire leaves them to the
+ * seller): the job and identity it names, and the proposal or payment it carries. Returns nothing; throws a SellerTransportError.
+ */
+export function validateBody(p, body) {
   if (!record(body)) fail('peer_body_invalid', 409);
   if (p.path === SELLER_CONTEXT_CHALLENGE_PATH) {
     if (!keys(body, ['scope']) || !keys(body.scope, SELLER_CONTEXT_SCOPE_KEYS.filter(k => k !== 'buyerBundleHash')) ||
@@ -269,6 +274,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY REFERENCES peer_jobs(job) ON DELETE CASCADE, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS kit_context_admissions (jobId TEXT PRIMARY KEY, buyer TEXT NOT NULL, admittedAt INTEGER, state TEXT NOT NULL, rev INTEGER NOT NULL, record TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS kit_context_admissions_starts ON kit_context_admissions(admittedAt, buyer);
+    CREATE TABLE IF NOT EXISTS kit_reservations (key TEXT PRIMARY KEY, buyer TEXT NOT NULL, jobId TEXT NOT NULL,
+      operationId TEXT NOT NULL, route TEXT NOT NULL, allocationId TEXT, class TEXT NOT NULL, requestHash TEXT NOT NULL,
+      at INTEGER NOT NULL, state TEXT NOT NULL, code TEXT, rev INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS kit_reservations_buyer_at ON kit_reservations(buyer, at);
+    CREATE TABLE IF NOT EXISTS kit_payment_transactions (tx TEXT PRIMARY KEY, jobId TEXT NOT NULL, operationId TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
     CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
     CREATE INDEX IF NOT EXISTS peer_nonces_effect ON peer_nonces(effect);`);
@@ -285,6 +295,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     return canonicalize(profile);
   };
   const keptProfileText = (jobId) => get('SELECT profile FROM kit_purchase_profiles WHERE job = ?', jobId)?.profile ?? null;
+  // A new wire job's row and its kept tuple, in the caller's transaction: the tuple references its job row,
+  // and the row carries the identity the old reserve path compares a later request against.
+  const keepJobWithin = (p, profile, time) => {
+    const profileText = purchaseProfileText(profile);
+    run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, canonicalize(requestIdentity(p)));
+    run('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)', p.jobId, profileText, time);
+  };
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
   transaction(() => {
@@ -308,12 +325,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       ${jobId === undefined ? '' : 'j.job = ? AND '}
       NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_transactions t WHERE t.job = j.job)
+      AND NOT EXISTS (SELECT 1 FROM kit_reservations k WHERE k.jobId = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_slots s WHERE s.slot >= j.job || ':' AND s.slot < j.job || ';')
       ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
       LIMIT ?`).all(...(jobId === undefined ? [] : [jobId]), needed).map(row => row.job);
     if (time === undefined || jobs.length === needed) return jobs;
     // Complete terminal jobs retire only after every nonce and context retention window.
-    for (const { job } of db.prepare(`SELECT job FROM peer_jobs j WHERE NOT EXISTS (
+    for (const { job } of db.prepare(`SELECT job FROM peer_jobs j WHERE NOT EXISTS (SELECT 1 FROM kit_reservations k WHERE k.jobId = j.job) AND NOT EXISTS (
       SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = j.job
       AND (e.state IS NULL OR e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n
         LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = m.effect
@@ -376,8 +394,18 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     issue: (request, challengeScopeHash, authorization = NO_DELEGATION) => ledger.issue({ jobId: request?.jobId, buyer: request?.buyer }, challengeScopeHash, authorization),
     issueForOperator: request => ledger.issueForOperator({ jobId: request?.jobId, buyer: request?.buyer }),
     accept: (owner, nonce, record) => transaction(() => acceptWithin(owner, nonce, record)) });
+  // A job is retained once it has a kept tuple, an old-path job row, a context admission or a K1 admission row (an intent row has no tuple yet).
+  const retainedJobs = () => `SELECT job FROM kit_purchase_profiles UNION SELECT job FROM peer_jobs UNION SELECT jobId AS job FROM kit_context_admissions${admissions() ? ' UNION SELECT job FROM peer_context_admissions' : ''}`;
+  const reservationAccounting = createReservationAccounting({
+    store: { get, run, transaction, keptProfileText, keepJobWithin,
+      hasJobWithin: jobId => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
+      jobCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${retainedJobs()})`).n },
+    now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow, nonceWindowMs },
+    contextRecords: () => admissionCounts().contextRecords,
+  });
   const store = {
     challenges,
+    reservationAccounting,
     // Only the holder of the seller state lock calls this at startup, after `challenges.closeLostValidations()`
     // and before serving or policy-hold reconciliation: every context step still `pending` belongs to a dead owner.
     // One the ledger never accepted ran nothing: it ends as a definite refusal and its hold is later found absent.
@@ -414,7 +442,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // admission records newer than `since`. It returns the admission time or
     // throws a refusal, which rolls back every row of this request.
     // keepProfile is the TP-1 tuple of a wire reservation. Absent, nothing about the tuple is
-    // read or kept. Supplied, its shape is checked and the context step, which carries no
+    // read or kept, and every path but the context step's (the signed wire opens the rest) refuses an absent tuple before
+    // anything is read.
+    // Supplied, its shape is checked and the context step, which carries no
     // purchase, is refused. Once the nonce is known not to conflict, and before any answer
     // (cached, uncertain, retained, dry run or classify), an existing job must hold exactly that
     // tuple; a job with none is refused too. A new job keeps it with its own row, in this
@@ -422,6 +452,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // tp1_purchase_profile_mismatch and rolls back the whole reservation. The kept tuple leaves
     // with its job.
     reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, keepProfile, challengeNonce = null } = {}) {
+      if (keepProfile === undefined && p?.path !== CONTEXT) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
       requireJobId(p?.jobId);
       const profileText = keepProfile === undefined ? null : purchaseProfileText(keepProfile);
       if (profileText !== null && p.path === CONTEXT) fail('tp1_purchase_profile_mismatch', 500);

@@ -1142,7 +1142,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         commitmentVerifier,
       );
     } catch (error) {
-      throw new SellerAgentError('commitment_failed', String(error?.message ?? error).slice(0, 240),503,{cause:readFailure ?? error});
+      throw new SellerAgentError('commitment_failed', 'commitment_failed',503,{cause:readFailure ?? error});
     }
     if (early) {
       if (attempt && !session.signatureCommitmentHeld && !noLocalWrites) { session.signatureCommitmentHeld = true; persist(session); }
@@ -2182,6 +2182,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     transportAgreementOf: (jobId) => {
       const session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId));
       return structuredClone(session?.agreement ?? session?.proposal?.plan?.draft ?? null);
+    },
+    /**
+     * The job's durable commitment and Agreement as JSON texts, `{ commitmentText, agreementText }`, or null when either is not
+     * retained. Read-only: it never signs or reads the chain. Throws the durable state's read or validation errors.
+     */
+    continuationEvidenceOf: (jobId) => {
+      const session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId));
+      return session?.commitment && session.agreement ? { commitmentText: JSON.stringify(session.commitment), agreementText: JSON.stringify(session.agreement) } : null;
     },
     stageOf: (jobId) => sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId))?.stage ?? null,
     deliveryStateOf: (jobId) => {

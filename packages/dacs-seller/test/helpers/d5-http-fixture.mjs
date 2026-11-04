@@ -4,6 +4,7 @@ import { purchaseSupport } from '../../src/dacs/listing.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from '../../src/dacs/agreement-context-consumer.mjs';
 import DatabaseSync from 'better-sqlite3';
 import { testWallet } from './protocol-fixture.mjs';
+import { withFixtureProfile } from './wire-authority-fixture.mjs';
 let nextTestWallet = 30;
 const key = () => { const wallet = testWallet(nextTestWallet++); return { claim: wallet.claim, sign: wallet.signBytes }; };
 import { randomBytes } from 'node:crypto';
@@ -31,7 +32,7 @@ const presentContext=async body=>({disposition:'present',value:{scope:body.scope
 async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},knownJob=null,maxNoncesPerBuyerPerWindow=120,releaseFails=false,releaseWrites=null,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=presentContext,...http}={}){
  const dir=await mkdtemp(join(tmpdir(),'d5-wire-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=T;
  const seller=key(),buyer=key(),other=key(),listing=fixtureListing({...seller,signBytes:seller.sign},{now:T}),pin=listingPin(listing),support=purchaseSupport(listing);
- const path=join(dir,'transport.sqlite'),store=createSellerTransportStore({path,maxRecords,maxChallenges,maxContextRecords,contextSessionState,contextStartLimits:limits,maxNoncesPerBuyerPerWindow,now:()=>time});t.after(()=>store.close());
+ const path=join(dir,'transport.sqlite'),store=withFixtureProfile(createSellerTransportStore({path,maxRecords,maxChallenges,maxContextRecords,contextSessionState,contextStartLimits:limits,maxNoncesPerBuyerPerWindow,now:()=>time}));t.after(()=>store.close());
  const auth=createSellerTransportServerAuth({sellerSigner:seller,listingPin:pin,store,now:()=>time});let holds=0,writes=0,logs=0,releases=0;
  const route=createSellerContextRoute({admitPresentation:async({jobId,bundle})=>admittedSession({jobId,bundle,bundleHash:identityBundleHash(bundle),seller:seller.claim,listingPin:pin}),listing,resolveBuyer:async (body,options)=>{writes++;return perform(body,options)},assertBuyerAccess,knownJob,now:()=>time,limits,recover,resumable,writable,
   admitWrites:async input=>{holds++;return admitWrites?admitWrites(input):null},releaseWrites:async input=>{releases++;if(releaseFails)throw new Error('release fixture failure');return releaseWrites?.(input)}});

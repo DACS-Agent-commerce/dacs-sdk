@@ -17,7 +17,8 @@ import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
-import {createSellerTransportClientAuth,createSellerTransportStore,SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore,SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
+import {wireAuthentication} from './helpers/wire-buyer.mjs';
 import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent}={}){
@@ -28,7 +29,7 @@ async function fixture(t,{wrap=agent=>agent}={}){
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,tp1Network:testNetwork()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
- const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW}),timeoutMs:60000});
+ const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:wireAuthentication({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW},()=>request.proposal.plan.agreementHash),timeoutMs:60000});
  return{...f,start,options,dataDirectory,client,setKeepAliveTimeout:api.setTestKeepAliveTimeout,setReadbackTimeout:api.setTestReadbackTimeout};
 }
 async function anchorAgreement(f,request,answer){
@@ -316,8 +317,10 @@ test('host refuses malformed options before opening any state',async t=>{
  const loose=await mkdtemp(join(tmpdir(),'TEST-host-loose-'));await chmod(loose,0o755);
  const link=join(root,'link');await symlink(dataDirectory,link);
  const file=join(root,'regular');await writeFile(file,'TEST');
+ // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
+ const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},tp1Network:testNetwork()});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',tp1Network:testNetwork()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],
@@ -332,6 +335,7 @@ test('host refuses malformed options before opening any state',async t=>{
   ['non-private dataDirectory',{...base(),dataDirectory:loose},/existing private \(mode 0700\) directory/],
   ['symbolic link dataDirectory',{...base(),dataDirectory:link},/existing private \(mode 0700\) directory/],
   ['regular file dataDirectory',{...base(),dataDirectory:file},/existing private \(mode 0700\) directory/],
+  ...notExactly0700.map(([mode,directory])=>[`dataDirectory with mode ${mode.toString(8)}`,{...base(),dataDirectory:directory},/existing private \(mode 0700\) directory/]),
   ['observeDemosTransfer is not a function',{...base(),observeDemosTransfer:5},/must be functions/],
   ['now is not a function',{...base(),now:5},/must be functions/],
   ['mismatched payment evidence pair',{...base(),nativePaymentEvidence:{anchorEvidence:()=>{}}},/payment-evidence anchor and reconcilePaymentEvidence/],

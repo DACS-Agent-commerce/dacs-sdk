@@ -82,6 +82,7 @@ const host = await startSellerHost({
                          // [PROFILE.json](PROFILE.json) profile: standardRevision
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
+  readCommitmentReceipt, // Chain-bound current SR-2 receipt reader, with bounded I/O.
   tp1Network,            // { connection() -> { endpoint, transportAuthority, connectionId }, readAuthority(scope) }:
                          // this host's own https connection and the trusted reader that confirms it and the
                          // chain, read once within 10,000 ms (tp1_authority_timeout; connection() must return
@@ -252,7 +253,22 @@ per-client limiter so one client cannot exhaust the shared request budget.
   cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
   and body, for this seller and Listing; unsigned or mismatched requests are
-  refused before the agent runs. Effects are journaled before they run, so a
+  refused before the agent runs. Every route but the challenge and the context
+  step (the Agreement proposal, Agreement state, commitment (`commitments`, and
+  `commitments/signature` when enabled), payment and bundle routes, including the
+  buyer-copy read) opens every request and signs every answer through the SDK's
+  `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
+  tuple kept for the job); a request signed under the old domain is refused. The
+  transport store stays their journal; the two read routes reserve and store
+  nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
+  (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
+  first), and a delegated request for one is refused
+  `peer_delegation_agreement_required`. A payment, bundle or buyer-copy request
+  continues a committed purchase only on the job's durable commitment and
+  Agreement, admitted by the wire anew for each request, under the host's own
+  signed Listing and with the commitment's receipt read now by
+  `readCommitmentReceipt` (10 s deadline; its failure is `commitment_unverified`).
+  Effects are journaled before they run, so a
   restarted host answers a completed request again and reconciles uncertain
   work through the agent's retained state. A commitment retry first reads back
   the original CREATE and publishes again only with proof that nothing was signed.
@@ -771,6 +787,20 @@ per-client limiter so one client cannot exhaust the shared request budget.
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).
 
+### Seller key custody
+
+`openSellerKey` (`src/seller-key.mjs`; Node ^22.13.0 or >=23.4.0) loads the
+seller key only through `loadDacsSecretV1`, from one file in the exactly-0700
+data directory holding `{ format: "dacs-seller-key/v1", algorithm: "ed25519",
+mnemonic }`, and zeroes every copy it owns. It signs only through three roles:
+`sign(bytes)` for effects, which checks the kit operation guard on every call;
+`readOnlyAnswerSigner(...)`, which returns a Promise of a single-use signer for
+one read answer, refusal or discovery document, whose `sign` returns a Promise
+of the signature (always `await` both: a Promise is never accepted as signature
+bytes) and checks the TP-1 authority when it signs, and the kit guard for a
+`ready: true` discovery document; and `integritySigner`, for seller-state journal bytes only.
+After `close()` every role refuses. Nothing in this package calls it yet.
+
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.
 
@@ -781,11 +811,13 @@ status) is a simulation contract, not the pinned node's genesis RPC shape.
 
 ## Package checks
 
-From the repository root, build the core, prepare a locked smoke consumer in a
-new directory outside the checkout, then test against it:
+From the repository root, build the core and the Node host kit (the seller
+imports its `./secrets` subpath), prepare a locked smoke consumer in a new
+directory outside the checkout, then test against it:
 
 ```sh
 npm run build
+npm run host:build
 export DACS_SELLER_SMOKE_DIR=/tmp/dacs-seller-consumer   # must not exist yet
 npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
 npm run seller:test

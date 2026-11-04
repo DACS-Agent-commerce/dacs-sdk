@@ -15,13 +15,14 @@ import {createSellerTransportStore} from '../../src/dacs/seller-transport-auth.m
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment-evidence-consumer.mjs';
 // `ledger` is a function returning the challenge ledger the agent uses; by default one transport store lives as long as the fixture.
-export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,ledger=null}={}){
+export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,ledger=null,publicEndpoint=null}={}){
  const dir=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=NOW;const signed=[];const contexts=new Map();
  let store=null,generations=0;const storeDirectory=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-ledger-'));t.after(()=>rm(storeDirectory,{recursive:true,force:true}));
  const openStore=()=>store=createSellerTransportStore({path:join(storeDirectory,'transport.sqlite'),now:()=>time,generation:'TEST-generation-'+ ++generations});
  if(ledger===null){openStore();t.after(()=>store.close());}
  const unreachable=()=>{throw new Error('TEST external effect');};
  const {signature,...listingDraft}=fixtureListing(seller,{now:NOW});
+ if(publicEndpoint!==null)listingDraft.seller.publicEndpoint=publicEndpoint;
  if(buyerRequirement!==null)listingDraft.buyerRequirement=structuredClone(buyerRequirement);
  if(expectedSizeBytes===null)delete listingDraft.offering.deliverable.expectedSizeBytes;
  else listingDraft.offering.deliverable.expectedSizeBytes=expectedSizeBytes;

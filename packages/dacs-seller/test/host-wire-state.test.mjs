@@ -16,7 +16,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
+import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, assertTp1Authority, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { JOBS, T, exchange, presentContext, world } from './helpers/d5-http-fixture.mjs';
@@ -450,6 +450,44 @@ test('P10-T10 a rejecting reader keeps its cause, a stalled one times out at 10,
   }
 });
 
+test('the reader the signed routes call on every request is bounded too: after startup a stalled read ends tp1_authority_timeout at 10,000 ms with the deadline as its cause, a late result is ignored and never unhandled, and a reader that answers still passes', async (t) => {
+  const f = await hostFixture(t);
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  const reader = authorityReader();
+  let stall = false, settleLate;
+  const readAuthority = (scope) => (stall ? new Promise((resolve) => { settleLate = () => resolve(reader(scope)); }) : reader(scope));
+  try {
+    await f.start({ tp1Network: testNetwork({ readAuthority }) });
+    const [binding] = f.bindings;
+    await assertTp1Authority(binding, TEST_CONNECTION, [], null);
+    stall = true;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    let outcome = 'pending';
+    const reading = assertTp1Authority(binding, TEST_CONNECTION, [], null).then(() => { outcome = 'passed'; }, (error) => { outcome = error; });
+    mock.timers.tick(AUTHORITY_DEADLINE_MS - 1);
+    await flush();
+    assert.equal(outcome, 'pending', 'still waiting at 9,999 ms');
+    mock.timers.tick(1);
+    await flush();
+    await flush();
+    assert.notEqual(outcome, 'pending', 'the stalled read ended at its deadline');
+    await reading;
+    assert.deepEqual({ code: outcome.code, status: outcome.status }, { code: 'tp1_authority_timeout', status: 500 });
+    assert.equal(isBoundedCallTimeout(outcome.cause), true, 'the deadline is the cause');
+    settleLate();
+    await flush();
+    await flush();
+    assert.deepEqual(unhandled, []);
+    stall = false;
+    await assertTp1Authority(binding, TEST_CONNECTION, [], null);
+  } finally {
+    mock.timers.reset();
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('P10-T11 the host binds only the SDK\'s approved record; no option or environment variable names one', async (t) => {
   const f = await hostFixture(t);
   const forged = { ...TP1_APPROVED_IDENTITY_RECORD, chainIdentity: derive('forged-chain'), provenance: { ...TP1_APPROVED_IDENTITY_RECORD.provenance } };
@@ -651,9 +689,14 @@ test('P10-T12 replay matrix: for a pending, completed, retry, uncertain, no-effe
   };
   const rows = [];
   for (const [state, settle] of Object.entries(JOB_STATES)) {
+    // A route the signed wire opens refuses an absent tuple, so the legacy job is one that has lost its tuple (an upgraded store).
     const first = w.request(jobId(`matrix-${state}`));
     const kept = state === 'legacy' ? undefined : PROFILE;
-    settle(w.store, w.store.reserve(first, {}, { keepProfile: kept }));
+    settle(w.store, w.store.reserve(first, {}, { keepProfile: PROFILE }));
+    if (state === 'legacy') {
+      const db = new DatabaseSync(w.path);
+      try { db.prepare('DELETE FROM kit_purchase_profiles WHERE job = ?').run(first.jobId); } finally { db.close(); }
+    }
     rows.push({ state, first, kept, jobGone: state === 'no-effect' });
   }
   const tables = () => ['peer_jobs', 'peer_nonces', 'peer_nonce_retention', 'peer_effects', 'kit_purchase_profiles'].map((table) => w.query(`SELECT COUNT(*) AS n FROM ${table}`));
@@ -665,10 +708,10 @@ test('P10-T12 replay matrix: for a pending, completed, retry, uncertain, no-effe
         const before = tables();
         // A same-nonce reserve answers from the store; a fresh nonce is classified, so the matrix itself writes nothing.
         const answer = (options) => (request === first ? store.reserve(request, {}, options) : store.classify(request, {}, options));
-        const untupled = answer({});
-        if (kept) assert.deepEqual(answer({ keepProfile: kept }), untupled, `${at}: the kept tuple answers as the legacy path does`);
+        assert.throws(() => answer({}), MISMATCH, `${at}: an absent tuple is refused on a route the signed wire opens`);
+        const answered = kept ? answer({ keepProfile: kept }) : null;
         for (const supplied of [PROFILE, OTHER_PROFILE].filter((profile) => profile !== kept)) {
-          if (jobGone) { assert.deepEqual(answer({ keepProfile: supplied }), untupled, `${at}: a removed job has no tuple to compare`); continue; }
+          if (jobGone) { assert.deepEqual(answer({ keepProfile: supplied }), answered, `${at}: a removed job has no tuple to compare`); continue; }
           assert.throws(() => store.reserve(request, {}, { keepProfile: supplied }), MISMATCH, `${at}: reserve refuses ${kept ? 'another' : 'any'} tuple`);
           assert.throws(() => store.classify(request, {}, { keepProfile: supplied }), MISMATCH, `${at}: classify refuses ${kept ? 'another' : 'any'} tuple`);
         }
@@ -722,7 +765,7 @@ test('P10-T13 a tuple kept before a crash is present after restart; one not kept
   const legacy = jobId('t13-legacy');
   const refused = jobId('t13-refused');
   w.store.reserve(w.request(kept), {}, { keepProfile: PROFILE });
-  w.store.reserve(w.request(legacy), {}, {});
+  assert.throws(() => w.store.reserve(w.request(legacy), {}, {}), MISMATCH, 'a route the signed wire opens refuses an absent tuple');
   assert.throws(() => w.store.reserve(w.request(refused), {}, { keepProfile: { ...PROFILE, extra: 1 } }), MISMATCH);
   const reopened = w.reopen();
   assert.deepEqual(reopened.purchaseProfile(kept), PROFILE);
@@ -833,13 +876,16 @@ test('P10-T18 through the real guarded store\'s classify, its dry-run reserve an
   assert.equal(replay.text, first.text, 'and replays its answer');
   assert.equal(w.effects().writes, 1, 'without new work');
 
-  w.store.reserve(await proposal(other), {}, {});
+  // A job bound before tuples were kept (an upgraded store) has none: no reservation can create one without its tuple any more.
+  const bound = await proposal(other), planted = new DatabaseSync(w.path);
+  planted.prepare('INSERT INTO peer_jobs VALUES (?, ?)').run(other, canonicalize({ jobId: other, buyer: bound.buyer, seller: bound.seller, listingPin: bound.listingPin, agreementHash: bound.agreementHash }));
+  planted.close();
   const dryRuns = async (store, label) => {
     const [matching, different, untupled, legacy, brandNew] = await Promise.all([proposal(job), proposal(job), proposal(other), proposal(other), proposal(jobId('t18-new'))]);
     assert.equal(store.classify(matching, {}, { keepProfile: PROFILE }), 'known', `${label}: the matching tuple answers as reserve would`);
     assert.throws(() => store.classify(different, {}, { keepProfile: OTHER_PROFILE }), MISMATCH, `${label}: a different tuple is refused`);
     assert.throws(() => store.classify(untupled, {}, { keepProfile: PROFILE }), MISMATCH, `${label}: an existing job with no kept tuple is refused`);
-    assert.equal(store.classify(legacy, {}), 'known', `${label}: an absent tuple is the legacy path`);
+    assert.throws(() => store.classify(legacy, {}, { keepProfile: undefined }), MISMATCH, `${label}: an absent tuple is refused on a route the signed wire opens`);
     assert.equal(store.classify(brandNew, {}, { keepProfile: PROFILE }), 'start', `${label}: a new job classifies start`);
     assert.equal(tuples(), 1, `${label}: a dry run keeps no tuple`);
   };
