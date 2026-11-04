@@ -6,7 +6,7 @@ import { parse } from "yaml";
 type Step = { name?: string; run?: string };
 type Job = { strategy?: { "fail-fast"?: boolean; matrix?: Record<string, unknown> }; steps: Step[] };
 
-const ci = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8")) as { jobs: Record<string, Job> };
+const ci = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8")) as { jobs: { "build-test": Job; "buyer-minimum-runtime": Job } };
 const floor = ci.jobs["buyer-minimum-runtime"];
 const buyerRoot = ci.jobs["build-test"].steps.find(step => step.name?.startsWith("Package smoke (buyer root"));
 const runLines = (steps: Step[]) => steps.flatMap(step => step.run?.split("\n") ?? []).map(line => line.trim());
