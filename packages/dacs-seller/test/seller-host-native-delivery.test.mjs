@@ -3029,7 +3029,18 @@ for (const hung of ['retained read', 'receipt verification']) test(`a delivery e
   if (hung === 'retained read') w.faults.readRetainedEvidenceHang = never;
   else w.faults.verifyReceipt = ({ artifactKind, logicalAddress }, options) => (artifactKind === 'SettlementEvidence' && logicalAddress === address ? never(options) : undefined);
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const post = async () => { const res = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); return { status: res.status, body: await res.json() }; };
+  // Not fetch: its pooled connection from the claim above keeps a real idle timer, which the mocked clearTimeout cannot
+  // clear when that connection is reused, so on a slow machine it fired as a headers timeout while this request was held.
+  // A fresh node:http connection uses no global timer.
+  const post = () => new Promise((resolve, reject) => {
+    const req = http.request(`${w.host().url}/dacs/v1/payments`, { method: 'POST', agent: false, headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header } }, (res) => {
+      let text = ''; res.setEncoding('utf8'); res.on('data', (chunk) => { text += chunk; });
+      res.on('end', () => { try { resolve({ status: res.statusCode, body: JSON.parse(text) }); } catch (error) { reject(error); } });
+    });
+    // A real deadline: the socket timeout runs on Node's own timer list, which the mocked setTimeout leaves alone.
+    req.setTimeout(30_000, () => req.destroy(new Error('held payment request did not settle within 30 s')));
+    req.on('error', reject); req.end(signed.rawBody);
+  });
   const pending = post();
   await reached;
   t.mock.timers.tick(10_000);

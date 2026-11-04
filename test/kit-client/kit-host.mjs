@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { commitmentFixture } from '../../packages/dacs-seller/test/helpers/commitment-fixture.mjs';
 import { NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
+import { testNetwork } from '../../packages/dacs-seller/test/helpers/wire-authority-fixture.mjs';
 import { startSellerHost } from '../../packages/dacs-seller/src/host.mjs';
 import { createSellerTransportClientAuth, SELLER_TRANSPORT_HEADER } from '../../packages/dacs-client/src/dacs/seller-transport-auth.mjs';
 
@@ -13,8 +14,10 @@ export async function composedKitHost(t) {
   const fixture = await commitmentFixture(t);
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-kit-client-host-'));
   // The fixture's agent options that the host does not take (it owns its directory and has no early commit) are left out.
-  const { durableDirectory, commitOnSignature, nativeArtifactAnchor, ...config } = fixture.config;
-  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory });
+  const config = { ...fixture.config };
+  const { nativeArtifactAnchor } = config;
+  for (const key of ['durableDirectory', 'commitOnSignature', 'nativeArtifactAnchor']) delete config[key];
+  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { fixture, host, dataDirectory };
 }
