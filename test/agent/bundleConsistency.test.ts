@@ -22,6 +22,13 @@ const read = (p: string) => JSON.parse(readFileSync(join(CONF, p), "utf8"));
 // opt out of the validation gate explicitly (mirrors a caller that validated
 // upstream). The gate itself is exercised in its own block further down.
 const TRUST = { trustBundles: true } as const;
+
+// Canonical JID-1 job IDs: lookupBundleCopies refuses anything else.
+const JOB_1 = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const JOB_2 = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+const JOB_3 = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+const JOB_4 = "01ARZ3NDEKTSV4RRFFQ69G5FAY";
+const JOB_OTHER = "01ARZ3NDEKTSV4RRFFQ69G5FAZ";
 const present = (bundle: Record<string, unknown>) =>
   ({ disposition: "present", bundle }) as const;
 const absent = { disposition: "absent" } as const;
@@ -35,33 +42,33 @@ describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
       gates.set("both", resolve);
     });
     let starts = 0;
-    const lookup = lookupBundleCopies("job-1", async (address, role) => {
+    const lookup = lookupBundleCopies(JOB_1, async (address, role) => {
       calls.push([address, role]);
       starts += 1;
       if (starts === 2) gates.get("both")?.();
       await started;
-      return { disposition: "present", bundle: { jobId: "job-1", role } };
+      return { disposition: "present", bundle: { jobId: JOB_1, role } };
     });
 
     await expect(lookup).resolves.toEqual({
       buyer: {
         disposition: "present",
-        bundle: { jobId: "job-1", role: "buyer" },
+        bundle: { jobId: JOB_1, role: "buyer" },
       },
       seller: {
         disposition: "present",
-        bundle: { jobId: "job-1", role: "seller" },
+        bundle: { jobId: JOB_1, role: "seller" },
       },
     });
     expect(calls).toEqual([
-      [bundleAddress("job-1", "buyer"), "buyer"],
-      [bundleAddress("job-1", "seller"), "seller"],
+      [bundleAddress(JOB_1, "buyer"), "buyer"],
+      [bundleAddress(JOB_1, "seller"), "seller"],
     ]);
   });
 
   test("preserves absent/indeterminate and converts reader failure to indeterminate", async () => {
     await expect(
-      lookupBundleCopies("job-2", async (_address, role) =>
+      lookupBundleCopies(JOB_2, async (_address, role) =>
         role === "buyer"
           ? { disposition: "absent" }
           : { disposition: "indeterminate", reason: "not finalized" },
@@ -72,7 +79,7 @@ describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
     });
 
     await expect(
-      lookupBundleCopies("job-2", async (_address, role) => {
+      lookupBundleCopies(JOB_2, async (_address, role) => {
         if (role === "buyer") throw new Error("rpc unavailable");
         return { disposition: "absent" };
       }),
@@ -87,9 +94,9 @@ describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
 
   test("ignores cross-session content and fails malformed responses closed", async () => {
     await expect(
-      lookupBundleCopies("job-3", async (_address, role) =>
+      lookupBundleCopies(JOB_3, async (_address, role) =>
         role === "buyer"
-          ? { disposition: "present", bundle: { jobId: "job-other" } }
+          ? { disposition: "present", bundle: { jobId: JOB_OTHER } }
           : { disposition: "present", bundle: {} },
       ),
     ).resolves.toMatchObject({
@@ -107,22 +114,27 @@ describe("lookupBundleCopies (§10.4.3(a) two-sided lookup)", () => {
       bundle: { jobId: string; phaseSummary: Array<{ index: number }> };
     } = {
       disposition: "present",
-      bundle: { jobId: "job-4", phaseSummary: [{ index: 0 }] },
+      bundle: { jobId: JOB_4, phaseSummary: [{ index: 0 }] },
     };
-    const result = await lookupBundleCopies("job-4", async (_address, role) =>
+    const result = await lookupBundleCopies(JOB_4, async (_address, role) =>
       role === "buyer" ? returned : { disposition: "absent" },
     );
     returned.bundle.phaseSummary[0]!.index = 9;
     expect(result.buyer).toEqual({
       disposition: "present",
-      bundle: { jobId: "job-4", phaseSummary: [{ index: 0 }] },
+      bundle: { jobId: JOB_4, phaseSummary: [{ index: 0 }] },
     });
   });
 
-  test("rejects non-canonical job identifiers before reading", async () => {
+  test.each([
+    ["untrimmed", ` ${JOB_1}`],
+    ["legacy free-text", "job-1"],
+    ["lowercase", JOB_1.toLowerCase()],
+    ["first character above 7", `8${JOB_1.slice(1)}`],
+  ])("rejects a %s job identifier before reading", async (_label, jobId) => {
     const read = vi.fn();
-    await expect(lookupBundleCopies(" job-1", read)).rejects.toThrow(
-      /jobId must be non-empty canonical text/,
+    await expect(lookupBundleCopies(jobId, read)).rejects.toThrow(
+      /jobId must be a canonical uppercase ULID/,
     );
     expect(read).not.toHaveBeenCalled();
   });
