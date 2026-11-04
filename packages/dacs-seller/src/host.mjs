@@ -35,7 +35,7 @@
 // Agreement proposal, state and commitment routes open every request and sign
 // every answer through that context (seller-wire-requests.mjs), with the transport
 // store as their journal; the payment and bundle routes still use the old server auth.
-import { existsSync, lstatSync, mkdirSync, opendirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, opendirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD, WireError, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
@@ -51,6 +51,7 @@ import { retainedFor } from './dacs/seller-wire-requests.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
+import { isPrivateDirectory } from './private-directory.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network']);
@@ -159,14 +160,6 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
   };
 }
 
-function privateDirectory(path) {
-  let stat;
-  try { stat = lstatSync(path); } catch { stat = null; }
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.() || realpathSync(path) !== path) {
-    throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
-  }
-}
-
 function checkTp1Network(tp1Network) {
   if (tp1Network === null || typeof tp1Network !== 'object' || Array.isArray(tp1Network)) throw new TypeError('tp1Network must be an object');
   const unknown = Object.keys(tp1Network).filter((key) => !TP1_NETWORK_KEYS.includes(key));
@@ -239,7 +232,7 @@ export async function startSellerHost(options) {
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
-  privateDirectory(dataDirectory);
+  if (!isPrivateDirectory(dataDirectory)) throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
   if ((observeDemosTransfer !== undefined && typeof observeDemosTransfer !== 'function') || typeof now !== 'function') throw new TypeError('now and any supplied observeDemosTransfer must be functions');
   // DACS-4 PC-7(b): the answers that let the agent sign the same evidence
   // again (`unsigned`) come only from the package's wallet journal,

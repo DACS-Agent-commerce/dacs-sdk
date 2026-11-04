@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { commitmentFixture } from '../../packages/dacs-seller/test/helpers/commitment-fixture.mjs';
 import { NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
+import { testNetwork } from '../../packages/dacs-seller/test/helpers/wire-authority-fixture.mjs';
 import { startSellerHost } from '../../packages/dacs-seller/src/host.mjs';
 import { testNetwork } from '../../packages/dacs-seller/test/helpers/wire-authority-fixture.mjs';
 import { wireBuyer } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';

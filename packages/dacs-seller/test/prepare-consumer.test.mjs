@@ -28,15 +28,15 @@ const waitUntil=ready=>{while(!ready())if(Date.now()>deadline)process.exit(3);};
 writeFileSync(env.PREPARE_PROBE_LOG,args.join(' ')+'\\n',{flag:'a'});
 if(env.PREPARE_PROBE_FAIL===args[0])process.exit(1);
 if(args[0]==='pack'){
- const destination=args[args.indexOf('--pack-destination')+1],seller=args.includes('--workspace');
- const name=seller?'dacs-seller':'dacs',file=name+'-0.1.0-alpha.0.tgz';
+ const destination=args[args.indexOf('--pack-destination')+1],workspace=args.includes('--workspace')?args[args.indexOf('--workspace')+1]:'@kynesyslabs/dacs';
+ const name=workspace.replace('@kynesyslabs/',''),file=name+'-0.1.0-alpha.0.tgz';
  writeFileSync(join(destination,file),'stub tarball');
  process.stdout.write(JSON.stringify([{filename:file,integrity:'sha512-stub',files:[]}])+'\\n');
 }
 if(args[0]==='ci'){
  if(env.PREPARE_PROBE_BARRIER){writeFileSync(join(env.PREPARE_PROBE_BARRIER,String(process.pid)),'');waitUntil(()=>readdirSync(env.PREPARE_PROBE_BARRIER).length>=2);}
  if(env.PREPARE_PROBE_HOLD){writeFileSync(join(env.PREPARE_PROBE_HOLD,'started'),'');waitUntil(()=>existsSync(join(env.PREPARE_PROBE_HOLD,'release')));}
- for(const name of ['dacs','dacs-seller']){mkdirSync(join(process.cwd(),'node_modules/@kynesyslabs',name),{recursive:true});writeFileSync(join(process.cwd(),'node_modules/@kynesyslabs',name,'package.json'),'{}\\n');}
+ for(const name of ['dacs','dacs-node','dacs-seller']){mkdirSync(join(process.cwd(),'node_modules/@kynesyslabs',name),{recursive:true});writeFileSync(join(process.cwd(),'node_modules/@kynesyslabs',name,'package.json'),'{}\\n');}
 }
 `;
 
@@ -90,10 +90,10 @@ test('a new directory is created and prepared, with prepared.json binding runtim
   const result = probe.run(directory);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(preparedPath(result.stdout), directory);
-  assert.equal(probe.calls().length, 3, 'pack core, pack seller and install once');
+  assert.equal(probe.calls().length, 4, 'pack core, pack seller, pack dacs-node and install once');
   assert.ok(existsSync(join(directory, 'run.mjs')));
   const marker = JSON.parse(readFileSync(join(directory, 'prepared.json'), 'utf8'));
-  assert.deepEqual(Object.keys(marker).sort(), ['corePack', 'lockDigest', 'runtime', 'sellerPack', 'sourceFingerprint']);
+  assert.deepEqual(Object.keys(marker).sort(), ['corePack', 'lockDigest', 'nodePack', 'runtime', 'sellerPack', 'sourceFingerprint']);
   assert.equal(staleSetupReason(directory, sellerSourceFingerprint([])), null, 'the setup matches the files its seller pack contained');
 });
 
