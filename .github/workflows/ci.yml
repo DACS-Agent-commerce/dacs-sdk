@@ -2,8 +2,8 @@ name: CI
 
 on:
   push:
-    # phase0-completion is the shared base of the phase 0 PRs: a run on each of its heads shows whether a red PR
-    # check comes from the base or from the PR itself.
+    # phase0-completion is the shared base of the phase 0 PRs: a run on its newest head shows whether a red PR
+    # check comes from the base or from the PR itself (older heads' unfinished runs end as cancelled, see below).
     branches: [main, phase0-completion]
   pull_request:
   merge_group:
