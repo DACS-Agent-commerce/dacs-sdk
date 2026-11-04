@@ -51,6 +51,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Build Node host kit
+        run: npm run host:build
+
       - name: Prepare locked seller consumer
         env:
           DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
@@ -68,9 +71,6 @@ jobs:
       - name: Test the kit-client contract harness
         if: matrix.node-version == '22'
         run: npm run kit-client:test
-
-      - name: Build Node host kit
-        run: npm run host:build
 
       - name: Build project generator
         run: npm run generator:build
