@@ -19,6 +19,15 @@ test("required build CI runs the workflow contract regression", () => {
   assert.ok(!contract["continue-on-error"]);
 });
 
+test("build CI builds the Node host kit before any step that runs the client tests", () => {
+  const steps = ci.jobs["build-test"].steps;
+  const hostBuild = steps.findIndex(step => step.run === "npm run host:build");
+  assert.notEqual(hostBuild, -1);
+  const clientTests = steps.flatMap((step, index) => /npm test --workspace @kynesyslabs\/dacs-client\b/.test(step.run ?? "") ? [index] : []);
+  assert.ok(clientTests.length > 0);
+  for (const index of clientTests) assert.ok(hostBuild < index, `"${steps[index].name}" runs before the Node host kit is built`);
+});
+
 test("required build CI builds the Node host kit before it prepares the seller consumer", () => {
   const runs = ci.jobs["build-test"].steps.map(step => step.run);
   const hostBuild = runs.indexOf("npm run host:build");
