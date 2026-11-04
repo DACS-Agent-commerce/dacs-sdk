@@ -27,6 +27,7 @@ const GUARD_SITES = {
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
   'src/dacs/seller-transport-auth.mjs': ['createSellerTransportServerAuth', 'createSellerTransportClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
+  'src/dacs/effect-boundary.mjs': ['effectBoundary'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],
   'src/dacs/native-payment-evidence-consumer.mjs': ['createNativePaymentEvidenceConsumer'],
   'src/dacs/native-dem-delivery-consumer.mjs': ['submitNativeDemDelivery'],

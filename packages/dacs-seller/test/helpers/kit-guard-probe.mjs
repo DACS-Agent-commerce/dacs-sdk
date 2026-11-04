@@ -116,6 +116,7 @@ async function effectEntries() {
   const { createDevnetDemoListingPublisher } = await import('../../src/devnet-demo/listing.mjs');
   const { createDevnetDemoDeliveryCapability } = await import('../../src/devnet-demo/native-delivery.mjs');
   const { storageWriteRpcSigner } = await import('../../src/devnet-demo/storage-write-recovery.mjs');
+  const { createEffectBoundary } = await import('../../src/dacs/effect-boundary.mjs');
 
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
@@ -130,6 +131,9 @@ async function effectEntries() {
   await attempt('signatureCommitmentAnchor', () => signatureCommitmentAnchor({ onCreateAuthorized: () => { effects.sends++; }, anchorAgreement: async () => { effects.sends++; } }, {}, true).anchorAgreement({}));
   await attempt('createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ sign: signBytes, scanOwnListings: async () => [], loadRailResolution: async () => null,
     anchor: { publish: async () => { effects.sends++; }, read: async () => { effects.sends++; }, verifyReceipt: async () => { effects.sends++; } } })({}));
+  const probeBoundary = createEffectBoundary({ stopped: () => { effects.sends++; return false; }, binding: { profile: { pinVersion: 'probe' }, localDigest: 'probe' }, currentLocal: () => ({}),
+    history: { read: async () => { effects.sends++; return []; }, append: async () => { effects.sends++; } }, clock: { now: () => 0, after: () => () => {} } });
+  await attempt('effectBoundary', () => probeBoundary.pass({}, () => { effects.signs++; }, () => { effects.sends++; }));
   await attempt('storageWriteRpcSigner', () => storageWriteRpcSigner({ claim: 'writer', sign: signBytes }, 'writer')('message'));
 
   const delivery = { authority: 'TEST-native', writer: seller.claim, publish: async () => { effects.sends++; }, read: async () => ({ status: 'absent' }), readRetained: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
