@@ -775,6 +775,9 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | | `packages/dacs-client/test/host-observations.test.mjs:1` | bd6057097c2fb51e72674ab76591a628b073c896 |
 | D11 | fix(client): D11 give the slow-reader passive test a signed nonce | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 1fe0fe0837472ca2fdca069087ec5f53db4d3822 |
+| D11 | fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/portal-capability.mjs:1` | fb1f631894e79e1139d7d66c8ce2e56d97a40ae5 |
+| | `packages/dacs-client/test/portal-capability.test.mjs:1` | 189905857901935cee5e40590ae4050d15f56d30 |
 
 ## Complete commit and file inventory
 
@@ -2173,6 +2176,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/test/host-observations.test.mjs:1` |
+| fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/README.md:1` |
+| fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/src/portal-capability.mjs:1` |
+| fix(client): D11 refuse ill-formed UTF-16 portal ids and tokens | `packages/dacs-client/test/portal-capability.test.mjs:1` |
 
 ## Original moved files
 

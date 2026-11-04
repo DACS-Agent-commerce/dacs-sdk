@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "d4af0546ed04cd46f6c3bd0c20423685534bfbee"
+        "blob": "bc2c1b3644f40fcb57f0ee593a161b5e37ff76b4"
       },
       "DELTA-LEDGER.json": {
-        "blob": "c28e604271a68e459f9f41e178d75c1275d11332"
+        "blob": "6d385057608c3969be27e2851d809ad69126ec8d"
       },
       "DELTA-MAP.md": {
-        "blob": "1d602be0914f76204931713dc47915661808e187"
+        "blob": "ba58ad476ac9f52e4444d433feef7ecd76ead28b"
       },
       "DELTA-NOTES.md": {
         "blob": "fb704617e73c267d379cb9121dee8f2ec7c45d35"
@@ -385,7 +385,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "67a43dea0c5c61e31d785603cd944f782e615c27"
+        "blob": "dfef841477321f7faba28309acb10dca899f60d4"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6b49745eb6bce57a22ecd0b91269e451f324a722"
+        "blob": "b4437080660930749f52aca371685f71e3063a2c"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1208,7 +1208,7 @@
         "blob": "0dcfab473d1256f9de295bc65c0f04926e1ceb62"
       },
       "src/portal-capability.mjs": {
-        "blob": "d6200b11094df0e624dd644d980ac3bc7444868d"
+        "blob": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
       },
       "src/public/portal-intent/intent.mjs": {
         "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
@@ -1649,7 +1649,7 @@
         "blob": "1fe0fe0837472ca2fdca069087ec5f53db4d3822"
       },
       "test/portal-capability.test.mjs": {
-        "blob": "073700c9a849a4bfc092cb5913498364fd622f0d"
+        "blob": "189905857901935cee5e40590ae4050d15f56d30"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
