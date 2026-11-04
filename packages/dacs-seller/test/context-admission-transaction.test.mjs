@@ -1,17 +1,20 @@
 // P09ba: K1's admission transaction start (D2-D5), the fenced completion (D7/D8a-c), C1's CAS and the
-// counter union. Policy, wire reservation and wire completion are doubles; P12b1 reruns the D5 cases on
+// counter union. P09bb: compensation C2-C4, the outcome classifier, durable release, the sweep and the admission record.
+// Policy, wire reservation, wire completion, outcome inspection and sink evidence are doubles; P12b1 reruns the D5 cases on
 // the real journal. The null-end fence case uses the real wire journal and so needs a root-owned `/`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { canonicalize, compositeVerificationAddress, generateCanonicalJobId } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, inspectWireOperation, openWireRequestJournal,
   completeWireEffect, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
-import { SELLER_PROFILE } from '../src/dacs/session-admission.mjs';
+import { SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
 import { createSellerContextAdmission, parsePolicyLedger, releaseSellerContextHolds } from '../src/devnet-demo/operator-approval.mjs';
 
 const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000, POLICY_MS = 10000;
@@ -26,6 +29,11 @@ const PIN = { listingId: 'tp1-vector-listing', version: 1, contentHash: hash('co
 const PROFILE = Object.freeze({ id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISION, base: TP1_BASE_REVISION,
   chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, pinVersion: TP1_APPROVED_IDENTITY_RECORD.pinVersion });
 const outcome = { status: 200, text: ' {"disposition":"present","fixture":true} ' };
+// What the sink answers for a context: the scope the row names, and each party's Vet record reference.
+const SCOPE = { agreement: 'context-scope-vector' };
+const vetRef = tag => ({ vetRecordRef: { contentHash: hash(tag) } });
+const presented = (jobId, input = {}, scope = SCOPE) => ({ status: 200, text: JSON.stringify({ disposition: 'present', value: { scope, input: { jobId, buyer: vetRef('buyer'), seller: vetRef('seller'), ...input } } }) });
+const nonPass = { status: 409, text: JSON.stringify({ disposition: 'rejected', code: 'party_vet_non_pass', errorClass: 'permanent' }) };
 const deferred = () => {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
@@ -46,12 +54,16 @@ function world(t, config = {}) {
   assert.ifError(importFailure);
   const directory = mkdtempSync(join(tmpdir(), 'TEST-context-admission-'));
   const path = join(directory, 'transport.sqlite'), holds = new Set();
-  const calls = { validation: 0, reserve: 0, release: 0, wire: 0, vet: 0, complete: [] };
-  const control = { clock: T0, ready: true, beforeReserve: null, releaseFault: null, generation: 0, reserved: [] };
+  const calls = { validation: 0, reserve: 0, release: 0, effective: 0, wire: 0, vet: 0, complete: [], evidence: [] };
+  const control = { clock: T0, ready: true, beforeReserve: null, releaseFault: null, generation: 0, reserved: [], evidence: null, inspect: null, killed: false, unavailable: null };
   const options = { maxContextRecords: 20, contextStartLimits: { maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 5 }, ...config };
   const defaultPolicy = {
     async reserve(request) { calls.reserve++; control.reserved.push(request); holds.add(request.hold); return control.beforeReserve ? control.beforeReserve() : null; },
-    async release({ hold }) { calls.release++; holds.delete(hold); if (control.releaseFault) throw control.releaseFault; },
+    async release({ hold }) {
+      calls.release++; if (control.unavailable) throw control.unavailable;
+      if (holds.delete(hold)) calls.effective++;
+      if (control.releaseFault) throw control.releaseFault;
+    },
   };
   const wire = { ends: new Map(), latest: -1 };
   const sameEnd = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -60,14 +72,22 @@ function world(t, config = {}) {
     if (wire.ends.has(effect.attempt) && !sameEnd(wire.ends.get(effect.attempt), answer)) throw Object.assign(new Error('conflict'), { code: 'seller_effect_conflict' });
     calls.complete.push({ effect, outcome: answer }); wire.ends.set(effect.attempt, answer);
   };
+  // The default evidence is no intent at both retained presenter addresses; the default inspection sees an outcome the wire double holds.
+  const evidenceOf = (record, kind) => [record.vetAddresses.buyer, record.vetAddresses.seller].map(address => ({ address, kind }));
+  const publishedView = jobId => {
+    const outcomes = [...wire.ends.values()].filter(end => end !== null);
+    return outcomes.length === 0 ? { state: 'none' } : { state: 'completed', binding: row(jobId).contextBinding, outcome: outcomes.at(-1) };
+  };
   let store, admission, internals;
   function reopen() {
-    store?.close();
+    if (!control.killed) store?.close();
+    control.killed = false;
     store = createSellerTransportStore({ path, generation: `test-generation-${++control.generation}`, now: () => control.clock, ready: () => control.ready,
       maxContextRecords: options.maxContextRecords, contextStartLimits: options.contextStartLimits });
     internals = sellerStoreInternals(store);
     admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity: options.capacity ?? null,
-      effectEvidence: async () => [], inspectContextOutcome: () => ({ state: 'none' }), completeWire: options.completeWire ?? doubleCompleteWire,
+      effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
+      inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,
       now: () => control.clock, ready: () => control.ready, deadlines: { policyMs: POLICY_MS } });
   }
   reopen();
@@ -82,7 +102,7 @@ function world(t, config = {}) {
       disposition: 'admitted', jobId, buyer, buyerBundleHash: hash('bundle'), listingPin: PIN,
       participants: [{ role: 'buyer', claim: buyer, ...SELLER_PROFILE }, { role: 'seller', claim: SELLER, ...SELLER_PROFILE }] },
       firstAdmission: { challengeExpiresAt: control.clock + 600000, generatedAt: control.clock, checkedAt: control.clock } };
-    const input = { jobId, buyer, seller: SELLER, listingPin: PIN, contextScopeHash: hash('context-scope'), nonce, presentationHash: attempt.presentationHash,
+    const input = { jobId, buyer, seller: SELLER, listingPin: PIN, contextScopeHash: hash(canonicalize(SCOPE)), nonce, presentationHash: attempt.presentationHash,
       owner: result.owner, accepted, sellerBundlePresentedBy: SELLER, delegationExpiresAt: control.clock + HOUR, purchaseProfile: PROFILE };
     return { input, attempt };
   }
@@ -112,7 +132,15 @@ function world(t, config = {}) {
       return exec(sql);
     };
   }
-  return { directory, holds, calls, wire, control, options, prepare, reserveWire, legacyStart, row, compensating, cut, reopen, wireEnds: wire.ends,
+  // A process kill at the next commit for which `when()` holds, just after it or just before it: the handle closes and nothing else is written.
+  function kill(when, at = 'after-commit') {
+    const db = internals.db, exec = db.exec.bind(db);
+    db.exec = sql => {
+      if (sql === 'COMMIT' && when()) { if (at === 'after-commit') exec(sql); control.killed = true; db.close(); throw new Error('killed'); }
+      return exec(sql);
+    };
+  }
+  return { directory, holds, calls, wire, control, options, prepare, reserveWire, legacyStart, row, compensating, cut, kill, reopen, wireEnds: wire.ends, evidenceOf,
     get store() { return store; }, get admission() { return admission; }, get internals() { return internals; }, get db() { return internals.db; },
     get policy() { return options.policy ?? defaultPolicy; }, changes: () => internals.db.prepare('SELECT total_changes() AS n').get().n };
 }
@@ -192,7 +220,7 @@ test('P09b-T27 an ordinary admission makes exactly one validation, hold and star
   assert.equal(w.calls.complete.length, 1); assert.strictEqual(w.calls.complete[0].effect, capability.effect); assert.strictEqual(w.calls.complete[0].outcome, outcome);
   assert.equal(w.holds.size, 0); assert.equal(w.internals.admissionCounts().starts, 1);
   const settled = w.row(p.input.jobId);
-  assert.equal(settled.state, 'settled'); assert.equal(settled.contextOutcome, null);
+  assert.equal(settled.state, 'settled'); assert.equal(settled.contextOutcome, 'other', 'the fixture is no exact present context');
   assert.deepEqual(settled.cleanup, { releasePending: false, holdCall: 'settled', cause: null, tries: 0 });
 });
 
@@ -304,7 +332,7 @@ test('admission-policy-append-lost-ack', async t => {
   w.reopen(); const p = w.prepare();
   await assert.rejects(w.admission.begin(p.input), error => error.code === 'seller_budget_unavailable' && error.status === 503 && error.cause === cause);
   await w.admission.jobEffectMutex(p.input.jobId).run(() => {});
-  assert.equal(w.row(p.input.jobId).state, 'compensating'); assert.equal(openHolds(evidencePath), 0);
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(openHolds(evidencePath), 0);
   assert.equal(w.row(p.input.jobId).cleanup.releasePending, false); assert.equal(w.row(p.input.jobId).admittedAt, null);
   w.reopen(); assert.equal(w.row(p.input.jobId).cleanup.holdCall, 'settled');
   assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'seller_budget_unavailable');
@@ -318,8 +346,8 @@ test('admission-D4-atomic-hook-cuts', async t => {
   refused.admission.addAcceptanceHook(() => { order.push('second'); throw Object.assign(new Error('hook-full'), { code: 'peer_store_capacity', status: 503 }); });
   await reject(refused.admission.begin(p.input), 'peer_store_capacity', 503);
   assert.deepEqual(order, ['capacity', 'first', 'second']); assert.equal(db.prepare('SELECT count(*) AS n FROM test_acceptance').get().n, 0);
-  refused.reopen(); assert.equal(refused.row(p.input.jobId).state, 'compensating'); assert.equal(refused.row(p.input.jobId).admittedAt, null);
-  assert.equal(refused.store.challenges.retained(p.input.nonce).state, 'failed'); assert.equal(refused.holds.size, 1); assert.equal(refused.calls.release, 0);
+  await drained(refused, p.input.jobId); refused.reopen(); assert.equal(refused.row(p.input.jobId).state, 'aborted'); assert.equal(refused.row(p.input.jobId).admittedAt, null);
+  assert.equal(refused.store.challenges.retained(p.input.nonce).state, 'failed'); assert.equal(refused.holds.size, 0); assert.equal(refused.calls.effective, 1);
   assert.equal(refused.internals.admissionCounts().starts, 0);
   for (const at of ['before-commit', 'after-commit']) {
     const w = world(t), q = w.prepare(); w.db.exec('CREATE TABLE test_acceptance (jobId TEXT PRIMARY KEY)');
@@ -399,11 +427,12 @@ test('admission-hook-thenable-and-store-fault', async t => {
   const unhandled = []; const onUnhandled = reason => unhandled.push(reason); process.on('unhandledRejection', onUnhandled); t.after(() => process.off('unhandledRejection', onUnhandled));
   const w = world(t), p = w.prepare(); w.admission.addAcceptanceHook(() => Promise.reject(new Error('late-refusal')));
   await assert.rejects(w.admission.begin(p.input), TypeError); await flush();
-  assert.deepEqual(unhandled, []); assert.equal(w.row(p.input.jobId).state, 'compensating'); assert.equal(w.row(p.input.jobId).admittedAt, null);
-  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'operation_uncertain'); assert.equal(w.holds.size, 1);
+  await drained(w, p.input.jobId);
+  assert.deepEqual(unhandled, []); assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.row(p.input.jobId).admittedAt, null);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'operation_uncertain'); assert.equal(w.holds.size, 0);
   const faulty = world(t), q = faulty.prepare(); faulty.cut('before-commit', () => faulty.row(q.input.jobId)?.state === 'admitted');
-  await assert.rejects(faulty.admission.begin(q.input), /cut-before-commit/);
-  assert.equal(faulty.row(q.input.jobId).state, 'compensating'); assert.equal(faulty.holds.size, 1); assert.equal(faulty.calls.release, 0);
+  await assert.rejects(faulty.admission.begin(q.input), /cut-before-commit/); await drained(faulty, q.input.jobId);
+  assert.equal(faulty.row(q.input.jobId).state, 'aborted'); assert.equal(faulty.holds.size, 0); assert.equal(faulty.calls.effective, 1);
   const refused = world(t), r = refused.prepare(), capability = await running(refused, r); refused.wire.latest++;
   await reject(capability.complete(outcome), 'seller_effect_superseded');
   assert.equal(refused.row(r.input.jobId).state, 'running'); assert.equal(refused.calls.release, 0); assert.equal(refused.calls.complete.length, 0);
@@ -412,7 +441,7 @@ test('admission-hook-thenable-and-store-fault', async t => {
 
 test('admission-capability-identity', async t => {
   const w = world(t), p = w.prepare(); const a = await running(w, p);
-  assert.deepEqual(Object.keys(w.admission).sort(), ['addAcceptanceHook', 'begin', 'jobEffectMutex', 'reserveContext', 'runningCheck']);
+  assert.deepEqual(Object.keys(w.admission).sort(), ['addAcceptanceHook', 'admissionRecord', 'begin', 'cleanupPending', 'compensate', 'jobEffectMutex', 'reserveContext', 'runningCheck', 'sweep']);
   assert.ok(Object.isFrozen(a)); assert.ok(Object.isFrozen(w.admission));
   const b = await w.admission.reserveContext(p.input.jobId, w.reserveWire), copied = a.complete;
   await reject(copied(outcome), 'context_admission_closed', 409);
@@ -524,3 +553,470 @@ test('admission-release-failure-keeps-the-settlement-and-its-cause', async t => 
   assert.equal(settled.state, 'settled'); assert.equal(settled.cleanup.releasePending, true); assert.equal(settled.cleanup.tries, 1);
   assert.equal(settled.cleanup.cause.message, 'release-ack-lost'); assert.equal(w.calls.complete.length, 1);
 });
+
+// ---- P09bb: compensation C2-C4, the outcome classifier, durable release, the sweep and the admission record ----
+const drained = (w, jobId) => w.admission.jobEffectMutex(jobId).run(() => {});
+const sweepTwice = async (w, startup = false) => { await w.admission.sweep({ startup }); await w.admission.sweep({ startup: false }); };
+const restart = async w => { w.reopen(); await sweepTwice(w, true); };
+const failedWith = (w, p, code) => assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, code);
+// A row that is running whose context outcome is durable in the wire but not yet settled: the cut falls between D7 and D8a.
+async function crashAfterPublish(w, p, answer) {
+  const capability = await running(w, p);
+  w.cut('before-commit', () => w.row(p.input.jobId).state === 'settled');
+  await assert.rejects(capability.complete(answer), /cut-before-commit/);
+  assert.equal(w.row(p.input.jobId).state, 'running');
+  return capability;
+}
+const COMPLETED_CLASSES = [['success', jobId => presented(jobId)], ['vet-non-pass', () => nonPass], ['other', () => ({ status: 200, text: '{"disposition":"indeterminate"}' })]];
+const OTHER_OUTCOMES = [
+  ['a present answer for another scope', jobId => presented(jobId, {}, { agreement: 'another' })],
+  ['a present answer for another job', () => presented(job(0x99))],
+  ['a present answer without the buyer record', jobId => presented(jobId, { buyer: {} })],
+  ['a present answer without the seller record', jobId => presented(jobId, { seller: { vetRecordRef: null } })],
+  ['an absent answer', () => ({ status: 200, text: '{"disposition":"absent"}' })],
+  ['a rejection that is not a Vet non-pass', () => ({ status: 409, text: '{"disposition":"rejected","code":"other_refusal"}' })],
+  ['text that is not JSON', () => ({ status: 200, text: 'not json' })],
+  ['a JSON array', () => ({ status: 200, text: '[]' })],
+  ['a JSON scalar', () => ({ status: 200, text: '7' })],
+  ['JSON null', () => ({ status: 200, text: 'null' })],
+];
+
+test('P09b-T01 at 12 counted starts, D4 compensates to aborted, releases the hold and fails the challenge with `unpaid_start_limit`', async t => {
+  const w = world(t, { contextStartLimits: { maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 12 } }), p = w.prepare();
+  for (let index = 0; index < 11; index++) w.legacyStart(0x40 + index, OTHER);
+  w.control.beforeReserve = () => { w.legacyStart(0x60, OTHER); return null; };
+  await reject(w.admission.begin(p.input), 'unpaid_start_limit', 429); await drained(w, p.input.jobId);
+  const aborted = w.row(p.input.jobId);
+  assert.equal(aborted.state, 'aborted'); assert.equal(aborted.admittedAt, null); assert.equal(aborted.compensation.proof, 'no-effect'); assert.equal(aborted.cleanup.releasePending, false);
+  assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); failedWith(w, p, 'unpaid_start_limit'); assert.equal(w.internals.admissionCounts().starts, 12);
+});
+
+test('P09b-T03 compensated admissions count and aborted intents do not, the same after restart', async t => {
+  const w = world(t), admitted = w.prepare(0x11), refused = w.prepare(0x22);
+  await w.admission.begin(admitted.input); await w.admission.compensate(admitted.input.jobId, 'd');
+  w.control.beforeReserve = () => 'budget-refused';
+  await reject(w.admission.begin(refused.input), 'seller_budget_refused', 409); await drained(w, refused.input.jobId);
+  assert.equal(w.row(admitted.input.jobId).state, 'aborted'); assert.equal(w.row(refused.input.jobId).state, 'aborted');
+  assert.equal(w.internals.admissionCounts().starts, 1); w.reopen(); assert.equal(w.internals.admissionCounts().starts, 1);
+});
+
+test('P09b-T08 a policy refusal aborts the intent and fails the challenge with `seller_budget_refused`', async t => {
+  const w = world(t), p = w.prepare(); w.control.beforeReserve = () => 'budget-refused';
+  await reject(w.admission.begin(p.input), 'seller_budget_refused', 409); await drained(w, p.input.jobId);
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.row(p.input.jobId).admittedAt, null); failedWith(w, p, 'seller_budget_refused');
+  assert.equal(w.holds.size, 0); assert.equal(w.admission.cleanupPending(), false); assert.equal(w.internals.admissionCounts().starts, 0);
+});
+
+test('P09b-T09 a policy call past 10,000 ms answers `seller_budget_unavailable` and its late hold is released once it settles', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const w = world(t), p = w.prepare(), barrier = deferred(), entered = deferred();
+  w.control.beforeReserve = () => { entered.resolve(); return barrier.promise; };
+  const start = w.admission.begin(p.input), rejected = assert.rejects(start, error => error.code === 'seller_budget_unavailable' && error.status === 503);
+  await entered.promise; t.mock.timers.tick(POLICY_MS); await rejected;
+  assert.equal(w.row(p.input.jobId).state, 'compensating'); assert.equal(w.row(p.input.jobId).cleanup.holdCall, 'pending');
+  assert.equal(w.admission.cleanupPending(), true); assert.equal(w.holds.size, 1); assert.equal(w.calls.release, 0);
+  barrier.resolve(null); await drained(w, p.input.jobId);
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(w.admission.cleanupPending(), false);
+});
+
+test('P09b-T12 an operator abort before D3 takes the mutex leaves zero policy lines and an aborted row', async t => {
+  const w = world(t), p = w.prepare(), entered = deferred(), barrier = deferred();
+  const occupied = w.admission.jobEffectMutex(p.input.jobId).run(async () => { entered.resolve(); await barrier.promise; }); await entered.promise;
+  const start = w.admission.begin(p.input), closed = reject(start, 'context_admission_closed', 409), abort = w.admission.compensate(p.input.jobId, 'd');
+  barrier.resolve(); await occupied; await closed; await abort;
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.calls.reserve, 0); assert.equal(w.calls.release, 0);
+  assert.equal(w.row(p.input.jobId).cleanup.releasePending, false); failedWith(w, p, 'context_admission_closed'); assert.equal(w.admission.cleanupPending(), false);
+});
+
+test('P09b-T13 an abort while `reserve()` is inside its append waits for the mutex; the appended hold is released before cleanup reports complete', async t => {
+  const w = world(t), p = w.prepare(), entered = deferred(), barrier = deferred();
+  w.control.beforeReserve = () => { entered.resolve(); return barrier.promise; };
+  const start = w.admission.begin(p.input), closed = reject(start, 'context_admission_closed', 409); await entered.promise;
+  const abort = w.admission.compensate(p.input.jobId, 'd'); await flush();
+  assert.equal(w.row(p.input.jobId).state, 'compensating'); assert.equal(w.holds.size, 1); assert.equal(w.calls.release, 0); assert.equal(w.admission.cleanupPending(), true);
+  barrier.resolve(null); await closed; await abort;
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(w.admission.cleanupPending(), false);
+});
+
+test('P09b-T14 the T12 and T13 cases with a restart at and after the barrier end with no open hold on an aborted row', async t => {
+  const marked = world(t), first = marked.prepare();   // killed as D3 is marked pending, before the append
+  marked.kill(() => marked.row(first.input.jobId)?.cleanup.holdCall === 'pending');
+  await assert.rejects(marked.admission.begin(first.input), Error); await restart(marked);
+  assert.equal(marked.row(first.input.jobId).state, 'aborted'); assert.equal(marked.calls.reserve, 0); assert.equal(marked.holds.size, 0); assert.equal(marked.admission.cleanupPending(), false);
+  const appended = world(t), second = appended.prepare();   // killed with the hold line durable, before D4
+  appended.control.beforeReserve = () => { appended.control.killed = true; appended.db.close(); return null; };
+  await assert.rejects(appended.admission.begin(second.input), Error); assert.equal(appended.holds.size, 1); appended.control.beforeReserve = null;
+  await restart(appended);
+  assert.equal(appended.row(second.input.jobId).state, 'aborted'); assert.equal(appended.holds.size, 0); assert.equal(appended.calls.effective, 1); assert.equal(appended.admission.cleanupPending(), false);
+  const fenced = world(t), third = fenced.prepare(), entered = deferred(), barrier = deferred();   // an abort's C1 is durable while reserve() is inside its append
+  fenced.control.beforeReserve = () => { entered.resolve(); return barrier.promise; };
+  const start = assert.rejects(fenced.admission.begin(third.input), Error); await entered.promise;
+  fenced.kill(() => fenced.row(third.input.jobId)?.state === 'compensating'); await assert.rejects(fenced.admission.compensate(third.input.jobId, 'd'), Error);
+  barrier.resolve(null); await start; fenced.control.beforeReserve = null; await restart(fenced);
+  assert.equal(fenced.row(third.input.jobId).state, 'aborted'); assert.equal(fenced.holds.size, 0); assert.equal(fenced.calls.effective, 1);
+});
+
+test('P09b-T15 trigger (c) fires at delegation expiry plus 30,000 ms, not one millisecond earlier, and keeps the row on an unsafe sum', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input); const admitted = w.row(p.input.jobId);
+  w.control.clock = T0 + HOUR + 29999; await w.admission.compensate(p.input.jobId, 'c'); await sweepTwice(w);
+  assert.deepEqual(w.row(p.input.jobId), admitted); assert.equal(w.calls.release, 0);
+  w.control.clock = T0 + HOUR + 30000; await w.admission.compensate(p.input.jobId, 'c');
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1);
+  const direct = world(t), q = direct.prepare(0x22); q.input.delegationExpiresAt = null; await direct.admission.begin(q.input);
+  direct.control.clock = Number.MAX_SAFE_INTEGER - SESSION_CHALLENGE_LIFETIME_MS; await sweepTwice(direct); await direct.admission.compensate(q.input.jobId, 'c');
+  assert.equal(direct.row(q.input.jobId).state, 'admitted'); assert.equal(direct.row(q.input.jobId).cleanup.cause, null);
+  const unsafe = world(t), r = unsafe.prepare(0x33); r.input.delegationExpiresAt = Number.MAX_SAFE_INTEGER - 5; await unsafe.admission.begin(r.input);
+  await unsafe.admission.compensate(r.input.jobId, 'c');
+  assert.equal(unsafe.row(r.input.jobId).state, 'admitted'); assert.equal(unsafe.row(r.input.jobId).cleanup.cause.code, 'peer_clock_invalid');
+  assert.equal(unsafe.admission.cleanupPending(), true); assert.equal(unsafe.holds.size, 1); assert.equal(unsafe.calls.release, 0);
+});
+
+test('P09b-T16 trigger (c) after a clean null end with no Vet intent aborts as no-effect', async t => {
+  const w = world(t), p = w.prepare(), capability = await running(w, p); await capability.complete(null);
+  assert.equal(w.row(p.input.jobId).attemptFence, 'null-ended'); assert.equal(w.row(p.input.jobId).state, 'running'); assert.equal(w.holds.size, 1);
+  w.control.clock = T0 + HOUR + 30000; await w.admission.compensate(p.input.jobId, 'c');
+  const aborted = w.row(p.input.jobId);
+  assert.equal(aborted.state, 'aborted'); assert.equal(aborted.compensation.proof, 'no-effect'); assert.deepEqual(aborted.compensation.evidence, w.evidenceOf(aborted, 'no-intent'));
+  assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1);
+});
+
+test('P09b-T17 absence on chain is not proof: a dispatched signed CREATE keeps the row compensating; no intent aborts it; a live lease keeps it', async t => {
+  const dispatched = world(t), p = dispatched.prepare(); await running(dispatched, p);
+  dispatched.control.evidence = record => [{ address: record.vetAddresses.buyer, kind: 'no-intent' },
+    { address: record.vetAddresses.seller, kind: 'undetermined', cause: new Error('signed CREATE dispatched') }];
+  await dispatched.admission.compensate(p.input.jobId, 'd'); await restart(dispatched);
+  const kept = dispatched.row(p.input.jobId);
+  assert.equal(kept.state, 'compensating'); assert.equal(kept.cleanup.cause.code, 'context_compensation_undetermined'); assert.equal(dispatched.holds.size, 1); assert.equal(dispatched.calls.release, 0);
+  assert.equal(dispatched.admission.cleanupPending(), true);
+  const lease = world(t), q = lease.prepare(); await running(lease, q);
+  lease.control.inspect = () => ({ state: 'pending', binding: lease.row(q.input.jobId).contextBinding, attempt: 0, requestHash: hash('request'), leaseUntil: T0 + 1000 });
+  lease.control.evidence = record => lease.evidenceOf(record, 'undetermined'); await lease.admission.compensate(q.input.jobId, 'd');
+  assert.equal(lease.row(q.input.jobId).state, 'compensating'); assert.equal(lease.holds.size, 1);
+  for (const kind of ['executed', 'never-dispatched', 'retired', 'absent-on-chain']) {
+    const other = world(t), r = other.prepare(); await running(other, r); other.control.evidence = record => other.evidenceOf(record, kind);
+    await other.admission.compensate(r.input.jobId, 'd'); assert.equal(other.row(r.input.jobId).state, 'compensating', kind); assert.equal(other.holds.size, 1, kind);
+  }
+  const clean = world(t), s = clean.prepare(); await running(clean, s); await clean.admission.compensate(s.input.jobId, 'd');
+  assert.equal(clean.row(s.input.jobId).state, 'aborted'); assert.equal(clean.holds.size, 0);
+});
+
+test('P09b-T18 indeterminate readback keeps the row compensating with its hold and cause', async t => {
+  const w = world(t), p = w.prepare(), cause = new Error('journal unreadable'); await running(w, p);
+  w.control.evidence = () => { throw cause; }; await w.admission.compensate(p.input.jobId, 'd'); await sweepTwice(w);
+  const kept = w.row(p.input.jobId);
+  assert.equal(kept.state, 'compensating'); assert.equal(kept.cleanup.cause.code, 'context_compensation_undetermined'); assert.equal(kept.cleanup.cause.status, 503);
+  assert.equal(w.holds.size, 1); assert.equal(w.calls.release, 0); assert.equal(w.admission.cleanupPending(), true);
+  w.control.evidence = null; await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.row(p.input.jobId).cleanup.cause, null); assert.equal(w.holds.size, 0);
+});
+
+test('P09b-T20 identical retries at each barrier are pending; with the owner killed at the barrier they end with zero holds and starts after the sweep', async t => {
+  const pending = { kind: 'refused', code: 'context_attempt_pending', status: 503 };
+  // Alive: the retry is pending while the owner is validating, waiting for the mutex or inside the policy call; the owner then finishes normally.
+  const live = world(t), q = live.prepare(), entered = deferred(), release = deferred(), occupied = deferred();
+  assert.deepEqual(live.store.challenges.attempt(q.attempt), pending);
+  const held = live.admission.jobEffectMutex(q.input.jobId).run(() => occupied.promise);
+  live.control.beforeReserve = () => { entered.resolve(); return release.promise; };
+  const start = live.admission.begin(q.input); assert.deepEqual(live.store.challenges.attempt(q.attempt), pending);
+  occupied.resolve(); await held; await entered.promise; assert.deepEqual(live.store.challenges.attempt(q.attempt), pending);
+  release.resolve(null); await start; assert.equal(live.store.challenges.attempt(q.attempt).kind, 'continuation');
+  // Killed: nothing but the challenge, the intent, the pending mark or the hold line is durable; the sweep leaves no hold and no start.
+  const barriers = [
+    ['validation started', null],
+    ['intent committed', (w, p) => w.kill(() => w.row(p.input.jobId)?.state === 'intent')],
+    ['policy call marked pending', (w, p) => w.kill(() => w.row(p.input.jobId)?.cleanup.holdCall === 'pending')],
+    ['hold line durable', w => { w.control.beforeReserve = () => { w.control.killed = true; w.db.close(); return null; }; }],
+  ];
+  for (const [barrier, arrange] of barriers) {
+    const w = world(t), p = w.prepare();
+    if (arrange !== null) { arrange(w, p); await assert.rejects(w.admission.begin(p.input), Error, barrier); }
+    w.control.beforeReserve = null; await restart(w);
+    assert.deepEqual(w.store.challenges.attempt(p.attempt), { kind: 'refused', code: 'context_challenge_failed', status: 409, cause: 'validator_lost' }, barrier);
+    assert.notEqual(w.row(p.input.jobId)?.state ?? 'aborted', 'compensating', barrier); assert.equal(w.holds.size, 0, barrier); assert.equal(w.internals.admissionCounts().starts, 0, barrier);
+  }
+});
+
+test('P09b-T21 a crash around C1, or after C3 and before C4a, re-reads evidence before aborting, and keeps changed evidence compensating', async t => {
+  const c1 = world(t), p = c1.prepare(); await running(c1, p);
+  c1.kill(() => c1.row(p.input.jobId).state === 'compensating'); await assert.rejects(c1.admission.compensate(p.input.jobId, 'd'), Error);
+  c1.reopen(); assert.equal(c1.row(p.input.jobId).state, 'compensating'); assert.equal(c1.calls.evidence.length, 0);
+  c1.control.evidence = record => c1.evidenceOf(record, 'undetermined'); await sweepTwice(c1, true);
+  assert.equal(c1.row(p.input.jobId).state, 'compensating'); assert.equal(c1.calls.evidence.length, 2); assert.equal(c1.holds.size, 1);
+  c1.control.evidence = null; await c1.admission.sweep({ startup: false });
+  assert.equal(c1.row(p.input.jobId).state, 'aborted'); assert.equal(c1.calls.evidence.length, 3); assert.equal(c1.holds.size, 0);
+  for (const changed of [false, true]) {
+    const w = world(t), q = w.prepare(); await running(w, q);
+    w.cut('before-commit', () => w.row(q.input.jobId).state === 'aborted'); await w.admission.compensate(q.input.jobId, 'd');
+    const proven = w.row(q.input.jobId);
+    assert.equal(proven.state, 'compensating'); assert.equal(proven.compensation.proof, 'no-effect'); assert.equal(w.calls.evidence.length, 1);
+    w.reopen(); if (changed) w.control.evidence = record => w.evidenceOf(record, 'undetermined'); await w.admission.sweep({ startup: true });
+    assert.equal(w.calls.evidence.length, 2, 'the saved proof is not reused'); assert.equal(w.row(q.input.jobId).state, changed ? 'compensating' : 'aborted');
+    assert.equal(w.holds.size, changed ? 1 : 0);
+  }
+});
+
+test('P09b-T22 lost release acknowledgements are released again idempotently, also across two restarts', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input); w.control.releaseFault = new Error('acknowledgement lost');
+  await w.admission.compensate(p.input.jobId, 'd');
+  const lost = w.row(p.input.jobId);
+  assert.equal(lost.state, 'aborted'); assert.equal(lost.cleanup.releasePending, true); assert.equal(lost.cleanup.tries, 1); assert.equal(w.calls.effective, 1);
+  await sweepTwice(w); w.reopen(); await sweepTwice(w, true); w.reopen(); await sweepTwice(w, true);
+  assert.equal(w.row(p.input.jobId).cleanup.releasePending, true); assert.equal(w.row(p.input.jobId).cleanup.tries, 7); assert.equal(w.calls.effective, 1);
+  assert.equal(w.row(p.input.jobId).rev, lost.rev, 'a retried release is not a state change'); assert.equal(w.admission.cleanupPending(), true);
+  w.control.releaseFault = null; await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).cleanup.releasePending, false); assert.equal(w.row(p.input.jobId).cleanup.cause, null); assert.equal(w.calls.effective, 1);
+  assert.equal(w.internals.admissionCounts().starts, 1, 'spent starts stay counted'); assert.equal(w.admission.cleanupPending(), false);
+});
+
+test('P09b-T23 an unavailable policy ledger keeps `releasePending` with its cause until a later sweep releases', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input); w.control.unavailable = new Error('policy ledger unavailable');
+  await w.admission.compensate(p.input.jobId, 'd');
+  const waiting = w.row(p.input.jobId);
+  assert.equal(waiting.state, 'aborted'); assert.equal(waiting.cleanup.releasePending, true); assert.equal(waiting.cleanup.cause.message, 'policy ledger unavailable');
+  assert.equal(w.holds.size, 1); assert.equal(w.admission.cleanupPending(), true);
+  await restart(w); assert.equal(w.row(p.input.jobId).cleanup.releasePending, true); assert.equal(w.admission.cleanupPending(), true); assert.equal(w.holds.size, 1);
+  w.control.unavailable = null; await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).cleanup.releasePending, false); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(w.admission.cleanupPending(), false);
+});
+
+test('P09b-T24 a definite failed bootstrap closes the job; a fresh Start on another job is admitted; the old request\'s recovery ends null', async t => {
+  const w = world(t), old = w.prepare(0x11), fresh = w.prepare(0x22); w.control.beforeReserve = () => 'budget-refused';
+  await reject(w.admission.begin(old.input), 'seller_budget_refused', 409); await drained(w, old.input.jobId); w.control.beforeReserve = null;
+  assert.equal(w.row(old.input.jobId).state, 'aborted');
+  assert.deepEqual(w.store.challenges.attempt(old.attempt), { kind: 'refused', code: 'context_challenge_failed', status: 409, cause: 'seller_budget_refused' });
+  await reject(w.admission.begin(old.input), 'context_job_closed', 409);
+  await reject(w.admission.reserveContext(old.input.jobId, w.reserveWire), 'context_admission_closed', 409); assert.equal(w.calls.wire, 0);
+  await w.admission.begin(fresh.input); await w.admission.reserveContext(fresh.input.jobId, w.reserveWire);
+  assert.equal(w.row(fresh.input.jobId).state, 'running'); assert.equal(w.row(old.input.jobId).state, 'aborted'); assert.equal(w.calls.wire, 1);
+});
+
+test('P09b-T30 with the shipped guard off, `begin` and `compensate` refuse before any write', async t => {
+  const probe = fileURLToPath(new URL('./helpers/admission-guard-off-probe.mjs', import.meta.url));
+  const kept = (process.env.NODE_OPTIONS ?? '').split(' ').filter(option => option !== '' && !option.includes('kit-guard-fixture.mjs')).join(' ');
+  const child = spawnSync(process.execPath, [probe], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: kept } });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { begin: 'kit_operation_guard_off', compensate: 'kit_operation_guard_off', written: 0, portCalls: 0 });
+});
+
+test('P09b-T33 attempt A paused before D7, recovery B issued; A completes before and after B\'s completion, with equal and different outcomes: A never completes B, changes B\'s outcome, settles the admission or releases the hold; the same with C1 between D6 and D7, and across restart. Round 3, both orderings against compensation: (1) A paused after its durable Vet work and before D7; C1 and compensation run with no context outcome; A released refuses `context_admission_closed` and adds no end or outcome, and no replay becomes available. Here the row stays `compensating`, because C3\'s `executed` proof is P11d3\'s; P11d3 reruns this ordering to settlement `none` (H-19). (2) A publishes its successful outcome before C1; compensation sees it and settles `success` through the completed-context branch. Each asserts the admission revision, the exact journal files, the allocation-hook calls, the hold and `admissionRecord` after two sweeps and a restart', async t => {
+  for (const [label, answer] of [['equal', outcome], ['different', { status: 200, text: '{"disposition":"indeterminate","other":true}' }]]) {
+    const w = world(t), p = w.prepare(), a = await running(w, p), b = await w.admission.reserveContext(p.input.jobId, w.reserveWire);
+    assert.equal(b.attempt, a.attempt + 1, label);
+    await reject(a.complete(answer), 'context_admission_closed', 409); await reject(a.complete(null), 'context_admission_closed', 409);
+    assert.equal(w.calls.complete.length, 0, label); assert.equal(w.row(p.input.jobId).state, 'running'); assert.equal(w.holds.size, 1);
+    await b.complete(outcome); await reject(a.complete(answer), 'context_admission_closed', 409);
+    assert.equal(w.calls.complete.length, 1, label); assert.deepEqual(w.wireEnds.get(b.attempt), outcome); assert.equal(w.wireEnds.has(a.attempt), false);
+    assert.equal(w.row(p.input.jobId).state, 'settled'); assert.equal(w.calls.effective, 1, label);
+  }
+  const fenced = world(t), q = fenced.prepare(), c = await running(fenced, q);
+  assert.equal(fenced.admission.runningCheck(q.input.jobId, c.attempt, c.rev), true); fenced.compensating(q.input.jobId);
+  await reject(c.complete(outcome), 'context_admission_closed', 409); assert.equal(fenced.calls.complete.length, 0); assert.equal(fenced.row(q.input.jobId).state, 'compensating');
+  // (1) A is paused after durable Vet work; C1 and compensation find no outcome. P11d3's executed proof is what would settle it, so the row stays.
+  const paused = world(t), r = paused.prepare(), d = await running(paused, r); assert.equal(paused.admission.runningCheck(r.input.jobId, d.attempt, d.rev), true);
+  paused.control.evidence = record => paused.evidenceOf(record, 'executed');
+  const observe = () => ({ record: paused.admission.admissionRecord(r.input.jobId), row: paused.row(r.input.jobId), complete: paused.calls.complete.length, holds: paused.holds.size, effective: paused.calls.effective });
+  await paused.admission.compensate(r.input.jobId, 'd'); const held = observe();
+  await reject(d.complete(outcome), 'context_admission_closed', 409); await reject(d.complete(null), 'context_admission_closed', 409);
+  await sweepTwice(paused); paused.reopen(); await sweepTwice(paused, true);
+  assert.deepEqual(observe(), held); assert.equal(held.record.state, 'compensating'); assert.equal(held.record.contextOutcome, null);
+  assert.equal(held.complete, 0); assert.equal(held.holds, 1); assert.equal(held.effective, 0); assert.equal(paused.wireEnds.size, 0);
+  // (2) A publishes its successful outcome before C1: compensation sees it and settles `success`.
+  const published = world(t), s = published.prepare(), e = await running(published, s); await e.complete(presented(s.input.jobId));
+  const done = published.admission.admissionRecord(s.input.jobId); assert.equal(done.state, 'settled');
+  const later = world(t), u = later.prepare(); await crashAfterPublish(later, u, presented(u.input.jobId)); await later.admission.compensate(u.input.jobId, 'd');
+  const after = later.admission.admissionRecord(u.input.jobId); assert.equal(after.state, 'settled'); assert.equal(after.contextOutcome, 'success');
+  await sweepTwice(later); later.reopen(); await sweepTwice(later, true);
+  assert.deepEqual(later.admission.admissionRecord(u.input.jobId), after); assert.equal(later.calls.complete.length, 1); assert.equal(later.calls.effective, 1); assert.equal(later.calls.evidence.length, 0);
+});
+
+test('P09b-T35 a D4 acceptance hook that refuses compensates exactly as D4\'s limit race (challenge `failed` with its code, hold released); one that succeeds commits with the acceptance; a crash inside D4 leaves neither', async t => {
+  const refused = world(t), p = refused.prepare(); refused.db.exec('CREATE TABLE test_acceptance (jobId TEXT PRIMARY KEY)');
+  refused.admission.addAcceptanceHook(input => { refused.db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId); });
+  refused.admission.addAcceptanceHook(() => { throw Object.assign(new Error('hook-full'), { code: 'peer_store_capacity', status: 503 }); });
+  await reject(refused.admission.begin(p.input), 'peer_store_capacity', 503); await drained(refused, p.input.jobId);
+  assert.equal(refused.row(p.input.jobId).state, 'aborted'); failedWith(refused, p, 'peer_store_capacity'); assert.equal(refused.holds.size, 0); assert.equal(refused.calls.effective, 1);
+  assert.equal(refused.db.prepare('SELECT COUNT(*) AS n FROM test_acceptance').get().n, 0); assert.equal(refused.internals.admissionCounts().starts, 0);
+  const accepted = world(t), q = accepted.prepare(); accepted.db.exec('CREATE TABLE test_acceptance (jobId TEXT PRIMARY KEY)');
+  accepted.admission.addAcceptanceHook(input => { accepted.db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId); });
+  await accepted.admission.begin(q.input);
+  assert.equal(accepted.row(q.input.jobId).state, 'admitted'); assert.equal(accepted.db.prepare('SELECT COUNT(*) AS n FROM test_acceptance').get().n, 1); assert.equal(accepted.holds.size, 1);
+  const crashed = world(t), r = crashed.prepare(); crashed.db.exec('CREATE TABLE test_acceptance (jobId TEXT PRIMARY KEY)');
+  crashed.admission.addAcceptanceHook(input => { crashed.db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId); });
+  crashed.kill(() => crashed.row(r.input.jobId)?.state === 'admitted', 'before-commit');
+  await assert.rejects(crashed.admission.begin(r.input), Error); await restart(crashed);
+  assert.equal(crashed.row(r.input.jobId).state, 'aborted'); assert.equal(crashed.row(r.input.jobId).admittedAt, null); assert.equal(crashed.db.prepare('SELECT COUNT(*) AS n FROM test_acceptance').get().n, 0);
+  assert.equal(crashed.store.challenges.retained(r.input.nonce).state, 'failed'); assert.equal(crashed.internals.admissionCounts().starts, 0); assert.equal(crashed.holds.size, 0);
+});
+
+test('P09b-T34 `admissionRecord` reads back the row\'s `contextScopeHash` (never the challenge scope hash), nonce and state after restart, writes nothing, and answers null for an unknown job. Round 4: it reports `contextOutcome` as null before settlement and as the recorded class after each settlement (`success`, `vet-non-pass` and `other` by D8a and by compensation), the same after restart', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input);
+  const admitted = w.admission.admissionRecord(p.input.jobId);
+  assert.equal(admitted.contextScopeHash, p.input.contextScopeHash); assert.notEqual(admitted.contextScopeHash, hash('challenge-scope'));
+  assert.equal(admitted.nonce, p.input.nonce); assert.equal(admitted.state, 'admitted'); assert.equal(admitted.contextOutcome, null); assert.equal(admitted.admittedAt, T0);
+  w.reopen(); const written = w.changes();
+  assert.deepEqual(w.admission.admissionRecord(p.input.jobId), admitted); assert.equal(w.admission.admissionRecord(job(0x77)), null); assert.equal(w.admission.admissionRecord('not a job'), null);
+  assert.equal(w.changes() - written, 0, 'reading the record writes nothing');
+  for (const [expected, make] of COMPLETED_CLASSES) {
+    const byD8a = world(t), q = byD8a.prepare(); await (await running(byD8a, q)).complete(make(q.input.jobId));
+    const byCompensation = world(t), r = byCompensation.prepare(); await crashAfterPublish(byCompensation, r, make(r.input.jobId)); await byCompensation.admission.compensate(r.input.jobId, 'd');
+    for (const [source, x, jobId] of [['D8a', byD8a, q.input.jobId], ['compensation', byCompensation, r.input.jobId]]) {
+      assert.equal(x.admission.admissionRecord(jobId).contextOutcome, expected, `${expected} by ${source}`); assert.equal(x.admission.admissionRecord(jobId).state, 'settled');
+      x.reopen(); assert.equal(x.admission.admissionRecord(jobId).contextOutcome, expected, `${expected} by ${source} after restart`);
+    }
+  }
+});
+
+test('P09b-T36 compensation reads the context outcome first: a successful completed outcome settles with `contextOutcome` `success` and is never aborted; a Vet non-pass outcome settles `vet-non-pass`; D8a records the same classes on an ordinary completion; an inspection that throws or reports another binding keeps the row `compensating` with its cause and `ready:false`, also after two sweeps and a restart. Round 4: through both D8a and compensation, `success` is recorded only for a `present` answer whose scope hashes to the row\'s `contextScopeHash`, for the row\'s job, naming both Vet record references. A `present` answer for another scope or job, or missing either reference, a completed `indeterminate`, `absent` or non-Vet `rejected` answer, and outcome text that is not a JSON object each record `other`. T37 covers the D7→D8a crash for all three completed classes, asserting one settlement and one effective hold release by `holdId`; P11b2-T17 checks the slot side. The `none` class needs C3\'s `executed` proof, so P11d3 adds that case (H-19)', async t => {
+  const cases = [...COMPLETED_CLASSES, ...OTHER_OUTCOMES.map(([label, make]) => ['other', make, label])];
+  for (const [expected, make, label = expected] of cases) {
+    const byD8a = world(t), q = byD8a.prepare(); await (await running(byD8a, q)).complete(make(q.input.jobId));
+    assert.equal(byD8a.admission.admissionRecord(q.input.jobId).contextOutcome, expected, `D8a: ${label}`); assert.equal(byD8a.calls.effective, 1, label);
+    const byCompensation = world(t), r = byCompensation.prepare(); await crashAfterPublish(byCompensation, r, make(r.input.jobId)); await byCompensation.admission.compensate(r.input.jobId, 'd');
+    assert.equal(byCompensation.admission.admissionRecord(r.input.jobId).contextOutcome, expected, `compensation: ${label}`);
+    assert.equal(byCompensation.calls.evidence.length, 0, 'a completed outcome is never aborted and needs no evidence'); assert.equal(byCompensation.calls.effective, 1, label);
+  }
+  const cause = new Error('journal unreadable');
+  const failures = [['an inspection that throws', () => { throw cause; }, 'operation_uncertain'],
+    ['another binding', jobId => ({ state: 'completed', binding: hash('another-binding'), outcome: presented(jobId) }), 'context_outcome_binding_mismatch'],
+    ['an unknown view', () => ({ state: 'unreadable' }), 'context_outcome_unavailable']];
+  for (const [label, inspect, code] of failures) {
+    const w = world(t), p = w.prepare(); await crashAfterPublish(w, p, presented(p.input.jobId)); w.control.inspect = () => inspect(p.input.jobId);
+    await w.admission.compensate(p.input.jobId, 'd'); await sweepTwice(w); w.reopen(); await sweepTwice(w, true);
+    const kept = w.row(p.input.jobId);
+    assert.equal(kept.state, 'compensating', label); assert.equal(kept.contextOutcome, null, label); assert.equal(kept.cleanup.cause.code, code, label);
+    assert.equal(w.holds.size, 1, label); assert.equal(w.calls.evidence.length, 0, label); assert.equal(w.admission.cleanupPending(), true, label);
+    w.control.inspect = null; await w.admission.sweep({ startup: false }); assert.equal(w.admission.admissionRecord(p.input.jobId).contextOutcome, 'success', label);
+  }
+});
+
+test('P09b-T37 table: durable cut (D1, D2, hold line, D4, D7 before D8a, C1, C3 before C4a) × completed outcome class (`success`, `vet-non-pass`, `other`) wherever that outcome can already exist; mark impossible combinations N/A and exercise pre-outcome cuts with no completed outcome instead. SIGKILL, reopen, retry where K1 permits and run two sweeps: D1 closes `validator_lost` with no admission/hold/journal; D2 aborts with zero holds/starts; a durable hold is released by `holdId` once effectively; D4 continues into D5 with its original hold/start and settles the selected completion. For each D7→D8a class, restart then C1 before sweep: recover the exact durable outcome, settle with that class once, and release the same hold once. At C1/C3, completed outcomes use the outcome-first branch; without an outcome, re-read evidence and abort only on no-effect proof, otherwise retain `compensating`, hold and cause. No C3 evidence step is invented after outcome-first settlement. Assert challenge/admission state, revisions, policy lines, journal files and hook calls after each sweep/reopen; repeat cleanup without double settlement or effective release. `none` settlement and its real sink proof stay at P11d3. P11b2-T17 runs the applicable class/cut slot matrix', async t => {
+  // D1: only the challenge is durable. D2, the hold line and D4 cannot hold an outcome (N/A: no wire reservation exists yet); they run without one.
+  const d1 = world(t), q = d1.prepare(); await restart(d1);
+  assert.equal(d1.row(q.input.jobId), null); assert.equal(d1.holds.size, 0); assert.equal(d1.calls.wire, 0); failedWith(d1, q, 'validator_lost');
+  const d2 = world(t), r = d2.prepare(); d2.kill(() => d2.row(r.input.jobId)?.state === 'intent'); await assert.rejects(d2.admission.begin(r.input), Error); await restart(d2);
+  assert.equal(d2.row(r.input.jobId).state, 'aborted'); assert.equal(d2.calls.reserve, 0); assert.equal(d2.holds.size, 0); assert.equal(d2.internals.admissionCounts().starts, 0);
+  const hold = world(t), s = hold.prepare(); hold.control.beforeReserve = () => { hold.control.killed = true; hold.db.close(); return null; };
+  await assert.rejects(hold.admission.begin(s.input), Error); hold.control.beforeReserve = null; await restart(hold);
+  assert.equal(hold.row(s.input.jobId).state, 'aborted'); assert.equal(hold.calls.effective, 1); assert.equal(hold.holds.size, 0);
+  const d4 = world(t), u = d4.prepare(); d4.kill(() => d4.row(u.input.jobId)?.state === 'admitted'); await assert.rejects(d4.admission.begin(u.input), Error); await restart(d4);
+  const kept = d4.row(u.input.jobId); assert.equal(kept.state, 'admitted'); assert.equal(d4.holds.size, 1); assert.equal(d4.internals.admissionCounts().starts, 1); assert.equal(d4.calls.reserve, 1);
+  const continued = await d4.admission.reserveContext(u.input.jobId, d4.reserveWire); await continued.complete(presented(u.input.jobId));
+  assert.equal(d4.row(u.input.jobId).holdId, kept.holdId); assert.equal(d4.admission.admissionRecord(u.input.jobId).contextOutcome, 'success'); assert.equal(d4.calls.reserve, 1); assert.equal(d4.calls.effective, 1);
+  // D7 before D8a, C1 and C3 before C4a, each with every completed class: restart, then C1 before the sweep or the sweep alone; one settlement, one release.
+  for (const [expected, make] of COMPLETED_CLASSES) {
+    for (const cut of ['D7 then C1 then sweep', 'C1 then restart', 'C3 evidence was read first']) {
+      const w = world(t), p = w.prepare(); await crashAfterPublish(w, p, make(p.input.jobId));
+      if (cut === 'C1 then restart') w.compensating(p.input.jobId);
+      if (cut === 'C3 evidence was read first') { w.compensating(p.input.jobId); w.control.inspect = () => ({ state: 'none' }); await w.admission.sweep({ startup: false }); w.control.inspect = null; }
+      w.reopen(); if (cut === 'D7 then C1 then sweep') await w.admission.compensate(p.input.jobId, 'd');
+      const label = `${expected}: ${cut}`; await sweepTwice(w, true); const record = w.admission.admissionRecord(p.input.jobId);
+      assert.equal(record.state, cut === 'C3 evidence was read first' ? 'aborted' : 'settled', label);
+      if (record.state === 'settled') { assert.equal(record.contextOutcome, expected, label); assert.equal(w.calls.effective, 1, label); assert.equal(w.calls.evidence.length, 0, label); }
+      assert.equal(w.holds.size, 0, label); const stable = w.row(p.input.jobId); await sweepTwice(w); assert.deepEqual(w.row(p.input.jobId), stable, label);
+    }
+  }
+});
+
+test('admission-projection-isolation', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input);
+  const record = w.admission.admissionRecord(p.input.jobId), stored = w.row(p.input.jobId);
+  assert.deepEqual(Object.keys(record).sort(), ['admittedAt', 'buyer', 'contextOutcome', 'contextScopeHash', 'jobId', 'listingPin', 'nonce', 'presentationHash', 'rev', 'seller', 'state']);
+  assert.equal(Object.isFrozen(record), true); assert.equal(Object.isFrozen(record.listingPin), true);
+  assert.throws(() => { record.state = 'settled'; }, TypeError); assert.throws(() => { record.listingPin.version = 9; }, TypeError);
+  assert.notStrictEqual(w.admission.admissionRecord(p.input.jobId), record); assert.deepEqual(w.row(p.input.jobId), stored); assert.equal(w.admission.admissionRecord(p.input.jobId).state, 'admitted');
+});
+
+test('admission-policy-startup-owner', async t => {
+  const w = world(t), evidencePath = join(w.directory, 'policy.jsonl');
+  const real = createSellerContextAdmission({ evidencePath, sellerApproval: { mode: 'policy' }, now: () => T0 });
+  w.options.policy = real; w.reopen(); const p = w.prepare(); await w.admission.begin(p.input); assert.equal(openHolds(evidencePath), 1);
+  // The K1 composition has no legacy store: a restart, the startup sweep and a periodic one leave the live hold to the sweep's own rules.
+  const owner = createSellerContextAdmission({ evidencePath, sellerApproval: { mode: 'policy' }, now: () => T0 }); await owner.ready;
+  w.options.policy = owner; w.reopen(); await sweepTwice(w, true); assert.equal(w.row(p.input.jobId).state, 'admitted'); assert.equal(openHolds(evidencePath), 1);
+  // The legacy startup reconciler reads only the old table's peer_* state, finds none for this job and releases the live hold: why K1 must not pass its store.
+  await createSellerContextAdmission({ evidencePath, sellerApproval: { mode: 'policy' }, transportStore: w.store, now: () => T0 }).ready;
+  assert.equal(openHolds(evidencePath), 0, 'the legacy reconciler would have ended the live hold');
+});
+
+test('admission-sweep-repeat-fault', async t => {
+  const w = world(t), failing = w.prepare(0x11), releasing = w.prepare(0x22), settled = w.prepare(0x33);
+  await running(w, failing); await w.admission.begin(releasing.input); await w.admission.begin(settled.input);
+  w.control.evidence = record => { if (record.jobId === failing.input.jobId) throw new Error('journal unreadable'); return w.evidenceOf(record, 'no-intent'); };
+  w.control.releaseFault = new Error('acknowledgement lost');
+  await w.admission.compensate(failing.input.jobId, 'd'); await w.admission.compensate(releasing.input.jobId, 'd');
+  w.control.releaseFault = null; w.control.unavailable = new Error('policy ledger unavailable');
+  await w.admission.sweep({ startup: false }); await w.admission.sweep({ startup: false });
+  assert.equal(w.row(failing.input.jobId).state, 'compensating'); assert.equal(w.row(releasing.input.jobId).cleanup.releasePending, true);
+  assert.equal(w.row(settled.input.jobId).state, 'admitted'); assert.equal(w.admission.cleanupPending(), true); assert.equal(w.holds.size, 2);
+  w.control.evidence = null; w.control.unavailable = null; await w.admission.sweep({ startup: false });
+  assert.equal(w.row(failing.input.jobId).state, 'aborted'); assert.equal(w.row(releasing.input.jobId).cleanup.releasePending, false); assert.equal(w.holds.size, 1);
+  assert.equal(w.admission.cleanupPending(), false); const stable = [failing, releasing, settled].map(x => w.row(x.input.jobId)); const effective = w.calls.effective;
+  await sweepTwice(w); await restart(w);
+  assert.deepEqual([failing, releasing, settled].map(x => w.row(x.input.jobId)), stable); assert.equal(w.calls.effective, effective);
+});
+
+test('admission-evidence-set-must-cover-both-composite-addresses', async t => {
+  const w = world(t), p = w.prepare(); await running(w, p); const foreign = compositeVerificationAddress(job(0x99), SELLER);
+  const both = record => [record.vetAddresses.buyer, record.vetAddresses.seller];
+  const incomplete = [['an empty answer', () => []], ['not an array', () => 'no-intent'], ['the buyer address only', record => [{ address: both(record)[0], kind: 'no-intent' }]],
+    ['the seller address only', record => [{ address: both(record)[1], kind: 'no-intent' }]], ['a foreign address for the seller', record => [{ address: both(record)[0], kind: 'no-intent' }, { address: foreign, kind: 'no-intent' }]],
+    ['the buyer address twice', record => [{ address: both(record)[0], kind: 'no-intent' }, { address: both(record)[0], kind: 'no-intent' }]],
+    ['a third entry', record => [...w.evidenceOf(record, 'no-intent'), { address: foreign, kind: 'no-intent' }]], ['entries that are not records', () => [null, 7]]];
+  for (const [label, evidence] of incomplete) {
+    w.control.evidence = evidence; await w.admission.compensate(p.input.jobId, 'd');
+    assert.equal(w.row(p.input.jobId).state, 'compensating', label); assert.equal(w.holds.size, 1, label); assert.equal(w.calls.release, 0, label);
+  }
+  const mapped = world(t), q = mapped.prepare(); await running(mapped, q); const saved = mapped.row(q.input.jobId);
+  const corrupt = [['an address that does not follow its presenter', { ...saved, vetAddresses: { ...saved.vetAddresses, buyer: foreign } }],
+    ['colliding addresses', { ...saved, vetAddresses: { buyer: saved.vetAddresses.seller, seller: saved.vetAddresses.seller } }], ['a missing mapping', { ...saved, vetAddresses: undefined }]];
+  for (const [label, record] of corrupt) {
+    mapped.db.prepare('UPDATE kit_context_admissions SET record = ? WHERE jobId = ?').run(JSON.stringify(record), q.input.jobId); const evidenceCalls = mapped.calls.evidence.length;
+    await mapped.admission.compensate(q.input.jobId, 'd');
+    assert.equal(mapped.row(q.input.jobId).state, 'compensating', label); assert.equal(mapped.calls.evidence.length, evidenceCalls, `${label}: nothing is read for an unverified mapping`); assert.equal(mapped.holds.size, 1, label);
+    mapped.db.prepare('UPDATE kit_context_admissions SET record = ? WHERE jobId = ?').run(JSON.stringify(saved), q.input.jobId);
+  }
+  w.control.evidence = record => record.vetAddresses && [{ address: both(record)[0], kind: 'proven-unsigned' }, { address: both(record)[1], kind: 'no-intent' }]; await w.admission.compensate(p.input.jobId, 'd');
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.deepEqual(w.row(p.input.jobId).compensation.evidence.map(entry => entry.kind), ['proven-unsigned', 'no-intent']);
+});
+
+test('admission-evidence-addresses-follow-presenter-spelling', async t => {
+  const sellerSpelling = `${SELLER}?jurisdiction=GB`;
+  for (const [role, arrange] of [['buyer', p => { p.input.sellerBundlePresentedBy = SELLER; }], ['seller', p => { p.input.sellerBundlePresentedBy = sellerSpelling; }]]) {
+    const w = world(t), p = w.prepare(0x11, BUYER, { presenter: EQUIVALENT_BUYER }); arrange(p); await running(w, p);
+    const saved = w.row(p.input.jobId), journal = new Set([saved.vetAddresses[role]]), request = { buyer: compositeVerificationAddress(p.input.jobId, BUYER), seller: compositeVerificationAddress(p.input.jobId, SELLER) };
+    assert.equal(saved.vetAddresses.buyer, compositeVerificationAddress(p.input.jobId, EQUIVALENT_BUYER)); assert.notEqual(saved.vetAddresses[role], request[role]);
+    w.control.evidence = record => [record.vetAddresses.buyer, record.vetAddresses.seller].map(address => ({ address, kind: journal.has(address) ? 'undetermined' : 'no-intent' }));
+    await w.admission.compensate(p.input.jobId, 'd'); await sweepTwice(w); await restart(w);
+    assert.equal(w.row(p.input.jobId).state, 'compensating', role); assert.equal(w.holds.size, 1, role); assert.equal(w.calls.release, 0, role);
+    assert.ok(w.calls.evidence.every(read => read.buyer === saved.vetAddresses.buyer && read.seller === saved.vetAddresses.seller), `${role}: exactly the retained presenter addresses were read`);
+    journal.clear(); await w.admission.sweep({ startup: false });
+    assert.equal(w.row(p.input.jobId).state, 'aborted', `${role}: no intent at both correct addresses is the positive control`); assert.equal(w.holds.size, 0);
+  }
+});
+
+test('admission-periodic-sweep-spares-live-begin', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const waiting = world(t), p = waiting.prepare(), occupied = deferred(), entered = deferred();   // D2 committed, D3 not yet holding the mutex
+  const held = waiting.admission.jobEffectMutex(p.input.jobId).run(async () => { entered.resolve(); await occupied.promise; }); await entered.promise;
+  const start = waiting.admission.begin(p.input), intent = waiting.row(p.input.jobId);
+  await waiting.admission.sweep({ startup: false }); assert.deepEqual(waiting.row(p.input.jobId), intent); assert.equal(waiting.store.challenges.retained(p.input.nonce).state, 'attempted');
+  assert.equal(waiting.admission.cleanupPending(), false); await assert.rejects(waiting.admission.sweep({ startup: true }), TypeError); assert.deepEqual(waiting.row(p.input.jobId), intent);
+  occupied.resolve(); await held; await start; assert.equal(waiting.row(p.input.jobId).state, 'admitted'); assert.equal(waiting.calls.reserve, 1); assert.equal(waiting.holds.size, 1);
+  const slow = world(t), q = slow.prepare(), inside = deferred(), barrier = deferred();   // inside the policy call, just below its deadline
+  slow.control.beforeReserve = () => { inside.resolve(); return barrier.promise; };
+  const slowStart = slow.admission.begin(q.input); await inside.promise; t.mock.timers.tick(POLICY_MS - 1);
+  const pendingIntent = slow.row(q.input.jobId); await slow.admission.sweep({ startup: false });
+  assert.deepEqual(slow.row(q.input.jobId), pendingIntent); assert.equal(slow.row(q.input.jobId).state, 'intent');
+  barrier.resolve(null); await slowStart; assert.equal(slow.row(q.input.jobId).state, 'admitted'); assert.equal(slow.calls.reserve, 1); assert.equal(slow.internals.admissionCounts().starts, 1);
+  const late = world(t), r = late.prepare(), lateInside = deferred(), lateBarrier = deferred();   // genuine trigger (a) still fences; the late call keeps the lease until it can be released
+  late.control.beforeReserve = () => { lateInside.resolve(); return lateBarrier.promise; };
+  const lateStart = assert.rejects(late.admission.begin(r.input), error => error.code === 'seller_budget_unavailable'); await lateInside.promise; t.mock.timers.tick(POLICY_MS); await lateStart;
+  const swept = late.admission.sweep({ startup: false }); await flush(); assert.equal(late.row(r.input.jobId).state, 'compensating'); assert.equal(late.holds.size, 1);
+  lateBarrier.resolve(null); await swept; assert.equal(late.row(r.input.jobId).state, 'aborted'); assert.equal(late.holds.size, 0); assert.equal(late.calls.effective, 1);
+  const operator = world(t), s = operator.prepare(), gate = deferred(), got = deferred();   // operator (d) fences an owned begin
+  const lease = operator.admission.jobEffectMutex(s.input.jobId).run(async () => { got.resolve(); await gate.promise; }); await got.promise;
+  const operatorStart = assert.rejects(operator.admission.begin(s.input), Error); await operator.admission.sweep({ startup: false });
+  assert.equal(operator.row(s.input.jobId).state, 'intent'); const abort = operator.admission.compensate(s.input.jobId, 'd');
+  assert.equal(operator.row(s.input.jobId).state, 'compensating'); gate.resolve(); await lease; await operatorStart; await abort; assert.equal(operator.row(s.input.jobId).state, 'aborted');
+});
+
