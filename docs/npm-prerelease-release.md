@@ -20,7 +20,8 @@ Before approving the workflow:
 
 1. require reviewed, green heads for the complete dependency stack;
 2. merge through the documented parent-first order;
-3. verify that core, host and generator manifests carry one exact version;
+3. verify that the manifests of all five packages (core, host, client, kit and
+   generator) carry one exact version and the publish policy;
 4. create the matching tag on that exact `main` commit; and
 5. enter the exact version in the workflow dispatch form.
 
@@ -33,22 +34,36 @@ findings are recorded in the #191 baseline (exit 4) passes that job, as
 it does on every other acceptance run, so baseline-only findings do not stop a
 prerelease. The baseline waives transitive findings only: an advisory that is
 high or critical on a direct dependency of the consumer fails the job even when
-the baseline lists it. The publish job installs a pinned
-release toolchain without a dependency cache, runs conformance, types and all
-three test suites, and creates the release set twice. It uploads the three
-exact tarballs, SHA-256 receipts, combined source provenance and one CycloneDX
-SBOM per package before its publish step. It then publishes the reviewed
-tarballs under the npm `next` tag in this order:
+the baseline lists it. The `verify` job, which has a 120-minute limit and no
+environment, OIDC token or secret, requires a clean build tree, builds core, the
+host and the generator, then runs conformance, types, the suites of all five
+packages and the release-gate regressions (`release:test`). The publish job needs
+the `verify` job, so none of those suites runs inside its 45-minute limit. The
+publish job installs a pinned release toolchain without a dependency cache,
+requires a clean build tree and builds again. It creates the release set twice
+with `--strict`, which refuses unless all five packages are releasable at the
+planned version and each package's internal dependencies come earlier in the
+order below. Before its publish step it uploads, as an artifact named for the
+commit and the run attempt (so a re-run of the job does not reuse a name), the
+five exact tarballs, SHA-256 receipts, combined source provenance (recording
+`strict-five` admission and the order) and one CycloneDX SBOM per package. A preparation run (CI on pull requests) reports
+a private or absent package as not ready, packs the others and records
+`preparation` admission, which the publisher refuses. It then publishes the reviewed tarballs under the
+npm `next` tag in this order:
 
 1. `@kynesyslabs/dacs`;
-2. `@kynesyslabs/dacs-node`; and
-3. `create-dacs-agent`.
+2. `@kynesyslabs/dacs-node`;
+3. `@kynesyslabs/dacs-client`;
+4. `@kynesyslabs/dacs-seller`; and
+5. `create-dacs-agent`.
 
-The publisher reads each exact registry version first. A retry skips an already
-published artifact only when its registry integrity equals the reviewed
-receipt; any mismatch or registry ambiguity fails closed. This makes a partial
-three-package release safely resumable without rebuilding or trying to replace
-an immutable npm version.
+The publisher first requires `strict-five` provenance naming exactly these
+five packages in this order, and refuses a missing, extra or reordered package
+before any registry read. It then reads each exact registry version. A retry
+skips an already published artifact only when its registry integrity equals the
+reviewed receipt; any mismatch or registry ambiguity fails closed. This makes a
+partial five-package release safely resumable without rebuilding or trying to
+replace an immutable npm version.
 
 GitHub creates a missing environment the first time a job names it, with no
 reviewers and no deployment rule. So the publish job also needs a
@@ -63,7 +78,7 @@ fails closed. These are point-in-time checks: repository administrators remain
 trusted to keep the environment and workflow protected during publication.
 
 For the first release, configure the `npm-prerelease-gated` environment's
-`NPM_TOKEN` secret with the minimum npm permission required to create all three
+`NPM_TOKEN` secret with the minimum npm permission required to create all five
 public packages. After package creation, configure each npm package's trusted
 publisher for this repository, `publish-prerelease-gated.yml`, and the
 `npm-prerelease-gated` environment, then remove the long-lived publish token.
@@ -75,10 +90,38 @@ attaches provenance. See npm's official
 [provenance](https://docs.npmjs.com/generating-provenance-statements/)
 documentation.
 
-After the workflow completes, verify all three exact versions and their
+After the workflow completes, verify all five exact versions and their
 provenance on npm. Generate a clean project from the registry packages and run
 the clean-VPS restart, replay and capped funded acceptance before promoting a
 prerelease or changing the stable `latest` tag.
+
+## Rerunning an interrupted or timed-out publication
+
+Rerun the same workflow for the same tag. The publisher skips each version whose
+registry integrity equals the reviewed receipt and whose `next` is the release
+version, and publishes the rest. It never retries `npm publish` and never moves a
+tag. After a failed or timed-out publish it reads the registry back: an exact
+version counts as published, an absent one stops the run. Every read is bounded,
+and the run ends 40 minutes after it starts or 2 minutes before the job's
+45-minute limit; a publish starts only with 6 minutes left. Errors:
+
+- `publish_outcome_unknown`: the version is not visible after a failed publish;
+  the cause holds npm's message. Check npm, then rerun.
+- `dist_tag_conflict`: `next` points elsewhere. Fix it on npm by hand, rerun.
+- `existing_release_conflict`, `published_integrity_conflict`: the registry holds
+  this version with other bytes. Stop and prepare a new version.
+- `publish_budget_exhausted`: too little job time was left. Use "Re-run failed jobs" (not "Re-run all jobs"):
+  only the `publish` job runs again, with a new 45-minute clock, and the
+  `verify` job's result stays.
+- `registry_*`: a read stopped; the cause says why. Rerun after a timeout or
+  `registry_unavailable`, investigate the others first.
+
+Only `npm publish` gets credentials: the job's setup-node configuration with the
+first-release token or, later, trusted publishing. Every other release npm
+command runs without token, auth or password variables and with
+`npm_config_userconfig=/dev/null`. `ENEEDAUTH`, `E401` or `E403` in the cause of
+`publish_outcome_unknown` means npm could not authenticate: complete the
+credential steps below and rerun.
 
 ## Moving publication credentials to the gated workflow
 
@@ -102,7 +145,8 @@ repository or the organization still give it.
    the `npm-prerelease-gated` environment only, with the minimum permission from
    the previous section. Prefer a newly created token to copying the old value.
 3. For each npm package that exists (`@kynesyslabs/dacs`,
-   `@kynesyslabs/dacs-node`, `create-dacs-agent`), set its trusted publisher
+   `@kynesyslabs/dacs-node`, `@kynesyslabs/dacs-client`,
+   `@kynesyslabs/dacs-seller`, `create-dacs-agent`), set its trusted publisher
    (package Settings → Trusted publishing → GitHub Actions) to this repository,
    workflow filename `publish-prerelease-gated.yml` and environment
    `npm-prerelease-gated`, replacing any binding to `publish-prerelease.yml` or

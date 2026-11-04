@@ -5710,6 +5710,147 @@
       ]
     },
     {
+      "delta": "WF",
+      "subject": "delta(client): WF P52b tests for the root names, call-time guidance and plugin import inventory",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/fixtures/plugin-import-inventory.json",
+          "before": null,
+          "after": "653d6a10cd366ea8f71d7d82fd5940c16447b6af"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api-inventory.test.mjs",
+          "before": null,
+          "after": "f83e3553639f67784ef7eb8c68a902ba2aa543a6"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "87ebc3dd347a0a505eb5e3227627b71551c22bda",
+          "after": "3c6de00345482168eef1b5261fc5fbd103a437f5"
+        },
+        {
+          "path": "packages/dacs-client/test/public-guidance.test.mjs",
+          "before": null,
+          "after": "46737251b71eda167149709f7ac8ddb004411861"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P52b root names, call-time guidance and documented method inventory",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "0ab6e982665eead8bfcb054b78822b0a508cfe16",
+          "after": "8eef30db35c285a915231522e0b73a8c407e9384"
+        },
+        {
+          "path": "packages/dacs-client/src/public-guidance.mjs",
+          "before": null,
+          "after": "3e30100bbe51407035a50afcb5f1ef2c991040fa"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a0 durable wallet-lock recovery, owned append and fence-first lock order",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "6215d34787c361a4c056c2a78fcb2dccda823ff0",
+          "after": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "8917eac7303f718f2fb1ec4dad47235c0364c4cb",
+          "after": "39b829559547b7567fbeab5746d4239b703a43d3"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/holder-incarnation.mjs",
+          "before": null,
+          "after": "0d50723061fa03dc704eb75965fc5db36f79ac72"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-owned-append.test.mjs",
+          "before": null,
+          "after": "1df73fe136ac98d597f1509c074d8da73b74087e"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-recovery.test.mjs",
+          "before": null,
+          "after": "9e0eea8347fa209477848f388b17d7b4218d733a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/journal-child-process.mjs",
+          "before": null,
+          "after": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": null,
+          "after": "e8eb401ca45efce0cc79b1f5b2cc8f8cee657015"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-lock-order-child.mjs",
+          "before": null,
+          "after": "f808491afd7a868398cad255e96315ebda2c0b89"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": null,
+          "after": "37e944e9f1b36e944b7af495fe532ba43b208aaa"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "d65da09f23b12c15b976cc640c9cbef7be5e894a",
+          "after": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a0 refuse an owned lane reuse or append that the lock row does not back",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "39b829559547b7567fbeab5746d4239b703a43d3",
+          "after": "a284092528a7f3564c8def91dd5fee530ae04b93"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-owned-append.test.mjs",
+          "before": "1df73fe136ac98d597f1509c074d8da73b74087e",
+          "after": "8136201c3d57264ab3fe16d2ccacbef4035fdd49"
+        }
+      ]
+    },
+    {
+      "delta": "D18",
+      "subject": "delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/bound-terms-mismatch.test.mjs",
+          "before": null,
+          "after": "065eeb0112947f2736a21250173b49ecac6e0393"
+        }
+      ]
+    },
+    {
+      "delta": "D19",
+      "subject": "delta(client): D19 pin every scope clause of native payment evidence with the real SDK verifier",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/helpers/readback-review-loader.mjs",
+          "before": "0fd55490fb08991a2c021ccc4e48679f0a2b00b6",
+          "after": "62c46293df16bbd4ffc8fbddde460a12406dbda2"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52",
+          "after": "aa0be667f8a71c8b7a687588757106bef3ca3cd8"
+        }
+      ]
+    },
+    {
       "delta": "D11",
       "subject": "feat(client): findTransferAtNonce reads which of a wallet's own transactions took a nonce",
       "sha": "c6fe0c1050a753dcd96b9bc8de30c990c6d09b9f",
@@ -5837,6 +5978,17 @@
         }
       ],
       "sha": "2561440c1c62f81e08ac0b6e3c3524457c2a0528"
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the confirmed-body cancel check in the delta records and package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "8affaaac5cf2437c182821204b3f45667745d8f2",
+          "after": "8affaaac5cf2437c182821204b3f45667745d8f2"
+        }
+      ]
     }
   ]
 }

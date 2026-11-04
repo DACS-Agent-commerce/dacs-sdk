@@ -71,6 +71,11 @@ const host = await startSellerHost({
                          // [PROFILE.json](PROFILE.json) profile: standardRevision
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
+  tp1Network,            // { connection() -> { endpoint, transportAuthority, connectionId }, readAuthority(scope) }:
+                         // this host's own https connection and the trusted reader that confirms it and the
+                         // chain, read once within 10,000 ms (tp1_authority_timeout; connection() must return
+                         // at once). The host binds the SDK's approved TP-1 identity record over it before
+                         // it opens any state: no option, environment variable or file names a record
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
@@ -81,6 +86,16 @@ const host = await startSellerHost({
 // host.url is http://127.0.0.1:<port>; host.close() drains requests and closes the state.
 // host.issueSessionChallenge({ jobId, buyer }) issues the challenge the buyer's bundle presents.
 ```
+
+The host keeps three state directories under `dataDirectory`: `seller/`,
+`transport/` and `wire-journal/`, the wire request journal, opened with a 300 s
+lease. `kit-format.json` (`{"format":"dacs-kit-data/tp1-1"}`) is written first, on
+a directory that holds none of them. A directory that holds any of them without
+that marker, or with another one, is from an older kit format and is refused
+with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
+or `unreadable`); nothing is migrated. A new transport store over a
+`wire-journal/` that already holds `k-` or `o-` files is refused with
+`kit_journal_accounting_mismatch`, and nothing in the journal is changed.
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
@@ -172,6 +187,23 @@ journals that no signed CREATE for this address can land. A missing name-index
 entry, an RPC failure, or a copied/serialized proof is insufficient. A retained
 attempt from an older version without this marker is conservatively treated as
 already asked. Read-only recovery never initiates publication, even with proof.
+The same holds for a CREATE the node refused: its read stays `rejected`, and once
+the account nonce has passed it and the readback finds it absent the read returns
+the object made by `deadRefusedCreate(reason)` (`isDeadRefusedCreate`, same module;
+`mayPublishAgain` accepts either proof). The seller then publishes the Deliverable,
+the delivery evidence (when publication is on) or the commitment again, once,
+through the same authorization check as the first send, and the anchor records
+the replacement (`supersedes`), so it is never replaced again. If the refused
+bytes were sent again first, the resend may be what took the nonce: a replacement
+then also needs the complete-index rule of the wallet journal's `fate()`. The
+nonce read answers `{ nonce, blockHeight }` and the absent readback reports
+`checkedThroughBlock`, which must reach that height; any other answer stays
+`indeterminate` and signs nothing. The nonce there is a safe integer, not a
+numeric string. The replacement may differ from the refused intent only in the
+fields the seller stamps again on each attempt (the commitment's `createdAt`, and
+the signature over it); any other difference stays a `conflict`, as does a
+different artifact for the address while the refused CREATE is still live or
+uncertain.
 Keep both journals across restart; losing or rolling them back invalidates the
 proof. Without a valid proof after a failure before signing, the commitment
 remains held until the operator can reconcile it.
@@ -717,6 +749,20 @@ per-client limiter so one client cannot exhaust the shared request budget.
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).
 
+### Seller key custody
+
+`openSellerKey` (`src/seller-key.mjs`; Node ^22.13.0 or >=23.4.0) loads the
+seller key only through `loadDacsSecretV1`, from one file in the exactly-0700
+data directory holding `{ format: "dacs-seller-key/v1", algorithm: "ed25519",
+mnemonic }`, and zeroes every copy it owns. It signs only through three roles:
+`sign(bytes)` for effects, which checks the kit operation guard on every call;
+`readOnlyAnswerSigner(...)`, which returns a Promise of a single-use signer for
+one read answer, refusal or discovery document, whose `sign` returns a Promise
+of the signature (always `await` both: a Promise is never accepted as signature
+bytes) and checks the TP-1 authority when it signs, and the kit guard for a
+`ready: true` discovery document; and `integritySigner`, for seller-state journal bytes only.
+After `close()` every role refuses. Nothing in this package calls it yet.
+
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.
 
@@ -727,11 +773,13 @@ status) is a simulation contract, not the pinned node's genesis RPC shape.
 
 ## Package checks
 
-From the repository root, build the core, prepare a locked smoke consumer in a
-new directory outside the checkout, then test against it:
+From the repository root, build the core and the Node host kit (the seller
+imports its `./secrets` subpath), prepare a locked smoke consumer in a new
+directory outside the checkout, then test against it:
 
 ```sh
 npm run build
+npm run host:build
 export DACS_SELLER_SMOKE_DIR=/tmp/dacs-seller-consumer   # must not exist yet
 npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
 npm run seller:test

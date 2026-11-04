@@ -4,6 +4,7 @@
 // rebroadcasts nothing itself. A new export fails the sweep until it is added
 // here. src/index.mjs only re-exports functions classified below.
 export const EXPORT_CLASSIFICATION = Object.freeze({
+  'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall', 'isBoundedCallTimeout'] },
   'src/dacs/bounded-reads.mjs': { effect: {  }, pure: ['readFailureCode', 'readRetainedBounded'] },
   'src/dacs/commit-on-signature.mjs': { effect: { signatureCommitmentAnchor: ['signatureCommitmentAnchor'] }, pure: ['commitOnSignatureConfig', 'verifyAgreementCreateAuthorization', 'verifySignatureAgreement'] },
   'src/dacs/deliverable-wallet-journal.mjs': { effect: { createDeliverableWalletJournal: ['guardedCreate'] }, pure: ['deliverableJournalFor'] },
@@ -14,8 +15,9 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/devnet-source.mjs': { effect: {  }, pure: ['isDevnetAgreementTransport', 'isDevnetDemoTransport', 'isDevnetSettlementTransport'] },
   'src/dacs/fixture-anchors.mjs': { effect: { signAnchorWrite: ['signAnchorWrite'] }, pure: ['anchorWriteMessage', 'canonicalSignature', 'fixtureRef', 'fixtureTxRef', 'fixtureWriteHash', 'verifyFixtureReceipt', 'verifyFixtureRecord'] },
   'src/dacs/fixture-settlement.mjs': { effect: {  }, pure: ['createFixtureSettlement'] },
+  'src/dacs/kit-data-format.mjs': { effect: {  }, pure: ['assertKitDataFormat'] },
   'src/dacs/listing.mjs': { effect: {  }, pure: ['attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle', 'canonicalize', 'contentHash', 'isReportableTitle', 'listingSigningMessage', 'logicalListingAddress', 'normalizeDemAmount', 'purchaseSupport', 'utf8', 'validateListing', 'verifyComponent'] },
-  'src/dacs/native-dem-delivery-consumer.mjs': { effect: { submitNativeDemDelivery: ['submitNativeDemDelivery'] }, pure: ['createNativeDemDeliveryCapability', 'hasGuardedNativeDemDelivery', 'isProvenUnsignedAbsence', 'nativeDemDeliveryConfig', 'nativeDemDeliverySubmitsOf', 'provenUnsignedAbsence', 'readNativeDemDelivery', 'reconcileNativeDemDelivery', 'verifyNativeDemDeliveryReceipt'] },
+  'src/dacs/native-dem-delivery-consumer.mjs': { effect: { submitNativeDemDelivery: ['submitNativeDemDelivery'] }, pure: ['createNativeDemDeliveryCapability', 'deadRefusedCreate', 'hasGuardedNativeDemDelivery', 'isDeadRefusedCreate', 'isProvenUnsignedAbsence', 'mayPublishAgain', 'nativeDemDeliveryConfig', 'nativeDemDeliverySubmitsOf', 'provenUnsignedAbsence', 'readNativeDemDelivery', 'reconcileNativeDemDelivery', 'verifyNativeDemDeliveryReceipt'] },
   'src/dacs/native-payment-evidence-consumer.mjs': { effect: { createNativePaymentEvidenceConsumer: ['createNativePaymentEvidenceConsumer'] }, pure: ['checkNativePaymentEvidence', 'nativeEvidenceReadOutcome', 'nativePaymentEvidenceConfig', 'usesNativePaymentEvidence'] },
   'src/dacs/payment-evidence-wallet-journal.mjs': { effect: { createPaymentEvidenceWalletJournal: ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence'], createSignedCreateJournal: ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'] }, pure: ['isPaymentEvidenceWalletJournalPair', 'paymentEvidenceWalletJournalOf'] },
   'src/dacs/process-lease.mjs': { effect: {  }, pure: ['ProcessLeaseError', 'leaseFile', 'leaseHolderState', 'leaseState', 'takeLease'] },
@@ -50,7 +52,10 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/kit-operation-guard.mjs': { effect: {}, pure: ['KitOperationGuardError', 'assertKitOperationAdmitted', 'kitOperationAdmitted'] },
   'src/mcp/seller-content.mjs': { effect: {  }, pure: ['escapeJson', 'sellerData'] },
   'src/operations.mjs': { effect: {  }, pure: ['OperationError'] },
+  'src/private-directory.mjs': { effect: {  }, pure: ['isPrivateDirectory'] },
   'src/public/portal/seller-session-limits.mjs': { effect: {  }, pure: ['assertSellerSessionLifetime'] },
+  'src/seller-diagnostics.mjs': { effect: {  }, pure: ['sellerDiagnostic'] },
+  'src/seller-key.mjs': { effect: { openSellerKey: ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'] }, pure: ['SellerKeyError', 'parseSellerKeyRecord'] },
   'src/util/bounded-resolution.mjs': { effect: {  }, pure: ['boundedResolutionValue', 'resolveWithDeadline'] },
   'src/util/http.mjs': { effect: {  }, pure: ['OutboundError', 'fetchBoundedJson'] },
   'src/util/immutable-readbacks.mjs': { effect: {  }, pure: ['createImmutableReadbacks'] },
