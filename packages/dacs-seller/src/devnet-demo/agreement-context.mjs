@@ -1,7 +1,7 @@
 import { isProvenUnsignedAbsence, PASSIVE_RETAINED_READ } from '../dacs/native-dem-delivery-consumer.mjs';
 import { listingPin, protocolSupport } from '../dacs/purchase-protocol.mjs';
 import { attachIdentityPresentation, DEM_RAIL, purchaseSupport, verifyComponent } from '../dacs/listing.mjs';
-import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore, identityBundleHash, partyVetCore, verifyCompositeVerificationRecord, vetPhaseFailureClass } from '@kynesyslabs/dacs';
+import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionStore, identityBundleHash, partyVetCore, verifyCompositeVerificationRecord, vetPhaseFailureClass, sellerFulfilmentVetModeOf, SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { addressForClaim } from '../dacs/demos-claims.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
@@ -40,6 +40,8 @@ const freshOps=()=>({buyer:{checkpoints:{},steps:{},signing:{}},seller:{checkpoi
 // The demo requirement is empty, so a party Vet has no attempts and signs only
 // its composite record, in this SDK step.
 const SIGNING_STEP='composite';
+// How often a takeover re-reads and re-classifies a step whose evidence moved while it awaited authorization.
+const RECONCILE_ATTEMPTS=3;
 const PRESENTATION_LOOKUP_MAX_BYTES=4096, PRESENTATION_LOOKUP_TIMEOUT_MS=10000;
 const presentationBytes=bundle=>Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`).toString('hex');
 const presentationUnknown=(message,cause)=>fail('seller_presentation_indeterminate',message,cause);
@@ -87,10 +89,17 @@ function partyVetState(store,writer) {
   return{read,update,jobs,serializeStep};
 }
 
+const rejectedAuthorization=verdict=>({status:'authorization-rejected',reason:['fenced','expired','indeterminate'].includes(verdict?.reason)?verdict.reason:'indeterminate'});
+// A retained signing step whose signer provably never ran (no bytes written ahead) or whose signature is kept.
+// Bytes without a signature are an unknown outcome and are never recoverable.
+const signingRecoverable=(old,entry)=>entry?.signedBytes?Boolean(entry.signature):old.state==='pending';
+
 // Reserve before execution. Completed results/failures replay; an interrupted
 // pending step holds for authoritative reconciliation and never executes again.
+// With `reconcile` (the orchestrator Vet mode) a pending or failed step is taken over instead
+// when its retained evidence proves where it stopped (see `reclaim`).
 // Signing context belongs to this async invocation, including concurrent keys.
-function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) {
+function durableOperationStore(state,job,role,{now,clock,wait={pending:false},reconcile}) {
   const own=(current)=>{if(!liveJob(current,job))fail('binding-changed','the job\'s party Vet binding changed; nothing was written');return current.ops[role];};
   Object.defineProperty(clock,'step',{configurable:true,get:()=>{const scope=signingContext.getStore();return scope?.clock===clock?scope.view:null;}});
   const terminalFailure=error=>({name:String(error?.name??'Error'),message:String(error?.message??error),...(typeof error?.code==='string'?{code:error.code}:{}),...(typeof error?.category==='string'?{category:error.category}:{})});
@@ -106,9 +115,37 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
       fail('indeterminate','the retained party Vet step has an unknown outcome; authoritative reconciliation is required');
     };
     const done=value=>authorized?{status:'complete',value}:value;
+    // Orchestrator mode only. Takes over a pending or failed step whose retained evidence proves where it stopped:
+    // a signing step with a kept signature (reused) or with no bytes written ahead (the signer cannot have run),
+    // an anchor step whose record reads back finalized (completed from the readback) or is proven unsigned.
+    // Authorization comes first and writes nothing if refused. One transaction then moves the step and its signing
+    // entry to this owner, only while the whole row is still the revision that was classified; otherwise it reads again.
+    // Answers null (reserve or replay as usual), {answer} (done: completed or authorization refused) or {owned} (run it).
+    const reclaim=async()=>{
+      for(let attempt=0;attempt<RECONCILE_ATTEMPTS;attempt++){
+        const observed=await state.read(job.jobId),ops=own(observed),old=ops.steps[key],entry=ops.signing[key]??null;
+        if(!old||!['pending','failed'].includes(old.state))return null;
+        if(old.operationHash!==operationHash||old.inputHash!==inputHash||entry&&(entry.operationHash!==operationHash||entry.inputHash!==inputHash))fail('conflict','party Vet effect key conflict');
+        const decision=step===SIGNING_STEP?(signingRecoverable(old,entry)?{}:null):await reconcile({step,inputHash,checkpoints:ops.checkpoints});
+        if(!decision)return null;
+        if(authorized){const verdict=await authorize();if(verdict?.status!=='authorized')return{answer:rejectedAuthorization(verdict)};}
+        let taken=false;
+        await state.update(job.jobId,current=>{
+          if(current.revision!==observed.revision)return undefined;
+          const latest=own(current);
+          latest.steps[key]=decision.value===undefined?{...identity,state:'pending',owner}:{...identity,state:'complete',value:clone(decision.value)};
+          if(entry)latest.signing[key]={...entry,reservation:owner};
+          taken=true;return current;
+        });
+        if(taken)return decision.value===undefined?{owned:true}:{answer:done(clone(decision.value))};
+      }
+      fail('indeterminate','the retained party Vet step kept changing; nothing was run again');
+    };
     return state.serializeStep(job.jobId,role,key,()=>signingContext.run(null,async()=>{
+      const taken=reconcile?await reclaim():null;
+      if(taken?.answer!==undefined)return taken.answer;
       let replay=false,value;
-      await state.update(job.jobId,current=>{
+      if(!taken)await state.update(job.jobId,current=>{
         const ops=own(current),old=ops.steps[key];
         if(old){value=kept(old);replay=true;return undefined;}
         if(step===SIGNING_STEP&&ops.signing[key])fail('indeterminate','a legacy written-ahead signing step requires authoritative reconciliation');
@@ -116,18 +153,20 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
       });
       if(replay)return done(value);
       const fenced=ops=>{const pending=ops.steps[key];if(pending?.state!=='pending'||pending.owner!==owner)fail('binding-changed','the party Vet operation reservation changed');};
-      const clear=()=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);delete ops.steps[key];if(ops.signing[key]?.reservation===owner)delete ops.signing[key];return current;});
-      if(authorized){
+      // Never deletes written-ahead bytes or a kept signature in orchestrator mode: the step stays pending with them.
+      const clear=()=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);if(reconcile&&ops.signing[key]?.signedBytes)return undefined;delete ops.steps[key];if(ops.signing[key]?.reservation===owner)delete ops.signing[key];return current;});
+      if(authorized&&!taken){
         let verdict;
         try{verdict=await authorize();}catch(error){try{await clear();}catch(cause){throw new AggregateError([error,cause],'party Vet authorization cleanup failed',{cause});}throw error;}
-        if(verdict?.status!=='authorized'){await clear();return{status:'authorization-rejected',reason:['fenced','expired','indeterminate'].includes(verdict?.reason)?verdict.reason:'indeterminate'};}
+        if(verdict?.status!=='authorized'){await clear();return rejectedAuthorization(verdict);}
       }
       let view=null;
       try{if(step===SIGNING_STEP){
-        const at=now();if(!Number.isSafeInteger(at)||at<0)fail('indeterminate','party Vet signing time is unavailable');
+        let at=now();if(!Number.isSafeInteger(at)||at<0)fail('indeterminate','party Vet signing time is unavailable');
         await state.update(job.jobId,current=>{
           const ops=own(current);fenced(ops);
-          if(ops.signing[key])fail('conflict','party Vet signing identity already exists');
+          const existing=ops.signing[key];
+          if(existing){if(!taken||existing.reservation!==owner)fail('conflict','party Vet signing identity already exists');at=existing.generatedAt;return undefined;}
           ops.signing[key]={...identity,generatedAt:at,reservation:owner};return current;
         });
         view=Object.freeze({key,generatedAt:at});
@@ -210,8 +249,18 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false}}) 
 // retainedScope({jobId,buyer}) (seller context route, seller-context-route.mjs
 // createSellerContextRecords): the scope of that buyer's completed route step
 // from the seller's durable records, or null.
-export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
+// vetMode: `counterparty` (absent) has the buyer verify and sign the seller's own
+// Vet record; `tp1-g3-orchestrator` has this seller wallet sign both records, with
+// the Listing's exact seller bundle, and never calls `counterparty`. It is fixed
+// here and cannot be changed by a request, a bundle or the Listing. Any other
+// value, or an anchor composed in another mode, throws a TypeError before the
+// store is used. The returned capability exposes the mode.
+export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,vetMode:vetModeOption,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
   assertKitOperationAdmitted('createDevnetDemoAgreementContextProvider');
+  const vetMode=sellerFulfilmentVetModeOf(vetModeOption);
+  if(vetMode===null) throw new TypeError('unsupported Vet mode');
+  if(sellerFulfilmentVetModeOf(anchor?.vetMode)!==vetMode) throw new TypeError('the native anchor and the Vet provider are composed in different Vet modes');
+  const orchestrator=vetMode===SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
   if(anchor?.writer!==wallet?.claim || listing?.seller?.identity?.presentedBy!==wallet?.claim || typeof wallet?.signBytes!=='function') throw new TypeError('Vet producer and native anchor must belong to the seller');
   if(typeof anchor.hasIntent!=='function') throw new TypeError('the native anchor must answer whether a CREATE intent is retained');
   if(!store || !['read','update','entries'].every((key)=>typeof store[key]==='function')) throw new TypeError('party Vet state requires the seller\'s party Vet store');
@@ -221,7 +270,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     access?.assertWallet(addressForClaim(buyer));
   };
   const state=partyVetState(store,wallet.claim);
-  const ownTerms=t=>Boolean(t?.listingPin&&t.price&&same(t.listingPin,listingPin(listing))&&t.seller===wallet.claim&&t.payee===addressForClaim(wallet.claim)&&same(t.price,purchaseSupport(listing).price));
+  const ownTerms=t=>Boolean((!orchestrator||purchaseSupport(listing).supported)&&t?.listingPin&&t.price&&same(t.listingPin,listingPin(listing))&&t.seller===wallet.claim&&t.payee===addressForClaim(wallet.claim)&&same(t.price,purchaseSupport(listing).price));
   const contexts=new Map(),invocations=[],vets=new Map(),running=new Map(),drops=new Set(),releasing=new Map();
   const rememberInvocation=value=>{invocations.push(value);if(invocations.length>INVOCATION_DIAGNOSTIC_LIMIT)invocations.shift();};
   const verifier={isSignerAuthorized:(_artifact,signature)=>signature.signer===wallet.claim,resolvePublicKey:(signature)=>signature.signer===wallet.claim?signature.signer:null,verify:({signedBytes,signature})=>verifyComponent({signedBytes,signature})};
@@ -481,10 +530,14 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     }
     return clone(await signPresentation(job,kept));
   }
-  // A buyer Vet kept in memory for a retry is read back from the anchor again before it is reused.
-  async function buyerVetAnchored({recordRef}) {
+  const requirementOf=bundle=>bundle.presentedBy===wallet.claim?SELLER_REQUIREMENT:listing.buyerRequirement;
+  // A Vet kept in memory for a retry is read back from the anchor again before it is reused. In the
+  // orchestrator mode the readback is also strictly verified for the party's exact bundle and requirement.
+  async function vetAnchored({recordRef,record},bundle) {
     const logicalAddress=recordRef.anchor.locator,read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ);
-    return read.status==='present'&&contentHash(read.artifact)===recordRef.contentHash&&await validReceipt(read,logicalAddress,read.artifact,wallet.claim);
+    return read.status==='present'&&contentHash(read.artifact)===recordRef.contentHash
+      &&(!orchestrator||(await strictRecord(read.artifact,{jobId:record.jobId,bundle,requirement:requirementOf(bundle),authority:wallet.claim})).status==='valid')
+      &&await validReceipt(read,logicalAddress,read.artifact,wallet.claim);
   }
   // Another provider instance may consume the one-use challenge first. After a
   // failed evaluate the buyer is asked again; only a retained record is taken,
@@ -621,7 +674,22 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         throw error;
       }
     };
-    const durable=durableOperationStore(state,job,role,{now,clock,wait});
+    // Orchestrator mode: a cut anchor step is reconciled from the party's retained record (its
+    // composite-submitting checkpoint) and the anchor itself. Finalized and strictly valid: complete
+    // from that readback. Proven unsigned (no intent included): run it again. Anything else stays held.
+    const reconcileAnchorStep=orchestrator?async({step,inputHash,checkpoints})=>{
+      if(step!=='composite-anchor')return null;
+      const submitting=Object.values(checkpoints).filter(value=>value.stage==='composite-submitting'&&value.record);
+      if(submitting.length!==1)return null;
+      const artifact=submitting[0].record;
+      if(inputHash!==sha256Hex(canonicalize({logicalAddress:address,artifactHash:sha256Hex(canonicalize(artifact))})))fail('conflict','party Vet anchor evidence conflict');
+      const out=await anchor.readRetained({logicalAddress:address,artifactKind:'CompositeVerificationRecord',fresh:true,proofOfNoIntent:true},PASSIVE_RETAINED_READ);
+      if(isProvenUnsignedAbsence(out))return{};
+      if(out?.status!=='present'||!same(out.artifact,artifact)||(await strictRecord(artifact,{jobId,bundle:identityBundle,requirement,authority:wallet.claim})).status!=='valid'
+        ||!await validReceipt(out,address,artifact,wallet.claim,{fresh:true}))return null;
+      return{value:{ref:{anchor:{kind:'storage-program',locator:out.receipt.nativeAddress},contentHash:contentHash(artifact),signer:wallet.claim},receipt:out.receipt}};
+    }:undefined;
+    const durable=durableOperationStore(state,job,role,{now,clock,wait,reconcile:reconcileAnchorStep});
     const sign=async(bytes)=>{
       let stored;
       try{guard(job,'signature');await markWrite(job);stored=await durable.writeAhead(bytes);await authorizeEffect(job);guard(job,'signature');}
@@ -695,7 +763,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // journal keys for its two CVRs are checked passively: an intent there with
   // no binding was written by an earlier server version, and the job is
   // quarantined for good (nothing is read back, signed or sent for it).
-  // Answers 'bound', 'conflict' (bound to another binding) or 'legacy'.
+  // Answers 'bound', 'conflict' (bound to another binding), 'mode' (the same binding
+  // under the other Vet mode, with writes started) or 'legacy'.
+  const withoutMode=binding=>{const {vetMode:_mode,...rest}=binding;return rest;};
   const disposable=row=>!row.writeStarted&&!['selected','ended'].includes(row.lifecycle?.state);
   async function bind(job,addresses) {
     for(let tries=0;tries<3;tries+=1){
@@ -707,7 +777,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         if(current?.quarantine){outcome='legacy';return undefined;}
         if(current?.binding&&same(current.binding,job.binding)){outcome='bound';job.writeStarted||=current.writeStarted===true;return undefined;}
         if(current?.binding){
-          if(!disposable(current)){outcome='conflict';return undefined;}
+          if(!disposable(current)){outcome=current.writeStarted&&same(withoutMode(current.binding),withoutMode(job.binding))?'mode':'conflict';return undefined;}
           outcome='bound';
           return{binding:clone(job.binding),writeStarted:false,ops:freshOps(),seller:null};
         }
@@ -739,8 +809,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // answered (recheckFinished), so a receipt that stopped qualifying is refused.
   // The run answers {job,buyerVet,sellerVet}, or {refused:'conflict'|'legacy'}.
   async function recheckFinished(job) {
-    if(!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet no longer has a verified finalized anchor receipt');
-    const sellerVet=await produceSeller(job);
+    if(!await vetAnchored(job.buyerVet,job.binding.buyerIdentityBundle))fail('party_vet_unavailable','the buyer Vet no longer has a verified finalized anchor receipt');
+    if(orchestrator&&!await vetAnchored(job.sellerVet,listing.seller.identity))fail('party_vet_unavailable','the seller Vet no longer has a verified finalized anchor receipt');
+    const sellerVet=orchestrator?job.sellerVet:await produceSeller(job);
     return sellerVet.refused?sellerVet:{job,buyerVet:job.buyerVet,sellerVet};
   }
   // Only in-process producers defer deletion; no owner record survives a crash.
@@ -752,11 +823,11 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     });
   }
   function jobVet(scope,buyerIdentityBundle,open,ticket) {
-    const {generatedAt:_generatedAt,...terms}=scope,binding={scope:terms,buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};
+    const binding=bindingFor(scope,buyerIdentityBundle);
     let job=vets.get(scope.jobId);
     if(job&&job.incarnation!==ticket.incarnation) return Promise.reject(Object.assign(new Error('the producer admission changed'),{code:'context_released'}));
     if(job&&!same(job.binding,binding))return Promise.resolve({refused:'conflict'});
-    if(!job){job={jobId:scope.jobId,incarnation:ticket.incarnation,binding:clone(binding),buyerVet:null,running:null,finished:false,writeStarted:false,evicted:false,open};vets.set(scope.jobId,job);}
+    if(!job){job={jobId:scope.jobId,incarnation:ticket.incarnation,binding:clone(binding),buyerVet:null,sellerVet:null,running:null,finished:false,writeStarted:false,evicted:false,open};vets.set(scope.jobId,job);}
     if(job.finished&&job.running)return job.running.then(()=>trackProducer(job,()=>recheckFinished(job)));
     if(!job.running){
       job.open=open;
@@ -767,12 +838,18 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         try{
           const session=createInMemoryFencedSessionStore();await session.create({jobId:scope.jobId,phase:'settle-pending',now:now()});const leased=await session.acquireLease({jobId:scope.jobId,owner:'devnet-demo-party-vet',ttlMs:300000,now:now()});if(!leased.ok)throw new Error(`party Vet lease failed: ${leased.reason}`);
           guard(job,'party Vet');
-          if(!counterpartyReady()&&!(await state.read(job.jobId))?.counterpartyRecord)
+          if(!orchestrator&&!counterpartyReady()&&!(await state.read(job.jobId))?.counterpartyRecord)
             fail('counterparty_vet_required','a buyer verifier and its challenge ledger are required');
-          if(job.buyerVet&&!await buyerVetAnchored(job.buyerVet))fail('party_vet_unavailable','the buyer Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
+          // The orchestrator signs its own record first: a seller non-pass then costs one write, not two.
+          if(orchestrator){
+            if(job.sellerVet&&!await vetAnchored(job.sellerVet,listing.seller.identity))fail('party_vet_unavailable','the seller Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
+            job.sellerVet??={...await produce({job,identityBundle:clone(listing.seller.identity),session,lease:leased.lease,role:'seller'}),identityBundle:clone(listing.seller.identity)};
+            if(job.sellerVet.refused)return job.sellerVet;
+          }
+          if(job.buyerVet&&!await vetAnchored(job.buyerVet,buyerIdentityBundle))fail('party_vet_unavailable','the buyer Vet kept from an earlier attempt no longer has a verified finalized anchor receipt');
           job.buyerVet??=await produce({job,identityBundle:buyerIdentityBundle,session,lease:leased.lease,role:'buyer'});
           if(job.buyerVet.refused)return job.buyerVet;
-          const sellerVet=await produceSeller(job);
+          const sellerVet=orchestrator?job.sellerVet:await produceSeller(job);
           if(sellerVet.refused)return sellerVet;
           return{job,buyerVet:job.buyerVet,sellerVet};
         }catch(error){
@@ -794,7 +871,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     return job.running;
   }
   // Admission tickets fence production; membership records only answered times.
-  const bindingFor=(scope,buyerIdentityBundle)=>{const {generatedAt,...terms}=scope;return{scope:terms,buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT};};
+  // The orchestrator mode is part of its binding only, so counterparty bindings stay byte-identical.
+  const bindingFor=(scope,buyerIdentityBundle)=>{const {generatedAt,...terms}=scope;return{scope:terms,buyerIdentityBundle,sellerRequirement:SELLER_REQUIREMENT,...(orchestrator?{vetMode}:{})};};
   const validate=(scope)=>{requireJobId(scope?.jobId);if(!Number.isSafeInteger(scope.generatedAt)||scope.generatedAt<0)fail('context_time_invalid','context time must be a nonnegative safe integer');};
   const admissible=(row,ticket)=>Boolean(row?.binding&&same(row.binding,ticket.binding)
     &&row.lifecycle?.incarnation===ticket.incarnation&&row.lifecycle.epoch===ticket.epoch
@@ -823,18 +901,27 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     return{ticket:ticketFor(row,scope.generatedAt)};
   }
   const descriptor=(input,vetRequirements)=>{const {generatedAt,...base}=input;return{input:base,vetRequirements};};
+  const checkpointRecord=(row,role)=>{
+    const kept=Object.values(row.ops?.[role]?.checkpoints??{}).filter(value=>['composite-submitting','complete'].includes(value.stage)&&value.record);
+    return kept.length===1?kept[0].record:null;
+  };
+  // The orchestrator's seller record comes from its own checkpoint and the Listing's bundle. Its buyer record
+  // may be absent: a seller non-pass is answered from the one-record state.
   const proofIdentity=(row)=>{
-    const checkpoints=Object.values(row.ops?.buyer?.checkpoints??{}).filter(value=>['composite-submitting','complete'].includes(value.stage)&&value.record);
-    if(checkpoints.length!==1||!row.counterpartyRecord||!row.presentation?.bundle?.presentation)return null;
-    return{buyer:checkpoints[0].record,seller:row.counterpartyRecord,sellerBundle:row.presentation.bundle};
+    if(orchestrator){const seller=checkpointRecord(row,'seller');return seller?{buyer:checkpointRecord(row,'buyer'),seller,sellerBundle:listing.seller.identity}:null;}
+    const buyer=checkpointRecord(row,'buyer');
+    if(!buyer||!row.counterpartyRecord||!row.presentation?.bundle?.presentation)return null;
+    return{buyer,seller:row.counterpartyRecord,sellerBundle:row.presentation.bundle};
   };
   // All adapters authenticate these exact checkpoint identities at canonical addresses.
   async function project(row,time){
-    if(!ownTerms(row.binding?.scope))return null;
+    if(!ownTerms(row.binding?.scope)||sellerFulfilmentVetModeOf(row.binding?.vetMode)!==vetMode)return null;
     const expected=proofIdentity(row);if(!expected)return null;
     const buyerIdentityBundle=row.binding.buyerIdentityBundle,scope={...row.binding.scope,generatedAt:time};
     const records=[],requirements=[];
-    for(const [role,bundle,authority,requirement] of [['buyer',buyerIdentityBundle,wallet.claim,listing.buyerRequirement],['seller',expected.sellerBundle,buyerIdentityBundle.presentedBy,SELLER_REQUIREMENT]]){
+    const parties=[['buyer',buyerIdentityBundle,wallet.claim,listing.buyerRequirement],['seller',expected.sellerBundle,orchestrator?wallet.claim:buyerIdentityBundle.presentedBy,SELLER_REQUIREMENT]];
+    // The answer lists buyer then seller; the orchestrator reads seller first, as it wrote first.
+    for(const [role,bundle,authority,requirement] of orchestrator?[...parties].reverse():parties){
       const logicalAddress=compositeVerificationAddress(row.jobId,bundle.presentedBy);
       const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true},PASSIVE_RETAINED_READ);
       if(read?.status!=='present'||!same(read.artifact,expected[role]))return null;
@@ -843,8 +930,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
         ||!await validReceipt(read,logicalAddress,read.artifact,authority))return null;
       if(read.artifact.overallDecision!=='pass')return{refused:nonPass(read.artifact)};
       const recordRef={anchor:{kind:'storage-program',locator:logicalAddress},contentHash:contentHash(read.artifact),signer:authority};
-      records.push({identityBundle:clone(bundle),vetRecordRef:recordRef});
-      requirements.push({vetRecordRef:clone(recordRef),evaluatedParty:bundle.presentedBy,requirement:clone(requirement),verifier:authority,freshness:[],dealSpecific:[]});
+      const index=role==='buyer'?0:1;
+      records[index]={identityBundle:clone(bundle),vetRecordRef:recordRef};
+      requirements[index]={vetRecordRef:clone(recordRef),evaluatedParty:bundle.presentedBy,requirement:clone(requirement),verifier:authority,freshness:[],dealSpecific:[]};
     }
     const input={jobId:row.jobId,verifiedListing:{disposition:'verified',listing,pin:listingPin(listing)},buyer:records[0],seller:records[1],selectedRail:{...DEM_RAIL},payoutBindings:[{railId:DEM_RAIL.railId,phaseIndex:protocolSupport(listing).phases.payment,payeeAddress:scope.payee}],generatedAt:time};
     const value=descriptor(input,requirements);
@@ -881,10 +969,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(typeof writable!=='function')throw new TypeError('a durable purchase-state check is required');
     if(writable()!==true)fail('not-pending','the purchase is no longer pending');
     assertAccess(buyerIdentityBundle.presentedBy);
-    if(!counterpartyReady())return{disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
+    if(!orchestrator&&!counterpartyReady())return{disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
     for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&!(await state.read(row.jobId)))await store.update(key,current=>current?.jobId===row.jobId?null:undefined);
     const admitted=await admit(scope,buyerIdentityBundle);
-    if(admitted.refused)return{disposition:'rejected',code:admitted.refused==='legacy'?LEGACY_PARTY_VET_STATE:'context_conflict',reason:admitted.refused==='legacy'?LEGACY_REASON:'context binding conflict'};
+    if(admitted.refused)return{...ADMISSION_REFUSALS[admitted.refused]};
     const produced=await jobVet(scope,buyerIdentityBundle,writable,admitted.ticket);
     if(produced.refused)return typeof produced.refused==='object'?produced.refused:{disposition:'rejected',reason:'context binding conflict'};
     const row=await state.read(scope.jobId);authorized(row,admitted.ticket,false);
@@ -895,8 +983,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     validate(scope);assertAccess(buyerIdentityBundle.presentedBy);
     const row=await state.read(scope.jobId);
     if(!row?.binding||!row.lifecycle||!same(row.binding,bindingFor(scope,buyerIdentityBundle)))return null;
-    const ticket=ticketFor(row,scope.generatedAt);if(!eligible(row,ticket))return null;
-    const candidate=await project(row,scope.generatedAt);if(!candidate||candidate.refused)return candidate;
+    const ticket=ticketFor(row,scope.generatedAt);
+    // An orchestrator non-pass never retains an answer time, so only the admitted request is checked for it.
+    if(!(orchestrator?admissible(row,ticket):eligible(row,ticket)))return null;
+    const candidate=await project(row,scope.generatedAt);
+    if(candidate?.refused)return orchestrator&&!admissible(await state.read(scope.jobId),ticket)?null:candidate;
+    if(!candidate||!eligible(row,ticket))return null;
     try{return await finish(scope.jobId,ticket,candidate);}catch(error){if(!['context_released','binding-changed','conflict'].includes(error?.code))throw error;return null;}
   }
   async function recoverBuyer({scope,buyerIdentityBundle}){
@@ -914,7 +1006,9 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       const scope=await retainedScope({jobId,buyer:buyerIdentityBundle.presentedBy});
       if(!scope||!same(bindingFor(scope,buyerIdentityBundle),row.binding)||scope.generatedAt!==generatedAt)return{disposition:'indeterminate',reason:'completed route differs'};
     }
-    const candidate=await project(row,generatedAt);
+    let candidate;
+    // An unavailable readback keeps its cause (timeout, damaged journal, ...) and never answers a context.
+    try{candidate=await project(row,generatedAt);}catch(error){if(!orchestrator)throw error;return{disposition:'indeterminate',reason:`party Vet readback failed (${oneLine(typeof error?.code==='string'?error.code:error?.name??'error')})`};}
     if(!candidate||candidate.refused)return{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
     try{await finish(jobId,ticket,candidate);}catch(error){if(!['context_released','binding-changed','conflict'].includes(error?.code))throw error;return{disposition:'indeterminate',reason:'the context lifecycle changed'};}
     return{disposition:'present',value:{input:clone(candidate.input),vetRequirements:clone(candidate.vetRequirements)}};
@@ -935,10 +1029,29 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // Answers {writes}, the writes a retry of resolveBuyer still makes, only for a clean cut: some
   // party has no intent and the row shows nothing of its signing, or has an intent whose CREATE is
   // proven unsigned, and every other party is anchored and verified. Anything else answers null.
+  // The orchestrator's resume, seller then buyer, each read with the anchor's no-intent proof. An address is done
+  // when its record is the retained one, a pass, strictly valid for the party's exact bundle and requirement, with
+  // a finalized receipt. It is missing only on the anchor's proven unsigned absence: plain absence proves nothing.
+  // Anything else answers null. Whether a retained signature is reused is decided later, by the resumed step.
+  async function resumableOrchestrator({scope,buyerIdentityBundle},row){
+    let writes=0;
+    for(const bundle of [listing.seller.identity,buyerIdentityBundle]){
+      const logicalAddress=compositeVerificationAddress(scope.jobId,bundle.presentedBy);
+      const read=await anchor.readRetained({logicalAddress,artifactKind:'CompositeVerificationRecord',fresh:true,proofOfNoIntent:true},PASSIVE_RETAINED_READ);
+      if(isProvenUnsignedAbsence(read)){writes++;continue;}
+      const expected=checkpointRecord(row,bundle.presentedBy===wallet.claim?'seller':'buyer');
+      if(read?.status!=='present'||!expected||!same(read.artifact,expected)||read.artifact.overallDecision!=='pass'
+        ||(await strictRecord(read.artifact,{jobId:scope.jobId,bundle,requirement:requirementOf(bundle),authority:wallet.claim})).status!=='valid'
+        ||!await validReceipt(read,logicalAddress,read.artifact,wallet.claim,{fresh:true}))return null;
+    }
+    const current=await state.read(scope.jobId);
+    return writes&&resumableRow(current,scope,buyerIdentityBundle)&&same(cutState(current),cutState(row))?{writes}:null;
+  }
   async function resumableBuyer({scope,buyerIdentityBundle}){
     if(!ownTerms(scope))return null;
     validate(scope);assertAccess(buyerIdentityBundle.presentedBy);
     const row=await state.read(scope.jobId);if(!resumableRow(row,scope,buyerIdentityBundle))return null;
+    if(orchestrator)return resumableOrchestrator({scope,buyerIdentityBundle},row);
     let writes=0,cut=false;
     for(const party of [buyerIdentityBundle.presentedBy,wallet.claim]){
       const logicalAddress=compositeVerificationAddress(scope.jobId,party);
@@ -995,7 +1108,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     void completion.then(settled,error=>{settled();logged('release',jobId)(error);});return completion;
   }
   async function sweep(ended){let deleted=0;for(const jobId of await state.jobs())if(ended(jobId)===true&&await drop(jobId))deleted++;return{deleted,usage:store.usage?.()??null};}
-  return{resolveBuyer,recoverBuyer,resumableBuyer,resolveSeller,release,sweep,usage:()=>store.usage?.()??null,assertBuyerAccess:assertAccess,contexts,invocations};
+  return{vetMode,resolveBuyer,recoverBuyer,resumableBuyer,resolveSeller,release,sweep,usage:()=>store.usage?.()??null,assertBuyerAccess:assertAccess,contexts,invocations};
 
 }
 
@@ -1025,6 +1138,12 @@ const oneLine=(text)=>String(text).replace(/[\u0000-\u001f\u007f\u2028\u2029\\]/
 
 
 const LEGACY_REASON=`${LEGACY_PARTY_VET_STATE}: this purchase was started by an earlier server version; nothing was signed or sent; start a new purchase`;
+// The definite answer to a request that cannot be admitted, by the refusal `admit` gives.
+const ADMISSION_REFUSALS=Object.freeze({
+  legacy:Object.freeze({disposition:'rejected',code:LEGACY_PARTY_VET_STATE,reason:LEGACY_REASON}),
+  mode:Object.freeze({disposition:'rejected',code:'vet_mode_mismatch',reason:'the retained party Vet binding uses another Vet mode'}),
+  conflict:Object.freeze({disposition:'rejected',code:'context_conflict',reason:'context binding conflict'}),
+});
 
 const CONTEXT_TIMES=16;
 const INVOCATION_DIAGNOSTIC_LIMIT=CONTEXT_TIMES*2;

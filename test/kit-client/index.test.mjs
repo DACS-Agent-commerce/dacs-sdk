@@ -6,7 +6,7 @@ import { CASE_IDS, indexProblems } from './index-rules.mjs';
 
 const HARNESS_DIRECTORY = new URL('./', import.meta.url);
 const TITLE = /^test\((['"])(K12-.+?)\1,/gm;
-const CASE_ID = /^K12-(H\d[a-z]?(?:-(?:wire|host))?)(?:\([ivx]+\))?(?: \/ A37)? (today|control):/;
+const CASE_ID = /^K12-(H\d[a-z]?(?:-(?:wire|host))?)(?:\([ivx]+\))?(?: \/ A37)? (today|target|control)(?: \([^)]*\))?:/;
 const CASES_WITHOUT_SEPARATE_CONTROL = new Set(['H6b', 'H7']);
 
 const index = JSON.parse(readFileSync(new URL('./harness-index.json', HARNESS_DIRECTORY), 'utf8'));
@@ -23,9 +23,11 @@ test('K12 index: every case id has exactly one harness test, every harness test 
   assert.deepEqual(parsed.filter((entry) => !indexed.has(entry.id)).map((entry) => entry.title), [], 'every harness test belongs to an indexed case');
   for (const entry of index) {
     const id = entry.id.replace(/^K12-/, '');
-    const todayTests = count(id, 'today');
-    assert.equal(todayTests, id === 'H3' ? 2 : 1, `${entry.id} has ${id === 'H3' ? 'one test per part' : 'exactly one test'} of today's behaviour`);
-    assert.equal(count(id, 'control'), CASES_WITHOUT_SEPARATE_CONTROL.has(id) ? 0 : todayTests, `${entry.id} has a positive control for each baseline`);
+    const active = entry.flippedBy === null ? 'today' : 'target';
+    const activeTests = count(id, active);
+    assert.equal(activeTests, id === 'H3' ? 2 : 1, `${entry.id} has one ${active} test per part`);
+    assert.equal(count(id, active === 'today' ? 'target' : 'today'), 0, `${entry.id} asserts only its current behaviour`);
+    assert.equal(count(id, 'control'), CASES_WITHOUT_SEPARATE_CONTROL.has(id) ? 0 : activeTests, `${entry.id} has a control for each active assertion`);
   }
 });
 
