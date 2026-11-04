@@ -6,6 +6,8 @@ import DatabaseSync from 'better-sqlite3';
 import { testWallet } from './protocol-fixture.mjs';
 let nextTestWallet = 30;
 const key = () => { const wallet = testWallet(nextTestWallet++); return { claim: wallet.claim, sign: wallet.signBytes }; };
+import { randomBytes } from 'node:crypto';
+import { admittedSession } from './challenge-api.mjs';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,readFile,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -18,7 +20,7 @@ const {SELLER_CONTEXT_LIMITS}=await import('../../src/dacs/seller-context-route.
 const {SELLER_TRANSPORT_HEADER,SELLER_CONTEXT_PATH,SELLER_CONTEXT_CHALLENGE_PATH,sellerContextChallengeScope,sellerContextScopeHash}=await import('../../src/dacs/seller-transport-auth.mjs');
 const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX','01ARZ3NDEKTSV4RRFFQ69G5FAY','01ARZ3NDEKTSV4RRFFQ69G5FAZ'];
 const T=1800000000000;
-function bundleFor(buyer){const b={bundleVersion:'1',presentedBy:buyer.claim,presentedAt:T,sessionNonce:'a'.repeat(64),claims:[{ref:buyer.claim}]};return {...b,presentation:{kind:'per-claim',signatures:[{ref:buyer.claim,signature:buyer.sign(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(b))).toString('base64url')}]}};}
+function bundleFor(buyer,at=T){const b={bundleVersion:'1',presentedBy:buyer.claim,presentedAt:at,sessionNonce:'a'.repeat(64),claims:[{ref:buyer.claim}]};return {...b,presentation:{kind:'per-claim',signatures:[{ref:buyer.claim,signature:buyer.sign(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(b))).toString('base64url')}]}};}
 function exchange(handler,{text='{}',header,url=SELLER_CONTEXT_PATH,headers={},method='POST',chunks}={}){
  const req=new PassThrough();Object.assign(req,{url,method,headers:{'content-type':'application/json',...(header?{[SELLER_TRANSPORT_HEADER]:header}:{}),...headers},socket:{remoteAddress:'127.0.0.1',localAddress:'127.0.0.1'}});
  const res={destroyed:false,writableEnded:false,headersSent:false,writeHead(status,h){this.status=status;this.headers=h;this.headersSent=true},end(text){this.text=text;this.writableEnded=true;}};
@@ -26,24 +28,30 @@ function exchange(handler,{text='{}',header,url=SELLER_CONTEXT_PATH,headers={},m
 }
 // A present context answer; as recover it reads back and verifies both Vet records.
 const presentContext=async body=>({disposition:'present',value:{scope:body.scope,input:{jobId:body.scope.jobId}}});
-async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},maxNoncesPerBuyerPerWindow=120,releaseFails=false,releaseWrites=null,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=presentContext,...http}={}){
+async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},maxRecords=10000,maxChallenges=10000,maxContextRecords=10000,contextSessionState=()=>null,assertBuyerAccess=()=>{},knownJob=null,maxNoncesPerBuyerPerWindow=120,releaseFails=false,releaseWrites=null,admitWrites=null,writable=()=>true,recover=async()=>null,resumable=null,perform=presentContext,...http}={}){
  const dir=await mkdtemp(join(tmpdir(),'d5-wire-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=T;
  const seller=key(),buyer=key(),other=key(),listing=fixtureListing({...seller,signBytes:seller.sign},{now:T}),pin=listingPin(listing),support=purchaseSupport(listing);
- const path=join(dir,'transport.sqlite'),store=createSellerTransportStore({path,maxRecords,maxChallenges,maxContextRecords,contextSessionState,maxNoncesPerBuyerPerWindow,now:()=>time});t.after(()=>store.close());
+ const path=join(dir,'transport.sqlite'),store=createSellerTransportStore({path,maxRecords,maxChallenges,maxContextRecords,contextSessionState,contextStartLimits:limits,maxNoncesPerBuyerPerWindow,now:()=>time});t.after(()=>store.close());
  const auth=createSellerTransportServerAuth({sellerSigner:seller,listingPin:pin,store,now:()=>time});let holds=0,writes=0,logs=0,releases=0;
- const route=createSellerContextRoute({listing,resolveBuyer:async (body,options)=>{writes++;return perform(body,options)},assertBuyerAccess,now:()=>time,limits,recover,resumable,writable,
+ const route=createSellerContextRoute({admitPresentation:async({jobId,bundle})=>admittedSession({jobId,bundle,bundleHash:identityBundleHash(bundle),seller:seller.claim,listingPin:pin}),listing,resolveBuyer:async (body,options)=>{writes++;return perform(body,options)},assertBuyerAccess,knownJob,now:()=>time,limits,recover,resumable,writable,
   admitWrites:async input=>{holds++;return admitWrites?admitWrites(input):null},releaseWrites:async input=>{releases++;if(releaseFails)throw new Error('release fixture failure');return releaseWrites?.(input)}});
  const agent={claim:seller.claim,listingPin:pin,agreementState:()=>({proposal:null,contribution:null})};
  const handler=createSellerHttpHandler(agent,{authentication:auth,context:route,...http});
  const bundles=new Map();
- const wire=async({actor=buyer,jobId=JOBS[0],alter=()=>{},fresh=false}={})=>{
-  const cacheKey=actor.claim+jobId+time;
-  if(fresh)bundles.delete(cacheKey);
-  const bundle=structuredClone(bundles.get(cacheKey)??bundleFor(actor)),scope={source:AGREEMENT_CONTEXT_SOURCE,wallet:'0x'+actor.claim.slice(16),jobId,buyer:actor.claim,buyerBundleHash:identityBundleHash(bundle),seller:seller.claim,listingPin:pin,rail:{railId:'demos-native:DEM',railVersion:1},payee:support.payee,price:support.price,generatedAt:time};
+ const wire=async({actor=buyer,jobId=JOBS[0],alter=()=>{}}={})=>{
+  const cacheKey=actor.claim+jobId;
+  const bundle=structuredClone(bundles.get(cacheKey)??bundleFor(actor,time)),scope={source:AGREEMENT_CONTEXT_SOURCE,wallet:'0x'+actor.claim.slice(16),jobId,buyer:actor.claim,buyerBundleHash:identityBundleHash(bundle),seller:seller.claim,listingPin:pin,rail:{railId:'demos-native:DEM',railVersion:1},payee:support.payee,price:support.price,generatedAt:bundle.presentedAt};
   const body={scope,buyerIdentityBundle:bundle};alter(body);
   // Challenge issuance is fixture setup. HTTP issuance and its own limits
   // are exercised separately below, without this setup shortcut.
-  const challenge=bundles.has(cacheKey)?{sessionNonce:bundle.sessionNonce}:store.issueContextChallenge({jobId,buyer:actor.claim},sellerContextChallengeScope(scope),{maxPerBuyer:1000,maxGlobal:1000,admit:()=>time});
+  let challenge={sessionNonce:bundle.sessionNonce};
+  if(!bundles.has(cacheKey)) {
+   // Seed the unrelated issuance step so context-validation and start-limit vectors reach their own check.
+   challenge={sessionNonce:randomBytes(32).toString('hex')};
+   const db=new DatabaseSync(path);
+   try { db.prepare("INSERT INTO kit_challenges (nonce,jobId,buyer,challengeScopeHash,origin,issuedAt,expiresAt,state) VALUES (?,?,?,?,'route',?,?,'issued')").run(challenge.sessionNonce,jobId,actor.claim,sellerContextScopeHash(sellerContextChallengeScope(scope)),time,time+600000); }
+   finally { db.close(); }
+  }
   bundle.sessionNonce=challenge.sessionNonce;
   bundles.set(cacheKey,structuredClone(bundle));
   // Keep the presenter's signature and both request hashes valid even for
@@ -54,7 +62,7 @@ async function world(t,{limits={maxStartsPerHour:2,maxStartsPerBuyerPerHour:1},m
   const client=createSellerTransportClientAuth({buyerSigner:actor,seller:seller.claim,resolveJob:()=>({listingPin:pin,agreementHash:sellerContextScopeHash(scope)}),now:()=>time});
   const {header}=await client.request(SELLER_CONTEXT_PATH,body,text);return {text,header};
  };
- const counts=()=>{const db=new DatabaseSync(path,{readonly:true});try{return Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'peer_%' AND name NOT IN ('peer_meta','peer_context_challenges') ORDER BY name").all().map(({name})=>[name,db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n]))}finally{db.close()}};
+ const counts=()=>{const db=new DatabaseSync(path,{readonly:true});try{return Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'peer_%' AND name NOT IN ('peer_meta','kit_challenges') ORDER BY name").all().map(({name})=>[name,db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n]))}finally{db.close()}};
  const effects=()=>({holds,writes,logs,releases,counts:counts()});
  return {handler,wire,store,auth,route,buyer,other,seller,listing,pin,path,effects,now:()=>time,advance:ms=>{time+=ms}};
 }

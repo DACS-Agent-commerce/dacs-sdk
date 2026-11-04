@@ -32,6 +32,7 @@
 // <dataDirectory>/wire-journal under a 300 s lease, and holds the binding and
 // the journal in a wire context for the signed routes.
 import { existsSync, lstatSync, mkdirSync, opendirSync, realpathSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD, WireError, assertTp1Binding, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
@@ -44,12 +45,13 @@ import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
+import { stopRequested } from './devnet-demo/stop-request.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
 
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network']);
-const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
+const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now', 'contextSessionState']);
 const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 // The startup binding read is bounded (SA-16); a later answer grants nothing.
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
@@ -228,7 +230,15 @@ export async function startSellerHost(options) {
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS,
-    host = '127.0.0.1', port = 0, now = () => Date.now() } = options;
+    host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
+  if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
+  const sessionState = input => {
+    try {
+      const value = contextSessionState(input);
+      if (value && typeof value.then === 'function') Promise.resolve(value).then(undefined, () => {});
+      return typeof value === 'string' ? value : null;
+    } catch { return null; }
+  };
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
@@ -255,6 +265,7 @@ export async function startSellerHost(options) {
   };
   const shutdown = new AbortController();
   try {
+    const generation = randomBytes(16).toString('hex');
     await assertKitDataFormat(dataDirectory, DURABLE_SYNC);
     const transport = join(dataDirectory, 'transport');
     const journalDirectory = join(dataDirectory, JOURNAL_DIRECTORY);
@@ -268,9 +279,12 @@ export async function startSellerHost(options) {
       process.stderr.write(`seller-state: released the lock on job ${job} left by a holder that is gone (${reason})\n`);
     }
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    // Likewise a context step still pending in the journal has no run left: it opens as uncertain.
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, markPendingContextEffectsUncertain: true });
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, generation, stopped: stopRequested, contextSessionState: sessionState });
     opened.push(() => store.close());
+    // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
+    // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
+    store.challenges.closeLostValidations();
+    store.recoverLostContextReservations();
     // An existing path is left to the journal's own checks, which refuse a symlink, a
     // file or a directory others can write, with their detail.
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
