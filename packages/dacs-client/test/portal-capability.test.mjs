@@ -103,6 +103,7 @@ for (const method of METHODS) {
     ['object id', 'id', {}], ['boxed id', 'id', new String('TEST')], ['long id', 'id', 'x'.repeat(257)],
     ['missing token', 'token', undefined], ['empty token', 'token', ''], ['null token', 'token', null],
     ['object token', 'token', {}], ['numeric token', 'token', 1], ['long token', 'token', 'x'.repeat(1025)],
+    ['lone-surrogate id', 'id', 'TEST\uD800'], ['lone-surrogate token', 'token', 'TEST\uDC00'],
   ]) test(`${method}: ${label}`, async t => {
     const w = fixture(t);
     await positive(w, method);
@@ -113,6 +114,37 @@ for (const method of METHODS) {
       return w.purchases()[method](field === 'id' ? value : w.op.id, field === 'token' ? value : w.token);
     }, denial);
     assert.deepEqual(w.calls, before);
+  });
+
+  // A lone surrogate encodes as U+FFFD, so it must never authenticate as another token or id.
+  test(`${method}: a lone-surrogate token cannot authenticate as the stored U+FFFD token`, async t => {
+    const w = fixture(t);
+    w.patch('handoff_token_hash', tokenHash('TEST-�'));
+    assert.ok(await w.run(method, w.op.id, 'TEST-�'));
+    for (const token of ['TEST-\uD800', 'TEST-\uDC00', 'TEST-\uDFFF']) await refused(w, method, w.op.id, token);
+    w.patch('handoff_token_hash', tokenHash('TEST-��'));
+    await refused(w, method, w.op.id, 'TEST-\uDC00\uD800');
+  });
+  test(`${method}: a stored hash of an ill-formed token authenticates no ill-formed token`, async t => {
+    const w = fixture(t);
+    w.patch('handoff_token_hash', tokenHash('TEST-\uD801'));
+    await refused(w, method, w.op.id, 'TEST-\uD801');
+    await refused(w, method, w.op.id, 'TEST-\uDFFF');
+  });
+  test(`${method}: a lone-surrogate operation id is refused before the host lookup`, async t => {
+    const w = fixture(t), id = `${w.op.id}�`;
+    w.db.prepare('DELETE FROM operation_events WHERE operation_id=?').run(w.op.id);
+    w.patch('id', id);
+    assert.ok(await w.run(method, id));
+    await refused(w, method, `${w.op.id}\uD800`);
+  });
+  test(`${method}: token and id length limits count code units and refuse a split pair`, async t => {
+    const w = fixture(t), pair = 't'.repeat(1022) + '\u{1F600}', split = 't'.repeat(1023) + '\uD83D';
+    w.patch('handoff_token_hash', tokenHash(pair));
+    assert.ok(await w.run(method, w.op.id, pair));
+    w.patch('handoff_token_hash', tokenHash('t'.repeat(1023) + '�'));
+    await refused(w, method, w.op.id, split);
+    await refused(w, method, `${'i'.repeat(255)}\uDE00`);
   });
 
   for (const [label, value] of [
