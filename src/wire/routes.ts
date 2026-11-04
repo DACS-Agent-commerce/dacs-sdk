@@ -9,6 +9,8 @@
 export const DACS_SELLER_HTTP_V1 = "dacs-seller-http/v1";
 /** Header carrying the base64url signed envelope (the plugin's header name). */
 export const DACS_SELLER_HTTP_HEADER = "x-dacs-seller-peer";
+/** Header carrying the explicit-resume proof of one CREATE (explicitResume.ts). */
+export const DACS_SELLER_RESUME_HEADER = "x-dacs-seller-resume";
 export const DACS_SELLER_DISCOVERY_PATH = "/.well-known/dacs-seller.json";
 
 /**
@@ -23,6 +25,7 @@ export const DACS_SELLER_HTTP_DOMAINS = Object.freeze({
   response: "dacs-seller-http:v1:response:",
   delegation: "dacs-seller-http:v1:delegation:",
   discovery: "dacs-seller-http:v1:discovery:",
+  explicitCreateResume: "dacs-seller-http:v1:explicit-create-resume:",
 });
 
 export const DACS_SELLER_HTTP_PATHS = Object.freeze({
@@ -80,12 +83,12 @@ export function findDacsSellerHttpRoute(method: string, target: string): DacsSel
   return DACS_SELLER_HTTP_ROUTES.find((r) => r.method === method && r.path === target) ?? null;
 }
 
-const PRE_AGREEMENT_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_PATHS.contextChallenge]);
+const PRE_AGREEMENT_PATHS: readonly string[] = Object.freeze([DACS_SELLER_HTTP_PATHS.contextChallenge, DACS_SELLER_HTTP_PATHS.context]);
 
 /**
  * Whether a route is used before any Agreement exists. Its request issues or
  * consumes a seller nonce, so `checkWireRequest` refuses it and it is never
- * answered as readback. Not exported from the package index.
+ * answered as readback.
  */
 export const isPreAgreementRoute = (path: string): boolean => PRE_AGREEMENT_PATHS.includes(path);
 
