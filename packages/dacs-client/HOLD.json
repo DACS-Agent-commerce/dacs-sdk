@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "30f2fb15690d9323a7a6fcf207c29ea12d24bbc1"
+        "blob": "74c881868fe3c4efc636b2af0e0f7195e38369aa"
       },
       "DELTA-LEDGER.json": {
-        "blob": "65aad15ec6815556e3cab19bcb64a6d025ec0666"
+        "blob": "c9b9d01f8a8f57104179953c878fb31839cb0c8a"
       },
       "DELTA-MAP.md": {
-        "blob": "2ce177cae6c79756af04a2a12423cc44861c746d"
+        "blob": "4e93971f8926024e71b4c4835541d5330793c613"
       },
       "DELTA-NOTES.md": {
         "blob": "fb704617e73c267d379cb9121dee8f2ec7c45d35"
@@ -385,7 +385,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "bfe29650b5d1af801e678020d3fee92612d5f5d5"
+        "blob": "6a3e55feeb3eb8da84d2ce0416673a102e44a97a"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1031,7 +1031,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "8cf78f49ec9015ef3664529ca106ae20dc7eae61"
+        "blob": "ea5ff4f6b1fb638c9b8adc9aabab3bc51c299e49"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1211,7 +1211,7 @@
         "blob": "0dcfab473d1256f9de295bc65c0f04926e1ceb62"
       },
       "src/portal-capability.mjs": {
-        "blob": "d6200b11094df0e624dd644d980ac3bc7444868d"
+        "blob": "fb1f631894e79e1139d7d66c8ce2e56d97a40ae5"
       },
       "src/public/portal-intent/intent.mjs": {
         "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
@@ -1229,7 +1229,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "c2cecbe570de30465a266e0feda4bbb60485ccf4"
+        "blob": "66d408eb805ccb91a33d8569a3d823af09c8dcbb"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1634,7 +1634,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "5582b173bd445f8aab89428aa33191696fa5a3f6"
+        "blob": "4b2890a5914808950da2aecb21f7c0c1703badc8"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
@@ -1655,7 +1655,7 @@
         "blob": "1fe0fe0837472ca2fdca069087ec5f53db4d3822"
       },
       "test/portal-capability.test.mjs": {
-        "blob": "073700c9a849a4bfc092cb5913498364fd622f0d"
+        "blob": "189905857901935cee5e40590ae4050d15f56d30"
       },
       "test/price-bound.test.mjs": {
         "blob": "867d8e64bdc654107ea24f4416f71cb95fa42f9c"
