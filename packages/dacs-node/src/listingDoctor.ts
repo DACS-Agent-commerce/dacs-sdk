@@ -71,6 +71,12 @@ export interface DacsX402ExistingListingResolutionOptionsV1 {
     contentHash: string;
     writer: string;
   }>): Promise<boolean>;
+  /**
+   * Reads a JSON document. It is handed URLs named by the remote seller card, including a listing
+   * index that may be on another origin than the seller endpoint, so a custom reader must refuse
+   * non-public addresses and redirects and bound the size and time of a read, as
+   * `readDacsPublicJsonV1` does.
+   */
   readJson(url: string): Promise<unknown>;
 }
 
@@ -91,6 +97,12 @@ export interface DacsPayDemExistingListingResolutionOptionsV1 {
     contentHash: string;
     writer: string;
   }>): Promise<boolean>;
+  /**
+   * Reads a JSON document. It is handed URLs named by the remote seller card, including a listing
+   * index that may be on another origin than the seller endpoint, so a custom reader must refuse
+   * non-public addresses and redirects and bound the size and time of a read, as
+   * `readDacsPublicJsonV1` does.
+   */
   readJson(url: string): Promise<unknown>;
 }
 
