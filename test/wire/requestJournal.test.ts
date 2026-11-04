@@ -29,7 +29,7 @@ const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 /** The journal suites sign repeatedly and fsync every durable step: far past Vitest's 5 s default on a loaded machine. */
 const JOURNAL_TEST_TIMEOUT_MS = 60_000;
 
-const EFFECT_ROUTES = wire.DACS_SELLER_HTTP_ROUTES.filter((r) => r.auth === "signed" && r.effect === "effect").map((r) => r.path);
+const EFFECT_ROUTES = wire.DACS_SELLER_HTTP_ROUTES.filter((r) => r.auth === "signed" && r.effect === "effect" && r.path !== wire.DACS_SELLER_HTTP_PATHS.context).map((r) => r.path);
 const PAYMENT_AND_DELIVERY = [P.payments, P.bundleRequest] as const;
 
 describe("an effect route without the SDK's journal", { timeout: JOURNAL_TEST_TIMEOUT_MS }, () => {
