@@ -148,7 +148,7 @@
     "release:set:publish": "node scripts/publish-release-set.mjs",
     "acceptance:registry-container": "bash scripts/verify-registry-container-consumer.sh",
     "seller:test": "node scripts/run-seller-tests.mjs",
-    "kit-client:test": "node scripts/run-kit-client-tests.mjs",
+    "kit-client:test": "node scripts/run-kit-client-tests.mjs test/kit-client/*.test.mjs",
     "seller:prepare": "node scripts/prepare-seller-consumer.mjs"
   },
   "publishConfig": {

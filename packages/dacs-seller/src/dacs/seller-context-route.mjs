@@ -124,7 +124,7 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
   // nothing: this call has already thrown. A policy code keeps its code; a timeout or any other failure
   // is 503 `session_admission_unavailable` with the original error as its cause.
   async function policyRead(work) {
-    try { return await boundedCall(work, { timeoutMs: POLICY_READ_TIMEOUT_MS }).result; }
+    try { return await boundedCall(work, { timeoutMs: POLICY_READ_TIMEOUT_MS }); }
     catch (cause) {
       if (['buyer_access_closed', 'context_job_unknown'].includes(cause?.code)) throw new SellerTransportError(cause.code, 409, { cause });
       throw new SellerTransportError('session_admission_unavailable', 503, { cause });

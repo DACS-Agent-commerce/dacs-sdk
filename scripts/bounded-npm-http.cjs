@@ -150,6 +150,6 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
   }
   syncBuiltinESMExports();
 }
-module.exports = { responseBudget, readBoundedResponse, installBoundedNpmHttp,
+module.exports = { responseBudget, readBoundedResponse, installBoundedNpmHttp, jsonScanner,
   NPM_METADATA_MAX_BYTES, NPM_TARBALL_MAX_BYTES, NPM_TARBALL_MAX_UNPACKED_BYTES, NPM_AUDIT_MAX_BYTES, NPM_HTTP_TIMEOUT_MS, NPM_JSON_MAX_ENTRIES };
 if (process.env.DACS_BOUNDED_NPM_HTTP === "1") installBoundedNpmHttp();

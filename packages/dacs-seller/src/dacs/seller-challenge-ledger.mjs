@@ -83,6 +83,40 @@ function acceptedText(record, row) {
   } catch { return null; }
 }
 
+// The attempt as every answer compares it, each field read once: an absent scope is null, and a presentation hash that is not 64 lowercase hex is null.
+const normaliseAttempt = ({ nonce, jobId, buyer, challengeScopeHash, presentationHash, path }) => ({
+  nonce, jobId, buyer, path, challengeScopeHash: challengeScopeHash ?? null, presentationHash: isHash(presentationHash) ? presentationHash : null,
+});
+
+// Whether the attempt is the row's own party: its job, scope and canonical buyer, on the path of the row's origin.
+const ORIGIN_PATHS = Object.freeze({ route: 'context', operator: 'proposal' });
+const isRowParty = (row, input) => input.path === ORIGIN_PATHS[row.origin] && input.jobId === row.jobId
+  && input.challengeScopeHash === row.challengeScopeHash && sameCanonicalClaimIdentity(row.buyer, input.buyer);
+
+// K1 attempt step 7 on an `issued` row: the code the first attempt fails with, or null when it may validate.
+function firstAttemptRefusal(row, input, time) {
+  if (!isRowParty(row, input)) return 'context_challenge_mismatch';
+  if (time >= row.expiresAt) return 'context_challenge_expired';
+  return input.presentationHash === null ? 'context_challenge_attempt_invalid' : null;
+}
+
+function continuation(row) {
+  return acceptedIsComplete(row.accepted, row) ? Object.freeze({ kind: 'continuation', accepted: row.accepted }) : refused('session_admission_unavailable', 503);
+}
+
+// The stored answer of a row past `issued`, by state. Each receives a row its party has already matched.
+const REPLAY_ANSWERS = Object.freeze({
+  accepted: continuation,
+  attempted: () => refused('context_attempt_pending', 503),
+  failed: (row) => refused('context_challenge_failed', 409, row.failure?.code),
+});
+
+// A row past `issued` answers only its own party presenting the stored presentation hash; anyone else, or a state with no answer, finds it consumed.
+function replayAnswer(row, input) {
+  const matched = isRowParty(row, input) && input.presentationHash === row.presentationHash && Object.hasOwn(REPLAY_ANSWERS, row.state);
+  return matched ? REPLAY_ANSWERS[row.state](row) : refused('context_challenge_consumed');
+}
+
 /**
  * Creates the challenge ledger on the caller's SQLite handle and returns a frozen API.
  * `transaction(fn, rollback = false)` runs fn synchronously in BEGIN IMMEDIATE and returns its result.
@@ -92,9 +126,16 @@ function acceptedText(record, row) {
  * over durable rows. `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
  * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
  * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class);
- * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check.
+ * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
+ * it, the guard and the stop check also run before a reused live nonce is returned.
  * `attempt(input)` returns `{ kind: 'validate', owner }`, `{ kind: 'continuation', accepted }` or
- * `{ kind: 'refused', code, status, cause? }`. `accept` and `recordFailed` return whether the row was
+ * `{ kind: 'refused', code, status, cause? }`. The row's party is its job, scope (absent counts as null) and
+ * canonical buyer on the path of its origin (`context` for a route row, `proposal` for an operator row).
+ * An `accepted`, `attempted` or `failed` row answers its continuation, `context_attempt_pending` or
+ * `context_challenge_failed` with the stored cause only to its party with the stored presentation hash;
+ * anyone else gets `context_challenge_consumed` and nothing is written. A first attempt by anyone but the
+ * party fails the row as `context_challenge_mismatch`, except a route row on `proposal`, which is refused
+ * unchanged. Throws if the row changed under the lock. `accept` and `recordFailed` return whether the row was
  * `attempted` by that owner and changed; their `Within` forms need an open transaction and open none.
  * `accept` also binds the job to the accepted presentation in the same transaction and throws
  * SellerTransportError `seller_job_bound` when another nonce already bound the job. `jobBinding(jobId)`
@@ -175,7 +216,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (readCount(requireSynchronous(counts.buyerStarts(buyer), 'buyerStarts'), 'buyerStarts') >= capacity.maxStartsPerBuyerPerHour) fail('buyer_unpaid_start_limit', 429);
   }
 
-  // K1 step 16: the guard and the stop again, then the route's final expiry check.
+  // K1 step 16, for a new and a reused nonce alike: the guard and the stop again, then the route's final expiry check.
   function assertStillAllowed(origin, authorization) {
     assertIssueAdmitted(origin);
     if (stopped() !== false) fail('seller_stopped', 503);
@@ -188,11 +229,15 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     const jobRows = all('SELECT * FROM kit_challenges WHERE jobId = ?', jobId);
     if (jobRows.some((row) => row.state !== 'issued')) fail('context_job_closed');
     const live = jobRows.find((row) => row.expiresAt > time && row.challengeScopeHash === challengeScopeHash && sameCanonicalClaimIdentity(row.buyer, buyer));
-    if (live) return answerOf(live);
-    enforceIssuanceLimits(buyer, jobRows.length, time);
-    const reclaimed = planReclamation(time);
-    enforceAdmissionLimits(buyer);
+    let reclaimed = [];
+    if (!live) {
+      enforceIssuanceLimits(buyer, jobRows.length, time);
+      reclaimed = planReclamation(time);
+      enforceAdmissionLimits(buyer);
+    }
+    // A reused nonce is answered only while the seller may still answer: it skips the counts and the writes, not step 16.
     assertStillAllowed(origin, authorization);
+    if (live) return answerOf(live);
     const nonce = randomBytes(32).toString('hex');
     const expiresAt = time + SESSION_CHALLENGE_LIFETIME_MS;
     for (const stale of reclaimed) run('DELETE FROM kit_challenges WHERE nonce = ?', stale);
@@ -205,50 +250,41 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     assertIssueAdmitted(origin);
     validateIssueRequest(request, challengeScopeHash, origin);
     if (origin === 'route' && typeof authorization?.assertStillLive !== 'function') throw new TypeError('issue needs the final-liveness closure assertStillLive');
-    const time = readClock(SESSION_CHALLENGE_LIFETIME_MS);
-    return transaction(() => issueInTransaction(request, challengeScopeHash ?? null, origin, authorization, time));
+    // K1 step 6 refuses an unusable clock before the lock is taken. The lock can be waited for: expiry,
+    // reuse and the written times use the clock read again once it is held.
+    readClock(SESSION_CHALLENGE_LIFETIME_MS);
+    return transaction(() => issueInTransaction(request, challengeScopeHash ?? null, origin, authorization, readClock(SESSION_CHALLENGE_LIFETIME_MS)));
   }
 
-  // K1 attempt step 7 on an `issued` row: the code the first attempt fails with, or null when it may validate.
-  function firstAttemptRefusal(row, input, sameParty, presentationHash, time) {
-    if (!sameParty || input.path !== (row.origin === 'route' ? 'context' : 'proposal')) return 'context_challenge_mismatch';
-    if (time >= row.expiresAt) return 'context_challenge_expired';
-    return presentationHash === null ? 'context_challenge_attempt_invalid' : null;
-  }
-
-  function continuation(row) {
-    return acceptedIsComplete(row.accepted, row) ? Object.freeze({ kind: 'continuation', accepted: row.accepted }) : refused('session_admission_unavailable', 503);
+  // A transition the lock guarantees changes exactly one row; anything else throws so the caller's transaction rolls back.
+  function changeOne(sql, ...args) {
+    if (run(sql, ...args) !== 1) throw new Error('the challenge row changed under the ledger lock');
   }
 
   // K1 attempt steps 1-7; the order of these answers is the contract.
   function attemptInTransaction(input, time) {
     const row = retained(input.nonce);
     if (row === null) return refused('context_challenge_mismatch');
-    const presentationHash = isHash(input.presentationHash) ? input.presentationHash : null;
-    const sameParty = row.jobId === input.jobId && row.challengeScopeHash === input.challengeScopeHash && sameCanonicalClaimIdentity(row.buyer, input.buyer);
-    const samePresentation = sameParty && row.presentationHash === presentationHash;
-    if (row.state === 'accepted' && samePresentation) return continuation(row);
-    if (row.state === 'attempted' && samePresentation) return refused('context_attempt_pending', 503);
-    if (row.state === 'failed' && row.presentationHash === presentationHash) return refused('context_challenge_failed', 409, row.failure?.code);
-    if (row.state !== 'issued') return refused('context_challenge_consumed');
+    if (row.state !== 'issued') return replayAnswer(row, input);
     if (ready() !== true) return refused('seller_not_ready', 503);
     if (input.path === 'proposal' && row.origin === 'route') return refused('context_challenge_mismatch');
-    const code = firstAttemptRefusal(row, input, sameParty, presentationHash, time);
+    const code = firstAttemptRefusal(row, input, time);
     if (code !== null) {
-      run("UPDATE kit_challenges SET state = 'failed', presentationHash = ?, attemptedAt = ?, failure = ? WHERE nonce = ? AND state = 'issued'",
-        presentationHash, time, JSON.stringify({ code, status: 409, at: time }), row.nonce);
+      changeOne("UPDATE kit_challenges SET state = 'failed', presentationHash = ?, attemptedAt = ?, failure = ? WHERE nonce = ? AND state = 'issued'",
+        input.presentationHash, time, JSON.stringify({ code, status: 409, at: time }), row.nonce);
       return refused(code);
     }
     const owner = Object.freeze({ generation, attemptId: randomUUID() });
-    run("UPDATE kit_challenges SET state = 'attempted', presentationHash = ?, owner = ?, attemptedAt = ? WHERE nonce = ? AND state = 'issued'",
-      presentationHash, ownerText(owner), time, row.nonce);
+    changeOne("UPDATE kit_challenges SET state = 'attempted', presentationHash = ?, owner = ?, attemptedAt = ? WHERE nonce = ? AND state = 'issued'",
+      input.presentationHash, ownerText(owner), time, row.nonce);
     return Object.freeze({ kind: 'validate', owner });
   }
 
   function attempt(input) {
     if (!isRecord(input) || (input.path !== 'context' && input.path !== 'proposal')) throw new TypeError('attempt needs an input naming its path, context or proposal');
-    const time = readClock();
-    return transaction(() => attemptInTransaction(input, time));
+    const normalised = normaliseAttempt(input);
+    readClock();
+    return transaction(() => attemptInTransaction(normalised, readClock()));
   }
 
   // The row this exact attempt owns, or null: only this generation's owner can ever advance a validation.
@@ -287,8 +323,9 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   }
 
   function closeLostValidations() {
-    const failure = JSON.stringify({ code: 'validator_lost', status: 409, at: readClock() });
-    return transaction(() => run("UPDATE kit_challenges SET state = 'failed', failure = ? WHERE state = 'attempted' AND json_extract(owner, '$.generation') IS NOT ?", failure, generation));
+    readClock();
+    return transaction(() => run("UPDATE kit_challenges SET state = 'failed', failure = ? WHERE state = 'attempted' AND json_extract(owner, '$.generation') IS NOT ?",
+      JSON.stringify({ code: 'validator_lost', status: 409, at: readClock() }), generation));
   }
 
   return Object.freeze({
