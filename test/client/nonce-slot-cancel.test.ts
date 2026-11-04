@@ -31,7 +31,7 @@ type Gate = 'off' | 'account';
 type View = 'int' | 'node2';
 type Variant = { signer: 'wallet' | 'alt' | 'mixed'; nonceOwner: 'account' | 'signer' };
 type Opts = { historyDown?: boolean; noSeam?: boolean; lag?: number; cap?: number; oldestFirst?: boolean; base?: number;
-  failPayment?: 'consumes' | 'free' | null; amountDem?: boolean; bodyNonceOff?: boolean; badHash?: boolean; farGap?: number; tsOf?: (a: any, i: number) => number | undefined };
+  failPayment?: 'consumes' | 'free' | null; amountDem?: boolean; bodyNonceOff?: boolean; bodyStatus?: 'failed' | 'pending'; badHash?: boolean; farGap?: number; tsOf?: (a: any, i: number) => number | undefined };
 // Node payloads, history rows and operation records are untyped JSON here.
 type Row = { name: string; transfers: number; rejected: number; doublePay: boolean; paidCancelled: boolean; doublePayMismatch: boolean; extra: any };
 type World = ReturnType<typeof world>;
@@ -47,7 +47,7 @@ function world(view: View, variant: Variant, gate: Gate, o: Opts = {}) {
   const db = openDatabase(join(dir, 'state.sqlite'));
   const base = o.base ?? 6;
   const hex = (n: number) => 'd'.repeat(60) + String(n).padStart(4, '0');
-  const chain: any = { nonce: base, altNonce: base, pending: [] as any[], rejected: 0, failedOnce: o.failPayment === 'free',
+  const chain: any = { nonce: base, altNonce: base, pending: [] as any[], rejected: 0, reads: {} as Record<string, number>, failedOnce: o.failPayment === 'free',
     applied: Array.from({ length: base }, (_, i) => ({ hash: hex(i + 1), nonce: i + 1, from: WALLET, signer: WALLET, to: OTHER, amount: '1', type: 'native' })) as any[] };
   const hashOf = (p: any) => createHash('sha256').update(JSON.stringify(p)).digest('hex');
   const broadcast = (payload: any) => { chain.pending.push(payload); };
@@ -90,7 +90,9 @@ function world(view: View, variant: Variant, gate: Gate, o: Opts = {}) {
     if (message === 'getTxByHash') {
       const a = byHash(data.hash); if (!a) return ok(null);
       const content = project(a); if (o.bodyNonceOff) content.nonce = view === 'node2' ? String(a.nonce + 1) : a.nonce + 1;
-      return ok({ hash: a.hash, status: a.failed ? 'failed' : 'confirmed', blockNumber: 10, content });
+      // bodyStatus: the observation reads the transaction confirmed; every later read of its body (cancel's own) shows another status.
+      const reads = (chain.reads[a.hash] = (chain.reads[a.hash] ?? 0) + 1);
+      return ok({ hash: a.hash, status: a.failed ? 'failed' : o.bodyStatus && reads > 1 ? o.bodyStatus : 'confirmed', blockNumber: 10, content });
     }
     if (message === 'getBlockByNumber') return ok({ number: 10, status: 'confirmed', content: { ordered_transactions: chain.applied.map((a: any) => a.hash), timestamp: 1761900000 } });
     throw new Error(`unexpected ${message}`);
@@ -256,6 +258,11 @@ const SCENARIOS: Array<[string, Scenario]> = [
   ['a slot row whose canonical nonce differs leaves it open', async (world) => {
     const w = world({ bodyNonceOff: true }); return [await openAfterSlotTaken('X13', w, () => w.external())];
   }],
+  // The status read says the slot's transaction is included; the canonical body of the same transaction says it failed, or is still pending.
+  ['a slot transaction whose canonical body is not confirmed leaves it open', async (world) => {
+    const failed = world({ bodyStatus: 'failed' }), pending = world({ bodyStatus: 'pending' });
+    return [await openAfterSlotTaken('X25 failed', failed, () => failed.external()), await openAfterSlotTaken('X25 pending', pending, () => pending.external())];
+  }],
   ['a slot row with no readable hash leaves it open', async (world) => {
     const w = world({ badHash: true }); return [await openAfterSlotTaken('X14', w, () => w.external())];
   }],
@@ -379,6 +386,8 @@ const EXPECTED: Array<[string, number, number, any]> = [
   ['X12', 0, 0, { resolve: false, op1: 'payment_uncertain' }],
   ['X13', 0, 0, { resolve: false, op1: 'payment_uncertain' }],
   ['X14', 0, 0, { resolve: false, op1: 'payment_uncertain' }],
+  ['X25 failed', 0, 0, { resolve: false, op1: 'payment_uncertain' }],
+  ['X25 pending', 0, 0, { resolve: false, op1: 'payment_uncertain' }],
   ['R', 2, 1, { told: true, verifyRelease: 'awaiting_inclusion', cancelAfter: 'invalid_state', op1AtCancel: 'broadcast_reported', verifyPayment: 'verified', op1: 'settled_verified', rebuy: 'payload' }],
   ...['X15', 'X16', 'X17', 'X18', 'X19'].map((n): [string, number, number, any] => n === 'X17' // nothing is unlisted when the wallet signs with its own key
     ? [n, 2, 0, { cancel: false, op1: 'settled_verified', rebuy: 'payload' }]
