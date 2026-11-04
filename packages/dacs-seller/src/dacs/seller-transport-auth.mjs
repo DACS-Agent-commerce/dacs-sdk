@@ -239,12 +239,14 @@ const SELLER_CONTEXT_START_LIMITS = Object.freeze({ maxStartsPerHour: 12, maxSta
  * `generation` names this process (drawn after the seller state lock), `ready` and `stopped` are
  * synchronous booleans, `contextSessionState({ jobId })` is synchronous (DACS-5 name or unknown), and
  * `contextStartLimits` are the route's own unpaid-start limits, which the ledger enforces too.
+ * `contextRecords` is the counter step 4 of reservation accounting reads; it defaults to the union of the
+ * retained context records (old admissions and K1 rows, intent rows included), and only tests replace it.
  * Returns the store, whose `challenges` is the ledger; `recoverLostContextReservations()` runs only
  * while the caller holds the seller state lock. Throws on an unusable option or storage.
  */
 export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null,
   contextStartLimits = SELLER_CONTEXT_START_LIMITS, generation = randomBytes(16).toString('hex'), ready = () => true, stopped = () => false,
-  maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now() }) {
+  maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), contextRecords }) {
   if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
   if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
   if (!uint(maxChallenges) || maxChallenges === 0 || typeof contextSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
@@ -401,7 +403,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       hasJobWithin: jobId => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
       jobCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${retainedJobs()})`).n },
     now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow, nonceWindowMs },
-    contextRecords: () => admissionCounts().contextRecords,
+    contextRecords: contextRecords ?? (() => admissionCounts().contextRecords),
   });
   const store = {
     challenges,

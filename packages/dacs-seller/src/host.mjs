@@ -37,7 +37,7 @@
 // Agreement proposal, state and commitment routes open every request and sign
 // every answer through that context (seller-wire-requests.mjs), with the transport
 // store as their journal; the payment and bundle routes still use the old server auth.
-import { existsSync, lstatSync, mkdirSync, opendirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, opendirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
