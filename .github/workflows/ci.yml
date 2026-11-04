@@ -11,6 +11,13 @@ on:
 permissions:
   contents: read
 
+# A newer phase0-completion head replaces an unfinished push run of an older one: several merges in a row otherwise
+# queue one full run each and only the newest head matters. Every other event gets its own group (run_id), so pull
+# request, merge queue and main runs are never cancelled or replaced.
+concurrency:
+  group: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/phase0-completion') && 'ci-phase0-completion-push' || format('ci-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/phase0-completion' }}
+
 jobs:
   build-test:
     runs-on: ubuntu-latest
