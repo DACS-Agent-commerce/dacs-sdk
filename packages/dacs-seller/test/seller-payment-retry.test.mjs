@@ -7,7 +7,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { wireContinuationFixture, wireRouteFixture } from './helpers/wire-continuation-fixture.mjs';
 import { testWallet, NOW, JOB, buyer as fixtureBuyer, seller as fixtureSeller } from './helpers/protocol-fixture.mjs';
-import { fixtureListing } from './fixtures/listings.mjs';
 import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 import * as listingApi from '../src/dacs/listing.mjs';
 import { agreementInput, listingPin } from '../src/dacs/purchase-protocol.mjs';
@@ -22,10 +21,6 @@ import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 
 let walletSequence=60;
 function key() { const w=testWallet(walletSequence++);return {...w,sign:w.signBytes,signWallet:message=>'0x'+w.signBytes(Buffer.from(message)).toString('hex')}; }
-const identityFor = (party, presentedAt) => {
-  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'payment-retry' });
-  return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
-};
 const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
 
 async function world(t, answers, { proposalAnswers = [{ disposition: 'complete', contribution: null }] } = {}) {

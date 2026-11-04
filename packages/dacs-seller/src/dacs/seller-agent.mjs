@@ -511,7 +511,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // address lock with nothing awaited before the CREATE intent), as its
   // authorizeSigning hook (run by the wallet after its approval wait, right
   // before it signs), or just before a wallet or delivery call. A holder that
-  // lost its job's row sends nothing.
+  // lost its job's row before the wallet signs signs and sends nothing. A row
+  // lost after the signature is not checked again: the wallet still confirms
+  // and broadcasts that signed CREATE.
   const transportAuthority = new AsyncLocalStorage();
   const heldFor = (jobId) => {
     const transport = transportAuthority.getStore();

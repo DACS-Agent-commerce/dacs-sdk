@@ -188,7 +188,6 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
         }
         // Payment evidence is taken only on an assembled settlement profile, whichever auth opened the request.
-        // Payment evidence is taken only on an assembled settlement profile, whichever auth opened the request.
         if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
         // The context step reads the journal first and runs its admission only
         // for new work, recording the start in the reserve transaction. A wire request's
@@ -366,7 +365,7 @@ export class SellerRefusedError extends Error {
  * an unhandled rejection. A synchronous adapter that throws is the same refusal as an asynchronous one.
  */
 function verifiedWithin(verify, timeLeftMs) {
-  return boundedCall(verify, { timeoutMs: Math.max(1, Math.ceil(timeLeftMs)) }).result;
+  return boundedCall(verify, { timeoutMs: Math.max(1, Math.ceil(timeLeftMs)) });
 }
 
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {

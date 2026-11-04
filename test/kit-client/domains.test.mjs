@@ -23,7 +23,7 @@ const STATE_PATH = DACS_SELLER_HTTP_PATHS.state;
 /** A state request for a job the host holds nothing for, signed by the client under the wire domain. */
 const stateRequest = (host) => wireSignedRequest(host, STATE_PATH, { transportIdentity: { jobId: JOB } }, { jobId: JOB, agreementHash: sha256Hex('kit-client-agreement') });
 
-test("K12-H6a today: the composed kit host refuses a request signed under the old domain; only the wire domain is accepted (peer_signature_invalid)", async (t) => {
+test("K12-H6a target: the composed kit host refuses a request signed under the old domain; only the wire domain is accepted (peer_signature_invalid)", async (t) => {
   const { host } = await composedKitHost(t);
   const { payload, text } = await stateRequest(host);
   const answer = await postHeader(host, STATE_PATH, headerSignedUnder(OLD_DOMAIN, payload, hostBuyer), text);

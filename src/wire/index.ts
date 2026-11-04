@@ -5,6 +5,7 @@
 export {
   DACS_SELLER_HTTP_V1,
   DACS_SELLER_HTTP_HEADER,
+  DACS_SELLER_RESUME_HEADER,
   DACS_SELLER_DISCOVERY_PATH,
   DACS_SELLER_HTTP_DOMAINS,
   DACS_SELLER_HTTP_PATHS,
@@ -12,6 +13,7 @@ export {
   DACS_SELLER_HTTP_LIMITS,
   findDacsSellerHttpRoute,
   isReadRoute,
+  isPreAgreementRoute,
   type DacsSellerHttpPath,
   type DacsSellerHttpRoute,
 } from "./routes.js";
@@ -51,6 +53,7 @@ export {
   signWireEnvelope,
   openWireEnvelope,
   checkWireRequest,
+  admitPreAgreementRequest,
   authorizeWireRequest,
   wireOperationId,
   wireOperationBinding,
@@ -61,6 +64,8 @@ export {
   type OpenedEnvelope,
   type OpenEnvelopeOptions,
   type RequestCheck,
+  type PreAgreementCheck,
+  type AdmittedPreAgreementRequest,
   type WireRetainedAgreement,
   type WireRetainedStage,
   type SigningContext,
@@ -77,6 +82,17 @@ export {
   type SellerSessionDelegation,
   type SellerSessionDelegationPayload,
 } from "./delegation.js";
+export {
+  MAX_EXPLICIT_RESUME_CLAIMS,
+  createExplicitResumeLedger,
+  explicitCreateResumeSigningBytes,
+  signExplicitCreateResume,
+  verifyExplicitCreateResume,
+  type ExplicitCreateResumePayload,
+  type ExplicitResumeLedger,
+  type ExplicitResumeScope,
+  type ExplicitResumeSigningContext,
+} from "./explicitResume.js";
 export {
   signWireResponse,
   signWireRequest,

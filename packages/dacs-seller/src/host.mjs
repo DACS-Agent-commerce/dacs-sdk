@@ -29,16 +29,17 @@
 // record over the operator's `tp1Network` ({ connection(), readAuthority }); no
 // option, environment variable or file names a record. It then checks the data
 // directory's format marker (kit-format.json), keeps the wire request journal at
-// <dataDirectory>/wire-journal under a 300 s lease, and holds the binding, the
-// journal and the seller's signer in a wire context for the signed routes. The
+// <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
+// refuses startup, and holds the binding, the journal and the seller's signer in a
+// wire context for the signed routes. The
 // Agreement proposal, state and commitment routes open every request and sign
 // every answer through that context (seller-wire-requests.mjs), with the transport
 // store as their journal; the payment and bundle routes still use the old server auth.
 import { existsSync, lstatSync, mkdirSync, opendirSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
-import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, assertTp1Binding, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
-import { boundedCall } from './dacs/bounded-call.mjs';
+import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
 import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
@@ -55,9 +56,9 @@ const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAcce
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network', 'readCommitmentReceipt']);
 const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
 const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
-// The startup binding read is bounded (SA-16); a later answer grants nothing.
+// The startup binding read is bounded; a later answer grants nothing.
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
-// One journal for every seller route; its lease must exceed the 240 s context step (DC5).
+// One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
 const JOURNAL_DIRECTORY = 'wire-journal';
 const TRANSPORT_STORE_FILE = join('transport', 'transport.sqlite');
@@ -173,26 +174,26 @@ function checkTp1Network(tp1Network) {
   if (TP1_NETWORK_KEYS.some((key) => typeof tp1Network[key] !== 'function')) throw new TypeError('tp1Network needs a connection() and a readAuthority function');
 }
 
-// Every wait on the operator's reader is bounded (SA-16), at startup and in the context the signed
-// routes use: a deadline is `tp1_authority_timeout` with the timeout as its cause, any other failure
-// is the reader's or the binding's own error, and a late answer is never used.
-async function withinAuthorityDeadline(work) {
-  const { result } = boundedCall(work, { timeoutMs: TP1_AUTHORITY_TIMEOUT_MS });
-  try { return await result; } catch (error) {
-    if (error?.name === 'TimeoutError') throw new WireError('tp1_authority_timeout', 500, undefined, error);
-    throw error;
-  }
-}
+// The operator's authority reader, each read within 10,000 ms. The wire keeps the reader it is bound with and calls it on
+// every signed request, so the deadline is on the reader itself: a stalled read ends as `tp1_authority_timeout` (the
+// timeout is its cause) instead of holding a request slot for good. Only this deadline is that error; any other failure,
+// a reader's own TimeoutError included, is the reader's own error.
+const withinAuthorityDeadline = (work) => boundedCall(work, { timeoutMs: TP1_AUTHORITY_TIMEOUT_MS }).catch((error) => {
+  if (isBoundedCallTimeout(error)) throw new WireError('tp1_authority_timeout', 500, undefined, error);
+  throw error;
+});
 
-// K7: the binding over the SDK's approved record and the operator's current connection.
-const bindApprovedProfile = ({ connection, readAuthority }) =>
-  withinAuthorityDeadline(() => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: connection(), readAuthority }));
+// The binding over the SDK's approved record and the operator's current connection, read once and within the same deadline.
+async function bindApprovedProfile(tp1Network) {
+  const readAuthority = (input) => withinAuthorityDeadline(() => tp1Network.readAuthority(input));
+  return withinAuthorityDeadline(() => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: tp1Network.connection(), readAuthority }));
+}
 
 const journalAccountingMismatch = (detail, cause) => Object.assign(
   new Error(`kit_journal_accounting_mismatch: ${detail}`, cause === undefined ? undefined : { cause }), { code: 'kit_journal_accounting_mismatch' });
 
-// OP-4, until startup reconciliation exists (P11d3): a fresh kit store must not meet a journal that
-// already holds reservations. Stops at the first such entry; nothing is deleted. A journal that
+// Until startup reconciles the journal with the store, a fresh kit store must not meet a journal
+// that already holds reservations. Stops at the first such entry; nothing is deleted. A journal that
 // cannot be listed refuses with its cause. A missing or non-directory path is left to the journal's own checks.
 function assertJournalHoldsNoAccounting(journalDirectory) {
   let directory;
@@ -200,11 +201,15 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
     if (cause.code === 'ENOENT' || cause.code === 'ENOTDIR') return;
     throw journalAccountingMismatch('the wire journal cannot be listed', cause);
   }
+  let held = null;
   try {
-    for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
-      if (JOURNAL_ACCOUNTING_FILE.test(entry.name)) throw journalAccountingMismatch(`${JOURNAL_DIRECTORY}/${entry.name} exists but the kit store is new`);
-    }
-  } finally { directory.closeSync(); }
+    try {
+      for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+        if (JOURNAL_ACCOUNTING_FILE.test(entry.name)) { held = entry.name; break; }
+      }
+    } finally { directory.closeSync(); }
+  } catch (cause) { throw journalAccountingMismatch('the wire journal cannot be listed', cause); }
+  if (held !== null) throw journalAccountingMismatch(`${JOURNAL_DIRECTORY}/${held} exists but the kit store is new`);
 }
 
 // Resolves once the host listens: { url, listingPin, seller, timeouts,
@@ -217,9 +222,7 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // startup error as `cause` when that error cannot carry the property).
 // The startup errors include the binding's own (`tp1_*`, with the reader's
 // error kept as the cause; `tp1_authority_timeout` after 10,000 ms), which come
-// before the state lock and any file, and `tp1_local_binding_changed` when the
-// connection no longer matches the binding just before the host listens (that re-check
-// reads the reader again, within the same 10,000 ms); `kit_store_format_unsupported` for a data
+// before the state lock and any file; `kit_store_format_unsupported` for a data
 // directory from an older kit format; `kit_journal_accounting_mismatch` for a
 // new kit store over a journal that already holds reservations; and the
 // journal's own `seller_replay_guard_invalid` with its detail.
@@ -250,6 +253,7 @@ export async function startSellerHost(options) {
   // CORE §5.1: the Deliverable resume, when there is one, comes only from the journal whose guarded submit the capability is.
   deliverableJournalFor(nativeDemDelivery, resumeDeliverableCreate);
   checkTp1Network(tp1Network);
+  // Refuses an unbindable connection before the lock and any file; the signed routes keep the binding.
   const binding = await bindApprovedProfile(tp1Network);
   // One live process owns the state for its lifetime (this one too, for a
   // second start); taken before anything is opened, released after all of it.
@@ -281,16 +285,15 @@ export async function startSellerHost(options) {
     // An existing path is left to the journal's own checks, which refuse a symlink, a
     // file or a directory others can write, with their detail.
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
     // The seller takes new purchases until it stops; every later readiness term is ANDed in by the PR that owns it (SA-7).
     const sellerReady = () => !stopping;
-    // The context every signed route on `./wire` uses (the transport store is their journal), and the host's own re-check of
-    // the binding before it listens.
-    // The check reads the reader again, so it has the same 10,000 ms deadline as the first read.
-    const assertCurrentBinding = () => withinAuthorityDeadline(() => assertTp1Binding(binding, tp1Network.connection()));
+    // The context every signed route on `./wire` uses (the transport store is their journal). The binding is read once at
+    // startup; a later connection is never compared.
     const wire = Object.freeze({ binding, connection: tp1Network.connection, signer, journal, store, ready: sellerReady, now, requireDelegation: false,
-      retainedFor: (request) => retainedFor(agent, request), continuationFor: (request) => continuationFor(agent, request, signedListing), readCommitmentReceipt, assertCurrentBinding });
+      retainedFor: (request) => retainedFor(agent, request), continuationFor: (request) => continuationFor(agent, request, signedListing), readCommitmentReceipt });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before
@@ -300,8 +303,6 @@ export async function startSellerHost(options) {
     // has been synced yet.
     await DURABLE_SYNC.directory(transport);
     await DURABLE_SYNC.directory(dataDirectory);
-    // The connection the binding was read for must still be the operator's before anything is served.
-    await wire.assertCurrentBinding();
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
     const handler = createSellerHttpHandler(agent, { authentication, wire });
     const active = new Set();
