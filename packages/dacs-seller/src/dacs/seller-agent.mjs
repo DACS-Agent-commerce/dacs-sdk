@@ -34,6 +34,7 @@ import { join } from 'node:path';
 import { bindWhenNoSigningGate } from './signing-gate-bind.mjs';
 import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
+import { readRetainedBounded, readFailureCode } from './bounded-reads.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE, SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
@@ -41,8 +42,9 @@ import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymen
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
 import { sellerSessionPresentationProblem } from './session-admission.mjs';
 import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
-import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isProvenUnsignedAbsence, PASSIVE_RETAINED_READ } from './native-dem-delivery-consumer.mjs';
+import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isDeadRefusedCreate, mayPublishAgain, PASSIVE_RETAINED_READ } from './native-dem-delivery-consumer.mjs';
 import { deliverableJournalFor } from './deliverable-wallet-journal.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { agreementInput, agreementTerms, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
 
 /** A seller refusal with its stable code and HTTP status (422 by default). */
@@ -85,7 +87,7 @@ export function transportOutcome(path, { answer, error, held, cause = error } = 
   const refusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
   const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
   if (held !== undefined || (error && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
-    ...(cause === undefined ? {} : { cause, causeCode: [cause, cause?.cause].some(c => c?.name === 'TimeoutError' || c?.code === 'ETIMEDOUT') ? 'timeout' : 'reader' }) };
+    ...(cause === undefined ? {} : { cause, causeCode: readFailureCode(cause) }) };
   const noEffect = rejected && !resumed && !retained;
   const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
   const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
@@ -174,6 +176,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // when the seller durably admitted exactly that context request for the job.
 const MAX_CHALLENGES_PER_JOB=16;
 export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
+  assertKitOperationAdmitted('createSellerAgent');
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
   if (typeof simulatedFixture !== 'boolean') throw new TypeError('simulatedFixture must be true or false');
@@ -505,8 +508,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const persist = (session) => { durable?.saveSession(session); verifiedSessions.set(session.jobId, sessionFingerprint(session)); };
   // The seller-state lock, checked last before an effect that leaves through
   // another journal: as the native publisher's authorize hook (called under its
-  // address lock with nothing awaited before the CREATE intent), or just before
-  // a wallet or delivery call. A holder that lost its job's row sends nothing.
+  // address lock with nothing awaited before the CREATE intent), as its
+  // authorizeSigning hook (run by the wallet after its approval wait, right
+  // before it signs), or just before a wallet or delivery call. A holder that
+  // lost its job's row before the wallet signs signs and sends nothing. A row
+  // lost after the signature is not checked again: the wallet still confirms
+  // and broadcasts that signed CREATE.
   const transportAuthority = new AsyncLocalStorage();
   const heldFor = (jobId) => {
     const transport = transportAuthority.getStore();
@@ -886,7 +893,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (progress.disposition !== 'complete') {
       if(!existing&&!session.agreementSignatureKey&&!session.sellerContribution){if(nativeProfile)challenges.retireChallenge(nonce,presentationHash);sessions.delete(jobId);}
       const answer={disposition:progress.disposition,stage:progress.stage,reason:progress.reason};
-      if(contextFailure){answer.causeCode=contextFailure?.name==='TimeoutError'||contextFailure?.code==='ETIMEDOUT'?'timeout':contextFailure instanceof RangeError?'reply-limit':'reader';Object.defineProperty(answer,'cause',{value:contextFailure});}
+      if(contextFailure){answer.causeCode=readFailureCode(contextFailure);Object.defineProperty(answer,'cause',{value:contextFailure});}
       return answer;
     }
     // The verified responder result is authoritative for the contribution: a
@@ -986,8 +993,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // commitment is authenticated again, but an absent one is never published.
   // `adopt` is internal to transport reconciliation: a publisher readback may
   // adopt a commitment that was anchored before its session save, still with
-  // no signing or submission.
-  async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement, adopt = false } = {}) {
+  // no signing or submission. `noLocalWrites` is the read-only replay of an
+  // expired delegation: it signs nothing and saves nothing (no session save, no
+  // anchor row update, no slot release), so it answers only for a commitment
+  // that is already retained and holds (readback required) before adopting one.
+  // It implies `readbackOnly`.
+  async function commit({ jobId, signedProjection }, { readbackOnly = false, signatureAgreement, adopt = false, noLocalWrites = false } = {}) {
     const session = sessionFor(jobId);
     assertBuyer(session.buyerBundle.presentedBy,jobId);
     assertRailPin(session.railPin, 'in-flight');
@@ -1003,6 +1014,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // after that it only reads back. A persisted early attempt is not a held
     // commitment: when nothing was signed the retry signs its one record, and
     // the publisher's own proof gate refuses a second CREATE otherwise.
+    readbackOnly ||= noLocalWrites;
     readbackOnly ||= early ? !attempt || Boolean(session.signatureCommitmentHeld) : Boolean(session.signatureCommitmentHeld);
     const readbackRequired = () => { throw new SellerAgentError('commitment_readback_required', 'only the retained commitment may be read back here', 503); };
     if(readbackOnly&&!session.commitment&&!session.signatureCommitmentAttempt&&!adopt)readbackRequired();
@@ -1033,7 +1045,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       try { await signatureCommitmentReady(); }
       catch(cause) { throw new SellerAgentError('signature_connection_unavailable', 'early commitment connection reservation is unavailable', 503,{cause}); }
     }
-    if (!nativeArtifactAnchor && durable?.hasAnchor(finalityCommitmentAddress(jobId))) await durable.reconcileAnchor(`anchor:${finalityCommitmentAddress(jobId)}`, anchors);
+    if (!nativeArtifactAnchor && durable?.hasAnchor(finalityCommitmentAddress(jobId))) await durable.reconcileAnchor(`anchor:${finalityCommitmentAddress(jobId)}`, anchors, { record: !noLocalWrites });
     // Older retained attempts have no publication marker. Their CREATE may
     // already have been asked for, so require the same proof as a new send.
     if (nativeArtifactAnchor) session.commitmentPublishAsked ??= session.commitCreatedAt !== undefined;
@@ -1052,10 +1064,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       session.agreementSignedProjection = structuredClone(signedProjection);
       session.signatureCommitmentAttempt = true;
     }
-    persist(session);
+    if (!noLocalWrites) persist(session);
     let finalized;
     let nativeCommitmentProjection;
-    let commitmentProvenUnsigned = false;
+    let readFailure;
+    let commitmentMayPublishAgain = false;
     try {
       finalized = await commitFixedPriceAgreement(
         {
@@ -1067,10 +1080,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         },
         nativeArtifactAnchor ? {
           resolve: async (logicalAddress) => {
-            const read=await nativeArtifactAnchor.readRetained({logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true},{resend:!readbackOnly,authorizeResend:heldFor(jobId)});
-            if(read.status==='absent') {
-              commitmentProvenUnsigned = isProvenUnsignedAbsence(read);
-              if (session.commitmentPublishAsked && !commitmentProvenUnsigned) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
+            const read=await readRetainedBounded(nativeArtifactAnchor,{logicalAddress,artifactKind:'FinalityCommitmentRecord',proofOfNoIntent:true,fresh:true},{resend:!readbackOnly,authorizeResend:heldFor(jobId)}).catch((cause)=>{readFailure=cause;throw cause;});
+            if(read.status==='absent'||isDeadRefusedCreate(read)) {
+              commitmentMayPublishAgain = mayPublishAgain(read);
+              if (session.commitmentPublishAsked && !commitmentMayPublishAgain) return { disposition: 'indeterminate', reason: 'a requested commitment CREATE has no authenticated readback or proof that nothing was signed' };
               return {disposition:'absent'};
             }
             if(read.status!=='present') return {disposition:read.status==='rejected'?'rejected':'indeterminate',reason:read.reason};
@@ -1080,17 +1093,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           verifyAnchorReceipt: async (anchored) => readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:anchored.anchorReceipt.logicalAddress,artifact:anchored.record,artifactKind:'FinalityCommitmentRecord',receipt:anchored.anchorReceipt,signedProjection:nativeCommitmentProjection,fresh:true}),
           submit: async (logicalAddress, commitmentRecord) => {
             if(readbackOnly || retainedNativeCommitment) readbackRequired();
-            if (session.commitmentPublishAsked && !commitmentProvenUnsigned) readbackRequired();
+            if (session.commitmentPublishAsked && !commitmentMayPublishAgain) readbackRequired();
             heldFor(jobId)?.();
             session.commitmentPublishAsked = true;
             persist(session);
-            const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId)});
+            const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId),authorizeSigning:heldFor(jobId)});
             if(out.status!=='present') throw new Error(out.reason ?? 'native commitment publication is indeterminate');
             nativeCommitmentProjection=out.signedProjection;
             return {record:commitmentRecord,nativeAddress:out.receipt.nativeAddress,anchorTxRef:out.txRef,anchorReceipt:out.receipt};
           },
         } : {
-          ...commitmentReader(anchors, claim),
+          ...commitmentReader(anchors, claim, (cause) => { readFailure = cause; }),
           submit: async (logicalAddress, commitmentRecord) => {
             if (readbackOnly) readbackRequired();
             const receipt = (await anchorOnce(logicalAddress, commitmentRecord)).receipt;
@@ -1100,10 +1113,10 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         commitmentVerifier,
       );
     } catch (error) {
-      throw new SellerAgentError('commitment_failed', String(error?.message ?? error).slice(0, 240),503,{cause:error});
+      throw new SellerAgentError('commitment_failed', 'commitment_failed',503,{cause:readFailure ?? error});
     }
     if (early) {
-      if (attempt && !session.signatureCommitmentHeld) { session.signatureCommitmentHeld = true; persist(session); }
+      if (attempt && !session.signatureCommitmentHeld && !noLocalWrites) { session.signatureCommitmentHeld = true; persist(session); }
       return { status: 'commitment-held', address: finalized.logicalAddress, resumed: finalized.resumed };
     }
     // A fresh read creates a new observation timestamp, not a new commitment
@@ -1126,10 +1139,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if(native)adopted.agreementAnchor=nativeAgreementView(native);
       if(adopted.stage==='proposed')adopted.stage='committed';
       retainCommitmentPhase(adopted,retained,false);
-      releaseFinalizedSignatureCommitment(adopted, jobId);
-      persist(adopted);Object.assign(session,adopted);
+      if(!noLocalWrites){releaseFinalizedSignatureCommitment(adopted, jobId);persist(adopted);}
+      Object.assign(session,adopted);
       return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
     }
+    // Adopting an anchored commitment is a save, which a read-only replay never makes.
+    if (noLocalWrites) readbackRequired();
     // A conflicting or out-of-order phase must not change the live session:
     // validate and keep the complete adoption on a copy, then save it once.
     const adopted = structuredClone(session);
@@ -1222,24 +1237,26 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   // command from this seller's retained state plus a fresh native readback. It
   // never signs or publishes to complete an uncertain effect: a finalized (or
   // early held) commitment answers what the same request would answer now.
-  // Only a native read that proves nothing was ever signed may hand the request
-  // back to its ordinary start once, under the same job lock.
+  // Only a native read that proves nothing was ever signed, or that a refused
+  // CREATE can no longer be included, may hand the request back to its
+  // ordinary start once, under the same job lock.
   const COMMITMENT_PATHS = new Set(['/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
+  // Answers `{ proven }`; a read that fails is never a proof, and its error is passed out as `failure`.
   const provenUnsignedCommitment = async (jobId) => {
-    if (!nativeArtifactAnchor) return false;
+    if (!nativeArtifactAnchor) return { proven: false };
     try {
-      const read = await nativeArtifactAnchor.readRetained({ logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true }, PASSIVE_RETAINED_READ);
-      return read?.status === 'absent' && isProvenUnsignedAbsence(read);
-    } catch { return false; }
+      const read = await readRetainedBounded(nativeArtifactAnchor, { logicalAddress: finalityCommitmentAddress(jobId), artifactKind: 'FinalityCommitmentRecord', proofOfNoIntent: true, fresh: true }, PASSIVE_RETAINED_READ);
+      return { proven: mayPublishAgain(read) };
+    } catch (failure) { return { proven: false, failure }; }
   };
   async function reconcileCommitmentTransport({ request, body, readOnly = false } = {}) {
     if (!COMMITMENT_PATHS.has(request?.path)) return undefined;
     const held = (reason, cause) => {
       const out = { disposition: 'indeterminate', reason: String(reason).slice(0, 240) };
-      if (cause) { out.causeCode = cause?.cause?.name === 'TimeoutError' ? 'timeout' : 'reader'; Object.defineProperty(out, 'cause', { value: cause }); }
+      if (cause) { out.causeCode = readFailureCode(cause); Object.defineProperty(out, 'cause', { value: cause }); }
       return out;
     };
-    const failed = (error) => held(typeof error?.code === 'string' ? error.code : 'seller_commitment_readback_indeterminate', error);
+    const failed = (error, cause = error) => held(typeof error?.code === 'string' ? error.code : 'seller_commitment_readback_indeterminate', cause);
     const bound = () => {
       try {
         return request.method === 'POST' && isCanonicalJobId(request.jobId) && Boolean(body) && typeof body === 'object' && !Array.isArray(body) &&
@@ -1258,11 +1275,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // Recovery never starts an early attempt or reserves its buyer slot.
     if (early && !session.signatureCommitmentAttempt) return held('seller_signature_attempt_absent');
     const input = { jobId: request.jobId, signedProjection: body.signedProjection };
-    const options = { readbackOnly: true, adopt: !early, ...(early ? { signatureAgreement: body.agreement } : {}) };
+    const options = { readbackOnly: true, adopt: !early, noLocalWrites: readOnly, ...(early ? { signatureAgreement: body.agreement } : {}) };
     let answer;
     try { answer = await commit(input, options); }
     catch (error) {
-      if (readOnly || early || session.commitment || session.signatureCommitmentHeld || !(await provenUnsignedCommitment(request.jobId))) return failed(error);
+      if (readOnly || early || session.commitment || session.signatureCommitmentHeld) return failed(error);
+      const unsigned = await provenUnsignedCommitment(request.jobId);
+      if (!unsigned.proven) return failed(error, unsigned.failure ?? error);
       try { answer = await commit(input, early ? { signatureAgreement: body.agreement } : {}); }
       catch (retryError) { return failed(retryError); }
     }
@@ -1440,7 +1459,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       if (!isDeliverableMiss(error)) return { status: 'held', reason: `native delivery reconciliation readback is unavailable: ${String(error?.message ?? error).slice(0, 180)}` };
       read = { status: 'absent' };
     }
-    if (isProvenUnsignedAbsence(read)) return { status: 'askable' };
+    if (mayPublishAgain(read)) return { status: 'askable' };
     if (read?.status === 'absent' && deliverableJournal) {
       const asked = await resumeDeliverableJournal(session, work, result.fulfilmentId);
       return asked.status === 'unsigned' ? { status: 'askable' } : { status: 'held', reason: asked.reason };
@@ -1639,7 +1658,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           if (!isDeliverableMiss(error)) return { status: 'indeterminate', reason: `native delivery readback is unavailable: ${String(error?.code ?? 'unknown').slice(0, 64)}: ${String(error?.message ?? error).slice(0, 180)}` };
           read = { status: 'absent' };
         }
-        if (isProvenUnsignedAbsence(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved the Deliverable CREATE was never signed' };
+        if (mayPublishAgain(read)) return { status: 'absent', reason: read.reason ?? 'the reader proved nothing signed for the Deliverable can still land' };
         if (read?.status === 'absent' && deliverableJournal) {
           const asked = await resumeDeliverableJournal(session, work, input.fulfilmentId);
           return asked.status === 'unsigned' ? { status: 'absent', reason: asked.reason ?? 'the wallet journal keeps no signed Deliverable CREATE that can still land' } : { status: 'indeterminate', reason: asked.reason };
@@ -1840,7 +1859,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // the wallet. A retained intent (sent, lost, denied or unknown) is only
     // ever read back. Only an absence the capability itself proves unsigned (a
     // branded no-intent verdict, as the shipped artifact anchor returns for
-    // proofOfNoIntent) permits the write again; a plain absent (a lagging name
+    // proofOfNoIntent), or a refused CREATE it marks dead (its nonce passed and
+    // it can no longer be included), permits the write again; a plain absent (a lagging name
     // index, or a verdict that lost its proof) does not establish that nothing
     // was signed, so it holds instead of asking a non-idempotent capability for
     // a second CREATE at the same address.
@@ -1848,13 +1868,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     try{
       if(!session.deliveryEvidenceWork){
         session.deliveryEvidenceWork={address,evidenceHash:ready.evidenceHash};persist(session);
-        read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
+        read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId)});
       }else{
         if(session.deliveryEvidenceWork.address!==address||session.deliveryEvidenceWork.evidenceHash!==ready.evidenceHash)return held('retained delivery evidence work differs from the verified Deliverable');
         // Only a seller that publishes delivery evidence may send its retained CREATE again,
         // and only while the check that authorized signing it still holds.
-        read=await nativeArtifactAnchor.readRetained({logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true},{resend:deliveryEvidenceEnabled,authorizeResend:heldFor(session.jobId)});
-        if(read?.status==='absent'&&deliveryEvidenceEnabled&&isProvenUnsignedAbsence(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId)});
+        read=await readRetainedBounded(nativeArtifactAnchor,{logicalAddress:address,artifactKind:'SettlementEvidence',proofOfNoIntent:true},{resend:deliveryEvidenceEnabled,authorizeResend:heldFor(session.jobId)});
+        if(deliveryEvidenceEnabled&&mayPublishAgain(read))read=await nativeArtifactAnchor.publish({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',authorize:heldFor(session.jobId),authorizeSigning:heldFor(session.jobId)});
       }
     }catch(error){return held(String(error?.message??error).slice(0,240));}
     if(read?.status!=='present')return held(read?.reason??'original delivery evidence CREATE requires authenticated readback; no resend');
@@ -1863,14 +1883,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // A verifier that throws or cannot answer is an unavailable readback, not a
     // failed effect: the paid claim stays a retry, never a thrown 503.
     let verdict;
-    try{verdict=await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:read.receipt,signedProjection:read.signedProjection});}
+    try{verdict=await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:read.receipt,signedProjection:read.signedProjection});}
     catch(error){return held(cause(error));}
     if(verdict==='indeterminate')return held('delivery evidence readback is unavailable');
     if(verdict!=='valid')return held('delivery evidence readback differs');
     const retained=session.deliveryEvidenceWork.receipt;
     if(retained){
       if(!sameNativeDeliveryReceipt(retained,read.receipt))return held('retained delivery evidence receipt differs');
-      try{verdict=await nativeArtifactAnchor.verifyReceipt({logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:retained,signedProjection:read.signedProjection});}
+      try{verdict=await readAdmissionCapability(nativeArtifactAnchor,'verifyReceipt',{logicalAddress:address,artifact:evidence,artifactKind:'SettlementEvidence',receipt:retained,signedProjection:read.signedProjection});}
       catch(error){return held(cause(error));}
       if(verdict==='indeterminate')return held('retained delivery evidence receipt is unavailable');
       if(verdict!=='valid')return held('retained delivery evidence receipt differs');

@@ -48,6 +48,14 @@ const rail: PaymentRailRef = {
   parameters: { network: "eip155:84532" },
 };
 
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.values(value).forEach(deepFreeze);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 function identity(primaryClaim: string): IdentityBundle {
   return {
     bundleVersion: "1",
@@ -572,6 +580,39 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
       resumed: false,
     });
   });
+
+  test.each(["agreement", "verifiedListing", "session"] as const)(
+    "commits an RFQ whose %s input is deeply frozen",
+    async (frozenInput) => {
+      const value = listing();
+      const rfqSession = await acceptedSession(value);
+      const agreement = await signRfqAgreement(
+        deriveRfqAgreement(agreementInput(value, rfqSession)),
+        {
+          party: BUYER,
+          algorithm: "ed25519",
+          sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(BUYER_SEED)),
+        },
+        {
+          party: SELLER,
+          algorithm: "ed25519",
+          sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+        },
+      );
+      const input = rfqCommitmentInput(value, rfqSession, agreement);
+      const frozen = { ...input, [frozenInput]: deepFreeze(structuredClone(input[frozenInput])) };
+      let submits = 0;
+      const result = await commitRfqAgreement(
+        frozen,
+        commitmentProvider(() => {
+          submits += 1;
+        }),
+        verifyCommitmentSignature,
+      );
+      expect(submits).toBe(1);
+      expect(result).toMatchObject({ recordKind: "finality", resumed: false });
+    },
+  );
 
   test("has zero SR-2 writes when the RFQ transcript or accepted price is rebound", async () => {
     const value = listing();

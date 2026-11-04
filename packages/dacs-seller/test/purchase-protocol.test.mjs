@@ -59,6 +59,14 @@ test('payment evidence accepts a qualified seller identity and rejects a differe
   assert.equal((await verifyPaymentEvidence({ ...f, record: fixtureRecord(address, changed) })).status, 'rejected');
 });
 
+for (const [label, paymentTxRefs] of [['a null entry', [null]], ['a string of length one', 'a'], ['an object of length one', { length: 1 }]]) test(`payment evidence whose paymentTxRefs is ${label} is rejected without throwing`, async () => {
+  const f = await protocolFixture(), address = paymentEvidenceAddress(JOB, 'demos-native:DEM', 2);
+  const signed = await signComponentArtifact({ evidenceVersion: '1', jobId: JOB, phase: 'pay-dem', outcome: 'success', observedAt: NOW, paymentTxRefs,
+    paymentAmount: { amount: '2.5', currency: 'DEM' }, settlementFinality: { model: 'bft-final', finalityObservedAt: NOW } },
+  ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
+  assert.equal((await verifyPaymentEvidence({ ...f, record: fixtureRecord(address, signed) })).status, 'rejected');
+});
+
 test('anchored bundle references and receipts use the role-independent bundle signed scope', async () => {
   const f = await protocolFixture(), ref = label => fixtureRef('TEST-' + label, sha256Hex('TEST ' + label));
   const session = bundleSession({ ...f, agreementRef: ref('agreement'), commitmentRef: ref('commitment'), payment: ref('payment'), delivery: ref('delivery'), finalisedAt: NOW });

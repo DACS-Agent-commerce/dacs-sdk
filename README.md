@@ -246,6 +246,15 @@ const seller = await createAgent({
   // and performs the DACS-4 semantic and cryptographic verification itself.
   resolveSettlementEvidenceContext: (input) =>
     resolveAuthenticatedSettlementContext(input),
+  // Also required for DACS-4 PC-2 SettlementEvidence references (CORE §5.1).
+  // Without this callback every PC-2 reference resolves as `unresolved`.
+  // Verify retained receipt evidence and its logical/native addresses,
+  // content hash, transaction, writer and nonce against the same Demos chain
+  // this Agent reads. The host can connect its own DemosAdapter to that chain
+  // and call verifyDemosAnchorReceipt; false/throw alone is indeterminate.
+  // The SDK binds and reads the receipt but does not authenticate it itself.
+  resolveAttestationAnchorReceipt: (input) =>
+    resolveVerifiedAttestationReceipt(input),
   bindings: { index: bindings, publisher: bindings },
 });
 
@@ -896,7 +905,8 @@ co-signed; single-signature suppression is available only for an honest abort.
 `lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
 §10.4.3(a) read step for consumers. It fetches the buyer and seller logical
 bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
-ignores content returned for another job. Lookup is discovery, not trust: pass
+ignores content returned for another job. It rejects a `jobId` that is not a
+canonical JID-1 job ID before making any read. Lookup is discovery, not trust: pass
 each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
 that returns its `.valid` boolean to `bundleConsistency` before using the
 resulting two-sided verdict.
@@ -920,8 +930,35 @@ Public `AttestationRef` values use the DACS-2 §7.5.2
 (`TxRef`) is the DACS-4 §9.3 discriminated union, and `SettlementEvidence`
 contains no signed `phaseIndex` (SB-1 derives it from the evidence anchor).
 `verifyBundleCore` resolves normative references through
-`resolveAttestationRef(ref, jobId, parties)` so the signed locator is never
-discarded.
+`resolveAttestationRef(ref, jobId, parties, outcome?)` so the signed locator is
+never discarded. `verifyBundleCore` always passes the bundle's `outcome`, for
+outcome-dependent SR-2 lifecycle gates (DACS-5 SEB-1). The outcome has been
+checked against the supported outcomes but is not authenticated at that point:
+refs resolve even when the bundle signatures fail, and such a bundle is never
+`ok`. It is optional in the type, so existing three-parameter resolvers and
+direct three-argument calls still compile; a resolver called without it must
+apply its strictest gate (`finalized` only). A `null` result is reported
+`missing`. To classify a refusal instead, throw `AttestationRefRejection` with
+disposition `"fail"` (`invalid-binding`), `"error"` (`invalid-shape`) or
+`"indeterminate"` (`unresolved`); any other error propagates.
+
+```ts
+import { AttestationRefRejection, type VerifyBundleDeps } from "@kynesyslabs/dacs";
+
+const resolveAttestationRef: VerifyBundleDeps["resolveAttestationRef"] = async (
+  ref,
+  jobId,
+  parties,
+  outcome, // undefined on a direct three-argument call: use the strictest gate
+) => {
+  const artifact = await myVerifiedStore.read(ref.anchor.locator, outcome);
+  // No qualifying carrier is indeterminate, not absence (CORE §5.1 SR2-12).
+  if (artifact === undefined) {
+    throw new AttestationRefRejection("indeterminate", "no verified carrier");
+  }
+  return artifact; // null only when absence is established
+};
+```
 
 Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
 `{ rail, txHash, kind }` transaction refs are exposed only through the
@@ -1072,8 +1109,12 @@ the consumer's `node_modules`, performs a frozen rematerialization with an empty
 cache and an unreachable loopback registry, and reruns the substrate-free
 `canonical` and `artifacts` imports. CI uploads the
 core tarball and `provenance.json` for the exact checkout SHA. The release-set
-verifier additionally requires byte-identical core, Node host and generator
-tarballs at one version with identical compatibility metadata. It emits exact
+verifier additionally requires byte-identical tarballs at one version, with
+identical compatibility metadata, for every package of the five-package policy
+that is ready; a private or absent package is reported "not ready" and skipped.
+With `--strict`, which only the gated publish workflow passes, it refuses unless
+all five are releasable at the planned version and every package's internal
+dependencies come earlier in the policy order. It emits exact
 checksums, one CycloneDX SBOM per package and combined release provenance. These
 are qualified package candidates, not evidence that the packages were published
 to npm.

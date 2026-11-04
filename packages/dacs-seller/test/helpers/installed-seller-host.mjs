@@ -1,7 +1,8 @@
 // Runs inside a temporary application that installed the packed core and
 // seller tarballs. It is copied there and started with a clean `node` (no
-// flags, loaders or NODE_OPTIONS), so every import below resolves through that
-// application's node_modules, never through this repository.
+// flags or NODE_OPTIONS), so every import below resolves through that
+// application's node_modules, never through this repository. The host run
+// needs the unshipped guard loader, which the test passes as NODE_OPTIONS.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { sign, verify } from 'node:crypto';
@@ -11,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as core from '@kynesyslabs/dacs';
+import * as wire from '@kynesyslabs/dacs/wire';
 import * as seller from '@kynesyslabs/dacs-seller';
 import { createSellerAgent } from '@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs';
 import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs';
@@ -20,6 +22,16 @@ import { createNativePaymentEvidenceConsumer } from '@kynesyslabs/dacs-seller/sr
 const require = createRequire(import.meta.url);
 const packageRoot = dirname(require.resolve('@kynesyslabs/dacs-seller/package.json'));
 const out = { environment: { execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS ?? null }, packageRoot: relative(process.cwd(), packageRoot) };
+// While the installed kit's guard is off (no fixture loader), the run only
+// proves that the host refuses to start, and ends there.
+const guard = await import('@kynesyslabs/dacs-seller/src/kit-operation-guard.mjs');
+if (!guard.kitOperationAdmitted()) {
+  let refusal = null;
+  try { await seller.startSellerHost({}); } catch (error) { refusal = { name: error.name, code: error.code, entry: error.entry }; }
+  out.guardOff = { guard: guard.KIT_OPERATION_GUARD, start: refusal };
+  process.stdout.write(`${JSON.stringify(out)}\n`);
+  process.exit(0);
+}
 // `--second <dataDirectory>`: another process tries to host on a live host's state.
 const second = process.argv[2] === '--second' ? process.argv[3] : null;
 
@@ -136,7 +148,18 @@ const vetContextCalls = [];
 const journalDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wallet-')));
 const journal = seller.createPaymentEvidenceWalletJournal({ path: join(journalDirectory, 'wallet-journal.sqlite'), signCreate: refuse('wallet.signCreate'), broadcast: refuse('wallet.broadcast'),
   readAccountNonce: refuse('wallet.readAccountNonce'), readTransactionState: refuse('wallet.readTransactionState') });
+// The wire's test-only authority semantics, inlined: this file runs alone in the consumer application,
+// where the repository's fixture helper is not available. It confirms the approved chain for the
+// connection and participants it is asked about.
+const approvedRecord = wire.TP1_APPROVED_IDENTITY_RECORD;
+const approvedProfile = { id: wire.TP1_PROFILE_ID, revision: wire.TP1_PROFILE_REVISION, base: wire.TP1_BASE_REVISION, chainIdentity: approvedRecord.chainIdentity, pinVersion: approvedRecord.pinVersion };
+const tp1Network = {
+  connection: () => ({ endpoint: 'https://rpc.example.invalid/', transportAuthority: 'installed-authority', connectionId: 'installed-conn-1' }),
+  readAuthority: (scope) => ({ local: { ...scope.local }, chainIdentity: approvedRecord.chainIdentity, provenance: 'test-only-independent-authority/v1', sessionId: scope.sessionId,
+    participants: scope.participants.map((claim) => ({ claim, profile: approvedProfile, modules: wire.TESTNET_PROFILE_TP1.tuple })) }),
+};
 const capabilities = () => ({
+  tp1Network,
   now:()=>now,
   nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: journal.anchorEvidence, fetchImpl: refuse('nativePaymentEvidence.fetch') }),
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence,

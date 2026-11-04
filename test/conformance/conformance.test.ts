@@ -149,6 +149,10 @@ const read = (rel: string) =>
 const b64u = (s: string) => Uint8Array.from(Buffer.from(s, "base64url"));
 const hex = (s: string) => Uint8Array.from(Buffer.from(s, "hex"));
 
+// Canonical JID-1 job IDs for lookupBundleCopies, which refuses anything else.
+const LOOKUP_JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const OTHER_SESSION_JOB_ID = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+
 describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
   if (!haveVectors) {
     it.skip("vectors not synced — run `npm run conformance:sync`", () => {});
@@ -1998,9 +2002,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       expect([b !== s, s !== o]).toEqual(want);
     },
     "verify-lookup-both": async (want) => {
-      const copies = await lookupBundleCopies("job-1", async (_address, role) => ({
+      const copies = await lookupBundleCopies(LOOKUP_JOB_ID, async (_address, role) => ({
         disposition: "present",
-        bundle: { jobId: "job-1", anchoredByRole: role },
+        bundle: { jobId: LOOKUP_JOB_ID, anchoredByRole: role },
       }));
       expect({
         buyer: copies.buyer.disposition === "present",
@@ -2008,11 +2012,11 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       }).toEqual(want);
     },
     "verify-lookup-one": async (want) => {
-      const copies = await lookupBundleCopies("job-1", async (_address, role) =>
+      const copies = await lookupBundleCopies(LOOKUP_JOB_ID, async (_address, role) =>
         role === "buyer"
           ? {
               disposition: "present",
-              bundle: { jobId: "job-1", anchoredByRole: role },
+              bundle: { jobId: LOOKUP_JOB_ID, anchoredByRole: role },
             }
           : { disposition: "absent" },
       );
@@ -2022,7 +2026,7 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       }).toEqual(want);
     },
     "verify-lookup-none": async (want) => {
-      const copies = await lookupBundleCopies("job-1", async () => ({
+      const copies = await lookupBundleCopies(LOOKUP_JOB_ID, async () => ({
         disposition: "absent",
       }));
       expect({
@@ -2031,9 +2035,9 @@ describe("DACS-Standard §14 conformance vectors (manifest-driven)", () => {
       }).toEqual(want);
     },
     "verify-lookup-cross-session-jobid-ignored": async (want) => {
-      const copies = await lookupBundleCopies("job-1", async () => ({
+      const copies = await lookupBundleCopies(LOOKUP_JOB_ID, async () => ({
         disposition: "present",
-        bundle: { jobId: "job-other" },
+        bundle: { jobId: OTHER_SESSION_JOB_ID },
       }));
       expect(await bundleConsistency(copies, { trustBundles: true })).toBe(want);
     },

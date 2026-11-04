@@ -21,7 +21,7 @@
     "src/dacs/directory.mjs", "src/dacs/listing.mjs",
     "src/dacs/native-agreement-payment-consumer.mjs", "src/dacs/native-dem-delivery-consumer.mjs",
     "src/dacs/native-payment-evidence-consumer.mjs", "src/dacs/network-binding.mjs",
-    "src/dacs/protocol-purchases.mjs", "src/dacs/purchase-protocol.mjs",
+    "src/dacs/protocol-purchases.mjs", "src/dacs/purchase-admission-state.mjs", "src/dacs/purchase-protocol.mjs",
     "src/dacs/seller-agent-error.mjs", "src/dacs/seller-http.mjs",
     "src/dacs/seller-session-lifecycle.mjs", "src/dacs/seller-session-limits.mjs",
     "src/dacs/seller-sr2-agreement-consumer.mjs", "src/dacs/seller-transport-auth.mjs",
@@ -38,10 +38,11 @@
     "src/util/sqlite-statement-boundary.mjs", "src/util/sqlite-write-lease.mjs",
     "src/util/http.mjs", "src/util/ids.mjs",
     "src/util/immutable-readbacks.mjs", "src/util/purchase-readback-cache.mjs",
-    "src/util/text.mjs", "src/wallet/devnet-native-transport.mjs",
-    "src/wallet/durable-journal.mjs", "src/wallet/payload-helpers.mjs",
+    "src/util/text.mjs", "src/wallet/demos-quiet-hooks.mjs", "src/wallet/devnet-native-transport.mjs",
+    "src/wallet/durable-journal.mjs", "src/wallet/holder-incarnation.mjs", "src/wallet/node-demos-loading.mjs",
+    "src/wallet/payload-helpers.mjs",
     "README.md", "LICENSE",
-    "src/public-verification.mjs"
+    "src/public-admission.mjs", "src/public-guidance.mjs", "src/public-verification.mjs"
   ],
   "engines": {
     "node": "^22.13.0 || >=23.4.0"
@@ -55,6 +56,11 @@
   "homepage": "https://github.com/DACS-Agent-commerce/dacs-sdk/tree/main/packages/dacs-client#readme",
   "bugs": {
     "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+  },
+  "dependencies": {
+    "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
+    "@kynesyslabs/demosdk": "^4.0.16",
+    "@scure/bip39": "2.2.0"
   },
   "peerDependencies": {
     "@kynesyslabs/dacs": "0.1.0-alpha.0"

@@ -14,13 +14,13 @@ import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { commitmentReceiptTime, type CommitmentReceiptReader } from "./commitment.js";
-import { journalStore, reserveEffect, type WireEffect, type WireRequestJournal } from "./journal.js";
-import { assertEndpointProof, isContinuingRoute, type EndpointProof } from "./discovery.js";
+import { inspectWireOperation, journalStore, reserveEffect, type WireEffect, type WireRequestJournal } from "./journal.js";
+import { assertEndpointProof, isCommittedRoute, isContinuingRoute, isStageRoute, type EndpointProof, type RetainedPurchaseContinuation } from "./discovery.js";
 import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isReadRoute } from "./routes.js";
-import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPreAgreementRoute, isReadRoute } from "./routes.js";
+import { verifySellerSessionDelegation, type SellerSessionDelegation, type SellerSessionDelegationPayload } from "./delegation.js";
 import {
-  admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin,
+  admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, withCanonicalClaims,
   isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedBytes, ownedConfig, ownedFields, ownedOrNothing, sameCanonical,
   uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
@@ -109,6 +109,8 @@ export interface EnvelopeSigningContext extends SigningContext {
   agreement?: unknown;
   /** Required with `commitment`: the Listing the purchase pins, as bytes or an admitted value (WireRequestInput.signedListing). */
   signedListing?: unknown;
+  /** Retained purchase work signed under a `ready: false` proof: the capability for this exact request (WireRequestInput.continuation). */
+  continuation?: RetainedPurchaseContinuation;
   /**
    * Required: the tuple the signer kept for this purchase, exactly the
    * binding's profile. `null` (none kept yet) only for a seller's answer to a
@@ -127,7 +129,7 @@ export interface EnvelopeSigningContext extends SigningContext {
  * (expiry is not checked here: the receiver decides which routes an expired one serves).
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
-  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing"]) as EnvelopeSigningContext;
+  const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing, continuation } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing", "continuation"]) as EnvelopeSigningContext;
   const payload = ownedArtifact(supplied, "peer_envelope_invalid", 500);
   await assertTp1Binding(binding, local);
   if (!isRecord(payload)) return fail("peer_envelope_invalid", 500);
@@ -151,7 +153,7 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
   });
   if (payload.kind === "request") await assertEndpointProof(endpointProof, {
     binding, seller: payload.seller as string, listingPin: payload.listingPin as ListingPin,
-    publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement, signedListing,
+    publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement, signedListing, continuation,
   });
   await assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
   const signature = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes)).toString("base64url");
@@ -222,24 +224,27 @@ export async function openWireEnvelope<K extends WireKind>(header: unknown, kind
   if (lacksProfile(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) fail("tp1_profile_missing", 409);
   // With exactly the wire's members, the profile gate comes before every other payload check, so a revision fault is named as one.
   if (hasKeys(p, kind === "response" ? RESPONSE_FIELDS : REQUEST_FIELDS)) await assertPeerProfile(p.profile, binding);
-  if (!payloadShape(p, kind)) fail("peer_envelope_invalid");
+  // DACS-1 reader rule: a `DID:` scheme resolves as `did:` and is canonicalised before hashing, signing or comparison (CF-2): every check, the signature and the authentication hash below read the canonical copy.
+  const canonical = withCanonicalClaims(p, ["buyer", "seller"]);
+  if (!payloadShape(canonical, kind)) fail("peer_envelope_invalid");
   if (requireDelegation && !delegated) fail("peer_delegation_required");
-  const payload = p as unknown as Extract<WirePayload, { kind: K }>;
+  const payload = canonical as unknown as Extract<WirePayload, { kind: K }>;
   const actor = kind === "request" ? payload.buyer : payload.seller;
   if (principal !== undefined && actor !== principal) fail("peer_signer_wrong");
   // The opener has no clock: whether the delegation is still live is the admitting caller's decision.
   const delegation = delegated ? await verifySellerSessionDelegation(envelope.delegation, { binding, local, buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin, jobId: payload.jobId, allowExpired: true }) : null;
   const key = delegation?.sessionPublicKey ?? claimKey(actor);
-  if (!verifyEd25519(wireEnvelopeSigningBytes(payload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
+  if (!verifyEd25519(wireEnvelopeSigningBytes(payload as unknown as WirePayload), envelopeSignatureBytes(envelope.signature), key)) fail("peer_signature_invalid");
   // The trusted reader is asked about these participants and this job only once a signature authenticates them.
   await assertTp1Authority(binding, local, [payload.buyer, payload.seller], payload.jobId);
   const normalizedDelegation = delegated ? {
-    payload: (envelope.delegation as SellerSessionDelegation).payload,
+    payload: delegation,
     signature: walletSignatureBytes((envelope.delegation as SellerSessionDelegation).signature).toString("base64url"),
   } : null;
+  // The authenticated header in CF-2 canonical form: its payload and delegation are the canonical copies the signatures cover.
   const normalizedHeader = Buffer.from(canonicalize({ payload, signature: envelopeSignatureBytes(envelope.signature).toString("base64url"),
     ...(normalizedDelegation ? { delegation: normalizedDelegation } : {}) })).toString("base64url");
-  const result = deepFreeze({ payload: cloneJson(payload), delegation: delegated ? cloneJson(envelope.delegation as SellerSessionDelegation) : null,
+  const result = deepFreeze({ payload: cloneJson(payload), delegation: delegated ? cloneJson({ ...(envelope.delegation as SellerSessionDelegation), payload: delegation as SellerSessionDelegationPayload }) : null,
     authenticationHash: sha256Hex(normalizedHeader) });
   recordOpened(opened, result, binding);
   return result;
@@ -272,9 +277,11 @@ export interface RequestCheck {
    * draft's hash and parties; for the context route, the exact context-scope
    * hash). Each must equal the signed jobId, agreementHash, buyer and seller
    * exactly, before any delegation scope, reservation or return. Omitted or
-   * malformed is refused.
+   * malformed is refused. The proposals, commitments and commitment signature
+   * routes take a WireRetainedStage. Pre-Agreement context takes the four
+   * members plus host-owned `accepted`; every other route takes exactly four.
    */
-  retained: WireRetainedAgreement;
+  retained: WireRetainedAgreement | WireRetainedStage;
   /**
    * The host's proposal draft and/or retained Agreement. On every request,
    * each one given must also name the signed job, Listing, buyer and seller.
@@ -328,12 +335,17 @@ export interface RequestCheck {
   signedListing?: unknown;
   /**
    * Required on every route that starts or commits a purchase (proposals,
-   * commitments, commitment signature, context): whether this seller accepts
-   * new purchases now, from its own current state (the `ready` it would
+   * commitments, commitment signature, and both pre-Agreement routes through
+   * `admitPreAgreementRequest`): whether this seller accepts new purchases
+   * now, from its own current state (the `ready` it would
    * publish). A buyer's endpoint proof can still say `ready: true` for up to
    * ten minutes after the seller drains, so such a request is refused here
    * (`seller_not_ready`, 503). The payment, delivery and read routes continue
-   * a committed purchase and do not read it.
+   * a committed purchase and do not read it. While it is false, the proposals,
+   * commitments and commitment signature routes are still admitted when
+   * `retained.allocated` is true, or when the journal already holds the
+   * route's operation under this request's binding; the context route when
+   * `retained.accepted` is true.
    */
   ready?: boolean;
 }
@@ -345,6 +357,26 @@ export interface WireRetainedAgreement {
   /** The job's buyer and seller claims, from the host's own record: a request from anyone else is refused. */
   buyer: string;
   seller: string;
+}
+
+/** What the host retains on the proposals, commitments and commitment signature routes: also whether it holds a live allocation for this stage (`allocated`, from its own records, never the request). */
+export interface WireRetainedStage extends WireRetainedAgreement {
+  allocated: boolean;
+}
+
+const RETAINED_MEMBERS = ["jobId", "agreementHash", "buyer", "seller"];
+
+/** The members the host retains for a route: the stage routes add `allocated`, the context route `accepted`. */
+function retainedMembers(path: string): string[] {
+  if (isStageRoute(path)) return [...RETAINED_MEMBERS, "allocated"];
+  return path === DACS_SELLER_HTTP_PATHS.context ? [...RETAINED_MEMBERS, "accepted"] : RETAINED_MEMBERS;
+}
+
+/** The retained record's exact members for a route, each well-formed: anything else is `seller_retained_agreement_required` (500). */
+function assertRetainedShape(path: string, retained: JsonRecord | undefined): asserts retained is JsonRecord {
+  const stage = isStageRoute(path);
+  if (!hasKeys(retained, retainedMembers(path)) || !isCanonicalJobId(retained.jobId) || !isHash(retained.agreementHash) ||
+      !isClaim(retained.buyer) || !isClaim(retained.seller) || (stage && typeof retained.allocated !== "boolean")) fail("seller_retained_agreement_required", 500);
 }
 
 /**
@@ -360,25 +392,69 @@ export function messageLifetime(override: unknown, code: string, max: number = D
 
 const CHECK_FIELDS = ["seller", "listingPin", "method", "path", "rawBody", "now", "maxLifetimeMs", "binding", "local", "purchaseProfile", "requireDelegation", "retained", "artifacts", "requestJournal", "ready", "commitment", "agreement", "readCommitmentReceipt", "signedListing"] as const;
 
+const AGREEMENT_EVIDENCE_FIELDS: readonly string[] = ["artifacts", "commitment", "agreement", "readCommitmentReceipt", "signedListing"];
+const PRE_AGREEMENT_CHECK_FIELDS = [...CHECK_FIELDS.filter((field) => !AGREEMENT_EVIDENCE_FIELDS.includes(field)), "route"];
+
 /**
- * A request that starts or commits a purchase (every effect route the buyer
- * does not sign as a continuation) is admitted only while the seller accepts
- * new purchases by its own current state, never a buyer's kept proof.
+ * What `admitPreAgreementRequest` needs: `RequestCheck` without the Agreement
+ * evidence (artifacts, commitment, agreement, receipt reader, signed Listing),
+ * plus the `route` the host is serving, which must be the request's path. The
+ * challenge route takes the four retained members; the context route takes
+ * them plus the host's own `accepted`: whether its admission of this scope may
+ * continue while the seller is not ready. `accepted` is never taken from the
+ * request, and any other member set is refused.
  */
-function admitNewPurchase(request: WireRequestPayload, ready: unknown): void {
-  if (isReadRoute(request.path) || isContinuingRoute(request.path)) return;
-  if (typeof ready !== "boolean") fail("seller_readiness_required", 500);
-  if (!ready) fail("seller_not_ready", 503);
+export type PreAgreementCheck = Omit<RequestCheck, "artifacts" | "commitment" | "agreement" | "readCommitmentReceipt" | "signedListing" | "retained"> & {
+  route: "contextChallenge" | "context";
+  retained: WireRetainedAgreement & { accepted?: boolean };
+};
+
+/** A pre-Agreement request admitted by `admitPreAgreementRequest`. */
+export interface AdmittedPreAgreementRequest {
+  readonly route: PreAgreementCheck["route"];
+  /** The admitted request body. Handling must use this, never a separately parsed copy. */
+  readonly body: JsonRecord;
+  /** When the admitted delegation expires; `null` on a direct request, which carries none. */
+  readonly delegationExpiresAt: number | null;
+  /**
+   * Context route only: the reservation in the request journal, made when it is
+   * called, after the host's accounting. It re-checks current authority, then
+   * the request's expiry, then the delegation's (time counted from the check's
+   * start), and resolves as `CheckedWireRequest.reserve` does. Admission itself
+   * writes nothing. Absent on the challenge route, which has no journal operation.
+   */
+  readonly reserve?: () => Promise<WireEffect>;
 }
 
 /**
- * A payment or delivery request continues only a purchase whose finalized
+ * A request that starts or commits a purchase on the stage routes is admitted
+ * only while the seller accepts new purchases by its own current state, never
+ * a buyer's kept proof. While it does not, it is admitted only for a purchase
+ * the host retains (`retained.allocated`, or the journal's operation is bound
+ * to this request).
+ */
+function admitNewPurchase(request: WireRequestPayload, c: RequestCheck, retained: JsonRecord): void {
+  if (isReadRoute(request.path) || isContinuingRoute(request.path)) return;
+  if (typeof c.ready !== "boolean") fail("seller_readiness_required", 500);
+  if (c.ready || retained.allocated === true || hasBoundOperation(request, c.requestJournal)) return;
+  fail("seller_not_ready", 503);
+}
+
+/** Whether the journal already holds this request's operation under the binding the request carries: work the seller began, whatever its state. */
+function hasBoundOperation(request: WireRequestPayload, journal: WireRequestJournal | undefined): boolean {
+  if (journal === undefined) return fail("seller_replay_guard_required", 500);
+  const view = inspectWireOperation(journal, request);
+  return view.state !== "none" && view.binding === wireOperationBinding(request);
+}
+
+/**
+ * A payment, delivery or buyer-copy request continues only a purchase whose finalized
  * commitment the seller holds for exactly this job, Agreement, parties and
  * Listing, for an Agreement both parties signed, valid at its receipt time
  * under the seller's own Listing, its receipt authenticated now (commitment.ts).
  */
 async function admitContinuation(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin): Promise<void> {
-  if (!isContinuingRoute(request.path)) return;
+  if (!isCommittedRoute(request.path)) return;
   if (c.commitment === null) fail("peer_agreement_uncommitted", 409);
   if (c.commitment === undefined) fail("seller_commitment_required", 500);
   await commitmentReceiptTime(c.commitment, c.agreement, c.signedListing, c.readCommitmentReceipt, { binding: c.binding, seller: request.seller, listingPin, now: c.now,
@@ -404,11 +480,16 @@ export function wireOperationId(request: Pick<WireRequestPayload, "seller" | "jo
   return sha256Hex(canonicalize({ seller, jobId, path }));
 }
 
-function reserveEffectRequest(request: WireRequestPayload, store: object | null): WireEffect | null {
-  if (store === null) return null;
-  const { buyer, seller, profile, nonce, agreementHash, jobId, path } = request;
+/** The binding an operation is first reserved under (sha256 of the canonical profile, buyer and Agreement hash): compare it with inspectWireOperation's `binding`. */
+export function wireOperationBinding(request: Pick<WireRequestPayload, "profile" | "buyer" | "agreementHash">): string {
+  const { profile, buyer, agreementHash } = request;
+  return sha256Hex(canonicalize({ profile, buyer, agreementHash }));
+}
+
+function reserveEffectRequest(request: WireRequestPayload, store: object): WireEffect {
+  const { buyer, seller, profile, nonce, jobId, path } = request;
   return reserveEffect(store, { key: sha256Hex(canonicalize({ buyer, seller, profile, nonce })), seller, jobId, path,
-    binding: sha256Hex(canonicalize({ profile, buyer, agreementHash })), requestHash: wireRequestHash(request) });
+    binding: wireOperationBinding(request), requestHash: wireRequestHash(request) });
 }
 
 /**
@@ -422,13 +503,29 @@ async function assertStillAuthorized(request: WireRequestPayload, c: RequestChec
   if (delegationExpiresAt !== null && delegationExpiresAt <= at) fail("peer_delegation_expired", 408);
 }
 
-/** Every per-request admission an effect needs, in order, then its reservation. */
-async function admitEffect(request: WireRequestPayload, c: RequestCheck, listingPin: ListingPin, delegationExpiresAt: number | null, startedAt: number): Promise<WireEffect | null> {
+/** What admission leaves for the host: the authority and expiry re-check (`authorize`), then reserve (which runs it first). */
+interface Deferred {
+  authorize: (() => Promise<void>) | null;
+  reserve: (() => Promise<WireEffect>) | null;
+}
+const NOTHING_DEFERRED: Deferred = Object.freeze({ authorize: null, reserve: null });
+
+/** What admission carries from the check to the deferred steps. */
+interface EffectAdmission { listingPin: ListingPin; retained: JsonRecord; delegationExpiresAt: number | null; startedAt: number }
+
+/** Every per-request admission an effect needs, in order. Its journal write is `reserve()`, which the host calls after its own accounting. */
+async function admitEffect(request: WireRequestPayload, c: RequestCheck, { listingPin, retained, delegationExpiresAt, startedAt }: EffectAdmission): Promise<Deferred> {
   const store = effectJournal(request, c.requestJournal);
-  admitNewPurchase(request, c.ready);
+  admitNewPurchase(request, c, retained);
   await admitContinuation(request, c, listingPin);
-  if (store !== null) await assertStillAuthorized(request, c, delegationExpiresAt, startedAt);
-  return reserveEffectRequest(request, store);
+  if (store === null) return NOTHING_DEFERRED;
+  return deferredReservation(request, c, store, delegationExpiresAt, startedAt);
+}
+
+/** The authority and expiry re-check, and the reservation behind it, for an effect route: also pre-Agreement context. */
+function deferredReservation(request: WireRequestPayload, c: RequestCheck, store: object, delegationExpiresAt: number | null, startedAt: number): { authorize: () => Promise<void>; reserve: () => Promise<WireEffect> } {
+  const authorize = () => assertStillAuthorized(request, c, delegationExpiresAt, startedAt);
+  return { authorize, reserve: async () => { await authorize(); return reserveEffectRequest(request, store); } };
 }
 
 export interface CheckedWireRequest {
@@ -440,16 +537,21 @@ export interface CheckedWireRequest {
    */
   readbackOnly: boolean;
   /**
-   * The effect route's operation, from the request journal (journal.ts):
-   * `new` or `recover` (run, or first reconcile, then completeWireEffect) or
-   * `completed` (answer with its outcome; run nothing). `null` on a read route.
+   * The effect route's reservation in the request journal (journal.ts), made
+   * when it is called, after the host's accounting. It re-checks current
+   * authority, then the request's expiry, then the delegation's (time counted
+   * from the check's start), and resolves `new` or `recover` (run, or first
+   * reconcile, then completeWireEffect) or `completed` (answer with its
+   * outcome; run nothing). It rejects with the journal's answer: a second call
+   * is `peer_request_replayed`. `null` on a read route.
    */
-  effect: WireEffect | null;
+  reserve: (() => Promise<WireEffect>) | null;
 }
 
 /**
  * Seller-side binding of an opened request to this HTTP exchange
- * (the plugin's server-side request checks, without its body checks). It takes only the
+ * (the plugin's server-side request checks, without its body checks), shared by
+ * both admission entries and authorizeWireRequest. It takes only the
  * value openWireEnvelope returned, under the same binding, and the seller's
  * current connection: a payload or delegation the caller assembled is refused.
  * The check is read once (ownedFields), and its Listing pin, retained
@@ -458,9 +560,9 @@ export interface CheckedWireRequest {
  * retained. The received body bytes are admitted (CF-5) before their hash is
  * compared, and the admitted body is returned.
  */
-export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): Promise<CheckedWireRequest> {
+async function requestAdmissionPrefix(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck | PreAgreementCheck, preAgreement: boolean): Promise<RequestAdmissionPrefix> {
   const startedAt = performance.now();
-  const c = ownedFields(check, CHECK_FIELDS) as unknown as RequestCheck;
+  const c = ownedFields(check, preAgreement ? PRE_AGREEMENT_CHECK_FIELDS : CHECK_FIELDS) as unknown as RequestCheck & { route?: unknown };
   const listingPin = ownedConfig(c.listingPin, "wire_input_invalid") as ListingPin;
   const retained = c.retained === undefined ? undefined : ownedConfig(c.retained, "seller_retained_agreement_required") as JsonRecord;
   const artifacts = (c.artifacts === undefined ? [] : ownedArtifact(c.artifacts, "wire_input_invalid", 500)) as unknown[];
@@ -470,27 +572,51 @@ export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPaylo
   await assertTp1Binding(c.binding, c.local);
   if (typeof envelope !== "object" || envelope === null || openedBinding(opened, envelope) !== c.binding ||
       envelope.payload?.kind !== "request") fail("peer_request_unverified", 500);
+  // A pre-Agreement route issues a nonce no Agreement covers: it is admitted only by admitPreAgreementRequest.
+  if (!preAgreement && isPreAgreementRoute(envelope.payload.path)) fail("wire_route_requires_preagreement", 500);
   // openWireEnvelope checked the kept tuple and the request's own; the tuple kept now is checked again.
   if (c.purchaseProfile !== null) await assertPurchaseProfile(c.purchaseProfile, c.binding, 500);
   const { payload: request, delegation } = envelope;
   await assertTp1Authority(c.binding, c.local, [request.buyer, request.seller], request.jobId);
   const maxLifetimeMs = messageLifetime(c.maxLifetimeMs, "seller_configuration_invalid");
+  if (preAgreement && (!isPreAgreementRouteName(c.route) || DACS_SELLER_HTTP_PATHS[c.route] !== request.path)) fail("wire_input_invalid", 500);
   if (request.seller !== c.seller) fail("peer_audience_wrong");
   if (!isUint(c.now) || request.expiresAt <= c.now || request.expiresAt > c.now + maxLifetimeMs) fail("peer_expired", 408);
   const body = admitWireRequestBody(rawBody);
   if (request.method !== c.method || request.path !== c.path || request.bodyHash !== sha256Hex(rawBody)) fail("peer_request_mismatch");
   if (!sameCanonical(request.listingPin, listingPin)) fail("peer_listing_mismatch", 409);
   // A correctly signed request naming another job or Agreement never reaches the delegation scope, a reservation or a handler.
-  if (!hasKeys(retained, ["jobId", "agreementHash", "buyer", "seller"]) || !isCanonicalJobId(retained.jobId) || !isHash(retained.agreementHash) ||
-      !isClaim(retained.buyer) || !isClaim(retained.seller)) {
-    fail("seller_retained_agreement_required", 500);
-  }
+  assertRetainedShape(request.path, retained);
   if (request.jobId !== retained.jobId) fail("peer_job_mismatch", 409);
   if (request.agreementHash !== retained.agreementHash) fail("peer_agreement_mismatch", 409);
   // The retained parties bind every request, with or without artifacts: another key that knows the job and its public Agreement is refused.
   if (request.buyer !== retained.buyer) fail("peer_agreement_party_mismatch", 409);
   if (request.seller !== retained.seller) fail("peer_agreement_party_mismatch", 409);
   if (c.requireDelegation && !delegation) fail("peer_delegation_required");
+  return { c, request, delegation, listingPin, retained, artifacts, body, startedAt };
+}
+
+/** What the shared prefix hands to each admission entry once its checks pass. */
+interface RequestAdmissionPrefix {
+  c: RequestCheck;
+  request: WireRequestPayload;
+  delegation: SellerSessionDelegation | null;
+  listingPin: ListingPin;
+  retained: JsonRecord;
+  artifacts: unknown[];
+  body: JsonRecord;
+  startedAt: number;
+}
+
+const isPreAgreementRouteName = (route: unknown): route is PreAgreementCheck["route"] => route === "contextChallenge" || route === "context";
+
+/** Re-admit the authenticated delegation copy before either admission path verifies it. */
+function readmittedDelegation(delegation: SellerSessionDelegation): unknown {
+  return admitWireJson(Buffer.from(JSON.stringify(delegation)), DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "peer_delegation_invalid", 401);
+}
+
+async function admitWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): Promise<Omit<CheckedWireRequest, "reserve"> & Deferred> {
+  const { c, request, delegation, listingPin, retained, artifacts, body, startedAt } = await requestAdmissionPrefix(envelope, check, false);
   // Every host artifact given binds the signed job, Listing and both parties, on a direct request as on a delegated one.
   const retainedArtifacts = artifacts.filter((a) => a != null) as JsonRecord[];
   for (const artifact of retainedArtifacts) {
@@ -502,11 +628,11 @@ export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPaylo
     }
   }
   if (!delegation) {
-    return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin, null, startedAt) };
+    return { body, readbackOnly: false, ...await admitEffect(request, c, { listingPin, retained, delegationExpiresAt: null, startedAt }) };
   }
   if (retainedArtifacts.length === 0) fail("peer_delegation_agreement_required", 409);
   // This frozen copy came only from an authenticated, CF-5-admitted envelope.
-  const admittedDelegation = admitWireJson(Buffer.from(JSON.stringify(delegation)), DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "peer_delegation_invalid", 401);
+  const admittedDelegation = readmittedDelegation(delegation);
   const scope = { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: true };
   for (const artifact of retainedArtifacts) {
     const deadline = (artifact.terms as JsonRecord | undefined)?.deadline;
@@ -515,14 +641,75 @@ export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPaylo
   }
   await verifySellerSessionDelegation(admittedDelegation, scope);
   if (c.now < delegation.payload.expiresAt && request.expiresAt <= delegation.payload.expiresAt) {
-    return { body, readbackOnly: false, effect: await admitEffect(request, c, listingPin, delegation.payload.expiresAt, startedAt) };
+    return { body, readbackOnly: false, ...await admitEffect(request, c, { listingPin, retained, delegationExpiresAt: delegation.payload.expiresAt, startedAt }) };
   }
   // An expired delegation, or a request that outlives a live one, authenticates readback only. The buyer
   // picks readback by its own clock, which may run ahead of this one: a read route is answered either way.
   // A nonce reservation never extends expired delegation authority.
   // Refuse effect routes rather than returning a flag a host could overlook.
   if (!isReadRoute(request.path)) fail("peer_delegation_expired", 408);
-  return { body, readbackOnly: true, effect: null };
+  return { body, readbackOnly: true, ...NOTHING_DEFERRED };
+}
+
+/**
+ * Step 13: a delegation the request carries must be live now, for this buyer,
+ * seller, Listing pin and job, and must outlast the request; no deadline is
+ * needed, as no Agreement exists. A direct request carries none. Verifier
+ * failures other than scope and time (binding, profile, authority) propagate
+ * unchanged. Returns the delegation's expiry, or `null`.
+ */
+async function admitPreAgreementDelegation({ c, request, delegation, listingPin }: RequestAdmissionPrefix): Promise<number | null> {
+  if (!delegation) return null;
+  const scope = { binding: c.binding, local: c.local, buyer: request.buyer, seller: request.seller, listingPin, jobId: request.jobId, time: c.now, allowExpired: false };
+  const { expiresAt } = await verifySellerSessionDelegation(readmittedDelegation(delegation), scope);
+  if (request.expiresAt > expiresAt) fail("peer_delegation_expired", 408);
+  return expiresAt;
+}
+
+/** Step 14: new work needs `ready`; on the context route the host's `accepted` also lets a retained admission continue while it is false. */
+function admitPreAgreementReadiness(request: WireRequestPayload, c: RequestCheck, retained: JsonRecord): void {
+  const context = request.path === DACS_SELLER_HTTP_PATHS.context;
+  if (typeof c.ready !== "boolean") fail("seller_readiness_required", 500);
+  if (context && typeof retained.accepted !== "boolean") fail("seller_retained_agreement_required", 500);
+  if (!c.ready && !(context && retained.accepted === true)) fail("seller_not_ready", 503);
+}
+
+/**
+ * Admit a challenge or context request before any Agreement exists (K2): the
+ * same binding, exchange, Listing and retained checks as `checkWireRequest`,
+ * then the delegation it carries (live, in scope, outliving the request; direct
+ * requests carry none unless `requireDelegation` is set), the context route's
+ * journal handle, then readiness. Admission writes nothing and never reads
+ * back under an expired delegation. On the context route `reserve()` makes the
+ * journal reservation after the host's accounting.
+ * @throws the first failing step's refusal (`wire_input_invalid` for a `route`
+ * that is not the request's path); a verifier failure keeps its own code and cause.
+ */
+export async function admitPreAgreementRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: PreAgreementCheck): Promise<AdmittedPreAgreementRequest> {
+  const prefix = await requestAdmissionPrefix(envelope, check, true);
+  const { c, request, retained, body, startedAt } = prefix;
+  const delegationExpiresAt = await admitPreAgreementDelegation(prefix);
+  const store = request.path === DACS_SELLER_HTTP_PATHS.context ? journalStore(c.requestJournal) : null;
+  admitPreAgreementReadiness(request, c, retained);
+  if (store === null) return Object.freeze({ route: "contextChallenge", body, delegationExpiresAt });
+  return Object.freeze({ route: "context", body, delegationExpiresAt, reserve: deferredReservation(request, c, store, delegationExpiresAt, startedAt).reserve });
+}
+
+/** Admit an opened request (admitWireRequest) and return its body and, on an effect route, `reserve()`: nothing is journaled until the host calls it. */
+export async function checkWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): Promise<CheckedWireRequest> {
+  const { body, readbackOnly, reserve } = await admitWireRequest(envelope, check);
+  return { body, readbackOnly, reserve };
+}
+
+/**
+ * Admit an opened request as checkWireRequest does, then run the re-check `reserve()` begins with, and return without reserving or publishing anything: for a
+ * host answering from its own retained state, such as a completed outcome it re-signs. A refusal keeps its own code and cause; success records no nonce key,
+ * so the same signed request can be answered again until it expires.
+ */
+export async function authorizeWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): Promise<Pick<CheckedWireRequest, "body" | "readbackOnly">> {
+  const { body, readbackOnly, authorize } = await admitWireRequest(envelope, check);
+  await authorize?.();
+  return { body, readbackOnly };
 }
 
 /**

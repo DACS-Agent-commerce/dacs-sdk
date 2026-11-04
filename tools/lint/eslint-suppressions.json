@@ -41,7 +41,7 @@
   },
   "packages/dacs-client/src/dacs/protocol-purchases.mjs": {
     "no-unused-vars": {
-      "count": 4
+      "count": 3
     }
   },
   "packages/dacs-client/src/dacs/purchase-protocol.mjs": {
@@ -87,19 +87,14 @@
       "count": 1
     }
   },
-  "packages/dacs-client/src/seams/purchase-store-not-wired.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "packages/dacs-client/src/seams/seller-integration-not-wired.mjs": {
     "no-unused-vars": {
       "count": 4
     }
   },
-  "packages/dacs-client/src/seams/wallet-actions-not-wired.mjs": {
-    "no-unused-vars": {
-      "count": 2
+  "packages/dacs-client/src/util/sqlite-statement-boundary.mjs": {
+    "no-unsafe-finally": {
+      "count": 1
     }
   },
   "packages/dacs-client/src/wallet/devnet-native-transport.mjs": {
@@ -110,6 +105,16 @@
   "packages/dacs-client/test/buyer-chain-indeterminate.test.mjs": {
     "no-unused-vars": {
       "count": 1
+    }
+  },
+  "packages/dacs-client/test/d11-import-boundary.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/d11-seam-parameters.test.mjs": {
+    "require-yield": {
+      "count": 2
     }
   },
   "packages/dacs-client/test/fixtures/authorization-server.pre-dcr-logout.mjs": {
@@ -123,6 +128,11 @@
   "packages/dacs-client/test/fixtures/seller-durable-state.main-06958bb.mjs": {
     "no-unused-vars": {
       "count": 2
+    }
+  },
+  "packages/dacs-client/test/guarded-sqlite.test.mjs": {
+    "no-unused-vars": {
+      "count": 3
     }
   },
   "packages/dacs-client/test/helpers/commitment-node-junk.mjs": {
@@ -165,9 +175,30 @@
       "count": 1
     }
   },
+  "packages/dacs-client/test/host-observations.test.mjs": {
+    "getter-return": {
+      "count": 1
+    },
+    "no-dupe-keys": {
+      "count": 1
+    }
+  },
+  "packages/dacs-client/test/purchase-tx-results.test.mjs": {
+    "getter-return": {
+      "count": 1
+    }
+  },
   "packages/dacs-client/test/readback-review-decisions.test.mjs": {
     "no-unused-vars": {
       "count": 1
+    }
+  },
+  "packages/dacs-client/test/sqlite-statement-boundary-regressions.test.mjs": {
+    "no-undef": {
+      "count": 1
+    },
+    "require-yield": {
+      "count": 6
     }
   },
   "packages/dacs-client/test/sweep-contracts.test.mjs": {
@@ -205,9 +236,233 @@
       "count": 3
     }
   },
+  "packages/dacs-seller/src/dacs/seller-agent.mjs": {
+    "no-unused-vars": {
+      "count": 14
+    }
+  },
+  "packages/dacs-seller/src/dacs/seller-context-route.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    },
+    "no-useless-assignment": {
+      "count": 3
+    }
+  },
+  "packages/dacs-seller/src/dacs/seller-durable-state.mjs": {
+    "no-unsafe-finally": {
+      "count": 1
+    },
+    "no-unused-vars": {
+      "count": 4
+    }
+  },
+  "packages/dacs-seller/src/dacs/seller-transport-auth.mjs": {
+    "no-unused-vars": {
+      "count": 6
+    }
+  },
+  "packages/dacs-seller/src/dacs/session-admission.mjs": {
+    "no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-seller/src/dacs/session-challenge-limits.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/src/devnet-demo/agreement-context.mjs": {
+    "no-unused-vars": {
+      "count": 6
+    }
+  },
+  "packages/dacs-seller/src/devnet-demo/artifact-anchor.mjs": {
+    "no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-seller/src/devnet-demo/operator-custody.mjs": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/src/devnet-demo/seller-state-lock.mjs": {
+    "no-useless-assignment": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/src/mcp/seller-content.mjs": {
+    "no-misleading-character-class": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/agent-construction.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/approval-ledger.test.mjs": {
+    "no-loss-of-precision": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/artifact-sdk-admission.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/bilateral-vet.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/context-compensation.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/d5-admission.test.mjs": {
+    "no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-seller/test/d5-challenge-retention.test.mjs": {
+    "getter-return": {
+      "count": 2
+    },
+    "no-unused-vars": {
+      "count": 5
+    }
+  },
+  "packages/dacs-seller/test/d5-limits-before-effects.test.mjs": {
+    "no-unused-vars": {
+      "count": 6
+    }
+  },
+  "packages/dacs-seller/test/deliverable-wallet-journal.test.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-seller/test/devnet-storage-write-recovery.test.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-seller/test/helpers/d5-http-fixture.mjs": {
+    "no-unused-vars": {
+      "count": 7
+    }
+  },
+  "packages/dacs-seller/test/helpers/finalized-commitment-reader.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/helpers/installed-seller-host.mjs": {
+    "no-unused-vars": {
+      "count": 6
+    }
+  },
+  "packages/dacs-seller/test/helpers/proposal-admission-fixture.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/helpers/seller-agent-isolated-fixture.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/host-lifecycle.test.mjs": {
+    "no-unused-vars": {
+      "count": 3
+    }
+  },
+  "packages/dacs-seller/test/payment-evidence-wallet-journal.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/rail-session-admission.test.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-seller/test/seller-agent-contracts.test.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-seller/test/seller-host-native-delivery.test.mjs": {
+    "no-unused-vars": {
+      "count": 16
+    }
+  },
+  "packages/dacs-seller/test/seller-lifecycle-gates.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/seller-settlement-profile.test.mjs": {
+    "no-unused-vars": {
+      "count": 6
+    }
+  },
+  "packages/dacs-seller/test/seller-substrate-profile.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/seller-transport-auth.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/signed-listing.test.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "packages/dacs-seller/test/vet-lifecycle.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "packages/dacs-seller/test/vet-production.test.mjs": {
+    "no-unused-vars": {
+      "count": 5
+    }
+  },
+  "packages/dacs-seller/test/vetted-proposal.test.mjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "scripts/bounded-npm-http.cjs": {
+    "no-unused-vars": {
+      "count": 1
+    }
+  },
+  "scripts/release-checks.mjs": {
+    "array-callback-return": {
+      "count": 1
+    }
+  },
   "scripts/verify-pr303-test-effectiveness.mjs": {
     "no-useless-assignment": {
       "count": 1
+    }
+  },
+  "scripts/wire/adapt-tp1-revision-fixture.mjs": {
+    "no-unused-vars": {
+      "count": 2
+    }
+  },
+  "scripts/wire/generate-wire-vectors.mjs": {
+    "no-unused-vars": {
+      "count": 5
     }
   },
   "src/agent/compositeVerification.ts": {
@@ -280,6 +535,11 @@
       "count": 1
     }
   },
+  "src/wire/journal.ts": {
+    "no-unsafe-finally": {
+      "count": 1
+    }
+  },
   "test/agent/fencedSessionStore.test.ts": {
     "no-useless-assignment": {
       "count": 1
@@ -315,9 +575,49 @@
       "count": 2
     }
   },
+  "test/scripts/bounded-npm-transport.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 3
+    }
+  },
+  "test/scripts/registry-container-disposition.test.ts": {
+    "no-regex-spaces": {
+      "count": 5
+    }
+  },
+  "test/scripts/registry-container-registry.test.ts": {
+    "no-regex-spaces": {
+      "count": 1
+    }
+  },
+  "test/scripts/transport-rebuild.test.ts": {
+    "@typescript-eslint/no-misused-promises": {
+      "count": 1
+    }
+  },
   "test/seller/durableBundleFinalization.test.ts": {
     "@typescript-eslint/no-misused-promises": {
       "count": 1
+    }
+  },
+  "test/version.test.ts": {
+    "no-regex-spaces": {
+      "count": 1
+    }
+  },
+  "test/wire/continuation.test.ts": {
+    "@typescript-eslint/await-thenable": {
+      "count": 58
+    }
+  },
+  "test/wire/launchReview.test.ts": {
+    "@typescript-eslint/await-thenable": {
+      "count": 27
+    }
+  },
+  "test/wire/requestJournal.test.ts": {
+    "@typescript-eslint/await-thenable": {
+      "count": 7
     }
   }
 }

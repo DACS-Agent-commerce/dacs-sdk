@@ -1,11 +1,14 @@
 // Run-time port of http-mcp/src/dacs/native-payment-evidence-consumer.mjs at
-// DACS-Agent-commerce/frontend 15fdf23: the whole file.
+// DACS-Agent-commerce/frontend 15fdf23: the whole file. Changed here:
+// checkNativePaymentEvidence checks the shape of the seller-signed artifact
+// before it reads any field.
 // Consumed, opt-in SOURCE/loopback capability. SDK intake's bft-final field
 // describes the fixture node's included view, NOT independent consensus.
 import { contentHash, createPayDemSellerObserver, paymentEvidenceAddress, verifySettlementEvidence } from '@kynesyslabs/dacs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_REPLY_BYTES } from './demos-sr2-adapter.mjs';
 import { agreementTerms, ed25519Deps } from './purchase-protocol.mjs';
 import { isDevnetSettlementTransport } from './devnet-source.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
 export const NATIVE_PAYMENT_EVIDENCE = 'sdk-pay-dem-intake-native-evidence/loopback-v1';
 const capabilities = new WeakSet();
@@ -16,11 +19,13 @@ export function nativePaymentEvidenceConfig(value) {
 }
 export const usesNativePaymentEvidence = (op) => op?.terms?.protocol?.nativePaymentEvidence === NATIVE_PAYMENT_EVIDENCE;
 
+const isPlainObject = (value) => value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
+
 // A signed CREATE projection is checked before the adapter clones it: a plain
 // object whose JSON fits one node reply. A projection that cannot serialize is
 // refused the same way.
 function boundedProjection(projection) {
-  if (projection === null || typeof projection !== 'object' || Object.getPrototypeOf(projection) !== Object.prototype) return false;
+  if (!isPlainObject(projection)) return false;
   try { return Buffer.byteLength(JSON.stringify(projection)) <= DEMOS_SR2_REPLY_BYTES; } catch { return false; }
 }
 
@@ -35,18 +40,37 @@ export function nativeEvidenceReadOutcome(record) {
     ...(record?.code ? { code: record.code } : {}) };
 }
 
+// The one payment transaction reference of a seller-signed artifact, or null
+// when paymentTxRefs is not an array of exactly one plain object.
+function singlePaymentTxRef(artifact) {
+  const refs = artifact.paymentTxRefs;
+  return Array.isArray(refs) && refs.length === 1 && isPlainObject(refs[0]) ? refs[0] : null;
+}
+
+// The content hash of an artifact, or null when it is not canonical JSON.
+function contentHashOrNull(artifact) {
+  try { return contentHash(artifact); } catch { return null; }
+}
+
 // Independently derive the verifier context from the retained signed Agreement
 // and the buyer's observed tuple; the seller's HTTP answer is not a verdict.
+// A malformed artifact (not a plain object, not hashable, or not carrying exactly
+// one plain-object payment reference) fails on scope; it never throws.
 export async function checkNativePaymentEvidence({ artifact, agreement, writer, txHash, blockNumber }) {
   const terms = agreementTerms(agreement);
   const address = paymentEvidenceAddress(agreement.jobId, terms.rail, terms.paymentPhaseIndex);
-  const ref = { anchor: { kind: 'storage-program', locator: address }, contentHash: contentHash(artifact) };
+  const scopeMismatch = { decision: 'fail', reasons: ['native-payment-evidence-scope-mismatch'] };
+  if (!isPlainObject(artifact)) return scopeMismatch;
+  const paymentTxRef = singlePaymentTxRef(artifact);
   if (writer !== terms.seller || artifact.jobId !== agreement.jobId || artifact.phase !== 'pay-dem'
-      || artifact.outcome !== 'success' || artifact.paymentTxRefs?.length !== 1
-      || artifact.paymentTxRefs[0].kind !== 'demos' || artifact.paymentTxRefs[0].txHash !== txHash
-      || artifact.paymentTxRefs[0].blockNumber !== blockNumber || artifact.paymentAmount?.amount !== terms.price.amount
+      || artifact.outcome !== 'success' || paymentTxRef === null
+      || paymentTxRef.kind !== 'demos' || paymentTxRef.txHash !== txHash
+      || paymentTxRef.blockNumber !== blockNumber || artifact.paymentAmount?.amount !== terms.price.amount
       || artifact.paymentAmount?.currency !== 'DEM' || artifact.settlementFinality?.model !== 'bft-final'
-      || artifact.signature?.signer !== writer) return { decision: 'fail', reasons: ['native-payment-evidence-scope-mismatch'] };
+      || artifact.signature?.signer !== writer) return scopeMismatch;
+  const artifactHash = contentHashOrNull(artifact);
+  if (artifactHash === null) return scopeMismatch;
+  const ref = { anchor: { kind: 'storage-program', locator: address }, contentHash: artifactHash };
   return verifySettlementEvidence(artifact, { orchestrator: writer,
     agreement: { amount: terms.price.amount, currency: terms.price.currency },
     rail: { railId: terms.rail, railType: 'demos-native', asset: 'DEM', assetSpec: { kind: 'native-dem' }, network: 'demos', networkSpec: { kind: 'demos' }, handler: 'pay-dem' },
@@ -58,6 +82,7 @@ export async function checkNativePaymentEvidence({ artifact, agreement, writer, 
 // key or Boolean authority. Tests call the unchanged packaged wallet bridge.
 // Reader and observer always use the actual pinned SDK/adapter on this origin.
 export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability = null, anchorEvidence, readSignedProjection, fetchImpl = globalThis.fetch, now = () => Date.now() }) {
+  if (anchorEvidence !== undefined) assertKitOperationAdmitted('createNativePaymentEvidenceConsumer');
   const rpc = new URL(rpcUrl);
   const source = sourceCapability !== null;
   if (source && (!isDevnetSettlementTransport(sourceCapability) || rpc.href !== sourceCapability.pins.endpoint)) throw new TypeError('native payment evidence requires the exact opaque SettlementEvidence source capability');

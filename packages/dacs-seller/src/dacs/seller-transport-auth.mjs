@@ -7,8 +7,10 @@ import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs
 import { dirname, isAbsolute } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
+import { isTp1WireProfile } from '@kynesyslabs/dacs/wire';
 import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
 export const SELLER_TRANSPORT_MAX_RESPONSE = 512 * 1024;
@@ -249,6 +251,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS peer_nonces (nonce TEXT PRIMARY KEY, request_hash TEXT NOT NULL, effect TEXT NOT NULL, status INTEGER, response TEXT);
     CREATE TABLE IF NOT EXISTS peer_nonce_retention (nonce TEXT PRIMARY KEY, buyer TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS peer_context_challenges (nonce TEXT PRIMARY KEY, job TEXT NOT NULL, buyer TEXT NOT NULL, scope TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, attempted INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY REFERENCES peer_jobs(job) ON DELETE CASCADE, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
     CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
     CREATE INDEX IF NOT EXISTS peer_nonces_effect ON peer_nonces(effect);`);
@@ -259,6 +262,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   }
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
+  // A purchase's TP-1 tuple, as the canonical text kept for its job.
+  const purchaseProfileText = (profile) => {
+    if (!isTp1WireProfile(profile)) fail('tp1_purchase_profile_mismatch', 500);
+    return canonicalize(profile);
+  };
+  const keptProfileText = (jobId) => get('SELECT profile FROM kit_purchase_profiles WHERE job = ?', jobId)?.profile ?? null;
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
   transaction(() => {
@@ -400,8 +409,18 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // runs only then, inside this transaction: starts(since, buyer?) counts
     // admission records newer than `since`. It returns the admission time or
     // throws a refusal, which rolls back every row of this request.
-    reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, contextDecision = false, verdict = null } = {}) {
+    // keepProfile is the TP-1 tuple of a wire reservation. Absent, nothing about the tuple is
+    // read or kept. Supplied, its shape is checked and the context step, which carries no
+    // purchase, is refused. Once the nonce is known not to conflict, and before any answer
+    // (cached, uncertain, retained, dry run or classify), an existing job must hold exactly that
+    // tuple; a job with none is refused too. A new job keeps it with its own row, in this
+    // transaction, once every capacity, rate and admission check has passed. Every refusal is
+    // tp1_purchase_profile_mismatch and rolls back the whole reservation. The kept tuple leaves
+    // with its job.
+    reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, contextDecision = false, verdict = null, keepProfile } = {}) {
       requireJobId(p?.jobId);
+      const profileText = keepProfile === undefined ? null : purchaseProfileText(keepProfile);
+      if (profileText !== null && p.path === CONTEXT) fail('tp1_purchase_profile_mismatch', 500);
       if (p.path === CONTEXT) {
         requireJobId(body?.scope?.jobId);
         if (body.scope.jobId !== p.jobId) fail('peer_job_mismatch', 409);
@@ -412,8 +431,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const requestHash = sha256Hex(canonicalize(p));
         const nonce = `${p.buyer}:${p.nonce}`;
         const previous = get('SELECT * FROM peer_nonces WHERE nonce = ?', nonce);
+        if (previous && previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
+        const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
+        // The tuple is not part of the request hash, so this comes before a repeated nonce's answer.
+        if (profileText !== null && job && keptProfileText(p.jobId) !== profileText) fail('tp1_purchase_profile_mismatch', 500);
         if (previous) {
-          if (previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
           // A definite earlier no-effect answer belongs to its own nonce,
           // even if a fresh attempt of the same command later succeeds.
           if (previous.response !== null && (previous.status < 500 || previous.effect === NO_EFFECT_KEY)) return { disposition: 'cached', status: previous.status, text: previous.response };
@@ -424,7 +446,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           return { disposition: 'uncertain' };
         }
         const context = canonicalize(requestIdentity(p));
-        const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
         const contextStep = p.path === CONTEXT;
         // The context step is checked against the job's parties and pin only:
         // its agreementHash slot is the context scope hash, not the Agreement.
@@ -473,7 +494,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
             get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
               OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${reclaimable}))`, time, time - nonceWindowMs, time).n >= maxRecords) fail('peer_store_capacity', 503);
         if (get('SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE buyer = ? AND created_at > ?', p.buyer, time - nonceWindowMs).n >= maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
-        const neededJobs = !job && !contextStep && !retained ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
+        const newJob = !job && !contextStep && !retained;
+        const neededJobs = newJob ? Math.max(0, get('SELECT COUNT(*) AS n FROM peer_jobs').n - maxJobs + 1) : 0;
         const retiredJobs = reclaimableJobs(neededJobs, undefined, time);
         if (retiredJobs.length < neededJobs) fail('peer_job_capacity', 503);
         const reclaimNonces=()=>{
@@ -516,7 +538,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         }
         reclaimNonces();
         if (creates) db.exec(CONTEXT_ADMISSIONS);
-        if (!job && !contextStep && !retained) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
+        if (newJob) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
+        if (newJob && profileText !== null) run('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)', p.jobId, profileText, time);
         run('INSERT INTO peer_nonces VALUES (?, ?, ?, NULL, NULL)', nonce, requestHash, effectKey);
         run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)', nonce, p.buyer, time, p.expiresAt);
         if (retained) {
@@ -539,8 +562,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     },
     // Read-only reserve: 'start' for new work, 'known' for journaled answers;
     // conflicts throw reserve's refusal. No mutations run; the transaction rolls back.
-    classify(p, body, { journaledOnly = false, admit = () => 0 } = {}) {
-      return this.reserve(p, body, { journaledOnly, admit, dryRun: true }).disposition === 'perform' ? 'start' : 'known';
+    classify(p, body, { journaledOnly = false, admit = () => 0, keepProfile } = {}) {
+      return this.reserve(p, body, { journaledOnly, admit, dryRun: true, keepProfile }).disposition === 'perform' ? 'start' : 'known';
+    },
+    // The TP-1 tuple kept for a job, or null when none was kept.
+    purchaseProfile(jobId) {
+      requireJobId(jobId);
+      const text = keptProfileText(jobId);
+      return text === null ? null : JSON.parse(text);
     },
     // The context step's pre-Agreement admission record for a job, or null:
     // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.
@@ -691,6 +720,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
 
 /** Create request validation and response signing over a supplied store; throw on invalid configuration. */
 export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = MAX_TRANSPORT_LIFETIME_MS, requireDelegation = false }) {
+  assertKitOperationAdmitted('createSellerTransportServerAuth');
   checkSigner(sellerSigner);
   if (!pinValid(listingPin) || !store?.reserve || !store?.finish || !uint(maxLifetimeMs) || maxLifetimeMs < 1 || maxLifetimeMs > MAX_TRANSPORT_LIFETIME_MS) throw new Error('seller transport configuration is invalid');
   if (typeof requireDelegation !== 'boolean' || store.journaledOnlyReserve !== true) throw new Error('seller delegation configuration is invalid');
@@ -801,6 +831,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
 // resolveJob comes from the approved Agreement, never an HTTP response.
 /** Create signed requests and bound response verification; throw on invalid configuration. */
 export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, delegation, seller, resolveJob, now = () => Date.now(), lifetimeMs = DEFAULT_TRANSPORT_LIFETIME_MS, nonce = () => randomBytes(24).toString('base64url') }) {
+  assertKitOperationAdmitted('createSellerTransportClientAuth');
   const signing = sessionSigner ?? buyerSigner;
   checkSigner(signing);
   if (sessionSigner && (buyerSigner || !delegation || signing.claim !== `did:demos:agent:${delegation.payload?.sessionPublicKey}`)) throw new Error('session signing key differs from the buyer delegation');

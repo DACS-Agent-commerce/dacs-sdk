@@ -1,4 +1,5 @@
 import { admitSessionChallenge } from './session-challenge-limits.mjs';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 // Opt-in host-local recovery for the SIMULATED seller adapter. This retains
 // seller-authenticated application context beside the pinned SDK stores. It
 // never obtains a buyer key or reconstructs facts from a cached HTTP answer.
@@ -13,7 +14,8 @@ import { anchorWriteMessage, canonicalSignature, verifyFixtureRecord } from './f
 import { leaseFile, leaseHolderState, PROCESS_LEASE_ID as PROCESS, PROCESS_NAMESPACE as NAMESPACE, ProcessLeaseError, takeLease as takeProcessLease } from './process-lease.mjs';
 
 const CHALLENGE_PAGE_SIZE=128;
-const DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
+/** The domain every local journal-integrity signature starts with. */
+export const SELLER_STATE_SIGNING_DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const same = (a, b) => canonicalize(a) === canonicalize(b);
 const droppedByJson = (v) => v === undefined || typeof v === 'function' || typeof v === 'symbol';
@@ -185,7 +187,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
   }
   function authenticated(kind, id, body) {
     const payload = { version: '1', kind, id, seller: signer.claim, listingPin: pin, body: clone(body) };
-    const bytes = Buffer.from(`${DOMAIN}${canonicalize(payload)}`);
+    const bytes = Buffer.from(`${SELLER_STATE_SIGNING_DOMAIN}${canonicalize(payload)}`);
     const signature = Buffer.from(signer.sign(bytes));
     if (signature.length !== 64 || !verify(null, bytes, key, signature)) fail('seller_state_signer_invalid');
     return JSON.stringify({ payload, signature: signature.toString('base64url') });
@@ -196,7 +198,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       const { payload: p, signature } = envelope;
       if (Object.keys(envelope).sort().join(',') !== 'payload,signature' || Object.keys(p).sort().join(',') !== 'body,id,kind,listingPin,seller,version' || p.version !== '1' || p.kind !== kind || p.id !== id || p.seller !== signer.claim || !same(p.listingPin, pin) || typeof signature !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(signature)) fail('seller_state_corrupt');
       const sig = Buffer.from(signature, 'base64url');
-      if (sig.toString('base64url') !== signature || !verify(null, Buffer.from(`${DOMAIN}${canonicalize(p)}`), key, sig)) fail('seller_state_corrupt');
+      if (sig.toString('base64url') !== signature || !verify(null, Buffer.from(`${SELLER_STATE_SIGNING_DOMAIN}${canonicalize(p)}`), key, sig)) fail('seller_state_corrupt');
       return clone(p.body);
     } catch { fail('seller_state_corrupt'); }
   }
@@ -606,6 +608,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // under the same fence. Without that, one signer failure would refuse
       // these bytes for good, a paid order's evidence included.
       signOnce(id, bytes) {
+        assertKitOperationAdmitted('signOnce');
         const bytesHash = sha256Hex(bytes), jobId = scopedJob();
         return transaction(() => {
           fence(jobId);
@@ -649,7 +652,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // address, the artifact size and the writer authorization. A kept intent
       // is never sent again: after it, any failure (a write refused before it
       // left this process included) holds the anchor, and recovery only reads.
-      async anchor({ jobId, logicalAddress, artifact, anchors, authorize }) {
+      async anchor(request) {
+        assertKitOperationAdmitted('anchor');
+        const { jobId, logicalAddress, artifact, anchors, authorize } = request;
         if (!isCanonicalJobId(jobId) || typeof logicalAddress !== 'string' || logicalAddress.length < 1 || logicalAddress.length > MAX_ANCHOR_ADDRESS_LENGTH) fail('seller_state_binding_invalid');
         const id = `anchor:${logicalAddress}`;
         const prior = transaction(() => { fence(jobId); return anchorRow(logicalAddress); });
@@ -675,12 +680,15 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // Read back and authenticate the anchor `anchor:<address>` again, completed
       // or not, and record its receipt. Returns the receipt; throws a coded
       // SellerRecoveryError (seller_effect_missing, or the readback's code).
-      async reconcileAnchor(id, anchors) {
+      // With `record: false` the readback is authenticated and returned and
+      // nothing is signed or saved.
+      async reconcileAnchor(id, anchors, { record = true } = {}) {
         const prior = typeof id === 'string' && id.startsWith('anchor:') ? anchorRow(id.slice('anchor:'.length)) : null;
         if (!prior) fail('seller_effect_missing');
         const scoped = running.getStore()?.api === api;
         if (scoped) transaction(() => fence(prior.jobId));
         const receipt = await authenticatedReadback(anchors, prior);
+        if (!record) return receipt;
         // Inside an acquisition the update is fenced like every job-scoped
         // write. Unscoped (the lock-free reconcile) it only records an
         // authenticated readback of a retained intent, as before.
