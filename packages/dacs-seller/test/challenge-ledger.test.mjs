@@ -369,9 +369,14 @@ cardTest('T13', (t) => {
     w.control.now = T0 + LIFETIME + 1;
     if (reopened) w.reopen('generation-two');
     for (const buyer of [BUYER, EQUIVALENT]) assert.deepEqual(w.quiet(() => w.attempt(first.sessionNonce, { ...route, buyer })), { kind: 'continuation', accepted: record }, label);
-    const otherPath = operator ? 'context' : 'proposal';
-    for (const change of [{ buyer: OTHER }, { jobId: job('other') }, { challengeScopeHash: hash('other scope') }, { presentationHash: hash('other bundle') }, { path: otherPath }]) {
-      assert.deepEqual(w.quiet(() => w.attempt(first.sessionNonce, { ...route, ...change })), refused('context_challenge_consumed'), `${label} ${Object.keys(change)}`);
+    // The one other path: the proposal continues a route row's context-step acceptance, read only. An operator row has none.
+    const otherPath = { path: operator ? 'context' : 'proposal' };
+    const answerOnOtherPath = operator ? refused('context_challenge_consumed') : { kind: 'continuation', accepted: record };
+    for (const buyer of [BUYER, EQUIVALENT]) assert.deepEqual(w.quiet(() => w.attempt(first.sessionNonce, { ...route, ...otherPath, buyer })), answerOnOtherPath, `${label} other path`);
+    for (const change of [{ buyer: OTHER }, { jobId: job('other') }, { challengeScopeHash: hash('other scope') }, { presentationHash: hash('other bundle') }]) {
+      for (const path of [route.path, otherPath.path]) {
+        assert.deepEqual(w.quiet(() => w.attempt(first.sessionNonce, { ...route, ...change, path })), refused('context_challenge_consumed'), `${label} ${path} ${Object.keys(change)}`);
+      }
     }
     for (const buyer of [BUYER, EQUIVALENT, OTHER]) quietRefusal(w, () => issue(buyer), 'context_job_closed', 409);
     w.control.sessionState = () => 'finalised';
@@ -858,7 +863,8 @@ test('challenge-replay-answers-only-the-row-party', (t) => {
         'another buyer': [{ buyer: OTHER }, false],
         'another job': [{ jobId: job('another job') }, false],
         'another scope': [{ challengeScopeHash: hash('another scope') }, false],
-        'the other path': [{ path: origin === 'route' ? 'proposal' : 'context' }, false],
+        // Only a route row's context step is continued on the proposal path, and only while it validates or once accepted.
+        'the other path': [{ path: origin === 'route' ? 'proposal' : 'context' }, origin === 'route' && ['attempted', 'accepted'].includes(states[index])],
         'another presentation': [{ presentationHash: hash('another presentation') }, false],
         'no presentation': [{ presentationHash: undefined }, stored === undefined],
       };
@@ -867,6 +873,26 @@ test('challenge-replay-answers-only-the-row-party', (t) => {
         const before = w.rows();
         const result = w.quiet(() => w.ledger.attempt({ nonce, ...party, presentationHash: stored, ...change }));
         assert.deepEqual(result, answered ? answer : refused('context_challenge_consumed'), label);
+        assert.deepEqual(w.rows(), before, `${label} changes nothing`);
+      }
+    });
+  }
+});
+
+test('challenge-route-row-is-continued-on-proposal-only-for-its-party', (t) => {
+  for (const reopened of [false, true]) {
+    const w = world(t, { limits: { maxPerHour: 100, maxPerBuyerPerHour: 100 } });
+    const rows = ['attempted', 'accepted', 'failed by the validator'].map((state) => rowInState(w, 'route', state, state));
+    if (reopened) w.reopen('generation-two');
+    rows.forEach(({ nonce, party, answer }, index) => {
+      const continued = index < 2;
+      const onProposal = (change = {}) => w.quiet(() => w.ledger.attempt({ nonce, ...party, presentationHash: PRESENTATION, ...change, path: 'proposal' }));
+      for (const [name, change, answered] of [['its party', {}, true], ['an equivalent buyer', { buyer: EQUIVALENT }, true], ['another buyer', { buyer: OTHER }, false],
+        ['another job', { jobId: job('another job') }, false], ['another scope', { challengeScopeHash: hash('another scope') }, false],
+        ['another presentation', { presentationHash: hash('another presentation') }, false]]) {
+        const label = `${reopened ? 'reopened' : 'live'} ${['attempted', 'accepted', 'failed'][index]}: ${name}`;
+        const before = w.rows();
+        assert.deepEqual(onProposal(change), answered && continued ? answer : refused('context_challenge_consumed'), label);
         assert.deepEqual(w.rows(), before, `${label} changes nothing`);
       }
     });
