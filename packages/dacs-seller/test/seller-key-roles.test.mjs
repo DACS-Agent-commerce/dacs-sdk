@@ -4,7 +4,7 @@
 // signer call is counted on node:crypto's sign, under the key object.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -356,4 +356,12 @@ test('a caller who forgets to await the read-only signer fails loudly: sign retu
   assert.throws(() => Buffer.from(unawaited), TypeError, 'a sync consumer copying the result');
   assert.throws(() => verifiesUnder(SELLER, bytes, unawaited), TypeError, 'a verifier handed the Promise');
   assert.ok(verifiesUnder(SELLER, bytes, await unawaited), 'awaited, the same call yields verifying signature bytes');
+});
+
+test('the README and the openSellerKey doc comment both say minting a read-only role and its sign return Promises to await', () => {
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  const source = readFileSync(new URL('../src/seller-key.mjs', import.meta.url), 'utf8').replace(/\s+/g, ' ');
+  assert.match(readme, /`readOnlyAnswerSigner\(\.\.\.\)`, which returns a Promise of a single-use signer/);
+  assert.match(readme, /`sign` returns a Promise of the signature \(always `await` both/);
+  assert.match(source, /`readOnlyAnswerSigner` returns a Promise of `\{ claim, sign\(bytes\) \}` whose `sign` returns a Promise of the signature: await both/);
 });
