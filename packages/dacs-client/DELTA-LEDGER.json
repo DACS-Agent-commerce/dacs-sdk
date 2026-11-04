@@ -5901,6 +5901,17 @@
           "after": "d0e6acf2d424fe03affaff39805f48f2d49e46eb"
         }
       ]
+    },
+    {
+      "delta": "D18",
+      "subject": "delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/bound-terms-mismatch.test.mjs",
+          "before": null,
+          "after": "065eeb0112947f2736a21250173b49ecac6e0393"
+        }
+      ]
     }
   ]
 }

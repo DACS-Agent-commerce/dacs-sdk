@@ -980,6 +980,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 88abfb10c132141730d27792596b73899fe34400 |
 | WF | delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | d0e6acf2d424fe03affaff39805f48f2d49e46eb |
+| D18 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/bound-terms-mismatch.test.mjs:1` | 065eeb0112947f2736a21250173b49ecac6e0393 |
 
 ## Complete commit and file inventory
 
@@ -3080,6 +3082,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/test/bound-terms-mismatch.test.mjs:1` |
 
 ## Original moved files
 
