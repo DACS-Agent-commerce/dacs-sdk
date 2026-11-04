@@ -623,6 +623,8 @@ test("the held private snapshot's preparation inventory cannot admit a new packe
   assert.ok(damaged.errors.includes(identityReason), "unexpected source and packed identity defects keep one package prefix");
   await writeFile(join(dir, "package.json"), heldManifest);
   await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
+  // The held manifest lists its packed files, so the new path must be listed to be packed.
+  await changeManifest(root, packages[2], { files: [...(JSON.parse(heldManifest).files ?? []), "unreviewed.mjs"] });
   const changed = await prepare(root, join(root, "changed"), () => {});
   assert.ok(changed.errors.some(e => e.includes("outside allow-list")));
   assert.equal(changed.artifacts.length, 4);
