@@ -7,7 +7,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { testWallet, NOW, JOB } from './helpers/protocol-fixture.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
-import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 import * as listingApi from '../src/dacs/listing.mjs';
 import { agreementInput, listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
@@ -36,7 +35,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
   const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-')));
-  const store = withFixtureProfile(seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW }));
+  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [];
   let proposalCalls = 0;
@@ -94,7 +93,7 @@ test('a held answer after the evidence checkpoint runs the agent again on a fres
 // Other routes stay read-only; only unstarted payment claims may be released.
 test('the transport store permits retained retries for payment claims and proposals, with payment-only release', (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-store-')));
-  const store = withFixtureProfile(seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW }));
+  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const jobId = JOB, reservation = { disposition: 'uncertain', effectKey: 'TEST-effect', owner: 'TEST-owner' };
   for (const path of ['/dacs/v1/commitments', '/dacs/v1/commitments/signature', '/dacs/v1/bundles/buyer-copy']) {
@@ -145,7 +144,7 @@ async function delegatedWorld(t, answers, publication = null) {
     listingPin: pin, jobId, notBefore: time - 1000, expiresAt: Math.min(time + 600000, deadline) };
   const delegation = { payload, signature: buyerKey.sign(sellerSessionDelegationSigningBytes(payload)).toString('base64url') };
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-delegated-')));
-  const store = withFixtureProfile(seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'), now: clock }));
+  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'), now: clock });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [], reconciles = [];
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: () => structuredClone(plan.draft),

@@ -5,7 +5,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
-import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 const { createSellerTransportClientAuth, createSellerTransportServerAuth, createSellerTransportStore, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
 const buyer = 'did:demos:agent:' + 'a'.repeat(64), seller = 'did:demos:agent:' + 'b'.repeat(64);
 const HOUR = 3600000;
@@ -19,7 +18,7 @@ function world(t, options = {}) {
   let time = 1800000000000, store;
   const config = { path, now: () => time, maxRecords: 1,
     contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId], ...options };
-  const reopen = (options) => { store?.close(); store = withFixtureProfile(createSellerTransportStore({ ...config, ...options })); return store; };
+  const reopen = (options) => { store?.close(); store = createSellerTransportStore({ ...config, ...options }); return store; };
   reopen(); t.after(() => store.close());
   const issue = (jobId) => store.issueContextChallenge({ jobId, buyer }, { jobId, buyer }, { maxPerBuyer: 1, maxGlobal: 1, admit: () => time });
   const count = table => { const db = new DatabaseSync(path, { readonly: true }); try { return db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n; } finally { db.close(); } };
@@ -725,7 +724,7 @@ test('buyer nonce quota survives reopen and nonce cleanup until the full rate wi
   const first = request(w, 0, { expiresAt: w.now() + 10 });
   w.store.finish(w.store.reserve(first, {}), 409, '{}', { noEffect: true }); w.reopen();
   noMutations(() => assert.throws(() => w.store.classify(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' }));
-  const secondHandle = withFixtureProfile(createSellerTransportStore({ ...options, path: w.path, now: w.now }));
+  const secondHandle = createSellerTransportStore({ ...options, path: w.path, now: w.now });
   try { assert.throws(() => secondHandle.reserve(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' }); }
   finally { secondHandle.close(); }
   w.advance(20);

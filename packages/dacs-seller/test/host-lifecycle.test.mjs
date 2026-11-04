@@ -158,6 +158,18 @@ test('host close destroys a connection that never finishes its request headers',
  }finally{socket.destroy();}
 });
 
+test('a class-instance tp1Network whose connection() reads its own private field answers a signed proposal, state read and commitment, each signed and verified by the buyer',async t=>{
+ const f=await fixture(t),network=testNetwork(),receivers=[];
+ class OperatorNetwork{#current=network.connection();connection(){receivers.push(this);return {...this.#current};}readAuthority(scope){return network.readAuthority(scope);}}
+ const tp1Network=new OperatorNetwork(),host=await f.start({tp1Network}),request=await f.proposal(host),client=f.client(host,request);
+ const reads=[receivers.length];
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');reads.push(receivers.length);
+ assert.equal(typeof await client.agreementState(request.transportIdentity),'object');reads.push(receivers.length);
+ await anchorAgreement(f,request,answer);
+ assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');reads.push(receivers.length);
+ for(let i=1;i<reads.length;i++)assert.ok(reads[i]-reads[i-1]>=2,`request ${i} read the connection again`);
+ assert.ok(receivers.every(receiver=>receiver===tp1Network),'every read ran on tp1Network');
+});
 test('wrapped native artifact readbacks keep their capability receiver',async t=>{
  const f=await fixture(t),native=f.native;
  const artifactAnchor={...native,reads:0,verifies:0,

@@ -23,7 +23,7 @@ import { wireBuyer } from './helpers/wire-buyer.mjs';
 import { agreementInput, listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
-import { retainedFor } from '../src/dacs/seller-wire-requests.mjs';
+import { WIRE_ROUTE_PATHS, createWireContext, wireAuthenticator } from '../src/dacs/seller-wire-requests.mjs';
 import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportServerAuth, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
 
 const PATHS = DACS_SELLER_HTTP_PATHS;
@@ -76,8 +76,8 @@ async function statementsDuring(work) {
 function stubAgent() {
   const drafts = new Map();
   const agent = {
-    claim: seller.claim, listingPin: PIN, retains: false, credit: () => {}, onWork: () => {}, answer: undefined,
-    calls: { proposals: 0, commits: 0, states: 0, reconciled: 0, payments: 0 },
+    claim: seller.claim, listingPin: PIN, retains: false, credit: () => {}, onWork: () => {}, answer: undefined, fenced: undefined,
+    calls: { proposals: 0, commits: 0, signatureCommits: 0, states: 0, reconciled: 0, payments: 0 },
     transportAgreementOf: (jobId) => structuredClone(drafts.get(jobId) ?? null),
     retainsProposalWork: (jobId) => agent.retains && drafts.has(jobId),
     assertSettlementCredit: (jobId) => agent.credit(jobId),
@@ -86,9 +86,12 @@ function stubAgent() {
       agent.onWork('proposal', body);
       transport?.check();
       drafts.set(body.transportIdentity.jobId, body.proposal.plan.draft);
+      // As the real agent does, an answer may be settled inside the job fence (`fenced`) before the route returns.
+      if (agent.fenced !== undefined) transport.settle({ status: 200, value: agent.fenced });
       return agent.answer ? agent.answer() : { disposition: 'complete', contribution: { signed: true } };
     },
     commit: async (body) => { agent.calls.commits++; agent.onWork('commit', body); return agent.answer ? agent.answer() : { status: 'committed', jobId: body.jobId }; },
+    commitOnSignature: async (body) => { agent.calls.signatureCommits++; return { status: 'committed', jobId: body.jobId }; },
     readCommitment: async ({ jobId }) => ({ status: 'committed', jobId }),
     agreementState: (identity) => { agent.calls.states++; return { proposal: null, contribution: null, jobId: identity.jobId }; },
     submitPayment: async () => { agent.calls.payments++; return { status: 'payment-evidenced' }; },
@@ -102,7 +105,7 @@ function stubAgent() {
 }
 
 /** One seller: a transport store, a bound profile, the wire journal and the handler, with a buyer that signs for it. */
-async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader() } = {}) {
+async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader(), commitOnSignature = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-routes-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   mkdirSync(join(directory, 'transport'), { mode: 0o700 });
@@ -138,9 +141,8 @@ async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader()
     state.journals.push(journalDirectory);
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: JOURNAL_LEASE_MS, clock });
     const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: PIN, store, now: clock });
-    const wire = { binding: buyerWire.binding, connection, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, requireDelegation: false,
-      retainedFor: (input) => retainedFor(agent, input) };
-    Object.assign(handle, { store, handler: createSellerHttpHandler(agent, { authentication, wire }) });
+    const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false });
+    Object.assign(handle, { store, authentication, wire, handler: createSellerHttpHandler(agent, { authentication, wire, commitOnSignature }) });
   };
   mount();
   t.after(() => handle.store.close());
@@ -216,8 +218,6 @@ test('P11a1-T04: a new purchase keeps its tuple inside the reservation transacti
   const refused = await other.post();
   assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 500, error: 'tp1_purchase_profile_mismatch' });
   assert.deepEqual({ calls: w.agent.calls.proposals, rows: w.rows() }, before, 'no agent call and no row');
-  const request = (await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash })).payload;
-  assert.throws(() => w.handle.store.reserve(request, job.body), { code: 'tp1_purchase_profile_mismatch', status: 500 }, 'the old store refuses an absent tuple on a moved route');
 });
 
 test('P11a1-T05: answers of null, an array, a number, a boolean, a string, malformed Unicode, malformed JSON, duplicate members and 512 KiB + 1 byte are each refused outgoing_body_rejected with no stored terminal answer; an object of exactly 512 KiB and an ordinary object are stored as given, and sign and verify unchanged on replay', async (t) => {
@@ -233,9 +233,9 @@ test('P11a1-T05: answers of null, an array, a number, a boolean, a string, malfo
   assert.equal(w.rows().peer_effects, refusedAnswers.length);
   const db = new DatabaseSync(w.storePath, { readonly: true });
   try { assert.deepEqual(db.prepare("SELECT state FROM peer_effects WHERE state = 'complete'").all(), [], 'no refused answer became a terminal entry'); } finally { db.close(); }
-  const { admitAnswerText } = await import('../src/dacs/seller-wire-requests.mjs');
+  const { encode } = wireAuthenticator(w.handle.wire, w.agent, w.handle.authentication);
   for (const text of ['\ud800', '{"a":', '{"a":1,"a":2}', '{"a":1,"\\u0061":2}', '[1]', 'null']) {
-    assert.throws(() => admitAnswerText(text), { code: 'outgoing_body_rejected', status: 500 }, JSON.stringify(text));
+    assert.throws(() => encode(text), { code: 'outgoing_body_rejected', status: 500 }, JSON.stringify(text));
   }
   const exact = { pad: '' };
   exact.pad = 'x'.repeat(MAX_RESPONSE_BYTES - Buffer.byteLength(JSON.stringify(exact)));
@@ -498,29 +498,87 @@ test('P11a1-T19: no request creates a wire journal file in this PR. Non-pre-Agre
   assert.deepEqual(w.journalFiles(), [], 'no wire journal file exists');
 });
 
-test('a state read for a job the agent holds with no kept tuple is refused tp1_purchase_profile_mismatch (missing), signed, with no agent call and nothing written; a read for a job with its tuple is answered, also after restart', async (t) => {
-  const w = await world(t);
-  const kept = await proposeJob(w, 'tuple-kept'), untupled = await proposeJob(w, 'tuple-missing');
+test('one tuple gate on every wire route: a job the agent holds with no kept tuple, with no store row or a row from before tuples were kept, is refused tp1_purchase_profile_mismatch, signed, with no agent call and nothing written, also after restart and under a delegation; a fresh proposal keeps exactly one tuple and a job with its tuple is answered', async (t) => {
+  const w = await world(t, { commitOnSignature: true });
+  const kept = await proposeJob(w, 'gate-kept');
   assert.equal((await kept.post()).status, 200);
-  // The agent retained this job without the store ever keeping its tuple, as a job retained before tuples were kept.
-  await w.agent.receiveProposal(untupled.body);
-  assert.equal(w.handle.store.purchaseProfile(untupled.jobId), null);
-  const read = (job, options) => w.post(PATHS.state, identityBody(job.jobId, job.agreementHash), { jobId: job.jobId, agreementHash: job.agreementHash, ...options });
-  const expired = () => ({ delegation: w.delegationFor({ jobId: untupled.jobId, expiresAt: NOW - 1 }), signer: SESSION });
-  const live = () => ({ delegation: w.delegationFor({ jobId: untupled.jobId, expiresAt: untupled.deadline }), signer: SESSION });
+  assert.equal(w.rows().kit_purchase_profiles, 1, 'the fresh proposal kept exactly one tuple');
+  const rowless = await proposeJob(w, 'gate-rowless'), legacy = await proposeJob(w, 'gate-legacy');
+  // The agent holds both jobs while the store keeps no tuple for them: one has no store row, one was reserved before tuples were kept.
+  const legacyRequest = (await w.buyerWire.signRequest(PATHS.proposals, legacy.body, { jobId: legacy.jobId, agreementHash: legacy.agreementHash })).payload;
+  w.handle.store.finish(w.handle.store.reserve(legacyRequest, legacy.body), 200, '{}', {});
+  for (const job of [rowless, legacy]) await w.agent.receiveProposal(job.body);
+  const routes = [[PATHS.proposals, (job) => job.body], [PATHS.state, (job) => identityBody(job.jobId, job.agreementHash)], [PATHS.commitments, (job) => ({ jobId: job.jobId })], [PATHS.commitmentSignature, (job) => ({ jobId: job.jobId })]];
+  assert.deepEqual(routes.map(([path]) => path), [...WIRE_ROUTE_PATHS], 'every wire route is covered');
+  const delegated = (job) => ({ delegation: w.delegationFor({ jobId: job.jobId, expiresAt: job.deadline }), signer: SESSION });
   for (const reopen of [false, true]) {
     if (reopen) w.reopen();
-    const rowsBefore = w.rows(), statesBefore = w.agent.calls.states;
-    for (const [label, options] of [['a plain read', {}], ['a live delegation', live()], ['an expired delegation read back', expired()]]) {
-      const refused = await read(untupled, options);
-      assert.deepEqual({ status: refused.status, error: refused.body.error, signed: refused.signed }, { status: 500, error: 'tp1_purchase_profile_mismatch', signed: true }, `${label}${reopen ? ' after restart' : ''}`);
+    for (const job of [rowless, legacy]) for (const [path, bodyOf] of routes) for (const options of [{}, delegated(job)]) {
+      const label = `${path}, ${job === rowless ? 'no store row' : 'a row with no tuple'}${options.delegation ? ', delegated' : ''}${reopen ? ', after restart' : ''}`;
+      const rowsBefore = w.rows(), effectsBefore = w.effects();
+      const refused = await w.post(path, bodyOf(job), { jobId: job.jobId, agreementHash: job.agreementHash, ...options });
+      assert.deepEqual({ status: refused.status, error: refused.body.error, signed: refused.signed }, { status: 500, error: 'tp1_purchase_profile_mismatch', signed: true }, label);
       await w.verified(refused);
+      assert.equal(w.effects(), effectsBefore, `${label}: no agent call`);
+      assert.deepEqual(w.rows(), rowsBefore, `${label}: nothing written`);
     }
-    assert.equal(w.agent.calls.states, statesBefore, 'the agent answered none of them');
-    assert.deepEqual(w.rows(), rowsBefore, 'nothing was written');
-    assert.equal((await read(kept)).status, 200, 'a job with its kept tuple is answered');
+    assert.equal((await w.post(PATHS.state, identityBody(kept.jobId, kept.agreementHash), { jobId: kept.jobId, agreementHash: kept.agreementHash })).status, 200, 'a job with its kept tuple is answered');
   }
-  assert.equal(w.handle.store.purchaseProfile(untupled.jobId), null, 'the refused read kept no tuple');
+  assert.deepEqual([rowless, legacy].map((job) => w.handle.store.purchaseProfile(job.jobId)), [null, null], 'no refused request kept a tuple');
+});
+
+test('with commitOnSignature, commitments/signature is a wire route: a signed request is answered signed, a job the seller holds nothing for gets the signed 404, and a replay is answered from the cache', async (t) => {
+  const w = await world(t, { commitOnSignature: true });
+  const job = await proposeJob(w, 'signature-route');
+  assert.equal((await job.post()).status, 200);
+  const signed = await w.buyerWire.signRequest(PATHS.commitmentSignature, { jobId: job.jobId }, { jobId: job.jobId, agreementHash: job.agreementHash });
+  const first = await w.send(PATHS.commitmentSignature, signed);
+  assert.deepEqual({ status: first.status, body: first.body }, { status: 200, body: { status: 'committed', jobId: job.jobId } });
+  await w.verified(first);
+  const calls = w.agent.calls.signatureCommits;
+  const replay = await w.send(PATHS.commitmentSignature, signed);
+  assert.equal(replay.status, 200);
+  await w.verified(replay);
+  assert.equal(w.agent.calls.signatureCommits, calls, 'the replay ran no second commitment');
+  const unknown = jobFor('signature-unknown');
+  const missing = await w.post(PATHS.commitmentSignature, { jobId: unknown }, { jobId: unknown, agreementHash: derive('signature-unknown') });
+  assert.deepEqual({ status: missing.status, error: missing.body.error, signed: missing.signed }, { status: 404, error: 'peer_unknown_job', signed: true });
+  await w.verified(missing);
+  const unmounted = await world(t);
+  const off = await unmounted.post(PATHS.commitmentSignature, { jobId: unknown }, { jobId: unknown, agreementHash: derive('signature-unknown') });
+  assert.deepEqual({ status: off.status, error: off.body.error, signed: off.signed }, { status: 404, error: 'not_found', signed: false }, 'without commitOnSignature the route is not mounted');
+});
+
+test('a fenced settlement whose answer the wire cannot sign is refused outgoing_body_rejected, signed, and its effect stays uncertain: a retry reconciles instead of running again', async (t) => {
+  const w = await world(t);
+  const job = await proposeJob(w, 'fenced-unsignable');
+  w.agent.fenced = null;
+  const refused = await job.post();
+  assert.deepEqual({ status: refused.status, error: refused.body.error, signed: refused.signed }, { status: 500, error: 'outgoing_body_rejected', signed: true });
+  await w.verified(refused);
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { assert.deepEqual(db.prepare("SELECT state FROM peer_effects WHERE state = 'complete'").all(), [], 'the unsignable answer is no terminal entry'); } finally { db.close(); }
+  w.agent.fenced = undefined;
+  const proposals = w.agent.calls.proposals;
+  const retried = await job.post();
+  assert.equal(retried.status, 200);
+  assert.deepEqual({ proposals: w.agent.calls.proposals, reconciled: w.agent.calls.reconciled }, { proposals, reconciled: 1 }, 'the retry reconciled the uncertain effect');
+});
+
+test('the wire context is checked where it is made and where the handler takes it: a member of the wrong kind, an unbranded copy, another delegation rule and another seller are each refused', async (t) => {
+  const w = await world(t);
+  const { binding, signer, journal, store } = w.handle.wire;
+  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false };
+  const wrongKinds = { connection: { tp1Network: { connection: 1 } }, ready: { ready: 'yes' }, now: { now: NOW }, signer: { signer: { claim: seller.claim } }, store: { store: {} },
+    agent: { agent: {} }, requireDelegation: { requireDelegation: 'no' }, binding: { binding: null }, journal: { journal: undefined } };
+  for (const [label, change] of Object.entries(wrongKinds)) assert.throws(() => createWireContext({ ...valid, ...change }), TypeError, label);
+  const handlerWith = (wire, authentication = w.handle.authentication) => createSellerHttpHandler(w.agent, { authentication, wire });
+  assert.throws(() => handlerWith({ ...w.handle.wire }), /createWireContext/, 'an unbranded copy');
+  const delegated = createSellerTransportServerAuth({ sellerSigner: SELLER, listingPin: PIN, store, now: w.clock, requireDelegation: true });
+  assert.throws(() => handlerWith(w.handle.wire, delegated), /same seller and delegation rule/, 'another delegation rule');
+  assert.throws(() => handlerWith(createWireContext({ ...valid, signer: BUYER })), /same seller and delegation rule/, 'another seller');
+  assert.throws(() => createSellerHttpHandler(w.agent, { wire: w.handle.wire }), /old authentication/, 'no old authentication');
+  assert.doesNotThrow(() => handlerWith(createWireContext(valid)));
 });
 
 test('P11a1-T20: the harness\'s old-domain proposal is refused; only the wire domain is accepted', async (t) => {

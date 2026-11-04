@@ -42,9 +42,6 @@ export const SELLER_CONTEXT_SCOPE_KEYS = Object.freeze(['source', 'wallet', 'job
 export const sellerContextChallengeScope = (value) => { requireJobId(value?.jobId); const { buyerBundleHash, ...scope } = value; return scope; };
 export const sellerContextScopeHash = (scope) => { requireJobId(scope?.jobId); return sha256Hex(canonicalize(scope)); };
 const READ_ROUTES = new Set([STATE, '/dacs/v1/bundles/buyer-copy']);
-// The routes the signed wire opens (seller-wire-requests.mjs). Their requests always bring the purchase's TP-1 tuple; the
-// context step keeps its legacy branch, and the routes still on the old auth follow in the next PR.
-const TUPLE_REQUIRED_ROUTES = new Set([PROPOSAL, STATE, '/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
 const exact = (a, b) => canonicalize(a) === canonicalize(b);
 const record = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const keys = (v, expected) => record(v) && Object.keys(v).length === expected.length && expected.every((k) => Object.hasOwn(v, k));
@@ -417,17 +414,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // admission records newer than `since`. It returns the admission time or
     // throws a refusal, which rolls back every row of this request.
     // keepProfile is the TP-1 tuple of a wire reservation. Absent, nothing about the tuple is
-    // read or kept. A route the signed wire opens refuses an absent tuple before anything is read.
-    // Supplied, its shape is checked and the context step, which carries no
+    // read or kept. Supplied, its shape is checked and the context step, which carries no
     // purchase, is refused. Once the nonce is known not to conflict, and before any answer
     // (cached, uncertain, retained, dry run or classify), an existing job must hold exactly that
     // tuple; a job with none is refused too. A new job keeps it with its own row, in this
     // transaction, once every capacity, rate and admission check has passed. Every refusal is
     // tp1_purchase_profile_mismatch and rolls back the whole reservation. The kept tuple leaves
     // with its job.
-
     reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, contextDecision = false, verdict = null, keepProfile } = {}) {
-      if (keepProfile === undefined && TUPLE_REQUIRED_ROUTES.has(p?.path)) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
       requireJobId(p?.jobId);
       const profileText = keepProfile === undefined ? null : purchaseProfileText(keepProfile);
       if (profileText !== null && p.path === CONTEXT) fail('tp1_purchase_profile_mismatch', 500);

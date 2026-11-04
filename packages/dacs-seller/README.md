@@ -245,7 +245,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   commitment routes (`commitments`, and `commitments/signature` when enabled)
   open every request and sign every answer through the SDK's `./wire` (domain
   `dacs-seller-http:v1`, the host's bound TP-1 profile and the tuple kept for the
-  job); a request signed under the old domain is refused. The transport store
+  job); a request signed under the old domain is refused, so
+  `createSellerTransportClientAuth` does not reach these routes. The transport store
   stays the journal of the proposal and commitment routes; the state route
   reserves and stores nothing. A job the seller holds nothing for gets a signed 404
   `peer_unknown_job`, and a delegated request for one is refused
