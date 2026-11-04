@@ -211,6 +211,8 @@ test('an unreadable, truncated, oversized, gapped or foreign history is unavaila
     ['a foreign temporary file', { 'other.tmp': 'x' }],
     ['an empty identity', { [recordFile(1)]: valid(1, { operationId: '' }) }],
     ['an unknown state', { [recordFile(1)]: valid(1, { state: 'sent' }) }],
+    ['a state held in an array, which skips the signed-bytes check', { [recordFile(1)]: valid(1, { state: ['signed'], bytes: 'AAAA' }) }],
+    ['an artifact hash held in an array', { [recordFile(1)]: valid(1, { artifactHash: [SIGNED.artifactHash] }) }],
     ['a sequence that disagrees with its file name', { [recordFile(1)]: valid(2) }],
     ['a record of another lane', { [recordFile(1)]: valid(1, { lane: 'lane-2' }) }],
     ['a stray file', { [recordFile(1)]: valid(1), 'notes.txt': 'x' }],
@@ -257,7 +259,8 @@ test('a lane that was never written reads as empty, and a lane name cannot leave
 });
 
 test('fields cannot choose the sequence or lane, and an invalid record is never written', async (t) => {
-  for (const fields of [{ ...SIGNED, seq: 9 }, { ...SIGNED, lane: 'foreign' }, { ...SIGNED, bytes: 'AAAA' }, record('sent'), null]) {
+  for (const fields of [{ ...SIGNED, seq: 9 }, { ...SIGNED, lane: 'foreign' }, { ...SIGNED, bytes: 'AAAA' }, record('sent'), null,
+    { ...SIGNED, state: ['signed'], bytes: 'AAAA' }, { ...SIGNED, artifactHash: [SIGNED.artifactHash] }, { ...STARTED, artifactHash: [STARTED.artifactHash] }]) {
     const directory = newDirectory(t);
     await assert.rejects(createEffectHistory({ dataDirectory: directory }).append(LANE, fields), { code: 'eb_persist_failed' });
     assert.deepEqual(await createEffectHistory({ dataDirectory: directory }).read(LANE), []);

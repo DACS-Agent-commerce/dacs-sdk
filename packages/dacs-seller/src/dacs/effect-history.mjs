@@ -68,8 +68,10 @@ function parseRecord(text, seq, lane) {
   let record;
   try { record = JSON.parse(text); } catch (cause) { throw unavailable(`record ${seq} of lane ${lane} is not valid JSON`, cause); }
   const hasText = (field) => typeof record?.[field] === 'string' && record[field].length > 0;
-  if (record === null || typeof record !== 'object' || record.seq !== seq || record.lane !== lane || !RECORD_STATE.test(record.state) ||
-      !hasText('operationId') || !hasText('pinVersion') || !SHA256_HEX.test(record.artifactHash)) throw unavailable(`record ${seq} of lane ${lane} is not a valid record`);
+  // RegExp.test coerces its argument, so a one-element array would pass as its string: require strings first.
+  const matches = (pattern, field) => typeof record[field] === 'string' && pattern.test(record[field]);
+  if (record === null || typeof record !== 'object' || record.seq !== seq || record.lane !== lane || !matches(RECORD_STATE, 'state') ||
+      !hasText('operationId') || !hasText('pinVersion') || !matches(SHA256_HEX, 'artifactHash')) throw unavailable(`record ${seq} of lane ${lane} is not a valid record`);
   if (record.state === 'signed') {
     const bytes = hasText('bytes') ? Buffer.from(record.bytes, 'base64') : Buffer.alloc(0);
     if (bytes.length === 0 || bytes.toString('base64') !== record.bytes || createHash('sha256').update(bytes).digest('hex') !== record.artifactHash)
