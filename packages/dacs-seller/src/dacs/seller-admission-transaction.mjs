@@ -14,6 +14,9 @@ const POLICY_HOLD_WRITES = 2;
 const LIVE_STATES = ['intent', 'admitted', 'running'];
 const HASH = /^[0-9a-f]{64}$/;
 
+// Per transaction instance: the live-begin reader below, kept off the frozen API so that nothing outside the module can take it for authority.
+const instanceReaders = new WeakMap();
+
 const isHash = (value) => typeof value === 'string' && HASH.test(value);
 const isUint = (value) => Number.isSafeInteger(value) && value >= 0;
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -62,7 +65,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
   }
   const mutexes = new Map(), leases = new WeakMap(), acceptanceHooks = [];
   // The live-begin owners: the one `begin` per job that is between D2's commit and the end of its D3/D4 work, late policy settlement and
-  // failure recording included. Closure-private: only `ownedIntent`, for the sweep in P09bb, reads it, and no age or lease stands in for it.
+  // failure recording included. Closure-private: only `ownedIntent`, which P09bb's sweep reads from inside this closure, answers from it,
+  // and no age or lease stands in for it. `admissionTransactionInternals` hands the same reader to this package's tests only.
   const liveBegins = new Map();
   const ownedIntent = (jobId, rev) => liveBegins.get(jobId)?.rev === rev;
   let hooksSealed = false;
@@ -345,9 +349,21 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     else await releaseHold(settled);
   }
 
-  return Object.freeze({ begin, reserveContext, runningCheck, jobEffectMutex,
+  const api = Object.freeze({ begin, reserveContext, runningCheck, jobEffectMutex,
     addAcceptanceHook(hook) {
       if (hooksSealed || typeof hook !== 'function') throw new TypeError('an acceptance hook is a synchronous function registered before the first begin');
       acceptanceHooks.push(hook);
     } });
+  instanceReaders.set(api, Object.freeze({ ownedIntent }));
+  return api;
+}
+
+/**
+ * Seller-internal, not a root export and not on the transaction: the private readers of one transaction instance, for this package's tests.
+ * `ownedIntent(jobId, rev)` is true only while the one `begin` that committed that intent revision is still working on it.
+ */
+export function admissionTransactionInternals(transaction) {
+  const readers = instanceReaders.get(transaction);
+  if (readers === undefined) throw new TypeError('admissionTransactionInternals needs a transaction made by createContextAdmissionTransaction');
+  return readers;
 }
