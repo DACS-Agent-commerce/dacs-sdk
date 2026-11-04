@@ -894,7 +894,7 @@ describe("durable RFQ records written before the v0.6 channel wire", () => {
     }
     expect(DURABLE_RFQ_LIFECYCLE_HISTORICAL_STORE_VERSION).toBe(1);
     const { store, client, profileAdmission } = archivalClient(STORE_V1.buyerFinalized);
-    await expect(store.create(STORE_V1.buyerFinalized as never)).toMatchObject({ status: "created" });
+    expect(await store.create(STORE_V1.buyerFinalized as never)).toMatchObject({ status: "created" });
     const status = await client.getStatus(STORE_V1.jobId);
     // The archival read admits nothing and performs no current lookup.
     expect(profileAdmission).not.toHaveBeenCalled();
@@ -941,8 +941,8 @@ describe("durable RFQ records written before the v0.6 channel wire", () => {
     expect(durableRfqLifecycleTransitionViolation(STORE_V1.buyerFinalized, next)).toBe(
       "historical store-version-1 records are read-only",
     );
-    await expect(
-      store.compareAndSwap("buyer", STORE_V1.jobId, STORE_V1.buyerFinalized.revision, next as never),
+    expect(
+      await store.compareAndSwap("buyer", STORE_V1.jobId, STORE_V1.buyerFinalized.revision, next as never),
     ).toMatchObject({ status: "corrupt", reason: "historical store-version-1 records are read-only" });
   });
 
