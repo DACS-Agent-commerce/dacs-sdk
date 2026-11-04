@@ -1329,3 +1329,14 @@ test("module-sync export conditions are refused because Node 22 resolves them be
     assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", "dist/sync.js"]), /module-sync/);
   }
 });
+
+test("each private package's recorded preparation manifest hash is the hash of its checked-in manifest", () => {
+  const snapshot = p => createHash("sha256").update(JSON.stringify(p, (_, value) => value && typeof value === "object" && !Array.isArray(value) ?
+    Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value)).digest("hex");
+  const recorded = packages.filter(p => p.preparationManifestSha256);
+  assert.deepEqual(recorded.map(p => p.name), ["@kynesyslabs/dacs-client", "@kynesyslabs/dacs-seller"]);
+  for (const definition of recorded) {
+    const manifestPath = new URL(`../../${definition.directory}/package.json`, import.meta.url);
+    assert.equal(snapshot(JSON.parse(readFileSync(manifestPath, "utf8"))), definition.preparationManifestSha256, `${definition.name}: update preparationManifestSha256 in scripts/release-policy.json`);
+  }
+});
