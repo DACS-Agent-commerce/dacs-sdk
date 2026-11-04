@@ -5874,6 +5874,37 @@
           "after": "b6402003588457f0340179859466e374237f7fd6"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": null,
+          "after": "ea9e892b09ac6333d8cec727575d5879c875f298"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary-barriers.test.mjs",
+          "before": null,
+          "after": "a63d589030296a4ce2afe05b377351748a6bf250"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6402003588457f0340179859466e374237f7fd6",
+          "after": "867b80b2a25f2f8c8ceafce8f72d22561446d173"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-boundary-fixture.mjs",
+          "before": null,
+          "after": "aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "8f8757994d69d512ccbf145bcd2180b622acc962",
+          "after": "abe08190196e3a17ccbb29ce6785df334c20d080"
+        }
+      ]
     }
   ]
 }

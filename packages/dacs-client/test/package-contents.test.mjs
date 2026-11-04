@@ -9,7 +9,7 @@ import { installPackedPair } from './helpers/packed-install.mjs';
 
 const packageDir = fileURLToPath(new URL('..', import.meta.url));
 // Shipped before any entry point imports them; the effect boundary's later PRs wire them in.
-const SHIPPED_NOT_YET_WIRED = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-history.mjs'];
+const SHIPPED_NOT_YET_WIRED = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-history.mjs', 'src/wallet/effect-boundary.mjs'];
 function entryPointClosure() {
   const files = new Set();
   function visit(path) {
@@ -292,4 +292,22 @@ test('documented local packing builds core before skipping pack lifecycle script
   const install = commands.indexOf('npm ci'), build = commands.indexOf('npm run build');
   const pack = commands.findIndex(command => command.startsWith('npm pack --ignore-scripts'));
   assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
+});
+
+
+test("no EB test double or authority fixture is in the client's files or exports", t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'eb-contents.mjs'), `
+    import assert from 'node:assert/strict';
+    import { readdirSync, readFileSync } from 'node:fs';
+    const root = new URL('./node_modules/@kynesyslabs/dacs-client/', import.meta.url);
+    const files = readdirSync(root, { recursive: true });
+    assert.ok(files.includes('src/wallet/effect-boundary.mjs'));
+    for (const file of files) assert.doesNotMatch(file, /fixture|double|test\\//);
+    const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+    assert.deepEqual(Object.keys(pkg.exports), ['.', './wallet/durable-journal']);
+    const { createEffectBoundary } = await import(new URL('src/wallet/effect-boundary.mjs', root));
+    assert.equal(typeof createEffectBoundary, 'function');
+  `);
+  run(process.execPath, ['eb-contents.mjs'], app);
 });

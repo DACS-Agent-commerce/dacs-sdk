@@ -243,6 +243,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 - `P52b` — the root exports the five capability constructors and four pure names a plugin composes a purchase from, and `purchaseNext`, `protocolView` and `PURCHASE_STATUS_HELP` choose held or admitted guidance on every call (`src/public-guidance.mjs`). The README lists each factory's active and passive methods and the error contract. The plugin import inventory is recorded as names, dispositions and owners in `test/fixtures/plugin-import-inventory.json`.
 - `P16a0` — the durable wallet journal recovers a lane lock left by our own crashed process only when its holder is provably dead (`src/wallet/holder-incarnation.mjs`: a per-process lease in a private `holders` directory plus boot, PID namespace and start identity; only the `exited` class is reclaimed, by compare-and-set inside the acquiring transaction, with no record changed). It adds `appendUnderLock` and `withOwnedOrAcquiredLane`, and native readback and CREATE recovery take the connection fence before the wallet lane. `withOwnedOrAcquiredLane` checks that a retained lane context still owns its lock row before reusing it, and `appendUnderLock` refuses a key another holder has locked, as `put` does; both report `journal-fenced`.
 - `P16a1a` — the client's effect boundary gets its state before its passes: `src/wallet/effect-history.mjs` keeps an artifact's authorization and dispatch records append-only under `eb/<lane>/<artifactHash>/<seq>` in the durable wallet journal (through `appendUnderLock`, inside the lane frame that already owns the lane; an identical retry is idempotent, a conflicting record, a gap, a full journal or a fenced owner refuses `eb_persist_failed`), and `src/wallet/effect-fence.mjs` is the actor fence (acquisition within 10,000 ms, an owner capability that nested steps reuse, the connection generation, `replaceConnection`). Both ship in the package but nothing calls them yet.
+- `P16a1b` — the client's effect boundary gets its passes: `src/wallet/effect-boundary.mjs` (`createEffectBoundary`) runs K0's EB1 to EB9 over P16a1a's history and fence. It reads the one hold constant at every check, requires a host `stopped` seam and `feeCeilingOs` (no default), shares one 10,000 ms read budget per pass across authority and stop reads, refreshes under the fence, persists the exact signed bytes before any send and records `dispatch-started` before it. A refusal after signing keeps `signed-held` or `dispatch-withheld`; a held artifact needs a new explicit pass, and a possible dispatch is readback-only (a CREATE or wire replay only under the composition's `replayPolicy`). `signerFor` makes a library's signature run the same checks and persist before it is returned. The module ships in the package but nothing calls it yet.
 
 ## Commit register
 
@@ -975,6 +976,12 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/effect-fence.mjs:1` | 4919d146fb62f67705ae52f4fb553e165a9dfebe |
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6402003588457f0340179859466e374237f7fd6 |
+| WF | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | ea9e892b09ac6333d8cec727575d5879c875f298 |
+| | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` | a63d589030296a4ce2afe05b377351748a6bf250 |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 867b80b2a25f2f8c8ceafce8f72d22561446d173 |
+| | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` | aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | abe08190196e3a17ccbb29ce6785df334c20d080 |
 
 ## Complete commit and file inventory
 
@@ -3060,6 +3067,19 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/src/wallet/effect-fence.mjs:1` |
 | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/package.json:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/effect-boundary-barriers.test.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `scripts/release-policy.json:1` |
 
 ## Original moved files
 
