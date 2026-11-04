@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "3f89fb0c0d9c9ddd3d4700060830161f75710987"
+        "blob": "083709d5a76585bfc4580e7e6e39c5b9e40e3206"
       },
       "DELTA-LEDGER.json": {
-        "blob": "02639c59baa92e5bb9565b7280f232d168defd62"
+        "blob": "5a5691866fd536b82573dcb21e4b91440420e242"
       },
       "DELTA-MAP.md": {
-        "blob": "f7ad466462c9b42951cf6181032e3af718b9aa34"
+        "blob": "d9a8456c3b6b5afa64b09d8a53ad5a417ca27267"
       },
       "DELTA-NOTES.md": {
-        "blob": "b4375e1e7884bf57720e1ad487226deca671e5b7"
+        "blob": "35029409b02fe37b50707c2504c19065bd5b73ca"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "a666ca8144e5ea7bb682fbbc2ab3a89351304303"
+        "blob": "7ee7f3e0379d9ac8f1268fabc54aff35073b76db"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1280,7 +1280,7 @@
         "blob": "5659a095247774027f29b46cc9cb2c847994007b"
       },
       "src/util/sqlite-statement-boundary.mjs": {
-        "blob": "336df0f1e4d8723d137c5b659c342792f51d81a7"
+        "blob": "a5497646bd1d81fe09d9cd5da3bc34ed988c76be"
       },
       "src/util/sqlite-write-lease.mjs": {
         "blob": "cc652d18792a64c8ab106e4a16eef68eebe6ed11"
@@ -1714,6 +1714,9 @@
       "test/purchase-tx-boundary.test.mjs": {
         "blob": "53fbeca69a87846aa9d32845aab011cbf451dd84"
       },
+      "test/purchase-tx-iterator-before-store.test.mjs": {
+        "blob": "ef7988d676cddff1e9a0cbcf7cfa2734b2325388"
+      },
       "test/purchase-tx-nesting.test.mjs": {
         "blob": "124ddbf578822f8bfe3298e01e83626f40de071d"
       },
@@ -1737,6 +1740,9 @@
       },
       "test/sqlite-floor-iterators.test.mjs": {
         "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"
+      },
+      "test/sqlite-iterator-before-install.test.mjs": {
+        "blob": "fc93248388336aabfe7f9d8e37379258fb6323db"
       },
       "test/sqlite-iterator-own-methods.test.mjs": {
         "blob": "cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8"
