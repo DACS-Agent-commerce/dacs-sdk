@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # phase0-completion is the shared base of the phase 0 PRs: a run on each of its heads shows whether a red PR
+    # check comes from the base or from the PR itself.
+    branches: [main, phase0-completion]
   pull_request:
   merge_group:
 
