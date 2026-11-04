@@ -71,6 +71,8 @@ export function expectedBlob(records, independent) {
 }
 export function checkDeltas(packageDir=pkg) {
   const failures=[]; const active=ledger(); const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
+  const last=active.changes.at(-1);
+  if(last && !last.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) failures.push(`${prefix}DELTA-LEDGER.json: last record names no source or test change`);
   const archived=readFileSync(join(pkg,'evidence/publication-history.json'));
   if(createHash('sha256').update(archived).digest('hex')!==HISTORY_SHA256) failures.push('archived source/delta evidence digest differs');
   const evidence=JSON.parse(archived);

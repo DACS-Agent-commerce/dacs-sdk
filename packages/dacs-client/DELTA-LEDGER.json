@@ -5928,6 +5928,72 @@
           "after": "aa0be667f8a71c8b7a687588757106bef3ca3cd8"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a1ba add the held in-process Node wallet session",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "b7183e63a75b68cda34c2b30a4d532963794b13f",
+          "after": "29da13af511befa8c1e091b0dd0c44081a40ed87"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": null,
+          "after": "5180e2239baa16c58382e324a2343331c9d8f11b"
+        },
+        {
+          "path": "packages/dacs-client/test/delta-ledger-gate.test.mjs",
+          "before": null,
+          "after": "9ba32690269d501dbd268aa6d6baab4f73e8c176"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": null,
+          "after": "768ebf54a4154a3474b684f4e564c174b34dd29e"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-demosdk.test.mjs",
+          "before": null,
+          "after": "5d0ec6a515b679af804545aef83500ed14765538"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-fresh-child.test.mjs",
+          "before": null,
+          "after": "3b29524ec8c9c36f436fdea32f59900a96b98c10"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-lanes.test.mjs",
+          "before": null,
+          "after": "2c99d83affd845f26b41aa46aff35c8b6acff389"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-rpc-bounds.test.mjs",
+          "before": null,
+          "after": "d070b403f5f6eb74f7c8ae2a903b4f4a998c5e95"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-rpc-clock.test.mjs",
+          "before": null,
+          "after": "712534d8175cc91180de20bf8ae25e06d784d5f5"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+          "before": null,
+          "after": "b89833fadfe86e93e3ff76c1b379726dd9bded4f"
+        },
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "d0e6acf2d424fe03affaff39805f48f2d49e46eb",
+          "after": "9b3fac5c0509ab6f0e5401c7d76700814a73842d"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "88abfb10c132141730d27792596b73899fe34400",
+          "after": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2"
+        }
+      ]
     }
   ]
 }

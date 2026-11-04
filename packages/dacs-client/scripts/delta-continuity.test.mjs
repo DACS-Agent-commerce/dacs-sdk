@@ -215,3 +215,12 @@ for (const field of ['before', 'after']) {
     assert.ok(history.check().includes(`${path}: delta D11 blob differs at ${sha}${field === 'before' ? '^' : ''}`));
   });
 }
+
+test('a control-only last record is refused with the ledger path even when every earlier source record remains', async t => {
+  const history = await fixture(t);
+  history.record('changed\n'); history.record('changed\n');
+  const ledger = history.read('DELTA-LEDGER.json');
+  ledger.changes.at(-1).files = [];
+  history.json('DELTA-LEDGER.json', ledger); history.render();
+  assert.ok(history.check().some(failure => failure.includes('packages/dacs-client/DELTA-LEDGER.json: last record names no source or test change')));
+});
