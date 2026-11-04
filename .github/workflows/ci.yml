@@ -51,6 +51,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Build Node host kit
+        run: npm run host:build
+
       - name: Prepare locked seller consumer
         env:
           DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer

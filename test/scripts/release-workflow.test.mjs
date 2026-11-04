@@ -28,6 +28,14 @@ test("build CI builds the Node host kit before any step that runs the client tes
   for (const index of clientTests) assert.ok(hostBuild < index, `"${steps[index].name}" runs before the Node host kit is built`);
 });
 
+test("required build CI builds the Node host kit before it prepares the seller consumer", () => {
+  const runs = ci.jobs["build-test"].steps.map(step => step.run);
+  const hostBuild = runs.indexOf("npm run host:build");
+  assert.ok(hostBuild >= 0);
+  assert.ok(hostBuild < runs.findIndex(run => run?.startsWith("npm run seller:prepare")));
+  assert.ok(hostBuild < runs.indexOf("npm run seller:test"));
+});
+
 test("main, pull requests and merge queues prepare on both pinned Node versions", () => {
   for (const event of ["push", "pull_request", "merge_group", "workflow_dispatch"]) assert.ok(Object.hasOwn(workflow.on, event));
   assert.ok(workflow.on.push.branches.includes("main"));
