@@ -72,8 +72,8 @@ describe("dacs-seller-http/v1 routes and limits", () => {
 describe("signing domains", () => {
   it("are new SDK wire domains, distinct from the Standard's artifact domains and from each other", () => {
     const wire = Object.values(DACS_SELLER_HTTP_DOMAINS);
-    expect(wire).toEqual(["dacs-seller-http:v1:request:", "dacs-seller-http:v1:response:", "dacs-seller-http:v1:delegation:", "dacs-seller-http:v1:discovery:"]);
-    expect(new Set(wire).size).toBe(4);
+    expect(wire).toEqual(["dacs-seller-http:v1:request:", "dacs-seller-http:v1:response:", "dacs-seller-http:v1:delegation:", "dacs-seller-http:v1:discovery:", "dacs-seller-http:v1:explicit-create-resume:"]);
+    expect(new Set(wire).size).toBe(5);
     // The Standard's signature domains and its hash-domain tags (CORE §B.7; the tags are not signature domains).
     const standardDomains = [...SIGNATURE_DOMAIN_SEPARATORS, ...COMPOSITE_DOMAIN_SEPARATORS, "dacs-sealed-bid:v1:", "dacs-sb3:v1:", "dacs-ap2-idem:v1:"];
     expect(SIGNATURE_DOMAIN_SEPARATORS).toHaveLength(30);

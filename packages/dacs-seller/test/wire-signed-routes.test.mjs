@@ -210,7 +210,8 @@ test('P11a1-T04: a new purchase keeps its tuple inside the reservation transacti
   w.reopen();
   assert.deepEqual(w.handle.store.purchaseProfile(job.jobId), w.buyerWire.binding.profile, 'and it survives a restart');
   const other = await proposeJob(w, 't04-other');
-  w.handle.store.keepPurchaseProfileWithin(other.jobId, { ...w.buyerWire.binding.profile, pinVersion: OLD_PIN_VERSION });
+  const earlier = (await w.buyerWire.signRequest(PATHS.proposals, other.body, { jobId: other.jobId, agreementHash: other.agreementHash })).payload;
+  w.handle.store.reserve(earlier, other.body, { keepProfile: { ...w.buyerWire.binding.profile, pinVersion: OLD_PIN_VERSION } });
   const before = { calls: w.agent.calls.proposals, rows: w.rows() };
   const refused = await other.post();
   assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 500, error: 'tp1_purchase_profile_mismatch' });
@@ -358,7 +359,7 @@ test('P11a1-T11: request lifetimes up to 60,000 ms and peer clocks within 30 s p
 });
 
 test('P11a1-T12: labels outside the signing domains and the report envelope in the capabilities are unchanged', () => {
-  assert.deepEqual({ ...DACS_SELLER_HTTP_DOMAINS }, { request: 'dacs-seller-http:v1:request:', response: 'dacs-seller-http:v1:response:', delegation: 'dacs-seller-http:v1:delegation:', discovery: 'dacs-seller-http:v1:discovery:' });
+  assert.deepEqual({ ...DACS_SELLER_HTTP_DOMAINS }, { request: 'dacs-seller-http:v1:request:', response: 'dacs-seller-http:v1:response:', delegation: 'dacs-seller-http:v1:delegation:', discovery: 'dacs-seller-http:v1:discovery:', explicitCreateResume: 'dacs-seller-http:v1:explicit-create-resume:' });
   assert.equal(TP1_CAPABILITIES.output.envelope, 'dacs-chatgpt-plugin/devnet-purchased-report');
   assert.equal(TP1_CAPABILITIES.output.reportVersion, '1');
 });

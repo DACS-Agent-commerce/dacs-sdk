@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "09d4bda84626ea48f35c5bff46cd5d67004f04cc"
+        "blob": "81e1e87d84eeabc59ece422f2468cccb7ced45a7"
       },
       "DELTA-LEDGER.json": {
-        "blob": "77eb33be8f5bfa7bd879fc9eea700b1fdbb409a1"
+        "blob": "39513aabde1bc20fa246ad57a962166039204311"
       },
       "DELTA-MAP.md": {
-        "blob": "a475fe70fced22f2f3f588de50be44db6d330228"
+        "blob": "603f312882fea5a8a9d20382f71be66d0c582fd2"
       },
       "DELTA-NOTES.md": {
-        "blob": "13ef939069cf3f7c370f32a16a81394641a95524"
+        "blob": "c44f92343cea9dc6a5f8c970f2b8ff361015d2c7"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "41f541173f20c826a0c64433d31e8c6dcfc39223"
+        "blob": "0376a3b7554a41fe5501dc99201bce8399dcd7e1"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1030,11 +1030,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "243e061b1d3f87b314a41df0a3455dba5ddfa47a"
+        "blob": "d41f97f82ab1e6403f9100463a8339d93571f4dd"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "07a6011ab6121db373de0395190e707217efdcaf"
+        "blob": "199eb885d694fb69f740cf535787bd12cf237c3d"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1298,10 +1298,13 @@
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "6215d34787c361a4c056c2a78fcb2dccda823ff0"
+        "blob": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
       },
       "src/wallet/durable-journal.mjs": {
-        "blob": "8917eac7303f718f2fb1ec4dad47235c0364c4cb"
+        "blob": "a284092528a7f3564c8def91dd5fee530ae04b93"
+      },
+      "src/wallet/holder-incarnation.mjs": {
+        "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
       },
       "src/wallet/payload-helpers.mjs": {
         "blob": "f121637cb5c6f739597a3b9bf7f1253b61c1ec19"
@@ -1344,6 +1347,12 @@
       },
       "test/directory-byte-budget.test.mjs": {
         "blob": "ad06ad3f730a4b61f626a3eef35317bd839047b1"
+      },
+      "test/durable-journal-owned-append.test.mjs": {
+        "blob": "8136201c3d57264ab3fe16d2ccacbef4035fdd49"
+      },
+      "test/durable-journal-recovery.test.mjs": {
+        "blob": "9e0eea8347fa209477848f388b17d7b4218d733a"
       },
       "test/engine-floor-portability.test.mjs": {
         "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
@@ -1513,6 +1522,9 @@
       "test/helpers/harness.mjs": {
         "blob": "91c8b39a12d3065895533ecc1f158180ccb71ba2"
       },
+      "test/helpers/journal-child-process.mjs": {
+        "blob": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
+      },
       "test/helpers/listener-guard.mjs": {
         "blob": "7915bac5268baf9bfafa259cbe710f1731caf917"
       },
@@ -1531,8 +1543,14 @@
       "test/helpers/native-agreement-payment-harness.mjs": {
         "blob": "a2ee2468f0dbae5c68043a50a73b404691b36ba5"
       },
+      "test/helpers/native-create-world.mjs": {
+        "blob": "e8eb401ca45efce0cc79b1f5b2cc8f8cee657015"
+      },
       "test/helpers/native-dem-delivery-provider.mjs": {
         "blob": "a900bb837a031e97a9fc34f80705bba17f52f3fb"
+      },
+      "test/helpers/native-lock-order-child.mjs": {
+        "blob": "f808491afd7a868398cad255e96315ebda2c0b89"
       },
       "test/helpers/native-payment-evidence-flow.mjs": {
         "blob": "130099289985e6c5183736f18c8c589906cd50e2"
@@ -1702,6 +1720,9 @@
       "test/native-broadcast-once.test.mjs": {
         "blob": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54"
       },
+      "test/native-lock-order.test.mjs": {
+        "blob": "37e944e9f1b36e944b7af495fe532ba43b208aaa"
+      },
       "test/native-payment-evidence-shape.test.mjs": {
         "blob": "bb761efa71a4b511c65d6796798861a6ad40c7d3"
       },
@@ -1715,7 +1736,7 @@
         "blob": "9869cc55d5b9235033ffd0382583a5e3948f5f4f"
       },
       "test/package-contents.test.mjs": {
-        "blob": "d65da09f23b12c15b976cc640c9cbef7be5e894a"
+        "blob": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026"
       },
       "test/packed-consumer.test.mjs": {
         "blob": "8a0d5f40a09ba49a79011580142ef137bc9db113"
