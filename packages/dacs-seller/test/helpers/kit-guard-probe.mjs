@@ -3,13 +3,14 @@
 // decides whether the guard fixture loader is present (it removes it for the
 // off-state cases).
 import fs from 'node:fs';
-import { mkdtempSync, readdirSync, realpathSync } from 'node:fs';
+import { mkdtempSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { contentHash } from '@kynesyslabs/dacs';
 import { seller } from './protocol-fixture.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
+import { KEY_FORMAT, LOCAL, SELLER_SEED_BYTE, cryptoCalls, derivationDouble, discoveryPayload, importSellerKey, keyRecordBytes, mnemonicFor, testBinding, validateMnemonic, walletFor, wire } from './seller-key-fixture.mjs';
 
 const WATCHED_FS_CALLS = ['openSync', 'mkdirSync', 'lstatSync', 'realpathSync', 'writeFileSync', 'readFileSync', 'readdirSync', 'statSync'];
 const LOCAL_RECORD_DOMAIN = 'dacs-chatgpt-plugin:offline-seller-state:v1:';
@@ -186,10 +187,27 @@ async function effectEntries() {
   await attempt('guardedCreate', () => other.guardedCreate({}, { resume: false }));
   other.close();
 
+  // Opening a key is not an effect and works while off; the key it returns signs nothing.
+  const { openSellerKey } = await importSellerKey();
+  const keyFile = join(directory, 'seller.key');
+  writeFileSync(keyFile, keyRecordBytes(mnemonicFor(SELLER_SEED_BYTE)), { mode: 0o600 });
+  const sellerKey = await openSellerKey({ filePath: keyFile, dataDirectory: directory, keyFormat: KEY_FORMAT, listingSeller: walletFor(SELLER_SEED_BYTE).claim,
+    validateMnemonic, derive: derivationDouble().derive });
+  const keySignaturesBefore = cryptoCalls.signs;
+  await attempt('sellerKey.sign', () => sellerKey.sign(Buffer.from('bytes')));
+  // A read-only discovery role refuses a `ready: true` document while off, and still signs `ready: false` (the control).
+  const discoveryBinding = await testBinding();
+  const discoveryRole = () => sellerKey.readOnlyAnswerSigner({ purpose: 'discovery', binding: discoveryBinding, local: LOCAL });
+  await attempt('sellerKey.readOnlyAnswerSigner', async () => (await discoveryRole()).sign(wire.discoverySigningBytes(discoveryPayload(discoveryBinding, { ready: true }))));
+  const keySignatures = cryptoCalls.signs - keySignaturesBefore;
+  await (await discoveryRole()).sign(wire.discoverySigningBytes(discoveryPayload(discoveryBinding)));
+  readable.readyFalseSigned = cryptoCalls.signs - keySignaturesBefore - keySignatures;
+  sellerKey.close();
+
   const anchors = await anchorFixture();
   await attempt('publish', () => anchors.publish(anchors.open(), ARTIFACT_JOB));
   readable.anchorRead = (await anchors.open().read({ logicalAddress: 'dacs4:probe', artifactKind: 'FinalityCommitmentRecord', artifact: {} }).catch((error) => ({ error: error.code ?? error.name }))).error ?? 'answered';
-  return { refused, refusedWithoutInput, signsBeforeStore, storeSignaturesAtOpen, storeSignaturesAfterWrite, readable, effects, walletRequests: anchors.captured.length, anchorJournalRows: anchors.journal.rows.size };
+  return { refused, refusedWithoutInput, signsBeforeStore, storeSignaturesAtOpen, storeSignaturesAfterWrite, readable, effects, keySignatures, walletRequests: anchors.captured.length, anchorJournalRows: anchors.journal.rows.size };
 }
 
 const CASES = { startWithHostileOptions, concurrentStarts, namedGuardInputs, guardValues, fixtureAdmits, artifactReadRecovery, effectEntries };

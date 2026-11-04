@@ -339,7 +339,7 @@ test('a finished job fresh-reads and fresh-verifies the seller receipt',async()=
 for(const [status,code] of [['rejected','seller_vet_receipt_invalid'],['indeterminate','indeterminate']])test(`a ${status} seller publication reply keeps its reason and class`,async()=>{
  const f=productionFixture(),publish=f.anchor.publish,sellerAddress=compositeVerificationAddress(JOB,seller.claim);
  f.anchor.publish=async options=>options.logicalAddress===sellerAddress?{status,reason:`TEST ${status}`}:publish(options);
- await assert.rejects(f.run(),e=>e.code===code&&e.cause?.status===status&&String(e.message).includes(`TEST ${status}`));f.base.close();
+ await assert.rejects(f.run(),e=>e.code===code&&e.cause?.status===status&&e.cause.reason===`TEST ${status}`&&!e.message.includes(`TEST ${status}`));f.base.close();
 });
 test('a resumed signed presentation without a buyer verifier is refused before any callback',async()=>{
  const f=productionFixture(),read=f.counterparty.readRecord;let fail=true;
