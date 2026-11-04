@@ -153,8 +153,9 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
       });
       if(replay)return done(value);
       const fenced=ops=>{const pending=ops.steps[key];if(pending?.state!=='pending'||pending.owner!==owner)fail('binding-changed','the party Vet operation reservation changed');};
-      // Never deletes written-ahead bytes or a kept signature in orchestrator mode: the step stays pending with them.
-      const clear=()=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);if(reconcile&&ops.signing[key]?.signedBytes)return undefined;delete ops.steps[key];if(ops.signing[key]?.reservation===owner)delete ops.signing[key];return current;});
+      // Never deletes a kept signature in orchestrator mode: the step stays pending with it. Bytes written ahead without a
+      // signature are cleared too, since clear runs only where no signature was made (a refusal, or a fault before the signer).
+      const clear=()=>state.update(job.jobId,current=>{const ops=own(current);fenced(ops);if(reconcile&&ops.signing[key]?.signature)return undefined;delete ops.steps[key];if(ops.signing[key]?.reservation===owner)delete ops.signing[key];return current;});
       if(authorized&&!taken){
         let verdict;
         try{verdict=await authorize();}catch(error){try{await clear();}catch(cause){throw new AggregateError([error,cause],'party Vet authorization cleanup failed',{cause});}throw error;}

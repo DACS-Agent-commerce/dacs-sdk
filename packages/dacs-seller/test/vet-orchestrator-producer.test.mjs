@@ -421,3 +421,32 @@ test('a store-busy error while a taken-over W step runs again keeps its written-
             assert.equal(f.controls.signatures.length, 2);
         });
 });
+const compositeEntries = async (f, role) => { const ops = (await f.row()).ops[role]; return { steps: Object.keys(ops.steps).filter(key => JSON.parse(key).step === 'composite'), signing: Object.keys(ops.signing) }; };
+test('a W signer refusal that proves no signature was made clears the step and its written-ahead bytes, so a retry signs once', async (t) => {
+    for (const role of ['seller', 'buyer'])
+        await t.test(role, async (t) => {
+            const f = await orchestratorFixture(t, { disk: true });
+            let refused = 0;
+            f.controls.beforeSign = () => { if (!refused && f.controls.signatures.length === (role === 'seller' ? 0 : 1)) { refused++; throw Object.assign(new Error('TEST operator refused'), { code: 'user_rejected' }); } };
+            await blocked(() => f.run());
+            assert.equal(refused, 1);
+            assert.deepEqual(await compositeEntries(f, role), { steps: [], signing: [] });
+            assertPresent(await f.run(f.fresh()));
+            assert.equal(f.controls.signatures.length, 2);
+        });
+});
+test('a store-busy error after the bytes are written ahead and before the signer runs clears the step, so a retry signs once', async (t) => {
+    for (const role of ['seller', 'buyer'])
+        await t.test(role, async (t) => {
+            const f = await orchestratorFixture(t, { disk: true });
+            let busy = 0;
+            // The purchase check right after the write-ahead is the first read that sees bytes without a signature.
+            const flaky = { ...f.store, read: async (key) => { const entries = Object.values((await f.row())?.ops[role].signing ?? {}); if (!busy && entries.some(entry => entry.signedBytes && !entry.signature)) { busy++; throw Object.assign(new Error('TEST store busy'), { code: 'journal-busy' }); } return f.store.read(key); } };
+            await blocked(() => f.run(f.provider({ store: flaky, anchor: f.openAnchor() })));
+            assert.equal(busy, 1);
+            assert.equal(f.controls.signatures.length, role === 'seller' ? 0 : 1);
+            assert.deepEqual(await compositeEntries(f, role), { steps: [], signing: [] });
+            assertPresent(await f.run(f.fresh()));
+            assert.equal(f.controls.signatures.length, 2);
+        });
+});
