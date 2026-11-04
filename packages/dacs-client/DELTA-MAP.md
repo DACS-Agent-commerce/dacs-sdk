@@ -225,6 +225,10 @@ Published part-05 iteration records are archived with the existing ledger archiv
 
 Part 06 was rebuilt and joined onto its earlier published history by a merge that changes no content, so the earlier commits stay reachable. Their source and test changes are archived as superseded records, and their inventory rows name each full commit hash. The earlier history also reaches a second commit with the subject `fix(client): D11 guard iterator-owned steps on supported runtimes`; both records for that subject name their commit hash. The rebuilt portal capability commit is recorded under its published hash. The later records still decide every current blob.
 
+## D11 — Part 07 package pins follow one manifest
+
+Part 07's earlier iteration commits stay reachable and their inventory rows are archived as superseded records. The manifest `files` list is the sorted import closure of the two entry points, and the package's own tests check the release-policy manifest and packed-inventory pins and the current export text against it.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -835,6 +839,8 @@ Part 06 was rebuilt and joined onto its earlier published history by a merge tha
 | D11 | fix(client): D11 record the deleted guarded SQLite files after the 06e merge | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/util/guarded-sqlite.mjs` (deleted) | deleted |
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) | deleted |
+| D11 | fix(client): D11 rebuild part 07 package pins from one manifest | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 4c8be31a5c5efea2b63374e7d3af501003e92c3d |
 
 ## Complete commit and file inventory
 
@@ -2306,108 +2312,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record part 06e's kept earlier history by commit | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record part 06e's kept earlier history by commit | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record part 06e's kept earlier history by commit | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `package-lock.json:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/LICENSE:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/README.md:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/package.json:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/src/index.mjs:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/src/public-verification.mjs:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/test/public-api.test.mjs:1` |
-| 31ba7e7ed5de79ef5589f8042bdf5f3292edf610 | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record rebuilt part 07 source integration | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 preserve part 07 reviewed publication controls | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/package.json:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 include capability checks in packed buyer runtime | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `package-lock.json:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/DELTA-MAP.md:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/HOLD.json:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/LICENSE:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/README.md:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/package.json:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/src/dacs/listing.mjs:3`, `packages/dacs-client/src/dacs/listing.mjs:24`, `packages/dacs-client/src/dacs/listing.mjs:31`, `packages/dacs-client/src/dacs/listing.mjs:89`, `packages/dacs-client/src/dacs/listing.mjs:92`, `packages/dacs-client/src/dacs/listing.mjs:99`, `packages/dacs-client/src/dacs/listing.mjs:184`, `packages/dacs-client/src/dacs/listing.mjs:189`, `packages/dacs-client/src/dacs/listing.mjs:207`, `packages/dacs-client/src/dacs/listing.mjs:212`, `packages/dacs-client/src/dacs/listing.mjs:216` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/src/index.mjs:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/src/public-verification.mjs:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/test/public-api.test.mjs:1` |
-| 3bf3927779c2de314fdca49e2274f93a0da808a1 | `packages/dacs-client/test/sweep-contracts.test.mjs:1` |
-| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/DELTA-MAP.md:1` |
-| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/HOLD.json:1` |
-| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/src/index.mjs:1` |
-| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| ef0ff95d3b965d75a5231f29e0c21b38f1bcc928 | `packages/dacs-client/test/public-api.test.mjs:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/DELTA-MAP.md:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/HOLD.json:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/README.md:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/src/index.mjs:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| 0d5a505cd99c4cec1bfaecb9f37521673e7de6d6 | `packages/dacs-client/test/public-api.test.mjs:1` |
-| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/DELTA-MAP.md:1` |
-| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/HOLD.json:1` |
-| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/src/index.mjs:1` |
-| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/test/package-contents.test.mjs:1` |
-| b4ebef3adea9e2de7259195da36070116e80f5de | `packages/dacs-client/test/public-api.test.mjs:1` |
-| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/DELTA-MAP.md:1` |
-| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/HOLD.json:1` |
-| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/package.json:1` |
-| ee9e92808e470b0904f2b0f712349fe1b943a898 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/DELTA-MAP.md:1` |
-| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/HOLD.json:1` |
-| bb6a22abdd2bb43668bd12f0a0a53859013e7f81 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/DELTA-MAP.md:1` |
-| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/HOLD.json:1` |
-| dd987c0b926f3b2abc7cde2fcf3a336b84816b48 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/DELTA-MAP.md:1` |
-| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/HOLD.json:1` |
-| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/package.json:1` |
-| 5fd7b6a77153c3a8a2a1e4f26039515aa433e702 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/DELTA-MAP.md:1` |
-| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/HOLD.json:1` |
-| 0f5aa86c4c10bb6232aab2035b740813a9a5b8e5 | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/DELTA-MAP.md:1` |
-| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/HOLD.json:1` |
-| 56cdd283f0c00d290458685609c5bc75b276cd0b | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 record part 07's kept earlier history by commit | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 record part 07's kept earlier history by commit | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 record part 07's kept earlier history by commit | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 record part 07's kept earlier history by commit | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 record part 07's kept earlier history by commit | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 stabilize public diagnostic clock fixtures | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -2435,12 +2339,6 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record passive reader corrections | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record passive reader corrections | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record passive reader corrections | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/DELTA-COMMITS.json:1` |
-| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/DELTA-LEDGER.json:1` |
-| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/DELTA-MAP.md:1` |
-| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/HOLD.json:1` |
-| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/scripts/check-hold.mjs:1` |
-| fix(client): D11 use passive readback in packed consumer | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | fix(client): D11 record the merged passive observation fixture | `packages/dacs-client/DELTA-MAP.md:1` |
@@ -2490,6 +2388,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/DELTA-NOTES.md:1` |
 | fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/IMPORT-CUT-MAP.md:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/README.md:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/package.json:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/scripts/import-cut-map.mjs:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| fix(client): D11 rebuild part 07 package pins from one manifest | `scripts/release-policy.json:1` |
 
 ## Original moved files
 

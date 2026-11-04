@@ -24,9 +24,9 @@
     {
       "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "16ab0c6084567f934546def4b99371ad71915feb67ed2720e151a4c4bdc62fc9",
-      "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid", "missing public export .", "release versions differ: 0.0.0 vs 0.1.0-alpha.0"],
-      "preparationFileListSha256": "eab1bbc42fd417315f554d5351520c7ff027112e470d385ac72e7e27d403348c",
+      "preparationManifestSha256": "2da2cf5ed90ff289f26527b088e9ba76e61c042383cd0d509ee7a160fc3285c8",
+      "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid"],
+      "preparationFileListSha256": "38b84ec98745026a6bc2317c262eb2af55228862588c3391d3541e54f3d01c43",
       "requiredExports": ["."],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
     },
