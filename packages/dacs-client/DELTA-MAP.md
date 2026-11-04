@@ -250,6 +250,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 - `P52a` — the three purchase factories sit behind one held admission wrapper (`src/public-admission.mjs`) driven by one constant (`src/dacs/purchase-admission-state.mjs`, `held`). Active methods return Promises and reject `profile_not_admitted` while held, or when the wire's binding check, the 10,000 ms deadline or the synchronous re-check fails. The factories refuse Node below 22.13 (23.0 to 23.3 included) before building anything. The purchase service awaits the protocol object it is given, reads plan-flight state through a private registry, and chooses its readback projection on each call. The synchronous re-check compares the canonical text of the connection taken before the authority read, so a host's live connection object that changes while the read is pending is refused. A `profile_not_admitted` from a wrapped protocol call means the original never ran: the service records none of it as a commitment, handoff or native-lane event and does not turn it into a result; it reaches the caller, or `verifyDeal`'s diagnostic readback when the hold is re-held.
 - `P52b` — the root exports the five capability constructors and four pure names a plugin composes a purchase from, and `purchaseNext`, `protocolView` and `PURCHASE_STATUS_HELP` choose held or admitted guidance on every call (`src/public-guidance.mjs`). The README lists each factory's active and passive methods and the error contract. The plugin import inventory is recorded as names, dispositions and owners in `test/fixtures/plugin-import-inventory.json`.
 - `P16a0` — the durable wallet journal recovers a lane lock left by our own crashed process only when its holder is provably dead (`src/wallet/holder-incarnation.mjs`: a per-process lease in a private `holders` directory plus boot, PID namespace and start identity; only the `exited` class is reclaimed, by compare-and-set inside the acquiring transaction, with no record changed). It adds `appendUnderLock` and `withOwnedOrAcquiredLane`, and native readback and CREATE recovery take the connection fence before the wallet lane. `withOwnedOrAcquiredLane` checks that a retained lane context still owns its lock row before reusing it, and `appendUnderLock` refuses a key another holder has locked, as `put` does; both report `journal-fenced`.
+- `P21a1a` — quiet Node demosdk loading for the client's Node wallet session. The internal `src/wallet/node-demos-loading.mjs` (no package export, not reached from the root) imports `@kynesyslabs/dacs-node/demos-loader`, registers the reviewed load transform in `src/wallet/demos-quiet-hooks.mjs`, then imports demosdk's websdk and the English BIP-39 wordlist. The transform checks the source SHA-256 against a reviewed table (demosdk 4.0.16 and 4.0.18), empties only the listed diagnostic statements of `GCRGeneration.js` and `demosclass.js`, and checks the output SHA-256. The client gains runtime dependencies on demosdk (`^4.0.16`), `@kynesyslabs/dacs-node` (exact) and `@scure/bip39` (exact), and every packed client consumer packs `dacs-node`. Nothing calls the loader yet.
 
 ## Commit register
 
@@ -972,6 +973,21 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF P16a0 refuse an owned lane reuse or append that the lock row does not back | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/durable-journal.mjs:4`, `packages/dacs-client/src/wallet/durable-journal.mjs:9`, `packages/dacs-client/src/wallet/durable-journal.mjs:22`, `packages/dacs-client/src/wallet/durable-journal.mjs:77`, `packages/dacs-client/src/wallet/durable-journal.mjs:82`, `packages/dacs-client/src/wallet/durable-journal.mjs:92`, `packages/dacs-client/src/wallet/durable-journal.mjs:136`, `packages/dacs-client/src/wallet/durable-journal.mjs:175`, `packages/dacs-client/src/wallet/durable-journal.mjs:200`, `packages/dacs-client/src/wallet/durable-journal.mjs:206`, `packages/dacs-client/src/wallet/durable-journal.mjs:232`, `packages/dacs-client/src/wallet/durable-journal.mjs:255`, `packages/dacs-client/src/wallet/durable-journal.mjs:280`, `packages/dacs-client/src/wallet/durable-journal.mjs:297`, `packages/dacs-client/src/wallet/durable-journal.mjs:301`, `packages/dacs-client/src/wallet/durable-journal.mjs:322` | a284092528a7f3564c8def91dd5fee530ae04b93 |
 | | `packages/dacs-client/test/durable-journal-owned-append.test.mjs:1` | 8136201c3d57264ab3fe16d2ccacbef4035fdd49 |
+| WF | delta(client): WF P21a1a tests for quiet Node demosdk loading | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/helpers/fresh-node-child.mjs:1` | a398b50dda2846da3e06e0d9948d99126b47773b |
+| | `packages/dacs-client/test/helpers/no-egress.mjs:1` | d1bf4792843fd904b488c29a0739c5c0663c0f0c |
+| | `packages/dacs-client/test/helpers/packed-install.mjs:1` | aef655a4d572cc793fde0d5f952278371470adc7 |
+| | `packages/dacs-client/test/node-demos-loading.test.mjs:1` | 7b1d41e983d9e07fc272914276a693777a7a298a |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 01874421936787529b34afabfd3ac1ee72782300 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | b95147159f768cec36bd94ad4c274ef01d49e0b4 |
+| WF | delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/demos-quiet-hooks.mjs:1` | 323ba838b4f2abe9189f84d6688cdaf0914b1972 |
+| | `packages/dacs-client/src/wallet/node-demos-loading.mjs:1` | 6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1 |
+| WF | delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-demos-loading.test.mjs:1` | 539d876bf79510f9d3bf9e09d99737131a43fdc1 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 88abfb10c132141730d27792596b73899fe34400 |
+| WF | delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | d0e6acf2d424fe03affaff39805f48f2d49e46eb |
 | D18 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/bound-terms-mismatch.test.mjs:1` | 065eeb0112947f2736a21250173b49ecac6e0393 |
 | D19 | delta(client): D19 pin every scope clause of native payment evidence with the real SDK verifier | Git subject selector (must resolve exactly once after publication checkpoint) |
@@ -3088,6 +3104,42 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P16a0 refuse an owned lane reuse or append that the lock row does not back | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P16a0 refuse an owned lane reuse or append that the lock row does not back | `packages/dacs-client/src/wallet/durable-journal.mjs:4`, `packages/dacs-client/src/wallet/durable-journal.mjs:9`, `packages/dacs-client/src/wallet/durable-journal.mjs:22`, `packages/dacs-client/src/wallet/durable-journal.mjs:77`, `packages/dacs-client/src/wallet/durable-journal.mjs:82`, `packages/dacs-client/src/wallet/durable-journal.mjs:92`, `packages/dacs-client/src/wallet/durable-journal.mjs:136`, `packages/dacs-client/src/wallet/durable-journal.mjs:175`, `packages/dacs-client/src/wallet/durable-journal.mjs:200`, `packages/dacs-client/src/wallet/durable-journal.mjs:206`, `packages/dacs-client/src/wallet/durable-journal.mjs:232`, `packages/dacs-client/src/wallet/durable-journal.mjs:255`, `packages/dacs-client/src/wallet/durable-journal.mjs:280`, `packages/dacs-client/src/wallet/durable-journal.mjs:297`, `packages/dacs-client/src/wallet/durable-journal.mjs:301`, `packages/dacs-client/src/wallet/durable-journal.mjs:322` |
 | delta(client): WF P16a0 refuse an owned lane reuse or append that the lock row does not back | `packages/dacs-client/test/durable-journal-owned-append.test.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/helpers/fresh-node-child.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/helpers/no-egress.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/helpers/packed-install.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/node-demos-loading.test.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF P21a1a tests for quiet Node demosdk loading | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `.github/workflows/ci.yml:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `package-lock.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/README.md:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/package.json:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/src/wallet/demos-quiet-hooks.mjs:1` |
+| delta(client): WF P21a1a quiet Node demosdk loading and the client's runtime dependencies | `packages/dacs-client/src/wallet/node-demos-loading.mjs:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `packages/dacs-client/test/node-demos-loading.test.mjs:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `scripts/release-policy.json:1` |
+| delta(client): WF P21a1a keep the loading suite valid under demosdk 4.0.18 and the release policy hash current | `test/scripts/release-checks.test.mjs:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1a record the merged package-contents test blob of two parallel records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): D18 pin boundTermsMismatch payee, rail and single-binding checks | `packages/dacs-client/DELTA-MAP.md:1` |
