@@ -1009,8 +1009,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       if(!scope||!same(bindingFor(scope,buyerIdentityBundle),row.binding)||scope.generatedAt!==generatedAt)return{disposition:'indeterminate',reason:'completed route differs'};
     }
     let candidate;
-    // An unavailable readback keeps its cause (timeout, damaged journal, ...) and never answers a context.
-    try{candidate=await project(row,generatedAt);}catch(error){if(!orchestrator)throw error;return{disposition:'indeterminate',reason:`party Vet readback failed (${oneLine(typeof error?.code==='string'?error.code:error?.name??'error')})`};}
+    // An unavailable readback names its cause class (timeout, damaged journal, ...) and never answers a context.
+    try{candidate=await project(row,generatedAt);}catch(error){if(!orchestrator)throw error;return{disposition:'indeterminate',reason:`party Vet readback failed (${readbackCause(error)})`};}
     if(!candidate||candidate.refused)return{disposition:'indeterminate',reason:'party Vet receipts no longer authenticate'};
     try{await finish(jobId,ticket,candidate);}catch(error){if(!['context_released','binding-changed','conflict'].includes(error?.code))throw error;return{disposition:'indeterminate',reason:'the context lifecycle changed'};}
     return{disposition:'present',value:{input:clone(candidate.input),vetRequirements:clone(candidate.vetRequirements)}};
@@ -1133,7 +1133,10 @@ const THROWN_CAUSES=Object.freeze({conflict:'conflict','binding-changed':'bindin
 const writerCode=(error,out)=>out
   ? out.status==='rejected'?(/^user_rejected:/.test(out.reason ?? '')?'denied':'rejected'):out.status==='indeterminate'?'indeterminate':'failed'
   : Object.hasOwn(THROWN_CAUSES,error?.code ?? '')?THROWN_CAUSES[error.code]:'failed';
-
+// The cause a failed orchestrator readback may name: one of a closed set, never
+// the thrown value's own text. It cannot throw, so the catch that calls it stays total.
+const READBACK_CAUSES=new Set(['journal-integrity','journal-busy','journal-capacity','indeterminate']);
+const readbackCause=error=>{try{return error?.name==='TimeoutError'?'timeout':READBACK_CAUSES.has(error?.code)?error.code:'unavailable';}catch{return 'unavailable';}};
 
 const LEGACY_REASON=`${LEGACY_PARTY_VET_STATE}: this purchase was started by an earlier server version; nothing was signed or sent; start a new purchase`;
 // The definite answer to a request that cannot be admitted, by the refusal `admit` gives.

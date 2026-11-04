@@ -113,8 +113,13 @@ test("W invocations name the seller as verifier of both records in the initial r
     assert.deepEqual(answer.value.input.seller.identityBundle, f.listing.seller.identity); assert.deepEqual(answer.value.vetRequirements.map(value => [value.evaluatedParty, value.verifier]), [[BUYER.claim, SELLER.claim], [SELLER.claim, SELLER.claim]]);
 } assertPresent(await f.fresh().recoverBuyer(f.input)); });
 test("W resolveSeller after a restart stays indeterminate while readback is unavailable and answers once both records read back finalized",async t=>{const f=await orchestratorFixture(t,{disk:true});assertPresent(await f.run());
- for(const cause of [new Error('TEST read outage'),new DOMException('TEST read deadline','TimeoutError'),Object.assign(new Error('TEST journal damaged'),{code:'journal-integrity'})]){
-  f.controls.onRead=()=>{throw cause;};const answer=await f.fresh().resolveSeller(f.sellerRequest());assert.equal(answer.disposition,'indeterminate');assert.ok(answer.reason.includes(cause.code==='journal-integrity'?cause.code:cause.name));
+ const odd=Object.assign(new Error('TEST code getter'),{});Object.defineProperty(odd,'code',{get(){throw new Error('TEST getter');}});
+ for(const [cause,klass] of [[new Error('TEST read outage'),'unavailable'],[new DOMException('TEST read deadline','TimeoutError'),'timeout'],[Object.assign(new Error('TEST journal damaged'),{code:'journal-integrity'}),'journal-integrity'],[Object.assign(new Error('TEST journal busy'),{code:'journal-busy'}),'journal-busy']]){
+  f.controls.onRead=()=>{throw cause;};assert.deepEqual(await f.fresh().resolveSeller(f.sellerRequest()),{disposition:'indeterminate',reason:`party Vet readback failed (${klass})`});
+ }
+ // The reason is a closed class: whatever else is thrown, no thrown text reaches it and the catch itself never throws.
+ for(const cause of [null,undefined,'TEST raw',Object.assign(new Error('x'),{code:'TEST\nline /home/x'}),odd]){
+  f.controls.onRead=()=>{throw cause;};const answer=await f.fresh().resolveSeller(f.sellerRequest());assert.deepEqual(answer,{disposition:'indeterminate',reason:'party Vet readback failed (unavailable)'});assert.ok(!/TEST|\/home/.test(answer.reason));
  }f.controls.onRead=null;assertPresent(await f.fresh().resolveSeller(f.sellerRequest()));
 });
 test("a party-Vet row with started writes under the counterparty mode is refused vet_mode_mismatch by a W provider, with zero signatures and wallet requests", async (t) => { const f = productionFixture(), p = await f.provider(); await p.resolveBuyer(f.input(), { writable: () => true }); const w = await orchestratorFixture(t); w.config.buyerAccess = null; w.config.store = f.store; w.config.wallet = f.config.wallet; w.config.listing = f.listing; w.config.anchor = { ...w.config.anchor, writer: f.config.wallet.claim }; const count = f.controls.signs; const answer = await w.run(w.provider(), f.input()); assert.equal(answer.code, 'vet_mode_mismatch'); assert.equal(f.controls.signs, count); assert.equal(w.controls.creates.length, 0); });
