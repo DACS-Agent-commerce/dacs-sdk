@@ -69,14 +69,14 @@ Node inspection baseline: `kynesyslabs/node` commit
 reports `dirty: true`, so this commit is an inspection baseline only; it does
 not identify what node2 runs.
 The timestamped, read-only node2 request/response fixtures and SHA-256 manifest
-are in the [current observation manifest](../conformance/tp1-node-observations/manifest-2026-10-20.json).
+are in the [current observation manifest](https://github.com/DACS-Agent-commerce/dacs-sdk/blob/main/conformance/tp1-node-observations/manifest-2026-10-20.json).
 On 2026-10-20 the deployment reported branch `stabilisation`,
 `builtAt: 2026-10-20T11:09:32Z`, and **`dirty: true`**. No deployment
 artifact digest or overlay was supplied. This source commit is an immutable
 inspection baseline, not a pin of the deployment's executable bytes; node
 composition qualification remains open until those bytes can be identified.
 The 2026-10-18 captures of the previous chain are kept unchanged as history
-([historical manifest](../conformance/tp1-node-observations/manifest.json)). That build
+([historical manifest](https://github.com/DACS-Agent-commerce/dacs-sdk/blob/main/conformance/tp1-node-observations/manifest.json)). That build
 reported source commit `61b8e75aa8db5e408c49e1c3a89db4d673f45578`,
 `builtAt: 2026-10-14T16:45:24Z` and `dirty: true`; a read-only
 `getNetworkInfo` on 2026-10-19 reported the same commit rebuilt at
