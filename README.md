@@ -905,7 +905,8 @@ co-signed; single-signature suppression is available only for an honest abort.
 `lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
 §10.4.3(a) read step for consumers. It fetches the buyer and seller logical
 bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
-ignores content returned for another job. Lookup is discovery, not trust: pass
+ignores content returned for another job. It rejects a `jobId` that is not a
+canonical JID-1 job ID before making any read. Lookup is discovery, not trust: pass
 each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
 that returns its `.valid` boolean to `bundleConsistency` before using the
 resulting two-sided verdict.
