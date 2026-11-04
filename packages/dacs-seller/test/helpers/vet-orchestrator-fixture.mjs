@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ARTIFACT_SEPARATORS, canonicalize, compositeVerificationAddress, contentHash, identityBundleHash, signComponentArtifact } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, canonicalize, compositeVerificationAddress, contentHash, signComponentArtifact } from '@kynesyslabs/dacs';
 import { BUYER, SELLER, T0, JOB, buyerBundle, k4Listing } from '../../../../test/kit-client/fixtures.mjs';
 import { testWallet } from './protocol-fixture.mjs';
 import { createDevnetDemoAgreementContextProvider } from '../../src/devnet-demo/agreement-context.mjs';
@@ -16,7 +16,7 @@ export { BUYER, SELLER, T0, JOB };
 export const W = 'tp1-g3-orchestrator', OTHER = testWallet(4), copy = structuredClone;
 export const address = party => compositeVerificationAddress(JOB, party.claim);
 export const deferred = () => { let resolve; const promise = new Promise(done => resolve = done); return { promise, resolve }; };
-export async function signedRecord(record, signer = SELLER) { const { signature, ...unsigned } = record; return signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.CompositeVerificationRecord, { signer: signer.claim, algorithm: 'ed25519', sign: signer.signBytes }); }
+export async function signedRecord(record, signer = SELLER) { const unsigned = { ...record }; delete unsigned.signature; return signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.CompositeVerificationRecord, { signer: signer.claim, algorithm: 'ed25519', sign: signer.signBytes }); }
 export async function orchestratorFixture(t, { real = false, disk = false, vetMode = W } = {}) {
     const listing = await k4Listing(), records = new Map(), controls = { signatures: [], creates: [], reads: [], counterpartyCalls: 0 };
     let base = createInMemoryPartyVetStore(), path;
