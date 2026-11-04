@@ -18,7 +18,7 @@ import { committedPurchase, BUYER_SEED, bytes, type Purchase } from "./committed
 import { stageAllocation } from "./agreementFixture.js";
 import { checkAndReserve } from "./checkAndReserve.js";
 
-const EFFECT_PATHS = wire.DACS_SELLER_HTTP_ROUTES.filter((route) => route.auth === "signed" && route.effect === "effect").map((route) => route.path);
+const EFFECT_PATHS = wire.DACS_SELLER_HTTP_ROUTES.filter((route) => route.auth === "signed" && route.effect === "effect" && route.path !== wire.DACS_SELLER_HTTP_PATHS.context).map((route) => route.path);
 
 /** Opens a signed request for `path` that expires `lifetimeMs` after the purchase's clock. */
 async function openRequest(p: Purchase, binding: wire.Tp1Binding, path: string, lifetimeMs = 30_000, delegated = false) {
