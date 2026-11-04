@@ -11,7 +11,6 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
 import { receiptReader, wireRouteFixture } from './helpers/wire-continuation-fixture.mjs';
-import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
@@ -399,7 +398,7 @@ async function httpSeller(t, w, { gate = {} } = {}) {
   const chain = nativeChain(w, { wire: true }), durableDirectory = w.dir(), peerDirectory = w.dir(), last = {};
   const build = (railAuthority) => w.agent(chain.options(railAuthority, durableDirectory));
   let agent = await build(w.steward.railAuthority());
-  const store = withFixtureProfile(seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite'), now: () => w.now }));
+  const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite'), now: () => w.now });
   t.after(() => { try { agent.close(); } catch { /* closed by a restart */ } store.close(); });
   const pin = seller.listingPin(w.listing);
   const gated = (name) => (body, options) => {
