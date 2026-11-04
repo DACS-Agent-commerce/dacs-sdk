@@ -34,7 +34,7 @@ const resign = (bundle, signer = seller) => {
 
 test('the W DEM context consumer accepts only the exact Listing seller bundle (K4-B3 to K4-B10)', async t => {
   const w = await proposed(t, W), c = await proposed(t, undefined), L = w.f.listing.seller.identity;
-  const { presentation: _presentation, ...withoutPresentation } = L;
+  const withoutPresentation = Object.fromEntries(Object.entries(L).filter(([name]) => name !== 'presentation'));
   const cases = [
     ['K4-B3 the exact Listing bundle', L, true, true],
     ['K4-B4 a fresh presentation of the Listing bundle', resign({ ...L, presentedAt: L.presentedAt + 5, sessionNonce: 'a'.repeat(64) }), false, true],
