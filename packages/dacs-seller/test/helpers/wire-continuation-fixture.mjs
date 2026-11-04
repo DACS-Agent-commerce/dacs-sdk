@@ -2,7 +2,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { continuationFor, retainedFor } from '../../src/dacs/seller-wire-requests.mjs';
+import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { wireBuyer } from './wire-buyer.mjs';
 import assert from 'node:assert/strict';
@@ -49,7 +49,8 @@ export async function wireContinuationFixture(t) {
     agent: () => agent, reopen: async () => { agent.close(); agent = await f.open(); } };
 }
 
-export async function wireRouteFixture(t, { agent, listing, buyer, seller, store, now, readCommitmentReceipt = receiptReader() }) {
+/** The wire context of a seller over `store` and `agent`, made by `createWireContext` as the handler requires, with the buyer that signs for it. */
+export async function wireRouteFixture(t, { agent, listing, buyer, seller, store, now, readCommitmentReceipt = receiptReader(), requireDelegation = false }) {
   const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-fixture-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const evidenceFor = async (path, id) => {
@@ -60,8 +61,7 @@ export async function wireRouteFixture(t, { agent, listing, buyer, seller, store
   const createBuyer = () => wireBuyer({ buyer, seller, listingPin: listingPin(listing), clock: now, publicEndpoint: new URL(listing.seller.publicEndpoint).origin, readCommitmentReceipt, evidenceFor });
   const buyerWire = await createBuyer();
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing)));
-  const wire = { binding: buyerWire.binding, connection: buyerWire.connection, signer: seller, store, now, ready: () => true, requireDelegation: false,
-    journal: openWireRequestJournal(directory, { leaseMs: 300000, clock: now }), retainedFor: input => retainedFor(agent, input),
-    continuationFor: input => continuationFor(agent, input, signedListing), readCommitmentReceipt };
+  const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection: buyerWire.connection }, signer: seller, store, ready: () => true, now, agent, requireDelegation,
+    journal: openWireRequestJournal(directory, { leaseMs: 300000, clock: now }), signedListing, readCommitmentReceipt });
   return { wire, buyerWire, createBuyer };
 }

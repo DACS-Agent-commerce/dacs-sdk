@@ -36,7 +36,8 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [];
   let proposalCalls = 0;
-  const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
+  // The durable agent already committed this job; the host holds it from the proposal its wire route admitted, which is when the store keeps the tuple.
+  const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposalCalls === 0 ? null : retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
     retainsPaymentClaim:()=>false,
     submitPayment: async (body) => { calls.push(body.txHash); return structuredClone(answers[Math.min(calls.length - 1, answers.length - 1)]); } };
@@ -145,8 +146,10 @@ async function delegatedWorld(t, answers, publication = null) {
   const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'), now: clock });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [], reconciles = [];
-  const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
-    receiveProposal: async () => ({ disposition: 'complete', contribution: null }),
+  let proposed = false;
+  // The durable agent already committed this job; the host holds it from the proposal its wire route admitted, which is when the store keeps the tuple.
+  const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposed ? retained.agent().transportAgreementOf(id) : null, continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
+    receiveProposal: async () => { proposed = true; return { disposition: 'complete', contribution: null }; },
     submitPayment: async (body) => {
       calls.push(body.txHash);
       const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
@@ -156,8 +159,7 @@ async function delegatedWorld(t, answers, publication = null) {
     },
     // An agent that would run the claim again: the transport must not let it under an expired delegation.
     reconcileTransport: async (input) => { reconciles.push(input.readOnly === true); return { disposition: 'retry', value: DELIVERED }; } };
-  const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock });
-  wire.requireDelegation = true;
+  const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock, requireDelegation: true });
   payload.profile = wire.binding.profile;
   delegation.signature = buyerKey.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + core.canonicalize(payload))).toString('base64url');
   const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,
