@@ -157,7 +157,7 @@ describe("job ID grammar vectors replayed through the core functions", () => {
     vi.restoreAllMocks();
   });
 
-  test("the replay covers every vector and every operation of the fixture", () => {
+  test("every vector and every operation of the fixture is accounted for (profile-admit outcomes are a todo)", () => {
     expect(grammar.vectors).toHaveLength(grammar.count);
     expect(new Set(grammar.vectors.map((vector) => vector.operation))).toEqual(
       new Set(REPLAYED_OPERATIONS),
@@ -165,10 +165,21 @@ describe("job ID grammar vectors replayed through the core functions", () => {
     expect(Object.keys(replay).sort()).toEqual([...REPLAYED_OPERATIONS].sort());
   });
 
-  test.each(grammar.vectors.map((vector) => [`${vector.operation}/${vector.name}`, vector] as const))(
+  // The profile-admit vectors are replayed only for their session ID (it is a canonical job ID that
+  // derives and looks up); their admit-or-refuse outcome is not checked here.
+  test.each(
+    grammar.vectors.map((vector) => [
+      vector.operation === "profile-admit"
+        ? `${vector.operation}/${vector.name} (session ID lookup only, outcome not checked)`
+        : `${vector.operation}/${vector.name}`,
+      vector,
+    ] as const),
+  )(
     "%s",
     async (_label, vector) => {
       await replay[vector.operation]!(vector);
     },
   );
+
+  test.todo("profile-admit outcomes (admit or refuse) need verifier-owned peer evidence and are not a core function");
 });
