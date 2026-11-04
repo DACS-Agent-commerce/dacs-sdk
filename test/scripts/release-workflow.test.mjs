@@ -19,6 +19,14 @@ test("required build CI runs the workflow contract regression", () => {
   assert.ok(!contract["continue-on-error"]);
 });
 
+test("required build CI builds the Node host kit before it prepares the seller consumer", () => {
+  const runs = ci.jobs["build-test"].steps.map(step => step.run);
+  const hostBuild = runs.indexOf("npm run host:build");
+  assert.ok(hostBuild >= 0);
+  assert.ok(hostBuild < runs.findIndex(run => run?.startsWith("npm run seller:prepare")));
+  assert.ok(hostBuild < runs.indexOf("npm run seller:test"));
+});
+
 test("main, pull requests and merge queues prepare on both pinned Node versions", () => {
   for (const event of ["push", "pull_request", "merge_group", "workflow_dispatch"]) assert.ok(Object.hasOwn(workflow.on, event));
   assert.ok(workflow.on.push.branches.includes("main"));
