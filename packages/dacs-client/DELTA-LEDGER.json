@@ -5934,6 +5934,37 @@
           "after": "15b6cee99bc61e26789ca19e1a36494f6fb322bc"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13a1 bound seller signing and authority reads by the request deadline",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "0beb91038714306005ecd3ad79faf4a5b9cb441e",
+          "after": "e43129e16f7d027fb24b9e2ecef24eb56a908393"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "4b27d7047e0557f0439250ad6d8690fc5f2241aa",
+          "after": "add72c0add7c8188d6cc86e7476207a4882c93af"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
+          "after": "767519509759e6d77c030f38e5601eab455922a0"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-delegation.test.mjs",
+          "before": "e346741a630e7700b726316460a6a4898de04b02",
+          "after": "cd60876eb390082bbb372c2fe29f3827488e0af5"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": "15b6cee99bc61e26789ca19e1a36494f6fb322bc",
+          "after": "e4a43f5d39bc6806039a4f3f7421d0874504effc"
+        }
+      ]
     }
   ]
 }

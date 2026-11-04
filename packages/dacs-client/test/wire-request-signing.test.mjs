@@ -175,3 +175,44 @@ test('response verification remains within the HTTP deadline', async (t) => {
   await assert.rejects(client.agreementState({ jobId: w.payload.jobId }));
   assert.equal(client.failureCause, 'timeout');
 });
+const deadline = (t) => {
+  const controller = new AbortController();
+  t.mock.method(AbortSignal, 'timeout', () => controller.signal);
+  return () => controller.abort(new DOMException('TEST-deadline', 'TimeoutError'));
+};const turn = () => new Promise(resolve => setImmediate(resolve));
+const outcome = (call) => Promise.race([call.then(() => 'resolved', (error) => error), turn().then(() => 'pending')]);
+test('an authority read that never answers ends at the HTTP deadline with cause timeout, and nothing is signed or sent', async (t) => {
+  const w = await world(t), expire = deadline(t);
+  let release, sends = 0;
+  w.state.gate = () => new Promise(resolve => release = resolve);
+  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async () => {
+      sends++;
+      throw Error('unexpected dispatch');
+    } });
+  const call = client.agreementState({ jobId: w.payload.jobId });
+  await turn();
+  expire();
+  assert.equal((await outcome(call)).name, 'SellerUnavailableError');
+  assert.equal(client.failureCause, 'timeout');
+  release();
+  await turn();
+  assert.equal(w.state.signs.length, 0, 'the signer is not called after the deadline');
+  assert.equal(sends, 0);
+});
+test('a signature that finishes after the HTTP deadline is dropped and nothing is sent', async (t) => {
+  const w = await world(t), expire = deadline(t);
+  let release, sends = 0;
+  const authentication = w.createSellerWireAuthentication({ ...w.options, sessionSigner: { claim: w.session.claim, sign: (bytes) => new Promise(resolve => release = () => resolve(w.session.sign(bytes))) } });
+  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication, fetchImpl: async () => {
+      sends++;
+      throw Error('unexpected dispatch');
+    } });
+  const call = client.agreementState({ jobId: w.payload.jobId });
+  while (!release) await turn();
+  expire();
+  assert.equal((await outcome(call)).name, 'SellerUnavailableError');
+  assert.equal(client.failureCause, 'timeout');
+  release();
+  await turn();
+  assert.equal(sends, 0);
+});
