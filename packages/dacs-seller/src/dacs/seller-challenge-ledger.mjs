@@ -205,8 +205,9 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     assertIssueAdmitted(origin);
     validateIssueRequest(request, challengeScopeHash, origin);
     if (origin === 'route' && typeof authorization?.assertStillLive !== 'function') throw new TypeError('issue needs the final-liveness closure assertStillLive');
-    const time = readClock(SESSION_CHALLENGE_LIFETIME_MS);
-    return transaction(() => issueInTransaction(request, challengeScopeHash ?? null, origin, authorization, time));
+    readClock(SESSION_CHALLENGE_LIFETIME_MS);
+    // The lock can be waited for: expiry, reuse and the written times use the clock read once it is held.
+    return transaction(() => issueInTransaction(request, challengeScopeHash ?? null, origin, authorization, readClock(SESSION_CHALLENGE_LIFETIME_MS)));
   }
 
   // K1 attempt step 7 on an `issued` row: the code the first attempt fails with, or null when it may validate.
@@ -248,8 +249,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
 
   function attempt(input) {
     if (!isRecord(input) || (input.path !== 'context' && input.path !== 'proposal')) throw new TypeError('attempt needs an input naming its path, context or proposal');
-    const time = readClock();
-    return transaction(() => attemptInTransaction(input, time));
+    readClock();
+    return transaction(() => attemptInTransaction(input, readClock()));
   }
 
   // The row this exact attempt owns, or null: only this generation's owner can ever advance a validation.
@@ -278,8 +279,9 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   }
 
   function closeLostValidations() {
-    const failure = JSON.stringify({ code: 'validator_lost', status: 409, at: readClock() });
-    return transaction(() => run("UPDATE kit_challenges SET state = 'failed', failure = ? WHERE state = 'attempted' AND json_extract(owner, '$.generation') IS NOT ?", failure, generation));
+    readClock();
+    return transaction(() => run("UPDATE kit_challenges SET state = 'failed', failure = ? WHERE state = 'attempted' AND json_extract(owner, '$.generation') IS NOT ?",
+      JSON.stringify({ code: 'validator_lost', status: 409, at: readClock() }), generation));
   }
 
   return Object.freeze({

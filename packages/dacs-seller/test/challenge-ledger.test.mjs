@@ -899,6 +899,57 @@ test('challenge-accept-commit-cuts-retain-exact-bytes', (t) => {
   assert.deepEqual(w.quiet(() => w.attempt(nonce, { presentationHash: hash('another bundle') })), refused('context_challenge_consumed'));
 });
 
+// A second ledger on the same store whose transaction waits `waitMs` for the lock, as a busy store does, before it runs the callback.
+function waitingLedger(w, waitMs, generation = 'generation-one') {
+  const { db, control } = w;
+  return createSellerChallengeLedger({
+    db, generation, now: () => control.now,
+    transaction(run) {
+      control.now += waitMs;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const result = run();
+        db.exec('COMMIT');
+        return result;
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+    sessionState: () => null, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false,
+  });
+}
+
+test('challenge-clock-is-read-inside-the-transaction', (t) => {
+  // issue: a nonce that expires while the transaction waits is not reused, and the new row is stamped with the time it was written.
+  const w = world(t);
+  const first = w.issue();
+  w.control.now = first.expiresAt - 10;
+  const waiting = waitingLedger(w, 20);
+  const second = waiting.issue({ jobId: job('one'), buyer: BUYER }, SCOPE, LIVE);
+  assert.notEqual(second.sessionNonce, first.sessionNonce);
+  assert.equal(second.expiresAt, first.expiresAt + 10 + LIFETIME);
+  assert.equal(waiting.retained(second.sessionNonce).issuedAt, first.expiresAt + 10);
+  // attempt: a nonce that expires while the transaction waits fails as expired and is stamped with the time it was decided.
+  w.control.now = second.expiresAt - 10;
+  assert.deepEqual(waiting.attempt(w.input(second.sessionNonce)), refused('context_challenge_expired'));
+  assert.equal(waiting.retained(second.sessionNonce).attemptedAt, second.expiresAt + 10);
+  // startup closing stamps the closure with the time it was written.
+  const lost = w.attempted('two');
+  assert.equal(waitingLedger(w, 20, 'generation-two').closeLostValidations(), 1);
+  assert.equal(waiting.retained(lost.nonce).failure.at, w.control.now);
+  // A clock that is unusable once the lock is held refuses and writes nothing.
+  const rows = w.rows().length;
+  const broken = createSellerChallengeLedger({
+    db: w.db, generation: 'generation-one', now: () => w.control.now,
+    transaction(run) { w.control.now = MAX_SAFE; w.db.exec('BEGIN IMMEDIATE'); try { return run(); } finally { w.db.exec('ROLLBACK'); } },
+    sessionState: () => null, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false,
+  });
+  w.control.now = T0;
+  assert.throws(() => broken.issue({ jobId: job('two'), buyer: BUYER }, SCOPE, LIVE), { code: 'peer_clock_invalid', status: 503 });
+  assert.equal(w.rows().length, rows);
+});
+
 test('challenge-snapshot-isolation', (t) => {
   const w = world(t);
   const { nonce, owner } = w.attempted();
