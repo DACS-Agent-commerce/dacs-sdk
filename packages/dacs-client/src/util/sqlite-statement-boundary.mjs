@@ -12,7 +12,7 @@ const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function 
 const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupported by the statement guard';
 const REFUSED_ITERATOR = 'an iterator whose own next is not a function is unsupported by the statement guard';
 const owners = new WeakMap(), iterators = new WeakMap(), registrations = new WeakMap();
-let installed = false, checking = false, nativeExec, nativePrepare, nativeAll, builtinNames, bundledExtensionNames;
+let installed = false, checking = false, reportedEnds = 0, nativeExec, nativePrepare, nativeAll, builtinNames, bundledExtensionNames;
 const POLICY_ROW = { query_only: 'number' };
 const FUNCTION_ROW = { name: 'string', builtin: 'number', type: 'string', enc: 'string', narg: 'number', flags: 'number' };
 const PROGRAM_ROW = { addr: 'number', opcode: 'string', p1: 'number', p2: 'number', p3: 'number', p4: 'nullable string', p5: 'number', comment: 'nullable string' };
@@ -62,6 +62,7 @@ function check() {
   if (checking) return;
   checking = true;
   try { for (const { db, predicate } of callbacks) synchronousResult(db, predicate()); }
+  catch (error) { reportedEnds++; throw error; }
   finally { checking = false; }
 }
 // Reading a binding object can run caller code (accessors, proxy traps), and
@@ -219,9 +220,14 @@ function install(db) {
  * Predicate SQL bypasses recursive checks. Accessor/proxy bindings, SQL callbacks,
  * virtual tables, EXPLAIN and statements prepared before installation are refused.
  * On Node 22.13.0/23.4.0 only iterators created after installation have own next
- * wrapped; an own next that is not a function is refused. Native methods stay unrestricted outside guards. Captured native
- * writers fail between grants; deliberately clearing the native flag requires
- * a native authorizer, which Node 22 lacks.
+ * wrapped; an own next that is not a function is refused. An earlier iterator
+ * keeps its native next, which cannot be reached, so its steps run unchecked but
+ * read-only: the fence is closed, so any write fails. The predicate runs once
+ * more when fn returns, so a guard whose liveness ended during such a step throws
+ * the predicate's error instead of returning, unless a check inside the guard
+ * already reported that end to fn. Native methods stay unrestricted
+ * outside guards. Captured native writers fail between grants; deliberately
+ * clearing the native flag requires a native authorizer, which Node 22 lacks.
  */
 export function withSqliteStatementGuard(db, predicate, fn) {
   if ([predicate, fn].some(callback => typeof callback !== 'function' || types.isAsyncFunction(callback) || types.isGeneratorFunction(callback))) {
@@ -233,7 +239,16 @@ export function withSqliteStatementGuard(db, predicate, fn) {
   if (!parent && queryOnly(db) !== 0) throw new TypeError('the statement guard requires a writable read-only policy');
   nativeExec.call(db, 'PRAGMA query_only=ON');
   callbacks.push({ db, predicate });
-  try { check(); return synchronousResult(db, fn()); }
+  const endsBefore = reportedEnds;
+  try {
+    check();
+    const result = fn();
+    // A step the boundary cannot wrap (an iterator created before installation
+    // on the engine floors) ran without a check. Unless a check already reported
+    // the end to the body, confirm liveness once more.
+    if (reportedEnds === endsBefore) check();
+    return synchronousResult(db, result);
+  }
   finally {
     callbacks.pop();
     if (!isSqliteHandleRetired(db)) {
