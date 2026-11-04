@@ -11,6 +11,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { wireAuthentication } from './wire-buyer.mjs';
 import * as core from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
 import * as seller from '@kynesyslabs/dacs-seller';
@@ -160,6 +161,7 @@ const tp1Network = {
 };
 const capabilities = () => ({
   tp1Network,
+  readCommitmentReceipt: Object.assign(refuse('readCommitmentReceipt'), { chainIdentity: approvedRecord.chainIdentity }),
   now:()=>now,
   nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: journal.anchorEvidence, fetchImpl: refuse('nativePaymentEvidence.fetch') }),
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence,
@@ -204,6 +206,8 @@ out.deliverableJournal = {
 };
 deliveryJournal.close();
 out.refusedConfigurations = {
+  missingReadCommitmentReceipt: await refusal({ signer, listing, dataDirectory, ...capabilities(), readCommitmentReceipt: undefined }),
+  invalidReadCommitmentReceipt: await refusal({ signer, listing, dataDirectory, ...capabilities(), readCommitmentReceipt: {} }),
   missingJournal: await refusal({ signer, listing, dataDirectory, ...withoutJournal }),
   missingSessionAdmission: await refusal({ signer, listing, dataDirectory, ...withoutAdmission }),
   missingAgreementAnchor: await refusal({ signer, listing, dataDirectory, ...withoutReadback }),
@@ -232,8 +236,10 @@ const proposalFor = async (input) => {
 // presentation on a job the seller issued no challenge for.
 fabricatedJobs.add(fabricatedJobId);
 let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted, fabricated, replayed, bare;
-const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: seller.createSellerTransportClientAuth({
-  buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, now:()=>now,resolveJob: () => ({ listingPin, agreementHash }) }) });
+const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: wireAuthentication({
+  buyer: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin,
+  clock: () => now, connection: tp1Network.connection, readAuthority: tp1Network.readAuthority,
+}, () => agreementHash) });
 // Independent of the package: node:crypto against the seller's own key.
 const independentVerifier = ({ party, algorithm, value, signedBytes }) => {
   if (algorithm !== 'ed25519' || party !== sellerKey.claim && party !== buyerKey.claim) return 'invalid';

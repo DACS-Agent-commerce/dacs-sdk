@@ -2151,6 +2151,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId));
       return structuredClone(session?.agreement ?? session?.proposal?.plan?.draft ?? null);
     },
+    /**
+     * The job's durable commitment and Agreement as JSON texts, `{ commitmentText, agreementText }`, or null when either is not
+     * retained. Read-only: it never signs or reads the chain. Throws the durable state's read or validation errors.
+     */
+    continuationEvidenceOf: (jobId) => {
+      const session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId));
+      return session?.commitment && session.agreement ? { commitmentText: JSON.stringify(session.commitment), agreementText: JSON.stringify(session.agreement) } : null;
+    },
     stageOf: (jobId) => sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId))?.stage ?? null,
     deliveryStateOf: (jobId) => {
       assertSettlementCredit(jobId);

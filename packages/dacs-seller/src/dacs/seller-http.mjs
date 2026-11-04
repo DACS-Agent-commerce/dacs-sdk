@@ -6,11 +6,10 @@
 // requests, independently signed seller responses and a durable intent journal.
 // Only an authenticated definite refusal becomes SellerRefusedError in that
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
-// With the `wire` option, the proposals, state and commitment routes open every
-// request and sign every answer through `./wire` (seller-wire-requests.mjs); the
-// transport store stays their only journal, and the state route reserves nowhere.
-// The payment and bundle routes, the challenge and the context step keep the old
-// server auth.
+// With the `wire` option, every route but the challenge and the context step opens
+// each request and signs each answer through `./wire` (seller-wire-requests.mjs); the
+// transport store stays their only journal, and the read routes reserve nowhere.
+// The challenge and the context step keep the old server auth.
 import { isReadRoute, signWireResponse, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
@@ -21,7 +20,7 @@ import { WIRE_ROUTE_PATHS, admitAnswerText, admitWireRoute } from './seller-wire
 
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE_LIST = 256;
-const WIRE_OPTION_MEMBERS = ['binding', 'connection', 'signer', 'journal', 'store', 'retainedFor', 'ready', 'now', 'requireDelegation'];
+const WIRE_OPTION_MEMBERS = ['binding', 'connection', 'signer', 'journal', 'store', 'retainedFor', 'continuationFor', 'readCommitmentReceipt', 'ready', 'now', 'requireDelegation'];
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 export const loopbackSocket = (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
@@ -93,9 +92,9 @@ function readRequest(req, timeoutMs) {
 
 // `context` (seller-context-route.mjs, seller context route) mounts the
 // Vet and Agreement-context route. Without it the route table is unchanged.
-// `wire` ({ binding, connection, signer, journal, store, retainedFor, ready, now, requireDelegation }) moves the routes
-// of WIRE_ROUTE_PATHS onto `./wire`; `store` is the raw transport store, their only journal. It needs `authentication`
-// for the routes still on the old auth.
+// `wire` ({ binding, connection, signer, journal, store, retainedFor, continuationFor, readCommitmentReceipt, ready, now,
+// requireDelegation }) moves the routes of WIRE_ROUTE_PATHS onto `./wire`; `store` is the raw transport store, their only
+// journal. It needs `authentication` for the challenge and the context step.
 export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire = null } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
   if (wire !== null && (!authentication || WIRE_OPTION_MEMBERS.some((member) => wire?.[member] === undefined) || typeof agent.transportAgreementOf !== 'function')) throw new Error('the wire routes need the wire context, retained Agreement scope and the old authentication of the routes still on it');
@@ -174,10 +173,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const rawBody = await readRequest(req, bodyTimeoutMs);
       try { body = admitRawJson(rawBody); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
-      let wireReadbackOnly = false;
+      let wireReadbackOnly = false, recheckWire;
       if (authentication) {
         if (wired) {
-          ({ body, readbackOnly: wireReadbackOnly } = await admitWireRoute(wire, agent, { header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (opened) => { request = opened; wiredRequests.add(opened); } }));
+          ({ body, readbackOnly: wireReadbackOnly, recheck: recheckWire } = await admitWireRoute(wire, agent, { header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (opened) => { request = opened; wiredRequests.add(opened); } }));
           // A signed read reserves and completes nowhere (K5 gives it no sink): it answers from the agent's current state.
           if (isReadRoute(req.url)) {
             const outcome = transportOutcome(req.url, { answer: await route(agent, body, {}) }, { retained: false });
@@ -186,9 +185,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         } else {
           request = authentication.readRequest(req.headers[SELLER_TRANSPORT_HEADER]);
           authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId), ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
-          if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
           if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
         }
+        // Payment evidence is taken only on an assembled settlement profile, whichever auth opened the request.
+        // Payment evidence is taken only on an assembled settlement profile, whichever auth opened the request.
+        if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
         // The context step reads the journal first and runs its admission only
         // for new work, recording the start in the reserve transaction. A wire request's
         // reservation keeps the job's TP-1 tuple in the same transaction.
@@ -220,7 +221,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           }
           // A cached refresh owns no pending reservation. Recheck its live
           // authority inside the agent's job fence, including after restore.
-          const transport = Object.freeze({ check: () => authentication.assertLive(request) });
+          // A wire request is rechecked by the wire on a fresh clock first; the old
+          // authentication knows no wire request, and its expiry bounds its delegation's.
+          if (wired) await recheckWire();
+          const transport = Object.freeze({ check: wired ? () => { if (request.expiresAt <= wire.now()) throw new WireError('peer_expired', 408); } : () => authentication.assertLive(request) });
           const answer = await route(agent, body, { transport }), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }

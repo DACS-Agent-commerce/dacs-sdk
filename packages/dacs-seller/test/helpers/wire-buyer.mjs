@@ -6,7 +6,7 @@ import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
 
 export const FIXTURE_ENDPOINT = 'https://seller.example.invalid';
 /** The routes the kit answers through the wire; the others still use the old server auth. */
-export const WIRE_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.state, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature]);
+export const WIRE_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.state, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature, DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature, DACS_SELLER_HTTP_PATHS.bundleBuyerCopy]);
 const DISCOVERY_LIFETIME_MS = 600_000;
 const LISTING_WINDOW_MS = 86_400_000;
 const REQUEST_LIFETIME_MS = 30_000;
@@ -20,19 +20,19 @@ const eligibilityFor = (listing, now) => () => ({
  * One binding over the fixture authority, the seller's signed discovery document, and the buyer's endpoint proof of it.
  * `buyer` and `seller` are `{ claim, sign }` signers; `clock()` is the buyer's and seller's shared test time.
  */
-export async function wireBuyer({ buyer, seller, listingPin, clock, connection = () => ({ ...TEST_CONNECTION }), readAuthority = authorityReader() }) {
+export async function wireBuyer({ buyer, seller, listingPin, clock, connection = () => ({ ...TEST_CONNECTION }), readAuthority = authorityReader(), evidenceFor = async () => ({}), readCommitmentReceipt, publicEndpoint = FIXTURE_ENDPOINT }) {
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: connection(), readAuthority });
   const now = clock();
-  const payload = { format: DACS_SELLER_DISCOVERY_FORMAT, profile: binding.profile, seller: seller.claim, publicEndpoint: FIXTURE_ENDPOINT, transport: [DACS_SELLER_HTTP_V1],
+  const payload = { format: DACS_SELLER_DISCOVERY_FORMAT, profile: binding.profile, seller: seller.claim, publicEndpoint, transport: [DACS_SELLER_HTTP_V1],
     listings: [listingPin], capabilities: TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + DISCOVERY_LIFETIME_MS };
   const document = await signDiscoveryDocument(payload, seller, binding, connection());
-  const listing = { seller: seller.claim, publicEndpoint: FIXTURE_ENDPOINT, listingPin };
-  const endpointProof = await verifyEndpointProof(document, { listing, binding, local: connection(), now, readListingEligibility: eligibilityFor(listing, now) });
+  const listing = { seller: seller.claim, publicEndpoint, listingPin };
+  const endpointProof = await verifyEndpointProof(document, { listing, binding, local: connection(), now, readListingEligibility: eligibilityFor(listing, now), readCommitmentReceipt });
 
   /** A signed request for `path`: `{ payload, header, text }`. `agreementHash` is the buyer's own view of the Agreement. */
   const signRequest = async (path, body, { jobId, agreementHash, nonce, lifetimeMs = REQUEST_LIFETIME_MS, delegation = null, signer = buyer, text = JSON.stringify(body) } = {}) => {
-    const { payload, header } = await signWireRequest({ signer, binding, local: connection(), endpointProof, publicEndpoint: FIXTURE_ENDPOINT, path, jobId, text, seller: seller.claim,
-      job: { listingPin, agreementHash, profile: binding.profile }, delegation, now: clock(), lifetimeMs, ...(nonce === undefined ? {} : { nonce }) });
+    const { payload, header } = await signWireRequest({ signer, binding, local: connection(), endpointProof, publicEndpoint, path, jobId, text, seller: seller.claim,
+      job: { listingPin, agreementHash, profile: binding.profile }, ...await evidenceFor(path, jobId), delegation, now: clock(), lifetimeMs, ...(nonce === undefined ? {} : { nonce }) });
     return { payload, header, text };
   };
   /** The `authentication` adapter of `createSellerAgentClient`: `jobFor(jobId)` supplies the buyer's Agreement hash. */

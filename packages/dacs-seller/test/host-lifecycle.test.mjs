@@ -317,7 +317,7 @@ test('host refuses malformed options before opening any state',async t=>{
  const link=join(root,'link');await symlink(dataDirectory,link);
  const file=join(root,'regular');await writeFile(file,'TEST');
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},tp1Network:testNetwork()});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',tp1Network:testNetwork()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],

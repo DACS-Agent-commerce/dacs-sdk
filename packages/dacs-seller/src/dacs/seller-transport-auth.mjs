@@ -42,9 +42,6 @@ export const SELLER_CONTEXT_SCOPE_KEYS = Object.freeze(['source', 'wallet', 'job
 export const sellerContextChallengeScope = (value) => { requireJobId(value?.jobId); const { buyerBundleHash, ...scope } = value; return scope; };
 export const sellerContextScopeHash = (scope) => { requireJobId(scope?.jobId); return sha256Hex(canonicalize(scope)); };
 const READ_ROUTES = new Set([STATE, '/dacs/v1/bundles/buyer-copy']);
-// The routes the signed wire opens (seller-wire-requests.mjs). Their requests always bring the purchase's TP-1 tuple; the
-// context step keeps its legacy branch, and the routes still on the old auth follow in the next PR.
-const TUPLE_REQUIRED_ROUTES = new Set([PROPOSAL, STATE, '/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
 const exact = (a, b) => canonicalize(a) === canonicalize(b);
 const record = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const keys = (v, expected) => record(v) && Object.keys(v).length === expected.length && expected.every((k) => Object.hasOwn(v, k));
@@ -429,10 +426,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // keepProfile is the TP-1 tuple of a wire reservation. Absent, nothing about the tuple is
     // read or kept (the old-auth context route). Supplied, its shape is checked, an existing job
     // must hold exactly that tuple (a dry run included), and a new job keeps it in this
-    // transaction once every capacity and rate check has passed. A route the signed wire opens refuses an absent tuple
-    // before anything is read.
+    // transaction once every capacity and rate check has passed. Every path but the context step's (the signed wire opens the
+    // rest) refuses an absent tuple before anything is read.
     reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, contextDecision = false, verdict = null, keepProfile } = {}) {
-      if (keepProfile === undefined && TUPLE_REQUIRED_ROUTES.has(p?.path)) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
+      if (keepProfile === undefined && p?.path !== CONTEXT) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
       requireJobId(p?.jobId);
       const profileText = keepProfile === undefined ? null : purchaseProfileText(keepProfile);
       if (p.path === CONTEXT) {

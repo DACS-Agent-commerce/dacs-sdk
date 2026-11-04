@@ -352,7 +352,7 @@ test('P10-T08 the host wire context refuses a changed connection and a copied bi
   await f.start({ tp1Network: testNetwork({ connection: () => ({ ...TEST_CONNECTION, connectionId }) }) });
   const [wire] = f.wires;
   assert.equal(Object.isFrozen(wire), true);
-  assert.deepEqual(Object.keys(wire).sort(), ['assertCurrentBinding', 'binding', 'connection', 'journal', 'now', 'ready', 'requireDelegation', 'retainedFor', 'signer', 'store']);
+  assert.deepEqual(Object.keys(wire).sort(), ['assertCurrentBinding', 'binding', 'connection', 'continuationFor', 'journal', 'now', 'readCommitmentReceipt', 'ready', 'requireDelegation', 'retainedFor', 'signer', 'store']);
   await wire.assertCurrentBinding();
   await assertTp1Binding(wire.binding, wire.connection());
   await assert.rejects(assertTp1Binding({ ...wire.binding }, wire.connection()), { code: 'tp1_binding_required' });

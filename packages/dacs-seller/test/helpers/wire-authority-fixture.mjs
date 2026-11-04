@@ -10,7 +10,7 @@ const AUTHORITY_PROVENANCE = 'test-only-independent-authority/v1';
 /** The TP-1 tuple the fixture authority confirms: the one a wire host keeps for each purchase. */
 export const FIXTURE_PROFILE = Object.freeze({ id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISION, base: TP1_BASE_REVISION,
   chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, pinVersion: TP1_APPROVED_IDENTITY_RECORD.pinVersion });
-const WIRE_ROUTES = new Set(['/dacs/v1/agreements/proposals', '/dacs/v1/agreements/state', '/dacs/v1/commitments', '/dacs/v1/commitments/signature']);
+const WIRE_ROUTES = new Set(['/dacs/v1/agreements/proposals', '/dacs/v1/agreements/state', '/dacs/v1/commitments', '/dacs/v1/commitments/signature', '/dacs/v1/payments', '/dacs/v1/bundles/request', '/dacs/v1/bundles/countersignature', '/dacs/v1/bundles/buyer-copy']);
 
 /**
  * `store` with the fixture tuple supplied on every `reserve` and `classify` of a route the signed wire opens, as the wire
