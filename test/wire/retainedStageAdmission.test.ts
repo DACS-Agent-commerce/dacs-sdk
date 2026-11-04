@@ -87,34 +87,24 @@ describe("retained-stage admission under ready:false", { timeout: TIMEOUT_MS }, 
     for (const path of NON_STAGE_ROUTES) {
       for (const ready of [true, false]) {
         const check = { ...x.check(path), ready, retained: { ...x.retained, allocated: false }, requestJournal: journalWithFiles().journal } as wire.RequestCheck;
-        await expect(wire.checkWireRequest(await x.open(path), check), `${path} ready=${ready}`).rejects.toMatchObject(RETAINED_REQUIRED);
+        const opened = await x.open(path);
+        const admission = path === P.context
+          ? wire.admitPreAgreementRequest(opened, { ...check, route: "context", retained: { ...x.retained, allocated: false, accepted: false } as wire.PreAgreementCheck["retained"] })
+          : wire.checkWireRequest(opened, check);
+        await expect(admission, `${path} ready=${ready}`).rejects.toMatchObject(RETAINED_REQUIRED);
       }
     }
   });
 
-  it("CAP the context route keeps its ready rule and its four retained members until P03b", async () => {
-    const x = await world();
-    const j = journalWithFiles();
-    // No operation yet: a drained seller refuses a new context request.
-    await expect(admit(x, P.context, j.journal, { retained: x.retained })).rejects.toMatchObject(NOT_READY);
-    await reserveFirst(x, P.context, j.journal);
-    // `allocated` is not a context member, so it cannot admit the route.
-    await expect(admit(x, P.context, j.journal, { retained: { ...x.retained, allocated: true } })).rejects.toMatchObject(RETAINED_REQUIRED);
-    expect((await wire.checkWireRequest(await x.open(P.context), { ...x.check(P.context), requestJournal: j.journal })).reserve).toBeTypeOf("function");
-  });
-
-  it("CAP under ready:false, a context retry is admitted when the journal already holds its operation under this request's binding, and another binding is seller_not_ready", async () => {
-    const x = await world(), other = await world();
-    for (const state of ["pending", "ended", "completed"]) {
-      const j = journalWithFiles();
-      const first = await reserveFirst(x, P.context, j.journal);
-      if (state === "ended") wire.completeWireEffect(j.journal, first, null);
-      if (state === "completed") wire.completeWireEffect(j.journal, first, { status: 200, text: "{}" });
-      const files = j.files();
-      expect((await admit(x, P.context, j.journal, { retained: x.retained })).reserve, state).toBeTypeOf("function");
-      await expect(admit(other, P.context, j.journal, { retained: other.retained }), `${state}, another binding`).rejects.toMatchObject(NOT_READY);
-      expect(j.files(), state).toEqual(files);
-    }
+  it("CAP the context route is admitted only through admitPreAgreementRequest, under its ready/accepted rule and five retained members", async () => {
+    const x = await world(), j = journalWithFiles(), opened = await x.open(P.context);
+    const check = { ...x.check(P.context), route: "context" as const, ready: false, retained: { ...x.retained, accepted: false }, requestJournal: j.journal };
+    await expect(wire.checkWireRequest(opened, check)).rejects.toMatchObject({ code: "wire_route_requires_preagreement" });
+    await expect(wire.admitPreAgreementRequest(opened, check)).rejects.toMatchObject(NOT_READY);
+    await (await wire.admitPreAgreementRequest(opened, { ...check, ready: true })).reserve!();
+    // An operation already bound to this request's binding does not admit it: only the host's `accepted` does.
+    await expect(wire.admitPreAgreementRequest(opened, check)).rejects.toMatchObject(NOT_READY);
+    expect((await wire.admitPreAgreementRequest(opened, { ...check, retained: { ...x.retained, accepted: true } })).reserve).toBeTypeOf("function");
   });
 
   it("CAP K5-S8 wire slice: a proposals stage admitted under ready:false after 8 nonce-only cuts reserves new attempt 0 (files 8 to 10)", async () => {

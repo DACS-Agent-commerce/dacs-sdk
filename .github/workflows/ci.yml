@@ -68,6 +68,10 @@ jobs:
         if: matrix.node-version == '22'
         run: npm test --workspace @kynesyslabs/dacs-client
 
+      - name: Test the kit-client contract harness
+        if: matrix.node-version == '22'
+        run: npm run kit-client:test
+
       - name: Build project generator
         run: npm run generator:build
 

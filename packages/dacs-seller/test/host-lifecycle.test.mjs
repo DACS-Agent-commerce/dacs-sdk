@@ -4,7 +4,6 @@ import fs, {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {connect} from 'node:net';
 import {once} from 'node:events';
-import {syncBuiltinESMExports} from 'node:module';
 import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -13,6 +12,7 @@ import Database from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import {commitmentFixture} from './helpers/commitment-fixture.mjs';
 import {privateModule} from './helpers/private-module.mjs';
+import {testNetwork} from './helpers/wire-authority-fixture.mjs';
 import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost} from '../src/host.mjs';
@@ -24,7 +24,7 @@ async function fixture(t,{wrap=agent=>agent}={}){
  const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
  const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;
  const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
- api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory},hosts=[];
+ api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,tp1Network:testNetwork()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
  const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW}),timeoutMs:60000});
@@ -254,16 +254,16 @@ test('host reports both literal loopback URLs',async t=>{
  const v6=await f.start({host:'::1'});assert.match(v6.url,/^http:\/\/\[::1\]:\d+$/);await v6.close();
 });
 
-test('host makes newly created seller and transport directories durable before listening',async t=>{
- const f=await fixture(t),original=fs.fsyncSync,synced=[];
+test('host makes newly created seller, transport and journal directories durable before listening',async t=>{
+ const f=await fixture(t),handle=await fs.promises.open(f.dataDirectory,'r'),proto=Object.getPrototypeOf(handle),original=proto.sync,synced=[];
+ await handle.close();
  try{
-  fs.fsyncSync=descriptor=>{try{synced.push(fs.realpathSync(`/proc/self/fd/${descriptor}`));}catch{}return original(descriptor);};
-  syncBuiltinESMExports();
+  proto.sync=async function(){try{synced.push(fs.realpathSync(`/proc/self/fd/${this.fd}`));}catch{}return original.call(this);};
   const host=await f.start();
   assert.ok(synced.includes(join(f.dataDirectory,'transport')),'the new transport directory entry is synced');
-  assert.ok(synced.includes(f.dataDirectory),'the new seller and transport directory entries are synced in dataDirectory');
+  assert.ok(synced.includes(f.dataDirectory),'the new seller, transport and wire-journal directory entries are synced in dataDirectory');
   await host.close();
- }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
+ }finally{proto.sync=original;}
 });
 
 const lockOwner=(lease,pid,namespace)=>`${pid}:${lease}:${Date.now()}:${randomUUID()}${namespace?`:${namespace.ns}.${namespace.boot}.${namespace.start}`:''}`;
@@ -318,7 +318,7 @@ test('host refuses malformed options before opening any state',async t=>{
  // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
  const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{}});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},tp1Network:testNetwork()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],
