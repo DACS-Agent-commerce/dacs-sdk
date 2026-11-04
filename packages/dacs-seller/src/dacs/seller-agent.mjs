@@ -1113,7 +1113,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         commitmentVerifier,
       );
     } catch (error) {
-      throw new SellerAgentError('commitment_failed', String(error?.message ?? error).slice(0, 240),503,{cause:readFailure ?? error});
+      throw new SellerAgentError('commitment_failed', 'commitment_failed',503,{cause:readFailure ?? error});
     }
     if (early) {
       if (attempt && !session.signatureCommitmentHeld && !noLocalWrites) { session.signatureCommitmentHeld = true; persist(session); }

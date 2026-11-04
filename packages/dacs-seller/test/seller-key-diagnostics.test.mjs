@@ -1,10 +1,22 @@
-// Seller key custody diagnostics (P20a, cases 20-12 and 20-14): a failure keeps
-// its real cause internally and emits only a fixed code and nonsecret context.
+// Seller key custody and lifetime diagnostics (P20a/P20b): failures keep their
+// real causes internally and emit only fixed codes and nonsecret context.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { chmodSync } from 'node:fs';
+import fsPromises, { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { inspect } from 'node:util';
+import { privateModule } from './helpers/private-module.mjs';
+import { productionFixture } from './helpers/vet-production-fixture.mjs';
+import { commitmentFixture } from './helpers/commitment-fixture.mjs';
+import { JOB } from './helpers/protocol-fixture.mjs';
+import { composeSellerApproval, createExactOperatorApproval } from '../src/devnet-demo/operator-approval.mjs';
+import * as policyFixture from './helpers/d5-policy-fixtures.mjs';
 import {
   BUYER, SELLER, capturedLog, derivationDouble, importSellerKey, keyFixture, keyRecordBytes, loaderSpy, mnemonicFor, openOptions, refusalOf,
 } from './helpers/seller-key-fixture.mjs';
@@ -33,6 +45,176 @@ test('a startup failure while the loader is live retains the original cause inte
   assert.equal(secret.redact(mnemonic), mnemonic, 'the whole-file token does not redact the mnemonic field alone');
   secret.destroy();
   assert.ok(!sink.lines.join('\n').includes(mnemonic));
+});
+
+// P20b secrets are generated at runtime, including every encoding K10-S8 names.
+const runtimeEncodings = encodingsOf(randomBytes(32));
+const runtimeFailure = () => Object.assign(new Error(runtimeEncodings.join(' | '), {
+  cause: new Error(runtimeEncodings.join(' | ')),
+}), { code: runtimeEncodings[0], category: runtimeEncodings[1] });
+function assertClosed(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  for (const encoding of runtimeEncodings) assert.ok(!text.includes(encoding), 'a runtime secret encoding was emitted');
+  assert.ok(!text.includes('secret-destroyed'));
+}
+function assertDiagnosticLines(lines) {
+  assertClosed(lines.join(''));
+  const codes = ['party_vet_writer_failed', 'party_vet_store_failed', 'seller_policy_ledger_unreadable', 'seller_policy_sign_authorization_failed'];
+  for (const line of lines) {
+    const entry = JSON.parse(line.slice(line.indexOf(': ') + 2));
+    assert.ok(codes.includes(entry.code));
+    assert.ok(Object.keys(entry).every(key => ['code', 'jobId', 'role', 'operation', 'writerCause', 'ledgerLine'].includes(key)));
+  }
+}
+function stderrCapture(t) {
+  const lines = [];
+  let unreadable;
+  const ledgerWait = new Promise(resolve => { unreadable = resolve; });
+  t.mock.method(process.stderr, 'write', line => {
+    lines.push(String(line));
+    if (String(line).startsWith('seller-policy-ledger unreadable')) unreadable();
+    return true;
+  });
+  return { lines, ledgerWait };
+}
+
+test('a failure after the loader is destroyed logs only the closed projection and keeps the original as an internal cause', async t => {
+  loaderSpy.reset();
+  const key = await openSellerKey(openOptions(keyFixture(t)));
+  t.after(() => key.close());
+  assert.ok(loaderSpy.calls[0].events.includes('destroy'));
+  const { durableOperationStore } = await privateModule(new URL('../src/devnet-demo/agreement-context.mjs', import.meta.url), ['durableOperationStore']);
+  const { sellerDiagnostic } = await import('../src/seller-diagnostics.mjs');
+  for (const stage of ['signer construction', 'listener construction']) {
+    const job = { jobId: JOB, binding: {}, incarnation: stage }, cause = runtimeFailure();
+    if (stage === 'listener construction') Object.assign(cause, { code: 'conflict', category: 'substrate' });
+    let row = { binding: {}, lifecycle: { incarnation: stage, state: 'open' }, ops: { buyer: { steps: {}, signing: {} } } };
+    const state = { serializeStep: (_job, _role, _key, work) => work(), update: async (_job, change) => { row = change(row) ?? row; } };
+    const { operationStore } = durableOperationStore(state, job, 'buyer', { now: () => 0, clock: {} });
+    let calls = 0;
+    const input = { operationKey: stage, operationHash: 'TEST operation', inputHash: 'TEST input', step: 'composite', execute: () => { calls++; throw cause; } };
+    const failed = await refusalOf(() => operationStore.runOnce(input));
+    assert.equal(failed.error.cause, cause);
+    assert.ok(!Object.keys(failed.error).includes('cause'));
+    if (stage === 'listener construction') assert.equal(failed.error.category, 'substrate');
+    const line = JSON.stringify(sellerDiagnostic(failed.code, { jobId: JOB, error: cause }));
+    assertClosed(line);
+    assertClosed(row);
+    const replayed = await refusalOf(() => operationStore.runOnce(input));
+    assert.equal(replayed.code, failed.code);
+    assertClosed(replayed.error);
+    // A retained failure from an older writer may still contain raw text.
+    for (const step of Object.values(row.ops.buyer.steps)) Object.assign(step.error, {
+      name: runtimeEncodings[0], message: cause.message, cause: { message: cause.message },
+    });
+    const legacy = await refusalOf(() => operationStore.runOnce(input));
+    assert.equal(legacy.code, failed.code);
+    assertClosed(legacy.error.message);
+    assertClosed(legacy.error.cause);
+    assert.equal(calls, 1, 'the failed step is replayed without executing again');
+  }
+});
+
+test('after startup, signer, provider-store and approval-ledger failures log only the closed projection', async t => {
+  loaderSpy.reset();
+  const key = await openSellerKey(openOptions(keyFixture(t)));
+  t.after(() => key.close());
+  assert.ok(loaderSpy.calls[0].events.includes('destroy'));
+  const capture = stderrCapture(t);
+  for (const site of ['signer', 'writer throw', 'writer refusal', 'provider-store']) {
+    const f = productionFixture();
+    t.after(() => f.base.close());
+    delete f.config.log; // Exercise the shipped default stderr path.
+    const cause = runtimeFailure();
+    if (site === 'signer') f.config.wallet.signBytes = () => { throw cause; };
+    if (site === 'writer throw') f.anchor.publish = async () => { throw cause; };
+    if (site === 'writer refusal') f.anchor.publish = async () => ({ status: 'rejected', reason: cause.message, cause });
+    const provider = await f.provider(), before = capture.lines.length;
+    let failure;
+    if (site === 'provider-store') {
+      f.config.store.update = async () => { throw cause; };
+      failure = await refusalOf(() => provider.release({ jobId: JOB, generatedAt: f.input().scope.generatedAt }));
+      assert.equal(failure.error, cause, 'store failure keeps its identity');
+    } else {
+      failure = await refusalOf(() => provider.jobVet(f.input().scope, f.input().buyerIdentityBundle, () => true));
+    }
+    assert.ok(failure, site);
+    if (site !== 'provider-store') assertClosed(failure.error.message);
+    if (site !== 'signer') assert.ok(capture.lines.length > before, `${site} emitted a diagnostic`);
+    assertDiagnosticLines(capture.lines);
+    assertClosed(await f.base.entries());
+  }
+  const { address, seller, sourceBinding, artifactAuthority, pin, T0, requestFor } = policyFixture;
+  const ledgerDirectory = await mkdtemp(join(tmpdir(), 'TEST-ledger-'));
+  t.after(() => rm(ledgerDirectory, { recursive: true, force: true }));
+  const policy = createExactOperatorApproval({ maxTotalOs: '10000000000', evidencePath: join(ledgerDirectory, 'ledger.jsonl'),
+    now: () => T0, sellerApproval: { mode: 'policy' },
+    policy: { address, seller, sourceBinding, artifactAuthority, listingPin: () => pin, resolvePurchase: () => null } });
+  const cause = runtimeFailure();
+  const read = t.mock.method(fsPromises, 'readFile', async () => { throw cause; });
+  syncBuiltinESMExports();
+  t.after(() => { read.mock.restore(); syncBuiltinESMExports(); });
+  const pending = refusalOf(() => policy.decide(requestFor({ artifactKind: 'CompositeVerificationRecord' })));
+  await capture.ledgerWait;
+  await policy.stop();
+  assert.equal((await pending).code, 'seller_approval_stopped');
+  read.mock.restore();
+  syncBuiltinESMExports();
+  assertDiagnosticLines(capture.lines);
+  let decisions = 0;
+  const request = requestFor({ artifactKind: 'CompositeVerificationRecord' });
+  const composed = composeSellerApproval({ mode: 'policy', manual: () => true, policy: {
+    decide: async () => ++decisions === 1 ? { outcome: 'held', reason: 'seller-record-missing', attemptId: 'TEST attempt', requestBytes: JSON.stringify(request) } : { outcome: 'refused' },
+    authorizeHeld: async () => 'unsigned', pause: async () => {}, releaseHeld: async () => {},
+  } });
+  await composed(request);
+  assert.equal(decisions, 2);
+  assert.ok(capture.lines.some(line => line.startsWith('seller-policy-sign-authorization failed:')));
+  assertDiagnosticLines(capture.lines);
+});
+
+test('a commitment failure answer to the buyer carries its code only, never wallet error text', async t => {
+  const f = await commitmentFixture(t), { agent } = await f.prepare(), cause = runtimeFailure();
+  f.native.publish = async () => { throw cause; };
+  const failed = await refusalOf(() => agent.commit({ jobId: JOB }));
+  assert.equal(failed.code, 'commitment_failed');
+  assert.equal(failed.error.status, 503);
+  assert.equal(failed.error.message, 'commitment_failed');
+  assert.equal(failed.error.cause.cause, cause, 'the SDK submission wrapper keeps the original wallet cause');
+  const { createSellerHttpHandler } = await import('../src/dacs/seller-http.mjs');
+  const handler = createSellerHttpHandler({ ...agent, commit: async () => { throw failed.error; } });
+  const request = Readable.from([Buffer.from(JSON.stringify({ jobId: JOB }))]);
+  Object.assign(request, { url: '/dacs/v1/commitments', method: 'POST', headers: { 'content-type': 'application/json' }, socket: { localAddress: '127.0.0.1', remoteAddress: '127.0.0.1' } });
+  let status, body;
+  await handler(request, { writeHead: value => { status = value; }, end: value => { body = value; } });
+  assert.equal(status, 503);
+  assert.deepEqual(JSON.parse(body), { error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
+  assertClosed(body);
+});
+
+test('closed seller diagnostics refuse unknown codes and hostile context without inspecting secret objects', async () => {
+  const { sellerDiagnostic } = await import('../src/seller-diagnostics.mjs');
+  let inspected = 0;
+  const inspect = () => { inspected++; throw runtimeFailure(); };
+  const hostile = new Proxy({}, { get: inspect, getOwnPropertyDescriptor: inspect });
+  const context = { jobId: JOB, role: 'buyer', operation: 'release', ledgerLine: 2, message: hostile, cause: hostile, key: hostile };
+  assert.deepEqual(sellerDiagnostic('seller_key_closed', context), { code: 'seller_key_closed', jobId: JOB, role: 'buyer', operation: 'release', ledgerLine: 2 });
+  for (const code of [runtimeEncodings[0], hostile, null, undefined]) {
+    assert.deepEqual(sellerDiagnostic(code, { jobId: runtimeEncodings[1], role: hostile, ledgerLine: Infinity }), { code: 'seller_diagnostic_unknown' });
+  }
+  assert.deepEqual(sellerDiagnostic('seller_key_closed', hostile), { code: 'seller_key_closed' });
+  assert.deepEqual(sellerDiagnostic('seller_key_closed', { get jobId() { inspected++; throw runtimeFailure(); } }), { code: 'seller_key_closed' });
+  assert.deepEqual(sellerDiagnostic('seller_key_closed', { jobId: 'x'.repeat(1_000_000), category: hostile, message: hostile }), { code: 'seller_key_closed' });
+  for (const code of ['seller_key_unavailable', 'seller_key_location_invalid', 'seller_key_format_invalid', 'seller_key_derivation_failed', 'seller_key_claim_mismatch', 'seller_key_role_refused', 'runtime_unsupported']) {
+    assert.deepEqual(sellerDiagnostic(code), { code });
+  }
+  assert.equal(inspected, 0);
+});
+
+test('no environment variable turns message output on in the approval module', async () => {
+  const source = await readFile(new URL('../src/devnet-demo/operator-approval.mjs', import.meta.url), 'utf8');
+  assert.ok(!source.includes('DACS_TEST_TRACE'));
+  assert.ok(!/process\.env/.test(source));
 });
 
 test('no mnemonic, derived secret, key-record object or its hex/base64/base64url/UTF-8 encoding appears in captured diagnostics on any custody failure path, nested causes included; mnemonic strings remain an acknowledged non-zeroable limit and arbitrary causes stay internal', async (t) => {
