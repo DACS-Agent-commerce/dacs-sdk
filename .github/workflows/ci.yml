@@ -73,6 +73,10 @@ jobs:
           DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
         run: npm run seller:test
 
+      # The client suite imports @kynesyslabs/dacs-node/demos-loader, which is dist/demosLoader.js.
+      - name: Build Node host kit
+        run: npm run host:build
+
       - name: Check held client snapshot and native authorization contracts
         if: matrix.node-version == '22'
         run: npm test --workspace @kynesyslabs/dacs-client
@@ -122,7 +126,9 @@ jobs:
           mkdir -p "$client_smoke/app"
           npm pack --ignore-scripts --pack-destination "$client_smoke"
           npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_smoke"
+          npm pack --workspace @kynesyslabs/dacs-node --pack-destination "$client_smoke"
           npm install --prefix "$client_smoke/app" --no-audit --ignore-scripts --omit=optional "$client_smoke"/*.tgz
+          (cd "$client_smoke/app" && npm ls --json @kynesyslabs/dacs-node | node -e 'const installed = JSON.parse(require("fs").readFileSync(0, "utf8")).dependencies["@kynesyslabs/dacs-node"]; if (!/^file:.*kynesyslabs-dacs-node-.*\.tgz$/.test(installed?.resolved)) { console.error("dacs-node is not the candidate archive: " + installed?.resolved); process.exit(1); }')
           (cd "$client_smoke/app" && node --input-type=module -e "const c = await import('@kynesyslabs/dacs-client'); if (typeof c.createPurchaseService !== 'function' || typeof c.NotWiredError !== 'function' || c.canonicalize({ b: 1, a: 2 }) !== '{\"a\":2,\"b\":1}') process.exit(1)")
 
       # Only the Node 20 floor leg expects the refusal; the floating 22 leg runs the read-only smoke above.
@@ -453,6 +459,8 @@ jobs:
           npm run typecheck
           npm run host:typecheck
           npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
+          # Every client file this area promises under 4.0.18, named one by one; later changes append theirs. No glob selects one.
+          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs
 
   postgres-wallet-authority:
     runs-on: ubuntu-latest
@@ -589,7 +597,9 @@ jobs:
           mkdir -p "$client_minimum/app"
           npm pack --ignore-scripts --pack-destination "$client_minimum"
           npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_minimum"
+          npm pack --workspace @kynesyslabs/dacs-node --pack-destination "$client_minimum"
           npm install --prefix "$client_minimum/app" --no-audit --ignore-scripts --omit=optional "$client_minimum"/*.tgz
+          (cd "$client_minimum/app" && npm ls --json @kynesyslabs/dacs-node | node -e 'const installed = JSON.parse(require("fs").readFileSync(0, "utf8")).dependencies["@kynesyslabs/dacs-node"]; if (!/^file:.*kynesyslabs-dacs-node-.*\.tgz$/.test(installed?.resolved)) { console.error("dacs-node is not the candidate archive: " + installed?.resolved); process.exit(1); }')
           (cd "$client_minimum/app" && node --input-type=module -e "await import('@kynesyslabs/dacs-client'); await import('@kynesyslabs/dacs-client/wallet/durable-journal')")
           cd "$client_minimum/app"
           node --input-type=module <<'NODE'
