@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "833e02ff15291554764674286faaaaf5b40ff41c"
+        "blob": "fad8f8652aebace3ba6378b99dcd08511f024cc4"
       },
       "DELTA-LEDGER.json": {
         "blob": "780a1ce45db7414f423d46a2053d7acb641eddbd"
       },
       "DELTA-MAP.md": {
-        "blob": "d41d22bd00042f830ac06ecc42d474dacc4b592a"
+        "blob": "6d96cc3301f6eba34d033aaa26a2722f32ed380e"
       },
       "DELTA-NOTES.md": {
         "blob": "0bcf57dd98cafaffa7de76ce928e36d840bb1084"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "1e6e5dfeaeebbeeb29f4cf44a5444f7fc717ef56"
+        "blob": "68b7f7b181a04cdd03bd117fc2db4b53ffceb4f6"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1750,7 +1750,7 @@
           "what": "Changes to package source, tests, tools, documentation or hold controls."
         }
       ],
-      "mergePolicy": "The package remains private with empty exports. D11, DEC-16 identity admission, independent programme review and coordinated release admission remain prerequisites before live wiring."
+      "mergePolicy": "The package remains private and exports only the reviewed root and durable-journal entry points. D11, DEC-16 identity admission, independent programme review and coordinated release admission remain prerequisites before live wiring."
     }
   }
 }
