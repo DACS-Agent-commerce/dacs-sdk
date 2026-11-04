@@ -7,7 +7,6 @@ import { commitmentFixture } from '../../packages/dacs-seller/test/helpers/commi
 import { NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { testNetwork } from '../../packages/dacs-seller/test/helpers/wire-authority-fixture.mjs';
 import { startSellerHost } from '../../packages/dacs-seller/src/host.mjs';
-import { testNetwork } from '../../packages/dacs-seller/test/helpers/wire-authority-fixture.mjs';
 import { wireBuyer } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
 import { createSellerTransportClientAuth, SELLER_TRANSPORT_HEADER } from '../../packages/dacs-client/src/dacs/seller-transport-auth.mjs';
 
