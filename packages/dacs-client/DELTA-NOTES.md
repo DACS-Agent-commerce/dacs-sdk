@@ -190,7 +190,7 @@ These records add no runtime behavior. SQL callbacks remain allowed inside a lea
 
 D11 transaction adapter dependency split:
 
-The database owner/epoch lease in `src/util/guarded-sqlite.mjs` remains separate from the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs`. The purchase transaction adapter requires the latter for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
+The purchase transaction adapter requires the connection-local liveness boundary in `src/util/sqlite-statement-boundary.mjs` for SQL after an automatic rollback and for synchronous result inspection. The rebuilt boundary normalizes its metadata locally, requires writable entry and undefined callback results, and restores constant query-only policies; its superseded records remain archived for historical verification. The boundary is internal and does not enable purchase actions or package exports.
 
 D11 SQLite transaction split:
 
@@ -225,3 +225,7 @@ Published part-05 iteration records are archived with the existing ledger archiv
 ## D11 — Part 06 rebuild keeps its earlier published history
 
 Part 06 was rebuilt and joined onto its earlier published history by a merge that changes no content, so the earlier commits stay reachable. Their source and test changes are archived as superseded records, and their inventory rows name each full commit hash. The earlier history also reaches a second commit with the subject `fix(client): D11 guard iterator-owned steps on supported runtimes`; both records for that subject name their commit hash. The rebuilt portal capability commit is recorded under its published hash. The later records still decide every current blob.
+
+## D11 — Part 07 package pins follow one manifest
+
+Part 07's earlier iteration commits stay reachable and their inventory rows are archived as superseded records. The manifest `files` list is the sorted import closure of the two entry points, and the package's own tests check the release-policy manifest and packed-inventory pins and the current export text against it.
