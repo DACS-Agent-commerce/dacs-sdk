@@ -38,6 +38,7 @@ const GUARD_SITES = {
   'src/devnet-demo/listing.mjs': ['createDevnetDemoListingPublisher'],
   'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability.submit'],
   'src/devnet-demo/storage-write-recovery.mjs': ['storageWriteRpcSigner'],
+  'src/seller-key.mjs': ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'],
 };
 
 // A probe child's NODE_OPTIONS: whatever the runner passed, minus the guard fixture loader, plus it when asked.
@@ -88,6 +89,8 @@ test('while the guard is off, every directly reachable effect entry under ./src/
   assert.equal(answer.signsBeforeStore, 0, 'the entries refused before the store opened signed nothing');
   assert.ok(answer.storeSignaturesAtOpen.length >= 1 && answer.storeSignaturesAfterWrite.length > answer.storeSignaturesAtOpen.length, 'the store keeps signing its own local records while off: when it creates a new store and when it updates an authenticated record');
   assert.ok(answer.storeSignaturesAfterWrite.every(Boolean), 'every store signature carries the local-record domain prefix');
+  assert.equal(answer.keySignatures, 0, 'the refused seller key sign made no cryptographic signer call');
+  assert.equal(answer.readable.readyFalseSigned, 1, 'a read-only role still signs ready:false discovery while off');
   assert.equal(answer.walletRequests, 0);
   assert.equal(answer.anchorJournalRows, 0, 'the refused publish stored no intent');
   assert.equal(answer.readable.durableState, 'function', 'the durable store stays readable');

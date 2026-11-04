@@ -30,8 +30,8 @@ test('conflicting input is refused before another executor runs',async()=>{
  gate.resolve();const results=await Promise.allSettled([first,second]);assert.equal(results[0].status,'fulfilled');assert.equal(results[1].status,'rejected');assert.match(results[1].reason.message,/conflict/);assert.equal(effects,1);f.raw.close();
 });
 test('terminal executor failure is retained and never invokes the executor again',async()=>{
- const f=await fixture();let effects=0;const input=request(async()=>{effects++;throw Object.assign(new Error('TEST terminal failure'),{code:'TEST_FAILED'});});
- for(let i=0;i<2;i++)await assert.rejects(f.store.runOnce(input),e=>e.message==='TEST terminal failure'&&e.code==='TEST_FAILED');assert.equal(effects,1);f.raw.close();
+ const f=await fixture(),cause=Object.assign(new Error('TEST terminal failure'),{code:'TEST_FAILED'});let effects=0;const input=request(async()=>{effects++;throw cause;});
+ for(let i=0;i<2;i++)await assert.rejects(f.store.runOnce(input),e=>e.message==='seller_diagnostic_unknown'&&e.code==='seller_diagnostic_unknown'&&(i===0?e.cause===cause:e.cause.message==='seller_diagnostic_unknown'));assert.equal(effects,1);f.raw.close();
 });
 test('lost result save remains indeterminate after real database reopen without a second effect',async t=>{
  const dir=await mkdtemp(join(tmpdir(),'TEST-vet-checkpoint-'));t.after(()=>rm(dir,{recursive:true,force:true}));const path=join(dir,'vet.sqlite');let raw=openPartyVetStore({path,mode:'create'}),crash=true,effects=0;
@@ -79,10 +79,10 @@ test('state metadata and canonical job boundaries reject foreign records',async(
  const [key,row]=(await f.raw.entries())[0];await f.raw.update(key,()=>({...row,writer:'TEST other writer'}));await assert.rejects(f.state.read(JOB),e=>e.code==='indeterminate');f.raw.close();
 });
 for(const role of ['buyer','seller'])test(`interrupted ${role} composite signature save retains a terminal failure across restart without signing twice`,async()=>{
- const raw=createInMemoryPartyVetStore();let interrupt=true,signs=0,active;
- const flaky={...raw,update:(key,change)=>raw.update(key,(current,rows)=>{const next=change(current,rows);if(interrupt&&Object.values(next?.ops?.[role]?.signing??{}).some(row=>row.signature!==undefined)){interrupt=false;throw new Error('TEST signature save interrupted');}return next;})};
+ const raw=createInMemoryPartyVetStore(),cause=new Error('TEST signature save interrupted');let interrupt=true,signs=0,active;
+ const flaky={...raw,update:(key,change)=>raw.update(key,(current,rows)=>{const next=change(current,rows);if(interrupt&&Object.values(next?.ops?.[role]?.signing??{}).some(row=>row.signature!==undefined)){interrupt=false;throw cause;}return next;})};
  active=await fixture(flaky,true,role);const input=request(async()=>{const bytes=Buffer.from('TEST durable signature');const prior=await active.durable.writeAhead(bytes);const signature=prior??(++signs,seller.signBytes(bytes).toString('base64url'));await active.durable.recordSignature(bytes,signature);return{signature};},{step:'composite'});
- await assert.rejects(active.store.runOnce(input),/signature save interrupted/);active=await fixture(raw,false,role);await assert.rejects(active.store.runOnce(input),/signature save interrupted/);assert.equal(signs,1);raw.close();
+ await assert.rejects(active.store.runOnce(input),e=>e.code==='seller_diagnostic_unknown'&&e.cause===cause);active=await fixture(raw,false,role);await assert.rejects(active.store.runOnce(input),e=>e.message==='seller_diagnostic_unknown'&&e.cause.message==='seller_diagnostic_unknown');assert.equal(signs,1);raw.close();
 });
 test('legacy successful results replay but an unfinished legacy signing step remains held',async()=>{
  const f=await fixture();let effects=0;const input=request(async()=>{effects++;return{};},{step:'composite'}),key=canonicalize({operationKey:input.operationKey,step:input.step});
