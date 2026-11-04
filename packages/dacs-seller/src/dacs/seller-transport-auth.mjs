@@ -11,6 +11,7 @@ import { isTp1WireProfile } from '@kynesyslabs/dacs/wire';
 import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { createReservationAccounting } from './seller-reservation-accounting.mjs';
 
 export const SELLER_TRANSPORT_HEADER = 'x-dacs-seller-peer';
 export const SELLER_TRANSPORT_MAX_RESPONSE = 512 * 1024;
@@ -229,7 +230,8 @@ const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserv
 // markPendingContextEffectsUncertain: the caller holds the seller state lock, so no other
 // process owns this journal. Every context step still `pending` at open belongs to an owner
 // that is gone and becomes `uncertain`, which `resume` can take. Only the host sets it.
-export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), markPendingContextEffectsUncertain = false }) {
+// contextRecords: the counter step 4 of reservation accounting reads; it defaults to the retained context admissions.
+export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), markPendingContextEffectsUncertain = false, contextRecords }) {
   if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
   if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
   if (!uint(maxChallenges) || maxChallenges === 0 || typeof contextSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
@@ -256,6 +258,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS peer_nonce_retention (nonce TEXT PRIMARY KEY, buyer TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS peer_context_challenges (nonce TEXT PRIMARY KEY, job TEXT NOT NULL, buyer TEXT NOT NULL, scope TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, attempted INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS kit_reservations (key TEXT PRIMARY KEY, buyer TEXT NOT NULL, jobId TEXT NOT NULL,
+      operationId TEXT NOT NULL, route TEXT NOT NULL, allocationId TEXT, class TEXT NOT NULL, requestHash TEXT NOT NULL,
+      at INTEGER NOT NULL, state TEXT NOT NULL, code TEXT, rev INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS kit_reservations_buyer_at ON kit_reservations(buyer, at);
+    CREATE TABLE IF NOT EXISTS kit_payment_transactions (tx TEXT PRIMARY KEY, jobId TEXT NOT NULL, operationId TEXT NOT NULL);
     CREATE TRIGGER IF NOT EXISTS kit_purchase_profiles_leave_with_job AFTER DELETE ON peer_jobs BEGIN DELETE FROM kit_purchase_profiles WHERE job = OLD.job; END;
     CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
     CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
@@ -365,7 +372,17 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (row.expires_at <= now()) return 'context_challenge_expired';
         return null;
   }
+  // A job is retained once it has a kept tuple, an old-path job row or a context admission.
+  const retainedJobs = () => `SELECT job FROM kit_purchase_profiles UNION SELECT job FROM peer_jobs${admissions() ? ' UNION SELECT job FROM peer_context_admissions' : ''}`;
+  const reservationAccounting = createReservationAccounting({
+    store: { get, run, transaction, keptProfileText, keepPurchaseProfileWithin,
+      hasJobWithin: jobId => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
+      jobCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${retainedJobs()})`).n },
+    now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow, nonceWindowMs },
+    contextRecords: contextRecords ?? (() => admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0),
+  });
   return {
+    reservationAccounting,
     issueContextChallenge(request, scope, { maxPerBuyer = 5, maxGlobal = 12, admit } = {}) {
       requireJobId(request?.jobId);
       requireJobId(scope?.jobId);
