@@ -507,6 +507,25 @@ describe("createPayDemRail nonce coordination", () => {
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  // #574: a rail configured without a network journals and reports "demos".
+  it("defaults the journalled network and result chainId to demos when the rail has no network", async () => {
+    const journalled: Array<{ network: string }> = [];
+    const rail = await createPayDemRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      maxTotalDebitOs: 2_000_000_000n,
+      journalPreparedTransfer: async (prepared) => {
+        journalled.push(prepared);
+      },
+    });
+
+    await expect(
+      rail.settle({ recipient: RECIPIENT, amount: "1000000000" }),
+    ).resolves.toMatchObject({ ok: true, txHash: TX_HASH, chainId: "demos" });
+    expect(journalled).toHaveLength(1);
+    expect(journalled[0]!.network).toBe("demos");
+  });
+
   it("supports a per-settlement journal and rechecks its fence beside broadcast", async () => {
     const order: string[] = [];
     const rail = await createPayDemRail({
