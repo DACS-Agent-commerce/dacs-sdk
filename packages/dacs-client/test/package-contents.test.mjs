@@ -266,3 +266,30 @@ test('documented local packing builds core before skipping pack lifecycle script
   const pack = commands.findIndex(command => command.startsWith('npm pack --ignore-scripts'));
   assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
 });
+
+// The root release check reads these pins in a separate CI job; check them in the package's own run too.
+test('release policy pins this exact manifest and packed inventory', () => {
+  const policy = JSON.parse(readFileSync(join(sdkDir, 'scripts/release-policy.json'), 'utf8'));
+  const held = policy.packages.find(entry => entry.directory === 'packages/dacs-client');
+  const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+  // Same key-sorted snapshot as scripts/release-checks.mjs manifestSnapshot().
+  const snapshot = JSON.stringify(manifest, (_, value) => value && typeof value === 'object' && !Array.isArray(value) ?
+    Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value);
+  assert.equal(held.preparationManifestSha256, createHash('sha256').update(snapshot).digest('hex'));
+  const result = spawnSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], { cwd: packageDir, encoding: 'utf8', maxBuffer: 4 << 20 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const files = JSON.parse(result.stdout)[0].files.map(file => file.path).sort();
+  assert.equal(held.preparationFileListSha256, createHash('sha256').update(JSON.stringify(files)).digest('hex'));
+  assert.ok(!held.preparationSnapshotBlockers.includes('missing public export .') && Object.hasOwn(manifest.exports, '.'));
+});
+
+test('current package docs describe the exported entry points, not an empty export map', () => {
+  const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+  const hold = JSON.parse(readFileSync(join(packageDir, 'HOLD.json'), 'utf8'));
+  const current = { 'README.md': readFileSync(join(packageDir, 'README.md'), 'utf8'),
+    'IMPORT-CUT-MAP.md': readFileSync(join(packageDir, 'IMPORT-CUT-MAP.md'), 'utf8'),
+    'HOLD.json merge policy': hold.step1Freeze.plannedRepins.mergePolicy, 'HOLD.json rule': hold.holds[0].rule };
+  for (const [name, text] of Object.entries(current)) assert.doesNotMatch(text, /exports remain empty|empty exports|exports: \{\}/i, name);
+  assert.deepEqual(Object.keys(manifest.exports), ['.', './wallet/durable-journal']);
+  assert.match(current['README.md'], /@kynesyslabs\/dacs-client\/wallet\/durable-journal/);
+});
