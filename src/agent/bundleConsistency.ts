@@ -164,9 +164,10 @@ function captureBundleCopyRead(
  * verified dispositions. A reader exception or malformed response is retained
  * as `indeterminate`, never silently converted to authoritative absence.
  *
- * @throws DacsError (as a rejection) before any address is hashed or any read
- * is made, when `jobId` is not a canonical JID-1 job ID (26 uppercase Crockford
- * characters, first 0-7) or `read` is not a function.
+ * @throws DacsError (as a rejection) before any read is made, when `jobId` is
+ * not a canonical JID-1 job ID (26 uppercase Crockford characters, first 0-7)
+ * or `read` is not a function. A bad job ID is rejected while its addresses are
+ * derived; a `read` that is not a function is rejected after they are derived.
  */
 export async function lookupBundleCopies(
   jobId: string,
