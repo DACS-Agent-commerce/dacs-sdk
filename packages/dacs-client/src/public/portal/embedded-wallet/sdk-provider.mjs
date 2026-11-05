@@ -315,11 +315,11 @@ function approvedDebit(debit) {
   return debit;
 }
 
-// The finalized native content when it is exactly the approved send, as
+// The finalized native content when it is exactly the approved send, in the
+// denomination read at approval (the content's own when none was read), as
 // canonical {totalDebitOs, feeDebitOs} (the seller amount stays in the total,
 // only gas and node fees are fees); null otherwise.
-function nativeFinalDebit(c, plan, debit, address) {
-  const postFork = typeof c?.amount === 'string';
+function nativeFinalDebit(c, plan, debit, address, postFork = typeof c?.amount === 'string') {
   if (!c || c.type !== 'native' || c.nonce !== plan.nonce || !sameAddress(c.to, plan.to) || osOf(c.amount, postFork) !== plan.amountOs
     || JSON.stringify(c.data) !== plan.data || !sameAddress(c.from, address) || !sameAddress(c.from_ed25519_address, address)
     || c.custom_charges != null || !nativeEditsMatch(c.gcr_edits, plan, address, postFork)
@@ -1000,6 +1000,8 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     const fee = await nodeRead(demos, started, 'getNetworkParameters', {}, (v) => typeof v?.networkFee === 'number' && typeof v?.rpcFee === 'number');
     const debit = nativeDebit(plan, fee);
     if (!debit) throw new EmbeddedWalletError('unsupported', 'the node reported fees this wallet cannot show exactly before signing; nothing was signed');
+    // On an Agreement transport the denomination the node reports at approval is the one the signed content must carry.
+    const approvedPostFork = transport.devnetAgreement ? (await nodeRead(demos, started, 'getNetworkInfo', {}, (v) => typeof v?.forks?.osDenomination?.activated === 'boolean')).forks.osDenomination.activated : undefined;
     await approvedWrite(started, {
       method: 'sendTransaction',
       address,
@@ -1033,15 +1035,15 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     // from/from_ed25519_address, gcr_edits and the node-reported fee.
     let signed;
     try {
-      signed = await demos.sign(structuredClone(tx), { nonce: plan.nonce, finalContent: (content) => approvedDebit(nativeFinalDebit(content, plan, debit, address)) });
+      signed = await demos.sign(structuredClone(tx), { nonce: plan.nonce, finalContent: (content) => approvedDebit(nativeFinalDebit(content, plan, debit, address, approvedPostFork)) });
     } catch (error) {
       stillCurrent(started);
       throw signFailure(error, 'the Demos SDK could not sign this transaction; nothing was sent');
     }
     stillCurrent(started);
     const c = signed?.content;
-    const postFork = typeof c?.amount === 'string';
-    if (!nativeFinalDebit(c, plan, debit, address)
+    const postFork = approvedPostFork ?? typeof c?.amount === 'string';
+    if (!nativeFinalDebit(c, plan, debit, address, approvedPostFork)
       || typeof signed.hash !== 'string' || !HASH.test(signed.hash) || signed.signature?.type !== 'ed25519') {
       throw new EmbeddedWalletError('payload_mismatch', 'the signed transaction differs from what was approved; nothing was sent');
     }

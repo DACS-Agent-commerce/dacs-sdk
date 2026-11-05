@@ -6092,6 +6092,27 @@
           "after": "0b931d7660acc1a9369014510d9353ea491fa8a0"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a1bb accept the signatureDomain signed message, require string debits and pin the native denomination at approval",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "9929fdd1ab2f401980ba8cf38cdc45a333827345",
+          "after": "fb364397ed046fb1211d620fb5dfa68563715c1a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "60c21da6b4840c357bb1fa2640c9e69f6b0ed6c8",
+          "after": "859efccb847f22e549c4e34667c49bcad1a34350"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-final-content.test.mjs",
+          "before": "520dc75570490cf8f0177623fa7cd837c098c28c",
+          "after": "17e556eaaa8199a80b20fa91c1563ef50fbb85b9"
+        }
+      ]
     }
   ]
 }

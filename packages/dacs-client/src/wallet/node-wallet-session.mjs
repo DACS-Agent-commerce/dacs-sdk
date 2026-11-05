@@ -27,6 +27,8 @@ const RPC_INVALID = 'node_wallet_rpc_invalid';
 const STAGE_NOT_DISPATCHED = 'not_dispatched';
 const STAGE_DISPATCHED_NO_ACK = 'dispatched_no_ack';
 const OS_AMOUNT = /^(?:0|[1-9][0-9]*)$/;
+const SIGNATURE_DOMAIN = Buffer.from('demos-tx:v1:');
+const CHAIN_ID_FIELD = /^[0-9]+:$/;
 
 // The error each failed request's closed envelope was made from, keyed by that envelope object.
 const causes = new WeakMap();
@@ -108,13 +110,24 @@ class NodeRpcFailure extends Error {
   }
 }
 
+// Whether `message` is what demosdk signs for a transaction with this hash: the bare hash, or, once the
+// node's signatureDomain fork is active, `demos-tx:v1:<decimal chain id>:<hash>`.
+function signsTransactionHash(message, hash) {
+  const signed = Buffer.from(message), hashBytes = Buffer.from(hash, 'utf8');
+  if (signed.equals(hashBytes)) return true;
+  const hashStart = signed.length - hashBytes.length;
+  return hashStart > SIGNATURE_DOMAIN.length && signed.subarray(0, SIGNATURE_DOMAIN.length).equals(SIGNATURE_DOMAIN)
+    && signed.subarray(hashStart).equals(hashBytes) && CHAIN_ID_FIELD.test(signed.subarray(SIGNATURE_DOMAIN.length, hashStart).toString('latin1'));
+}
+
+const isOsAmount = value => typeof value === 'string' && OS_AMOUNT.test(value);
+
 // Runs synchronously, so nothing can change the transaction between these checks and the inner signature.
 function checkFinalContent({ transaction, finalContent }, message) {
-  if (typeof transaction?.hash !== 'string' || !(message instanceof Uint8Array)
-    || !Buffer.from(message).equals(new TextEncoder().encode(transaction.hash))) throw new Error('the signed message is not the transaction hash');
+  if (typeof transaction?.hash !== 'string' || !(message instanceof Uint8Array) || !signsTransactionHash(message, transaction.hash)) throw new Error('the signed message is not the transaction hash');
   if (createHash('sha256').update(JSON.stringify(transaction.content)).digest('hex') !== transaction.hash) throw new Error('the transaction hash is not the SHA-256 of its content');
   const debit = finalContent(transaction.content);
-  if (!OS_AMOUNT.test(debit?.totalDebitOs) || !OS_AMOUNT.test(debit.feeDebitOs)) throw new Error('the finalized debit is not canonical OS amounts');
+  if (!isOsAmount(debit?.totalDebitOs) || !isOsAmount(debit.feeDebitOs)) throw new Error('the finalized debit is not canonical OS amounts');
 }
 
 // The SDK's crypto, except that a signature made inside `sign` is first checked against the approval;
