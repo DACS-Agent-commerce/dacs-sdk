@@ -7,7 +7,7 @@ import { createHash, createPrivateKey, createPublicKey } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canonicalize, compositeVerificationAddress, generateCanonicalJobId } from '@kynesyslabs/dacs';
+import { canonicalize, compositeVerificationAddress, generateCanonicalJobId, identityBundleHash } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, inspectWireOperation, openWireRequestJournal,
   completeWireEffect, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
@@ -78,9 +78,11 @@ function world(t, config = {}) {
     const bundle = { presentedBy: presenter, sessionNonce: nonce, presentation: { proof: 'TEST-fixture' } };
     const attempt = { nonce, jobId, buyer, challengeScopeHash, presentationHash: hash(canonicalize(bundle)), path: 'context' };
     const result = store.challenges.attempt(attempt); assert.equal(result.kind, 'validate'); calls.validation++;
-    const accepted = { buyerBundleText: ' ' + JSON.stringify(bundle) + ' ', buyerBundleHash: hash('bundle'), admission: {
-      disposition: 'admitted', jobId, buyer, buyerBundleHash: hash('bundle'), listingPin: PIN,
-      participants: [{ role: 'buyer', claim: buyer, ...SELLER_PROFILE }, { role: 'seller', claim: SELLER, ...SELLER_PROFILE }] },
+    // The ledger stores only the canonical bytes of the presentation the row was attempted with, under that bundle's identity hash.
+    const bundleHash = identityBundleHash(bundle);
+    const accepted = { buyerBundleText: canonicalize(bundle), buyerBundleHash: bundleHash, admission: {
+      disposition: 'admitted', jobId, buyer: presenter, buyerBundleHash: bundleHash, listingPin: PIN,
+      participants: [{ role: 'buyer', claim: presenter, ...SELLER_PROFILE }, { role: 'seller', claim: SELLER, ...SELLER_PROFILE }] },
       firstAdmission: { challengeExpiresAt: control.clock + 600000, generatedAt: control.clock, checkedAt: control.clock } };
     const input = { jobId, buyer, seller: SELLER, listingPin: PIN, contextScopeHash: hash('context-scope'), nonce, presentationHash: attempt.presentationHash,
       owner: result.owner, accepted, sellerBundlePresentedBy: SELLER, delegationExpiresAt: control.clock + HOUR, purchaseProfile: PROFILE };
