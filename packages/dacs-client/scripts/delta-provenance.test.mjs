@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,53 @@ function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));ex
 function check(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-provenance.mjs'),'--local-only'],{encoding:'utf8'});return {status:result.status,text:result.stdout+result.stderr};}
 const moved='packages/dacs-client/src/dacs/buyer-chain-readback.mjs';
 test('committed delta history and generated per-file table agree',t=>{const r=check(scratch(t));assert.equal(r.status,0,r.text);});
+function checkCallbackHistory(dir) {
+  const pkg = join(dir, 'packages/dacs-client');
+  const notes = readFileSync(join(pkg, 'DELTA-NOTES.md'), 'utf8');
+  const { changes } = JSON.parse(readFileSync(join(pkg, 'DELTA-LEDGER.json'), 'utf8'));
+  const replacement = 'fix(client): D11 enforce the write lease in SQLite instead of patching statements';
+  const retired = [
+    'fix(client): D11 refuse SQL callbacks under the statement guard',
+    'fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard',
+  ];
+  for (const subject of retired) {
+    assert.ok(notes.includes(`- \`${subject}\`: superseded by \`${replacement}\`.`),
+      `the provenance explanation must identify the replacement for ${subject}`);
+  }
+  const removal = 'fix(client): D11 remove the unused guarded SQLite lease and pack no client files';
+  assert.ok(notes.includes(`\`${removal}\` then deleted the module and its tests`), 'the notes must name the removal of the lease module');
+  assert.match(notes, /`src\/util\/guarded-sqlite\.mjs` and its test `test\/guarded-sqlite\.test\.mjs` are absent from the tree/);
+  const lease = changes.find(change => change.subject === replacement);
+  assert.ok(lease, 'the write-lease implementation must retain its own delta record');
+  const removed = changes.find(change => change.subject === removal);
+  assert.ok(removed, 'the removal of the write-lease module must keep its own delta record');
+  const retiredRecords = retired.map(subject => {
+    const record = changes.find(change => change.subject === subject);
+    assert.ok(record, `the superseded commit must remain recorded: ${subject}`);
+    return record;
+  });
+  // The committed tree no longer holds the guarded module or its tests: the
+  // removal record ends each file's chain, and the retired commits contribute
+  // historical evidence, not runtime code.
+  for (const file of lease.files) {
+    const removedFile = removed.files.find(entry => entry.path === file.path);
+    assert.ok(removedFile, `${removal} must record ${file.path}`);
+    assert.equal(removedFile.before, file.after, `${file.path} must be removed from the write-lease blob`);
+    assert.equal(removedFile.after, null, `${file.path} must be recorded as deleted`);
+    const committed = execFileSync('git', ['-C', dir, 'ls-tree', 'HEAD', '--', file.path], { encoding: 'utf8' }).trim();
+    assert.equal(committed, '', `${file.path} must be absent from the committed tree`);
+    for (const record of retiredRecords) {
+      assert.ok(record.files.some(entry => entry.path === file.path), `${record.subject} must record ${file.path}`);
+    }
+  }
+}
+test('callback history explains the superseded guard and records the write-lease removal',() => checkCallbackHistory(root));
+test('callback history check needs no ancestry beyond the checked-out commit', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'delta-provenance-shallow-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  execFileSync('git', ['clone', '--quiet', '--depth', '1', `file://${root}`, dir]);
+  checkCallbackHistory(dir);
+});
 test('the publication inventory cannot omit an outside-only commit or name an absent hash', t => {
   for (const edit of [
     rows => rows.filter(row => !row.files.includes('.gitleaksignore')),
@@ -69,3 +116,23 @@ function checkMainMerge(t, { detached = false } = {}) {
 }
 test('launch review: unrelated main commits and a PR merge preserve client provenance',t=>checkMainMerge(t));
 test('launch review: unrelated main commits and a PR merge preserve client provenance from a detached HEAD',t=>checkMainMerge(t,{detached:true}));
+
+for (const subject of ['delta(client): D11 TEST accepted source repair', 'fix(client): D11 TEST accepted source repair']) {
+ test(`D11 source history accepts ${subject.split(':')[0]} records`, t => {
+  const dir=scratch(t),git=(...args)=>execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false',...args]);
+  // Exercise this checkout's checker even before its test commit is published.
+  copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));
+  appendFileSync(join(dir,moved),'\n// TEST D11 source repair\n');git('add','--',moved);
+  const node=(...args)=>execFileSync(process.execPath,args,{cwd:dir});
+  node('packages/dacs-client/scripts/delta-map.mjs','--record','D11',subject);
+  const files=[moved,'packages/dacs-client/DELTA-COMMITS.json','packages/dacs-client/DELTA-LEDGER.json','packages/dacs-client/DELTA-MAP.md'];
+  if(git('diff','--name-only','HEAD','--','packages/dacs-client/scripts/delta-map.mjs').length)files.push('packages/dacs-client/scripts/delta-map.mjs');files.sort();
+  const inventory=join(dir,'packages/dacs-client/DELTA-COMMITS.json'),rows=JSON.parse(readFileSync(inventory,'utf8'));
+  rows.push({sha:null,subject,files});writeFileSync(inventory,JSON.stringify(rows,null,2)+'\n');
+  node('packages/dacs-client/scripts/delta-map.mjs');git('add','--',...files);git('commit','-qm',subject);
+  let result=check(dir);assert.equal(result.status,0,result.text);
+  const checker=join(dir,'packages/dacs-client/scripts/delta-map.mjs');
+  writeFileSync(checker,readFileSync(checker,'utf8').replace("'D1','D11','D15'","'D1','D15'"));
+  result=check(dir);assert.equal(result.status,1,result.text);assert.match(result.text,/invalid delta/);
+ });
+}
