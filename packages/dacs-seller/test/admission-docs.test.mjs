@@ -12,3 +12,5 @@ test('documented seller checks use the actual direct Node runner and explain inc
 test('directory and minimum-runtime claims match the portable immediate-directory implementation',()=>{
  const text=readme();assert.doesNotMatch(text,/check every ancestor|22\.13 or later \(`node:sqlite`\)/);assert.match(text,/immediate (store )?directories/);assert.match(text,/20\.19/);
 });
+
+test("ADMISSION.md describes both producer modes, the absent seller session freshness and the exact G3 label",async()=>{const {readFile}=await import('node:fs/promises');const docs=await readFile(new URL('../ADMISSION.md',import.meta.url),'utf8');assert.match(docs,/counterparty/);assert.match(docs,/tp1-g3-orchestrator/);assert.match(docs,/no seller session freshness/);assert.ok(docs.includes('The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1.'));});

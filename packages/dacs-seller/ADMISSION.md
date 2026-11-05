@@ -67,8 +67,17 @@ in-process comparison in the frozen tests is a test oracle, not a kit mode.
 This experimental API supports an explicit empty seller requirement only.
 It does not claim an accepted TP-1 or G10 profile. No unpublished register
 entry is needed to interpret this local restriction, and no protocol exception
-is authorized by it. A buyer-owned verifier must issue the session challenge
-and sign the seller CVR; without that capability, context creation is refused.
+is authorized by it. In the default `counterparty` producer mode a buyer-owned
+verifier must issue the session challenge and sign the seller CVR; without that
+capability, context creation is refused.
+
+The explicit `tp1-g3-orchestrator` provider and native-anchor composition signs
+both records with the seller wallet, seller first. It uses the signed Listing's
+seller identity verbatim, makes no counterparty calls, and gives no seller session freshness.
+Both records require verified, established `finalized` receipts on every answer.
+Checkpoints reuse retained signatures; unknown signing outcomes stay held.
+The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1.
+
 Buyer-side seller requirements are not a capability of this route: an extra
 request scope field is refused. The seller is evaluated against that empty
 requirement, independently of the Listing's buyer requirement, during initial
