@@ -1914,6 +1914,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 end passive lock and fence waits at the deadline | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 end passive lock and fence waits at the deadline | `packages/dacs-client/src/wallet/devnet-native-transport.mjs:8`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:11`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:13`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:15`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:61`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:132`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:173`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:177`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:187`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:192`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:196`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:198`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:223`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:294`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:458`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:484`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:942`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1104`, `packages/dacs-client/src/wallet/devnet-native-transport.mjs:1114` |
 | fix(client): D11 end passive lock and fence waits at the deadline | `packages/dacs-client/test/passive-observation.test.mjs:1` |
+| fix(client): D11 keep the delta ledger formatting compact | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep the delta ledger formatting compact | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep the delta ledger formatting compact | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep the delta ledger formatting compact | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep the delta ledger formatting compact | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
