@@ -19,6 +19,14 @@ test('the fixture-only claim names the packaged readers and excludes operator-su
   assert.match(readme, /`broadcast` is the operator's own callback/);
 });
 
+test('the required-capability bullet does not claim the host cannot start against a real node', () => {
+  assert.doesNotMatch(readme, /so the host does not start against a real node/);
+  const bullet = readme.match(/It starts only with the whole chain to delivery:[\s\S]*?\n- It signs no completed DACS-5 bundle/)?.[0] ?? '';
+  assert.match(bullet, /accept only `TEST-` authorities and a loopback fixture node\./);
+  assert.match(bullet, /`agreementAnchor` and `artifactAnchor` only by shape/);
+  assert.match(bullet, /`broadcast`\s+is the operator's own callback/);
+});
+
 test('the absence proof is a contract for an operator-supplied anchor, not the unbuildable package anchor', () => {
   // createDevnetDemoArtifactAnchor refuses every input because
   // isDevnetDemoTransport is always false (devnet-source.mjs:13), and no part

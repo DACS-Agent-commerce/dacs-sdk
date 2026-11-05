@@ -396,6 +396,21 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       await new Promise((resolve)=>setTimeout(resolve,READ_POLL_MS));
     }
   }
+  // The challenge is issued by the buyer before the seller can retain it. A
+  // lost save or a crash in between would otherwise make the retry ask for a
+  // second challenge. The intent's id is kept in the job row before the request
+  // and sent with it, so a repeat for the same need names the same issuance and
+  // the buyer's ledger can answer it with the challenge it already issued. A
+  // replacement of an expired presentation is a new need and gets its own id.
+  async function keepIssuanceIntent(job,expired) {
+    const replaces=expired?.challenge.sessionNonce??null;
+    const row=await state.update(job.jobId,(current)=>{
+      if(!liveJob(current,job))fail('binding-changed','seller presentation binding changed');
+      if(current.issuance&&current.issuance.replaces===replaces)return undefined;
+      return{...current,issuance:{id:randomUUID(),replaces}};
+    });
+    return row.issuance.id;
+  }
   async function sellerSession(job) {
     const retained=await state.read(job.jobId);
     if(!retained?.binding||!same(retained.binding,job.binding))fail('binding-changed','seller presentation binding changed');
@@ -428,7 +443,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       const buyer=job.binding.buyerIdentityBundle.presentedBy;
       // Challenge issuance must check the durable lifecycle and purchase state.
       await authorizeEffect(job);
-      const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim});
+      const issuance=await keepIssuanceIntent(job,expired);
+      const challenge=await callCounterparty('issueChallenge',{jobId:job.jobId,buyer,seller:wallet.claim,issuance});
       if(!sameCanonicalClaimIdentity(challenge?.issuer,buyer) || challenge?.jobId!==job.jobId || !sameCanonicalClaimIdentity(challenge?.seller,wallet.claim)
         // SN-2 sets only a floor for an issued challenge: at least 32
         // lowercase-hex characters, with no upper bound.
@@ -917,24 +933,39 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const job=vets.get(jobId);if(job){if(generatedAt===null)job.open=()=>false;job.evicted=true;if(!job.running||job.finished)forget(job);}
     for(const [key,entry] of contexts)if(entry.input.jobId===jobId&&entry.input.generatedAt!==generatedAt)contexts.delete(key);
   }
+  // A signature can be lost with no anchor intent to show for it: the signer
+  // was asked for bytes that were stored ahead, and the job ended before the
+  // intent. Deleting such a row would let a later request bind afresh and
+  // sign the same job again.
+  async function signatureMayBeLost(row) {
+    const asked=['buyer','seller'].some(role=>Object.values(row.ops?.[role]?.signing??{}).some(entry=>entry.signedBytes!==undefined));
+    if(!asked||!row.binding)return false;
+    const addresses=[row.binding.buyerIdentityBundle.presentedBy,wallet.claim].map(party=>compositeVerificationAddress(row.jobId,party));
+    return !(await Promise.all(addresses.map(logicalAddress=>anchor.hasIntent(logicalAddress)))).some(Boolean);
+  }
+  // Answers whether the row was physically deleted. A row that may hold a lost
+  // signature is reduced to an ended marker instead and kept for good.
   async function drop(jobId){
     requireJobId(jobId);evict(jobId,null);drops.add(jobId);
-    let removed=false;
+    let removed=false,marked=false;
     const ended=await state.update(jobId,row=>{
       if(!row)return undefined;
       if(row.lifecycle?.state!=='ended'){row.lifecycle={...(row.lifecycle??{incarnation:randomUUID(),epoch:0,times:[]}),epoch:(row.lifecycle?.epoch??0)+1,state:'ended',times:[]};return row;}
       return undefined;
     });
     if(!ended){drops.delete(jobId);return true;}
+    const lost=!ended.endedMarker&&!running.has(jobId)&&await signatureMayBeLost(ended);
     await state.update(jobId,row=>{
       if(!row){removed=true;return undefined;}
       if(row.lifecycle?.state!=='ended'||row.lifecycle.incarnation!==ended?.lifecycle?.incarnation||row.lifecycle.epoch!==ended?.lifecycle?.epoch)return undefined;
       // Other providers are fenced by ended/missing rows at authorizeEffect.
       // Only this provider's running producer defers physical deletion.
       if(running.has(jobId))return undefined;
+      if(row.endedMarker){marked=true;return undefined;}
+      if(lost){marked=true;return{lifecycle:row.lifecycle,endedMarker:true};}
       removed=true;return null;
     });
-    if(removed){for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&row.jobId===jobId)await store.update(key,current=>current?.jobId===jobId?null:undefined);drops.delete(jobId);}
+    if(removed||marked){for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&row.jobId===jobId)await store.update(key,current=>current?.jobId===jobId?null:undefined);drops.delete(jobId);}
     return removed;
   }
   function release({jobId,generatedAt=null}){
