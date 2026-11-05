@@ -26,11 +26,14 @@ function checkCallbackHistory(dir) {
   assert.match(notes, /SQL callbacks remain allowed inside a leased transaction/);
   const lease = changes.find(change => change.subject === replacement);
   assert.ok(lease, 'the write-lease implementation must retain its own delta record');
-  // The committed tree keeps the write-lease source and test blobs; the two
-  // retired commits contribute historical evidence, not runtime code.
+  // The committed tree holds each file's newest recorded blob, or no file where
+  // a later record deleted it; the two retired commits contribute historical
+  // evidence, not runtime code.
   for (const file of lease.files) {
-    const committed = execFileSync('git', ['-C', dir, 'rev-parse', `HEAD:${file.path}`], { encoding: 'utf8' }).trim();
-    assert.equal(committed, file.after, `${file.path} must retain the write-lease implementation`);
+    const newest = changes.findLast(change => change.files.some(entry => entry.path === file.path)).files.find(entry => entry.path === file.path);
+    const listed = execFileSync('git', ['-C', dir, 'ls-tree', 'HEAD', '--', file.path], { encoding: 'utf8' }).trim();
+    const committed = listed === '' ? null : listed.split(/\s/)[2];
+    assert.equal(committed, newest.after, `${file.path} must hold its newest recorded write-lease blob`);
     for (const subject of retired) {
       const record = changes.find(change => change.subject === subject);
       assert.ok(record, `the superseded commit must remain recorded: ${subject}`);
@@ -46,6 +49,14 @@ test('callback history check needs no ancestry beyond the checked-out commit', t
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   execFileSync('git', ['clone', '--quiet', '--depth', '1', `file://${root}`, dir]);
   checkCallbackHistory(dir);
+});
+test('callback history refuses a committed file that a later record deleted', t => {
+  const dir = scratch(t);
+  const path = 'packages/dacs-client/src/util/guarded-sqlite.mjs';
+  writeFileSync(join(dir, path), 'export {};\n');
+  execFileSync('git', ['-C', dir, 'add', '--', path]);
+  execFileSync('git', ['-C', dir, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'test: restore a deleted file']);
+  assert.throws(() => checkCallbackHistory(dir), /must hold its newest recorded write-lease blob/);
 });
 test('the publication inventory cannot omit an outside-only commit or name an absent hash', t => {
   for (const edit of [
