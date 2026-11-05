@@ -1,6 +1,6 @@
 import { types as nodeTypes } from "node:util";
 
-import { contentHash, paymentEvidenceAddress, stripSignature } from "../canonical/index.js";
+import { contentHash, legacyPaymentEvidenceAddress, stripSignature } from "../canonical/index.js";
 import { canonicalize } from "../canonical/jcs.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import {
@@ -506,7 +506,7 @@ function receiptMatches(
   if (record.phase.startsWith("pay-")) {
     if (typeof execution.railId !== "string" || execution.railId.length === 0) return false;
     try {
-      expectedAddress = paymentEvidenceAddress(
+      expectedAddress = legacyPaymentEvidenceAddress(
         bundle.jobId,
         execution.railId,
         execution.phaseIndex,
