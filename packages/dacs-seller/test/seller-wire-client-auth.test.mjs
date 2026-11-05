@@ -137,7 +137,9 @@ test('a configuration with a missing binding, endpoint proof, seller or job reso
 async function runningHost(t) {
   const f = await commitmentFixture(t);
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-wire-client-auth-'));
-  const { durableDirectory, commitOnSignature, nativeArtifactAnchor, ...config } = f.config;
+  const { nativeArtifactAnchor, ...config } = f.config;
+  delete config.durableDirectory;
+  delete config.commitOnSignature;
   const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { f, host };
