@@ -33,13 +33,13 @@ function bundleTemplate(){return {presentedBy:seller,bundleVersion:'1',presented
 const {listingPin:pinFor}=await import('../src/dacs/purchase-protocol.mjs');
 const scope={jobId,seller,price:purchaseSupport(sdkFixtureListing).price,listingPin:pinFor(sdkFixtureListing),generatedAt:1800000000000,payee:fixtureSeller.address};
 const bundle={presentedBy:buyer,bundleVersion:'1',presentedAt:scope.generatedAt,sessionNonce:'a'.repeat(64),claims:[{ref:buyer}],presentation:{kind:'per-claim',signatures:[{ref:buyer,signature:'fixture'}]}};
-function provider(buyerRequirement={requirementVersion:'1',required:[],preferredPresentation:'any'}){
+function provider(buyerRequirement={requirementVersion:'1',required:[],preferredPresentation:'any'},vetMode){
  let store=stores.get(records);if(!store){store=createInMemoryPartyVetStore();stores.set(records,store);}
  const counterparty={readRecord:async input=>({status:'unattempted',issuer:buyer,jobId,bundleHash:sdk.identityBundleHash(input.identityBundle),requirementHash:sdk.sha256Hex(sdk.canonicalize(input.requirement))}),issueChallenge:async()=>({issuer:buyer,seller,jobId,sessionNonce:'d'.repeat(64),expiresAt:scope.generatedAt+60000}),evaluate:async input=>{
   madeRequirements.push(structuredClone(input.requirement));
   return {recordVersion:'1',jobId,evaluatedParty:seller,overallDecision:nonPassParty===seller?decision:'pass',signature:{signer:buyer}};
  }};
- const provider=createDevnetDemoAgreementContextProvider({anchor:{writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}};}},wallet:{claim:seller,signBytes:fixtureSeller.signBytes},listing:{...sdkFixtureListing, buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
+ const provider=createDevnetDemoAgreementContextProvider({vetMode,anchor:{vetMode,writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}};}},wallet:{claim:seller,signBytes:fixtureSeller.signBytes},listing:{...sdkFixtureListing, buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
  return {...provider,resolveBuyer:(input,options={writable:()=>true})=>provider.resolveBuyer(input,options)};
 }
 async function retainProofs(){
@@ -99,4 +99,13 @@ test('a truthy authenticated non-pass recovery result never authorizes a durable
  const fresh=provider();
  const answer=await fresh.resolveSeller({jobId,listingPin:pinFor({...sdkFixtureListing,buyerRequirement:{requirementVersion:'1',required:[],preferredPresentation:'any'}}),buyerIdentityBundle:bundle,generatedAt:scope.generatedAt});
  assert.equal(answer.disposition,'indeterminate');assert.equal(fresh.contexts.size,0);
+});
+
+for(const value of ['fail','indeterminate','error'])test("VPC4w a non-pass seller self-Vet refuses the W context with party_vet_non_pass and writes no buyer record"+' ('+value+')',async()=>{
+ records=new Map();decision=value;nonPassParty=seller;const p=provider(undefined,'tp1-g3-orchestrator');
+ const answer=await p.resolveBuyer({scope,buyerIdentityBundle:bundle});assert.equal(answer.code,'party_vet_non_pass');assert.equal(records.size,1);assert.equal(records.has(compositeVerificationAddress(jobId,buyer)),false);
+});
+for(const value of ['fail','indeterminate','error'])test("VPC4w restarting from T31's actual one-record state, with no buyer record made up, recovery and repeated reconciliation answer the same refusal and make zero further signatures or CREATEs. The counterparty VPC4 test (:43-49), which plants both records, stays as it is"+' ('+value+')',async()=>{
+ records=new Map();decision=value;nonPassParty=seller;const p=provider(undefined,'tp1-g3-orchestrator'),input={scope,buyerIdentityBundle:bundle};const first=await p.resolveBuyer(input);assert.equal(first.code,'party_vet_non_pass');const snapshot=structuredClone([...records]);
+ for(let retry=0;retry<2;retry++)assert.deepEqual(await provider(undefined,'tp1-g3-orchestrator').recoverBuyer(input),first);assert.deepEqual([...records],snapshot);assert.equal(records.size,1);
 });

@@ -19,6 +19,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
+import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { JOBS, T, exchange, presentContext, world } from './helpers/d5-http-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
 import { NOW } from './helpers/protocol-fixture.mjs';
@@ -61,11 +62,13 @@ const sub = (source, from, to) => {
 // The host with one test seam that adds no runtime API: it records the binding
 // and the journal handle the host obtains, through the real SDK functions.
 async function hostFixture(t) {
-  const f = await commitmentFixture(t);
+  const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE });
   const dataDirectory = realpathSync(await mkdtemp(join(tmpdir(), 'TEST-host-wire-state-')));
   const { nativeArtifactAnchor, ...config } = f.config;
   delete config.durableDirectory;
   delete config.commitOnSignature;
+  // The host fixes its Vet mode and takes no such option.
+  delete config.vetMode;
   const api = await privateModule(HOST_URL, ['setTestRecorder'], (source) => {
     const text = sub(source, 'bindTp1Profile, openWireRequestJournal } from', 'bindTp1Profile as REAL_BIND, openWireRequestJournal as REAL_OPEN_JOURNAL } from');
     return sub(text, 'const REQUIRED =', `let testRecorder = { bindings: [], journals: [] }; function setTestRecorder(value) { testRecorder = value; }
