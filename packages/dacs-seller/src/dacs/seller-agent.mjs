@@ -25,7 +25,7 @@ import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs
 // and the final bundle closure, stay behind an explicit later SDK finaliser
 // call. Not deployed anywhere; tests run it on owned loopback only.
 import { commitOnSignatureConfig, verifySignatureAgreement, verifyAgreementCreateAuthorization } from './commit-on-signature.mjs';
-import { canonicalize, paymentEvidenceAddress, verifySellerPaymentIntake, commitFixedPriceAgreement, contentHash, isListing, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, ARTIFACT_SEPARATORS, compositeVerificationAddress, createFsFencedSessionStore, runDurableFulfilmentToDeliveryReady, verifySettlementEvidence, isCompositeVerificationRecord, isCanonicalBase64Url, signedBytes } from '@kynesyslabs/dacs';
+import { canonicalize, paymentEvidenceAddress, verifySellerPaymentIntake, commitFixedPriceAgreement, contentHash, isListing, createInMemoryFencedSessionStore, createInMemorySellerReceiptStore, fixedPriceAgreementLogicalAddress, finalizeFixedPriceAgreementContributions, finalityCommitmentAddress, identityBundleHash, isCanonicalJobId, isVerifiedListingAdmission, sameCanonicalClaimIdentity, canonicalDemosAgentPublicKey, isIdentityBundle, respondToFixedPriceAgreementProposalDurable, sellerFulfilmentVetModeOf, sellerFulfilmentVetRequirementsViolation, sha256Hex, signComponentArtifact, ARTIFACT_SEPARATORS, compositeVerificationAddress, createFsFencedSessionStore, runDurableFulfilmentToDeliveryReady, verifySettlementEvidence, isCompositeVerificationRecord, isCanonicalBase64Url, signedBytes } from '@kynesyslabs/dacs';
 import { isNativeDeliveryEvidence } from './delivery-evidence.mjs';
 import { randomBytes } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -40,8 +40,8 @@ import { fixtureRef, signAnchorWrite, verifyFixtureRecord, fixtureTxRef, canonic
 import { createSellerDurableState, DEFAULT_SELLER_MAX_JOBS } from './seller-durable-state.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
-import { sellerSessionPresentationProblem } from './session-admission.mjs';
-import { demDeliveryContextConfig, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
+import { sellerBundleProblem, sellerRecordVerifier } from './session-admission.mjs';
+import { demDeliveryContextConfig, demDeliveryContextVetMode, resolveDemDeliverySellerContext } from './dem-delivery-context-consumer.mjs';
 import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt, isDeadRefusedCreate, mayPublishAgain, PASSIVE_RETAINED_READ } from './native-dem-delivery-consumer.mjs';
 import { deliverableJournalFor } from './deliverable-wallet-journal.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
@@ -175,7 +175,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // seller-context-route.mjs createSellerContextRecords exactRequest) is true only
 // when the seller durably admitted exactly that context request for the job.
 const MAX_CHALLENGES_PER_JOB=16;
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
+export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
   assertKitOperationAdmitted('createSellerAgent');
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
@@ -212,6 +212,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   const claim = signer.claim;
   const nativeEvidence = nativePaymentEvidenceConfig(nativePaymentEvidence);
   const deliveryContext = demDeliveryContextConfig(demDeliveryContext);
+  // The agent's one Vet mode (default counterparty): the host composes it, and it
+  // must be the mode its DEM context capability was built in (none: the default).
+  const vetMode = sellerFulfilmentVetModeOf(vetModeOption);
+  if (vetMode === null) throw new TypeError('vetMode is not a supported fulfilment Vet mode');
+  if (vetMode !== (deliveryContext ? demDeliveryContextVetMode(deliveryContext) : sellerFulfilmentVetModeOf(undefined))) {
+    throw Object.assign(new TypeError('the seller agent and its DEM delivery context are composed in different Vet modes'), { code: 'vet_mode_mismatch' });
+  }
   const nativeDelivery = nativeDemDeliveryConfig(nativeDemDelivery);
   if ((nativeArtifactAnchor === null) !== (deliverableProducer === null)) throw new TypeError('native demo artifacts and the genuine deliverable producer must be configured together');
   if (nativeArtifactAnchor && (nativeArtifactAnchor.writer !== signer.claim || typeof nativeArtifactAnchor.publish !== 'function' || typeof nativeArtifactAnchor.readRetained !== 'function' || typeof nativeArtifactAnchor.verifyReceipt !== 'function' || typeof deliverableProducer !== 'function')) throw new TypeError('native demo artifact capability is incomplete or belongs to another seller');
@@ -433,7 +440,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (typeof buyer !== 'string' || buyer.length === 0 || buyer.normalize('NFC') !== buyer) return 'the retained session names no canonical buyer';
     const buyerProblem = retainedVetRefProblem(checkpoint.buyer, session.jobId, buyer, claim);
     if (buyerProblem) return `buyer ${buyerProblem}`;
-    const seller = retainedVetRefProblem(checkpoint.seller, session.jobId, claim, buyer);
+    const seller = retainedVetRefProblem(checkpoint.seller, session.jobId, claim, sellerRecordVerifier(vetMode, claim, buyer));
     if (seller) return `seller ${seller}`;
     return null;
   }
@@ -441,11 +448,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if(!nativeProfile)return null;
     const checkpoint=retainedVetRefs(session);
     if (!admission) return 'the seller has no session admission to authenticate retained Vet records';
-    const sellerBundle = session.sellerBundle ?? session.demDeliveryContext?.input?.seller?.identityBundle ?? listing.seller.identity, sellerProblem = sellerSessionPresentationProblem(sellerBundle, listing.seller.identity);
+    const sellerBundle = session.sellerBundle ?? session.demDeliveryContext?.input?.seller?.identityBundle ?? listing.seller.identity, sellerProblem = sellerBundleProblem(sellerBundle, listing.seller.identity, vetMode);
     if (sellerProblem) return `seller ${sellerProblem}`;
     const parties = [
       ['buyer', session.buyerBundle.presentedBy, checkpoint.buyer, identityBundleHash(session.buyerBundle), claim, listing.buyerRequirement],
-      ['seller', claim, checkpoint.seller, identityBundleHash(sellerBundle), session.buyerBundle.presentedBy, SELLER_REQUIREMENT],
+      ['seller', claim, checkpoint.seller, identityBundleHash(sellerBundle), sellerRecordVerifier(vetMode, claim, session.buyerBundle.presentedBy), SELLER_REQUIREMENT],
     ];
     const sessionRegistryPins = [];
     for (const [role, party, ref, bundleHash, verifier, requirement] of parties) {
@@ -455,11 +462,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       // against the exact requirement this profile invoked, binding its signed
       // requirementHash and result references; shape and signer alone would
       // accept a record the counterparty signed for another requirement.
-      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, role, party, bundleHash, verifier, invocation: { requirement, freshness: [], dealSpecific: [] }, now, sessionRegistryPins, presence: { bundle: role === 'buyer' ? session.buyerBundle : sellerBundle } });
+      const recordProblem = await vetRecordProblem(record, { ref, jobId: session.jobId, role, party, bundleHash, verifier, vetMode, invocation: { requirement, freshness: [], dealSpecific: [] }, now, sessionRegistryPins, presence: { bundle: role === 'buyer' ? session.buyerBundle : sellerBundle } });
       if (recordProblem) return `the ${role} ${recordProblem}`;
       try { receipt = await readAdmissionCapability(admission, 'readVetAnchorReceipt', { jobId: session.jobId, role, party, ref }); } catch (error) { throw vetUnverified(error?.code === 'ENOENT' ? `the ${role} Vet record has no SR-2 receipt` : `the ${role} Vet record SR-2 receipt cannot be read (${error?.code ?? 'error'})`, error); }
       // DACS-2 VPC-3: a record is relied on only at `accepted` or later.
-      const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId: session.jobId, party });
+      const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId: session.jobId, party, vetMode });
       if (receiptProblem) return `the ${role} ${receiptProblem}`;
       try { verdict = await readAdmissionCapability(admission, 'verifyVetAnchorReceipt', { jobId: session.jobId, role, party, ref, record, receipt }); } catch (error) { throw vetUnverified(`the ${role} Vet receipt cannot be verified (${error?.code ?? 'error'})`, error); }
       if (verdict !== 'valid') return `the ${role} Vet receipt does not verify`;
@@ -473,11 +480,27 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   function claimsVet(session) {
     return session.stage !== 'proposed' || session.vetCheckpoint !== undefined;
   }
+  // The one retained-context mode rule (K3: a retained context under the other
+  // mode is refused, never continued). Reads and writes nothing. A session with
+  // neither a retained context nor Agreement signature work retains nothing to
+  // continue. Only absence reads as counterparty (a session saved before the
+  // stamp existed); an unsupported stamp or another mode is a mismatch.
+  function retainedVetModeProblem(session) {
+    if (session.demDeliveryContext === undefined && session.agreementSignatureKey === undefined && session.sellerContribution === undefined) return null;
+    return sellerFulfilmentVetModeOf(session.demDeliveryContext?.vetMode) === vetMode ? null : `vet_mode_mismatch: the retained session was made under another Vet mode than this seller's (${vetMode})`;
+  }
+  const assertRetainedVetMode = (session) => {
+    const problem = retainedVetModeProblem(session);
+    if (problem) throw new SellerAgentError('vet_mode_mismatch', problem, 409);
+  };
+  // A session held under another mode is not verified here (its records follow
+  // the other mode's rule); every entry that could continue it refuses first.
+  const verifiesRetainedVet = (session) => claimsVet(session) && retainedVetModeProblem(session) === null;
   function retainedSessionProblem(session) {
     // Fixture sessions use not-performed Vet markers; a retained native Vet
     // checkpoint still needs native admission and cannot cross this profile.
     if (!nativeProfile && (session.vetCheckpoint !== undefined || session.demDeliveryContext !== undefined)) return 'the fixture profile cannot authenticate retained native Vet records';
-    return nativeProfile || durable ? retainedChallengeProblem(session) ?? (claimsVet(session) ? retainedVetCheckpointProblem(session) : null) : null;
+    return nativeProfile || durable ? retainedChallengeProblem(session) ?? (verifiesRetainedVet(session) ? retainedVetCheckpointProblem(session) : null) : null;
   }
   function sessionView (session) {
     if(!session)return null;
@@ -543,7 +566,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (!session) return;
     authenticateBuyerBundle(session.buyerBundle);
     if (identityBundleHash(session.buyerBundle) !== session.buyerBundleHash) throw new SellerAgentError('seller_state_corrupt', 'retained buyer binding is invalid', 503);
-    const problem = retainedSessionProblem(session) ?? (claimsVet(session) ? await retainedVetEvidenceProblem(session) : null);
+    const problem = retainedSessionProblem(session) ?? (verifiesRetainedVet(session) ? await retainedVetEvidenceProblem(session) : null);
     if (problem) throw new SellerAgentError('seller_state_unverified', problem, 503);
     sessions.set(session.jobId, session);verifiedSessions.set(session.jobId, sessionFingerprint(session));
     if (session.sellerContribution) {
@@ -580,6 +603,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const session = sessions.get(jobId);
     if (!session) throw new SellerAgentError('unknown_job', 'no session for this job', 404);
     assertSettlementCredit(jobId);
+    assertRetainedVetMode(session);
     return session;
   };
 
@@ -633,6 +657,9 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     assertVetContext();
     assertSessionAdmission();
     const existing = sessions.get(jobId);
+    // A retained context of another mode is never continued, replay of a signed proposal included; the session is kept.
+    const modeProblem = existing && retainedVetModeProblem(existing);
+    if (modeProblem) return { disposition: 'rejected', stage: 'context', reason: `VET_RECORD_UNVERIFIED: ${modeProblem}` };
     const completedProposalHash=existing?.proposal?.proposalHash??existing?.sellerContributionProposalHash;
     if(completedProposalHash&&completedProposalHash!==proposal?.proposalHash)return{disposition:'rejected',stage:'context',reason:'another proposal has already completed for this job'};
     // Session start (LRR-6, RAV-R1/R2): the rail is selected and its exact
@@ -796,17 +823,18 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
             // snapshots, so refuse presence-only requirements before signing.
             const invocationProblem = sellerFulfilmentVetRequirementsViolation(resolved.vetRequirements, { jobId, buyerRequirement: listing.buyerRequirement,
               buyer: { primaryClaim: session.buyerBundle.presentedBy, vetRecordRef: resolved.input.buyer.vetRecordRef },
-              seller: { primaryClaim: claim, vetRecordRef: resolved.input.seller.vetRecordRef } });
+              seller: { primaryClaim: claim, vetRecordRef: resolved.input.seller.vetRecordRef }, vetMode });
             if (invocationProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${invocationProblem}` };
             // DACS-2 §7.7.1: a reference is relied on only through the record it names.
             // §7.7.2: each party's record is verified by its counterparty, the
-            // buyer's by the seller and the seller's by the buyer. The seller's
-            // record is of the bundle the Agreement carries: the Listing's, or
-            // this session's presentation of exactly it, which must verify.
+            // buyer's by the seller and the seller's by the buyer; under W the
+            // seller verifies both. The seller's record is of the bundle the
+            // Agreement carries: the Listing's, or (counterparty mode only) this
+            // session's presentation of exactly it, which must verify.
             const sessionSeller = resolved.input.seller.identityBundle;
-            const presentationProblem = sellerSessionPresentationProblem(sessionSeller, sellerBundle);
+            const presentationProblem = sellerBundleProblem(sessionSeller, sellerBundle, vetMode);
             if (presentationProblem) return { disposition: 'rejected', reason: `seller identity differs: ${presentationProblem}` };
-            const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sessionSeller, session.buyerBundle.presentedBy]];
+            const parties = [['buyer', session.buyerBundle.presentedBy, session.buyerBundle, claim], ['seller', claim, sessionSeller, sellerRecordVerifier(vetMode, claim, session.buyerBundle.presentedBy)]];
             for (const [role] of parties) {
               // Restore replays each record against this profile's fixed
               // requirement and no freshness/deal-specific results. Sign only
@@ -828,7 +856,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               catch (cause) { return unavailable(cause,`the ${role} Vet record is unavailable`); }
               if (record === null) return unavailable(new Error('Vet record is absent'),`the ${role} Vet record is absent`);
               let problem;
-              try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, invocation, now, sessionRegistryPins, presence: { bundle } }); }
+              try { problem = await vetRecordProblem(record, { ref, jobId, role, party, bundleHash: identityBundleHash(bundle), verifier, vetMode, invocation, now, sessionRegistryPins, presence: { bundle } }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet evidence is unavailable`); }
               if (problem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${problem}` };
               // DACS-2 VPC-3: a signed record is no admitted one. It is relied on
@@ -837,7 +865,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
               try { receipt = await readAdmissionCapability(admission,'readVetAnchorReceipt',{ jobId, role, party, ref }); }
               catch (cause) { return unavailable(cause,`the ${role} Vet record read or authentication is unavailable`); }
               if (receipt === null) return unavailable(new Error('Vet receipt is absent'),`the ${role} Vet record has no SR-2 receipt`);
-              const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId, party });
+              const receiptProblem = vetAnchorReceiptProblem(receipt, { ref, jobId, party, vetMode });
               if (receiptProblem) return { disposition: 'rejected', reason: `VET_RECORD_UNVERIFIED: ${role}: ${receiptProblem}` };
               // CORE SR2-4: the receipt's fields alone are assertions, not proof.
               // Only the operator's authentication of this record's receipt passes.
@@ -915,6 +943,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // Read without replacing the object owned by a concurrent job operation.
     const session = sessionView(durable ? durable.loadSession(identity?.jobId) : sessions.get(identity?.jobId));
     if (!session?.proposal || session.transportIdentity?.proposalHash !== identity.proposalHash) return { proposal: null, contribution: null };
+    assertRetainedVetMode(session);
     return structuredClone({ proposal: session.proposal, contribution: session.sellerContribution ?? null });
   }
 
@@ -1517,6 +1546,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     let verifiedSchemaPayload, preparedCanonical = null;
     const deps = {
       auditSourceProfile: 'v2',
+      vetMode,
       receiptStore,
       resolveAuditSource: async (jobId) => jobId === session.jobId ? { status: 'verified', value: structuredClone(auditSource) } : { status: 'rejected', reason: 'another job was requested' },
       resolveAgreement: async (ref) => ref === agreement.ref ? { status: 'verified', value: structuredClone(agreement) } : { status: 'rejected', reason: 'another Agreement was requested' },
@@ -2131,10 +2161,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       const claimed=transport?.claim();
       const { path, jobId } = input.request, readOnly = input.readOnly === true || claimed?.live===false;
       let result;
+      // A retained context of another mode is held before anything else runs:
+      // no replay, adoption, readback or recovery transmission continues it.
+      const modeProblem = session && retainedVetModeProblem(session);
       // An unpaid outside buyer only has issued unknown writes inspected:
       // nothing is restored or run. Live and read-only proposal replay each
       // apply the proposal wallet and profile gates themselves.
-      if (path !== '/dacs/v1/agreements/proposals' && access && session && buyerAccessClosed(session, jobId)) {
+      if (modeProblem) result = { held: modeProblem };
+      else if (path !== '/dacs/v1/agreements/proposals' && access && session && buyerAccessClosed(session, jobId)) {
         result = { held: await readIssued?.(jobId, { unknownOnly: true }) ? 'buyer_access_closed; issued unknown writes inspected read-only; retained outcome unchanged' : 'buyer_access_closed; no unknown issued write, nothing was read; retained outcome unchanged' };
       } else { sessions.delete(jobId); await restore(session); result = await recoverTransport({ ...input, readOnly, transport:typeof claimed?.check==='function'?claimed:undefined }); }
       const outcome = transportOutcome(path, result, { retained: retainedWork(path, jobId, input.body), recovering: true, readOnly });
