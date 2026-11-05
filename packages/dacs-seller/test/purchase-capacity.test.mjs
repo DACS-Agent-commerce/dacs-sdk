@@ -693,6 +693,18 @@ test('reservation-completed-at-capacity-is-refused-until-its-source-is-revalidat
   assert.equal(w.f.rows().length, rows); assert.deepEqual(w.f.files(), files); assert.deepEqual(w.capacity.capacityReport().exhausted, []);
 });
 
+test('reservation-exhaustion-record-failure-keeps-the-refusal-as-cause', async t => {
+  const w = await coordination(t, { maxRecords: FOUR }); w.allocate(fixture.JOB);
+  assert.equal((await w.reserve(await w.request({}, { newJob: true }))).state, 'new');
+  const cut = new Error('TEST exhaustion record failed');
+  const failing = createReservationCoordinator({ accounting: w.f.store().reservationAccounting, inspectOperation: target => inspectWireOperation(w.f.journal, target),
+    capacity: { classify: input => w.capacity.classify(input), recordExhaustion: () => { throw cut; } } });
+  for (let refusal = 0; refusal < 2; refusal++) {
+    await assert.rejects(failing.reserveCoordinated(await w.request()), error => error === cut && error.cause?.code === 'peer_store_capacity' && error.cause.status === 503);
+  }
+  assert.equal(w.f.rows().length, 1, 'the refusals charged nothing'); assert.deepEqual(w.capacity.capacityReport().exhausted, []);
+});
+
 test('reservation-owner-rejection-releases-mutex', async t => {
   const cut = new Error('TEST reserve failed');
   const cases = [
