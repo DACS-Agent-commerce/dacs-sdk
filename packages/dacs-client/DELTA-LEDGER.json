@@ -6025,6 +6025,17 @@
           "after": "529e9fec2d2412d41405769ad294b373ca42f591"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a1ba accept Node's own Ed25519 experimental warning in the fresh-child stderr check",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-fresh-child.test.mjs",
+          "before": "3b29524ec8c9c36f436fdea32f59900a96b98c10",
+          "after": "6a818fd66d7d90ba6196381033269fbfff8b4647"
+        }
+      ]
     }
   ]
 }
