@@ -1043,10 +1043,12 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     // hash's recorded slot consumption with its signer (a confirmed body
     // consumed it; a later pending, unavailable or failed read cannot undo
     // that). slotConsumedCarried marks the carry-over: its pointer is never detached.
+    // A recorded mismatch is not carried: its pointer was detached as unproven,
+    // and re-reporting that hash must not pin it over the approved payment's own.
     const recordUnverified = (observation) => {
       const stored = coordinates.get(operation.id)?.observation;
       const reconciled = usesNativeAgreementPayment(operation) && stored?.nativeNonceResolved === true && stored.txHash === observation.txHash;
-      const consumed = observation.slotConsumed !== true && stored?.slotConsumed === true && stored.txHash === observation.txHash;
+      const consumed = observation.slotConsumed !== true && stored?.slotConsumed === true && stored.txHash === observation.txHash && !stored.mismatches?.length;
       recordObservation(operation.id, {
         ...observation,
         ...(reconciled ? { nativeNonceResolved: true } : {}),

@@ -262,6 +262,39 @@ test('an unproven mismatch detaches its hash so the approved payment\'s own hash
   assert.equal(w.coordinates.get(w.op.id).reportedTxHash, paymentHash);
 });
 
+const PAYMENT_HASH = '2'.repeat(64);
+const reportedAgain = w => w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, txHash: HASH });
+for (const [label, unverified] of [
+  ['pending', w => { w.chain.observeTransfer = async () => ({ status: 'pending' }); }],
+  ['unavailable', w => { w.chain.observeTransfer = async () => { throw new Error('TEST-down'); }; }],
+  ['body unavailable', w => { w.chain.getTransaction = async () => { throw new Error('TEST-body-down'); }; }],
+  ['body hash differs', w => { w.chain.getTransaction = async () => ({ hash: PAYMENT_HASH, status: 'confirmed', blockNumber: 10, content: { from: WALLET, nonce: 7 } }); }],
+]) {
+  test(`re-reporting an unproven mismatch's hash on an unverified read (${label}) leaves the approved payment's hash reportable`, async t => {
+    const w = world(t, WRONG_AMOUNT);
+    assert.equal((await w.verify()).verification.outcome, 'mismatch_unproven');
+    unverified(w);
+    const again = await reportedAgain(w);
+    assert.notEqual(again.verification.outcome, 'mismatch_unproven');
+    assert.notEqual(w.coordinates.get(w.op.id).observation?.slotConsumedCarried, true);
+    w.chain.observeTransfer = async () => ({ ...INCLUDED, txHash: PAYMENT_HASH });
+    w.chain.getTransaction = async () => ({ hash: PAYMENT_HASH, status: 'confirmed', blockNumber: 10, content: { from: WALLET, nonce: 7 } });
+    const paid = await w.purchases.verifyDeal({ accountId: w.op.accountId, operationId: w.op.id, txHash: PAYMENT_HASH });
+    assert.equal(paid.verification.outcome, 'verified');
+    assert.equal(paid.operation.status, 'settled_verified');
+    assert.equal(w.coordinates.get(w.op.id).reportedTxHash, PAYMENT_HASH);
+  });
+}
+
+test('a repeated unproven mismatch read keeps detaching its hash', async t => {
+  const w = world(t, WRONG_AMOUNT);
+  await w.verify();
+  const again = await reportedAgain(w);
+  assert.equal(again.verification.outcome, 'mismatch_unproven');
+  assert.equal(w.coordinates.get(w.op.id).reportedTxHash, null);
+  assert.equal(blocksWallet(w), true);
+});
+
 test('a readable alternate key retains the approved buyer projection', async t => {
   const w = world(t, INCLUDED, { signingAddress: '0x' + 'b'.repeat(64) }), result = await w.verify();
   assert.equal(result.verification.outcome, 'verified');
