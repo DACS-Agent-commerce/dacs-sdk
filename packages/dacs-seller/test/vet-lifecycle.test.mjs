@@ -94,7 +94,20 @@ test('ending an active producer reports durable invalidation before deferred del
  w.config.wallet.signBytes=async bytes=>{if(once){once=false;entered();await gate;}return sign(bytes);};
  const pending=p.resolveBuyer(a),held=pending.catch(error=>error);await ready;
  assert.deepEqual(await p.release({jobId:JOBS[0]}),{invalidated:true,deleted:false});resume();assert.ok((await held) instanceof Error);
- await p.sweep(()=>true);assert.equal(w.local.writes.length,0);assert.equal(w.controls.signs,1);assert.equal(w.store.usage().jobs,0,'the ended row is deleted after this producer settles');w.base.close();
+ await p.sweep(()=>true);assert.equal(w.local.writes.length,0);assert.equal(w.controls.signs,1);w.base.close();
+});
+test('an ended job whose signature may be lost keeps an ended marker, so no later request signs it again',async()=>{
+ const w=fixture(),p=w.provider(),a=w.input(),sign=w.config.wallet.signBytes;let entered,resume,once=true;
+ const ready=new Promise(r=>entered=r),gate=new Promise(r=>resume=r);
+ w.config.wallet.signBytes=async bytes=>{if(once){once=false;entered();await gate;}return sign(bytes);};
+ const held=p.resolveBuyer(a).catch(error=>error);await ready;
+ await p.release({jobId:JOBS[0]});resume();assert.ok((await held) instanceof Error);
+ assert.deepEqual(await p.sweep(()=>true),{deleted:0,usage:w.store.usage()});
+ assert.equal(w.store.usage().jobs,1,'only the small ended marker is kept');
+ await assert.rejects(w.provider().resolveBuyer(a),{code:'context_released'});
+ assert.deepEqual(await w.provider().release({jobId:JOBS[0]}),{invalidated:true,deleted:false});
+ await assert.rejects(w.provider().resolveBuyer(a),{code:'context_released'});
+ assert.equal(w.controls.signs,1);assert.equal(w.local.writes.length,0);w.base.close();
 });
 
 for(const restart of [false,true])test(`ending missing jobs writes no marker, reopen=${restart}`,async()=>{
@@ -145,6 +158,21 @@ test('lost challenge retention requests a fresh unused challenge before any sign
  await assert.rejects(w.provider().resolveBuyer(w.input()),/lost challenge save/);
  assert.equal(w.controls.presentationSigns,0);assert.equal(w.seen.length,0);
  assert.equal((await w.provider().resolveBuyer(w.input())).disposition,'present');assert.equal(w.issued.size,2);assert.equal(w.seen.length,1);w.base.close();
+});
+test('a lost challenge save repeats the same issuance request, so a one-challenge-per-job buyer answers with its issued challenge',async()=>{
+ const w=fixture(),update=w.config.store.update,issue=w.counterparty.issueChallenge,byIssuance=new Map(),requests=[];let once=true;
+ w.counterparty.issueChallenge=async input=>{
+  requests.push(input.issuance);
+  if(byIssuance.has(input.issuance))return structuredClone(byIssuance.get(input.issuance));
+  if(byIssuance.size)throw new Error('TEST the buyer issues one challenge per job');
+  const challenge=await issue(input);byIssuance.set(input.issuance,challenge);return structuredClone(challenge);
+ };
+ w.config.store.update=(key,change)=>update(key,(row,rows)=>{const next=change(row,rows);if(once&&!row?.presentation&&next?.presentation){once=false;throw new Error('TEST lost challenge save');}return next;});
+ await assert.rejects(w.provider().resolveBuyer(w.input()),/lost challenge save/);
+ assert.equal(w.controls.presentationSigns,0);assert.equal(w.seen.length,0);
+ assert.equal((await w.provider().resolveBuyer(w.input())).disposition,'present');
+ assert.equal(requests.length,2);assert.equal(typeof requests[0],'string');assert.equal(requests[1],requests[0]);
+ assert.equal(w.issued.size,1);assert.equal(w.seen.length,1);w.base.close();
 });
 
 // Pause after admission and producer binding, before the buyer's first write.
