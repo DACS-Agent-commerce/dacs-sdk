@@ -141,6 +141,18 @@ describe("Agent wallet-authority boundary", () => {
     await expect(pending).resolves.toBeDefined();
   });
 
+  it("refuses the replaced resolveAttestationAnchorWriter key before connecting", async () => {
+    const connect = vi.spyOn(Demos.prototype, "connect")
+      .mockResolvedValue(undefined as never);
+    await expect(createAgent({
+      demosRpc: "https://rpc.example",
+      resolveAttestationAnchorWriter: () => PRIMARY,
+    } as Parameters<typeof createAgent>[0])).rejects.toThrow(
+      /AgentConfig\.resolveAttestationAnchorWriter .*AgentConfig\.resolveAttestationAnchorReceipt/,
+    );
+    expect(connect).not.toHaveBeenCalled();
+  });
+
   it("does not reflectively expose the adapter, raw client, or wallet sentinel", () => {
     const adapter = authorityBearingAdapter();
     const agent = buildAgent(adapter, {
