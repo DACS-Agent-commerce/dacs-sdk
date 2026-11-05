@@ -92,8 +92,10 @@ export async function accountingFixture(t, options = {}) {
     tuples: () => db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n,
     payments: () => db.prepare('SELECT * FROM kit_payment_transactions').all(),
     jobRows: () => db.prepare('SELECT * FROM peer_jobs ORDER BY rowid').all(),
+    holds: () => db.prepare('SELECT * FROM kit_job_holds ORDER BY rowid').all(),
     assertEmpty: () => {
       assert.equal(rows().length, 0); assert.equal(files().length, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM kit_job_holds').get().n, 0);
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n, 0);
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_jobs').get().n, 0);
     },
