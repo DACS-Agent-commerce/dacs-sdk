@@ -164,6 +164,8 @@ function replayAnswer(row, input) {
  * `accept` also binds the job to the accepted presentation in the same transaction and throws
  * SellerTransportError `seller_job_bound` when another nonce already bound the job. `jobBinding(jobId)`
  * returns the detached frozen `{ jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt }` or null.
+ * Opening the ledger binds every job that has an `accepted` row and no binding yet (a store written before the
+ * binding existed) to its earliest accepted row, by `attemptedAt` then nonce, before any caller or reclamation can run.
  * `closeLostValidations()` returns how many earlier-generation attempts it closed. `retained(nonce)`
  * returns a detached frozen row or null; its caller compares the buyer and the exact bundle bytes.
  * Construction throws TypeError for an unusable port, generation or limit.
@@ -187,6 +189,12 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   const one = (sql, ...args) => db.prepare(sql).get(...args);
   const all = (sql, ...args) => db.prepare(sql).all(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args).changes;
+  // A store written before the bindings existed: bind each such job to its earliest accepted row. Nothing is written on a bound store.
+  if (one("SELECT 1 FROM kit_challenges WHERE state = 'accepted' AND jobId NOT IN (SELECT jobId FROM kit_job_bindings)")) {
+    run(`INSERT INTO kit_job_bindings (jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt)
+      SELECT jobId, nonce, buyer, presentationHash, json_extract(accepted, '$.buyerBundleHash'), json_extract(accepted, '$.admittedAt')
+      FROM kit_challenges WHERE state = 'accepted' ORDER BY attemptedAt, nonce ON CONFLICT (jobId) DO NOTHING`);
+  }
 
   function readClock(headroomMs = 0) {
     const time = now();

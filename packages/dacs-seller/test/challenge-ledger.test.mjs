@@ -1124,7 +1124,7 @@ test('a job already bound to one accepted presentation refuses a second acceptan
   w.control.now += 1;
   const second = w.ledger.issueForOperator({ jobId: job('one'), buyer: BUYER });
   const firstOwner = w.attempt(first.sessionNonce).owner;
-  const secondOwner = w.attempt(second.sessionNonce, { path: 'proposal', challengeScopeHash: null, presentationHash: hash('another presentation') }).owner;
+  const secondOwner = w.attempt(second.sessionNonce, { path: 'proposal', challengeScopeHash: null }).owner;
   assert.equal(w.ledger.accept(firstOwner, first.sessionNonce, w.record(first.sessionNonce)), true);
   const kept = w.ledger.jobBinding(job('one'));
   refusal(() => w.ledger.accept(secondOwner, second.sessionNonce, w.record(second.sessionNonce)), 'seller_job_bound');
@@ -1132,6 +1132,79 @@ test('a job already bound to one accepted presentation refuses a second acceptan
   assert.equal(w.ledger.retained(second.sessionNonce).state, 'attempted');
   assert.equal(w.ledger.recordFailed(secondOwner, second.sessionNonce, 'job_taken'), true);
   assert.equal(w.ledger.jobBinding(job('two')), null);
+});
+
+// A store written before `kit_job_bindings` existed: its accepted rows carry no binding until the ledger opens.
+const priorStore = (w, generation = 'generation-two') => { w.db.exec('DROP TABLE kit_job_bindings'); w.reopen(generation); };
+const operatorRequest = { jobId: job('one'), buyer: BUYER };
+
+for (const [label, sibling] of Object.entries({
+  'an operator row of the same buyer': {
+    issue: (w) => w.ledger.issueForOperator(operatorRequest).sessionNonce,
+    attempt: (w, nonce) => w.attempt(nonce, { path: 'proposal', challengeScopeHash: null }),
+    record: (w, nonce) => w.record(nonce),
+  },
+  'a route row of another buyer': {
+    issue: (w) => w.issue('one', OTHER).sessionNonce,
+    attempt: (w, nonce) => w.attempt(nonce, { buyer: OTHER, presentationHash: presentationOf(nonce, OTHER) }),
+    record: (w, nonce) => w.record(nonce, 'one', OTHER),
+  },
+})) {
+  test(`challenge-prior-store-binds-the-job-of-an-accepted-row-so-${label.replaceAll(' ', '-')}-is-refused`, (t) => {
+    const w = world(t), first = w.issue();
+    w.control.now += 1;
+    const nonce = sibling.issue(w);
+    const { owner } = w.attempt(first.sessionNonce);
+    assert.equal(w.ledger.accept(owner, first.sessionNonce, w.record(first.sessionNonce)), true);
+    const written = w.ledger.jobBinding(job('one'));
+    priorStore(w);
+    assert.deepEqual(w.ledger.jobBinding(job('one')), written);
+    const second = sibling.attempt(w, nonce);
+    assert.equal(second.kind, 'validate');
+    refusal(() => w.ledger.accept(second.owner, nonce, sibling.record(w, nonce)), 'seller_job_bound');
+    assert.equal(w.ledger.retained(nonce).state, 'attempted');
+    assert.deepEqual(w.ledger.jobBinding(job('one')), written);
+    assert.equal(w.ledger.recordFailed(second.owner, nonce, 'job_taken'), true);
+    w.reopen('generation-three');
+    assert.deepEqual(w.ledger.jobBinding(job('one')), written, 'opening a store whose accepted rows are bound changes nothing');
+  });
+}
+
+test('challenge-prior-store-binding-outlives-the-reclaimed-accepted-row', (t) => {
+  const w = world(t, { limits: { maxChallenges: 2 } }), first = w.issue();
+  w.control.now += 1_000;
+  const nonce = w.ledger.issueForOperator(operatorRequest).sessionNonce;
+  const { owner } = w.attempt(first.sessionNonce);
+  assert.equal(w.ledger.accept(owner, first.sessionNonce, w.record(first.sessionNonce)), true);
+  const written = w.ledger.jobBinding(job('one'));
+  priorStore(w);
+  const second = w.attempt(nonce, { path: 'proposal', challengeScopeHash: null });
+  w.control.now = T0 + HOUR + 500;
+  w.control.sessionState = (jobId) => (jobId === job('one') ? 'finalised' : null);
+  w.issue('two');
+  assert.equal(w.ledger.retained(first.sessionNonce), null, 'the accepted row was reclaimed');
+  assert.deepEqual(w.ledger.jobBinding(job('one')), written);
+  refusal(() => w.ledger.accept(second.owner, nonce, w.record(nonce)), 'seller_job_bound');
+  assert.equal(w.ledger.retained(nonce).state, 'attempted');
+});
+
+test('challenge-prior-store-with-two-accepted-rows-binds-the-earliest-attempt', (t) => {
+  const w = world(t), route = w.issue(), operator = w.ledger.issueForOperator(operatorRequest), third = w.issue('one', OTHER);
+  const { owner } = w.attempt(route.sessionNonce);
+  assert.equal(w.ledger.accept(owner, route.sessionNonce, w.record(route.sessionNonce)), true);
+  // The part 02 ledger let a second row of the job be accepted: copy the first's acceptance onto it.
+  w.db.prepare(`UPDATE kit_challenges SET state = 'accepted', accepted = copy.accepted, presentationHash = copy.presentationHash, owner = copy.owner
+    FROM (SELECT accepted, presentationHash, owner FROM kit_challenges WHERE nonce = ?) AS copy WHERE nonce = ?`).run(route.sessionNonce, operator.sessionNonce);
+  // The earlier attempt belongs to the larger nonce, so ordering by nonce alone would name the other row.
+  const [later, earlier] = [route.sessionNonce, operator.sessionNonce].sort();
+  w.db.prepare('UPDATE kit_challenges SET attemptedAt = ? WHERE nonce = ?').run(T0 + 20, later);
+  w.db.prepare('UPDATE kit_challenges SET attemptedAt = ? WHERE nonce = ?').run(T0 + 10, earlier);
+  priorStore(w);
+  assert.equal(w.ledger.jobBinding(job('one')).nonce, earlier);
+  const attempted = w.attempt(third.sessionNonce, { buyer: OTHER, presentationHash: presentationOf(third.sessionNonce, OTHER) });
+  refusal(() => w.ledger.accept(attempted.owner, third.sessionNonce, w.record(third.sessionNonce, 'one', OTHER)), 'seller_job_bound');
+  w.reopen('generation-three');
+  assert.equal(w.ledger.jobBinding(job('one')).nonce, earlier);
 });
 
 // A row attempted on its origin path by its party, with `presentationHash` (default: the one `input` attempts with).
