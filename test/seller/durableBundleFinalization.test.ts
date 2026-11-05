@@ -44,7 +44,7 @@ import {
   type FaultAttestationBundle,
 } from "../../src/artifacts/index.js";
 import {
-  bundleAddress,
+  legacyBundleAddress as bundleAddress,
   contentHash,
   sha256Hex,
 } from "../../src/canonical/index.js";
