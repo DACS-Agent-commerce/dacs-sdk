@@ -14,7 +14,7 @@ import {
   isCanonicalBase64Url,
   signComponentArtifact,
 } from "../artifacts/index.js";
-import { bundleAddress, canonicalize, contentHash } from "../canonical/index.js";
+import { legacyBundleAddress, canonicalize, contentHash } from "../canonical/index.js";
 import { ed25519Sign, signedBytes } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
 import {
@@ -1155,7 +1155,7 @@ function expectedBinding(
     bindingVersion: "1",
     jobId,
     role: localParty.role,
-    logicalAddress: bundleAddress(jobId, localParty.role),
+    logicalAddress: legacyBundleAddress(jobId, localParty.role),
     nativeAddress: anchored.nativeAddress,
     bundleContentHash,
     ...(anchored.anchorTx === undefined ? {} : { anchorTx: anchored.anchorTx }),
@@ -1568,7 +1568,7 @@ async function finalizeCompletedCounterparty(
     `retained ${role} detached signature`,
   );
 
-  const logicalAddress = bundleAddress(roleBundle.jobId, role);
+  const logicalAddress = legacyBundleAddress(roleBundle.jobId, role);
   const anchored = await publishCounterpartyBundle(
     logicalAddress,
     roleBundle,
