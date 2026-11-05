@@ -93,7 +93,17 @@ function world(t, { limits = {} } = {}) {
     };
     const ledger = createSellerChallengeLedger({
       db, transaction, generation, limits, now: () => control.now,
-      sessionState: ({ jobId }) => { control.ports++; return control.sessionState(jobId); },
+      // The ledger is handed the store's observation adapter, which has already read a throw, a Promise or a non-string as unknown
+      // (the adapter itself is tested in purchase-capacity.test.mjs), so this double answers a string or null.
+      sessionState: ({ jobId }) => {
+        control.ports++;
+        try {
+          const state = control.sessionState(jobId);
+          if (typeof state === 'string') return state;
+          void Promise.resolve(state).then(undefined, () => {});
+        } catch { return null; }
+        return null;
+      },
       admissionCounts: () => { control.ports++; control.countReads++; return { contextRecords: control.counts.contextRecords, starts: control.counts.starts, buyerStarts: () => control.counts.buyerStarts }; },
       ready: () => control.ready,
       stopped: () => control.stopped,

@@ -86,7 +86,7 @@ function world(t, config = {}) {
     store = createSellerTransportStore({ path, generation: `test-generation-${++control.generation}`, now: () => control.clock, ready: () => control.ready,
       maxContextRecords: options.maxContextRecords, contextStartLimits: options.contextStartLimits });
     internals = sellerStoreInternals(store);
-    capacity = createPurchaseCapacity({ store, now: () => control.clock, maxRecords: options.maxRecords ?? 10000, sessionState: () => null });
+    capacity = createPurchaseCapacity({ store, now: () => control.clock, maxRecords: options.maxRecords ?? 10000, sessionState: internals.sessionState });
     admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
       inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,

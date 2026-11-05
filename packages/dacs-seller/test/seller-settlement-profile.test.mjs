@@ -21,7 +21,7 @@ import { SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from '../src/d
 import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
-import { createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { testNetwork } from './helpers/wire-authority-fixture.mjs';
 
 let nextWallet=90;

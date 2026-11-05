@@ -161,14 +161,17 @@ function chargedClass(classified) {
 /**
  * Compose the reservation coordinator (K5 step 5, DC24) over the accounting, the purchase capacity and `inspectOperation(payload)`, the
  * synchronous read-only wire inspection of the payload's operation. `admissionTransaction`, when given, validates the job lease the
- * context route borrows. Returns an object with reserveCoordinated; throws a TypeError when a port is missing or unusable.
+ * context route borrows. Returns an object with reserveCoordinated and addPreAccountingGate; throws a TypeError when a port is missing or
+ * unusable. The capacity supplies the terminal check (`terminalSession`) and the pending-observation barrier it forwards from the store.
  */
 export function createReservationCoordinator({ accounting, capacity, inspectOperation, admissionTransaction }) {
   if (typeof accounting?.reserveAccounted !== 'function' || typeof capacity?.classify !== 'function' || typeof capacity.recordExhaustion !== 'function'
+      || typeof capacity.terminalSession !== 'function' || typeof capacity.flushTerminalObservations !== 'function'
       || typeof inspectOperation !== 'function' || (admissionTransaction != null && typeof admissionTransaction.requireJobLease !== 'function')) {
     throw new TypeError('the reservation coordinator needs accounting, purchase capacity, an operation inspection and, for context, the admission transaction');
   }
   const acquire = createKeyedMutex();
+  const gates = [];
   // What a request running under a borrowed job lease releases here: nothing, since its caller releases the lease.
   const releaseNothing = () => {};
 
@@ -199,9 +202,30 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
       throw failure;
     }
   }
+  // A gate answers exactly null or a refusal; anything else, a Promise included, is a defect of the gate and is never read as consent.
+  function refuseByGates(request) {
+    for (const gate of gates) {
+      const answer = gate(request);
+      if (answer === null) continue;
+      if (typeof answer?.then === 'function') void Promise.resolve(answer).then(undefined, () => {});
+      if (typeof answer?.code !== 'string' || !Number.isSafeInteger(answer.status) || answer.status < 400 || answer.status > 599) {
+        throw new TypeError('a pre-accounting gate answers null or a refusal { code, status }');
+      }
+      throw new SellerTransportError(answer.code, answer.status);
+    }
+  }
+  // K5's pre-accounting order: a terminal session refuses, then each gate may, unless this very operation already completed under the
+  // request's binding, whose source-verified replay stays available.
+  function refuseBeforeAccounting({ payload, route }, inspection) {
+    if (inspection?.state === 'completed' && inspection.binding === wireOperationBinding(payload)) return;
+    if (capacity.terminalSession(payload.jobId).terminal) fail('context_session_terminal', 409);
+    refuseByGates(Object.freeze({ route, jobId: payload.jobId, payload, inspection }));
+  }
   async function reserveUnderMutex({ retainedWork, ...accounted }) {
     const { payload, route } = accounted;
     const inspection = inspectOperation(payload);
+    capacity.flushTerminalObservations();
+    refuseBeforeAccounting(accounted, inspection);
     let refusal = null;
     const checkCapacityWithin = () => {
       let classified;
@@ -222,11 +246,24 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
 
   return {
     /**
+     * Registers a pre-accounting gate: a synchronous, read-only `({ route, jobId, payload, inspection })` answering null or a refusal
+     * `{ code, status }` (status 400 to 599). Gates run in registration order after the terminal check and before any accounting;
+     * register them before serving. A gate that throws refuses the request with its own error; any other answer, a Promise included,
+     * throws a TypeError. Throws a TypeError for a gate that is not a function.
+     */
+    addPreAccountingGate(gate) {
+      if (typeof gate !== 'function') throw new TypeError('a pre-accounting gate must be a function');
+      gates.push(gate);
+    },
+    /**
      * Reserve one request under its operation's mutex: inspect the operation, then run the accounting (steps 1 to 8) with step 5
      * classifying that inspection through the purchase capacity, call checked.reserve and record its result. The input is
      * reserveAccounted's plus `retainedWork`, the host's flag for a retained purchase stage. Returns the wire effect.
      * The mutex is released only once reserveAccounted has settled, whether it returned or threw; a context request borrows the
      * `ownership.jobLease` its caller holds instead, validated against the job and never released here.
+     * After the inspection, an operation completed under this request's binding classifies as before and meets neither the terminal
+     * check nor a gate; any other request is refused context_session_terminal 409 once its job's closure is durable, or by a gate, before
+     * any accounting row, unit or agent call. A failed write of the closure, or of an earlier pending one, is thrown as it is.
      * Throws seller_effect_pending 503 (the timeout as its cause) after 10,000 ms without the mutex, before inspecting and with no
      * row, unit or file; peer_store_capacity 503 where the class has no capacity, after its exhaustion record; wire_input_invalid 500
      * for malformed input; a TypeError for a context request without a live lease of its job or any other route given one;

@@ -61,6 +61,24 @@ unit. A request that cannot take the mutex within 10,000 ms is answered 503
 the coordinator: that, and the periodic terminal cleanup, come with the routes that
 use them.
 
+The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
+the old store's checks, startup cleanup and the coordinator) is kept as a durable,
+insert-only terminal closure for the job, together with the release of its open
+slots. It commits with the work that saw it or, when that work is refused, fails or
+is rolled back (the `classify` dry run included), in a transaction of its own before
+the answer leaves. A failed write keeps its error and the observation stays
+pending, so no later transaction or request passes it. A closure answers terminal
+after a restart whatever the port then says; an unknown, nonterminal or
+asynchronous answer creates none. The coordinator refuses a request for a closed job
+`context_session_terminal` (409) after inspecting its operation and before any
+accounting, unless that operation already completed under the request's binding; it
+first runs the gates registered with `addPreAccountingGate`, which are synchronous
+and read-only. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+is the one synchronous check for other callers, and the purchase capacity must be
+built on a store before any reader runs. These observation writes are counted apart
+from the challenge, admission and reservation writes, which a refusal still leaves
+untouched.
+
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 

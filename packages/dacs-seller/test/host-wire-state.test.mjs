@@ -246,7 +246,8 @@ test('P11b2-T21 host start releases the open slots of a finished session once, s
   const finished = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }), live = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 2) });
   const withCapacity = (work) => {
     const store = createSellerTransportStore({ path: f.path(STORE_FILE) });
-    try { return work(createPurchaseCapacity({ store, now: () => NOW, sessionState: () => null }), sellerStoreInternals(store)); } finally { store.close(); }
+    const internals = sellerStoreInternals(store);
+    try { return work(createPurchaseCapacity({ store, now: () => NOW, sessionState: internals.sessionState }), internals); } finally { store.close(); }
   };
   withCapacity((capacity, { transaction }) => {
     for (const id of [finished, live]) transaction(() => capacity.allocateWithin({ jobId: id, buyer: claim('buyer'), seller: claim('seller'), listingPin: { listingId: 'host-listing', version: 1, contentHash: derive('listing') } }));

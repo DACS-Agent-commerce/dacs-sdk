@@ -129,8 +129,8 @@ function replayAnswer(row, input) {
  * Creates the challenge ledger on the caller's SQLite handle and returns a frozen API.
  * `transaction(fn, rollback = false)` runs fn synchronously in BEGIN IMMEDIATE and returns its result.
  * `now()` is the seller clock in ms; `generation` identifies this process, drawn after the seller state
- * lock is held. `sessionState({ jobId })` is synchronous; anything but a string (a throw, a promise)
- * counts as an unknown state. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
+ * lock is held. `sessionState({ jobId })` is the store's observation adapter: a synchronous DACS-5 name or null
+ * (the adapter reads a throw or a promise as unknown), whose errors propagate. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
  * over durable rows. `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
  * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
  * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class);
@@ -184,13 +184,9 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!db.inTransaction) throw new TypeError(`${entry} runs inside an open transaction`);
   }
 
-  // Only an exact terminal state answers true; the source is unknown, never trusted, when it throws or is not synchronous.
-  function isTerminal(jobId) {
-    try {
-      const state = requireSynchronous(sessionState({ jobId }), 'sessionState');
-      return typeof state === 'string' && TERMINAL_CONTEXT_STATES.has(state);
-    } catch { return false; }
-  }
+  // Only an exact terminal state answers true. `sessionState` is the store's observation adapter, which has already read an unusable
+  // port as unknown; its own errors (an unbound cleanup, a failed write) are not an answer and propagate.
+  const isTerminal = (jobId) => TERMINAL_CONTEXT_STATES.has(sessionState({ jobId }));
 
   function retained(nonce) {
     const row = isHash(nonce) ? one('SELECT * FROM kit_challenges WHERE nonce = ?', nonce) : undefined;

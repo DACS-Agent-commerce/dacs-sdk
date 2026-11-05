@@ -23,7 +23,7 @@ for(const jobs of [JOBS,[...JOBS].reverse()])test(`SB-2 collision suspends both 
 
 
 test('transport admits a competing payment to authenticated intake instead of electing the first sender',async()=>{
- const {createSellerTransportStore}=await import('../src/dacs/seller-transport-auth.mjs');
+ const {createSellerTransportStore}=await import('./helpers/bound-transport-store.mjs');
  const {withFixtureProfile}=await import('./helpers/wire-authority-fixture.mjs');
  const dir=mkdtempSync(join(tmpdir(),'transport-collision-')),store=withFixtureProfile(createSellerTransportStore({path:join(dir,'transport.sqlite'),now:()=>1800000000000}));
  const buyer=key().claim,seller=key().claim,listingPin={listingId:'collision',version:1,contentHash:'b'.repeat(64)};
