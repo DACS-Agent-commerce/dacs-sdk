@@ -16,4 +16,6 @@ it("the packed package ships the wire guide, the TP-1 declaration and register, 
   for (const name of ["docs/dacs-seller-http-v1.md", "docs/testnet-profile-tp1.md", "conformance/tp1-register.json", "conformance/tp1-provenance-ids.json", "vectors/dacs-seller-http-v1.json", "dist/wire/index.js", "dist/wire/profile.js"]) {
     expect(files).toContain(name);
   }
+  // Node observations are test evidence; the release check refuses packed files outside its allow-list.
+  expect(files.filter((file) => file.startsWith("conformance/tp1-node-observations/"))).toEqual([]);
 }, 120_000);
