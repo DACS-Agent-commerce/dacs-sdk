@@ -5,7 +5,8 @@ import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs
 import {exchange} from './helpers/d5-http-fixture.mjs';
 import {withFixtureProfile} from './helpers/wire-authority-fixture.mjs';
 import {buyer,seller,NOW} from './helpers/protocol-fixture.mjs';
-import {createSellerTransportStore,createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
+import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {createSellerHttpHandler} from '../src/dacs/seller-http.mjs';
 const path='/dacs/v1/agreements/proposals';
 for(const terminal of [null,'finalised','vet-failed','negotiate-failed','commit-failed','settle-failed','aborted-by-self','aborted-by-other','failed-substrate'])test('original proposal fence rechecks context '+terminal,async t=>{

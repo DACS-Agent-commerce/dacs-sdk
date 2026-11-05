@@ -7,7 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { Server } from 'node:net';
 import Database from 'better-sqlite3';
 import { canonicalize, generateCanonicalJobId, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
-import { createSellerTransportStore, createSellerTransportServerAuth, createSellerTransportClientAuth,
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
+import { createSellerTransportServerAuth, createSellerTransportClientAuth,
   sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
   sellerSessionDelegationSigningBytes, SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';

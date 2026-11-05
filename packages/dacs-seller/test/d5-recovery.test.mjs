@@ -31,7 +31,7 @@ async function restartFixture(t){
  const signer=testWallet(17),buyer=testWallet(12),listing=fixtureListing(signer,{now:T}),pin=listingPin(listing);
  body.scope.buyer=buyer.claim;body.scope.wallet=buyer.address;body.scope.seller=signer.claim;body.scope.payee=signer.address;body.scope.listingPin=pin;
  body.buyerIdentityBundle={bundleVersion:'1',presentedBy:buyer.claim,presentedAt:T,sessionNonce:'e'.repeat(64),claims:[{ref:buyer.claim}],presentation:{kind:'per-claim',signatures:[{ref:buyer.claim,signature:'pending'}]}};
- const {createSellerTransportStore,sellerContextChallengeScope}=await import('../src/dacs/seller-transport-auth.mjs');const transport=createSellerTransportStore({path:join(directory,'transport.sqlite'),now:()=>T});
+ const {sellerContextChallengeScope}=await import('../src/dacs/seller-transport-auth.mjs');const {createSellerTransportStore}=await import('./helpers/bound-transport-store.mjs');const transport=createSellerTransportStore({path:join(directory,'transport.sqlite'),now:()=>T});
  body.buyerIdentityBundle.sessionNonce=issueChallenge(transport,{jobId:body.scope.jobId,buyer:buyer.claim},sellerContextChallengeScope(body.scope)).sessionNonce;transport.close();
  body.scope.buyerBundleHash=identityBundleHash(body.buyerIdentityBundle);body.buyerIdentityBundle.presentation.signatures[0].signature=buyer.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+body.scope.buyerBundleHash)).toString('base64url');
  const text=JSON.stringify(body),client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:signer.claim,resolveJob:()=>({listingPin:pin,agreementHash:sellerContextScopeHash(body.scope)}),now:()=>T}),header=(await client.request(SELLER_CONTEXT_PATH,body,text)).header;
@@ -84,7 +84,7 @@ for(const separateHandle of [false,true])test(`two route instances share journal
  const {exchange}=await import('./helpers/d5-http-fixture.mjs');
  const {createSellerContextRoute}=await import('../src/dacs/seller-context-route.mjs');
  const {createSellerHttpHandler}=await import('../src/dacs/seller-http.mjs');
- const {createSellerTransportStore,createSellerTransportServerAuth}=await import('../src/dacs/seller-transport-auth.mjs');
+ const {createSellerTransportServerAuth}=await import('../src/dacs/seller-transport-auth.mjs');const {createSellerTransportStore}=await import('./helpers/bound-transport-store.mjs');
  let begin,finish;const begun=new Promise(resolve=>begin=resolve),gate=new Promise(resolve=>finish=resolve);
  const w=await world(t,{admitWrites:async()=>{begin();await gate;return null;}});
  t.after(()=>finish());

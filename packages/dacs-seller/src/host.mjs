@@ -51,7 +51,7 @@ import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
 import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
-import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
+import { createSellerTransportServerAuth, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
 import { continuationFor, retainedFor } from './dacs/seller-wire-requests.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { stopRequested } from './devnet-demo/stop-request.mjs';
@@ -239,13 +239,6 @@ export async function startSellerHost(options) {
     host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
-  const sessionState = input => {
-    try {
-      const value = contextSessionState(input);
-      if (value && typeof value.then === 'function') Promise.resolve(value).then(undefined, () => {});
-      return typeof value === 'string' ? value : null;
-    } catch { return null; }
-  };
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
@@ -286,9 +279,10 @@ export async function startSellerHost(options) {
     // The challenge ledger issues only while the whole purchase allotment fits; until the capacity exists nothing is ready.
     let capacity;
     const capacityReady = () => capacity?.fitsNewPurchase() === true;
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, ready: capacityReady, contextSessionState: sessionState });
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, ready: capacityReady, contextSessionState });
     opened.push(() => store.close());
-    capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState });
+    // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
+    capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();

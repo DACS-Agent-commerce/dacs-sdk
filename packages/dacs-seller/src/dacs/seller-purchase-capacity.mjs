@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, wireOperationId } from '@kynesyslabs/dacs/wire';
-import { SellerTransportError, TERMINAL_CONTEXT_STATES, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
+import { SellerTransportError, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
 
 const SLOT_UNITS = 17;
 const DEFAULT_MAX_RECORDS = 10000;
@@ -44,15 +44,18 @@ export function ownsPurchaseCapacity(store, capacity) {
 }
 
 /**
- * Creates the purchase capacity on `store`'s SQLite owner (one per store and `maxRecords`); `sessionState({ jobId })` is the host's
- * synchronous DACS-5 state reader and `now` its clock. Throws TypeError for an option it cannot use. The `Within` methods run in the
+ * Creates the purchase capacity on `store`'s SQLite owner (one per store and `maxRecords`); `sessionState` must be that store's own
+ * observation adapter (`sellerStoreInternals(store).sessionState`) and `now` its clock. It binds the store's terminal cleanup, so a
+ * terminal job's closure and the release of its allocation commit together. `terminalSession(jobId)` and `flushTerminalObservations()`
+ * forward to the store's check and pending-observation barrier. Throws TypeError for an option it cannot use, or a store that already has
+ * a capacity. The `Within` methods run in the
  * store's open transaction and throw TypeError outside it; every snapshot is detached and frozen. A return is a compare-and-swap on the
  * allocation's one revision: it answers the units it freed, and 0 for a stale, repeated or unknown one. Refusals are SellerTransportErrors.
  */
 export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RECORDS, commitOnSignature = false, sessionState }) {
-  const { db, transaction } = sellerStoreInternals(store);
-  if (!isUint(maxRecords) || maxRecords === 0 || typeof commitOnSignature !== 'boolean' || typeof now !== 'function' || typeof sessionState !== 'function') {
-    throw new TypeError('purchase capacity needs a positive maxRecords, a boolean commitOnSignature, a clock and a session-state reader');
+  const internals = sellerStoreInternals(store), { db, transaction } = internals;
+  if (!isUint(maxRecords) || maxRecords === 0 || typeof commitOnSignature !== 'boolean' || typeof now !== 'function' || sessionState !== internals.sessionState) {
+    throw new TypeError("purchase capacity needs a positive maxRecords, a boolean commitOnSignature, a clock and the store's own session-state adapter");
   }
   const routes = commitOnSignature ? [...BASE_ROUTES, PATHS.commitmentSignature] : BASE_ROUTES;
   db.exec(SCHEMA);
@@ -154,23 +157,16 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
   }
   const releaseAllWithin = (input) => returnWithin(input);
 
-  // Only a synchronous string is an answer; a throw, a promise or a thenable is unknown (a late rejection is observed, never trusted).
-  function sessionName(jobId) {
-    try {
-      const answer = sessionState({ jobId });
-      if (typeof answer?.then === 'function') { void Promise.resolve(answer).then(undefined, () => {}); return null; }
-      return typeof answer === 'string' ? answer : null;
-    } catch { return null; }
+  // The store's closure writer calls this in its transaction for each job it closes: the job's live allocation, if any, is released once.
+  function releaseLiveWithin(jobId) {
+    const live = byJob(jobId);
+    if (live?.state === 'live') releaseAllWithin({ allocationId: live.allocationId, allocationRev: live.rev });
   }
+  // The store's adapter observes each live allocation's job (a closure answers first); a terminal one is closed and released by the
+  // store's writer in a transaction of its own, so a failure leaves neither the closure nor the release.
   function releaseTerminalAllocations() {
     if (db.inTransaction) throw new TypeError('terminal cleanup opens its own transaction');
-    for (const { jobId } of db.prepare("SELECT jobId FROM kit_allocations WHERE state = 'live'").all()) {
-      if (!TERMINAL_CONTEXT_STATES.has(sessionName(jobId))) continue;
-      transaction(() => {
-        const live = byJob(jobId);
-        if (live?.state === 'live') releaseAllWithin({ allocationId: live.allocationId, allocationRev: live.rev });
-      });
-    }
+    for (const { jobId } of db.prepare("SELECT jobId FROM kit_allocations WHERE state = 'live'").all()) sessionState({ jobId }, 'cleanup');
   }
 
   function retainedAllocated(input) {
@@ -187,8 +183,13 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
       allocations: db.prepare('SELECT * FROM kit_allocations ORDER BY rowid').all().map(snapshot), exhausted });
   }
 
+  // The coordinator's checks, which the store owns: its closure, its observer and its pending-observation barrier.
+  const terminalSession = (jobId) => internals.terminalSession(jobId);
+  const flushTerminalObservations = () => internals.flushTerminalObservations();
+
   const capacity = Object.freeze({ allotment, fitsNewPurchase, allocateWithin, allocationWithin, classify, recordExhaustion,
-    returnRouteSlotWithin, releaseAllWithin, releaseTerminalAllocations, retainedAllocated, capacityReport });
+    returnRouteSlotWithin, releaseAllWithin, releaseTerminalAllocations, terminalSession, flushTerminalObservations, retainedAllocated, capacityReport });
+  internals.bindTerminalCleanup(releaseLiveWithin);
   owners.set(capacity, store);
   return capacity;
 }
