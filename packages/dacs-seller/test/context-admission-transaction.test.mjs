@@ -796,7 +796,7 @@ test('P09b-T24 a definite failed bootstrap closes the job; a fresh Start on anot
   assert.equal(w.row(fresh.input.jobId).state, 'running'); assert.equal(w.row(old.input.jobId).state, 'aborted'); assert.equal(w.calls.wire, 1);
 });
 
-test('P09b-T30 with the shipped guard off, `begin` and `compensate` refuse before any write', async t => {
+test('P09b-T30 with the shipped guard off, `begin` and `compensate` refuse before any write', () => {
   const probe = fileURLToPath(new URL('./helpers/admission-guard-off-probe.mjs', import.meta.url));
   const kept = (process.env.NODE_OPTIONS ?? '').split(' ').filter(option => option !== '' && !option.includes('kit-guard-fixture.mjs')).join(' ');
   const child = spawnSync(process.execPath, [probe], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: kept } });
