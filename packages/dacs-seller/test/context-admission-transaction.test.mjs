@@ -31,7 +31,7 @@ const PROFILE = Object.freeze({ id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISI
 const outcome = { status: 200, text: ' {"disposition":"present","fixture":true} ' };
 // What the sink answers for a context: the scope the row names, and each party's Vet record reference.
 const SCOPE = { agreement: 'context-scope-vector' };
-const vetRef = tag => ({ vetRecordRef: { contentHash: hash(tag) } });
+const vetRef = tag => ({ vetRecordRef: { anchor: { kind: 'storage-program', locator: `vet-${tag}` }, contentHash: hash(tag) } });
 const presented = (jobId, input = {}, scope = SCOPE) => ({ status: 200, text: JSON.stringify({ disposition: 'present', value: { scope, input: { jobId, buyer: vetRef('buyer'), seller: vetRef('seller'), ...input } } }) });
 const nonPass = { status: 409, text: JSON.stringify({ disposition: 'rejected', code: 'party_vet_non_pass', errorClass: 'permanent' }) };
 const deferred = () => {
@@ -585,6 +585,11 @@ const OTHER_OUTCOMES = [
   ['a present answer for another job', () => presented(job(0x99))],
   ['a present answer without the buyer record', jobId => presented(jobId, { buyer: {} })],
   ['a present answer without the seller record', jobId => presented(jobId, { seller: { vetRecordRef: null } })],
+  ['a present answer whose two references are empty objects', jobId => presented(jobId, { buyer: { vetRecordRef: {} }, seller: { vetRecordRef: {} } })],
+  ['a present answer whose buyer reference is empty', jobId => presented(jobId, { buyer: { vetRecordRef: {} } })],
+  ['a present answer whose references lack an anchor', jobId => presented(jobId, { buyer: { vetRecordRef: { contentHash: hash('buyer') } }, seller: { vetRecordRef: { contentHash: hash('seller') } } })],
+  ['a present answer whose seller reference has an unknown anchor kind', jobId => presented(jobId, { seller: { vetRecordRef: { anchor: { kind: 'elsewhere', locator: 'x' }, contentHash: hash('seller') } } })],
+  ['a present answer whose buyer reference has a malformed content hash', jobId => presented(jobId, { buyer: { vetRecordRef: { anchor: { kind: 'https', locator: 'x' }, contentHash: 'not-a-hash' } } })],
   ['an absent answer', () => ({ status: 200, text: '{"disposition":"absent"}' })],
   ['a rejection that is not a Vet non-pass', () => ({ status: 409, text: '{"disposition":"rejected","code":"other_refusal"}' })],
   ['text that is not JSON', () => ({ status: 200, text: 'not json' })],
@@ -789,6 +794,25 @@ test('P09b-T23 an unavailable policy ledger keeps `releasePending` with its caus
   await restart(w); assert.equal(w.row(p.input.jobId).cleanup.releasePending, true); assert.equal(w.admission.cleanupPending(), true); assert.equal(w.holds.size, 1);
   w.control.unavailable = null; await w.admission.sweep({ startup: false });
   assert.equal(w.row(p.input.jobId).cleanup.releasePending, false); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(w.admission.cleanupPending(), false);
+});
+
+test('P09b-T23b a release that fails after another release already cleared the row leaves no cause on the settled row; one that fails first is cleared by the later release', async t => {
+  for (const order of ['the completion fails after the sweep released', 'the sweep fails before the completion released']) {
+    const gate = deferred(), entered = deferred(); let calls = 0;
+    const policy = { async reserve() { return null; }, async release() { if (++calls === 1) { entered.resolve(); if (await gate.promise === 'fail') throw new Error('completion release failed'); return; } if (order.startsWith('the sweep')) throw new Error('sweep release failed'); } };
+    const w = world(t, { policy }), p = w.prepare(), capability = await running(w, p), completing = capability.complete(presented(p.input.jobId));
+    await entered.promise; assert.equal(w.row(p.input.jobId).cleanup.releasePending, true);
+    await w.admission.sweep({ startup: false });
+    if (order.startsWith('the completion')) {
+      assert.equal(w.row(p.input.jobId).cleanup.releasePending, false, order); gate.resolve('fail');
+    } else {
+      assert.equal(w.row(p.input.jobId).cleanup.releasePending, true, order); assert.equal(w.row(p.input.jobId).cleanup.tries, 1, order); gate.resolve();
+    }
+    await completing; await sweepTwice(w);
+    const cleaned = w.row(p.input.jobId).cleanup;
+    assert.equal(cleaned.releasePending, false, order); assert.equal(cleaned.cause, null, order); assert.equal(w.admission.cleanupPending(), false, order);
+    w.reopen(); await sweepTwice(w, true); assert.equal(w.admission.cleanupPending(), false, order);
+  }
 });
 
 test('P09b-T24 a definite failed bootstrap closes the job; a fresh Start on another job is admitted; the old request\'s recovery ends null', async t => {

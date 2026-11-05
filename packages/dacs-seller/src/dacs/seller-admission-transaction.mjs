@@ -3,7 +3,7 @@
 // admission record. Nothing calls it until P12b1 wires the context route into it, schedules the sweep and ties `cleanupPending()` to readiness.
 // P11d3 later extends the C3 evidence kinds beyond `no-intent` and `proven-unsigned`; until then every other kind stays undetermined.
 import { randomUUID } from 'node:crypto';
-import { canonicalize, compositeVerificationAddress, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, compositeVerificationAddress, isAttestationRef, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall } from './bounded-call.mjs';
@@ -52,9 +52,9 @@ function bundlePresenter(text, presentationHash, nonce) {
     return exact && isCanonicalClaimReference(bundle.presentedBy) ? bundle.presentedBy : null;
   } catch { return null; }
 }
-const namesVetRecord = (party) => isRecord(party?.vetRecordRef);
+const namesVetRecord = (party) => isAttestationRef(party?.vetRecordRef);
 // SA-8's class of a completed context outcome, from its exact stored text and never by the absence of a refusal. `success` is only a `present`
-// answer whose scope hashes to the row's contextScopeHash, for the row's job, naming both Vet records; `vet-non-pass` is the explicit
+// answer whose scope hashes to the row's contextScopeHash, for the row's job, naming both Vet records by exact signed-record references; `vet-non-pass` is the explicit
 // `party_vet_non_pass` refusal (or that error in the HTTP envelope); everything else, text that is no JSON object included, is `other`.
 function contextOutcomeClass(row, outcomeText) {
   let answer;
@@ -205,13 +205,18 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       challenges.recordFailedWithin(owner, nonce, code, status);
     });
   }
-  // D8b/D8c and C4b/C4c: release the hold (idempotent at the policy), then clear releasePending. A failed release keeps it, with cause and count.
+  // D8b/D8c and C4b/C4c: release the hold (idempotent at the policy), then clear releasePending. A failed release keeps it, with cause and count,
+  // and only while the row still has releasePending: a completion's release and a sweep's can overlap, and a failure that lands after the other
+  // one cleared the row would leave a cause that nothing clears.
   // A hold whose D3 call never started has nothing to release, and a release for it would only write a policy line.
   async function releaseHold(row) {
-    const change = (patch) => transaction(() => { const current = read(row.jobId); update(current, { cleanup: { ...current.cleanup, ...patch(current.cleanup) } }); });
+    const change = (patch) => transaction(() => {
+      const current = read(row.jobId), next = patch(current.cleanup);
+      if (next !== null) update(current, { cleanup: { ...current.cleanup, ...next } });
+    });
     if (row.cleanup.holdCall !== 'none') {
       try { await policy.release({ jobId: row.jobId, hold: row.holdId }); }
-      catch (cause) { change((cleanup) => ({ cause: storedCause(cause), tries: cleanup.tries + 1 })); return; }
+      catch (cause) { change((cleanup) => (cleanup.releasePending ? { cause: storedCause(cause), tries: cleanup.tries + 1 } : null)); return; }
     }
     change(({ holdCall }) => ({ releasePending: false, cause: null, holdCall: holdCall === 'none' ? 'none' : 'settled' }));
   }
