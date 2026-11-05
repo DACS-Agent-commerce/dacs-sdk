@@ -5,6 +5,9 @@ import { evmErc20Settle, type EvmErc20Rail } from "../../src/rails/evmErc20.js";
 import {
   createIdempotencyStore,
   createInMemorySettlementLog,
+  isSettlementBridge,
+  registerSettlementBridge,
+  settlementBridgeTraits,
   type SettlementIdempotencyStore,
   type SettlementLog,
 } from "../../src/rails/idempotency.js";
@@ -284,5 +287,30 @@ describe("recoveryOnly refuses a store whose answer it cannot trust", () => {
     await expect(evmErc20Settle(rail, evmCfg, { store })({ ...evmRequest, recoveryOnly: true }))
       .rejects.toThrow(/no recorded settlement/);
     expect(rail.calls).toBe(0);
+  });
+});
+
+describe("the resume registry", () => {
+  test("an SDK bridge is registered and a bare function is not", () => {
+    const x402Rail: X402Rail = { address: "0xme", finalityBlocks: 12, settle: vi.fn() };
+    const bridges = [
+      payDemSettle({ address: payer, settle: vi.fn() }),
+      evmErc20Settle(countingEvmRail(), evmCfg),
+      x402Settle(x402Rail, x402Cfg),
+    ];
+    expect(bridges.map(isSettlementBridge)).toEqual([true, true, true]);
+    expect(isSettlementBridge(async () => ({}))).toBe(false);
+    expect(isSettlementBridge({})).toBe(false);
+  });
+
+  test("registering a bridge again keeps what it declared", () => {
+    const bridge = registerSettlementBridge(async () => evmPaid, { journaled: false });
+    expect(registerSettlementBridge(bridge)).toBe(bridge);
+    expect(settlementBridgeTraits(bridge)).toEqual({ journaled: false });
+  });
+
+  test("a bridge that declares nothing has empty traits and a bare function has none", () => {
+    expect(settlementBridgeTraits(registerSettlementBridge(async () => evmPaid))).toEqual({});
+    expect(settlementBridgeTraits(async () => evmPaid)).toBeUndefined();
   });
 });

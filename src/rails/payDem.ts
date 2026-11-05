@@ -15,6 +15,7 @@ export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddre
 import {
   assertRecordedForRecovery,
   createIdempotencyStore,
+  registerSettlementBridge,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -29,6 +30,8 @@ export const DEM_DECIMALS = 9;
 
 // Only this module owns the authority used by its factory and record reads.
 const executionAuthority = createPayDemExecutionAuthority();
+/** SDK-built rails: whether each was built with a prepared-transfer journal. A rail not in here declares nothing. */
+const railJournals = new WeakMap<object, boolean>();
 
 const DEMOS_TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
@@ -1852,6 +1855,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       );
     },
   };
+  railJournals.set(rail, journalPreparedTransfer !== undefined);
   return executionAuthority.register(rail);
 }
 
@@ -2293,7 +2297,7 @@ export function payDemSettle(
   // Keep a slow submit/reconcile from being overtaken by another call for the
   // same effect. Different settlement keys remain independent.
   const operations = new Map<string, Promise<SettleResult>>();
-  return async (req) => {
+  const bridge = async (req: SettleRequest): Promise<SettleResult> => {
     const {
       amount,
       asset,
@@ -2575,4 +2579,6 @@ export function payDemSettle(
       if (operations.get(key) === operation) operations.delete(key);
     }
   };
+  const journaled = railJournals.get(rail);
+  return registerSettlementBridge(bridge, journaled === undefined ? {} : { journaled });
 }
