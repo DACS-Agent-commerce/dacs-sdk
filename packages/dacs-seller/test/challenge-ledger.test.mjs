@@ -11,7 +11,7 @@ import { fork, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { generateCanonicalJobId, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
+import { canonicalize, generateCanonicalJobId, identityBundleHash, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { CHALLENGE_LIMIT_DEFAULTS, createSellerChallengeLedger } from '../src/dacs/seller-challenge-ledger.mjs';
 import { SELLER_PROFILE } from '../src/dacs/session-admission.mjs';
 
@@ -56,7 +56,9 @@ const SELLER = claim('seller');
 const OTHER = claim('other buyer');
 const EQUIVALENT = `${BUYER}?jurisdiction=GB`;
 const SCOPE = hash('scope');
-const PRESENTATION = hash('presentation');
+// The presentation a nonce is attempted with: its canonical bytes, and the hash and bundle hash callers derive from them.
+const bundleFor = (nonce, buyer = BUYER, presentation = 'fixture') => ({ presentedBy: buyer, sessionNonce: nonce, presentation: { kind: presentation } });
+const presentationOf = (nonce, buyer, presentation) => sha256Hex(canonicalize(bundleFor(nonce, buyer, presentation)));
 const PIN = { listingId: 'listing', version: 1, contentHash: hash('listing') };
 const PROFILE = { standardRevision: SELLER_PROFILE.standardRevision, documentVersions: SELLER_PROFILE.documentVersions };
 const LIVE = { assertStillLive() {} };
@@ -108,7 +110,7 @@ function world(t, { limits = {} } = {}) {
   reopen();
   t.after(() => { for (const db of handles) if (db.open) db.close(); rmSync(directory, { recursive: true, force: true }); });
 
-  const input = (nonce, overrides = {}) => ({ nonce, jobId: job('one'), buyer: BUYER, challengeScopeHash: SCOPE, presentationHash: PRESENTATION, path: 'context', ...overrides });
+  const input = (nonce, overrides = {}) => ({ nonce, jobId: job('one'), buyer: BUYER, challengeScopeHash: SCOPE, presentationHash: presentationOf(nonce), path: 'context', ...overrides });
   const w = {
     path, directory, control, statements, connect, reopen,
     get ledger() { return current.ledger; },
@@ -118,12 +120,12 @@ function world(t, { limits = {} } = {}) {
     issue: (label = 'one', buyer = BUYER, scope = SCOPE) => current.ledger.issue({ jobId: job(label), buyer }, scope, LIVE),
     input,
     attempt: (nonce, overrides) => current.ledger.attempt(input(nonce, overrides)),
-    record(nonce, label = 'one', buyer = BUYER) {
-      const bundleHash = hash('bundle');
-      const admission = { disposition: 'admitted', jobId: job(label), buyer, buyerBundleHash: bundleHash, listingPin: PIN,
-        participants: [{ role: 'buyer', claim: buyer, ...PROFILE }, { role: 'seller', claim: SELLER, ...PROFILE }] };
-      return { buyerBundleText: ` {"presentedBy":${JSON.stringify(buyer)},"sessionNonce":${JSON.stringify(nonce)},"presentation":{"kind":"fixture"}} `,
-        buyerBundleHash: bundleHash, admission, admittedAt: control.now,
+    // The accepted record of the presentation `bundle` (default: the one `input` attempts with), shaped as a caller stores it.
+    record(nonce, label = 'one', buyer = BUYER, bundle = bundleFor(nonce, buyer)) {
+      const bundleHash = identityBundleHash(bundle);
+      const admission = { disposition: 'admitted', jobId: job(label), buyer: bundle.presentedBy, buyerBundleHash: bundleHash, listingPin: PIN,
+        participants: [{ role: 'buyer', claim: bundle.presentedBy, ...PROFILE }, { role: 'seller', claim: SELLER, ...PROFILE }] };
+      return { buyerBundleText: canonicalize(bundle), buyerBundleHash: bundleHash, admission, admittedAt: control.now,
         firstAdmission: { challengeExpiresAt: current.ledger.retained(nonce).expiresAt, generatedAt: T0, checkedAt: control.now } };
     },
     // Runs `run` and proves it executed no INSERT, UPDATE or DELETE.
@@ -346,7 +348,7 @@ cardTest('T12', (t) => {
   assert.equal(result.owner.generation, 'generation-one');
   assert.match(result.owner.attemptId, /^[0-9a-f-]{36}$/);
   const row = w.ledger.retained(sessionNonce);
-  assert.deepEqual({ state: row.state, owner: row.owner, attemptedAt: row.attemptedAt, presentationHash: row.presentationHash }, { state: 'attempted', owner: result.owner, attemptedAt: T0, presentationHash: PRESENTATION });
+  assert.deepEqual({ state: row.state, owner: row.owner, attemptedAt: row.attemptedAt, presentationHash: row.presentationHash }, { state: 'attempted', owner: result.owner, attemptedAt: T0, presentationHash: presentationOf(sessionNonce) });
   const update = w.statements.findIndex((sql) => /^\s*UPDATE\b/i.test(sql));
   assert.ok(w.statements.indexOf('BEGIN IMMEDIATE') < update && update < w.statements.indexOf('COMMIT'));
 });
@@ -831,7 +833,7 @@ test('challenge-reused-nonce-passes-the-final-barrier', (t) => {
 function rowInState(w, origin, state, label) {
   const party = { jobId: job(label), buyer: BUYER, ...(origin === 'route' ? { path: 'context', challengeScopeHash: SCOPE } : { path: 'proposal', challengeScopeHash: null }) };
   const { sessionNonce: nonce, expiresAt } = origin === 'route' ? w.issue(label) : w.ledger.issueForOperator({ jobId: job(label), buyer: BUYER });
-  const attempt = (overrides = {}) => w.ledger.attempt({ nonce, ...party, presentationHash: PRESENTATION, ...overrides });
+  const attempt = (overrides = {}) => w.ledger.attempt({ nonce, ...party, presentationHash: presentationOf(nonce), ...overrides });
   const failed = (cause) => refused('context_challenge_failed', 409, cause);
   if (state === 'failed as mismatch') attempt({ buyer: OTHER });
   if (state === 'failed as attempt_invalid') attempt({ presentationHash: null });
@@ -886,7 +888,7 @@ test('challenge-route-row-is-continued-on-proposal-only-for-its-party', (t) => {
     if (reopened) w.reopen('generation-two');
     rows.forEach(({ nonce, party, answer }, index) => {
       const continued = index < 2;
-      const onProposal = (change = {}) => w.quiet(() => w.ledger.attempt({ nonce, ...party, presentationHash: PRESENTATION, ...change, path: 'proposal' }));
+      const onProposal = (change = {}) => w.quiet(() => w.ledger.attempt({ nonce, ...party, presentationHash: presentationOf(nonce), ...change, path: 'proposal' }));
       for (const [name, change, answered] of [['its party', {}, true], ['an equivalent buyer', { buyer: EQUIVALENT }, true], ['another buyer', { buyer: OTHER }, false],
         ['another job', { jobId: job('another job') }, false], ['another scope', { challengeScopeHash: hash('another scope') }, false],
         ['another presentation', { presentationHash: hash('another presentation') }, false]]) {
@@ -1093,4 +1095,78 @@ test('challenge-snapshot-isolation', (t) => {
   const continuation = w.attempt(nonce);
   assert.throws(() => { continuation.accepted.admission.jobId = 'changed'; }, TypeError);
   assert.equal(w.ledger.retained(nonce).accepted.admission.jobId, job('one'));
+});
+
+// A row attempted on its origin path by its party, with `presentationHash` (default: the one `input` attempts with).
+const attemptedRow = (w, origin, presentationOverride) => {
+  const request = { jobId: job('one'), buyer: BUYER };
+  const { sessionNonce: nonce } = origin === 'route' ? w.ledger.issue(request, SCOPE, LIVE) : w.ledger.issueForOperator(request);
+  const party = origin === 'route' ? { path: 'context', challengeScopeHash: SCOPE } : { path: 'proposal', challengeScopeHash: null };
+  const send = (presentationHash = presentationOf(nonce)) => w.ledger.attempt({ nonce, ...request, ...party, presentationHash });
+  const hashed = presentationOverride?.(nonce);
+  return { nonce, send, owner: send(hashed).owner };
+};
+
+// Each record is a different presentation than the row's own, or the row's own in bytes the callers never store.
+const foreignRecords = {
+  'another presentation': { record: (w, nonce) => w.record(nonce, 'one', BUYER, bundleFor(nonce, BUYER, 'other')) },
+  'a bundle for another nonce': { record: (w, nonce) => w.record(nonce, 'one', BUYER, bundleFor(hash('another nonce'))), own: true },
+  'a bundle presented by another buyer': { record: (w, nonce) => w.record(nonce, 'one', OTHER, bundleFor(nonce, OTHER)), own: true },
+  'the presentation in non-canonical text': { record: (w, nonce) => ({ ...w.record(nonce), buyerBundleText: ` ${canonicalize(bundleFor(nonce))}` }), own: true },
+  'the presentation with another bundle hash': { record: (w, nonce) => {
+    const record = w.record(nonce);
+    const other = identityBundleHash(bundleFor(nonce, OTHER));
+    assert.notEqual(other, record.buyerBundleHash);
+    return { ...record, buyerBundleHash: other, admission: { ...record.admission, buyerBundleHash: other } };
+  } },
+  'an admission naming an equivalent buyer, not the presenter': { record: (w, nonce) => {
+    const record = w.record(nonce);
+    const participants = record.admission.participants.map((entry) => (entry.role === 'buyer' ? { ...entry, claim: EQUIVALENT } : entry));
+    return { ...record, admission: { ...record.admission, buyer: EQUIVALENT, participants } };
+  } },
+};
+
+test('challenge-accept-stores-only-the-presentation-the-row-was-attempted-with', (t) => {
+  for (const origin of ['route', 'operator']) for (const [name, { record: foreign, own }] of Object.entries(foreignRecords)) {
+    const w = world(t);
+    // A record whose own hash the row stored is refused for its own fault; the others for not being the attempted presentation.
+    const row = attemptedRow(w, origin, own ? (nonce) => sha256Hex(foreign(w, nonce).buyerBundleText) : undefined);
+    const before = w.rows();
+    w.statements.length = 0;
+    assert.throws(() => w.ledger.accept(row.owner, row.nonce, foreign(w, row.nonce)), { code: 'context_challenge_attempt_invalid', status: 409 }, `${origin}: ${name} is refused`);
+    assert.deepEqual([w.mutations(), w.rows()], [[], before], `${origin}: ${name} changes nothing`);
+    assert.deepEqual([w.ledger.retained(row.nonce).state, w.ledger.retained(row.nonce).owner], ['attempted', row.owner], `${origin}: ${name} leaves the row attempted`);
+    if (own) continue;
+    // The exact presentation is still accepted afterwards, and a replay of the stored hash answers it.
+    const exact = w.record(row.nonce);
+    assert.equal(w.ledger.accept(row.owner, row.nonce, exact), true, `${origin}: ${name} then the exact record`);
+    assert.deepEqual(w.quiet(() => row.send()), { kind: 'continuation', accepted: exact }, `${origin}: ${name} then a replay`);
+  }
+});
+
+test('challenge-accepted-record-that-does-not-match-its-row-is-unavailable-after-reopening', (t) => {
+  for (const origin of ['route', 'operator']) {
+    const w = world(t);
+    const row = attemptedRow(w, origin);
+    const exact = w.record(row.nonce);
+    assert.equal(w.ledger.accept(row.owner, row.nonce, exact), true);
+    const other = w.record(row.nonce, 'one', BUYER, bundleFor(row.nonce, BUYER, 'other'));
+    w.db.prepare('UPDATE kit_challenges SET accepted = ? WHERE nonce = ?').run(JSON.stringify(other), row.nonce);
+    assert.deepEqual(w.quiet(() => row.send()), refused('session_admission_unavailable', 503), `${origin}: the origin path live`);
+    w.reopen('generation-two');
+    assert.deepEqual(w.quiet(() => row.send()), refused('session_admission_unavailable', 503), `${origin}: the origin path reopened`);
+    if (origin === 'route') {
+      const proposal = { nonce: row.nonce, jobId: job('one'), buyer: BUYER, challengeScopeHash: SCOPE, presentationHash: presentationOf(row.nonce), path: 'proposal' };
+      assert.deepEqual(w.quiet(() => w.ledger.attempt(proposal)), refused('session_admission_unavailable', 503), 'the proposal continuation');
+    }
+  }
+});
+
+test('challenge-accepted-presentation-answers-an-equivalent-buyer', (t) => {
+  const w = world(t);
+  const row = attemptedRow(w, 'route');
+  const exact = w.record(row.nonce);
+  assert.equal(w.ledger.accept(row.owner, row.nonce, exact), true);
+  const equivalent = { nonce: row.nonce, jobId: job('one'), buyer: EQUIVALENT, challengeScopeHash: SCOPE, presentationHash: presentationOf(row.nonce), path: 'context' };
+  assert.deepEqual(w.quiet(() => w.ledger.attempt(equivalent)), { kind: 'continuation', accepted: exact });
 });
