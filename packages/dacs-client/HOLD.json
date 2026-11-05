@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "6d880b7afb7f3cdd3ea327346333fa9edce01d21"
+        "blob": "74a8ec3605e3d49494eed73cacd57be1f86f709a"
       },
       "DELTA-LEDGER.json": {
-        "blob": "84787113944f07f70cd9b036ccfff59cd9133cf9"
+        "blob": "11db8cc0afb209e88511d406db82b2a562657a71"
       },
       "DELTA-MAP.md": {
-        "blob": "fdf0f712c806fc394613adeb80c18ca77285f277"
+        "blob": "921f25893b3c025be0b11ae2d4e8c0060becf8b0"
       },
       "DELTA-NOTES.md": {
-        "blob": "6db7dac19ef5b298d14eb9bb593469023f2ad9a2"
+        "blob": "75d217cf19ab79123d3dcaa75255ccecd4d05a80"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "f502d947c2f08129d0ed8fd0b6a81088de2acd9b"
+        "blob": "1e271eeae3ac6074a18f83a6e9ba0c940dd2f076"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1030,11 +1030,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "ff92999cf882bc7c0e603300270bd57d2fc7c32b"
+        "blob": "406b3ca3d242db22eddcbcf037614e0aa12eb297"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "a922e31aa33c7ed14ac12b6f26abdc4d73d73580"
+        "blob": "af39f38311edd745e3dc0c76744d4fe5e205424d"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "1201862146024d941c2d8257f9b9854ed309870c"
+        "blob": "78cc4a32d4d4ec0ec5ff89543fb65c1a5f0a39a0"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "4f4e3b4e63a48c1643f3e56f6d2fe0532424ae18"
@@ -1300,6 +1300,9 @@
       "src/util/text.mjs": {
         "blob": "1d922fed1da018ce9a4296d97bb50323e5eb67f6"
       },
+      "src/wallet/demos-quiet-hooks.mjs": {
+        "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
+      },
       "src/wallet/devnet-native-transport.mjs": {
         "blob": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
       },
@@ -1308,6 +1311,9 @@
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
+      },
+      "src/wallet/node-demos-loading.mjs": {
+        "blob": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
       },
       "src/wallet/payload-helpers.mjs": {
         "blob": "f121637cb5c6f739597a3b9bf7f1253b61c1ec19"
@@ -1525,6 +1531,9 @@
       "test/helpers/flows.mjs": {
         "blob": "4b2366a8bf91b481fd0b905d56d9289754073cad"
       },
+      "test/helpers/fresh-node-child.mjs": {
+        "blob": "a398b50dda2846da3e06e0d9948d99126b47773b"
+      },
       "test/helpers/harness.mjs": {
         "blob": "91c8b39a12d3065895533ecc1f158180ccb71ba2"
       },
@@ -1570,6 +1579,9 @@
       "test/helpers/native-settlement-consumer-seller.mjs": {
         "blob": "68ce796bf67c3e6b703086e4b7da4efce6be6159"
       },
+      "test/helpers/no-egress.mjs": {
+        "blob": "d1bf4792843fd904b488c29a0739c5c0663c0f0c"
+      },
       "test/helpers/node2-sr2-binding-consumer.mjs": {
         "blob": "dae379c3ddcb714434239f5e7d458c7293a9e91e"
       },
@@ -1586,7 +1598,7 @@
         "blob": "e3b8c9269b466b7854f17875beb5afbfd6f0403e"
       },
       "test/helpers/packed-install.mjs": {
-        "blob": "7cea0311b966cd6f9c6ce47a31173e435bd58624"
+        "blob": "aef655a4d572cc793fde0d5f952278371470adc7"
       },
       "test/helpers/party-vet-fixture.mjs": {
         "blob": "7734d2e4d975a99a9bd05b9d5c9cb1202e060409"
@@ -1631,7 +1643,7 @@
         "blob": "4d3ed905bcb93e2c82e33a669c1008de7aa99c73"
       },
       "test/helpers/readback-review-loader.mjs": {
-        "blob": "0fd55490fb08991a2c021ccc4e48679f0a2b00b6"
+        "blob": "62c46293df16bbd4ffc8fbddde460a12406dbda2"
       },
       "test/helpers/retained-answer-fixture.mjs": {
         "blob": "ac95f05b892947a1e4f7f514eefdc800f9a70d3f"
@@ -1747,8 +1759,11 @@
       "test/negotiate-phase-after-readback.test.mjs": {
         "blob": "9869cc55d5b9235033ffd0382583a5e3948f5f4f"
       },
+      "test/node-demos-loading.test.mjs": {
+        "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
+      },
       "test/package-contents.test.mjs": {
-        "blob": "491949d51e9c8ccde243ffcb0c6d6a31dcec5026"
+        "blob": "d0e6acf2d424fe03affaff39805f48f2d49e46eb"
       },
       "test/packed-consumer.test.mjs": {
         "blob": "8a0d5f40a09ba49a79011580142ef137bc9db113"
@@ -1769,7 +1784,7 @@
         "blob": "f83e3553639f67784ef7eb8c68a902ba2aa543a6"
       },
       "test/public-api.test.mjs": {
-        "blob": "3c6de00345482168eef1b5261fc5fbd103a437f5"
+        "blob": "88abfb10c132141730d27792596b73899fe34400"
       },
       "test/public-composition.test.mjs": {
         "blob": "a1a3b50c91d405fc00d7a92fc7ff75de650d1a32"
@@ -1811,7 +1826,7 @@
         "blob": "a386503425d34dab08feb52f89c8c92ec9f188fd"
       },
       "test/readback-review-decisions.test.mjs": {
-        "blob": "85def5a0ba534a8f2a5b0c7657d42fbf28598d52"
+        "blob": "aa0be667f8a71c8b7a687588757106bef3ca3cd8"
       },
       "test/readme-contract.test.mjs": {
         "blob": "0f7e7d6618f09f8377893affcdd5449425e4646f"
