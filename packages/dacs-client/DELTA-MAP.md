@@ -2323,6 +2323,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the merged passive transport source | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the merged passive transport source | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the merged passive transport source | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 correct the merged passive transport record | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 correct the merged passive transport record | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 correct the merged passive transport record | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 correct the merged passive transport record | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 correct the merged passive transport record | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
