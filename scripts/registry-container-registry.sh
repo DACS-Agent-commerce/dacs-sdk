@@ -79,15 +79,20 @@ YAML
 # Packs the clean, version-aligned release set with the pinned npm; sets
 # `version`. That npm is the client acceptance-bootstrap.mjs installed from its
 # SHA-512-checked archive and put first on PATH. It is never resolved again from
-# registry metadata: a different client refuses the stage.
+# registry metadata: a different client refuses the stage. Exports that npm's
+# prefix, so later host stages that ask for the global npm (`npm root --global`)
+# read the bootstrapped client, not the one bundled with the runner's Node.
 build_release_set() {
   stage=release-set
-  local npm_version
+  local npm_version npm_bin
   npm_version=$(npm --version) || return
   if [ "$npm_version" != 11.19.0 ]; then
     echo "npm 11.19.0 from scripts/acceptance-bootstrap.mjs must be first on PATH (found $npm_version)" >&2
     return 1
   fi
+  npm_bin=$(command -v npm) || return
+  export npm_config_prefix
+  npm_config_prefix=$(cd "$(dirname "$npm_bin")/.." && pwd -P) || return
   run_logged "$artifact_stage/release-set.log" run_bounded npm run conformance:sync || return
   run_logged "$artifact_stage/release-set.log" \
     run_bounded npm run release:set:verify -- --output-dir "$release_set" || return
