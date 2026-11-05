@@ -2724,6 +2724,58 @@ describe("runSession settles a resume only through recovery", () => {
     expect(seen.map((r) => r.recoveryOnly)).toEqual([true, true]);
   });
 
+  // A store whose bindHash fails once, after the session record was created and before the settlement intent is written.
+  const failingBindOnce = () => {
+    const inner = createInMemorySessionStore();
+    let failed = false;
+    return {
+      ...inner,
+      bindHash: async (input: Parameters<typeof inner.bindHash>[0]) => {
+        if (!failed) {
+          failed = true;
+          throw new Error("failed after the session record was created");
+        }
+        return inner.bindHash(input);
+      },
+    };
+  };
+
+  test("a resume that failed after creating the session record never turns it into a fresh claim", async () => {
+    const { calls, settle, resumeSettlement } = counting();
+    const sessionStore = failingBindOnce();
+    const deps = makeDeps({ settle, resumeSettlement, sessionStore });
+
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-1")).rejects.toThrow(/failed after the session record/);
+    expect((await sessionStore.load("job-1")).status).toBe("ok");
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-1")).rejects.toThrow(NO_RECORD);
+    expect(calls.settle).toBe(0);
+    expect(calls.resume).toBe(1);
+  });
+
+  test("a rerun of an anchored first run that failed after creating the session record never calls settle", async () => {
+    const { calls, settle, resumeSettlement } = counting();
+    const substrate = anchoredSubstrate({ failEvidenceOnce: true });
+    const first = makeDeps({ ...substrate, settle, resumeSettlement, sessionStore: undefined });
+    await expect(runSessionCore("stor-listing", TERMS, first)).rejects.toThrow(/crash before the evidence anchor/);
+    expect(calls.settle).toBe(1);
+
+    const deps = makeDeps({ ...substrate, settle, resumeSettlement, sessionStore: failingBindOnce() });
+    await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(/failed after the session record/);
+    await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(NO_RECORD);
+    expect(calls.settle).toBe(1);
+  });
+
+  test("a first run that failed after creating its session record still settles when resumed by jobId", async () => {
+    const { calls, settle, resumeSettlement } = counting();
+    const sessionStore = failingBindOnce();
+    const deps = makeDeps({ settle, resumeSettlement, sessionStore });
+
+    await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(/failed after the session record/);
+    const res = await runSessionCore("stor-listing", TERMS, deps, deps.newJobId());
+    expect(res.outcome).toBe("completed");
+    expect(calls.settle).toBe(1);
+  });
+
   test("a first run without a jobId still settles through settle", async () => {
     const { calls, settle } = counting();
     const res = await runSessionCore("stor-listing", TERMS, makeDeps({ settle, sessionStore: undefined }));

@@ -2861,6 +2861,9 @@ async function recordSessionOutcome(
 const NATIVE_SESSION_LEASE_MS = 30_000;
 const NATIVE_SESSION_RENEW_MS = 10_000;
 
+/** Phase of a record that a recovery-only run created; a later run must not read it as a fresh run's record. */
+const RECOVERY_CREATED_PHASE = "recovering";
+
 /** Hold native settlement decisions and publication under one renewable store lease. */
 function createNativeSettlementFence() {
   const owner = randomUUID();
@@ -4175,6 +4178,9 @@ async function runSessionCoreWithFence(
   // this job's record, nothing proves the job never reached the rail, so its
   // settlement may only recover (never a fresh claim through `settle`). A first
   // run whose Agreement is already anchored reruns a job that may have paid.
+  // A record that a recovery-only run created proves nothing either: it is
+  // stored in RECOVERY_CREATED_PHASE until the settlement intent replaces it, so
+  // a run that failed between the two writes does not allow a fresh claim next time.
   let freshClaimAllowed = resumeJobId === undefined && !agreementExisting;
   const store = fence.protect(runtime.sessionStore);
   if (store) {
@@ -4185,9 +4191,14 @@ async function runSessionCoreWithFence(
       );
     }
     if (loaded.status === "missing") {
-      await store.create({ jobId, agreementHash, phase: "negotiated", now: runtime.nowMs() });
+      await store.create({
+        jobId,
+        agreementHash,
+        phase: freshClaimAllowed ? "negotiated" : RECOVERY_CREATED_PHASE,
+        now: runtime.nowMs(),
+      });
     } else {
-      freshClaimAllowed = true;
+      freshClaimAllowed = loaded.record.phase !== RECOVERY_CREATED_PHASE;
       // Resume: enforce that the live record's bound hash is THIS deal's — a
       // mismatch is a replayed/altered agreement under a reused jobId.
       if (loaded.record.agreementHash !== agreementHash) {
