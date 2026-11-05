@@ -23,24 +23,34 @@ function checkCallbackHistory(dir) {
     assert.ok(notes.includes(`- \`${subject}\`: superseded by \`${replacement}\`.`),
       `the provenance explanation must identify the replacement for ${subject}`);
   }
-  assert.match(notes, /SQL callbacks remain allowed inside a leased transaction/);
+  const removal = 'fix(client): D11 remove the unused guarded SQLite lease and pack no client files';
+  assert.ok(notes.includes(`\`${removal}\` then deleted the module and its tests`), 'the notes must name the removal of the lease module');
+  assert.match(notes, /no SQLite statement guard and no write-lease module at this head/);
   const lease = changes.find(change => change.subject === replacement);
   assert.ok(lease, 'the write-lease implementation must retain its own delta record');
-  // The committed tree keeps the write-lease source and test blobs; the two
-  // retired commits contribute historical evidence, not runtime code.
+  const removed = changes.find(change => change.subject === removal);
+  assert.ok(removed, 'the removal of the write-lease module must keep its own delta record');
+  const retiredRecords = retired.map(subject => {
+    const record = changes.find(change => change.subject === subject);
+    assert.ok(record, `the superseded commit must remain recorded: ${subject}`);
+    return record;
+  });
+  // The committed tree no longer holds the guarded module or its tests: the
+  // removal record ends each file's chain, and the retired commits contribute
+  // historical evidence, not runtime code.
   for (const file of lease.files) {
-    const committed = execFileSync('git', ['-C', dir, 'rev-parse', `HEAD:${file.path}`], { encoding: 'utf8' }).trim();
-    assert.equal(committed, file.after, `${file.path} must retain the write-lease implementation`);
-    for (const subject of retired) {
-      const record = changes.find(change => change.subject === subject);
-      assert.ok(record, `the superseded commit must remain recorded: ${subject}`);
-      const retiredFile = record.files.find(entry => entry.path === file.path);
-      assert.ok(retiredFile, `${subject} must record ${file.path}`);
-      assert.notEqual(retiredFile.after, committed);
+    const removedFile = removed.files.find(entry => entry.path === file.path);
+    assert.ok(removedFile, `${removal} must record ${file.path}`);
+    assert.equal(removedFile.before, file.after, `${file.path} must be removed from the write-lease blob`);
+    assert.equal(removedFile.after, null, `${file.path} must be recorded as deleted`);
+    const committed = execFileSync('git', ['-C', dir, 'ls-tree', 'HEAD', '--', file.path], { encoding: 'utf8' }).trim();
+    assert.equal(committed, '', `${file.path} must be absent from the committed tree`);
+    for (const record of retiredRecords) {
+      assert.ok(record.files.some(entry => entry.path === file.path), `${record.subject} must record ${file.path}`);
     }
   }
 }
-test('callback history explains the superseded guard and preserves the write-lease tree', () => checkCallbackHistory(root));
+test('callback history explains the superseded guard and records the write-lease removal',() => checkCallbackHistory(root));
 test('callback history check needs no ancestry beyond the checked-out commit', t => {
   const dir = mkdtempSync(join(tmpdir(), 'delta-provenance-shallow-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
