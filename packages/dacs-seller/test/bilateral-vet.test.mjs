@@ -208,8 +208,10 @@ for (const boundary of ['presentation', 'composite', 'buyer-anchor', 'seller-anc
   }
   const held=p.resolveBuyer(input).catch(error=>error);await entered.promise;
   const before={signs:w.controls.signs,writes:w.local.writes.length,evaluations:w.seen.length};
-  assert.equal((await w.provider().sweep(()=>true)).deleted,1);
-  assert.deepEqual(await w.store.entries(),[]);
+  // A signature asked for with no anchor intent leaves an ended marker.
+  const marked=['composite','buyer-anchor'].includes(boundary);
+  assert.equal((await w.provider().sweep(()=>true)).deleted,marked?0:1);
+  assert.deepEqual((await w.store.entries()).map(([,row])=>row.endedMarker),marked?[true]:[]);
   resume.resolve();assert.ok((await held) instanceof Error);
   assert.equal(w.local.writes.length,before.writes);assert.equal(w.seen.length,before.evaluations);
   assert.equal(w.controls.signs,before.signs+(['presentation','composite'].includes(boundary)?1:0));
@@ -219,19 +221,21 @@ for (const boundary of ['presentation', 'composite', 'buyer-anchor', 'seller-anc
  });
 }
 
-for(const end of ['release','sweep'])test(`${end} deletes a pre-intent row and the purchase state fences restart`,async t=>{
- const w=fixture({maxJobs:1}),p=w.provider(),input=w.input(),entered=gate(),resume=gate(),sign=w.config.wallet.signBytes;
+for(const end of ['release','sweep'])test(`${end} keeps an ended marker for a pre-intent row whose signer was asked, and fences restart`,async t=>{
+ const w=fixture({maxJobs:2}),p=w.provider(),input=w.input(),entered=gate(),resume=gate(),sign=w.config.wallet.signBytes;
  t.after(()=>w.store.close());let once=true;
  w.config.wallet.signBytes=async bytes=>{if(once){once=false;entered.resolve();await resume.promise;}return sign(bytes);};
  const held=p.resolveBuyer(input).catch(error=>error);await entered.promise;
- if(end==='release')assert.deepEqual(await w.provider().release({jobId:JOBS[0]}),{invalidated:true,deleted:true});
- else assert.equal((await w.provider().sweep(()=>true)).deleted,1);
+ if(end==='release')assert.deepEqual(await w.provider().release({jobId:JOBS[0]}),{invalidated:true,deleted:false});
+ else assert.equal((await w.provider().sweep(()=>true)).deleted,0);
  resume.resolve();await held;await p.sweep(()=>true);
  const effects=[w.controls.signs,w.local.writes.length,w.seen.length];assert.equal(w.local.writes.length,0);
  for(const candidate of [input,{...input,scope:{...input.scope,payee:w.buyer.address}}]){
   await assert.rejects(w.provider().resolveBuyer(candidate,{writable:()=>false}),{code:'not-pending'});
   assert.equal(await w.provider().recoverBuyer(candidate),null);
  }
+ // The marker, not only the purchase state, refuses a new binding.
+ await assert.rejects(w.provider().resolveBuyer(input),{code:'context_released'});
  await w.provider().release({jobId:JOBS[0]});await w.provider().sweep(()=>true);
  assert.deepEqual([w.controls.signs,w.local.writes.length,w.seen.length],effects);
  assert.equal(w.store.usage().remainingJobs,1);assert.equal((await w.provider().resolveBuyer(w.input(JOBS[1]))).disposition,'present');
