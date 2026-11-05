@@ -396,7 +396,7 @@ async function abortAt(t, point) {
 for (const point of ['admission', 'lock', 'fence', 'binding', 'getTransactionStatus', 'getTxByHash', 'block', 'body']) {
   test(`passive abort at ${point} rejects with the caller reason and releases the fence once`, t => abortAt(t, point));
 }
-test('a stalled connection fence past the passive deadline runs no read and rejects with timeout once released', async t => {
+test('a stalled connection fence rejects the passive read with timeout at the deadline and releases a late grant unused', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let stall = false, reached, release;
   const arrived = new Promise(resolve => { reached = resolve; }), gate = new Promise(resolve => { release = resolve; });
@@ -405,12 +405,41 @@ test('a stalled connection fence past the passive deadline runs no read and reje
   let outcome = 'pending';
   const read = passive(w).then(value => { outcome = { value }; }, error => { outcome = { error }; });
   await arrived; t.mock.timers.tick(10_000); await flush();
-  assert.equal(outcome, 'pending');
-  release(); await read;
-  assert.equal(outcome.error?.kind, 'timeout'); assert.deepEqual(w.calls, []);
+  assert.equal(outcome.error?.kind, 'timeout'); assert.equal(w.fences.acquired, 0);
+  release(); await read; await flush();
+  assert.deepEqual(w.calls, []);
   assert.deepEqual(w.fences, { acquired: 1, released: 1 });
   await assertUnchanged(w, before);
   await w.source.close();
+});
+// A lane lock held by someone else, with a passive read queued behind it.
+async function readBehindHeldLock(t, options) {
+  const w = await memoryWorld(t, options);
+  let freeLock; const holder = w.journal.withWalletLock(`devnet/source-read/${w.source.transportBinding.bindingId}`, () => new Promise(resolve => { freeLock = resolve; }));
+  await flush(); w.lockKeys.length = 0;
+  let outcome = 'pending';
+  const read = passive(w).then(value => { outcome = { value }; }, error => { outcome = { error }; });
+  await flush();
+  return { w, read, outcome: () => outcome, freeLock: async () => { freeLock(); await holder; await flush(); } };
+}
+test('a held lane lock rejects the passive read with timeout at the deadline and starts no read once freed', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { w, read, outcome, freeLock } = await readBehindHeldLock(t);
+  const before = await w.journal.entries();
+  assert.equal(outcome(), 'pending'); t.mock.timers.tick(10_000); await flush();
+  assert.equal(outcome().error?.kind, 'timeout');
+  await freeLock(); await read;
+  assert.deepEqual(w.calls, []); assert.deepEqual(w.fences, { acquired: 0, released: 0 });
+  await assertUnchanged(w, before);
+});
+test('close settles a passive read that is still waiting for the lane lock', async t => {
+  const { w, read, outcome, freeLock } = await readBehindHeldLock(t);
+  assert.equal(outcome(), 'pending');
+  assert.notEqual(await settledWithin(w.source.close()), 'stalled');
+  await read;
+  assert.equal(outcome().error?.code, 'transport_closed');
+  await freeLock();
+  assert.deepEqual(w.calls, []); assert.deepEqual(w.fences, { acquired: 0, released: 0 });
 });
 test('close aborts an in-flight passive read and waits for it', async t => {
   let reached; const arrived = new Promise(resolve => { reached = resolve; });
