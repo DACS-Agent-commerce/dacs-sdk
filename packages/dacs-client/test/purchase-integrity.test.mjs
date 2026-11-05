@@ -1,19 +1,15 @@
-// D15 offline races. A test-only module hook supplies SQLite transactions to
-// the inert D11 stub; production never registers this hook or a store adapter.
+// D15 offline races. The test passes the source SQLite store as the D11
+// PurchaseStore parameter, as a host application does.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registerHooks } from 'node:module';
 import { test } from 'node:test';
-import { openDatabase } from './helpers/purchase-integrity-database.mjs';
+import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
-registerHooks({resolve(specifier,context,next){
-  if(specifier.endsWith('/seams/purchase-store-not-wired.mjs')) return {url:new URL('./helpers/purchase-integrity-database.mjs',import.meta.url).href,shortCircuit:true};
-  return next(specifier,context);
-}});
-const { createPurchaseService } = await import('../src/purchases.mjs');
-const { createCoordinateStore } = await import('../src/dacs/wallet-transactions.mjs');
+import { createPurchaseService } from '../src/purchases.mjs';
+import { createCoordinateStore } from '../src/dacs/wallet-transactions.mjs';
+const store={transaction,isUniqueViolation},purposes={APPROVE_PURCHASE:'approve-purchase'};
 const CHAIN='f'.repeat(64), WALLET='0x'+'a'.repeat(64), PAYEE='0x'+'7'.repeat(64), A='1'.repeat(64), B='2'.repeat(64), AMOUNT='2500000000';
 function world(t,{aStatus='included',bStatus='pending'}={}) {
  const dir=mkdtempSync(join(tmpdir(),'d15-race-')),file=join(dir,'state.sqlite'),connections=[];
@@ -25,7 +21,7 @@ function world(t,{aStatus='included',bStatus='pending'}={}) {
  const chain={network:'testnet',pinnedIdentity:CHAIN,rpcOrigin:'https://rpc.invalid',evidenceMode:'TEST-stub',networkIdentity:async()=>({identity:CHAIN,mode:'public-chain-read'}),
   async observeTransfer(hash){if(hash===A){enter();await gate;return aStatus==='included'?included(A):{status:aStatus};}return bStatus==='included'?included(B):{status:bStatus};},
   getTransaction:async hash=>({hash,status:'confirmed',blockNumber:10,content:{from:WALLET,nonce:7}})};
- const service=()=>createPurchaseService({...active,config:{},chain});let purchases=service();
+ const service=()=>createPurchaseService({...active,config:{},chain,store,purposes});let purchases=service();
  const terms={buyer:{wallet:WALLET},seller:{payee:PAYEE,claim:'TEST-seller'},price:{amountOs:AMOUNT,amount:'2.5'},listing:{listingId:'TEST-listing',version:1,contentHash:CHAIN},network:'testnet',rail:'demos-native:DEM',domain:{network:'testnet',rail:'demos-native:DEM',mode:'public-chain-read',chainIdentity:CHAIN}};
  const make=(key,status)=>{
   const op=active.ops.createIdempotent({accountId:'TEST-buyer',kind:'purchase',idempotencyKey:key,request:{key},status,terms,termsHash:CHAIN,expiresAt:new Date(Date.now()+3600000).toISOString()}).operation;
