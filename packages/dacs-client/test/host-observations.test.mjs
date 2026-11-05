@@ -9,13 +9,13 @@ import { createProtocolPurchases } from '../src/dacs/protocol-purchases.mjs';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 import { createPayDemSellerObserver } from '@kynesyslabs/dacs/seller';
 import { createDemosChainReader, OS_INTEGER } from '../src/dacs/chain.mjs';
-import { createPurchaseService } from '../src/purchases.mjs';
+import { createPurchaseService, BLOCKS_PURCHASE } from '../src/purchases.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 
 const HASH = '1'.repeat(64), CHAIN = 'f'.repeat(64), WALLET = '0x' + 'a'.repeat(64), PAYEE = '0x' + '7'.repeat(64);
 const INCLUDED = { status: 'included', txHash: HASH, payer: WALLET, payee: PAYEE, amountOs: '2500000000', blockNumber: 10 };
-function world(t, observation, { native = false, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, publicApi = false, now = () => 1700000000000 } = {}) {
+function world(t, observation, { native = false, config = {}, observer = 'TEST-host-reader', buyerRefusal = null, buyerAccess = null, signingAddress = WALLET, publicApi = false, now = () => 1700000000000 } = {}) {
   const db = openDatabase(':memory:'), store = createSqlitePurchaseStore();
   t.after(() => db.close());
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now }), coordinates = createCoordinateStore({ db, now });
@@ -39,7 +39,7 @@ function world(t, observation, { native = false, observer = 'TEST-host-reader', 
   coordinates.reportHash(op.id, HASH);
   const protocol = native || buyerRefusal || buyerAccess ? createProtocolPurchases({ db, ops, coordinates, store,
     buyerAccess: buyerRefusal ? { assertWallet() { throw buyerRefusal; } } : buyerAccess }) : null;
-  const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config: {}, chain, protocol, store, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
+  const purchases = (publicApi ? createPublicPurchaseService : createPurchaseService)({ db, ops, coordinates, config, chain, protocol, store, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' } });
   return { db, chain, protocol, coordinates, op, ops, purchases, fixReader() { observation = { ...INCLUDED }; },
     bodyReads: () => bodyReads, snapshot: () => JSON.stringify(db.prepare('SELECT * FROM sqlite_master ORDER BY name').all().filter(r => r.type === 'table').map(r => [r.name, db.prepare(`SELECT * FROM "${r.name}" ORDER BY rowid`).all()])),
     consumed: () => db.prepare('SELECT count(*) n FROM wallet_nonce_consumptions').get().n,
@@ -225,10 +225,41 @@ test('included epoch zero is retained in the public receipt', async t => {
   assert.equal(w.purchases.portalEvidence(result.operation.id, w.ops.handoffTokenFor(result.operation.id)).receipt.includedAt, '1970-01-01T00:00:00.000Z');
 });
 
-test('a readable, different amount remains a terms mismatch', async t => {
-  const result = await world(t, { ...INCLUDED, amountOs: '1' }).verify();
+const WRONG_AMOUNT = { ...INCLUDED, amountOs: '1' };
+const blocksWallet = w => w.coordinates.unresolvedForSender(WALLET, '', BLOCKS_PURCHASE).some(pending => pending.operationId === w.op.id);
+
+test('a readable, different amount ends payment_mismatch where the network counts one nonce per account', async t => {
+  const w = world(t, WRONG_AMOUNT, { config: { nonceSlotProof: 'account' } }), result = await w.verify();
   assert.equal(result.verification.outcome, 'mismatch');
   assert.equal(result.operation.status, 'payment_mismatch');
+  assert.equal(blocksWallet(w), false);
+});
+
+for (const [label, config] of [['by default', {}], ['with the slot proof off', { nonceSlotProof: 'off' }]]) {
+  test(`a readable, different amount keeps the purchase uncertain and the wallet blocked ${label}`, async t => {
+    const w = world(t, WRONG_AMOUNT, { config }), result = await w.verify();
+    assert.equal(result.verification.outcome, 'mismatch_unproven');
+    assert.deepEqual(result.verification.mismatches, ['amount differs from the approved price']);
+    assert.equal(result.operation.status, 'payment_uncertain');
+    assert.equal(blocksWallet(w), true);
+  });
+}
+
+test('an alternate-signed different amount keeps the wallet blocked where the slot proof is off', async t => {
+  const w = world(t, WRONG_AMOUNT, { signingAddress: '0x' + 'b'.repeat(64) }), result = await w.verify();
+  assert.equal(result.verification.outcome, 'mismatch_unproven');
+  assert.equal(result.operation.status, 'payment_uncertain');
+  assert.equal(blocksWallet(w), true);
+});
+
+test('an unproven mismatch detaches its hash so the approved payment\'s own hash can be reported', async t => {
+  const w = world(t, WRONG_AMOUNT);
+  await w.verify();
+  assert.equal(w.coordinates.get(w.op.id).reportedTxHash, null);
+  assert.equal((await w.verify()).verification.outcome, 'hash_required');
+  const paymentHash = '2'.repeat(64);
+  assert.equal(w.coordinates.reportHash(w.op.id, paymentHash), true);
+  assert.equal(w.coordinates.get(w.op.id).reportedTxHash, paymentHash);
 });
 
 test('a readable alternate key retains the approved buyer projection', async t => {

@@ -104,6 +104,7 @@ export const OBSERVATION_LIMITS = Object.freeze({
 export const BLOCKS_PURCHASE = ['payment_handoff', 'broadcast_reported', 'payment_uncertain', 'publication_handoff'];
 // An uncertain publication no longer blocks handoff, but still reserves its old nonce.
 const SUPERSESSION_STATES = [...BLOCKS_PURCHASE, 'publication_uncertain'];
+const UNPROVEN_MISMATCH_REASON = 'another transfer used the approved nonce slot, which on this network does not show that the approved payment can never land';
 const CANCELLABLE = new Set(['agreement_pending', 'awaiting_approval', 'approved', 'payment_handoff', 'payment_uncertain']);
 const TERMINAL = new Set(['settled_verified', 'payment_failed', 'payment_mismatch', 'expired', 'terms_changed', 'cancelled', 'superseded', 'agreement_rejected']);
 export const PURCHASE_TERMINAL_STATUSES = TERMINAL;
@@ -239,6 +240,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     VALUES (?, ?, ?, ?, ?, ?, ?)`);
   const approvalFor = db.prepare('SELECT * FROM approvals WHERE operation_id = ?');
   const limits = config.purchaseLimits ?? PURCHASE_LIMITS;
+  // Another transaction at a purchase's nonce slot proves its payment can never land only where the bound network counts one
+  // nonce for every key of the account; set only once P40 has shown that there. Cancel and verify_deal's mismatch both rely on it.
+  const slotProofEnabled = config.nonceSlotProof === 'account';
   // Only pre-payment open states (ACTIONABLE) hold an unpaid slot; any other
   // status, including one added later, frees it. payment_mismatch frees the
   // slot (owner decision 2026-10-08). broadcast_reported and payment_uncertain
@@ -1240,9 +1244,16 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
             throw error;
           }
         }
-        // The approved nonce slot was consumed by a different transfer, so the
-        // approved payment can no longer land: final, flagged, never accepted.
         recordUnverified(result);
+        // Where the network counts a nonce per signing key, a different transfer at the approved slot does not show that
+        // the approved payment can never land: another key may still send it. The purchase stays open and blocks the wallet,
+        // as cancel does, and the pointer is detached so the payment's own hash can still be reported.
+        if (!slotProofEnabled) {
+          coordinates.clearRejectedPointer(operation.id, hash);
+          return { operation: moveUnverified('payment_uncertain', { reason: UNPROVEN_MISMATCH_REASON, mismatches }), verification: { outcome: 'mismatch_unproven', ...result } };
+        }
+        // The approved nonce slot was consumed by a different transfer on a network with one nonce per account, so the
+        // approved payment can no longer land: final, flagged, never accepted.
         const next = moveUnverified('payment_mismatch', { mismatches });
         const mismatch = { operation: next, verification: { outcome: 'mismatch', ...result } };
         return mismatch;
@@ -1514,16 +1525,13 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       // purchase, any other transaction means the payload can never land.
       await assertBoundDomain(operation);
       const wallet = operation.terms.buyer.wallet;
-      // Another transaction at the slot proves this payload can never land only where the bound network counts one nonce
-      // for every key of the account; set only once P40 has shown that there.
-      const slotProof = config.nonceSlotProof === 'account';
       // Any transaction from the wallet at this nonce releases the purchase; a 1 DEM self-transfer is the smallest. When the wallet's
       // own other transaction already holds the slot (slotTx) a release would be refused, so the answer names that transaction instead.
       const open = (reason, slotTx = null) => ({
         operation: move(operation, 'payment_uncertain', { reason, nonceFence: coords.nonceFence }), cancelled: false,
         ...(slotTx ? { slotTxHash: slotTx } : { release: buildNativeTransferPayload({ from: wallet, to: wallet, amountOs: RELEASE_AMOUNT_OS, nonce: coords.expectedNonce, timestamp: now(), encoding: config.demAmountEncoding }) }),
-        message: slotTx ? `Not cancelled: ${operation.id} stays open and blocks this wallet's next purchase. Wallet transaction number ${coords.expectedNonce} is already ${slotTx}, so no release can be sent; call verify_deal with that hash if this wallet signs with its own key alone.`
-          : `Not cancelled: nothing proves the payment was never sent, so ${operation.id} stays open and blocks this wallet's next purchase. Send the release transfer (wallet transaction number ${coords.expectedNonce}). Report its hash only after it has landed: ${slotProof ? 'call cancel again, or ' : ''}call verify_deal with it if this wallet signs with its own key alone. If the payment landed instead, call verify_deal with the payment's hash.`,
+        message: slotTx ? `Not cancelled: ${operation.id} stays open and blocks this wallet's next purchase. Wallet transaction number ${coords.expectedNonce} is already ${slotTx}, so no release can be sent. On this network that transaction does not end the purchase; if the payment landed, call verify_deal with the payment's hash.`
+          : `Not cancelled: nothing proves the payment was never sent, so ${operation.id} stays open and blocks this wallet's next purchase. Send the release transfer (wallet transaction number ${coords.expectedNonce}). Report its hash only after it has landed: ${slotProofEnabled ? 'call cancel again, or call verify_deal with it if this wallet signs with its own key alone' : 'on this network the landed release does not end the purchase by itself'}. If the payment landed instead, call verify_deal with the payment's hash.`,
       });
       if (await chain.getAddressNonce(wallet) < coords.expectedNonce) return open('cancel pending: the handed-off transfer may still land; waiting for its nonce slot to be used');
       const slot = typeof chain.findTransferAtNonce === 'function' ? await chain.findTransferAtNonce(wallet, coords.expectedNonce) : { status: 'unknown' };
@@ -1543,7 +1551,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       if (same(taken.payee, operation.terms.seller.payee) && taken.amountOs === operation.terms.price.amountOs) {
         return continueProtocol({ ...await attachHashAndVerify(operation, slot.hash, 'nonce-slot-readback'), cancelled: false });
       }
-      if (!slotProof) return open('cancel pending: on this network another transaction at the nonce slot does not prove the payment can never land', slot.hash);
+      if (!slotProofEnabled) return open('cancel pending: on this network another transaction at the nonce slot does not prove the payment can never land', slot.hash);
     }
     const next = move(operation, 'cancelled', { reason: 'cancelled by account owner', nonceFence: coords?.nonceFence ?? null });
     return { operation: next, cancelled: next.status === 'cancelled' };
