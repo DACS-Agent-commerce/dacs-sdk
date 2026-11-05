@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runFreshChild } from './helpers/fresh-node-child.mjs';
 import { mnemonicBytes } from './helpers/tp1-node-fixture.mjs';
+// Where Node still marks Web Crypto Ed25519 experimental (23.4.0 and below), the storage-anchor signature check in
+// sdk-provider.mjs makes Node itself print this warning and its hint once. That output is Node's, not the child's.
+const NODE_ED25519_WARNING = /^\(node:\d+\) ExperimentalWarning: The Ed25519 Web Crypto API algorithm is an experimental feature and might change at any time\n/gm;
+const NODE_TRACE_WARNINGS_HINT = /^\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n/gm;
+function childOwnStderr(stderr) { return stderr.replace(NODE_ED25519_WARNING, '').replace(NODE_TRACE_WARNINGS_HINT, ''); }
 const names = ["a fresh child with no NODE_OPTIONS, loaders or helper imports constructs the source node-wallet entry, imports a generated valid mnemonic, completes an offline native-send and storage-CREATE control, and writes nothing to stdout or stderr, also when preparation fails or answers malformed", "a fresh child speaking a JSON-RPC line protocol on stdout answers a request, makes an offline native send, then answers a second request; every stdout line parses as a frame"];
 const fixture = readFileSync(new URL('./helpers/tp1-node-fixture.mjs',import.meta.url),'utf8');
 const nodeSource = fixture.slice(fixture.indexOf('export function scriptedNode()'),fixture.indexOf('export async function world')).replace('export ','');
@@ -38,7 +43,16 @@ await session.close();journal.close();
 `;
 for (let i=0;i<names.length;i++) test(names[i],t=>{
  const child=runFreshChild(t,source,[JSON.stringify([...mnemonicBytes()]),i?'frames':'silent']);
- assert.equal(child.status,0,child.stderr);assert.equal(child.stderr,'');
+ assert.equal(child.status,0,child.stderr);assert.equal(childOwnStderr(child.stderr),'');
  assert.deepEqual(child.result,{broadcasts:2,globals:['undefined','undefined','undefined']});
  if(i)assert.deepEqual(child.stdout.trim().split('\n').map(line=>JSON.parse(line).id),[1,2]);else assert.equal(child.stdout,'');
+});
+test('the child stderr check forgives only the Node Ed25519 experimental warning and its hint',()=>{
+ const warning='(node:2853) ExperimentalWarning: The Ed25519 Web Crypto API algorithm is an experimental feature and might change at any time\n';
+ const hint='(Use `node --trace-warnings ...` to show where the warning was created)\n';
+ assert.equal(childOwnStderr(warning+hint),'');
+ assert.equal(childOwnStderr(warning),'');
+ assert.equal(childOwnStderr(warning+hint+'TEST-child-output\n'),'TEST-child-output\n');
+ assert.equal(childOwnStderr('(node:1) ExperimentalWarning: Another feature is experimental\n'+hint),'(node:1) ExperimentalWarning: Another feature is experimental\n');
+ assert.equal(childOwnStderr('TEST-child-output '+warning),'TEST-child-output '+warning);
 });
