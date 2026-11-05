@@ -291,6 +291,15 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     verifiedPresentation(kept,proof.signatures[0].signature);
     return clone(kept.bundle);
   }
+  // Only for a reservation whose signer was never called: a refused check after
+  // the reservation put the exact bytes back to prepared, so a retry may reserve
+  // them again. Fenced by the reservation; a failed restore leaves it pending,
+  // which holds for reconciliation.
+  const releaseReservation=(job,request)=>state.update(job.jobId,current=>{
+    const signing=current?.presentation?.signing;
+    if(!liveJob(current,job)||signing?.state!=='pending'||signing.reservation!==request.reservation||signing.signedBytes!==request.signedBytes)return undefined;
+    current.presentation.signing={state:'prepared',signedBytes:signing.signedBytes};return current;
+  }).catch(logged('presentation reservation release',job.jobId));
   async function signPresentation(job,kept) {
     const completed=retainedPresentation(kept);if(completed)return completed;
     if(!kept.signing||!['prepared','pending'].includes(kept.signing.state))presentationUnknown('the unsigned seller presentation has no safe signing reservation');
@@ -311,10 +320,12 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const request=Object.freeze({jobId:job.jobId,signer:wallet.claim,reservation:kept.signing.reservation,signedBytes:kept.signing.signedBytes});
     let signature;
     if(mine){
-      guard(job,'seller presentation');await authorizeEffect(job);
-      // The reservation and authorization both await durable work. A pending
-      // signature may be reconciled later, but an expired challenge is never signed.
-      if(!usableChallenge(kept.challenge))fail('seller_challenge_expired','seller challenge expired before presentation');
+      try{
+        guard(job,'seller presentation');await authorizeEffect(job);
+        // The reservation and authorization both await durable work. A pending
+        // signature may be reconciled later, but an expired challenge is never signed.
+        if(!usableChallenge(kept.challenge))fail('seller_challenge_expired','seller challenge expired before presentation');
+      }catch(error){await releaseReservation(job,request);throw error;}
       const raw=await wallet.signBytes(Buffer.from(request.signedBytes,'hex'),request);
       signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
     }else signature=await readPresentationSignature(request);
