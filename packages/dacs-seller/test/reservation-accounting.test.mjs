@@ -198,6 +198,36 @@ test('accounting admits a context retry for a job whose context record is alread
   assert.equal(f.rows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.jobRows().length, 1);
 });
 
+test('accounting refuses step 4 for a context start on an existing job that has no context record at capacity', async t => {
+  const f = await accountingFixture(t, { maxContextRecords: 1 });
+  await f.reserve(f.args());
+  admitContextRecord(f, JOB2);
+  await assert.rejects(f.reserve(f.args(f.payload({ path: CONTEXT }), { contextStart: true })), refused('peer_context_capacity', 503));
+  f.reopen(); assert.equal(f.rows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.jobRows().length, 1);
+});
+
+test('accounting writes no job row or tuple for a context start, so a later proposal for the job is not a conflict', async t => {
+  const f = await accountingFixture(t);
+  const scope = f.payload({ path: CONTEXT, agreementHash: sha256Hex('context scope') });
+  assert.equal((await f.reserve(f.args(scope, { contextStart: true, newJob: true }))).state, 'new');
+  assert.equal(f.rows().length, 1); assert.equal(f.jobRows().length, 0); assert.equal(f.tuples(), 0);
+  assert.doesNotThrow(() => f.store().reserve(f.payload(), {}, { keepProfile: FIXTURE_PROFILE }));
+});
+
+test('accounting admits an accounted proposal as a new job after a context start for the same job', async t => {
+  const f = await accountingFixture(t);
+  await f.reserve(f.args(f.payload({ path: CONTEXT, agreementHash: sha256Hex('context scope') }), { contextStart: true }));
+  assert.equal((await f.reserve(f.args(f.payload(), { newJob: true }))).state, 'new');
+  assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.rows().length, 2);
+});
+
+test('accounting refuses a context-start flag that disagrees with the route before any row', async t => {
+  const f = await accountingFixture(t);
+  await assert.rejects(f.reserve(f.args(f.payload({ path: CONTEXT }))), refused('wire_input_invalid', 500));
+  await assert.rejects(f.reserve(f.args(f.payload(), { contextStart: true })), refused('wire_input_invalid', 500));
+  f.reopen(); f.assertEmpty();
+});
+
 test('accounting keeps a fresh job row and its tuple together, with the identity the old reserve path compares', async t => {
   const f = await accountingFixture(t);
   const payload = f.payload();

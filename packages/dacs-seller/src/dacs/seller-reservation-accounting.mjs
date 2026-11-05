@@ -1,7 +1,7 @@
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { isTp1WireProfile, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
-import { SellerTransportError } from './seller-transport-auth.mjs';
+import { SELLER_CONTEXT_PATH, SellerTransportError } from './seller-transport-auth.mjs';
 
 // The wire journal's lease; accounting refuses a clock whose lease sum the journal could not take.
 const RESERVATION_LEASE_MS = 300000;
@@ -61,7 +61,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     const fresh = !store.hasJobWithin(payload.jobId);
     if (newJob !== undefined && newJob !== fresh) fail('wire_input_invalid', 500);
     if (fresh && store.jobCountWithin() >= limits.maxJobs) fail('peer_job_capacity', 503);
-    if (contextStart && fresh) checkContextRecordsWithin();
+    if (contextStart && !store.hasContextRecordWithin(payload.jobId)) checkContextRecordsWithin();
     checkPurchaseTupleWithin({ payload, keepProfile, fresh });
     const capacity = capacityWithin(input, at, key);
     // The first claim for a transaction is retained for accounting only: a competing job still reaches settlement intake.
@@ -69,7 +69,9 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     run(`INSERT INTO kit_reservations (key, buyer, jobId, operationId, route, allocationId, class, requestHash, at, state, rev)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserving', 1)`, key, payload.buyer, payload.jobId, operationId, route,
     capacity.allocationId, capacity.class, requestHash, at);
-    if (fresh) store.keepJobWithin(payload, keepProfile, at);
+    // The context step carries its scope hash in the agreementHash slot and never binds the job's Agreement,
+    // so it writes no job row (and so no tuple): a later request for the job must still match its identity.
+    if (fresh && !contextStart) store.keepJobWithin(payload, keepProfile, at);
   }
 
   // Compare-and-swap on the inserted revision: a slower or repeated path cannot overwrite a newer result.
@@ -94,7 +96,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     if (!isTp1WireProfile(keepProfile)) fail('tp1_purchase_profile_mismatch', 500);
     if (typeof checked?.reserve !== 'function' || typeof payload !== 'object' || payload === null || route !== payload.path ||
         operationId !== wireOperationId(payload) || (newJob !== undefined && typeof newJob !== 'boolean') ||
-        typeof contextStart !== 'boolean' || (paymentTx !== null && (typeof paymentTx !== 'string' || paymentTx.length === 0)) ||
+        typeof contextStart !== 'boolean' || contextStart !== (route === SELLER_CONTEXT_PATH) || (paymentTx !== null && (typeof paymentTx !== 'string' || paymentTx.length === 0)) ||
         (checkCapacityWithin !== undefined && typeof checkCapacityWithin !== 'function')) fail('wire_input_invalid', 500);
     return { checked, payload, route, operationId, newJob, contextStart, paymentTx, keepProfile, checkCapacityWithin };
   }
@@ -104,6 +106,8 @@ export function createReservationAccounting({ store, now, limits, contextRecords
      * Charge once, commit a new job's row with its tuple and the payment claim, then call checked.reserve and record its result.
      * Returns the wire effect (state new, recover or completed). Throws the reservation's own refusal, after
      * recording it as refused{code}; any other failure leaves the charged row `reserving`, never refunded.
+     * A context start (contextStart must be true exactly on the context route) writes no job row or tuple, and
+     * step 4 applies to it whenever the job has no context record yet.
      * Throws before any row on an absent keepProfile, an unsafe clock, a full buyer window, job or context
      * capacity, a tuple mismatch, a replayed nonce key, or a refusal from checkCapacityWithin.
      * newJob, when given, must equal the store's own view of whether the job is new (else wire_input_invalid).

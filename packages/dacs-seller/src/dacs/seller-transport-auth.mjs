@@ -375,6 +375,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   const reservationAccounting = createReservationAccounting({
     store: { get, run, transaction, keptProfileText, keepJobWithin,
       hasJobWithin: jobId => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
+      hasContextRecordWithin: jobId => admissions() && Boolean(get('SELECT job FROM peer_context_admissions WHERE job = ?', jobId)),
       jobCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${retainedJobs()})`).n },
     now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow, nonceWindowMs },
     contextRecords: contextRecords ?? (() => admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0),
