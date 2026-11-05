@@ -21,6 +21,8 @@ import { WIRE_ROUTE_PATHS, wireAuthenticator } from './seller-wire-requests.mjs'
 
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE_LIST = 256;
+// The longest client deadline `boundedCall` accepts (Node's timers hold at most 2^31 - 1 ms).
+const MAX_CLIENT_TIMEOUT_MS = 2 ** 31 - 1;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 export const loopbackSocket = (address) => address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
@@ -361,12 +363,14 @@ export class SellerRefusedError extends Error {
 }
 
 /**
- * Waits for a response verification (an adapter's value or Promise) for at most `timeLeftMs`, and returns its result.
- * Throws its rejection unchanged, or a `TimeoutError` at the deadline: a result that comes later releases nothing and is never
- * an unhandled rejection. A synchronous adapter that throws is the same refusal as an asynchronous one.
+ * Waits for a response verification (an adapter's value or Promise) for at most `timeLeftMs` whole milliseconds, and returns its
+ * result. Throws its rejection unchanged, or a `TimeoutError` at the deadline: a result that comes later releases nothing and is
+ * never an unhandled rejection. With no time left (a response that arrived at or after the deadline) it throws that
+ * `TimeoutError` without starting the verification. A synchronous adapter that throws is the same refusal as an asynchronous one.
  */
 function verifiedWithin(verify, timeLeftMs) {
-  return boundedCall(verify, { timeoutMs: Math.max(1, Math.ceil(timeLeftMs)) });
+  if (timeLeftMs <= 0) return Promise.reject(new DOMException('the response arrived after the client deadline', 'TimeoutError'));
+  return boundedCall(verify, { timeoutMs: timeLeftMs });
 }
 
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {
@@ -375,6 +379,8 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
   if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
   }
+  // The deadline sizes the bounded verification wait, so it must be a duration that wait accepts.
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_CLIENT_TIMEOUT_MS) throw new TypeError('timeoutMs must be an integer from 1 to 2^31 - 1');
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/$/, '');
 
