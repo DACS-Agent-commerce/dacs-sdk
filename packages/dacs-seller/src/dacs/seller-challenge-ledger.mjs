@@ -260,6 +260,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     assertIssueAdmitted(origin);
     validateIssueRequest(request, challengeScopeHash, origin);
     if (origin === 'route' && typeof authorization?.assertStillLive !== 'function') throw new TypeError('issue needs the final-liveness closure assertStillLive');
+    // K1 step 2: a seller that is not ready, or has no room for a whole new purchase, issues nothing.
+    if (ready() !== true) fail('seller_not_ready', 503);
     // K1 step 6 refuses an unusable clock before the lock is taken. The lock can be waited for: expiry,
     // reuse and the written times use the clock read again once it is held.
     readClock(SESSION_CHALLENGE_LIFETIME_MS);

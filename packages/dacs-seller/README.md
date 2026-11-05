@@ -43,6 +43,18 @@ that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host without the capability reclaims nothing. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
 
+The host's optional `maxRecords` (default 10,000) is the permanent reservation
+budget. Each admitted purchase holds one durable allocation of 17 units for each
+of the context, proposals, commitments and payments routes (68 units, or 85 when
+commitments/signature is enabled). A new challenge, admission or purchase needs
+the whole allotment free, so a seller whose budget falls below the units it has
+already charged and allotted starts, serves the purchases it holds, and refuses
+new ones as not ready. A successful context completion returns only the context
+slot; an aborted start, a failed or non-validated context and a terminal DACS-5
+session (checked once at startup) return every open slot. Returned units never
+reduce what has been charged. The routes do not yet reserve through these units:
+that, and the periodic terminal cleanup, come with the routes that use them.
+
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
@@ -62,6 +74,7 @@ const host = await startSellerHost({
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
   maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
+  maxRecords: 10000,     // optional permanent reservation budget; a new purchase needs 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)

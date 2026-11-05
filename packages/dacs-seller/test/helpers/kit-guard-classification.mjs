@@ -30,6 +30,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-durable-state.mjs': { effect: { createSellerDurableState: ['signOnce', 'anchor'] }, pure: ['SellerRecoveryError'] },
   'src/dacs/seller-http.mjs': { effect: { createSellerHttpHandler: ['createSellerHttpHandler'], createSellerAgentClient: ['createSellerAgentClient'] }, pure: ['SellerRefusedError', 'SellerTlsUnusableError', 'SellerUnavailableError', 'loopbackSocket', 'sellerFailureAttempt', 'sellerFailureCause'] },
   'src/dacs/seller-proposal-time.mjs': { effect: {  }, pure: ['proposalTimeProblem'] },
+  'src/dacs/seller-purchase-capacity.mjs': { effect: {  }, pure: ['createPurchaseCapacity', 'ownsPurchaseCapacity'] },
   'src/dacs/seller-reservation-accounting.mjs': { effect: { createReservationAccounting: ['reserveAccounted'] }, pure: [] },
   'src/dacs/seller-transport-auth.mjs': { effect: { createSellerTransportServerAuth: ['createSellerTransportServerAuth'], createSellerTransportClientAuth: ['createSellerTransportClientAuth'] }, pure: ['SellerTransportError', 'createSellerTransportStore', 'normalizeSellerSessionDelegationSignature', 'pinValid', 'sellerContextChallengeScope', 'sellerContextScopeHash', 'sellerSessionDelegationSigningBytes', 'sellerStoreInternals', 'sellerTransportEffect', 'sellerTransportSigningBytes', 'validateBody', 'verifySellerSessionDelegation'] },
   'src/dacs/seller-wire-requests.mjs': { effect: {  }, pure: ['admitAnswerText', 'admitWireRoute', 'continuationFor', 'retainedFor'] },
