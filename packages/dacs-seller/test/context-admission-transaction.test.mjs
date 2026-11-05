@@ -40,9 +40,10 @@ const deferred = () => {
   return { promise, resolve };
 };
 const flush = () => new Promise(resolve => setImmediate(resolve));
-let createContextAdmissionTransaction, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
+let createContextAdmissionTransaction, createPurchaseCapacity, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
 try {
   ({ createContextAdmissionTransaction } = await import('../src/dacs/seller-admission-transaction.mjs'));
+  ({ createPurchaseCapacity } = await import('../src/dacs/seller-purchase-capacity.mjs'));
   ({ createSellerTransportStore, sellerStoreInternals, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs'));
   if (typeof sellerStoreInternals !== 'function') throw new Error('sellerStoreInternals is not exported');
 } catch (error) { importFailure = error; }
@@ -78,14 +79,15 @@ function world(t, config = {}) {
     const outcomes = [...wire.ends.values()].filter(end => end !== null);
     return outcomes.length === 0 ? { state: 'none' } : { state: 'completed', binding: row(jobId).contextBinding, outcome: outcomes.at(-1) };
   };
-  let store, admission, internals;
+  let store, admission, internals, capacity;
   function reopen() {
     if (!control.killed) store?.close();
     control.killed = false;
     store = createSellerTransportStore({ path, generation: `test-generation-${++control.generation}`, now: () => control.clock, ready: () => control.ready,
       maxContextRecords: options.maxContextRecords, contextStartLimits: options.contextStartLimits });
     internals = sellerStoreInternals(store);
-    admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity: options.capacity ?? null,
+    capacity = createPurchaseCapacity({ store, now: () => control.clock, maxRecords: options.maxRecords ?? 10000, sessionState: () => null });
+    admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
       inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,
       now: () => control.clock, ready: () => control.ready, deadlines: { policyMs: POLICY_MS } });
@@ -141,7 +143,7 @@ function world(t, config = {}) {
     };
   }
   return { directory, holds, calls, wire, control, options, prepare, reserveWire, legacyStart, row, compensating, cut, kill, reopen, wireEnds: wire.ends, evidenceOf,
-    get store() { return store; }, get admission() { return admission; }, get internals() { return internals; }, get db() { return internals.db; },
+    get store() { return store; }, get admission() { return admission; }, get capacity() { return capacity; }, get internals() { return internals; }, get db() { return internals.db; },
     get policy() { return options.policy ?? defaultPolicy; }, changes: () => internals.db.prepare('SELECT total_changes() AS n').get().n };
 }
 const reject = (promise, code, status) => assert.rejects(promise, { code, ...(status ? { status } : {}) });
@@ -293,7 +295,7 @@ test('admission-D2-refusal-table', async t => {
   const scenarios = [
     ['context_job_closed', 409, {}, async (w, p) => { await w.admission.begin(p.input); }, false],
     ['seller_not_ready', 503, {}, (w) => { w.control.ready = false; }, true],
-    ['seller_not_ready', 503, { capacity: { fitsNewPurchase: () => false, allocateWithin() {} } }, () => {}, true],
+    ['seller_not_ready', 503, { maxRecords: 67 }, () => {}, true],
     ['unpaid_start_limit', 429, { contextStartLimits: { maxStartsPerHour: 2, maxStartsPerBuyerPerHour: 5 } }, async (w) => { await w.admission.begin(w.prepare(0x22, OTHER).input); w.legacyStart(0x33, OTHER); }, true],
     ['buyer_unpaid_start_limit', 429, { contextStartLimits: { maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 2 } }, async (w) => { await w.admission.begin(w.prepare(0x22).input); w.legacyStart(0x33); }, true],
     ['context_challenge_attempt_invalid', 409, {}, (w, p) => { w.store.challenges.recordFailed(p.input.owner, p.input.nonce, 'validator_lost'); }, false],
@@ -339,13 +341,17 @@ test('admission-policy-append-lost-ack', async t => {
 });
 
 test('admission-D4-atomic-hook-cuts', async t => {
-  const order = [], capacity = { fitsNewPurchase: () => true, allocateWithin: purchase => { order.push('capacity'); assert.deepEqual(purchase, { jobId: purchase.jobId, buyer: BUYER, seller: SELLER, listingPin: PIN }); } };
-  const refused = world(t, { capacity }), p = refused.prepare(), db = refused.db;
+  // The purchase allocation is the first hook: it exists, with the exact parties, when the next hook runs, and rolls back with it.
+  const order = [], refused = world(t), p = refused.prepare(), db = refused.db;
   db.exec('CREATE TABLE test_acceptance (jobId TEXT PRIMARY KEY)');
-  refused.admission.addAcceptanceHook(input => { order.push('first'); db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId); });
+  refused.admission.addAcceptanceHook(input => {
+    const held = refused.capacity.allocationWithin(input.jobId);
+    order.push('first'); assert.deepEqual({ buyer: held.buyer, seller: held.seller, listingPin: held.listingPin }, { buyer: BUYER, seller: SELLER, listingPin: PIN });
+    db.prepare('INSERT INTO test_acceptance VALUES (?)').run(input.jobId);
+  });
   refused.admission.addAcceptanceHook(() => { order.push('second'); throw Object.assign(new Error('hook-full'), { code: 'peer_store_capacity', status: 503 }); });
   await reject(refused.admission.begin(p.input), 'peer_store_capacity', 503);
-  assert.deepEqual(order, ['capacity', 'first', 'second']); assert.equal(db.prepare('SELECT count(*) AS n FROM test_acceptance').get().n, 0);
+  assert.deepEqual(order, ['first', 'second']); assert.equal(refused.internals.transaction(() => refused.capacity.allocationWithin(p.input.jobId)), null); assert.equal(db.prepare('SELECT count(*) AS n FROM test_acceptance').get().n, 0);
   await drained(refused, p.input.jobId); refused.reopen(); assert.equal(refused.row(p.input.jobId).state, 'aborted'); assert.equal(refused.row(p.input.jobId).admittedAt, null);
   assert.equal(refused.store.challenges.retained(p.input.nonce).state, 'failed'); assert.equal(refused.holds.size, 0); assert.equal(refused.calls.effective, 1);
   assert.equal(refused.internals.admissionCounts().starts, 0);
@@ -790,7 +796,7 @@ test('P09b-T24 a definite failed bootstrap closes the job; a fresh Start on anot
   assert.equal(w.row(fresh.input.jobId).state, 'running'); assert.equal(w.row(old.input.jobId).state, 'aborted'); assert.equal(w.calls.wire, 1);
 });
 
-test('P09b-T30 with the shipped guard off, `begin` and `compensate` refuse before any write', async t => {
+test('P09b-T30 with the shipped guard off, `begin` and `compensate` refuse before any write', () => {
   const probe = fileURLToPath(new URL('./helpers/admission-guard-off-probe.mjs', import.meta.url));
   const kept = (process.env.NODE_OPTIONS ?? '').split(' ').filter(option => option !== '' && !option.includes('kit-guard-fixture.mjs')).join(' ');
   const child = spawnSync(process.execPath, [probe], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: kept } });

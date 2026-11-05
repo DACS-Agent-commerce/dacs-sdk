@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
-import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, generateCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, assertTp1Authority, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
@@ -26,7 +26,8 @@ import { TEST_CONNECTION, authorityReader, testNetwork } from './helpers/wire-au
 import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
-import { createSellerTransportClientAuth, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
+import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
+import { createSellerTransportClientAuth, createSellerTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 
 const HOST_URL = new URL('../src/host.mjs', import.meta.url);
 const PACKAGE_DIRECTORY = fileURLToPath(new URL('../', import.meta.url));
@@ -237,6 +238,28 @@ test('P10-T03 a restart reopens the same journal; a second run is refused on the
   assert.equal(statSync(f.path(JOURNAL_DIRECTORY)).ino, inode, 'the restart reopens the same directory');
   const another = { ...reservation, key: derive('key-2') };
   assert.equal((await rejection(Promise.resolve().then(() => reserveEffect(journalStore(f.journals[1]), another)))).code, 'seller_effect_pending', 'the reopened journal still holds the first attempt');
+});
+
+test('P11b2-T21 host start releases the open slots of a finished session once, starts with a maxRecords below what is already allotted, and refuses a zero one', async (t) => {
+  const f = await hostFixture(t);
+  await (await f.start()).close();
+  const finished = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }), live = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 2) });
+  const withCapacity = (work) => {
+    const store = createSellerTransportStore({ path: f.path(STORE_FILE) });
+    try { return work(createPurchaseCapacity({ store, now: () => NOW, sessionState: () => null }), sellerStoreInternals(store)); } finally { store.close(); }
+  };
+  withCapacity((capacity, { transaction }) => {
+    for (const id of [finished, live]) transaction(() => capacity.allocateWithin({ jobId: id, buyer: claim('buyer'), seller: claim('seller'), listingPin: { listingId: 'host-listing', version: 1, contentHash: derive('listing') } }));
+  });
+  const states = () => withCapacity((capacity) => Object.fromEntries(capacity.capacityReport().allocations.map((allocation) => [allocation.jobId, allocation.state])));
+  assert.deepEqual(states(), { [finished]: 'live', [live]: 'live' });
+  const contextSessionState = ({ jobId: id }) => (id === finished ? 'finalised' : null);
+  await (await f.start({ contextSessionState })).close();
+  assert.deepEqual(states(), { [finished]: 'released', [live]: 'live' });
+  await (await f.start({ contextSessionState, maxRecords: 40 })).close();
+  assert.deepEqual(states(), { [finished]: 'released', [live]: 'live' });
+  assert.ok(await rejection(f.start({ maxRecords: 0 })));
+  lockReleased(f);
 });
 
 test('P10-T04 a journal open failure closes the agent and store and reports the original cause', async (t) => {

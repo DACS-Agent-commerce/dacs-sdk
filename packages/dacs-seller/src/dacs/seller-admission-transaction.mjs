@@ -7,6 +7,7 @@ import { canonicalize, compositeVerificationAddress, isCanonicalClaimReference, 
 import { isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall } from './bounded-call.mjs';
+import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { SELLER_CONTEXT_PATH, SellerTransportError, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 
@@ -24,6 +25,8 @@ const PARTY_VET_NON_PASS = 'party_vet_non_pass';
 const OPEN_CLEANUP = `json_extract(record, '$.cleanup.releasePending') = 1 OR json_extract(record, '$.cleanup.holdCall') = 'pending'
   OR json_extract(record, '$.cleanup.cause') IS NOT NULL`;
 const HASH = /^[0-9a-f]{64}$/;
+// What each end of a start does to its allocation: `none` is a start aborted on proof of no effect (no completed context outcome).
+const ALLOCATION_CLEANUP = new Map([['success', 'context-slot'], ['vet-non-pass', 'all'], ['other', 'all'], ['none', 'all']]);
 
 const isHash = (value) => typeof value === 'string' && HASH.test(value);
 const isUint = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -66,8 +69,10 @@ function contextOutcomeClass(row, outcomeText) {
 /**
  * Creates the admission transaction on the shared store `createSellerTransportStore` returned, in its one SQLite transaction owner.
  * `policy` is `createSellerContextAdmission`'s `{ reserve, release }`; `completeWire(effect, outcome)` is synchronous and completes only
- * the wire effect handle it is given; `capacity` is null or `{ fitsNewPurchase, allocateWithin }`, whose allocation runs as the first
- * acceptance hook; `now` and `ready` are synchronous; `deadlines.policyMs` bounds the policy call.
+ * the wire effect handle it is given; `capacity` is the purchase capacity `createPurchaseCapacity` built on this same store (anything else
+ * is a TypeError): D2 checks that a whole purchase fits, its allocation runs as the first acceptance hook, and a settlement or an abort
+ * returns the allocation's slots in the same transaction (a validated context returns only its own); `now` and `ready` are synchronous;
+ * `deadlines.policyMs` bounds the policy call.
  * `inspectContextOutcome(jobId)` is the wire's synchronous, read-only operation view; `effectEvidence(row)` resolves one `{ address, kind, cause? }` per
  * Vet sink address (C3; only `no-intent` and `proven-unsigned` on both retained presenter addresses prove no effect).
  * `begin(request)` is D2-D4: it resolves `{ jobId, rev }` once the intent, the policy hold and the acceptance are durable. A D3 or D4 failure
@@ -84,17 +89,16 @@ function contextOutcomeClass(row, outcomeText) {
  * release, a pending policy call or a cleanup cause. `admissionRecord(jobId)` is the frozen read-only projection, or null.
  * Throws TypeError for an unusable option; operations reject with a SellerTransportError (guard errors keep their own class) that keeps its cause.
  */
-export function createContextAdmissionTransaction({ store, policy, capacity = null, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
+export function createContextAdmissionTransaction({ store, policy, capacity, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
   const { db, transaction, challenges, admissionCounts, limits } = sellerStoreInternals(store);
   if (![policy?.reserve, policy?.release, effectEvidence, inspectContextOutcome, completeWire, now, ready].every((port) => typeof port === 'function')
-    || !Number.isSafeInteger(deadlines?.policyMs) || deadlines.policyMs <= 0
-    || (capacity !== null && !['fitsNewPurchase', 'allocateWithin'].every((name) => typeof capacity?.[name] === 'function'))) {
-    throw new TypeError('admission needs the store, policy, evidence, completion, clock, readiness and deadline ports');
+    || !Number.isSafeInteger(deadlines?.policyMs) || deadlines.policyMs <= 0 || !ownsPurchaseCapacity(store, capacity)) {
+    throw new TypeError('admission needs the store, its purchase capacity, policy, evidence, completion, clock, readiness and deadline ports');
   }
   // The begins this process is running, by job: registered when D2 commits and removed by that begin alone, once its D3, D4 and compensation end.
   const mutexes = new Map(), leases = new WeakMap(), acceptanceHooks = [], liveBegins = new Map();
   let hooksSealed = false;
-  if (capacity !== null) acceptanceHooks.push(({ jobId, buyer, seller, listingPin }) => { capacity.allocateWithin({ jobId, buyer, seller, listingPin }); });
+  acceptanceHooks.push(({ jobId, buyer, seller, listingPin }) => { capacity.allocateWithin({ jobId, buyer, seller, listingPin }); });
 
   const read = (jobId) => {
     const found = db.prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId);
@@ -153,7 +157,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     if (counts.contextRecords - Number(ownRow) >= limits.maxContextRecords) fail('peer_context_capacity', 503);
     if (counts.starts >= limits.maxStartsPerHour) fail('unpaid_start_limit', 429);
     if (counts.buyerStarts(buyer) >= limits.maxStartsPerBuyerPerHour) fail('buyer_unpaid_start_limit', 429);
-    if (capacity !== null && capacity.fitsNewPurchase() !== true) fail('seller_not_ready', 503);
+    if (!capacity.fitsNewPurchase()) fail('seller_not_ready', 503);
   }
   function requireOwner({ nonce, jobId, buyer, presentationHash, owner }) {
     const challenge = challenges.retained(nonce);
@@ -384,9 +388,26 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     else await releaseHold(settled);
   }
 
+  // The allocation follows the row's end in the same transaction (K5 Returns). A validated `present` context returns only its own slot, so
+  // the purchase's later stages still spend theirs; every other end releases all open slots. A class this table lacks releases nothing and
+  // refuses, so the settlement rolls back and the row keeps its cause.
+  function cleanAllocationWithin(row) {
+    const cleanup = ALLOCATION_CLEANUP.get(row.state === 'aborted' ? 'none' : row.contextOutcome);
+    if (cleanup === undefined) fail('context_outcome_unavailable', 503);
+    const allocation = capacity.allocationWithin(row.jobId);
+    if (allocation?.state !== 'live') return;
+    const held = { allocationId: allocation.allocationId, allocationRev: allocation.rev };
+    if (cleanup === 'all') capacity.releaseAllWithin(held); else capacity.returnRouteSlotWithin({ ...held, route: SELLER_CONTEXT_PATH });
+  }
+  // A transition to a closed state, with the allocation's cleanup in the same transaction.
+  function closeWithin(row, patch) {
+    const closed = update(row, patch);
+    cleanAllocationWithin(closed);
+    return closed;
+  }
   // D8 from `running` or `compensating`: the row settles with the context outcome's class and its hold is released afterwards.
   function settleWithin(row, contextOutcome) {
-    return transaction(() => update(row, { state: 'settled', contextOutcome, cleanup: { ...row.cleanup, releasePending: true, cause: null } }));
+    return transaction(() => closeWithin(row, { state: 'settled', contextOutcome, cleanup: { ...row.cleanup, releasePending: true, cause: null } }));
   }
   // The context outcome comes first. It is the class of a completed outcome under this row's own binding, or null while there is none.
   // An inspection that fails, or that reports another binding, throws and settles nothing.
@@ -427,7 +448,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       if (contextOutcome !== null) return settleWithin(row, contextOutcome);
       const evidence = await noEffectEvidence(row);
       const proven = transaction(() => update(row, { compensation: { ...row.compensation, proof: 'no-effect', evidence } }));
-      return transaction(() => update(proven, { state: 'aborted', cleanup: { ...proven.cleanup, releasePending: true, cause: null } }));
+      return transaction(() => closeWithin(proven, { state: 'aborted', cleanup: { ...proven.cleanup, releasePending: true, cause: null } }));
     } catch (cause) { return noteCause(row, cause); }
   }
   // Sweep step 4: a running row whose journal holds a completed outcome settles; otherwise it stays as it was.
