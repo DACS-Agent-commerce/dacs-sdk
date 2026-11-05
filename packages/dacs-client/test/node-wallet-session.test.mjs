@@ -156,3 +156,15 @@ test('construction snapshots admission and the consumed key before its first awa
  assert.equal((await wallet.request({method:'sign',params:['TEST-snapshot']})).success,true);
  assert.ok(replacement.some(value=>value!==0),'the replacement buffer was not consumed');replacement.fill(0);
 });
+
+test("the delta map records the transport owner's port source and every edited line of sdk-provider.mjs, util/http.mjs and network-binding.mjs", async () => {
+const { ledger, locations } = await import('../scripts/delta-map.mjs');
+const map = readFileSync(new URL('../DELTA-MAP.md', import.meta.url), 'utf8');
+assert.match(map, /frontend `d6f0e16` `http-mcp\/src\/devnet-demo\/operator-network\.mjs:197-224`/);
+const record = ledger().changes.find(change => change.subject.startsWith('delta(client): WF P21a1bb '));
+for (const name of ['public/portal/embedded-wallet/sdk-provider.mjs', 'util/http.mjs', 'dacs/network-binding.mjs']) {
+  const path = `packages/dacs-client/src/${name}`;
+  assert.ok(record.files.some(file => file.path === path && file.before !== file.after), `${path} has a P21a1bb delta record`);
+  assert.ok(map.includes(locations(path)), `${path}: the map lists every edited line`);
+}
+});

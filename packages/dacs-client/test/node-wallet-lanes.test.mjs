@@ -6,6 +6,7 @@ import { runFreshChild } from './helpers/fresh-node-child.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
 import { api, world, mnemonicBytes, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
+import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 
 test("an accepted native send is broadcast once; its lane stays readback-only across a restart of the composition", async t => {
 const w=await world(t); const sent=await w.send(); assert.equal(sent.success,true,JSON.stringify(sent)); assert.equal(w.node.broadcasts.length,1); await w.restart(); assert.equal(w.node.broadcasts.length,1); const again=await w.send(); assert.equal(again.success,false); assert.equal(w.node.broadcasts.length,1);
@@ -107,4 +108,19 @@ test('acknowledgement persistence or lease release failure never repeats a nativ
   await w.restart();assert.equal(w.node.broadcasts.length,1);await w.send();assert.equal(w.node.broadcasts.length,1);
   assert.deepEqual((await w.lane()).signedTransaction,before.signedTransaction);
  }
+});
+
+test("a lost confirmation answer is never broadcast; its internal cause records the confirmation as dispatched without acknowledgement", async t => {
+const w=await world(t); w.node.mode='confirm-lost'; const result=await w.send();
+assert.equal(result.error.code,'upstream_unavailable',JSON.stringify(result)); assert.equal(w.node.confirms.length,1); assert.equal(w.node.broadcasts.length,0);
+const chain=causeChain(w.session.internalCauseOf(result)); const failure=chain.find(error=>error.code==='node_wallet_rpc_failed');
+assert.equal(failure?.stage,'dispatched_no_ack'); assert.ok(chain.some(error=>error.message==='TEST-confirm-lost'));
+});
+
+test('restart after each confirmation classification preserves refusal versus unknown', async t => {
+for(const [mode,code] of [['confirm-refuse','confirm_rejected'],['confirm-lost','upstream_unavailable']]) {
+  const w=await world(t); w.node.mode=mode; const first=await w.send(); assert.equal(first.error.code,code,JSON.stringify(first));
+  await w.restart(); assert.equal(w.node.broadcasts.length,0,'a restart sends nothing by itself');
+  const again=await w.send(); assert.equal(again.error.code,code,'the class is recomputed from the node answer, never advanced to a send'); assert.equal(w.node.broadcasts.length,0);
+}
 });
