@@ -26,17 +26,22 @@ function checkCallbackHistory(dir) {
   assert.match(notes, /SQL callbacks remain allowed inside a leased transaction/);
   const lease = changes.find(change => change.subject === replacement);
   assert.ok(lease, 'the write-lease implementation must retain its own delta record');
-  // The committed tree keeps the write-lease source and test blobs; the two
-  // retired commits contribute historical evidence, not runtime code.
+  // The committed tree holds each write-lease path as its latest record leaves
+  // it (a later record may delete the path); the two retired commits
+  // contribute historical evidence, not runtime code.
   for (const file of lease.files) {
-    const committed = execFileSync('git', ['-C', dir, 'rev-parse', `HEAD:${file.path}`], { encoding: 'utf8' }).trim();
-    assert.equal(committed, file.after, `${file.path} must retain the write-lease implementation`);
+    const latest = changes.findLast(change => change.files.some(entry => entry.path === file.path))
+      .files.find(entry => entry.path === file.path);
+    const lookup = spawnSync('git', ['-C', dir, 'rev-parse', '--verify', '--quiet', `HEAD:${file.path}`], { encoding: 'utf8' });
+    const committed = lookup.status === 0 ? lookup.stdout.trim() : null;
+    assert.equal(committed, latest.after,
+      `${file.path} must ${latest.after === null ? 'be absent, as its latest delta record removes it' : 'match its latest delta record'}`);
     for (const subject of retired) {
       const record = changes.find(change => change.subject === subject);
       assert.ok(record, `the superseded commit must remain recorded: ${subject}`);
       const retiredFile = record.files.find(entry => entry.path === file.path);
       assert.ok(retiredFile, `${subject} must record ${file.path}`);
-      assert.notEqual(retiredFile.after, committed);
+      assert.notEqual(retiredFile.after, file.after, `${subject} must differ from the write-lease blob`);
     }
   }
 }
@@ -55,6 +60,28 @@ test('SQLite split history distinguishes the lease from the later transaction ad
   assert.match(notes, /PR 03 supplies only the connection-local transaction-liveness lease/);
   assert.match(notes, /PR 03b supplies the statement boundary; PR 03c supplies the concrete transaction adapter/);
   assert.match(notes, /Historical adapter and store-test blobs record earlier commits, not the net tree of PR 03/);
+});
+function commitInScratch(dir, subject) {
+  const git = (...args) => execFileSync('git', ['-C', dir, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8' });
+  git('add', '-A');
+  git('commit', '-qm', subject);
+}
+test('callback history refuses a write-lease file restored after its removal record', t => {
+  const dir = scratch(t);
+  const { changes } = JSON.parse(readFileSync(join(dir, 'packages/dacs-client/DELTA-LEDGER.json'), 'utf8'));
+  const lease = changes.find(change => change.subject === 'fix(client): D11 enforce the write lease in SQLite instead of patching statements');
+  const source = lease.files.find(file => file.path.endsWith('src/util/guarded-sqlite.mjs'));
+  const restored = execFileSync('git', ['-C', dir, 'cat-file', 'blob', source.after]);
+  writeFileSync(join(dir, source.path), restored);
+  commitInScratch(dir, 'test: restore the removed guarded SQLite source');
+  assert.throws(() => checkCallbackHistory(dir), /must be absent, as its latest delta record removes it/);
+});
+test('callback history refuses a ledger without the removal record', t => {
+  const dir = scratch(t), file = join(dir, 'packages/dacs-client/DELTA-LEDGER.json'), data = JSON.parse(readFileSync(file, 'utf8'));
+  data.changes = data.changes.filter(change => change.subject !== 'fix(client): D11 remove the unused guarded SQLite lease and pack no client files');
+  writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  commitInScratch(dir, 'test: drop the removal record');
+  assert.throws(() => checkCallbackHistory(dir), /must match its latest delta record/);
 });
 test('the publication inventory cannot omit an outside-only commit or name an absent hash', t => {
   for (const edit of [
