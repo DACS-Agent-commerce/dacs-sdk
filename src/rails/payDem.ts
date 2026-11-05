@@ -13,7 +13,6 @@ import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
-  assertRecordedForRecovery,
   createIdempotencyStore,
   registerSettlementBridge,
   settlementKey,
@@ -2208,11 +2207,11 @@ export function payDemSettle(
     : stableMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
         store, "readOutcome", "pay-dem settlement store readOutcome",
       );
-  const hasRecordProperty = stableDataProperty(store, "hasRecord", "pay-dem settlement store hasRecord");
-  const storeHasRecord = !hasRecordProperty.found || hasRecordProperty.value === undefined
+  const recoverProperty = stableDataProperty(store, "recover", "pay-dem settlement store recover");
+  const storeRecover = !recoverProperty.found || recoverProperty.value === undefined
     ? undefined
-    : stableMethod<NonNullable<SettlementIdempotencyStore["hasRecord"]>>(
-        store, "hasRecord", "pay-dem settlement store hasRecord",
+    : stableMethod<NonNullable<SettlementIdempotencyStore["recover"]>>(
+        store, "recover", "pay-dem settlement store recover",
       );
   const configuredRecipient = optionalStableString(
     cfg,
@@ -2505,16 +2504,12 @@ export function payDemSettle(
             return captured;
           };
       // A recovery request never takes a fresh claim: with no retained hash it
-      // proceeds only when the store already holds a record for this key.
-      if (req.recoveryOnly === true) {
-        await assertRecordedForRecovery(
-          { readOutcome: storeReadOutcome, hasRecord: storeHasRecord },
-          key,
-          binding,
-          "pay-dem",
-        );
+      // settles only through the store's `recover`, never through `once`.
+      const storeSettle = req.recoveryOnly === true ? storeRecover : storeOnce;
+      if (storeSettle === undefined) {
+        throw new DacsError("pay-dem recovery requires a store with recover(); refusing a fresh payment");
       }
-      const result = await storeOnce(
+      const result = await storeSettle(
         key,
         binding,
         submit,
