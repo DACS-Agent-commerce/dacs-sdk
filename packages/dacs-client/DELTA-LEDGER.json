@@ -6101,6 +6101,37 @@
           "after": "d6407d953cdd85617b4bcce9c409d3d18beed67c"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13b1a verify seller answers on their exact bytes and classify them by K5's table",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "add72c0add7c8188d6cc86e7476207a4882c93af",
+          "after": "b88097dc5621acb7affa393aade0133f1c873923"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": null,
+          "after": "9e086f4add1dd0f39d97a2f406e76456a0976483"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "dd10aa2b3ebe253b092d9543850079587b5bca27",
+          "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
+        },
+        {
+          "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+          "before": "aa0be667f8a71c8b7a687588757106bef3ca3cd8",
+          "after": "6ef2bd3df352fcca8200df647c7d0345cd5eac8f"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": null,
+          "after": "3aeea852dffad587c333c12b28aa112733a7e853"
+        }
+      ]
     }
   ]
 }

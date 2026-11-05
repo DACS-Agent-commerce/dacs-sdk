@@ -56,7 +56,7 @@ export { OutboundError } from './util/http.mjs';
 export { OperationError, NotWiredError } from './client-errors.mjs';
 /** StaleProtocolCheck(operation) returns an Error for a protocol decision overtaken by retained state; construction performs no writes. */
 export { StaleProtocolCheck } from './dacs/protocol-purchases.mjs';
-/** SellerRefusedError(code,message,status), SellerUnavailableError(message,causeCode="other") and SellerTlsUnusableError(message) return transport Errors preserving refusal versus unavailable causes; construction performs no requests. */
+/** SellerRefusedError(code,message,status,answerClass="definite"), SellerUnavailableError(message,causeCode="other",{answerClass="unknown",code}) and SellerTlsUnusableError(message) return transport Errors preserving refusal versus unavailable causes and the class of the seller's answer; construction performs no requests. */
 export { SellerRefusedError, SellerUnavailableError, SellerTlsUnusableError } from './dacs/seller-http.mjs';
 /** DemosSr2BridgeError(code,message) returns an Error for refused wallet bridge input or state; construction neither signs nor submits. */
 export { DemosSr2BridgeError } from './dacs/demos-sr2-wallet-bridge.mjs';
