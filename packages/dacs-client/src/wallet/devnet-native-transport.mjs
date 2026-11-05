@@ -456,9 +456,33 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (r) { sharedAuth-=r.used.size; r.reserved=true; }
     else authRecords.set(identity,{ used:new Set(),floor:-Infinity,reserved:true });
   };
-  async function fenced(work, address) {
+  // Waiting for a lane lock or a connection fence runs no work. When `signal`
+  // aborts first the wait is given up with the abort reason; a grant that
+  // arrives later is handed back unused. Once granted, work is never abandoned.
+  function lockUnlessAborted(signal, key, work) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const giveUp = () => reject(signal.reason);
+      signal.addEventListener('abort', giveUp, { once: true });
+      journal.withWalletLock(key, () => { signal.removeEventListener('abort', giveUp); signal.throwIfAborted(); return work(); }).then(resolve, reject);
+    });
+  }
+  function acquireFenceUnlessAborted(signal, address) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const giveUp = () => reject(signal.reason);
+      signal.addEventListener('abort', giveUp, { once: true });
+      Promise.resolve(transportOwner.acquireConnectionFence({ address })).then(grant => {
+        signal.removeEventListener('abort', giveUp);
+        if (!signal.aborted) return resolve(grant);
+        // The caller already has the abort reason; a failed hand-back leaves nothing to report to.
+        void Promise.resolve().then(() => grant?.release?.()).catch(() => {});
+      }, error => { signal.removeEventListener('abort', giveUp); reject(error); });
+    });
+  }
+  async function fenced(work, address, signal) {
     await releaseExpiredLeases();
-    const f = await transportOwner.acquireConnectionFence({ address });
+    const f = await (signal ? acquireFenceUnlessAborted(signal, address) : transportOwner.acquireConnectionFence({ address }));
     if (!f || typeof f.release !== 'function') fail('invalid_transport_owner','actual connection fence acquisition failed');
     try {
       if (!sameContext(await context(),f.context)) fail('connection_changed','the acquired connection differs from actual egress');
@@ -929,7 +953,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // failure, or the abort reason (caller, close(), or OutboundError 'timeout').
   // Abort contract: fetchImpl and transportOwner honour AbortSignal and settle.
   // An abort stops new steps and aborts requests; it abandons no running work,
-  // and close() aborts and then waits for it.
+  // and close() aborts and then waits for it. A wait for the lane lock or the
+  // connection fence runs no work, so an abort or the deadline ends it at once;
+  // a lock or fence granted afterwards is released without any read.
   async function observePassiveTransfer(hash, options={}) {
     if(typeof hash!=='string' || !HASH.test(hash)) fail('invalid_params','a canonical native transaction hash is required');
     const stop=AbortSignal.any([closing.signal,...(options.signal?[options.signal]:[])]);
@@ -946,7 +972,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     }); reads.push(answer); return answer; };
     const client={ getTransactionStatus:(h)=>read('getTransactionStatus',{hash:h}), getBlockByNumber:(n)=>read('getBlockByNumber',{blockNumber:n}),
       getTxByHash:async(h)=>{ const tx=await read('getTxByHash',{hash:h}); body=clone(tx); return tx; } };
-    const result=await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>{ signal.throwIfAborted(); return fenced(async()=>{
+    const result=await lockUnlessAborted(signal,'devnet/source-read/'+declaration.bindingId,()=>fenced(async()=>{
       signal.throwIfAborted();
       const c=await context(), binder=makeBinder(false,signal);
       await (retained ? binder.recover(issued.networkBinding) : binder.bind());
@@ -955,7 +981,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       signal.throwIfAborted();
       if(!sameContext(await context(),c)) fail('connection_changed','the connection changed during passive observation');
       return observation;
-    }); });
+    },undefined,signal));
     // The core converts read errors to observations; keep this boundary's refusal after draining reads.
     if(nestedEnvelope) refuseEnvelope();
     if(result.status!=='included') return result;
