@@ -1759,6 +1759,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/DELTA-NOTES.md:1` |
 | fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 drop the removed guarded SQLite lease from the boundary notes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| 4014243ecb1a6a4bf226e86ca5d5ab40b86e9e39 | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 record the callback history check change | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the callback history check change | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the callback history check change | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the callback history check change | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
