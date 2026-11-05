@@ -217,7 +217,8 @@ out.refusedConfigurations = {
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
   otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
   scriptedJournal: await refusal({ signer, listing, dataDirectory, ...capabilities(), reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
-  scriptedAgent: await agentRefusal({ signer, listing, ...capabilities(), nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
+  // No sessionAdmission: an agent given one must also be given the challenge ledger, and that check comes first.
+  scriptedAgent: await agentRefusal({ signer, listing, ...withoutAdmission, nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
     reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
 };
 
