@@ -6101,6 +6101,34 @@
           "after": "5cfbfdb37ddd87d02e63858ceb59a5cbedaef481"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): an unproven verify_deal mismatch does not pin its hash when re-reported",
+      "sha": "188af4dc40684000f808d1dd5c92e51b9af892ab",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "5cfbfdb37ddd87d02e63858ceb59a5cbedaef481",
+          "after": "93ec1d4ba6bf5285c5da423817b610e2f36b1647"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "5f1ae4f5f43d9db66de72fffbf10cd6087610f51",
+          "after": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the unproven mismatch re-report fix in the delta records and package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "93ec1d4ba6bf5285c5da423817b610e2f36b1647",
+          "after": "93ec1d4ba6bf5285c5da423817b610e2f36b1647"
+        }
+      ]
     }
   ]
 }
