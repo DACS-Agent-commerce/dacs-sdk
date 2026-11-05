@@ -78,6 +78,29 @@ test('failed reservation acknowledgement holds without ever calling the signer',
  const f=await sessionFixture(t);interruptSave(f,next=>next?.presentation?.signing?.state==='pending',{after:true});
  await assert.rejects(f.run(),/interrupted save/);await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,0);
 });
+// Runs the callback once, right after the pending reservation is committed and
+// before the signer: the moment a refused check leaves a reservation no signer used.
+function afterReservation(f,callback){
+ const store=f.config.store;let done=false;
+ f.config.store={...store,update:async(key,change)=>{
+  const result=await store.update(key,change);
+  if(!done&&result?.presentation?.signing?.state==='pending'){done=true;callback();}
+  return result;
+ }};
+}
+for(const refusal of ['purchase closed','authorization unreadable'])test(`${refusal} after the reservation and before the signer puts the bytes back to prepared`,async t=>{
+ const f=await sessionFixture(t);let closed=false,unreadable=false;const read=f.config.store.read;
+ f.job.open=()=>!closed;
+ f.config.store={...f.config.store,read:async key=>{if(unreadable)throw new Error('TEST authorization read failed');return read(key);}};
+ afterReservation(f,()=>{if(refusal==='purchase closed')closed=true;else unreadable=true;});
+ await assert.rejects(f.run(),error=>refusal==='purchase closed'?error.code==='not-pending':/authorization read failed/.test(error.message));
+ assert.equal(f.controls.signs,0);const held=(await f.row()).presentation.signing;
+ assert.deepEqual(held,{state:'prepared',signedBytes:held.signedBytes});
+ closed=false;unreadable=false;
+ const bundle=await f.run();assert.equal(f.controls.signs,1);assert.equal(f.controls.presentationSigns,1);
+ assert.equal((await f.row()).presentation.signing.state,'complete');assert.equal(f.issued.size,1);
+ assert.equal(bundle.presentedBy,seller.claim);
+});
 test('a failed reservation write resumes the prepared exact bytes',async t=>{
  const f=await sessionFixture(t);interruptSave(f,next=>next?.presentation?.signing?.state==='pending');
  await assert.rejects(f.run(),/interrupted save/);const before=(await f.row()).presentation;
@@ -218,7 +241,7 @@ test('expired unknown signatures keep their reservation without requesting anoth
  f.config.now=()=>NOW+60001;delete f.config.wallet.reconcilePresentationSignature;
  await assert.rejects(f.run(),indeterminate);assert.equal(f.controls.signs,1);assert.equal(f.issued.size,1);
 });
-test('a challenge expiring during the pending reservation is never signed or reserved again',async t=>{
+test('a challenge expiring during the pending reservation is never signed; the reservation is released and a fresh challenge signs once',async t=>{
  const f=await sessionFixture(t),store=f.config.store;let at=NOW;
  f.config.now=()=>at;
  f.config.store={...store,update:async(key,change)=>{
@@ -228,8 +251,9 @@ test('a challenge expiring during the pending reservation is never signed or res
  }};
  await assert.rejects(f.run(),error=>error.code==='seller_challenge_expired');
  const kept=(await f.row()).presentation;
- assert.equal(kept.signing.state,'pending');assert.equal(f.controls.signs,0);
- await assert.rejects(f.run(),indeterminate);
- assert.deepEqual((await f.row()).presentation,kept);
- assert.equal(f.controls.signs,0);assert.equal(f.issued.size,1);
+ assert.deepEqual(kept.signing,{state:'prepared',signedBytes:kept.signing.signedBytes});assert.equal(f.controls.signs,0);
+ f.config.store=store;
+ const bundle=await f.run();
+ assert.equal(f.controls.signs,1);assert.equal(f.controls.presentationSigns,1);assert.equal(f.issued.size,2);
+ assert.equal((await f.row()).presentation.signing.state,'complete');assert.equal(bundle.presentedBy,seller.claim);
 });
