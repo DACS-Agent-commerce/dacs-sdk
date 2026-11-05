@@ -153,6 +153,63 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     });
   });
 
+  // #574: pin the "demos" network default. With no network on the params and
+  // no default argument, the result chainId and the recovery-context check
+  // both use "demos".
+  test.each([
+    ["omitted", {}],
+    ["undefined", { network: undefined }],
+  ])(
+    "defaults the network to demos when it is %s",
+    async (_label, networkOption) => {
+      const client = fakeClient();
+      const res = await payDemSettleCore(
+        { recipient: RECIPIENT, amount: "1500000000", ...networkOption },
+        client,
+      );
+      expect(res.ok).toBe(true);
+      expect(res.chainId).toBe("demos");
+      expect(client.sent).toEqual({ to: RECIPIENT, amountOs: 1_500_000_000n });
+    },
+  );
+
+  test("defaults the network to demos when an effect fence takes the third argument", async () => {
+    const client = fakeClient();
+    const res = await payDemSettleCore(
+      { recipient: RECIPIENT, amount: "1500000000" },
+      client,
+      {
+        owner: "worker",
+        generation: 1,
+        settlementKey: "demos-native:DEM:job:0",
+        bindingHash: "a".repeat(64),
+        async assertCurrent() {},
+      },
+    );
+    expect(res.chainId).toBe("demos");
+  });
+
+  test("checks a recovery context against the default demos network", async () => {
+    const accepted = fakeClient();
+    const context = recovery({ network: "demos" });
+    await expect(payDemSettleCore(
+      { recipient: RECIPIENT, amount: "1500000000", recovery: context },
+      accepted,
+    )).resolves.toMatchObject({ ok: true, chainId: "demos" });
+    expect(accepted.sent?.recovery).toEqual(context);
+
+    const refused = fakeClient();
+    await expect(payDemSettleCore(
+      {
+        recipient: RECIPIENT,
+        amount: "1500000000",
+        recovery: recovery({ network: "demos:testnet" }),
+      },
+      refused,
+    )).rejects.toThrow(/does not bind the exact payer, payee, network, and OS amount/);
+    expect(refused.sent).toBeUndefined();
+  });
+
   test.each([
     ["a null context", null, /recovery context must be stable data/],
     ["an array context", [], /recovery context must be stable data/],
