@@ -58,9 +58,11 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
     checkBuyerWindowWithin(payload.buyer, at);
-    const fresh = !store.hasJobWithin(payload.jobId);
+    // Three separate questions: is there a job row to compare the tuple with (fresh: no), does the job already hold
+    // a job slot (a context admission alone does), and, below, does it hold a context record.
+    const fresh = !store.hasJobRowWithin(payload.jobId);
     if (newJob !== undefined && newJob !== fresh) fail('wire_input_invalid', 500);
-    if (fresh && store.jobCountWithin() >= limits.maxJobs) fail('peer_job_capacity', 503);
+    if (!store.hasJobWithin(payload.jobId) && store.jobCountWithin() >= limits.maxJobs) fail('peer_job_capacity', 503);
     if (contextStart && !store.hasContextRecordWithin(payload.jobId)) checkContextRecordsWithin();
     checkPurchaseTupleWithin({ payload, keepProfile, fresh });
     const capacity = capacityWithin(input, at, key);
@@ -110,7 +112,8 @@ export function createReservationAccounting({ store, now, limits, contextRecords
      * step 4 applies to it whenever the job has no context record yet.
      * Throws before any row on an absent keepProfile, an unsafe clock, a full buyer window, job or context
      * capacity, a tuple mismatch, a replayed nonce key, or a refusal from checkCapacityWithin.
-     * newJob, when given, must equal the store's own view of whether the job is new (else wire_input_invalid).
+     * newJob, when given, must equal the store's own view of whether the job is new, that is, has no job row
+     * (else wire_input_invalid); a job whose only record is a context admission is new and holds its slot already.
      * checkCapacityWithin is step 5: synchronous, run inside the transaction, returning {class, allocationId};
      * its SQL writes roll back with the rest. Without it every row is general capacity.
      */
