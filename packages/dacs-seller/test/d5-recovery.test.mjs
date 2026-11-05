@@ -24,7 +24,7 @@ test('R1 only the exact admitted request extends proposal time, and the Agreemen
  assert.match(proposalTimeProblem({generatedAt:T,observedAt:T+1200000,deadlineSecAfterCommit,admitted:true}),/deadline/);
 });
 
-async function restartFixture(t){
+async function restartFixture(t,vetMode){
  const w=await world(t),body=JSON.parse((await w.wire()).text),directory=await mkdtemp(join(tmpdir(),'TEST-context-restart-'));t.after(()=>rm(directory,{recursive:true,force:true}));
  const {testWallet}=await import('./helpers/protocol-fixture.mjs');const {privateKeyFromSeed}=await import('@kynesyslabs/dacs');const {fixtureListing}=await import('./fixtures/listings.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');
  const signer=testWallet(17),buyer=testWallet(12),listing=fixtureListing(signer,{now:T}),pin=listingPin(listing);
@@ -35,7 +35,7 @@ async function restartFixture(t){
  body.scope.buyerBundleHash=identityBundleHash(body.buyerIdentityBundle);body.buyerIdentityBundle.presentation.signatures[0].signature=buyer.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+body.scope.buyerBundleHash)).toString('base64url');
  const text=JSON.stringify(body),client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:signer.claim,resolveJob:()=>({listingPin:pin,agreementHash:sellerContextScopeHash(body.scope)}),now:()=>T}),header=(await client.request(SELLER_CONTEXT_PATH,body,text)).header;
  const key=(wallet,tag)=>({claim:wallet.claim,privateKey:privateKeyFromSeed(new Uint8Array(32).fill(tag)).export({format:'pem',type:'pkcs8'})});
- await writeFile(join(directory,'config.json'),JSON.stringify({time:T,buyer:key(buyer,12),seller:key(signer,17),listing,pin,input:{text,header}}),{mode:0o600});
+ await writeFile(join(directory,'config.json'),JSON.stringify({vetMode,time:T,buyer:key(buyer,12),seller:key(signer,17),listing,pin,input:{text,header}}),{mode:0o600});
  const run=phase=>{const result=spawnSync(process.execPath,[new URL('./helpers/d5-restart-process.mjs',import.meta.url).pathname,directory,phase],{encoding:'utf8',timeout:30000});assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);};
  return{run,body};
 }
@@ -170,4 +170,33 @@ test('context client keeps sending the saved bytes after an uncertain send and r
  assert.equal((await client.resolveBuyer({scope: reversed, buyerIdentityBundle: body.buyerIdentityBundle}, {operation})).disposition, 'indeterminate');
  assert.equal(sent.length, 2); assert.equal(sent[0], sent[1]);
  assert.deepEqual(hashes, [sellerContextScopeHash(body.scope), sellerContextScopeHash(body.scope)]);
+});
+
+const W='tp1-g3-orchestrator';
+test('R2w two processes resume one unsigned W seller CREATE without a second signed record',async t=>{
+ const {run}=await restartFixture(t,W),cut=run('cut');assert.equal(cut.status,503);assert.equal(cut.signatures.length,1);
+ const unknown=run('unknown');assert.equal(unknown.status,503);assert.equal(unknown.holds.length,0);assert.deepEqual(unknown.signatures,cut.signatures);
+ const resumed=run('resume');assert.equal(resumed.status,200);assert.equal(resumed.signatures.length,2);assert.equal(resumed.creates.length,2);assert.equal(resumed.holds[0].writes,2);
+});
+test('R3w lost HTTP finish after both W Vet writes recovers read-only in a fresh process',async t=>{
+ const {run}=await restartFixture(t,W),lost=run('lost');assert.equal(lost.status,503);assert.equal(lost.signatures.length,2);
+ const out=run('resume');assert.equal(out.status,200);assert.deepEqual(out.signatures,lost.signatures);assert.deepEqual(out.creates,lost.creates);assert.equal(out.holds.length,0);
+});
+test('R4w with the seller record finalized and the buyer cut at each point, a fresh-process route resumes only the buyer write (holds[0].writes 1) and completes with two CVR signatures and two CREATEs in total',async t=>{
+ for(const phase of ['between','buyer-signature','buyer-complete','buyer-publish'])await t.test(phase,async t=>{
+  const {run}=await restartFixture(t,W),cut=run(phase);assert.equal(cut.creates.length,1);
+  const out=run('resume');assert.equal(out.status,200,JSON.stringify(out));assert.equal(out.holds[0].writes,1);assert.equal(out.signatures.length,2);assert.equal(out.creates.length,2);
+ });
+});
+test("R5w after a cut before the seller's first CREATE intent, a fresh-process route resumes both writes (holds[0].writes 2) and completes with two CVR signatures and two CREATEs in total, the saved seller signature reused. Controls: a fixture answering plain absence to the proof request gets no resume, and a seller step holding bytes with no signature resumes but signs nothing and stays indeterminate",async t=>{
+ for(const phase of ['seller-signature','seller-complete','seller-publish'])await t.test(phase,async t=>{
+  const {run}=await restartFixture(t,W);run(phase);
+  const out=run('resume');assert.equal(out.status,200,JSON.stringify(out));assert.equal(out.holds[0].writes,2);assert.equal(out.signatures.length,2);assert.equal(out.creates.length,2);
+ });
+ await t.test('plain absence to the proof request gets no resume',async t=>{
+  const {run}=await restartFixture(t,W),signed=run('seller-signature'),plain=run('plain');assert.equal(plain.status,503);assert.equal(plain.holds.length,0);assert.deepEqual(plain.signatures,signed.signatures);
+ });
+ await t.test('a seller step holding bytes with no signature resumes but signs nothing',async t=>{
+  const {run}=await restartFixture(t,W),bytes=run('seller-bytes'),held=run('resume');assert.equal(held.status,503);assert.equal(held.signatures.length,0);assert.deepEqual(held.signatures,bytes.signatures);assert.equal(held.creates.length,0);
+ });
 });

@@ -1,9 +1,13 @@
 // Explicit process-local capability for fixed-price DEM context resolution.
 // Present binds Agreement input and proves SDK derivability. Record signatures,
 // requirement provenance, receipts and delivery readiness belong to admission.
-import { canonicalize, compositeVerificationAddress, deriveFixedPriceAgreement, isAttestationRef, requireCanonicalJobId, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
+// The capability is built in one Vet mode and keeps it: the default counterparty
+// mode (the buyer verifies the seller's record; a seller presentation of the
+// Listing bundle is accepted) or the TP-1 G3 orchestrator mode "W" (the seller
+// verifies both records; only the exact Listing seller bundle is accepted).
+import { canonicalize, compositeVerificationAddress, deriveFixedPriceAgreement, isAttestationRef, requireCanonicalJobId, sameCanonicalClaimIdentity, sellerFulfilmentVetModeOf } from '@kynesyslabs/dacs';
 import { agreementInput, listingPin } from './purchase-protocol.mjs';
-import { sellerSessionPresentationProblem } from './session-admission.mjs';
+import { isOrchestratorVetMode, sellerBundleProblem, sellerRecordVerifier } from './session-admission.mjs';
 import { cutText } from '../util/text.mjs';
 import { resolveWithDeadline, boundedResolutionValue } from '../util/bounded-resolution.mjs';
 
@@ -19,13 +23,16 @@ const held = (disposition, reason) => ({ disposition: HELD.includes(disposition)
 /** Whether a bounded single-line TEST authority may label a capability. */
 export const isDemDeliveryContextAuthority = value => typeof value === 'string' && /^TEST-[A-Za-z0-9._:-]{1,115}$/.test(value);
 
-/** Register buyer/seller resolvers and optional lifecycle callbacks; throws on invalid configuration. */
-export function createDemDeliveryContext({ authority, resolveBuyer, resolveSeller, release = null, usage = null }) {
+/** Register buyer/seller resolvers and optional lifecycle callbacks in one Vet mode
+ * (`vetMode`, default counterparty); throws on invalid configuration or an unsupported mode. */
+export function createDemDeliveryContext({ authority, vetMode, resolveBuyer, resolveSeller, release = null, usage = null }) {
   if (!isDemDeliveryContextAuthority(authority) || typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || (release !== null && typeof release !== 'function') || (usage !== null && typeof usage !== 'function')) {
     throw new TypeError('DEM delivery context requires explicit TEST authority and buyer/seller resolvers');
   }
+  const mode = sellerFulfilmentVetModeOf(vetMode);
+  if (mode === null) throw new TypeError('DEM delivery context vetMode is not a supported fulfilment Vet mode');
   const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority });
-  capabilities.set(capability, { authority, resolveBuyer, resolveSeller, release, usage });
+  capabilities.set(capability, { authority, vetMode: mode, resolveBuyer, resolveSeller, release, usage });
   return capability;
 }
 
@@ -36,6 +43,13 @@ export function demDeliveryContextConfig(value) {
   return value;
 }
 const capabilityFor = value => capabilities.get(demDeliveryContextConfig(value));
+
+/** The Vet mode a registered capability was built in; throws for an absent or copied descriptor. */
+export function demDeliveryContextVetMode(capability) {
+  const configured = capabilityFor(capability);
+  if (!configured) throw new TypeError('demDeliveryContext requires a constructed application capability');
+  return configured.vetMode;
+}
 
 /** Return synchronous usage or null; rejected/async usage is reported as an error. */
 export function demDeliveryContextUsage(capability) {
@@ -58,9 +72,9 @@ function failureText(error) {
   try { return String(error?.message ?? error); } catch { return 'unreadable provider failure'; }
 }
 
-function reconstruct(input, expected) {
-  const roles = [['buyer', expected.buyer.identityBundle.presentedBy, expected.seller.identityBundle.presentedBy],
-    ['seller', expected.seller.identityBundle.presentedBy, expected.buyer.identityBundle.presentedBy]];
+function reconstruct(input, expected, vetMode) {
+  const buyerClaim = expected.buyer.identityBundle.presentedBy, sellerClaim = expected.seller.identityBundle.presentedBy;
+  const roles = [['buyer', buyerClaim, sellerClaim], ['seller', sellerClaim, sellerRecordVerifier(vetMode, sellerClaim, buyerClaim)]];
   for (const [role, party, verifier] of roles) {
     const ref = input[role]?.vetRecordRef;
     if (!isAttestationRef(ref)) return `${role} Vet ref is not an exact signed record ref`;
@@ -68,11 +82,11 @@ function reconstruct(input, expected) {
       return `${role} Vet ref is not at the canonical composite address`;
     }
     if (typeof ref.signer !== 'string' || !sameCanonicalClaimIdentity(ref.signer, verifier)) {
-      return `${role} Vet ref is not signed by its counterparty verifier`;
+      return isOrchestratorVetMode(vetMode) && role === 'seller' ? 'seller Vet ref is not signed by the seller as orchestrator verifier' : `${role} Vet ref is not signed by its counterparty verifier`;
     }
     expected[role].vetRecordRef = ref;
   }
-  const sellerProblem = sellerSessionPresentationProblem(input.seller?.identityBundle, expected.seller.identityBundle);
+  const sellerProblem = sellerBundleProblem(input.seller?.identityBundle, expected.seller.identityBundle, vetMode);
   if (sellerProblem) return `seller identity differs: ${sellerProblem}`;
   expected.seller.identityBundle = input.seller.identityBundle;
   if (canonicalize(input) !== canonicalize(expected)) return 'input differs from the captured purchase';
@@ -102,8 +116,8 @@ export async function resolveDemDeliverySellerContext(capability, { jobId, listi
     if (!object(answer.value) || !object(answer.value.input) || !Array.isArray(answer.value.vetRequirements)) return held('indeterminate', malformed);
     if (answer.value.vetRequirements.length > DEM_DELIVERY_CONTEXT_LIMITS.maxVetRequirements) return held('indeterminate', 'DEM delivery context exceeds Vet requirement limit');
     const input = snapshot(answer.value.input);
-    const problem = reconstruct(input, expected);
+    const problem = reconstruct(input, expected, configured.vetMode);
     if (problem) return held('rejected', `DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: ${problem}`);
-    return { disposition: 'present', input: snapshot(expected), vetRequirements: snapshot(answer.value.vetRequirements), authority: configured.authority };
+    return { disposition: 'present', input: snapshot(expected), vetRequirements: snapshot(answer.value.vetRequirements), authority: configured.authority, vetMode: configured.vetMode };
   } catch (error) { return held('indeterminate', `DEM delivery seller context failed: ${failureText(error)}`); }
 }
