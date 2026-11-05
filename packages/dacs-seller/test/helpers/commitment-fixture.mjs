@@ -10,8 +10,8 @@ import {createNativePaymentEvidenceConsumer}from'../../src/dacs/native-payment-e
 import {createPaymentEvidenceWalletJournal}from'../../src/dacs/payment-evidence-wallet-journal.mjs';
 import {contributionVerifier}from'../../src/dacs/purchase-protocol.mjs';
 import {createOperatorBuyerAccess}from'../../src/devnet-demo/buyer-access.mjs';
-export async function commitmentFixture(t,{early=false,publisher=null}={}){
- const f=await proposalAdmissionFixture(t,{assembled:true}),local=localAnchor({now:()=>NOW}),controls={agreement:null,read:null},unreachable=()=>{throw new Error('TEST no payment operation');};
+export async function commitmentFixture(t,{early=false,publisher=null,vetMode}={}){
+ const f=await proposalAdmissionFixture(t,{assembled:true,vetMode}),local=localAnchor({now:()=>NOW}),controls={agreement:null,read:null},unreachable=()=>{throw new Error('TEST no payment operation');};
  const walletDir=await mkdtemp(join(tmpdir(),'TEST-commitment-wallet-'));
  const journal=createPaymentEvidenceWalletJournal({path:join(walletDir,'journal.sqlite'),signCreate:unreachable,broadcast:unreachable,readAccountNonce:unreachable,readTransactionState:unreachable});t.after(async()=>{journal.close();await rm(walletDir,{recursive:true,force:true});});
  const native={writer:seller.claim,source:'TEST-native',readRetained:async({logicalAddress})=>{const row=await local.read(logicalAddress);return row.status==='present'?{...row,receipt:{...row.receipt,nonce:'1'},txRef:fixtureTxRef(row.receipt)}:row;},publish:async({logicalAddress,artifact})=>{if(!local.rows.has(logicalAddress))await local.write({logicalAddress,artifact,writer:seller.claim,writerSignature:signAnchorWrite(seller.signBytes,logicalAddress,core.contentHash(artifact))});return native.readRetained({logicalAddress});},verifyReceipt:async({receipt,logicalAddress,artifact})=>verifyFixtureReceipt({receipt,logicalAddress,hash:core.contentHash(artifact),expectedWriter:seller.claim})};
