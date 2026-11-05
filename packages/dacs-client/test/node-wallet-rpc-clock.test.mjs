@@ -1,16 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createWorld, NOW, JOB_IDS } from './helpers/native-create-world.mjs';
-import { api, world, mnemonicBytes, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
-const refusal = code => error => error.code === code || error.message === code;
+import { api, world, T0 } from './helpers/tp1-node-fixture.mjs';
 
 test("two requests in the same millisecond get strictly increasing stamps and both are accepted", async t => {
 const stamps=api.createRpcStampSource({now:()=>T0}); assert.equal(stamps.next('TEST-wallet'),T0); assert.equal(stamps.next('TEST-wallet'),T0+1); const w=await world(t); assert.equal((await w.send()).success,true); const values=w.node.calls.filter(row=>row.headers.identity?.startsWith('ed25519:')).map(row=>Number(row.headers.timestamp)); assert.ok(values.length>=2); for(let i=1;i<values.length;i++)assert.ok(values[i]>values[i-1]);
 });
 
-test("a backward clock step never yields a stamp at or below the last one used", async t => {
+test("a backward clock step never yields a stamp at or below the last one used", async () => {
 let now=T0; const stamps=api.createRpcStampSource({now:()=>now}); const first=stamps.next('TEST-wallet'); now-=1000; assert.equal(stamps.next('TEST-wallet'),first+1);
 });
 

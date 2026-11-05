@@ -999,6 +999,12 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-session.test.mjs:1` | b89833fadfe86e93e3ff76c1b379726dd9bded4f |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 9b3fac5c0509ab6f0e5401c7d76700814a73842d |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2 |
+| WF | delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-wallet-demosdk.test.mjs:1` | 667a5a229acef659479dfc36e8f72c01538a22a9 |
+| | `packages/dacs-client/test/node-wallet-lanes.test.mjs:1` | ded7906c4ff43355358085e5140d13a23f12fcab |
+| | `packages/dacs-client/test/node-wallet-rpc-bounds.test.mjs:1` | aa86e06ff523da7fd1cb5d2714fdb6229a36364c |
+| | `packages/dacs-client/test/node-wallet-rpc-clock.test.mjs:1` | 026f7fffb6ac5e064067f5352eb021788490322c |
+| | `packages/dacs-client/test/node-wallet-session.test.mjs:1` | 529e9fec2d2412d41405769ad294b373ca42f591 |
 
 ## Complete commit and file inventory
 
@@ -3137,6 +3143,18 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a1ba add the held in-process Node wallet session | `packages/dacs-client/test/node-wallet-session.test.mjs:1` |
 | delta(client): WF P21a1ba add the held in-process Node wallet session | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | delta(client): WF P21a1ba add the held in-process Node wallet session | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/test/node-wallet-demosdk.test.mjs:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/test/node-wallet-lanes.test.mjs:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/test/node-wallet-rpc-bounds.test.mjs:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/test/node-wallet-rpc-clock.test.mjs:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `packages/dacs-client/test/node-wallet-session.test.mjs:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `scripts/release-policy.json:1` |
+| delta(client): WF P21a1ba make the held Node wallet part pass its CI checks | `test/scripts/demosdk-pin-drift.test.ts:1` |
 
 ## Original moved files
 

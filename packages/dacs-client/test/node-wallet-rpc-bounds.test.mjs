@@ -1,9 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { runInNewContext } from 'node:vm';
-import { api, world, mnemonicBytes, setPurchaseAdmission, T0, ok } from './helpers/tp1-node-fixture.mjs';
-const refusal = code => error => error.code === code || error.message === code;
+import { world, ok } from './helpers/tp1-node-fixture.mjs';
 import { installNoEgress } from './helpers/no-egress.mjs';
 
 test("through the SDK path, a 4 MiB block reply is admitted and 4 MiB plus one byte is refused before decode, declared and streamed", async t => {

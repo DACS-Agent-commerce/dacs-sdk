@@ -5994,6 +5994,37 @@
           "after": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a1ba make the held Node wallet part pass its CI checks",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-demosdk.test.mjs",
+          "before": "5d0ec6a515b679af804545aef83500ed14765538",
+          "after": "667a5a229acef659479dfc36e8f72c01538a22a9"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-lanes.test.mjs",
+          "before": "2c99d83affd845f26b41aa46aff35c8b6acff389",
+          "after": "ded7906c4ff43355358085e5140d13a23f12fcab"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-rpc-bounds.test.mjs",
+          "before": "d070b403f5f6eb74f7c8ae2a903b4f4a998c5e95",
+          "after": "aa86e06ff523da7fd1cb5d2714fdb6229a36364c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-rpc-clock.test.mjs",
+          "before": "712534d8175cc91180de20bf8ae25e06d784d5f5",
+          "after": "026f7fffb6ac5e064067f5352eb021788490322c"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+          "before": "b89833fadfe86e93e3ff76c1b379726dd9bded4f",
+          "after": "529e9fec2d2412d41405769ad294b373ca42f591"
+        }
+      ]
     }
   ]
 }

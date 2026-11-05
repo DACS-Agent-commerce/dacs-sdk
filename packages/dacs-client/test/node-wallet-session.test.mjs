@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { runFreshChild } from './helpers/fresh-node-child.mjs';
-import { api, world, mnemonicBytes, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
+import { api, world, mnemonicBytes, setPurchaseAdmission } from './helpers/tp1-node-fixture.mjs';
 const refusal = code => error => error.code === code || error.message === code;
 
 test("admitted through the test seam, a native send signs once, confirms once and broadcasts once on the scripted TP-1 node", async t => {
@@ -14,7 +14,7 @@ test("with window, document and location absent, the public factory builds both 
 const w = await world(t); const {createDevnetNativeWalletTransport,createDevnetAgreementWalletTransport}=await import('../src/public/portal/embedded-wallet/sdk-provider.mjs'); const relayOrigin='https://node-wallet.invalid'; const descriptor={network:'demos-testnet',rpcUrl:relayOrigin+'/portal/api/devnet-native-wallet-rpc',bindingUrl:relayOrigin+'/portal/api/devnet-native-wallet-binding'}; assert.ok(createDevnetNativeWalletTransport({...descriptor,profile:'devnet-native'},{relayOrigin})); assert.ok(createDevnetAgreementWalletTransport({...descriptor,profile:'devnet-agreement',transportBinding:w.session.wallet.getWriteProfile().transportBinding},{relayOrigin})); for (const key of ['window','document','location']) assert.equal(typeof globalThis[key], 'undefined'); assert.ok(w.session.wallet.getWriteProfile()); const sent = await w.send(); assert.equal(sent.success, true, JSON.stringify(sent)); assert.ok(w.node.calls.every(row => row.url === w.owner.local.endpoint && row.redirect === 'error'));
 });
 
-test("with relayOrigin absent, readTransport, both profile helpers and the anchor plan still compare with globalThis.location", async t => {
+test("with relayOrigin absent, readTransport, both profile helpers and the anchor plan still compare with globalThis.location", async () => {
 const source = readFileSync(new URL('../src/public/portal/embedded-wallet/sdk-provider.mjs', import.meta.url), 'utf8').replace(/^export /gm, '');
 const origin = 'https://browser.example.invalid';
 const context = { URL, TextEncoder, location: { origin } };
@@ -110,7 +110,7 @@ test("an invalid mnemonic refuses invalid_mnemonic before connectWallet is calle
 const w=await world(t);const {Demos}=await (await import('../src/wallet/node-demos-loading.mjs')).loadNodeDemos();let connects=0;t.mock.method(Demos.prototype,'connectWallet',async()=>{connects++;throw new Error('TEST-invalid-connect');}); for (const key of [new TextEncoder().encode('TEST invalid mnemonic'),Uint8Array.of(255)]) { await assert.rejects(api.createNodeWalletSession({admission:w.admission,owner:w.owner,journal:w.journal(),key,clock:w.clock}),refusal('invalid_mnemonic')); assert.ok(key.every(v=>v===0)); assert.equal(w.node.calls.length,0);assert.equal(connects,0); }
 });
 
-test("an http endpoint, an endpoint with a path or credentials, or a non-canonical origin is refused by the owner", async t => {
+test("an http endpoint, an endpoint with a path or credentials, or a non-canonical origin is refused by the owner", async () => {
 for(const endpoint of ['http://rpc.invalid/','https://rpc.invalid/path','https://user:pass@rpc.invalid/','https://RPC.invalid/','https://rpc.invalid','https://rpc.invalid/?q=1']) assert.throws(()=>api.createNodeTransportOwner({endpoint,transportAuthority:'vector-authority',fetchImpl:()=>{}}));
 });
 

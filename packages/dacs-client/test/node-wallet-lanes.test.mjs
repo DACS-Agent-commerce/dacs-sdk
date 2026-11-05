@@ -1,14 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { rmSync } from 'node:fs';
 import { runFreshChild } from './helpers/fresh-node-child.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
-import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
 import { api, world, mnemonicBytes, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
-const refusal = code => error => error.code === code || error.message === code;
 
 test("an accepted native send is broadcast once; its lane stays readback-only across a restart of the composition", async t => {
 const w=await world(t); const sent=await w.send(); assert.equal(sent.success,true,JSON.stringify(sent)); assert.equal(w.node.broadcasts.length,1); await w.restart(); assert.equal(w.node.broadcasts.length,1); const again=await w.send(); assert.equal(again.success,false); assert.equal(w.node.broadcasts.length,1);
