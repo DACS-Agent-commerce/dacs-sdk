@@ -5,7 +5,7 @@
 import { createPublicKey, randomBytes, verify } from 'node:crypto';
 import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
 import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { decodeSignature } from '../signatures.mjs';
 import { assertSellerSessionLifetime } from './seller-session-limits.mjs';
@@ -179,6 +179,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000 }) {
   } catch (error) { if (error.code !== 'EEXIST') throw error; }
   const file = lstatSync(path);
   if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o077) !== 0 || file.uid !== process.getuid?.()) throw new Error('transport store file must be private and regular');
+  // Only server journal construction needs SQLite; the root import does not load it.
+  const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 1000');
   db.exec(`CREATE TABLE IF NOT EXISTS peer_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
