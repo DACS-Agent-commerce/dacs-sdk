@@ -734,7 +734,7 @@ test('reservation-owner-rejection-releases-mutex', async t => {
 test('reservation-mutex-owner-crash-reclassification', async t => {
   const cases = [
     // The owner died after its accounting commit and before the journal: the journal shows no operation, as it does for a cut with only the nonce key.
-    ['accounting durable, nothing journaled', request => () => neverSettles(), 'new', ['purchase', 'purchase']],
+    ['accounting durable, nothing journaled', () => () => neverSettles(), 'new', ['purchase', 'purchase']],
     ['journal durable, result unwritten', request => async () => { await request.checked.reserve(); return neverSettles(); }, 'pending', ['purchase', 'general']],
   ];
   for (const [label, hang, answer, classes] of cases) {
