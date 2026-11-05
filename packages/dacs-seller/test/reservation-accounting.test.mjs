@@ -221,6 +221,53 @@ test('accounting admits an accounted proposal as a new job after a context start
   assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.rows().length, 2);
 });
 
+// The old path's context step, as a route runs it: it leaves one admission and no job row or tuple.
+const oldContextStep = (f, jobId = JOB) => {
+  const scope = f.payload({ path: CONTEXT, jobId, agreementHash: sha256Hex('context scope') });
+  f.store().finish(f.store().reserve(scope, { scope: { jobId } }, { admit: f.now }), 200, '{}');
+};
+const admissionOnly = (f, jobId = JOB) => {
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions WHERE job = ?').get(jobId).n, 1);
+  assert.equal(f.jobRows().length, 0); assert.equal(f.tuples(), 0);
+};
+
+test('accounting admits an accounted proposal for a job whose only record is the old context admission', async t => {
+  const f = await accountingFixture(t); oldContextStep(f); admissionOnly(f);
+  assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
+  assert.equal(f.rows().length, 1); assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
+});
+
+test('accounting admits an accounted proposal with newJob true for a job whose only record is the old context admission', async t => {
+  const f = await accountingFixture(t); oldContextStep(f); admissionOnly(f);
+  assert.equal((await f.reserve(f.args(f.payload(), { newJob: true }))).state, 'new');
+  assert.equal(f.rows().length, 1); assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
+  await assert.rejects(f.reserve(f.args(f.payload(), { newJob: true })), refused('wire_input_invalid', 500));
+});
+
+test('accounting admits a context retry for a job whose only record is the old context admission, and keeps no job row', async t => {
+  const f = await accountingFixture(t, { maxContextRecords: 1 }); oldContextStep(f); admissionOnly(f);
+  const retry = f.payload({ path: CONTEXT, agreementHash: sha256Hex('context scope') });
+  assert.equal((await f.reserve(f.args(retry, { contextStart: true }))).state, 'new');
+  admissionOnly(f); assert.equal(f.rows().length, 1);
+  assert.doesNotThrow(() => f.store().reserve(f.payload(), {}, { keepProfile: FIXTURE_PROFILE }));
+});
+
+test('an admission-only job already holds its job slot: its proposal is admitted at full capacity and another job is refused', async t => {
+  const f = await accountingFixture(t, { maxJobs: 1 }); oldContextStep(f);
+  await assert.rejects(f.reserve(f.args(f.payload({ jobId: JOB2 }))), refused('peer_job_capacity', 503));
+  assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
+  await assert.rejects(f.reserve(f.args(f.payload({ jobId: JOB2 }))), refused('peer_job_capacity', 503));
+  f.reopen(); assert.equal(f.rows().length, 1); assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1);
+});
+
+test('accounting still refuses a proposal whose tuple differs after the old context admission and a first proposal', async t => {
+  const f = await accountingFixture(t); oldContextStep(f);
+  await f.reserve(f.args(f.payload()));
+  const other = { ...FIXTURE_PROFILE, revision: 'other-revision' };
+  await assert.rejects(f.reserve(f.args(f.payload(), { keepProfile: other })), refused('tp1_purchase_profile_mismatch', 500));
+  assert.equal(f.rows().length, 1); assert.equal(f.tuples(), 1);
+});
+
 test('accounting refuses a context-start flag that disagrees with the route before any row', async t => {
   const f = await accountingFixture(t);
   await assert.rejects(f.reserve(f.args(f.payload({ path: CONTEXT }))), refused('wire_input_invalid', 500));

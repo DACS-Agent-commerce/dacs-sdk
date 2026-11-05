@@ -370,11 +370,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (row.expires_at <= now()) return 'context_challenge_expired';
         return null;
   }
-  // A job is retained once it has a kept tuple, an old-path job row or a context admission.
-  const retainedJobs = () => `SELECT job FROM kit_purchase_profiles UNION SELECT job FROM peer_jobs${admissions() ? ' UNION SELECT job FROM peer_context_admissions' : ''}`;
+  // A job holds a job slot once it has a kept tuple, an old-path job row or a context admission; only the first two
+  // are a job row a request's tuple is compared with (the context step leaves an admission and no row).
+  const keptJobs = () => 'SELECT job FROM kit_purchase_profiles UNION SELECT job FROM peer_jobs';
+  const retainedJobs = () => `${keptJobs()}${admissions() ? ' UNION SELECT job FROM peer_context_admissions' : ''}`;
   const reservationAccounting = createReservationAccounting({
     store: { get, run, transaction, keptProfileText, keepJobWithin,
       hasJobWithin: jobId => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
+      hasJobRowWithin: jobId => Boolean(get(`SELECT job FROM (${keptJobs()}) WHERE job = ?`, jobId)),
       hasContextRecordWithin: jobId => admissions() && Boolean(get('SELECT job FROM peer_context_admissions WHERE job = ?', jobId)),
       jobCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${retainedJobs()})`).n },
     now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow, nonceWindowMs },
