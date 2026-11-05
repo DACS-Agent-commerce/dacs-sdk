@@ -1076,24 +1076,39 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     const job=vets.get(jobId);if(job){if(generatedAt===null)job.open=()=>false;job.evicted=true;if(!job.running||job.finished)forget(job);}
     for(const [key,entry] of contexts)if(entry.input.jobId===jobId&&entry.input.generatedAt!==generatedAt)contexts.delete(key);
   }
+  // A signature can be lost with no anchor intent to show for it: the signer
+  // was asked for bytes that were stored ahead, and the job ended before the
+  // intent. Deleting such a row would let a later request bind afresh and
+  // sign the same job again.
+  async function signatureMayBeLost(row) {
+    const asked=['buyer','seller'].some(role=>Object.values(row.ops?.[role]?.signing??{}).some(entry=>entry.signedBytes!==undefined));
+    if(!asked||!row.binding)return false;
+    const addresses=[row.binding.buyerIdentityBundle.presentedBy,wallet.claim].map(party=>compositeVerificationAddress(row.jobId,party));
+    return !(await Promise.all(addresses.map(logicalAddress=>anchor.hasIntent(logicalAddress)))).some(Boolean);
+  }
+  // Answers whether the row was physically deleted. A row that may hold a lost
+  // signature is reduced to an ended marker instead and kept for good.
   async function drop(jobId){
     requireJobId(jobId);evict(jobId,null);drops.add(jobId);
-    let removed=false;
+    let removed=false,marked=false;
     const ended=await state.update(jobId,row=>{
       if(!row)return undefined;
       if(row.lifecycle?.state!=='ended'){row.lifecycle={...(row.lifecycle??{incarnation:randomUUID(),epoch:0,times:[]}),epoch:(row.lifecycle?.epoch??0)+1,state:'ended',times:[]};return row;}
       return undefined;
     });
     if(!ended){drops.delete(jobId);return true;}
+    const lost=!ended.endedMarker&&!running.has(jobId)&&await signatureMayBeLost(ended);
     await state.update(jobId,row=>{
       if(!row){removed=true;return undefined;}
       if(row.lifecycle?.state!=='ended'||row.lifecycle.incarnation!==ended?.lifecycle?.incarnation||row.lifecycle.epoch!==ended?.lifecycle?.epoch)return undefined;
       // Other providers are fenced by ended/missing rows at authorizeEffect.
       // Only this provider's running producer defers physical deletion.
       if(running.has(jobId))return undefined;
+      if(row.endedMarker){marked=true;return undefined;}
+      if(lost){marked=true;return{lifecycle:row.lifecycle,endedMarker:true};}
       removed=true;return null;
     });
-    if(removed){for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&row.jobId===jobId)await store.update(key,current=>current?.jobId===jobId?null:undefined);drops.delete(jobId);}
+    if(removed||marked){for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&row.jobId===jobId)await store.update(key,current=>current?.jobId===jobId?null:undefined);drops.delete(jobId);}
     return removed;
   }
   function release({jobId,generatedAt=null}){
