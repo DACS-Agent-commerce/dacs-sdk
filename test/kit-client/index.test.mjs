@@ -6,7 +6,7 @@ import { CASE_IDS, indexProblems } from './index-rules.mjs';
 
 const HARNESS_DIRECTORY = new URL('./', import.meta.url);
 const TITLE = /^test\((['"])(K12-.+?)\1,/gm;
-const CASE_ID = /^K12-(H\d[a-z]?(?:-(?:wire|host))?)(?:\([ivx]+\))?(?: \/ A37)? (today|target|control):/;
+const CASE_ID = /^K12-(H\d[a-z]?(?:-(?:wire|host))?)(?:\([ivx]+\))?(?: \/ A37)? (today|target|control)(?: \([^)]*\))?:/;
 const CASES_WITHOUT_SEPARATE_CONTROL = new Set(['H6b', 'H7']);
 
 const index = JSON.parse(readFileSync(new URL('./harness-index.json', HARNESS_DIRECTORY), 'utf8'));

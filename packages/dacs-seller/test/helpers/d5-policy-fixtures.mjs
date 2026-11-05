@@ -37,7 +37,8 @@ const PAYMENT_TX_REF=Object.freeze({kind:'demos',txHash:'5'.repeat(64),blockNumb
 // overrides top-level artifact members (undefined deletes one); editArtifact,
 // editDeliveryBinding and editCreate change the artifact, the binding (in the
 // request and the CREATE) or the CREATE before the request is derived from them.
-function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='deliver-storage-program',artifact:override={},editArtifact=()=>{},editDeliveryBinding=()=>{},editCreate=()=>{},logicalAddress:addressOverride,rpcFeeDem='1',nonce=1}={}){
+function requestFor({artifactKind='Deliverable',job=JOBS[0],party=buyer,phase='deliver-storage-program',artifact:override={},editArtifact=()=>{},editDeliveryBinding=()=>{},editCreate=()=>{},logicalAddress:addressOverride,rpcFeeDem='1',nonce=1,walletAddress=address,writer=seller}={}){
+  const address=walletAddress,seller=writer;
   const settlementKind=artifactKind==='SettlementEvidence'&&phase==='pay-dem';
   const artifact={...artifactFor(artifactKind,job,party,phase),...override};
   for(const [key,value] of Object.entries(override))if(value===undefined)delete artifact[key];
