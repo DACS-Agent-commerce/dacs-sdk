@@ -229,6 +229,22 @@ test('a WF delta record is accepted and an unlisted delta id is still refused',t
  r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/invalid delta/);
 });
 
+// A published fix commit cannot be renamed to carry the delta id, so its record names the full hash.
+test('a WF record selected by its full commit hash may carry a fix(client) subject; the same subject without the hash is refused',t=>{
+ const dir=scratch(t),git=scratchGit(dir);useThisChecker(dir);
+ const subject='fix(client): TEST published fix without a delta id',record='delta(client): WF TEST record the published fix';
+ appendFileSync(join(dir,moved),'\n// TEST published fix\n');git('add','--',moved);git('commit','-qm',subject);
+ const sha=git('rev-parse','HEAD'),ledgerFile=join(dir,control[1]),inventoryFile=join(dir,control[0]);
+ const data=JSON.parse(readFileSync(ledgerFile,'utf8')),rows=JSON.parse(readFileSync(inventoryFile,'utf8'));
+ data.changes.push({delta:'WF',sha,subject,files:[{path:moved,before:git('rev-parse',`${sha}^:${moved}`),after:git('rev-parse',`${sha}:${moved}`)}]});
+ rows.push({sha,subject,files:[moved]},{sha:null,subject:record,files:[...control].sort()});
+ writeFileSync(ledgerFile,JSON.stringify(data));writeFileSync(inventoryFile,JSON.stringify(rows,null,2)+'\n');
+ execFileSync(process.execPath,['packages/dacs-client/scripts/delta-map.mjs'],{cwd:dir});git('add','--',...control);git('commit','-qm',record);
+ let r=check(dir);assert.equal(r.status,0,r.text);
+ data.changes.at(-1).sha=null;writeFileSync(ledgerFile,JSON.stringify(data));
+ r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/invalid delta fix\(client\): TEST published fix without a delta id/);
+});
+
 // Each fault edits only the PR's own records, in a scratch clone of the checked head.
 const LEDGER_FAULTS=[
  {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
