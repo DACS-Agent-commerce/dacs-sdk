@@ -9,7 +9,7 @@ import type {
 } from "@x402/core/types";
 import {
   createIdempotencyStore,
-  onceUnlessFreshClaim,
+  settleThroughStore,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -964,14 +964,14 @@ export function x402Settle(
     // on a reconciled resubmit is the SB-3 work in #33. A durable recovery may
     // replay only when `reconcile` returns an authorization bound to this exact
     // deterministic EIP-3009 nonce; absence alone still fails closed.
-    return onceUnlessFreshClaim(
+    return settleThroughStore({
       store,
-      req.recoveryOnly,
-      "x402",
-      settlementKey(railId, jobId, phaseIndex),
+      recoveryOnly: req.recoveryOnly,
+      label: "x402",
+      key: settlementKey(railId, jobId, phaseIndex),
       binding,
       submit,
       reconcile,
-    );
+    });
   };
 }

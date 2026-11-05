@@ -364,12 +364,16 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         return null;
       }
       get lookupCalls() { return this.#lookupCalls; }
-      #recordCalls: string[] = [];
-      async hasRecord(key: string) {
-        this.#recordCalls.push(key);
-        return true;
+      #recoverCalls: string[] = [];
+      async recover(
+        key: string,
+        _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
+        submit: Parameters<SettlementIdempotencyStore["once"]>[2],
+      ) {
+        this.#recoverCalls.push(key);
+        return runStoreSubmit(submit);
       }
-      get recordCalls() { return this.#recordCalls; }
+      get recoverCalls() { return this.#recoverCalls; }
       async once(
         key: string,
         _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
@@ -411,6 +415,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       settlementFinality: "bft-final" as const,
     }));
     firstStore.readOutcome = vi.fn(async () => { throw new Error("mutated lookup"); });
+    firstStore.recover = vi.fn(async () => { throw new Error("mutated recover"); });
     options.payDem!.maxTotalDebitOs = 20n;
     options.payDem!.journalPreparedTransfer = secondJournal;
     options.payDem!.settlementStore = secondStore;
@@ -470,10 +475,11 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     )).resolves.toBeNull();
     expect(firstStore.lookupCalls).toEqual(["demos-native:DEM:job-1:4"]);
     expect(firstStore.readOutcome).not.toHaveBeenCalled();
-    await expect(capturedRecovery.store!.hasRecord!(
-      "demos-native:DEM:job-1:4", storeBinding("demos-native:DEM", "job-1", 4),
-    )).resolves.toBe(true);
-    expect(firstStore.recordCalls).toEqual(["demos-native:DEM:job-1:4"]);
+    await expect(capturedRecovery.store!.recover!(
+      "demos-native:DEM:job-1:4", storeBinding("demos-native:DEM", "job-1", 4), async () => submitted,
+    )).resolves.toEqual(submitted);
+    expect(firstStore.recoverCalls).toEqual(["demos-native:DEM:job-1:4"]);
+    expect(firstStore.recover).not.toHaveBeenCalled();
     await capturedRecovery.reconcile!({} as never);
     expect(firstReconcile).toHaveBeenCalledTimes(1);
     expect(secondReconcile).not.toHaveBeenCalled();
@@ -524,6 +530,8 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       .resolves.toEqual(outcome);
     expect(poison).not.toHaveBeenCalled();
     expect(store.keys).toEqual(["rail:job:4"]);
+    // A store without recover() is forwarded without one, so pay-dem refuses its recovery requests.
+    expect("recover" in captured).toBe(false);
   });
 
   test("retains a class store receiver across restart-style dispatch reconstruction", async () => {
