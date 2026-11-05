@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { openPartyVetStore } from '../src/devnet-demo/party-vet-store.mjs';
 import { fixture, JOBS } from './helpers/bilateral-vet-fixture.mjs';
 
@@ -34,6 +35,9 @@ function crash(path, mode) {
 test('a real crash before the first effect leaves no owner token and ending reclaims capacity',async t=>{
  const path=directory(t);crash(path,'create');const w=persistent(t,path),p=w.provider();
  assert.ok((await w.store.entries()).every(([,row])=>row.activeRuns===undefined));
+ // The crashed child's anchor was in memory only; a real anchor journal keeps the intent it stored.
+ const stored=new Set([w.buyer,w.seller].map(party=>compositeVerificationAddress(JOBS[0],party.claim)));
+ w.anchor.hasIntent=async address=>stored.has(address);
  assert.deepEqual(await p.release({jobId:JOBS[0]}),{invalidated:true,deleted:true});
  assert.deepEqual(await w.store.entries(),[]);assert.equal(w.store.usage().remainingJobs,1);
  await assert.rejects(w.provider().resolveBuyer(w.input(),{writable:()=>false}),{code:'not-pending'});
