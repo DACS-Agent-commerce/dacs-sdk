@@ -13,6 +13,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, openWireEnvelope } from '@kynesyslabs/dacs/wire';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
+import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
 import { testNetwork } from './helpers/wire-authority-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
@@ -135,11 +136,12 @@ test('a configuration with a missing binding, endpoint proof, seller or job reso
 });
 
 async function runningHost(t) {
-  const f = await commitmentFixture(t);
+  const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-wire-client-auth-'));
   const { nativeArtifactAnchor, ...config } = f.config;
   delete config.durableDirectory;
   delete config.commitOnSignature;
+  delete config.vetMode;
   const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { f, host };
