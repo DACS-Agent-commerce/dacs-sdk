@@ -391,6 +391,7 @@ function runEarlyFailure(extraStubCommands = "") {
   const directory = mkdtempSync(join(tmpdir(), "dacs-registry-failure-"));
   scratch.push(directory);
   const npmBody = [
+    'if [ "${1:-}" = "--version" ]; then printf "11.19.0\\n"; exit 0; fi',
     'for directory in "$RUNNER_TEMP"/dacs-registry-acceptance.*; do',
     '  printf "partial doctor diagnostic\\n" > "$directory/exec-out/doctor.log"',
     '  printf "partial engine diagnostic\\n" > "$directory/measure-out/engine-strict.log"',
