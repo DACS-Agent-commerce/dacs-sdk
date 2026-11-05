@@ -617,3 +617,41 @@ test("the old path refuses another buyer's request for a job an accounted contex
   assert.equal(f.jobRows().length, 0);
   assert.doesNotThrow(() => oldReserve(f, f.payload()));
 });
+
+// A context start presented with an issued challenge, as the context route runs it.
+const issueChallenge = (f, jobId = JOB) => f.store().issueContextChallenge({ jobId, buyer: BUYER.claim }, { jobId, buyer: BUYER.claim }, { admit: f.now });
+const presented = (f, { sessionNonce }, jobId = JOB) => {
+  const p = contextPayload(f, { jobId }), body = { scope: { jobId, buyer: BUYER.claim }, buyerIdentityBundle: { sessionNonce } };
+  return { p, body, reserve: () => f.store().reserve(p, body, { admit: f.now, contextDecision: true }) };
+};
+const attempted = (f, { sessionNonce }) => f.db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce = ?').get(sessionNonce).attempted;
+
+test('a context start refused at full job capacity consumes its challenge, so the presentation cannot be tried again', async t => {
+  const f = await accountingFixture(t, { maxJobs: 1 });
+  oldReserve(f, f.payload({ jobId: JOB2 }));
+  const challenge = issueChallenge(f), start = presented(f, challenge);
+  assert.throws(start.reserve, refused('peer_job_capacity', 503));
+  assert.equal(attempted(f, challenge), 1);
+  assert.throws(() => f.store().attemptContextPresentation(start.p, start.body), refused('context_challenge_consumed', 409));
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
+  assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'peer_context_admissions'").get().n, 0);
+  // Without a presentation decision the step is refused the same way, with nothing written.
+  assert.throws(() => oldReserve(f, contextPayload(f)), refused('peer_job_capacity', 503));
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
+});
+
+test('a job that already holds the only context record is issued a fresh challenge for its retry; another job is not', async t => {
+  const holders = [
+    { name: 'old context admission', hold: f => oldContextStep(f), retry: 'cached' },
+    { name: 'accounted context start', hold: f => f.reserve(f.args(contextPayload(f))), retry: 'perform' },
+  ];
+  for (const holder of holders) for (const restart of [false, true]) {
+    const f = await accountingFixture(t, { maxContextRecords: 1 });
+    await holder.hold(f);
+    if (restart) f.reopen();
+    const challenge = issueChallenge(f);
+    assert.equal(challenge.expiresAt, T0 + 60000, holder.name);
+    assert.throws(() => issueChallenge(f, JOB2), refused('peer_context_capacity', 503), holder.name);
+    assert.equal(presented(f, challenge).reserve().disposition, holder.retry, holder.name);
+  }
+});

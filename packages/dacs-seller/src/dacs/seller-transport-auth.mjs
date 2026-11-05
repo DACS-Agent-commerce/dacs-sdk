@@ -440,7 +440,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         }
         if (reclaimable.length < needed) fail('context_challenge_capacity', 503);
         const retired = reclaimableContexts(time);
-        if (ledger.contextCountWithin() - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
+        // A job that already holds a context record retries its start without a second one, as reserve admits it.
+        if (!ledger.contextHeldWithin(request.jobId) && ledger.contextCountWithin() - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
         if (typeof admit !== 'function') fail('peer_context_unadmitted', 503);
         admit({ starts: (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0 });
         for (const row of reclaimable) run('DELETE FROM peer_context_challenges WHERE nonce = ?', row.nonce);
@@ -563,7 +564,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const freedJobs = retired.filter(row => !get('SELECT 1 FROM peer_jobs WHERE job = ?', row.job)).length;
         const neededJobs = !retained && !ledger.jobHeldWithin(p.jobId) ? Math.max(0, ledger.jobCountWithin() - freedJobs - maxJobs + 1) : 0;
         const retiredJobs = reclaimableJobs(neededJobs, undefined, time);
-        if (retiredJobs.length < neededJobs) fail('peer_job_capacity', 503);
+        // A context start now takes a job slot; like its context capacity refusal, this one consumes the recognized challenge.
+        if (retiredJobs.length < neededJobs) {
+          if (!contextStep) fail('peer_job_capacity', 503);
+          if (contextDecision) contextPresentationProblem(p, body);
+          return { contextRefusal: 'peer_job_capacity', status: 503 };
+        }
         const reclaimNonces=()=>{
           if(dryRun)return;
           run('DELETE FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time);
