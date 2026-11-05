@@ -25,7 +25,7 @@ function checkCallbackHistory(dir) {
   }
   const removal = 'fix(client): D11 remove the unused guarded SQLite lease and pack no client files';
   assert.ok(notes.includes(`\`${removal}\` then deleted the module and its tests`), 'the notes must name the removal of the lease module');
-  assert.match(notes, /no SQLite statement guard and no write-lease module at this head/);
+  assert.match(notes, /`src\/util\/guarded-sqlite\.mjs` and its test `test\/guarded-sqlite\.test\.mjs` are absent from the tree/);
   const lease = changes.find(change => change.subject === replacement);
   assert.ok(lease, 'the write-lease implementation must retain its own delta record');
   const removed = changes.find(change => change.subject === removal);

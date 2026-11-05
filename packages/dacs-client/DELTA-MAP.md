@@ -187,7 +187,7 @@ This delta records two historical statement-guard commits and their reciprocal h
 - `fix(client): D11 refuse SQL callbacks under the statement guard`: superseded by `fix(client): D11 enforce the write lease in SQLite instead of patching statements`.
 - `fix(client): D11 refuse overrides that share a bundled SQLite function name under a guard`: superseded by `fix(client): D11 enforce the write lease in SQLite instead of patching statements`.
 
-These records add no runtime behavior. The held client has no SQLite statement guard and no write-lease module at this head: both are absent from the tree, and the removal is recorded in the delta ledger. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
+These records add no runtime behavior. The guarded SQLite module `src/util/guarded-sqlite.mjs` and its test `test/guarded-sqlite.test.mjs` are absent from the tree: the removal is recorded in the delta ledger, and no statement guard replaces them. The historical callback-refusal blobs in the commit register describe those named commits, rather than a callback-refusal feature in the current tree.
 
 ## Commit register
 
@@ -1213,6 +1213,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 check callback history against the removed lease module | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 check callback history against the removed lease module | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 check callback history against the removed lease module | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 name the removed guarded SQLite module in the callback history | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 name the removed guarded SQLite module in the callback history | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 name the removed guarded SQLite module in the callback history | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 name the removed guarded SQLite module in the callback history | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 name the removed guarded SQLite module in the callback history | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 name the removed guarded SQLite module in the callback history | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 
