@@ -5,7 +5,7 @@
 // ledgers until it moves here). The caller owns the SQLite handle, the immediate-transaction helper, the startup lock
 // and the terminal-state view.
 import { randomBytes, randomUUID } from 'node:crypto';
-import { isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
+import { canonicalize, identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS, sessionAdmissionProblem } from './session-admission.mjs';
 import { SellerTransportError, TERMINAL_CONTEXT_STATES } from './seller-transport-auth.mjs';
@@ -61,19 +61,30 @@ function validateIssueRequest(request, challengeScopeHash, origin) {
   if (unknownMember || !isCanonicalClaimReference(request.buyer) || (origin === 'route' && !isHash(challengeScopeHash))) fail('context_scope_invalid');
 }
 
-// Whether the retained admission still binds this row's job and buyer and the record's own bundle hash.
-function admissionBindsRow(admission, buyerBundleHash, row) {
-  if (!isRecord(admission) || admission.jobId !== row.jobId || !sameCanonicalClaimIdentity(admission.buyer, row.buyer)) return false;
+// The presenting claim of the accepted bundle when it is exactly the presentation this row was attempted with, else null: canonical
+// bytes whose hash the row stored, for this nonce and canonical buyer, and the bundle hash callers derive from it.
+function presenterOfRowBundle(accepted, row) {
+  try {
+    const bundle = JSON.parse(accepted.buyerBundleText);
+    const exact = isRecord(bundle) && accepted.buyerBundleText === canonicalize(bundle) && sha256Hex(accepted.buyerBundleText) === row.presentationHash
+      && bundle.sessionNonce === row.nonce && sameCanonicalClaimIdentity(bundle.presentedBy, row.buyer) && identityBundleHash(bundle) === accepted.buyerBundleHash;
+    return exact ? bundle.presentedBy : null;
+  } catch { return null; }
+}
+
+// Whether the retained admission still binds this row's job, the presenter and the record's bundle hash.
+function admissionBindsRow(admission, buyerBundleHash, row, buyer) {
+  if (!isRecord(admission) || admission.jobId !== row.jobId) return false;
   const participants = Array.isArray(admission.participants) ? admission.participants : [];
   const seller = participants.find((entry) => entry?.role === 'seller')?.claim;
-  return sessionAdmissionProblem(admission, { jobId: row.jobId, buyer: admission.buyer, buyerBundleHash, seller, listingPin: admission.listingPin }) === null;
+  return sessionAdmissionProblem(admission, { jobId: row.jobId, buyer, buyerBundleHash, seller, listingPin: admission.listingPin }) === null;
 }
 
 function acceptedIsComplete(accepted, row) {
   if (!hasExactKeys(accepted, ACCEPTED_KEYS) || typeof accepted.buyerBundleText !== 'string' || !isHash(accepted.buyerBundleHash) || !isUint(accepted.admittedAt)
     || !hasExactKeys(accepted.firstAdmission, FIRST_ADMISSION_KEYS) || !FIRST_ADMISSION_KEYS.every((key) => isUint(accepted.firstAdmission[key]))) return false;
-  try { if (!isRecord(JSON.parse(accepted.buyerBundleText))) return false; } catch { return false; }
-  return admissionBindsRow(accepted.admission, accepted.buyerBundleHash, row);
+  const presenter = presenterOfRowBundle(accepted, row);
+  return presenter !== null && admissionBindsRow(accepted.admission, accepted.buyerBundleHash, row, presenter);
 }
 
 // The text to store for `record`: its own JSON form, checked as stored so the caller keeps no handle on it.
@@ -148,6 +159,9 @@ function replayAnswer(row, input) {
  * party fails the row as `context_challenge_mismatch`, except a route row on `proposal`, which is refused
  * unchanged. Throws if the row changed under the lock. `accept` and `recordFailed` return whether the row was
  * `attempted` by that owner and changed; their `Within` forms need an open transaction and open none.
+ * `accept` stores only the canonical bytes of the presentation the row was attempted with (its stored hash, its nonce
+ * and its canonical buyer) and refuses any other record as `context_challenge_attempt_invalid`; a stored record
+ * that does not match its row answers `session_admission_unavailable` on continuation.
  * `accept` also binds the job to the accepted presentation in the same transaction and throws
  * SellerTransportError `seller_job_bound` when another nonce already bound the job. `jobBinding(jobId)`
  * returns the detached frozen `{ jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt }` or null.
