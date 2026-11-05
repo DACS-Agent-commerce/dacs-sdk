@@ -674,8 +674,11 @@ per-client limiter so one client cannot exhaust the shared request budget.
   payment evidence (`native_evidence_required`), so these capabilities and the supported Listing size are checked before
   commitment or payment intake. Actual delivery still depends on valid producer
   output and available operator capabilities. These
-  capabilities accept only `TEST-` authorities and a loopback fixture node
-  (below), so the host does not start against a real node.
+  capabilities accept only `TEST-` authorities and a loopback fixture node.
+  The host checks `agreementAnchor` and `artifactAnchor` only by shape, and
+  the wallet journal's `broadcast` is the operator's own callback, so those
+  can still reach a real node; keep them on the fixture too (see the start of
+  this file).
 - It signs no completed DACS-5 bundle (`bundle_finalization_unavailable`
   from both the bundle request and the countersignature, after the delivery
   check): the ST-11 finalizer, which needs finalized and independently
