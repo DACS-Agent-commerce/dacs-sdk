@@ -591,6 +591,20 @@ per-client limiter so one client cannot exhaust the shared request budget.
   it cannot yet pin and recover an authenticated job registry snapshot.
   Direct `runFulfilmentCore` and durable wrapper callers also refuse them by
   default, as does the exported invocation check.
+  **TP-1 G3 orchestrator mode (W).** `createDemDeliveryContext` and
+  `createSellerAgent` take one `vetMode` (default `counterparty`, with its own
+  rule above); the agent's must equal its context capability's
+  (`vet_mode_mismatch`). Under `tp1-g3-orchestrator` the seller verifies both
+  records, the seller's own too (its reference `signer` and the record's
+  signature are the seller's), only a `finalized` receipt counts (an `included`
+  or `accepted` one is refused; an absent or unreadable one is retried with the
+  session kept), and the seller's bundle must be exactly the Listing's, with no
+  fresh presentation. Every session retains its mode, and an agent of the other
+  mode (or of any mode, for a session saved before the mode was kept, which is
+  `counterparty`) refuses to continue it at every entry with `vet_mode_mismatch`
+  and changes nothing. The mode is composed in code; no request, Listing or
+  environment variable selects it. Label:
+  "The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1."
   `acceptsPresenceOnlyVetRequirements: true` is only for callers that perform
   strict replay with authenticated job-bound authority and need no completed
   bundle. ST-11 completed-bundle finalization and

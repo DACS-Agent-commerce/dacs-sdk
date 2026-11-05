@@ -13,7 +13,10 @@ import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment-evidence-consumer.mjs';
-export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,publicEndpoint=null}={}){
+// `vetMode` selects the records and capability the fixture builds: the TP-1 G3
+// orchestrator mode has the seller verify its own record (default: counterparty).
+export const ORCHESTRATOR_MODE='tp1-g3-orchestrator';
+export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,publicEndpoint=null,vetMode}={}){
  const dir=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=NOW;const signed=[];const contexts=new Map();
  const unreachable=()=>{throw new Error('TEST external effect');};
  const {signature,...listingDraft}=fixtureListing(seller,{now:NOW});
@@ -22,9 +25,12 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
  if(expectedSizeBytes===null)delete listingDraft.offering.deliverable.expectedSizeBytes;
  else listingDraft.offering.deliverable.expectedSizeBytes=expectedSizeBytes;
  const listing=await core.signComponentArtifact(listingDraft,core.ARTIFACT_SEPARATORS.Listing,{signer:seller.claim,algorithm:'ed25519',sign:seller.signBytes}),admission=createSessionAdmissionFixture({seller:{claim:seller.claim,sign:seller.signBytes},buyer:{claim:buyer.claim,sign:buyer.signBytes},now:()=>time});
- const config={maxJobs,signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
+ const orchestrated=vetMode===ORCHESTRATOR_MODE,sellerParty={claim:seller.claim,sign:seller.signBytes};
+ const resolveSeller=async({jobId})=>contexts.has(jobId)?{disposition:'present',value:structuredClone(contexts.get(jobId))}:{disposition:'indeterminate',reason:'TEST context unavailable'};
+ const capability=mode=>createDemDeliveryContext({authority:'TEST-admission',vetMode:mode,resolveBuyer:unreachable,resolveSeller});
+ const config={maxJobs,...vetMode===undefined?{}:{vetMode},signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
   agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,
-  nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:createDemDeliveryContext({authority:'TEST-admission',resolveBuyer:unreachable,resolveSeller:async({jobId})=>contexts.has(jobId)?{disposition:'present',value:structuredClone(contexts.get(jobId))}:{disposition:'indeterminate',reason:'TEST context unavailable'}})};
+  nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:capability(vetMode)};
  const sourceUrl=new URL('../../src/dacs/seller-agent.mjs',import.meta.url),api=await privateModule(sourceUrl,[],source=>{
   if(!assembled&&source.includes('await respondToFixedPriceAgreementProposalDurable(')){
    const file=ts.createSourceFile('agent.mjs',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);let method;
@@ -35,20 +41,22 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
   }
   if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposal,retainedVetEvidenceProblem};');
  });
- const open=async()=>{const agent=await api.createSellerAgent(config);t.after(()=>agent.close());return agent;};
+ const open=async(overrides={})=>{const agent=await api.createSellerAgent({...config,...overrides});t.after(()=>agent.close());return agent;};
+ // The same durable directory reopened under `mode` (its own capability and agent option).
+ const reopenAs=mode=>open({vetMode:mode,demDeliveryContext:capability(mode)});
  const input=async(agent,jobId=JOB,party=buyer)=>{const challenge=await agent.issueSessionChallenge({jobId,buyer:party.claim}),bundle=fixtureIdentityBundle(party,time);bundle.sessionNonce=challenge.sessionNonce;bundle.presentation.signatures[0].signature=party.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');return{proposal:{},transportIdentity:{jobId,buyer:party.claim,seller:seller.claim},buyerIdentityBundle:bundle};};
- const proposal=async(agent,jobId=JOB,{synthetic=false,generatedAt=time,expiresAt}={})=>{
+ const proposal=async(agent,jobId=JOB,{synthetic=false,generatedAt=time,expiresAt,buyerRecord={},sellerRecord={},sellerBundle=listing.seller.identity}={})=>{
   const request=await input(agent,jobId);
   if(expiresAt!==undefined){const bundle=request.buyerIdentityBundle;bundle.claims[0].expiresAt=expiresAt;bundle.presentation.signatures[0].signature=buyer.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');}
   const base=agreementInput({jobId,listing,buyerBundle:request.buyerIdentityBundle,generatedAt});
-  const buyerRef=await admission.vetRecord(jobId,buyer.claim,request.buyerIdentityBundle,{requirement:listing.buyerRequirement});
-  const sellerRef=await admission.vetRecord(jobId,seller.claim,listing.seller.identity,{requirement:SELLER_REQUIREMENT});
-  const actual={...base,buyer:{...base.buyer,vetRecordRef:buyerRef},seller:{...base.seller,vetRecordRef:sellerRef}};
-  const vetRequirements=[['buyer',buyer.claim,seller.claim,listing.buyerRequirement],['seller',seller.claim,buyer.claim,SELLER_REQUIREMENT]].map(([role,evaluatedParty,verifier,requirement])=>({vetRecordRef:actual[role].vetRecordRef,evaluatedParty,verifier,requirement,freshness:[],dealSpecific:[]}));
+  const buyerRef=await admission.vetRecord(jobId,buyer.claim,request.buyerIdentityBundle,{requirement:listing.buyerRequirement,...buyerRecord});
+  const sellerRef=await admission.vetRecord(jobId,seller.claim,sellerBundle,{requirement:SELLER_REQUIREMENT,...orchestrated?{verifier:sellerParty}:{},...sellerRecord});
+  const actual={...base,buyer:{...base.buyer,vetRecordRef:buyerRef},seller:{...base.seller,identityBundle:sellerBundle,vetRecordRef:sellerRef}};
+  const vetRequirements=[['buyer',buyer.claim,seller.claim,listing.buyerRequirement],['seller',seller.claim,orchestrated?seller.claim:buyer.claim,SELLER_REQUIREMENT]].map(([role,evaluatedParty,verifier,requirement])=>({vetRecordRef:actual[role].vetRecordRef,evaluatedParty,verifier,requirement,freshness:[],dealSpecific:[]}));
   contexts.set(jobId,{input:structuredClone(actual),vetRequirements:structuredClone(vetRequirements)});
   return proposalForInput(synthetic?base:actual);
  };
- return{config,listing,dir,admission,signed,open,input,proposal,contexts,advance:ms=>{time+=ms;}};
+ return{config,listing,dir,admission,signed,open,reopenAs,capability,input,proposal,contexts,advance:ms=>{time+=ms;}};
 }
 
 export async function proposalForInput(input){
