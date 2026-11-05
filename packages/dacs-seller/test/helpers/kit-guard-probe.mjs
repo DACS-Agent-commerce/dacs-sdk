@@ -119,7 +119,7 @@ async function effectEntries() {
   const { storageWriteRpcSigner } = await import('../../src/devnet-demo/storage-write-recovery.mjs');
   const { createReservationAccounting } = await import('../../src/dacs/seller-reservation-accounting.mjs');
   const accounting = createReservationAccounting({ store: {}, now: () => 0,
-    limits: { maxJobs: 1, maxContextRecords: 1, maxNoncesPerBuyerPerWindow: 1, nonceWindowMs: 1 }, contextRecords: () => 0 });
+    limits: { maxJobs: 1, maxContextRecords: 1, maxNoncesPerBuyerPerWindow: 1 } });
 
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
