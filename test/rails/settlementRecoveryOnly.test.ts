@@ -103,6 +103,8 @@ describe("recoveryOnly never takes a fresh claim", () => {
 describe("recoveryOnly after a crash that left an intent and no outcome", () => {
   const LEASE_MS = 30_000;
   const AFTER_EVERY_LEASE_MS = 365 * 24 * 60 * 60 * 1000;
+  /** An intent without an outcome reaches `once`, which holds, finds no reconcile, or finds the payment absent. */
+  const UNRESOLVED_INTENT_REFUSAL = /refusing to resubmit|operator action required/;
   type Process = { settle: (req: SettleRequest) => Promise<SettleResult>; submits: () => number };
 
   /** One process of each rail over a shared log: `crashBeforeOutcome` makes its submit die without an outcome. */
@@ -138,7 +140,7 @@ describe("recoveryOnly after a crash that left an intent and no outcome", () => 
 
       const restarts = [1_000, 1_000 + 2 * LEASE_MS, 1_000 + AFTER_EVERY_LEASE_MS].map((now) => buildProcess(log, now, false));
       for (const restarted of restarts) {
-        await expect(restarted.settle({ ...request, recoveryOnly: true })).rejects.toThrow(/no recorded settlement/);
+        await expect(restarted.settle({ ...request, recoveryOnly: true })).rejects.toThrow(UNRESOLVED_INTENT_REFUSAL);
         expect(restarted.submits()).toBe(0);
       }
     },
@@ -157,7 +159,7 @@ describe("recoveryOnly after a crash that left an intent and no outcome", () => 
 
     const completing = settleA(evmRequest);
     await inRail; // A holds the intent and is inside the rail
-    await expect(settleB({ ...evmRequest, recoveryOnly: true })).rejects.toThrow(/no recorded settlement/);
+    await expect(settleB({ ...evmRequest, recoveryOnly: true })).rejects.toThrow(UNRESOLVED_INTENT_REFUSAL);
     await expect(settleB({ ...evmRequest, amount: "2000000", recoveryOnly: true })).rejects.toThrow(/conflicts/);
     expect(workerB.calls).toBe(0);
 
@@ -167,5 +169,120 @@ describe("recoveryOnly after a crash that left an intent and no outcome", () => 
     await expect(settleB({ ...evmRequest, amount: "2000000", recoveryOnly: true })).rejects.toThrow(/conflicts/);
     expect(workerA.calls).toBe(1);
     expect(workerB.calls).toBe(0);
+  });
+});
+
+describe("recoveryOnly adopts a payment that reconcile proves landed", () => {
+  const LEASE_MS = 30_000;
+
+  /** Crash a submit at t=1000 with an intent and no outcome, then recover after the lease with `reconcile`. */
+  const crashThenRecover = async (
+    buildSettle: (store: SettlementIdempotencyStore, crash: boolean, reconcile?: () => Promise<SettleResult | null>) =>
+      { settle: (req: SettleRequest) => Promise<SettleResult>; submits: () => number },
+    request: SettleRequest,
+    reconcile: () => Promise<SettleResult | null>,
+  ) => {
+    const log = createInMemorySettlementLog();
+    const crashed = buildSettle(createIdempotencyStore(log, { now: () => 1_000, leaseDurationMs: LEASE_MS }), true);
+    await expect(crashed.settle(request)).rejects.toThrow();
+    const restarted = buildSettle(
+      createIdempotencyStore(log, { now: () => 1_000 + 2 * LEASE_MS, leaseDurationMs: LEASE_MS }), false, reconcile,
+    );
+    return { restarted, result: restarted.settle({ ...request, recoveryOnly: true }) };
+  };
+
+  test("evm-erc20 returns the reconciled payment and submits nothing", async () => {
+    const reconcile = vi.fn(async () => evmPaid);
+    const { restarted, result } = await crashThenRecover((store, crash, found) => {
+      const rail = countingEvmRail(async () => { throw new Error(crash ? "process died" : "unexpected submit"); });
+      return { settle: evmErc20Settle(rail, evmCfg, { store, reconcile: found }), submits: () => rail.calls };
+    }, evmRequest, reconcile);
+    await expect(result).resolves.toMatchObject({ ok: true, txHash: "0xpaid" });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(restarted.submits()).toBe(0);
+  });
+
+  test("x402 returns the reconciled payment and submits nothing", async () => {
+    const reconcile = vi.fn(async () => evmPaid);
+    const { restarted, result } = await crashThenRecover((store, crash, found) => {
+      let submits = 0;
+      const rail: X402Rail = {
+        address: "0xme", finalityBlocks: 12,
+        settle: async () => { submits += 1; throw new Error(crash ? "process died" : "unexpected submit"); },
+      };
+      return { settle: x402Settle(rail, x402Cfg, { store, reconcile: found }), submits: () => submits };
+    }, x402Request, reconcile);
+    await expect(result).resolves.toMatchObject({ ok: true, txHash: "0xpaid" });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(restarted.submits()).toBe(0);
+  });
+
+  test("pay-dem returns the reconciled payment and submits nothing", async () => {
+    const executed = {
+      ok: true as const, txHash: hash, payer, payee, chainId: "demos", amountOs: "1000000000",
+      blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
+      networkFeeOs: "0", execution: "executed" as const,
+    };
+    const log = createInMemorySettlementLog();
+    const crashing = vi.fn(async () => { throw new Error("process died"); });
+    const crashedStore = createIdempotencyStore(log, { now: () => 1_000, leaseDurationMs: LEASE_MS });
+    await expect(payDemSettle({ address: payer, settle: crashing }, {}, { store: crashedStore, reconcile: async () => null })(demRequest))
+      .rejects.toThrow();
+
+    const resubmit = vi.fn();
+    const reconcile = vi.fn(async () => executed);
+    const store = createIdempotencyStore(log, { now: () => 1_000 + 2 * LEASE_MS, leaseDurationMs: LEASE_MS });
+    await expect(payDemSettle({ address: payer, settle: resubmit }, {}, { store, reconcile })({ ...demRequest, recoveryOnly: true }))
+      .resolves.toMatchObject({ ok: true, txHash: hash });
+    expect(resubmit).not.toHaveBeenCalled();
+    expect(reconcile).toHaveBeenCalled();
+  });
+
+  test("a reconcile that proves nothing landed still refuses and submits nothing", async () => {
+    const { restarted, result } = await crashThenRecover((store, crash, found) => {
+      const rail = countingEvmRail(async () => { throw new Error(crash ? "process died" : "unexpected submit"); });
+      return { settle: evmErc20Settle(rail, evmCfg, { store, reconcile: found }), submits: () => rail.calls };
+    }, evmRequest, async () => null);
+    await expect(result).rejects.toThrow(/operator action required/);
+    expect(restarted.submits()).toBe(0);
+  });
+});
+
+describe("recoveryOnly refuses a store whose answer it cannot trust", () => {
+  const storeAnswering = (
+    answers: Pick<SettlementIdempotencyStore, "readOutcome" | "hasRecord">,
+  ): SettlementIdempotencyStore => {
+    const inner = createIdempotencyStore(createInMemorySettlementLog());
+    return { once: (...args) => inner.once(...args), ...answers };
+  };
+
+  test("a lookup that answers undefined instead of null is refused, not treated as a fresh claim", async () => {
+    const rail = countingEvmRail();
+    const store = storeAnswering({
+      readOutcome: async () => undefined as unknown as null,
+      hasRecord: async () => true,
+    });
+    await expect(evmErc20Settle(rail, evmCfg, { store })({ ...evmRequest, recoveryOnly: true }))
+      .rejects.toThrow(/invalid outcome lookup answer/);
+    expect(rail.calls).toBe(0);
+  });
+
+  test("a store that cannot tell an unresolved intent from no record is refused", async () => {
+    const rail = countingEvmRail();
+    const store = storeAnswering({ readOutcome: async () => null });
+    await expect(evmErc20Settle(rail, evmCfg, { store })({ ...evmRequest, recoveryOnly: true }))
+      .rejects.toThrow(/cannot tell an unresolved intent/);
+    expect(rail.calls).toBe(0);
+  });
+
+  test("a record lookup that does not answer true is refused", async () => {
+    const rail = countingEvmRail();
+    const store = storeAnswering({
+      readOutcome: async () => null,
+      hasRecord: async () => undefined as unknown as boolean,
+    });
+    await expect(evmErc20Settle(rail, evmCfg, { store })({ ...evmRequest, recoveryOnly: true }))
+      .rejects.toThrow(/no recorded settlement/);
+    expect(rail.calls).toBe(0);
   });
 });

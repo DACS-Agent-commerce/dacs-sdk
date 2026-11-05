@@ -154,7 +154,9 @@ export interface SettleRequest {
   /**
    * Set by `runSession` on every `resumeSettlement` request. A bridge honours it
    * by never taking a fresh claim: with no retained transaction hash it proceeds
-   * only when its store already holds an outcome for this settlement key.
+   * only when its store already holds a record for this settlement key, an
+   * outcome or an unresolved intent, which it reconciles (adopting a payment it
+   * proves landed) rather than submits.
    */
   recoveryOnly?: boolean;
 }

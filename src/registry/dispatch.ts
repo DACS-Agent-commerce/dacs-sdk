@@ -311,10 +311,16 @@ function captureSettlementStore(
     "readOutcome",
     "pay-dem settlement store readOutcome",
   );
+  const hasRecord = optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["hasRecord"]>>(
+    source,
+    "hasRecord",
+    "pay-dem settlement store hasRecord",
+  );
   const wrapper: SettlementIdempotencyStore = {
     once: (key, binding, submit, reconcile) =>
       once(key, binding, submit, reconcile),
     ...(readOutcome === undefined ? {} : { readOutcome }),
+    ...(hasRecord === undefined ? {} : { hasRecord }),
   };
   return Object.freeze(wrapper);
 }

@@ -1,8 +1,8 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
 import {
-  assertRecordedForRecovery,
   createIdempotencyStore,
+  onceUnlessFreshClaim,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -297,10 +297,14 @@ export function evmErc20Settle(
         recipientEvm,
         amount,
       }, effectFence);
-    const key = settlementKey(railId, jobId, phaseIndex);
-    const once = () => store.once(key, binding, submit, reconcile);
-    if (req.recoveryOnly !== true) return once();
-    return assertRecordedForRecovery(store.readOutcome?.bind(store), key, binding, "evm-erc20")
-      .then(once);
+    return onceUnlessFreshClaim(
+      store,
+      req.recoveryOnly,
+      "evm-erc20",
+      settlementKey(railId, jobId, phaseIndex),
+      binding,
+      submit,
+      reconcile,
+    );
   };
 }

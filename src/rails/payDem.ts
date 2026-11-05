@@ -2204,6 +2204,12 @@ export function payDemSettle(
     : stableMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
         store, "readOutcome", "pay-dem settlement store readOutcome",
       );
+  const hasRecordProperty = stableDataProperty(store, "hasRecord", "pay-dem settlement store hasRecord");
+  const storeHasRecord = !hasRecordProperty.found || hasRecordProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementIdempotencyStore["hasRecord"]>>(
+        store, "hasRecord", "pay-dem settlement store hasRecord",
+      );
   const configuredRecipient = optionalStableString(
     cfg,
     "recipient",
@@ -2495,9 +2501,14 @@ export function payDemSettle(
             return captured;
           };
       // A recovery request never takes a fresh claim: with no retained hash it
-      // proceeds only when the store already holds an outcome for this key.
+      // proceeds only when the store already holds a record for this key.
       if (req.recoveryOnly === true) {
-        await assertRecordedForRecovery(storeReadOutcome, key, binding, "pay-dem");
+        await assertRecordedForRecovery(
+          { readOutcome: storeReadOutcome, hasRecord: storeHasRecord },
+          key,
+          binding,
+          "pay-dem",
+        );
       }
       const result = await storeOnce(
         key,

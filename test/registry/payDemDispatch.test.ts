@@ -364,6 +364,12 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
         return null;
       }
       get lookupCalls() { return this.#lookupCalls; }
+      #recordCalls: string[] = [];
+      async hasRecord(key: string) {
+        this.#recordCalls.push(key);
+        return true;
+      }
+      get recordCalls() { return this.#recordCalls; }
       async once(
         key: string,
         _binding: Parameters<SettlementIdempotencyStore["once"]>[1],
@@ -464,6 +470,10 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     )).resolves.toBeNull();
     expect(firstStore.lookupCalls).toEqual(["demos-native:DEM:job-1:4"]);
     expect(firstStore.readOutcome).not.toHaveBeenCalled();
+    await expect(capturedRecovery.store!.hasRecord!(
+      "demos-native:DEM:job-1:4", storeBinding("demos-native:DEM", "job-1", 4),
+    )).resolves.toBe(true);
+    expect(firstStore.recordCalls).toEqual(["demos-native:DEM:job-1:4"]);
     await capturedRecovery.reconcile!({} as never);
     expect(firstReconcile).toHaveBeenCalledTimes(1);
     expect(secondReconcile).not.toHaveBeenCalled();
