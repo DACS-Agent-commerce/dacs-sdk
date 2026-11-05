@@ -48,7 +48,7 @@ and readers must use `ComponentSignedArtifact`,
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
 | **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
 | **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core |
-| **Settle** | `payDemSettle` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
+| **Settle** | `payDemSettle` · `withRecoveredAttempts` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
 Agreement readers can call `validateFixedPriceAgreementBinding()` with the
@@ -608,9 +608,11 @@ contain the signed validity body, so it cannot reconstruct or authorize an
 exact resubmission; neither re-signing nor rebroadcasting is a permitted recovery
 action.
 
-`createPayDemRail` exposes the same boundary as the optional
-`journalPreparedTransfer` hook. Ordinary non-funded callers can omit it, but the
-low-level rail then provides only in-process hash-first observation. Across a
+`createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
+hook. A direct caller can omit it, but `runSession` refuses a pay-dem session
+whose `settle` or `resumeSettlement` bridge was built over a rail without it.
+Without the hook the low-level rail provides only in-process hash-first
+observation. Across a
 process restart, at-most-once settlement still requires `payDemSettle` with a
 durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
 additionally requires an application-owned durable journal or equivalent rail
@@ -681,10 +683,25 @@ npm run test:live:pay-dem
 `(listingId, listingVersion, contentHash)` tuple used by the session. To resume
 an interrupted session safely, pass the prior `jobId` and the same authenticated
 Listing to `runSession`; anchored artifacts are reused and the Listing remains
-pinned. No-repayment across a whole-process crash additionally requires a durable
-`sessionStore` and a rail-idempotent `resumeSettlement` implementation—a job id
-alone cannot prove whether a lost rail response moved value. The legacy native-ref
-input remains available for callers with a separate trusted pin.
+pinned. A `jobId` you pass is always a resume. A resume whose `sessionStore` has
+no record of the job, or with no `sessionStore`, settles only by recovery, and
+only through a `resumeSettlement` an SDK bridge returned (`payDemSettle`,
+`evmErc20Settle`, `x402Settle`, or `withRecoveredAttempts` around one of them);
+any other function is refused before any payment. A first run omits `jobId`; keep
+the generated job id from the `settle` request or the `sessionStore` before
+anything can fail. A first run takes its id from `deps.newJobId`, which must
+return a fresh id on every call. After a crash, pass the id as `jobId`; never
+rerun the first run with it. A first run whose Agreement for that id is already
+anchored settles only by recovery, whatever the `sessionStore` holds. Two
+concurrent first runs that share one id and have separate stores can still both
+pay; a shared `sessionStore` directory prevents that. A restart that finds an
+intent and no recorded outcome refuses instead of paying again; for a pay-dem
+purchase, [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)
+finishes it from the prepared-transfer journal. No-repayment across a
+whole-process crash additionally requires a durable `sessionStore` and a
+rail-idempotent `resumeSettlement`—a job id alone cannot prove whether a lost
+rail response moved value. The legacy native-ref input remains available for
+callers with a separate trusted pin.
 
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write
