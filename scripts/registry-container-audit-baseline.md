@@ -195,7 +195,7 @@ location, integrity and engine range identify each engine exception.
 | `GHSA-9qmh-m7c6-f92p` | The same transitive Anchor/toml 3.0.0 path permits excessive CPU use for long integer literals. The corrected toml 5.0.1 is outside Anchor's ^3.0.0 range; retain the notice until the parent changes. |
 | `GHSA-mrhx-c7xc-m3w5` | The transitive path is @x402/core 2.15.0 -> zod ^3.24.2 (3.25.76). Oversized constrained collections can exhaust memory. The corrected zod 4.6.6 is outside the selected parent range; a compatible x402 parent update is required. Direct high/critical results remain blocking. |
 
-The seven newer sigstore-chain engine entries and the two newer audit IDs were reported by the clean registry consumer job on pull request #907 (run 2026-11-05, about 01:48Z), whose log lists each package with its location, integrity and engine range. The JSON records no separate source block for them.
+The seven newer sigstore-chain engine entries and the two newer audit IDs were reported by the clean registry consumer job at https://github.com/DACS-Agent-commerce/dacs-sdk/actions/runs/41941378864/job/126968852052 (failed 2026-11-05T00:47:34Z, head 67f5c99888b0731bf9bb38e7c05d5b6e368cfff4), whose log lists each package with its location, integrity and engine range. The JSON records no separate source block for them.
 
 A major-version override would replace dependencies outside their parents'
 declared contracts. That needs a separate consumer dependency change and its
