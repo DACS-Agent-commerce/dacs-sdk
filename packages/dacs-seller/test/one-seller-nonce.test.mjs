@@ -12,6 +12,7 @@ import { createSellerTransportStore, createSellerTransportServerAuth, createSell
   sellerSessionDelegationSigningBytes, SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
 import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { KIT_TP1_VET_MODE } from '../src/host.mjs';
 import { createSellerContextAdmission, releaseSellerContextHolds, parsePolicyLedger } from '../src/devnet-demo/operator-approval.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { NOW, testWallet, buyer as agentBuyer, seller as agentSeller } from './helpers/protocol-fixture.mjs';
@@ -201,10 +202,10 @@ test(card('T11'), async t => {
 });
 
 async function hostFixture(t, edit = source => source) {
-  const f = await commitmentFixture(t), dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-one-nonce-host-'));
+  const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE }), dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-one-nonce-host-'));
   const { nativeArtifactAnchor, ...config } = f.config;
-  // The host builds its own durable directory, ledger and signing mode.
-  for (const name of ['durableDirectory', 'commitOnSignature', 'challengeLedger']) delete config[name];
+  // The host builds its own durable directory, ledger and signing mode, and fixes the Vet mode (`vetMode` is an agent option, not a host option).
+  for (const name of ['durableDirectory', 'commitOnSignature', 'challengeLedger', 'vetMode']) delete config[name];
   let current;
   const api = await privateModule(new URL('../src/host.mjs', import.meta.url), ['testStore', 'setStartupFailure'], source => edit(
     source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', 'const journal = Object.freeze({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());')));
