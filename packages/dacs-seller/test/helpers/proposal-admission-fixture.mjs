@@ -11,22 +11,17 @@ import {seller,buyer,JOB,NOW} from './protocol-fixture.mjs';
 import {fixtureListing,fixtureIdentityBundle} from '../fixtures/listings.mjs';
 import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
-import {createSellerTransportStore} from '../../src/dacs/seller-transport-auth.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment-evidence-consumer.mjs';
-// `ledger` is a function returning the challenge ledger the agent uses; by default one transport store lives as long as the fixture.
-export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,ledger=null}={}){
+export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null}={}){
  const dir=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=NOW;const signed=[];const contexts=new Map();
- let store=null,generations=0;const storeDirectory=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-ledger-'));t.after(()=>rm(storeDirectory,{recursive:true,force:true}));
- const openStore=()=>store=createSellerTransportStore({path:join(storeDirectory,'transport.sqlite'),now:()=>time,generation:'TEST-generation-'+ ++generations});
- if(ledger===null){openStore();t.after(()=>store.close());}
  const unreachable=()=>{throw new Error('TEST external effect');};
  const {signature,...listingDraft}=fixtureListing(seller,{now:NOW});
  if(buyerRequirement!==null)listingDraft.buyerRequirement=structuredClone(buyerRequirement);
  if(expectedSizeBytes===null)delete listingDraft.offering.deliverable.expectedSizeBytes;
  else listingDraft.offering.deliverable.expectedSizeBytes=expectedSizeBytes;
  const listing=await core.signComponentArtifact(listingDraft,core.ARTIFACT_SEPARATORS.Listing,{signer:seller.claim,algorithm:'ed25519',sign:seller.signBytes}),admission=createSessionAdmissionFixture({seller:{claim:seller.claim,sign:seller.signBytes},buyer:{claim:buyer.claim,sign:buyer.signBytes},now:()=>time});
- const config={get challengeLedger(){return ledger===null?store.challenges:ledger();},maxJobs,signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
+ const config={maxJobs,signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
   agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,
   nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:createDemDeliveryContext({authority:'TEST-admission',resolveBuyer:unreachable,resolveSeller:async({jobId})=>contexts.has(jobId)?{disposition:'present',value:structuredClone(contexts.get(jobId))}:{disposition:'indeterminate',reason:'TEST context unavailable'}})};
  const sourceUrl=new URL('../../src/dacs/seller-agent.mjs',import.meta.url),api=await privateModule(sourceUrl,[],source=>{
@@ -37,7 +32,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
    if(!signing)throw new Error('TEST signing stage missing');
    source=source.slice(0,signing.getStart(file))+"\nthrow new SellerAgentError('proposal_not_assembled','TEST isolated admission boundary',503);\n"+source.slice(method.body.end-1);
   }
-  if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposalClosingAttempt,retainedVetEvidenceProblem};');
+  if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposal,retainedVetEvidenceProblem};');
  });
  const open=async()=>{const agent=await api.createSellerAgent(config);t.after(()=>agent.close());return agent;};
  const input=async(agent,jobId=JOB,party=buyer)=>{const challenge=await agent.issueSessionChallenge({jobId,buyer:party.claim}),bundle=fixtureIdentityBundle(party,time);bundle.sessionNonce=challenge.sessionNonce;bundle.presentation.signatures[0].signature=party.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+identityBundleHash(bundle))).toString('base64url');return{proposal:{},transportIdentity:{jobId,buyer:party.claim,seller:seller.claim},buyerIdentityBundle:bundle};};
@@ -52,7 +47,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
   contexts.set(jobId,{input:structuredClone(actual),vetRequirements:structuredClone(vetRequirements)});
   return proposalForInput(synthetic?base:actual);
  };
- return{config,listing,dir,admission,signed,open,input,proposal,contexts,advance:ms=>{time+=ms;},get store(){return store;},storePath:join(storeDirectory,'transport.sqlite'),reopenStore(){store.close();openStore();}};
+ return{config,listing,dir,admission,signed,open,input,proposal,contexts,advance:ms=>{time+=ms;}};
 }
 
 export async function proposalForInput(input){

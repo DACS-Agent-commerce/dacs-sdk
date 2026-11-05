@@ -78,6 +78,21 @@ test('a stalled DEM delivery context resolver aborts and releases the job fence'
  assert.equal((await agent.receiveProposal(request)).disposition,'complete','the same job runs again after the fence is released');
 });
 
+for(const history of ['expired','consumed','retired'])test(`${history} challenge history does not exhaust issuance after durable reopen`,async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true,maxJobs:1}),agent=await f.open();agent.close();
+ const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const {sha256Hex}=await import('@kynesyslabs/dacs');const {buyer,NOW}=await import('./helpers/protocol-fixture.mjs');
+ const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing),maxJobs:1});
+ try{for(let i=0;i<16;i++){
+  const nonce=sha256Hex('TEST history '+i),hash=sha256Hex('TEST presentation '+i),issuedAt=history==='expired'?NOW-1600+i*100:NOW;
+  state.issueChallenge(nonce,{jobId:JOB.slice(0,-2)+i.toString(16).toUpperCase().padStart(2,'0'),buyer:buyer.claim,issuedAt,expiresAt:history==='expired'?issuedAt+50:NOW+600000});
+  if(history!=='expired')state.attemptChallenge(nonce,{presentationHash:hash});
+  if(history==='retired'){state.admitChallenge(nonce,hash,{TEST:'retained operator checkpoint'});state.retireChallenge(nonce,hash);}
+ }}finally{state.close();}
+ const fresh=await f.open(),next=await fresh.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim});
+ assert.equal(next.jobId,'01J8N4YV7YVYQ4DB7M8T4C7W0B');assert.ok(next.sessionNonce);
+
+});
+
 test('an exact retry reuses the retained context admission after the callback is lost',async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true});f.config.contextRequest=()=>true;
  const agent=await f.open(),request=await f.proposal(agent,JOB,{generatedAt:NOW-30000});
@@ -152,11 +167,10 @@ test('a pre-upgrade session without a retained generatedAt keeps its context-tim
  // missing field as an out-of-window proposal.
  const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');
  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
- const {sha256Hex,canonicalize}=await import('@kynesyslabs/dacs'),{SELLER_PROFILE}=await import('../src/dacs/session-admission.mjs');
- const bundle=request.buyerIdentityBundle,nonce=bundle.sessionNonce,presentationHash=sha256Hex(canonicalize(bundle)),buyerBundleHash=identityBundleHash(bundle);
+ const {contentHash}=await import('@kynesyslabs/dacs'),{SELLER_PROFILE}=await import('../src/dacs/session-admission.mjs');
+ const bundle=request.buyerIdentityBundle,nonce=bundle.sessionNonce,presentationHash=contentHash(bundle),buyerBundleHash=identityBundleHash(bundle);
  const admission=await f.admission.sessionAdmission.admit({jobId:JOB,buyer:bundle.presentedBy,buyerBundleHash,sessionNonce:nonce,seller:f.config.signer.claim,listingPin:listingPin(f.listing),profile:structuredClone(SELLER_PROFILE)});
- const {owner}=f.store.challenges.attempt({path:'proposal',nonce,jobId:JOB,buyer:bundle.presentedBy,challengeScopeHash:null,presentationHash});
- f.store.challenges.accept(owner,nonce,{buyerBundleText:canonicalize(bundle),buyerBundleHash,admission,admittedAt:NOW,firstAdmission:{challengeExpiresAt:NOW+600000,generatedAt:NOW,checkedAt:NOW}});
+ state.attemptChallenge(nonce,{presentationHash});state.admitChallenge(nonce,presentationHash,{buyerBundle:structuredClone(bundle),buyerBundleHash,admission,admittedAt:NOW});
  try{await state.withJob(JOB,async()=>state.saveSession({jobId:JOB,buyerBundle:structuredClone(request.buyerIdentityBundle),buyerBundleHash:identityBundleHash(request.buyerIdentityBundle),proposal:null,stage:'proposed',proposalAdmission:{proposalHash:request.proposal.proposalHash,observedAt:NOW,admitted:true}}));}finally{state.close();}
  const agent=await f.open(),answer=await agent.receiveProposal(request);
  assert.equal(answer.disposition,'complete');assert.deepEqual(agent.agreementState(request.transportIdentity).contribution,answer.contribution);
@@ -191,4 +205,10 @@ test('retained proposal authenticates the context references actually stored by 
  const first=await agent.receiveProposal(request);assert.equal(first.disposition,'complete');agent.close();
  const resumed=await f.open(),answer=await resumed.receiveProposal(request);assert.equal(answer.disposition,'complete');
  assert.deepEqual(answer.contribution,first.contribution);
+});
+
+for(const history of ['expired','expiry-boundary','consumed','retired'])test(`${history} rows do not count against live challenge limits`,async()=>{
+ const {admitSessionChallenge}=await import('../src/dacs/session-challenge-limits.mjs');
+ const rows=Array.from({length:16},(_,i)=>[String(i),{kind:'session-challenge',jobId:JOB,expiresAt:history==='expired'?99:history==='expiry-boundary'?100:101,attempt:['consumed','retired'].includes(history)?{}:null,...(history==='retired'?{retired:true}:{})}]);
+ assert.doesNotThrow(()=>admitSessionChallenge(rows,{jobId:JOB,issuedAt:100},{maxOutstanding:1,maxPerJob:1}));
 });

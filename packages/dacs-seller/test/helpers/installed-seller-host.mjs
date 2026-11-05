@@ -15,7 +15,6 @@ import * as core from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
 import * as seller from '@kynesyslabs/dacs-seller';
 import { createSellerAgent } from '@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs';
-import { createSellerTransportStore } from '@kynesyslabs/dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer } from '@kynesyslabs/dacs-seller/src/dacs/native-payment-evidence-consumer.mjs';
@@ -184,11 +183,7 @@ let activeHost=null;const start=async(extra={})=>activeHost=await seller.startSe
 // Refused configurations: each names its cause and starts nothing.
 const refusal = async (options) => { try { const host = await seller.startSellerHost(options); await host.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } };
 // Check the internal constructor without exposing it in the root package API.
-// The agent composes sessionAdmission only with the one challenge ledger, so the fixture opens the packed store the host would.
-const agentRefusal = async (options) => {
-  const store = createSellerTransportStore({ path: join(journalDirectory, 'agent-transport.sqlite'), now: Date.now, generation: 'TEST-installed-agent' });
-  try { const agent = await createSellerAgent({ challengeLedger: store.challenges, ...options }); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } finally { store.close(); }
-};
+const agentRefusal = async (options) => { try { const agent = await createSellerAgent(options); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } };
 if (second !== null) {
   process.stdout.write(`${JSON.stringify({ secondProcess: await refusal({ signer, listing, dataDirectory, ...capabilities() }) })}\n`);
   process.exit(0);

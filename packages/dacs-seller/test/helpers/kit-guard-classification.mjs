@@ -31,6 +31,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-proposal-time.mjs': { effect: {  }, pure: ['proposalTimeProblem'] },
   'src/dacs/seller-transport-auth.mjs': { effect: { createSellerTransportServerAuth: ['createSellerTransportServerAuth'], createSellerTransportClientAuth: ['createSellerTransportClientAuth'] }, pure: ['SellerTransportError', 'createSellerTransportStore', 'normalizeSellerSessionDelegationSignature', 'sellerContextChallengeScope', 'sellerContextScopeHash', 'sellerSessionDelegationSigningBytes', 'sellerTransportEffect', 'sellerTransportSigningBytes', 'verifySellerSessionDelegation'] },
   'src/dacs/session-admission.mjs': { effect: {  }, pure: ['hasPresenceOnlyClaim', 'identityPresentationValid', 'listingRevocationProblem', 'readAdmissionCapability', 'sellerSessionPresentationProblem', 'sessionAdmissionConfig', 'sessionAdmissionProblem', 'vetAnchorReceiptProblem', 'vetRecordProblem'] },
+  'src/dacs/session-challenge-limits.mjs': { effect: {  }, pure: ['admitSessionChallenge'] },
   'src/dacs/signing-gate-bind.mjs': { effect: {  }, pure: ['bindWhenNoSigningGate'] },
   'src/dacs/wallet-transactions.mjs': { effect: {  }, pure: ['assertStorageJsonDepth', 'buildStorageProgramCreatePayload', 'deriveStorageAddress'] },
   'src/devnet-demo/agreement-context.mjs': { effect: { createDevnetDemoAgreementContextProvider: ['createDevnetDemoAgreementContextProvider'] }, pure: [] },

@@ -12,16 +12,13 @@ import {railSteward} from './helpers/rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './helpers/session-admission-fixture.mjs';
 import {buildUnsignedIdentityBundle,attachIdentityPresentation} from '../src/dacs/listing.mjs';
 import {listingPin} from '../src/dacs/purchase-protocol.mjs';
-import {createSellerTransportStore} from '../src/dacs/seller-transport-auth.mjs';
-import {admittedSession} from './helpers/challenge-api.mjs';
+import {admitSessionChallenge} from '../src/dacs/session-challenge-limits.mjs';
 function fixture(t){
  const dir=mkdtempSync(join(tmpdir(),'TEST-agent-construction-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
  const listing=fixtureListing(seller,{now:NOW}),signer={claim:seller.claim,sign:seller.signBytes},unreachable=()=>assert.fail('unexpected external operation');let time=NOW;
- const storeDirectory=mkdtempSync(join(tmpdir(),'TEST-agent-construction-ledger-'));t.after(()=>rmSync(storeDirectory,{recursive:true,force:true}));
- const store=createSellerTransportStore({path:join(storeDirectory,'transport.sqlite'),now:()=>time,generation:'TEST-generation'});t.after(()=>store.close());
  const admission=createSessionAdmissionFixture({seller:{claim:seller.claim,sign:seller.signBytes},buyer:{claim:buyer.claim,sign:buyer.signBytes},now:()=>time});
- const config={signer,listing,durableDirectory:dir,challengeLedger:store.challenges,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission};
- return{config,dir,listing,signer,admission,ledger:store.challenges,store,storePath:join(storeDirectory,'transport.sqlite'),advance:ms=>{time+=ms;},open:changes=>createSellerAgent({...config,...changes})};
+ const config={signer,listing,durableDirectory:dir,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission};
+ return{config,dir,listing,signer,admission,advance:ms=>{time+=ms;},open:changes=>createSellerAgent({...config,...changes})};
 }
 // The simulated fixture profile: no session admission, so no retained Vet
 // evidence can ever be authenticated for a session that claims it.
@@ -42,13 +39,9 @@ const presentAt=(party,sessionNonce,presentedAt)=>{
 };
 const vetRef=(jobId,party,verifier)=>({anchor:{kind:'storage-program',locator:core.compositeVerificationAddress(jobId,party)},contentHash:'b'.repeat(64),signer:verifier});
 const sessionFor=(jobId,bundle,checkpoint)=>({jobId,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),stage:'vetted',vetCheckpoint:checkpoint});
-// CORE SN-4: the accepted attempt binds the exact complete presentation.
-const FIXTURE_PIN=listingPin(fixtureListing(seller,{now:NOW}));
-const admitWith=(ledger,nonce,session)=>{
- const bundle=session.buyerBundle,jobId=session.jobId??JOB,{owner}=ledger.attempt({path:'proposal',nonce,jobId,buyer:bundle.presentedBy,challengeScopeHash:null,presentationHash:core.sha256Hex(core.canonicalize(bundle))});
- const bundleHash=core.identityBundleHash(bundle),admission=admittedSession({jobId,bundle,bundleHash,seller:seller.claim,listingPin:FIXTURE_PIN});
- assert.equal(ledger.accept(owner,nonce,{buyerBundleText:core.canonicalize(bundle),buyerBundleHash:bundleHash,admission,admittedAt:NOW,firstAdmission:{challengeExpiresAt:NOW,generatedAt:NOW,checkedAt:NOW}}),true);
-};
+// CORE SN-4: the admitted attempt binds the exact complete presentation.
+const admittedAttempt=session=>({presentationHash:core.sha256Hex(core.canonicalize(session.buyerBundle))});
+const admitWith=(state,nonce,session)=>{const attempt=admittedAttempt(session);state.attemptChallenge(nonce,attempt);state.admitChallenge(nonce,attempt.presentationHash);};
 async function saveSession(f,session,prepare){
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{prepare?.(state);await state.withJob(session.jobId,()=>state.saveSession(session));}finally{state.close();}
@@ -62,11 +55,15 @@ test('failed Listing initialization closes every owned database handle',async t=
  const descriptors=()=>readdirSync('/proc/self/fd').filter(fd=>{try{return readlinkSync('/proc/self/fd/'+fd)===path;}catch{return false;}}).length;
  const before=descriptors();for(let i=0;i<3;i++)await assert.rejects(f.open({listing:changed}));assert.equal(descriptors(),before);
 });
-test('an issued challenge survives a reopen of the ledger with every bound field',async t=>{
+test('issued challenge survives authenticated database reopen with every bound field',async t=>{
  const f=fixture(t),agent=await f.open(),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
- const reopened=createSellerTransportStore({path:f.storePath,now:()=>NOW,generation:'TEST-generation-two'});t.after(()=>reopened.close());
- const {nonce,jobId,buyer:issuedFor,issuedAt,expiresAt,state,origin}=reopened.challenges.retained(issued.sessionNonce);
- assert.deepEqual({nonce,jobId,buyer:issuedFor,issuedAt,expiresAt,state,origin},{nonce:issued.sessionNonce,jobId:JOB,buyer:buyer.claim,issuedAt:issued.issuedAt,expiresAt:issued.expiresAt,state:'issued',origin:'operator'});
+ const reopened=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});try{const prior=reopened.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});assert.deepEqual(prior,{kind:'session-challenge',...issued,attempt:null});}finally{reopened.close();}
+});
+for(const durable of [true,false])test(`${durable?'durable':'memory'} challenges enforce total capacity and stop counting expired unused nonces`,async t=>{
+ const f=fixture(t),options={maxJobs:1,...durable?{}:{durableDirectory:undefined}},agent=await f.open(options);let current=agent;
+ t.after(()=>current.close());const first=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});await assert.rejects(agent.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');
+ if(durable){agent.close();current=await f.open(options);await assert.rejects(current.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');}
+ f.advance(first.expiresAt-NOW);assert.notEqual((await current.issueSessionChallenge({jobId:JOB,buyer:buyer.claim})).sessionNonce,first.sessionNonce);
 });
 for(const durable of [true,false])test(`${durable?'durable':'memory'} closed agents refuse every public operation`,async t=>{
  const f=fixture(t),agent=await f.open(durable?{}:{durableDirectory:undefined});agent.close();agent.close();
@@ -76,10 +73,33 @@ test('the partial constructor is absent from the public package entry',async()=>
  const entry=await import('../src/index.mjs');assert.equal(entry.createSellerAgent,undefined);
 });
 
-test('sessionAdmission without a complete challengeLedger is refused at construction',async t=>{
- const f=fixture(t),incomplete={...f.ledger};delete incomplete.issueForOperator;
- await assert.rejects(f.open({challengeLedger:null}),{name:'TypeError',message:/needs the challengeLedger/});
- await assert.rejects(f.open({challengeLedger:incomplete}),{name:'TypeError',message:/challengeLedger must provide/});
+test('per-job challenge capacity applies before the global bound',async t=>{
+ const f=fixture(t),agent=await f.open({maxJobs:32});t.after(()=>agent.close());for(let i=0;i<16;i++)await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});
+ await assert.rejects(agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),e=>e.code==='seller_challenge_capacity');assert.ok(await agent.issueSessionChallenge({jobId:'01J8N4YV7YVYQ4DB7M8T4C7W0B',buyer:buyer.claim}));
+});
+test('an expired unused challenge is retained across restart and does not consume live capacity',async t=>{
+ const f=fixture(t),agent=await f.open({maxJobs:1}),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ f.advance(issued.expiresAt-NOW+1);
+ const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});
+ try{assert.deepEqual(state.challenge(issued.sessionNonce),{kind:'session-challenge',...issued,attempt:null},'CORE SN-4 retains the unused issuance record');}finally{state.close();}
+ const fresh=await f.open({maxJobs:1});try{assert.ok(await fresh.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}));}finally{fresh.close();}
+});
+test('an attempted, admitted challenge stays retained but does not consume live capacity after expiry',async t=>{
+ const otherJob='01J8N4YV7YVYQ4DB7M8T4C7W0B';
+ const f=fixture(t),agent=await f.open({maxJobs:1}),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});
+ try{state.attemptChallenge(issued.sessionNonce,{presentationHash:'a'.repeat(64)});state.admitChallenge(issued.sessionNonce,'a'.repeat(64));}finally{state.close();}
+ f.advance(issued.expiresAt-NOW+1);
+ const fresh=await f.open({maxJobs:1});try{assert.ok(await fresh.issueSessionChallenge({jobId:otherJob,buyer:buyer.claim}),'a consumed challenge is a retained tombstone, not a live slot');}finally{fresh.close();}
+ const reopened=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing),maxJobs:1});
+ try{assert.deepEqual(reopened.challenge(issued.sessionNonce).attempt,{presentationHash:'a'.repeat(64),admitted:true});}finally{reopened.close();}
+});
+test('an attempted challenge, admitted or refused, holds no live issuance slot',()=>{
+ const value={jobId:JOB,issuedAt:NOW};
+ for(const admitted of [false,true]){
+  const row={kind:'session-challenge',jobId:JOB,issuedAt:NOW-1,expiresAt:NOW+1000,attempt:{presentationHash:'a'.repeat(64),admitted}};
+  assert.doesNotThrow(()=>admitSessionChallenge(new Map([['nonce',row]]),value,{maxOutstanding:1,maxPerJob:1}));
+ }
 });
 test('malformed challenge requests are coded refusals',async t=>{
  const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
@@ -107,7 +127,7 @@ test('restart refuses a retained session whose challenge was issued for another 
 test('restart refuses a retained vetted session with no exact, job-bound, verifier-signed Vet checkpoint',async t=>{
  const f=fixture(t),agent=await f.open(),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
  const bundle=presentWith(buyer,issued.sessionNonce);
- const admit=async session=>{await saveSession(f,session);if(!f.ledger.retained(issued.sessionNonce).accepted)admitWith(f.ledger,issued.sessionNonce,session);};
+ const admit=async session=>saveSession(f,session,state=>admitWith(state,issued.sessionNonce,session));
  for(const [checkpoint,pattern] of [
   [null,/no exact buyer and seller Vet checkpoint/],
   [{buyer:null,seller:null},/not an exact signed record reference/],
@@ -153,7 +173,7 @@ test('restart refuses a Vet record the counterparty did not sign or a receipt be
   const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...options});
   const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
   try{
-   admitWith(f.ledger,issued.sessionNonce,{buyerBundle:bundle});
+   admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
    await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
   }finally{state.close();}
   await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),error=>error.code==='seller_state_unverified'&&pattern.test(error.message));
@@ -168,7 +188,7 @@ test('restart restores a session bound to its admitted challenge and to verified
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement});
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{
-  admitWith(f.ledger,issued.sessionNonce,{buyerBundle:bundle});
+  admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
  }finally{state.close();}
  const fresh=await f.open({sessionAdmission:admission.sessionAdmission});
@@ -195,7 +215,7 @@ async function vettedSession(t,requirementHash={}){
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...requirementHash.seller?{requirementHash:requirementHash.seller}:{}});
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{
-  admitWith(f.ledger,issued.sessionNonce,{buyerBundle:bundle});
+  admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
  }finally{state.close();}
  return {f,admission};
@@ -227,6 +247,11 @@ test('restart fails closed when a Vet reader returns an oversized reply',async t
  await assert.rejects(f.open({sessionAdmission:{...admission.sessionAdmission,resolveVetRecord:async()=>({padded:'x'.repeat(64*1024)})}}),
   error=>error.code==='seller_state_unverified'&&/cannot be resolved/.test(error.message));
 });
+test('a malformed retained challenge issuance is corruption, not a released slot',()=>{
+ const value={jobId:JOB,issuedAt:NOW};
+ for(const row of [{kind:'session-challenge',attempt:null,expiresAt:'invalid'},{kind:'session-challenge',attempt:null,expiresAt:-1},{kind:'session-challenge',attempt:'consumed',expiresAt:NOW+1000}])
+  assert.throws(()=>admitSessionChallenge(new Map([['nonce',row]]),value,{maxOutstanding:1,maxPerJob:1}),error=>error.code==='seller_state_corrupt');
+});
 // CORE SN-4: an admitted nonce must name the exact complete presentation that
 // was presented, not just the nonce.
 test('restart refuses a retained session admitted for a different presentation',async t=>{
@@ -239,7 +264,7 @@ test('restart refuses a retained session admitted for a different presentation',
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement});
  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
  try{
-  admitWith(f.ledger,issued.sessionNonce,{buyerBundle:other});
+  const attempt={presentationHash:core.sha256Hex(core.canonicalize(other))};state.attemptChallenge(issued.sessionNonce,attempt);state.admitChallenge(issued.sessionNonce,attempt.presentationHash);
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
  }finally{state.close();}
  await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),error=>error.code==='seller_state_unverified'&&/another presentation/.test(error.message));
@@ -250,7 +275,7 @@ test('live reads refuse a shape-valid session another writer saved after open',a
  const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
  const issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),bundle=presentWith(buyer,issued.sessionNonce);
  const session={...sessionFor(JOB,bundle,{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}),paymentWork:{txHash:'a'.repeat(64),payerPayingKey:buyer.claim}};
- admitWith(f.ledger,issued.sessionNonce,session);await saveSession(f,session);
+ await saveSession(f,session,state=>admitWith(state,issued.sessionNonce,session));
  for(const read of [()=>agent.stageOf(JOB),()=>agent.durableSessionOf(JOB),()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB),()=>agent.durableSessions()])
   assert.throws(read,error=>error.code==='seller_state_unverified'&&/not verified by this seller instance/.test(error.message));
  assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
@@ -277,7 +302,7 @@ test('restart refuses a retained seller bundle that is not the Listing identity 
   const sellerRef=await admission.vetRecord(JOB,seller.claim,sellerBundle,{requirement:f.listing.buyerRequirement});
   const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
   try{
-   admitWith(f.ledger,issued.sessionNonce,{buyerBundle:bundle});
+   admitWith(state,issued.sessionNonce,{buyerBundle:bundle});
    await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
   }finally{state.close();}
   await assert.rejects(f.open({sessionAdmission:admission.sessionAdmission}),
@@ -319,7 +344,7 @@ test('a new session is gated by the operator revocation reading before a nonce i
 });
 test('a native seller without a session admission cannot open a session',async t=>{
  const f=fixture(t),agent=await f.open({sessionAdmission:undefined});t.after(()=>agent.close());
- await assert.rejects(agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_admission_unavailable'&&error.status===503);
+ await assert.rejects(agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_admission_required'&&error.status===503);
 });
 // The construction check proves the Listing's own bytes, signature and rail;
 // its fabricated catalog row is not a revocation reading and is not retained.
