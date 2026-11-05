@@ -198,17 +198,6 @@ export interface SettlementIdempotencyStore {
     binding: Readonly<SettlementBinding>,
   ): Promise<SettleResult | null>;
   /**
-   * Whether the log holds any record (an intent or an outcome) for these exact
-   * terms, read without claiming anything. A recovery-only request uses it to
-   * tell an unresolved intent, which `once` can reconcile, from a key the log has
-   * never seen, which only a fresh claim could settle. Throws when the retained
-   * terms conflict.
-   */
-  hasRecord?(
-    key: string,
-    binding: Readonly<SettlementBinding>,
-  ): Promise<boolean>;
-  /**
    * Run one settlement under a generation-fenced write-ahead protocol.
    *
    * `binding` is mandatory. Callers that cannot supply complete immutable terms
@@ -217,12 +206,31 @@ export interface SettlementIdempotencyStore {
   once(
     key: string,
     binding: Readonly<SettlementBinding>,
-    submit: (
-      fence?: Readonly<SettlementEffectFence>,
-    ) => Promise<SettleResult | SettlementNotInvokedResult>,
+    submit: SettlementSubmit,
+    reconcile?: SettlementReconcile,
+  ): Promise<SettleResult>;
+  /**
+   * Run one recovery-only settlement under the same protocol as `once`, which
+   * must never take a fresh claim. It returns a recorded outcome, or reconciles
+   * an expired unresolved intent: it adopts a payment that `reconcile` proves
+   * landed, and calls `submit` only under a bound replay authorization. Throws,
+   * without calling `submit`, when the log holds no unresolved intent for this
+   * key (never seen, or released after a not-invoked attempt). Required for a
+   * request with `recoveryOnly` set: a store without it cannot recover, and the
+   * request is refused rather than passed to `once`.
+   */
+  recover?(
+    key: string,
+    binding: Readonly<SettlementBinding>,
+    submit: SettlementSubmit,
     reconcile?: SettlementReconcile,
   ): Promise<SettleResult>;
 }
+
+/** The irreversible rail effect a settlement store runs under its fence. */
+type SettlementSubmit = (
+  fence?: Readonly<SettlementEffectFence>,
+) => Promise<SettleResult | SettlementNotInvokedResult>;
 
 export interface SettlementIdempotencyStoreOptions {
   owner?: string;
@@ -799,66 +807,6 @@ function captureReplayAuthorization(
   });
 }
 
-/**
- * Gate a recovery-only request: it proceeds only when the store already holds a
- * record for this key and binding, an outcome or an unresolved intent. `once`
- * then returns the outcome, or reconciles the intent and adopts a payment it
- * proves landed; it never submits without a bound replay authorization. Resolves
- * when a record exists. Throws a `DacsError` before the rail is reached when the
- * store cannot answer a read-only lookup, answers something other than a result
- * or `null`, holds no record at all, or the recorded binding conflicts with
- * these terms.
- */
-export async function assertRecordedForRecovery(
-  store: Pick<SettlementIdempotencyStore, "readOutcome" | "hasRecord">,
-  key: string,
-  binding: Readonly<SettlementBinding>,
-  label: string,
-): Promise<void> {
-  if (typeof store.readOutcome !== "function") {
-    throw new DacsError(
-      `${label} recovery requires a store with read-only outcome lookup; refusing a fresh payment`,
-    );
-  }
-  const found: unknown = await store.readOutcome(key, binding);
-  if (found !== null && (typeof found !== "object" || Array.isArray(found))) {
-    throw new DacsError(
-      `${label} recovery got an invalid outcome lookup answer for ${key}; refusing a fresh payment`,
-    );
-  }
-  if (found !== null) return;
-  if (typeof store.hasRecord !== "function") {
-    throw new DacsError(
-      `${label} recovery found no recorded outcome for ${key} and the store cannot tell an unresolved ` +
-        "intent from no record; refusing a fresh payment",
-    );
-  }
-  if (await store.hasRecord(key, binding) !== true) {
-    throw new DacsError(
-      `${label} recovery found no recorded settlement for ${key}; refusing a fresh payment ` +
-        "(the payment may have been sent: check the rail's own records before retrying)",
-    );
-  }
-}
-
-/**
- * Run `store.once`, first applying the recovery gate when `recoveryOnly` is
- * `true` (see `assertRecordedForRecovery`). Resolves to the settlement result;
- * throws what the gate or `once` throws.
- */
-export async function onceUnlessFreshClaim(
-  store: SettlementIdempotencyStore,
-  recoveryOnly: boolean | undefined,
-  label: string,
-  key: string,
-  binding: Readonly<SettlementBinding>,
-  submit: Parameters<SettlementIdempotencyStore["once"]>[2],
-  reconcile?: SettlementReconcile,
-): Promise<SettleResult> {
-  if (recoveryOnly === true) await assertRecordedForRecovery(store, key, binding, label);
-  return store.once(key, binding, submit, reconcile);
-}
-
 /** What an SDK settle bridge declares about itself. */
 export interface SettlementBridgeTraits {
   /**
@@ -930,51 +878,45 @@ export function createIdempotencyStore(
     return value;
   };
 
-  /** Read the log's record for these exact terms: whether any exists, and its outcome if recorded. */
-  const readRecord = async (
-    key: string,
-    binding: Readonly<SettlementBinding>,
-  ): Promise<Readonly<{ recorded: boolean; outcome: SettleResult | null }>> => {
-    const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
-    const bindingHash = settlementBindingHash(capturedBinding);
-    if (settlementKey(capturedBinding.railId, capturedBinding.jobId, capturedBinding.phaseIndex) !== key) {
-      throw new DacsError("settlement outcome lookup binding does not match its idempotency key");
-    }
-    if (durable.readOutcome === undefined) {
-      throw new DacsError("settlement log requires read-only outcome lookup for retained recovery");
-    }
-    const flying = inflight.get(key);
-    if (flying !== undefined) {
-      if (flying.bindingHash !== bindingHash) {
-        throw new DacsError(`settlement ${key} is already running under different terms`);
+  // `once` and `recover` share one state machine; `recoveryOnly` lets only a
+  // recorded outcome, a reconcile or a granted replay lease reach `submit`.
+  const protocol = {
+    async readOutcome(key: string, binding: Readonly<SettlementBinding>): Promise<SettleResult | null> {
+      const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
+      const bindingHash = settlementBindingHash(capturedBinding);
+      if (settlementKey(capturedBinding.railId, capturedBinding.jobId, capturedBinding.phaseIndex) !== key) {
+        throw new DacsError("settlement outcome lookup binding does not match its idempotency key");
       }
-    }
-    const raw = await durable.readOutcome(key);
-    if (raw === null) return { recorded: false, outcome: null };
-    const record = frozenClone(raw, "settlement read-only record");
-    if (typeof record.bindingHash !== "string" || !/^[0-9a-f]{64}$/.test(record.bindingHash)) {
-      throw new DacsError("settlement read-only record has an invalid binding hash");
-    }
-    if (record.bindingHash !== bindingHash) {
-      throw new DacsError(`settlement ${key} outcome binding conflicts with requested terms`);
-    }
-    if (hasExactKeys(record, ["bindingHash"])) return { recorded: true, outcome: null };
-    const outcome = captureStoredOutcome(record, "settlement read-only outcome");
-    return {
-      recorded: true,
-      outcome: captureBoundResult(outcome.result as SettleResult, capturedBinding,
-        "settlement read-only outcome") as SettleResult,
-    };
-  };
-
-  return {
-    async readOutcome(key, binding) {
-      return (await readRecord(key, binding)).outcome;
+      if (durable.readOutcome === undefined) {
+        throw new DacsError("settlement log requires read-only outcome lookup for retained recovery");
+      }
+      const flying = inflight.get(key);
+      if (flying !== undefined) {
+        if (flying.bindingHash !== bindingHash) {
+          throw new DacsError(`settlement ${key} is already running under different terms`);
+        }
+      }
+      const raw = await durable.readOutcome(key);
+      if (raw === null) return null;
+      const record = frozenClone(raw, "settlement read-only record");
+      if (typeof record.bindingHash !== "string" || !/^[0-9a-f]{64}$/.test(record.bindingHash)) {
+        throw new DacsError("settlement read-only record has an invalid binding hash");
+      }
+      if (record.bindingHash !== bindingHash) {
+        throw new DacsError(`settlement ${key} outcome binding conflicts with requested terms`);
+      }
+      if (hasExactKeys(record, ["bindingHash"])) return null;
+      const outcome = captureStoredOutcome(record, "settlement read-only outcome");
+      return captureBoundResult(outcome.result as SettleResult, capturedBinding,
+        "settlement read-only outcome") as SettleResult;
     },
-    async hasRecord(key, binding) {
-      return (await readRecord(key, binding)).recorded;
-    },
-    async once(key, binding, submit, reconcile) {
+    async settle(
+      key: string,
+      binding: Readonly<SettlementBinding>,
+      submit: SettlementSubmit,
+      reconcile: SettlementReconcile | undefined,
+      recoveryOnly: boolean,
+    ): Promise<SettleResult> {
       const capturedBinding = frozenClone(
         binding,
         "settlement idempotency binding",
@@ -1164,6 +1106,17 @@ export function createIdempotencyStore(
           await effectFence.assertCurrent();
         }
 
+        if (recoveryOnly && lease.stage !== "replay") {
+          // Only a fresh claim gets here: the log held no unresolved intent (a
+          // key never seen, or released after a not-invoked attempt). Give the
+          // claim back and refuse, whatever the release answers.
+          const released: unknown = await durable.releaseIntent({ key, bindingHash, lease: effectFence, now: now() });
+          throw new DacsError(
+            `settlement ${key} recovery found no recorded settlement; refusing a fresh payment` +
+              (released === "released" ? "" : ` (releasing the claim returned ${String(released)})`),
+          );
+        }
+
         // The reference rails assert this same fence again immediately beside
         // their irreversible request. An ordinary empty-hash failure is still
         // ambiguous; only an explicit not-invoked rail disposition releases.
@@ -1209,4 +1162,36 @@ export function createIdempotencyStore(
       }
     },
   };
+
+  return {
+    readOutcome: protocol.readOutcome,
+    once: (key, binding, submit, reconcile) => protocol.settle(key, binding, submit, reconcile, false),
+    recover: (key, binding, submit, reconcile) => protocol.settle(key, binding, submit, reconcile, true),
+  };
+}
+
+/**
+ * Settle one bridge request through `store`. A request with `recoveryOnly` set
+ * goes only to `store.recover`, never to `once`, and its result must be bound
+ * to `binding`; any other request goes to `once`. Resolves to the settlement
+ * result. Throws a `DacsError` before the rail is reached when a recovery
+ * request meets a store without `recover`, when `recover` returns a result for
+ * other terms, and otherwise what the store throws.
+ */
+export async function settleThroughStore(input: Readonly<{
+  store: SettlementIdempotencyStore;
+  recoveryOnly: boolean | undefined;
+  label: string;
+  key: string;
+  binding: Readonly<SettlementBinding>;
+  submit: SettlementSubmit;
+  reconcile?: SettlementReconcile;
+}>): Promise<SettleResult> {
+  const { store, key, binding, submit, reconcile } = input;
+  if (input.recoveryOnly !== true) return store.once(key, binding, submit, reconcile);
+  if (typeof store.recover !== "function") {
+    throw new DacsError(`${input.label} recovery requires a store with recover(); refusing a fresh payment`);
+  }
+  const recovered = await store.recover(key, binding, submit, reconcile);
+  return captureBoundResult(recovered, binding, `${input.label} recovered settlement result`) as SettleResult;
 }

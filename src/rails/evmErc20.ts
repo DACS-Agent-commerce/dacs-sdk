@@ -2,8 +2,8 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
 import {
   createIdempotencyStore,
-  onceUnlessFreshClaim,
   registerSettlementBridge,
+  settleThroughStore,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -298,14 +298,14 @@ export function evmErc20Settle(
         recipientEvm,
         amount,
       }, effectFence);
-    return onceUnlessFreshClaim(
+    return settleThroughStore({
       store,
-      req.recoveryOnly,
-      "evm-erc20",
-      settlementKey(railId, jobId, phaseIndex),
+      recoveryOnly: req.recoveryOnly,
+      label: "evm-erc20",
+      key: settlementKey(railId, jobId, phaseIndex),
       binding,
       submit,
       reconcile,
-    );
+    });
   });
 }

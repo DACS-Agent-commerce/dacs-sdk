@@ -687,7 +687,10 @@ pinned. A `jobId` you pass is always a resume. A resume whose `sessionStore` has
 no record of the job, or with no `sessionStore`, settles only by recovery, and
 only through a `resumeSettlement` an SDK bridge returned (`payDemSettle`,
 `evmErc20Settle`, `x402Settle`, or `withRecoveredAttempts` around one of them);
-any other function is refused before any payment. A first run omits `jobId`; keep
+any other function is refused before any payment. The bridge adopts or
+reconciles what the rail's own idempotency store recorded, and refuses when that
+store holds nothing for the job, so a crash before the rail recorded its intent
+needs operator action. A first run omits `jobId`; keep
 the generated job id from the `settle` request or the `sessionStore` before
 anything can fail. A first run takes its id from `deps.newJobId`, which must
 return a fresh id on every call. After a crash, pass the id as `jobId`; never

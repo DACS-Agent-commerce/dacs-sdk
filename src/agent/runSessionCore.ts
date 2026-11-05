@@ -154,10 +154,11 @@ export interface SettleRequest {
   priorAttempts?: readonly SettlementRecoveryAttempt[];
   /**
    * Set by `runSession` on every `resumeSettlement` request. A bridge honours it
-   * by never taking a fresh claim: with no retained transaction hash it proceeds
-   * only when its store already holds a record for this settlement key, an
-   * outcome or an unresolved intent, which it reconciles (adopting a payment it
-   * proves landed) rather than submits.
+   * by never taking a fresh claim: it settles through its store's `recover`,
+   * whose own atomic claim returns a recorded outcome or reconciles an
+   * unresolved intent (adopting a payment it proves landed), and refuses when
+   * the store holds no unresolved intent for the key. A store without `recover`
+   * is refused.
    */
   recoveryOnly?: boolean;
 }
@@ -2892,6 +2893,8 @@ async function recordSessionOutcome(
 const NATIVE_SESSION_LEASE_MS = 30_000;
 const NATIVE_SESSION_RENEW_MS = 10_000;
 
+/** Phase of a record that a fresh run created; the only phase that allows a fresh claim before an intent. */
+const FRESH_RUN_PHASE = "negotiated";
 /** Phase of a record that a recovery-only run created; a later run must not read it as a fresh run's record. */
 const RECOVERY_CREATED_PHASE = "recovering";
 
@@ -4236,11 +4239,13 @@ async function runSessionCoreWithFence(
       await store.create({
         jobId,
         agreementHash,
-        phase: freshClaimAllowed ? "negotiated" : RECOVERY_CREATED_PHASE,
+        phase: freshClaimAllowed ? FRESH_RUN_PHASE : RECOVERY_CREATED_PHASE,
         now: runtime.nowMs(),
       });
     } else {
-      freshClaimAllowed = loaded.record.phase !== RECOVERY_CREATED_PHASE;
+      // Only a fresh run's own record (no intent yet) may claim fresh; any other
+      // phase without a settlement checkpoint recovers or refuses.
+      freshClaimAllowed = loaded.record.phase === FRESH_RUN_PHASE;
       // Resume: enforce that the live record's bound hash is THIS deal's — a
       // mismatch is a replayed/altered agreement under a reused jobId.
       if (loaded.record.agreementHash !== agreementHash) {
