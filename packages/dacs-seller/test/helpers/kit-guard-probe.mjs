@@ -123,9 +123,11 @@ async function effectEntries() {
   const { createDevnetDemoListingPublisher } = await import('../../src/devnet-demo/listing.mjs');
   const { createDevnetDemoDeliveryCapability } = await import('../../src/devnet-demo/native-delivery.mjs');
   const { storageWriteRpcSigner } = await import('../../src/devnet-demo/storage-write-recovery.mjs');
-  const { createReservationAccounting } = await import('../../src/dacs/seller-reservation-accounting.mjs');
+  const { createReservationAccounting, createReservationCoordinator } = await import('../../src/dacs/seller-reservation-accounting.mjs');
   const accounting = createReservationAccounting({ store: {}, now: () => 0,
     limits: { maxJobs: 1, maxContextRecords: 1, maxNoncesPerBuyerPerWindow: 1, nonceWindowMs: 1 }, contextRecords: () => 0 });
+  const coordinator = createReservationCoordinator({ accounting, capacity: { classify: never('classification'), recordExhaustion: never('the exhaustion record') },
+    inspectOperation: never('the inspection') });
 
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
@@ -149,6 +151,7 @@ async function effectEntries() {
   await attempt('createSellerTransportServerAuth', () => createSellerTransportServerAuth({}));
   await attempt('createSellerTransportClientAuth', () => createSellerTransportClientAuth({}));
   await attempt('reserveAccounted', () => accounting.reserveAccounted({}));
+  await attempt('reserveCoordinated', () => coordinator.reserveCoordinated({}));
   await attempt('createNativePaymentEvidenceConsumer', () => createNativePaymentEvidenceConsumer({ anchorEvidence: async () => { effects.sends++; } }));
   await attempt('createDevnetDemoAgreementContextProvider', () => createDevnetDemoAgreementContextProvider({}));
   await attempt('signAnchorWrite', () => signAnchorWrite(signBytes, 'logical', 'hash'));

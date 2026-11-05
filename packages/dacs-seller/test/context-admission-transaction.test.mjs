@@ -447,7 +447,7 @@ test('admission-hook-thenable-and-store-fault', async t => {
 
 test('admission-capability-identity', async t => {
   const w = world(t), p = w.prepare(); const a = await running(w, p);
-  assert.deepEqual(Object.keys(w.admission).sort(), ['addAcceptanceHook', 'admissionRecord', 'begin', 'cleanupPending', 'compensate', 'jobEffectMutex', 'reserveContext', 'runningCheck', 'sweep']);
+  assert.deepEqual(Object.keys(w.admission).sort(), ['addAcceptanceHook', 'admissionRecord', 'begin', 'cleanupPending', 'compensate', 'jobEffectMutex', 'requireJobLease', 'reserveContext', 'runningCheck', 'sweep']);
   assert.ok(Object.isFrozen(a)); assert.ok(Object.isFrozen(w.admission));
   const b = await w.admission.reserveContext(p.input.jobId, w.reserveWire), copied = a.complete;
   await reject(copied(outcome), 'context_admission_closed', 409);

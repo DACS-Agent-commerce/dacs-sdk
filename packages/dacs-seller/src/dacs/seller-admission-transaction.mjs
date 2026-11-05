@@ -80,7 +80,8 @@ function contextOutcomeClass(row, outcomeText) {
  * `reserveContext(jobId, reserveWire)` is D5: it resolves the wire's completed result (which grants no capability; its source is the
  * caller's to revalidate) or the attempt's capability
  * `{ effect, operationId, attempt, rev, complete(outcome, { jobLease }) }`. `runningCheck(jobId, attempt, rev)` is the synchronous D6 fence.
- * `jobEffectMutex(jobId)` is `{ acquire(), run(work) }` over opaque leases. `addAcceptanceHook(hook)` registers a synchronous hook that
+ * `jobEffectMutex(jobId)` is `{ acquire(), run(work) }` over opaque leases; `requireJobLease(lease, jobId)` returns when `lease` is a live
+ * lease of that job's mutex and throws a TypeError otherwise, for the reservation coordinator that borrows it. `addAcceptanceHook(hook)` registers a synchronous hook that
  * runs inside D4's transaction and refuses by throwing; the first `begin` seals registration.
  * `compensate(jobId, trigger)` fences the row for trigger `a`, `b`, `c` (only from the delegation's expiry plus 30,000 ms) or `d`, then runs C2-C4 under the
  * job mutex; it settles a completed context outcome, aborts only on proof of no effect, and otherwise keeps the row `compensating` with its cause.
@@ -533,5 +534,6 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     addAcceptanceHook(hook) {
       if (hooksSealed || typeof hook !== 'function') throw new TypeError('an acceptance hook is a synchronous function registered before the first begin');
       acceptanceHooks.push(hook);
-    } });
+    },
+    requireJobLease(lease, jobId) { heldLease(lease, jobId); } });
 }

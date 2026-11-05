@@ -1,17 +1,21 @@
 // P11b2a: purchase capacity on the shared transport store: one allocation per admitted purchase with a 17-unit slot per route,
 // its classes, returns, terminal cleanup, exhaustion annotations and the K1 admission hooks. Accounting rows are written by hand
-// (P11b1's rows for P11b2b's coordinator), the wire journal is a double and no real route reserves through capacity yet: the
-// route-level and real-journal sequences belong to P11c1, P11d3 and P12b1.
+// (P11b1's rows), the wire journal is a double and no real route reserves through capacity yet: the route-level and real-journal
+// sequences belong to P11c1, P11d3 and P12b1. P11b2b's reservation coordinator is tested at the end of the file, on the real journal.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { canonicalize, generateCanonicalJobId } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS as PATHS, TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS as PATHS, TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, completeWireEffect, inspectWireOperation, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { retainedFor } from '../src/dacs/seller-wire-requests.mjs';
 import { SELLER_PROFILE } from '../src/dacs/session-admission.mjs';
+import * as fixture from './helpers/reservation-accounting-fixture.mjs';
+import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 
 const T0 = Date.UTC(2026, 10, 4, 12), UNITS = 17, FOUR = 68, FIVE = 85;
 const hash = text => createHash('sha256').update(String(text)).digest('hex');
@@ -36,11 +40,12 @@ const view = {
   completed: binding => ({ state: 'completed', binding, outcome: { status: 200, text: '{}' } }),
 };
 
-let createPurchaseCapacity, createContextAdmissionTransaction, createSellerTransportStore, sellerStoreInternals, importFailure;
+let createPurchaseCapacity, createContextAdmissionTransaction, createReservationCoordinator, createSellerTransportStore, sellerStoreInternals, SellerTransportError, importFailure;
 try {
   ({ createPurchaseCapacity } = await import('../src/dacs/seller-purchase-capacity.mjs'));
+  ({ createReservationCoordinator } = await import('../src/dacs/seller-reservation-accounting.mjs'));
   ({ createContextAdmissionTransaction } = await import('../src/dacs/seller-admission-transaction.mjs'));
-  ({ createSellerTransportStore, sellerStoreInternals } = await import('../src/dacs/seller-transport-auth.mjs'));
+  ({ SellerTransportError, createSellerTransportStore, sellerStoreInternals } = await import('../src/dacs/seller-transport-auth.mjs'));
 } catch (error) { importFailure = error; }
 
 // One store, its capacity and its admission transaction on one clock. `reopen()` is a restart: the old handle closes and the
@@ -463,4 +468,324 @@ test('capacity-exact-parties-and-fixed-allotment', t => {
     assert.equal(w.report().allocations.length, 1);
   }
   assert.throws(() => createPurchaseCapacity({ store: {}, now: () => T0, sessionState: () => null }), TypeError);
+});
+
+// P11b2b: the reservation coordinator. Ordinary routes run on the signed requests and real wire journal of the accounting fixture;
+// context runs on a world's admission transaction, whose job lease the coordinator borrows.
+const settle = () => new Promise(resolve => setImmediate(resolve));
+const rejects = (promise, code, status) => assert.rejects(promise, error => error.code === code && (status === undefined || error.status === status));
+const neverSettles = () => new Promise(() => {});
+const operationOf = jobId => wireOperationId({ seller: fixture.SELLER.claim, jobId, path: PATHS.proposals });
+
+async function coordination(t, { maxRecords = 1000 } = {}) {
+  const f = await fixture.accountingFixture(t), w = { f, inspections: 0, limit: maxRecords };
+  w.build = () => {
+    const store = f.store();
+    w.internals = sellerStoreInternals(store);
+    w.capacity = createPurchaseCapacity({ store, now: f.now, maxRecords: w.limit, sessionState: () => null });
+    w.coordinator = createReservationCoordinator({ accounting: store.reservationAccounting, capacity: w.capacity,
+      inspectOperation: target => { w.inspections++; return inspectWireOperation(f.journal, target); } });
+  };
+  w.reopen = (limit = w.limit) => { w.limit = limit; f.reopen(); w.build(); };
+  w.allocate = jobId => w.internals.transaction(() => w.capacity.allocateWithin({ jobId, buyer: fixture.BUYER.claim, seller: fixture.SELLER.claim, listingPin: fixture.PIN }));
+  w.request = async (change = {}, extra = {}) => ({ ...(await f.admit(f.payload(change))), newJob: false, contextStart: false, paymentTx: null, retainedWork: true, ...extra });
+  w.reserve = (input, ownership) => w.coordinator.reserveCoordinated(input, ownership);
+  w.classes = () => f.rows().map(row => row.class);
+  w.spent = jobId => w.capacity.capacityReport().allocations.find(allocation => allocation.jobId === jobId).slots[PATHS.proposals].spent;
+  w.counts = () => Object.fromEntries(f.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()
+    .map(({ name }) => [name, f.db.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get().n]));
+  w.build();
+  return w;
+}
+
+// A request whose reserve() stops at a barrier, so a test holds its owner inside the mutex; `outcome` is what reserve() does after the barrier opens.
+function paused(input, outcome = () => input.checked.reserve()) {
+  let reach, open;
+  const reached = new Promise(resolve => { reach = resolve; }), opened = new Promise(resolve => { open = resolve; });
+  return { reached, open, input: { ...input, checked: { reserve: async () => { reach(); await opened; return outcome(); } } } };
+}
+
+// The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection.
+function withCoordinator(w) {
+  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none;
+  w.coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity: w.capacity, admissionTransaction: w.admission,
+    inspectOperation: target => { w.inspections++; return w.control.operation(target); } });
+  w.contextInput = (p, path = PATHS.context) => {
+    const payload = { version: '1', kind: 'request', method: 'POST', path, bodyHash: hash('{}'), jobId: p.jobId, buyer: p.input.buyer, seller: SELLER, listingPin: PIN,
+      agreementHash: hash('agreement'), nonce: hash(`nonce-${++w.nonces}`).slice(0, 32), expiresAt: w.control.clock + 30000, profile: PROFILE };
+    const operationId = wireOperationId(payload);
+    return { checked: { reserve: async () => Object.freeze({ state: 'new', operationId, attempt: 0, leaseUntil: w.control.clock + 300000 }) },
+      payload, route: path, operationId, newJob: false, contextStart: true, paymentTx: null, keepProfile: PROFILE, retainedWork: true };
+  };
+  // D2-D4, then the kept tuple a context start keeps for the accounting to compare (the later context route owns keeping it).
+  w.begin = async p => {
+    await w.admission.begin(p.input);
+    w.db().prepare('INSERT INTO peer_jobs VALUES (?, ?)').run(p.jobId, '{}');
+    w.db().prepare('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)').run(p.jobId, canonicalize(PROFILE), T0);
+  };
+  w.coordinatedContext = p => w.admission.reserveContext(p.jobId, lease => w.coordinator.reserveCoordinated(w.contextInput(p), { jobLease: lease }));
+  w.livePending = () => { w.control.operation = target => ({ state: 'pending', binding: wireOperationBinding(target), attempt: 0, requestHash: hash('request'), leaseUntil: w.control.clock + 300000 }); };
+  return w;
+}
+
+test('P11b2-T01 admission allots 68 units and the first context reservation spends one from the allocation', async t => {
+  const w = withCoordinator(world(t, { maxRecords: 300 })), p = w.prepare();
+  await w.begin(p);
+  assert.equal(w.report().allotted, FOUR); assert.equal(w.current(p.jobId).state, 'live');
+  assert.equal((await w.coordinatedContext(p)).effect.state, 'new');
+  assert.deepEqual(figures(w.report()), { used: 1, allotted: FOUR - 1, free: 300 - 1 - (FOUR - 1) });
+  const rows = w.db().prepare('SELECT class, allocationId, route FROM kit_reservations').all().map(row => ({ ...row }));
+  assert.deepEqual(rows, [{ class: 'purchase', allocationId: w.current(p.jobId).allocationId, route: PATHS.context }]);
+});
+
+test('P11b2-T04 a poll inside a live context lease at full capacity is refused with no row or file and spends no purchase unit', async t => {
+  const w = withCoordinator(world(t, { maxRecords: FOUR })), p = w.prepare();
+  await w.begin(p); await w.coordinatedContext(p);
+  const files = readdirSync(w.directory), allocation = w.current(p.jobId);
+  w.livePending();
+  await rejects(w.coordinatedContext(p), 'peer_store_capacity', 503);
+  assert.equal(w.db().prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 1);
+  assert.deepEqual(w.current(p.jobId), allocation); assert.deepEqual(readdirSync(w.directory), files);
+});
+
+test('P11b2-T06 raising `maxRecords` and restarting admits the exhausted operation as general, with no file deleted', async t => {
+  const w = await coordination(t, { maxRecords: FOUR }); w.allocate(fixture.JOB);
+  assert.equal((await w.reserve(await w.request({}, { newJob: true }))).state, 'new');
+  await rejects(w.reserve(await w.request()), 'peer_store_capacity', 503);
+  const files = w.f.files();
+  w.reopen(1000);
+  await rejects(w.reserve(await w.request()), 'seller_effect_pending', 503);
+  assert.deepEqual(w.classes(), ['purchase', 'general']);
+  for (const name of files) assert.ok(w.f.files().includes(name), name);
+});
+
+test("P11b2-T07 an unrelated purchase's reservations and polls never touch another purchase's units", async t => {
+  const w = await coordination(t); w.allocate(fixture.JOB); w.allocate(fixture.JOB2);
+  const untouched = JSON.stringify(w.capacity.capacityReport().allocations.find(allocation => allocation.jobId === fixture.JOB));
+  assert.equal((await w.reserve(await w.request({ jobId: fixture.JOB2 }, { newJob: true }))).state, 'new');
+  await rejects(w.reserve(await w.request({ jobId: fixture.JOB2 })), 'seller_effect_pending', 503);
+  w.f.setTime(fixture.T0 + 300001);
+  assert.equal((await w.reserve(await w.request({ jobId: fixture.JOB2 }))).state, 'recover');
+  assert.equal(JSON.stringify(w.capacity.capacityReport().allocations.find(allocation => allocation.jobId === fixture.JOB)), untouched);
+  assert.ok(w.f.rows().every(row => row.jobId === fixture.JOB2));
+  assert.equal(w.spent(fixture.JOB2), 2);
+});
+
+test('P11b2-T10 requests competing for one operation wait for the paused reservation and are then classified after it, taking no unit', async t => {
+  const w = await coordination(t, { maxRecords: FOUR }); w.allocate(fixture.JOB);
+  const owner = paused(await w.request({}, { newJob: true })), first = w.reserve(owner.input);
+  await owner.reached;
+  const rivals = [await w.request(), await w.request()].map(input => rejects(w.reserve(input), 'peer_store_capacity', 503));
+  await settle();
+  assert.equal(w.inspections, 1, 'the rivals have not inspected'); assert.equal(w.f.rows().length, 1);
+  owner.open();
+  assert.equal((await first).state, 'new'); await Promise.all(rivals);
+  assert.equal(w.inspections, 3); assert.deepEqual(w.classes(), ['purchase']); assert.equal(w.spent(fixture.JOB), 1);
+  assert.equal(w.f.nonces().length, 1, 'a refused rival journals nothing');
+  assert.deepEqual(w.capacity.capacityReport().exhausted.map(record => record.route), [PATHS.proposals]);
+});
+
+test('P11b2-T11 after the lease runs out, one recovery spends from the slot and its competitors are refused', async t => {
+  const w = await coordination(t, { maxRecords: FOUR }); w.allocate(fixture.JOB);
+  assert.equal((await w.reserve(await w.request({}, { newJob: true }))).state, 'new');
+  w.f.setTime(fixture.T0 + 300001);
+  const owner = paused(await w.request()), recovery = w.reserve(owner.input);
+  await owner.reached;
+  const rivals = [await w.request(), await w.request()].map(input => rejects(w.reserve(input), 'peer_store_capacity', 503));
+  await settle(); assert.equal(w.inspections, 2);
+  owner.open();
+  assert.equal((await recovery).state, 'recover'); await Promise.all(rivals);
+  assert.deepEqual(w.classes(), ['purchase', 'purchase']); assert.equal(w.spent(fixture.JOB), 2);
+});
+
+test('P11b2-T12 with general capacity available, competitors are charged general and answered pending', async t => {
+  const w = await coordination(t); w.allocate(fixture.JOB);
+  const owner = paused(await w.request({}, { newJob: true })), first = w.reserve(owner.input);
+  await owner.reached;
+  const rivals = [await w.request(), await w.request()].map(input => rejects(w.reserve(input), 'seller_effect_pending', 503));
+  await settle(); assert.equal(w.inspections, 1);
+  owner.open();
+  assert.equal((await first).state, 'new'); await Promise.all(rivals);
+  assert.deepEqual(w.classes(), ['purchase', 'general', 'general']); assert.equal(w.spent(fixture.JOB), 1);
+});
+
+test("P11b2-T13 repeated recoveries use the slot's sixteen attempts and the seventeenth unit meets the journal's unresolved answer", async t => {
+  const w = await coordination(t); w.allocate(fixture.JOB);
+  for (let attempt = 0; attempt < 17; attempt++) {
+    w.f.setTime(fixture.T0 + attempt * 300001);
+    const request = await w.request({}, { newJob: attempt === 0 });
+    if (attempt < 16) assert.equal((await w.reserve(request)).state, attempt === 0 ? 'new' : 'recover', `attempt ${attempt}`);
+    else await rejects(w.reserve(request), 'seller_effect_unresolved', 500);
+  }
+  assert.equal(w.spent(fixture.JOB), 17); assert.equal(w.classes().filter(name => name === 'purchase').length, 17);
+  w.f.setTime(fixture.T0 + 17 * 300001);
+  await rejects(w.reserve(await w.request()), 'seller_effect_unresolved', 500);
+  assert.equal(w.classes().at(-1), 'general', 'the spent slot is not replenished');
+});
+
+test('P11b2-T14 waiters time out at 10,000 ms with nothing written; the owner keeps the mutex until its reservation settles; a late acquisition is released', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const w = await coordination(t); w.allocate(fixture.JOB);
+  const owner = paused(await w.request({}, { newJob: true })), first = w.reserve(owner.input);
+  await owner.reached;
+  const files = w.f.files(), counts = w.counts();
+  let outcome = null;
+  const waiter = w.reserve(await w.request()).then(() => 'granted', error => { outcome = error; return 'refused'; });
+  t.mock.timers.tick(9999); await settle(); assert.equal(outcome, null, 'still waiting at 9,999 ms');
+  t.mock.timers.tick(1);
+  assert.equal(await waiter, 'refused'); assert.equal(outcome.code, 'seller_effect_pending'); assert.equal(outcome.status, 503); assert.equal(outcome.cause.name, 'TimeoutError');
+  assert.equal(w.inspections, 1); assert.deepEqual(w.f.files(), files); assert.deepEqual(w.counts(), counts);
+  const behind = rejects(w.reserve(await w.request()), 'seller_effect_pending', 503);
+  await settle(); assert.equal(w.inspections, 1, 'the owner still holds the mutex');
+  owner.open();
+  assert.equal((await first).state, 'new'); await behind;
+  assert.equal(w.inspections, 2, 'the timed-out waiter never inspected and its late acquisition was released');
+  assert.deepEqual(w.classes(), ['purchase', 'general']);
+});
+
+test('P11b2-T18 reservations for different operations do not block each other', async t => {
+  const w = await coordination(t);
+  const owner = paused(await w.request({}, { newJob: true })), first = w.reserve(owner.input);
+  await owner.reached;
+  assert.equal((await w.reserve(await w.request({ jobId: fixture.JOB2 }, { newJob: true, retainedWork: false }))).state, 'new');
+  assert.equal(w.inspections, 2);
+  owner.open(); assert.equal((await first).state, 'new');
+});
+
+test('P11b2-T19 with the shipped guard off, the coordinator refuses before inspection and writes nothing', () => {
+  const probe = fileURLToPath(new URL('./helpers/coordinator-guard-off-probe.mjs', import.meta.url));
+  const kept = (process.env.NODE_OPTIONS ?? '').split(' ').filter(option => option !== '' && !option.includes('kit-guard-fixture.mjs')).join(' ');
+  const child = spawnSync(process.execPath, [probe], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: kept } });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { code: 'kit_operation_guard_off', written: 0, portCalls: 0 });
+});
+
+test('P11b2-T26 with `maxRecords` small and `free` 0, then again after the 60,000 ms buyer window has moved, 100 fresh requests from 100 distinct buyers each refuse `peer_store_capacity` and leave every count at its pre-request value, also after two restarts', async t => {
+  const w = await coordination(t, { maxRecords: 10 });
+  for (let n = 0; n < 10; n++) {
+    w.f.db.prepare(`INSERT INTO kit_reservations (key, buyer, jobId, operationId, route, allocationId, class, requestHash, at, state, rev)
+      VALUES (?, ?, ?, ?, ?, NULL, 'general', ?, ?, 'completed', 2)`).run(hash(`filler-${n}`), BUYER, job(0xee), operationOf(job(0xee)), PATHS.proposals, hash('request'), T0);
+  }
+  assert.equal(w.capacity.capacityReport().free, 0);
+  const before = w.counts(), files = w.f.files();
+  const flood = async round => {
+    for (let n = 0; n < 100; n++) {
+      const jobId = generateCanonicalJobId({ timestamp: T0, entropy: Buffer.from([round, n, 1, 2, 3, 4, 5, 6, 7, 8]) });
+      const payload = w.f.payload({ jobId, buyer: claim(`flood-${round}-${n}`) });
+      await rejects(w.reserve({ checked: { reserve: async () => assert.fail('a refused request reaches the journal') }, payload, route: payload.path, operationId: wireOperationId(payload),
+        newJob: true, contextStart: false, paymentTx: null, keepProfile: FIXTURE_PROFILE, retainedWork: false }), 'peer_store_capacity', 503);
+    }
+    assert.deepEqual(w.counts(), before, `round ${round}`); assert.deepEqual(w.f.files(), files, `round ${round}`);
+    assert.ok(w.counts().kit_reservations <= 10);
+  };
+  await flood(0);
+  w.f.setTime(fixture.T0 + 60001); await flood(1);
+  w.reopen(); w.reopen(); await flood(2);
+});
+
+test('reservation-completed-at-capacity-is-refused-until-its-source-is-revalidated', async t => {
+  const w = await coordination(t); w.allocate(fixture.JOB);
+  completeWireEffect(w.f.journal, await w.reserve(await w.request({}, { newJob: true })), { status: 200, text: '{"status":"delivered"}' });
+  w.reopen(FOUR);
+  assert.equal(w.capacity.capacityReport().free, 0);
+  const rows = w.f.rows().length, files = w.f.files();
+  await rejects(w.reserve(await w.request()), 'peer_store_capacity', 503);
+  assert.equal(w.f.rows().length, rows); assert.deepEqual(w.f.files(), files); assert.deepEqual(w.capacity.capacityReport().exhausted, []);
+});
+
+test('reservation-exhaustion-record-failure-keeps-the-refusal-as-cause', async t => {
+  const w = await coordination(t, { maxRecords: FOUR }); w.allocate(fixture.JOB);
+  assert.equal((await w.reserve(await w.request({}, { newJob: true }))).state, 'new');
+  const cut = new Error('TEST exhaustion record failed');
+  const failing = createReservationCoordinator({ accounting: w.f.store().reservationAccounting, inspectOperation: target => inspectWireOperation(w.f.journal, target),
+    capacity: { classify: input => w.capacity.classify(input), recordExhaustion: () => { throw cut; } } });
+  for (let refusal = 0; refusal < 2; refusal++) {
+    await assert.rejects(failing.reserveCoordinated(await w.request()), error => error === cut && error.cause?.code === 'peer_store_capacity' && error.cause.status === 503);
+  }
+  assert.equal(w.f.rows().length, 1, 'the refusals charged nothing'); assert.deepEqual(w.capacity.capacityReport().exhausted, []);
+});
+
+test('reservation-owner-rejection-releases-mutex', async t => {
+  const cut = new Error('TEST reserve failed');
+  const cases = [
+    ['a reserve that throws', async () => { throw cut; }, false, reason => assert.equal(reason, cut), 'reserving', null],
+    ['a definite refusal', async () => { throw new SellerTransportError('peer_operation_mismatch', 409); }, false, reason => assert.equal(reason.code, 'peer_operation_mismatch'), 'refused', 'peer_operation_mismatch'],
+    ['a failed result write', undefined, true, reason => assert.match(reason.message, /TEST result write failed/), 'reserving', null],
+  ];
+  for (const [label, outcome, failWrite, check, state, code] of cases) {
+    const w = await coordination(t); w.allocate(fixture.JOB);
+    const owner = paused(await w.request({}, { newJob: true }), outcome), first = w.reserve(owner.input);
+    await owner.reached;
+    const rival = w.reserve(await w.request());
+    await settle(); assert.equal(w.inspections, 1, label);
+    if (failWrite) w.f.db.exec("CREATE TRIGGER stop_result BEFORE UPDATE ON kit_reservations BEGIN SELECT RAISE(ABORT, 'TEST result write failed'); END");
+    owner.open();
+    const [owned, queued] = await Promise.allSettled([first, rival]);
+    assert.equal(owned.status, 'rejected', label); check(owned.reason);
+    assert.notEqual(queued.status, undefined); assert.equal(w.inspections, 2, `${label}: the queued request got the mutex`);
+    const [spent] = w.f.rows();
+    assert.deepEqual({ class: spent.class, state: spent.state, code: spent.code }, { class: 'purchase', state, code }, `${label}: the spent unit stays charged`);
+  }
+});
+
+test('reservation-mutex-owner-crash-reclassification', async t => {
+  const cases = [
+    // The owner died after its accounting commit and before the journal: the journal shows no operation, as it does for a cut with only the nonce key.
+    ['accounting durable, nothing journaled', () => () => neverSettles(), 'new', ['purchase', 'purchase']],
+    ['journal durable, result unwritten', request => async () => { await request.checked.reserve(); return neverSettles(); }, 'pending', ['purchase', 'general']],
+  ];
+  for (const [label, hang, answer, classes] of cases) {
+    const w = await coordination(t); w.allocate(fixture.JOB);
+    const request = await w.request({}, { newJob: true }), owner = paused(request, hang(request));
+    void w.reserve(owner.input);
+    await owner.reached; owner.open(); await settle();
+    w.reopen();
+    let done = false;
+    const next = w.reserve(await w.request()).then(effect => effect.state, error => error.code === 'seller_effect_pending' ? 'pending' : assert.fail(error)).finally(() => { done = true; });
+    for (let turn = 0; turn < 5 && !done; turn++) await settle();
+    assert.ok(done, `${label}: no lock survives the restart`); assert.equal(await next, answer, label);
+    assert.deepEqual(w.classes(), classes, label); assert.equal(w.f.rows()[0].state, 'reserving', `${label}: the dead owner's unit is not refunded`);
+  }
+});
+
+test('reservation-context-borrowed-lease', async t => {
+  const w = withCoordinator(world(t, { maxRecords: 300 })), p = w.prepare(), mutex = w.admission.jobEffectMutex(p.jobId);
+  await w.begin(p);
+  let queued, acquired = null;
+  await w.admission.reserveContext(p.jobId, async lease => {
+    const effect = await w.coordinator.reserveCoordinated(w.contextInput(p), { jobLease: lease });
+    queued = mutex.acquire().then(next => { acquired = next; });
+    await settle(); assert.equal(acquired, null, 'the coordinator did not release the borrowed lease');
+    return effect;
+  });
+  await queued; assert.notEqual(acquired, null); acquired.release();
+  const rows = () => w.db().prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, before = { rows: rows(), inspections: w.inspections };
+  const released = await mutex.acquire(); released.release();
+  const foreign = await w.admission.jobEffectMutex(job(0x77)).acquire();
+  const borrowed = [undefined, {}, { jobLease: undefined }, { jobLease: Object.freeze({ release() {} }) }, { jobLease: released }, { jobLease: foreign }];
+  for (const ownership of borrowed) await assert.rejects(w.coordinator.reserveCoordinated(w.contextInput(p), ownership), TypeError);
+  foreign.release();
+  const lease = await mutex.acquire();
+  await assert.rejects(w.coordinator.reserveCoordinated(w.contextInput(p, PATHS.proposals), { jobLease: lease }), TypeError, 'an ordinary route borrows nothing');
+  const bare = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity: w.capacity, inspectOperation: () => assert.fail('inspected') });
+  await assert.rejects(bare.reserveCoordinated(w.contextInput(p), { jobLease: lease }), TypeError, 'no admission transaction, no context');
+  lease.release();
+  assert.deepEqual({ rows: rows(), inspections: w.inspections }, before);
+});
+
+test('reservation-lock-map-cleanup', async t => {
+  const w = await coordination(t), ids = new Set([operationOf(fixture.JOB), operationOf(fixture.JOB2)]), events = [];
+  const set = Map.prototype.set, remove = Map.prototype.delete;
+  t.mock.method(Map.prototype, 'set', function (key, value) { if (ids.has(key)) events.push(['set', key]); return set.call(this, key, value); });
+  t.mock.method(Map.prototype, 'delete', function (key) { if (ids.has(key)) events.push(['delete', key]); return remove.call(this, key); });
+  const of = id => events.filter(([, key]) => key === id).map(([kind]) => kind);
+  const owner = paused(await w.request({}, { newJob: true })), first = w.reserve(owner.input);
+  await owner.reached;
+  const waiters = [await w.request(), await w.request()].map(input => w.reserve(input).catch(error => error.code));
+  assert.equal(of(operationOf(fixture.JOB)).at(-1), 'set', 'busy while an owner and waiters remain');
+  const other = await w.reserve(await w.request({ jobId: fixture.JOB2 }, { newJob: true, retainedWork: false }));
+  await settle(); assert.equal(other.state, 'new'); assert.deepEqual(of(operationOf(fixture.JOB2)).at(-1), 'delete', 'an idle operation leaves no entry');
+  owner.open(); await first; await Promise.all(waiters); await settle();
+  assert.equal(of(operationOf(fixture.JOB)).filter(kind => kind === 'delete').length, 1, 'removed once, after the last waiter');
+  assert.equal(of(operationOf(fixture.JOB)).at(-1), 'delete');
 });
