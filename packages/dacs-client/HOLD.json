@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "c8721ac617466f9ce4d1ae8bb1da9d1bbce71776"
+        "blob": "2414ecf69b1b773493862155fc5a3ab3a4537a44"
       },
       "DELTA-LEDGER.json": {
-        "blob": "a9afcf2ea73eb06b9589948fce65c290cb0293e4"
+        "blob": "d8439bd3c06c05ad59f850eceb074e65d93047ef"
       },
       "DELTA-MAP.md": {
-        "blob": "9efeebe09307e5ede13d69c0399c74bcf0fa5a64"
+        "blob": "49a9b60ee955a4946ef7e29dae28939cc5f7a757"
       },
       "DELTA-NOTES.md": {
         "blob": "b11aecbc3695038e9089f4dc476956911e5b3a90"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "879fdf1077f19c98842b903c2ae5cad6d4a33b80"
+        "blob": "8975f1b12ac330101c823dac1ae5f4ff8b3f9fc0"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1250,7 +1250,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "8affaaac5cf2437c182821204b3f45667745d8f2"
+        "blob": "5cfbfdb37ddd87d02e63858ceb59a5cbedaef481"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1730,7 +1730,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/host-observations.test.mjs": {
-        "blob": "5582b173bd445f8aab89428aa33191696fa5a3f6"
+        "blob": "5f1ae4f5f43d9db66de72fffbf10cd6087610f51"
       },
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
@@ -1799,7 +1799,7 @@
         "blob": "174d67c16132706497904b28250c6135e97d1497"
       },
       "test/purchase-review-races.test.mjs": {
-        "blob": "0f6b4617a40d7d1a888b9f065abc794d9b00b5b4"
+        "blob": "e335d978c5b071fad0e993debddefb2e0db1f73b"
       },
       "test/purchase-state-schema.test.mjs": {
         "blob": "940e94f63ffc2a65f42ea03bf262fb42fc200525"
