@@ -15,15 +15,16 @@ import {privateModule} from './helpers/private-module.mjs';
 import {testNetwork} from './helpers/wire-authority-fixture.mjs';
 import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
-import {startSellerHost} from '../src/host.mjs';
+import {startSellerHost,KIT_TP1_VET_MODE} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
 import {createSellerTransportStore,SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
 import {wireAuthentication} from './helpers/wire-buyer.mjs';
 import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent}={}){
- const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
- const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;
+ const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
+ // `vetMode` is an agent option: the host fixes it and takes no such option.
+ const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;delete config.vetMode;
  const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,tp1Network:testNetwork()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
@@ -352,4 +353,19 @@ test('host refuses malformed options before opening any state',async t=>{
   ['mismatched payment evidence pair',{...base(),nativePaymentEvidence:{anchorEvidence:()=>{}}},/payment-evidence anchor and reconcilePaymentEvidence/],
  ];
  for(const [label,options,expected] of cases)await assert.rejects(startSellerHost(options),expected,label);
+});
+test('a host started with a TP-1 G3 orchestrator DEM context takes a W proposal',async t=>{
+ assert.equal(KIT_TP1_VET_MODE,'tp1-g3-orchestrator');
+ const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
+ assert.equal((await f.client(host,request).propose(request)).disposition,'complete');
+});
+test('the host refuses a counterparty DEM context with vet_mode_mismatch before the state lock',async t=>{
+ const f=await fixture(t);
+ await assert.rejects(f.start({demDeliveryContext:f.capability(undefined)}),{name:'TypeError',code:'vet_mode_mismatch'});
+ await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
+});
+test('no host option selects or changes the kit Vet mode',async t=>{
+ const f=await fixture(t);
+ for(const mode of ['counterparty',KIT_TP1_VET_MODE,undefined])await assert.rejects(f.start({vetMode:mode}),/unknown seller host option: vetMode/);
+ await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
 });
