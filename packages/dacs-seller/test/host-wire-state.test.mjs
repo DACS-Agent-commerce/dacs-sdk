@@ -69,7 +69,7 @@ async function hostFixture(t) {
   delete config.durableDirectory;
   delete config.commitOnSignature;
   const api = await privateModule(HOST_URL, ['setTestRecorder'], (source) => {
-    const text = sub(source, 'bindTp1Profile, openWireRequestJournal } from', 'bindTp1Profile as REAL_BIND, openWireRequestJournal as REAL_OPEN_JOURNAL } from');
+    const text = sub(source, 'bindTp1Profile, inspectWireOperation, openWireRequestJournal } from', 'bindTp1Profile as REAL_BIND, inspectWireOperation, openWireRequestJournal as REAL_OPEN_JOURNAL } from');
     return sub(text, 'const REQUIRED =', `let testRecorder = { bindings: [], journals: [] }; function setTestRecorder(value) { testRecorder = value; }
 const bindTp1Profile = async (options) => { const binding = await REAL_BIND(options); testRecorder.bindings.push(binding); return binding; };
 const openWireRequestJournal = (...args) => { const journal = REAL_OPEN_JOURNAL(...args); testRecorder.journals.push(journal); return journal; };

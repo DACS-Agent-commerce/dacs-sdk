@@ -52,8 +52,14 @@ already charged and allotted starts, serves the purchases it holds, and refuses
 new ones as not ready. A successful context completion returns only the context
 slot; an aborted start, a failed or non-validated context and a terminal DACS-5
 session (checked once at startup) return every open slot. Returned units never
-reduce what has been charged. The routes do not yet reserve through these units:
-that, and the periodic terminal cleanup, come with the routes that use them.
+reduce what has been charged. The host composes a reservation coordinator: one
+in-process mutex per operation covers inspecting the journal, classifying the
+request against these units, committing its accounting row and recording the
+reservation's result, so a request that is only told `pending` spends no purchase
+unit. A request that cannot take the mutex within 10,000 ms is answered 503
+`seller_effect_pending` with nothing written. The routes do not yet reserve through
+the coordinator: that, and the periodic terminal cleanup, come with the routes that
+use them.
 
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
