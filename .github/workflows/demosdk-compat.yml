@@ -1,8 +1,8 @@
 name: demosdk compatibility
 
-# ci.yml already typechecks and tests demosdk 4.0.18 on ordinary PRs.
+# ci.yml already typechecks and tests demosdk 4.0.19 on ordinary PRs.
 # This daily workflow detects new in-range releases before another PR arrives
-# and adds build/declaration emit at 4.0.18 and the newest in-range release.
+# and adds build/declaration emit at 4.0.19 and the newest in-range release.
 # Its PR runs cover changes to this workflow or dependency configuration only;
 # source changes already receive the ci.yml compatibility checks.
 # When bumping ci.yml's pinned demosdk, update the matrix entry here too.
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        demosdk: ["locked", "4.0.18", "newest-in-range"]
+        demosdk: ["locked", "4.0.19", "newest-in-range"]
     name: typecheck + build (demosdk ${{ matrix.demosdk }})
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
