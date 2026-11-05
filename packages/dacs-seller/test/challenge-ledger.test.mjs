@@ -1170,3 +1170,46 @@ test('challenge-accepted-presentation-answers-an-equivalent-buyer', (t) => {
   const equivalent = { nonce: row.nonce, jobId: job('one'), buyer: EQUIVALENT, challengeScopeHash: SCOPE, presentationHash: presentationOf(row.nonce), path: 'context' };
   assert.deepEqual(w.quiet(() => w.ledger.attempt(equivalent)), { kind: 'continuation', accepted: exact });
 });
+
+test('challenge-issuance-refuses-a-session-state-that-cannot-be-read', (t) => {
+  const readers = {
+    throws: [() => { throw new Error('state unavailable'); }, /state unavailable/],
+    promise: [() => Promise.resolve('finalised'), TypeError],
+    'rejected promise': [() => Promise.reject(new Error('late')), TypeError],
+    object: [() => ({ state: 'finalised' }), TypeError],
+    number: [() => 42, TypeError],
+    undefined: [() => undefined, TypeError],
+  };
+  const entries = {
+    issue: (w) => w.issue(),
+    issueForOperator: (w) => w.ledger.issueForOperator({ jobId: job('one'), buyer: BUYER }),
+  };
+  const unguarded = (error) => error.code !== 'kit_operation_guard_off';
+  for (const [entry, issue] of Object.entries(entries)) for (const [name, [reader, expected]] of Object.entries(readers)) {
+    const label = `${entry} ${name}`;
+    const w = world(t);
+    w.control.sessionState = reader;
+    w.quiet(() => assert.throws(() => issue(w), (error) => unguarded(error) && (expected instanceof RegExp ? expected.test(error.message) : error instanceof expected), label));
+    assert.deepEqual(w.rows(), [], label);
+    assert.equal(w.control.countReads, 0, `${label} refuses at step 7, before the counts`);
+
+    // A live nonce is not handed back once the job's state can no longer be read, also after a restart.
+    w.control.sessionState = () => null;
+    const first = issue(w);
+    w.control.sessionState = reader;
+    w.quiet(() => assert.throws(() => issue(w), unguarded, `${label} reuse`));
+    w.reopen('generation-two');
+    w.quiet(() => assert.throws(() => issue(w), unguarded, `${label} reuse after restart`));
+    assert.deepEqual(w.rows().map((row) => row.nonce), [first.sessionNonce], label);
+  }
+});
+
+test('challenge-issuance-still-permits-a-null-or-nonterminal-session-state', (t) => {
+  const w = world(t);
+  for (const [label, state] of [['one', null], ['two', 'negotiating']]) {
+    w.control.sessionState = () => state;
+    assert.ok(w.issue(label).sessionNonce, String(state));
+  }
+  w.control.sessionState = () => 'finalised';
+  quietRefusal(w, () => w.issue('three'), 'context_session_terminal', 409);
+});
