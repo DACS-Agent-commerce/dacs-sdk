@@ -1,13 +1,16 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
+import { buildAgent, type AgentConfig } from "../../src/agent/Agent.js";
 import type { Signer } from "../../src/agent/signedArtifact.js";
 import {
+  AttestationRefRejection,
   verifyBundleCore,
   type VerifyBundleDeps,
 } from "../../src/index.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
-import type { CompositeVerificationRecord } from "../../src/artifacts/types.js";
-import { contentHash } from "../../src/canonical/index.js";
+import type { AnchorReceipt, CompositeVerificationRecord } from "../../src/artifacts/types.js";
+import { contentHash, paymentEvidenceAddress } from "../../src/canonical/index.js";
+import { DacsError, SubstrateError } from "../../src/errors.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -2010,5 +2013,496 @@ describe("verifyBundleCore (DACS-5 bundle signature + ref integrity)", () => {
     for (const [, , parties] of seen) {
       expect(parties).toEqual(fx.bundle.parties);
     }
+  });
+});
+
+describe("Agent PC-2 anchor receipt resolution (#316)", () => {
+  const nativeEvidence = "stor-" + "e".repeat(40);
+  // A name-index hit for the PC-2 program name. The SDK must never consult it.
+  const squattedEvidence = "stor-" + "f".repeat(40);
+  const thirdDid = didFor(Uint8Array.from(Buffer.alloc(32, 11)));
+  type ReceiptCallback = NonNullable<AgentConfig["resolveAttestationAnchorReceipt"]>;
+  type ReceiptInput = Parameters<ReceiptCallback>[0];
+  const evidenceVerdict = (result: { refs: Array<{ kind: string; verdict: string }> }) =>
+    result.refs.find((r) => r.kind === "dacs-4-evidence")?.verdict;
+
+  async function fixture(locator = paymentEvidenceAddress(JOB_ID, "x402:default", 0)) {
+    const fx = await buildFixture(buyerDid, signBuyer);
+    // The seller orchestrates the pay phase: it signs the evidence and is the
+    // SR-2 writer of its PC-2 anchor (DACS-5 SEB-3). anchoredByRole is not authority.
+    const { signature: _signature, ...scope } = fx.evidence;
+    fx.evidence = {
+      ...scope,
+      signature: await componentSignature(scope, ARTIFACT_SEPARATORS.SettlementEvidence,
+        sellerDid, signSeller),
+    };
+    const ref = {
+      anchor: { kind: "storage-program" as const, locator },
+      contentHash: contentHash(fx.evidence),
+      signer: sellerDid,
+    };
+    fx.bundle.settlementEvidence = [ref];
+    fx.bundle.phaseSummary = [{ index: 0, kind: "pay-x402", outcome: "ok",
+      txRefs: fx.evidence.paymentTxRefs, attestationRef: ref }];
+    await resignFixture(fx, [{ party: buyerDid, sign: signBuyer },
+      { party: sellerDid, sign: signSeller }]);
+    return { fx, ref, locator };
+  }
+
+  /** Verified CORE §5.1 receipt for the honest seller-written anchor. */
+  function receiptFor(ref: { anchor: { locator: string }; contentHash: string }): AnchorReceipt {
+    return {
+      receiptVersion: "1",
+      substrate: "demos",
+      finalityProfile: "demos-bft-confirmed-native-read",
+      logicalAddress: ref.anchor.locator,
+      nativeAddress: nativeEvidence,
+      contentHash: ref.contentHash,
+      transactionRef: { kind: "demos-storage-program", value: "0x" + "7".repeat(64) },
+      writer: sellerDid,
+      nonce: "3",
+      state: "finalized",
+      observationDisposition: "established",
+      observedAt: 1780000000000,
+      blockRef: { id: "0x" + "8".repeat(64), height: "12", timestamp: 1780000000000 },
+      evidence: { kind: "demos-bft-write-proof-v1", value: "e30" },
+    };
+  }
+
+  async function harness(options: {
+    locator?: string;
+    /** "honest" returns receiptFor(ref); a function derives the callback result. */
+    receipt?: "honest" | ((honest: AnchorReceipt, input: ReceiptInput) => unknown);
+    readNative?: () => Promise<Record<string, unknown> | null>;
+    config?: Partial<AgentConfig>;
+    tamper?: (fx: Fixture) => void;
+  } = {}) {
+    const { fx, ref, locator } = await fixture(options.locator);
+    options.tamper?.(fx);
+    const honest = receiptFor(ref);
+    const sellerOwner = Buffer.from(resolveFromDid(sellerDid)!).toString("hex");
+    const readAnchor = vi.fn(async (address: string) => {
+      if (address === "bundle") return fx.bundle;
+      if (address === "listing") return fx.listing;
+      if (address === "agreement-j1") return fx.agreement;
+      if (address === nativeEvidence) return options.readNative ? options.readNative() : fx.evidence;
+      if (address === squattedEvidence) return fx.evidence;
+      // Native references retain the existing direct-read path.
+      if (address === "settlement-j1") return fx.evidence;
+      return null;
+    });
+    const resolveAnchorByName = vi.fn(async (name: string, owner: string) => {
+      if (name.startsWith("dacs1%3A") && owner === sellerOwner)
+        return { status: "present" as const, address: "listing" };
+      if (name.startsWith("dacs4"))
+        return { status: "present" as const, address: squattedEvidence };
+      return { status: "absent" as const };
+    });
+    const callback = options.receipt === undefined
+      ? undefined
+      : vi.fn((input: ReceiptInput) => options.receipt === "honest"
+        ? honest
+        : (options.receipt as (h: AnchorReceipt, i: ReceiptInput) => unknown)(
+          structuredClone(honest), input));
+    const config: AgentConfig = {
+      demosRpc: "mem",
+      ...(callback ? { resolveAttestationAnchorReceipt: callback as unknown as ReceiptCallback } : {}),
+      resolveSettlementEvidenceContext: () => ({
+        orchestrator: sellerDid,
+        rail: { railId: "x402:default", railType: "x402", asset: "USDC",
+          handler: "pay-x402", network: "eip155:84532" },
+      }),
+      ...options.config,
+    };
+    const agent = buildAgent({ readAnchor, resolveAnchorByName } as never, config);
+    return { agent, config, fx, ref, locator, honest, callback, readAnchor,
+      resolveAnchorByName, evidenceCalls: () => resolveAnchorByName.mock.calls.filter(
+        ([name]) => name.startsWith("dacs4")) };
+  }
+
+  test("reads the exact native address of a verified receipt written by the orchestrator", async () => {
+    const h = await harness({ receipt: "honest" });
+    expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    expect(h.callback).toHaveBeenCalledExactlyOnceWith({ ref: h.ref, jobId: JOB_ID,
+      parties: h.fx.bundle.parties, signal: expect.any(AbortSignal) });
+    expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(squattedEvidence);
+    // DEMOS-MAPPING A.2: storageProgramName is never a consumer resolution input.
+    expect(h.evidenceCalls()).toHaveLength(0);
+  });
+
+  test.each([
+    ["a bundle party that is not the orchestrator", buyerDid],
+    ["an unrelated third party", thirdDid],
+  ])("a receipt writer that is %s fails evidence verification", async (_label, writer) => {
+    const h = await harness({ receipt: (honest) => ({ ...honest, writer }) });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(result).not.toMatchObject({ ok: true, fullyVerified: true });
+    expect(evidenceVerdict(result)).toBe("invalid-evidence");
+    expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle" }));
+  });
+
+  // CORE §5.1 SR2-12: without a receipt callback the Agent has no carrier to
+  // qualify. That is a missing capability, not established absence.
+  test("absent callback is unresolved, not missing, without guessing", async () => {
+    const h = await harness();
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceVerdict(result)).toBe("unresolved");
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(squattedEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.evidenceCalls()).toHaveLength(0);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle",
+      reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* unresolved$/) }));
+  });
+
+  // DEMOS-MAPPING: a Demos not-found read is indeterminate. A lagging node can
+  // answer not-found for a write the host verified finalized elsewhere.
+  test("a not-found read at the receipt's native address is unresolved, not missing", async () => {
+    const h = await harness({ receipt: "honest", readNative: async () => null });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(result).not.toMatchObject({ ok: true, fullyVerified: true });
+    expect(evidenceVerdict(result)).toBe("unresolved");
+    expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(squattedEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.evidenceCalls()).toHaveLength(0);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle",
+      reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* unresolved$/) }));
+  });
+
+  // CORE §5.1 SR2-12: with no qualifying carrier the resolution result is
+  // indeterminate, never authoritative absence.
+  test.each([
+    ["no receipt", (): null => null],
+    ["undefined result", (): undefined => undefined],
+    ["callback throws", () => { throw new Error("unavailable"); }],
+    ["callback rejects", () => Promise.reject(new Error("unavailable"))],
+  ] as const)("%s is unresolved, not missing, without guessing", async (_label, receipt) => {
+    const h = await harness({ receipt: receipt as never });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(result).not.toMatchObject({ ok: true, fullyVerified: true });
+    expect(evidenceVerdict(result)).toBe("unresolved");
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(squattedEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.evidenceCalls()).toHaveLength(0);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle",
+      reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* unresolved$/) }));
+  });
+
+  // A host that has proved a delivered receipt invalid, e.g. forged, reports
+  // that permanently.
+  test.each([
+    ["throws", () => { throw new AttestationRefRejection("fail", "forged receipt"); }],
+    ["rejects with", () => Promise.reject(new AttestationRefRejection("fail", "forged receipt"))],
+  ] as const)("a callback that %s AttestationRefRejection(\"fail\") is invalid-binding and never read", async (_label, receipt) => {
+    const h = await harness({ receipt: receipt as never });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceVerdict(result)).toBe("invalid-binding");
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.evidenceCalls()).toHaveLength(0);
+    const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+    expect(reputation.exclusions).toContainEqual(expect.objectContaining({
+      code: "invalid-bundle", ref: "bundle",
+      reason: expect.stringMatching(/dacs-4-evidence\/dacs4:payment:.* invalid-binding$/) }));
+  });
+
+  // Only a deliberate "fail" is permanent; any other throw stays retryable.
+  test.each([
+    ["AttestationRefRejection(\"error\")", () => new AttestationRefRejection("error", "x")],
+    ["AttestationRefRejection(\"indeterminate\")",
+      () => new AttestationRefRejection("indeterminate", "x")],
+    ["a DacsError", () => new DacsError("x")],
+    ["a SubstrateError", () => new SubstrateError("rpc unavailable")],
+    ["a look-alike with disposition \"fail\"",
+      () => Object.assign(new Error("x"), { name: "AttestationRefRejection", disposition: "fail" })],
+  ] as const)("a callback that throws %s is unresolved", async (_label, error) => {
+    for (const receipt of [() => { throw error(); }, () => Promise.reject(error())]) {
+      const h = await harness({ receipt: receipt as never });
+      const result = await h.agent.verifyBundle("bundle");
+      expect(result.ok).toBe(false);
+      expect(evidenceVerdict(result)).toBe("unresolved");
+      expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    }
+  });
+
+  test.each<[string, (honest: AnchorReceipt) => unknown]>([
+    ["a bare writer claim", () => buyerDid],
+    ["an array", (honest) => [honest, honest]],
+    ["an unknown member", (honest) => ({ ...honest, extra: true })],
+    ["no transaction", ({ transactionRef: _t, ...rest }) => rest],
+    ["no nonce", ({ nonce: _n, ...rest }) => rest],
+    ["a non-canonical writer", (honest) => ({ ...honest, writer: sellerDid.toUpperCase() })],
+    ["a non-ClaimRef writer", (honest) => ({ ...honest, writer: "seller" })],
+    ["another substrate", (honest) => ({ ...honest, substrate: "ethereum" })],
+    ...["not-a-number", "03", "-1", "+1", "1.0", "1e3", " 3", "0x3", "３",
+      "9007199254740992",
+    ].map((nonce): [string, (honest: AnchorReceipt) => unknown] => [
+      `nonce ${JSON.stringify(nonce)}`, (honest) => ({ ...honest, nonce })]),
+    ...["", " " + nativeEvidence, "stor-" + "e".repeat(39), "stor-" + "e".repeat(64),
+      "stor-" + "E".repeat(40), "stor-" + "g".repeat(40), paymentEvidenceAddress(JOB_ID, "x402:default", 0),
+    ].map((nativeAddress): [string, (honest: AnchorReceipt) => unknown] => [
+      `native address ${JSON.stringify(nativeAddress)}`,
+      (honest) => ({ ...honest, nativeAddress })]),
+  ])("a malformed receipt (%s) is invalid-shape and never read", async (_label, receipt) => {
+    const h = await harness({ receipt });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceVerdict(result)).toBe("invalid-shape");
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(h.locator);
+    expect(h.evidenceCalls()).toHaveLength(0);
+  });
+
+  test.each([
+    ["another phase index", { logicalAddress: paymentEvidenceAddress(JOB_ID, "x402:default", 1) }],
+    ["the :resolved successor", { logicalAddress: paymentEvidenceAddress(JOB_ID, "x402:default", 0, true) }],
+    ["another job", { logicalAddress: paymentEvidenceAddress(OTHER_JOB_ID, "x402:default", 0) }],
+    ["another content hash", { contentHash: h("9") }],
+  ])("a receipt for %s does not bind the ref and is invalid-binding", async (_label, overrides) => {
+    const h = await harness({ receipt: (honest) => ({ ...honest, ...overrides }) });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceVerdict(result)).toBe("invalid-binding");
+    expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+  });
+
+  describe("outcome-aware lifecycle gate (DACS-5 SEB-1 SR-2 lifecycle)", () => {
+    // DACS-5 §10.3.1: the failed and aborted terminal outcome classes.
+    const failedOrAborted = ["failed-perm", "failed-counterparty", "failed-substrate",
+      "aborted-by-self", "aborted-by-other"] as const;
+    const belowEveryGate: Array<[string, Partial<Record<keyof AnchorReceipt, unknown>>]> = [
+      ["submitted", { state: "submitted", blockRef: undefined }],
+      ["accepted", { state: "accepted", blockRef: undefined }],
+      ["reorged", { state: "reorged" }],
+      ["indeterminate over included", { state: "included",
+        observationDisposition: "indeterminate", preservedReceiptHash: h("6") }],
+      ["indeterminate over finalized", { observationDisposition: "indeterminate",
+        preservedReceiptHash: h("6") }],
+    ];
+
+    async function withOutcome(
+      receipt: (honest: AnchorReceipt) => unknown,
+      outcome: string,
+    ) {
+      const h = await harness({ receipt });
+      h.fx.bundle.outcome = outcome;
+      await resignFixture(h.fx, [{ party: buyerDid, sign: signBuyer },
+        { party: sellerDid, sign: signSeller }]);
+      return h;
+    }
+
+    test.each(failedOrAborted)("outcome %s admits an established included receipt", async (outcome) => {
+      const h = await withOutcome((honest) => ({ ...honest, state: "included" }), outcome);
+      expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+      expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+    });
+
+    test.each(["completed", ...failedOrAborted] as const)(
+      "outcome %s admits an established finalized receipt", async (outcome) => {
+        const h = await withOutcome((honest) => honest, outcome);
+        expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+      });
+
+    test.each([
+      ["completed", "included", { state: "included" }] as const,
+      ...(["completed", ...failedOrAborted] as const).flatMap((outcome) =>
+        belowEveryGate.map(([state, overrides]) => [outcome, state, overrides] as const)),
+    ])("outcome %s refuses receipt state %s as unresolved", async (outcome, _state, overrides) => {
+      const h = await withOutcome(
+        (honest) => JSON.parse(JSON.stringify({ ...honest, ...overrides })), outcome);
+      const result = await h.agent.verifyBundle("bundle");
+      expect(result.ok).toBe(false);
+      expect(evidenceVerdict(result)).toBe("unresolved");
+      expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    });
+  });
+
+  test.each([
+    [paymentEvidenceAddress(OTHER_JOB_ID, "x402:default", 0), "invalid-binding"],
+    [`dacs4:payment:${JOB_ID}:x402%3adefault:0`, "invalid-shape"],
+    [`dacs4:payment:${JOB_ID}:x402%3Adefault:00`, "invalid-shape"],
+    [`dacs4:payment:${JOB_ID}:x402%3Adefault:9007199254740992`, "invalid-shape"],
+    [`dacs4:payment:${JOB_ID}:x402%3Adefault:0:extra`, "invalid-shape"],
+    [`dacs4:payment:${JOB_ID}:x402%3Adefault:0:resolved:extra`, "invalid-shape"],
+    [`dacs4:payment:${JOB_ID.toLowerCase()}:x402%3Adefault:0`, "invalid-shape"],
+  ])("DACS-4 SB-1 locator %s is %s before authority or lookup", async (locator, verdict) => {
+    const h = await harness({ locator, receipt: "honest" });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceVerdict(result)).toBe(verdict);
+    expect(h.callback).not.toHaveBeenCalled();
+    expect(h.evidenceCalls()).toHaveLength(0);
+    expect(h.readAnchor).not.toHaveBeenCalledWith(locator);
+  });
+
+  test("a hash mismatch still fails after the exact native read", async () => {
+    const h = await harness({ receipt: "honest", tamper: (fx) => {
+      fx.evidence.observedAt = 1780000000001;
+    } });
+    const result = await h.agent.verifyBundle("bundle");
+    expect(result.ok).toBe(false);
+    expect(evidenceVerdict(result)).toBe("hash-mismatch");
+    expect(h.readAnchor).toHaveBeenCalledWith(nativeEvidence);
+  });
+
+  test("a substrate fault on the exact native read propagates as on the native path (#70)", async () => {
+    const fault = () => Promise.reject(new SubstrateError("rpc unavailable"));
+    const pc2 = await harness({ receipt: "honest", readNative: fault });
+    await expect(pc2.agent.verifyBundle("bundle")).rejects.toBeInstanceOf(SubstrateError);
+    await expect(pc2.agent.getReputation(sellerDid, ["bundle"])).rejects.toBeInstanceOf(SubstrateError);
+    // Same fault, native locator: the pre-existing direct-read behaviour.
+    const native = await harness({ locator: "settlement-j1" });
+    native.readAnchor.mockImplementation(async (address: string) => {
+      if (address === "settlement-j1") throw new SubstrateError("rpc unavailable");
+      if (address === "bundle") return native.fx.bundle;
+      if (address === "listing") return native.fx.listing;
+      if (address === "agreement-j1") return native.fx.agreement;
+      return null;
+    });
+    await expect(native.agent.verifyBundle("bundle")).rejects.toBeInstanceOf(SubstrateError);
+  });
+
+  describe("resolution deadline", () => {
+    const timeout = { attestationAnchorReceiptTimeoutMs: 20 };
+
+    test("a callback that never settles is unresolved, aborts its signal, and ignores a late receipt", async () => {
+      let signal: AbortSignal | undefined;
+      let settle: (value: AnchorReceipt) => void = () => {};
+      const h = await harness({ config: timeout, receipt: (_honest, input) => {
+        signal = input.signal;
+        return new Promise((resolve) => { settle = resolve; });
+      } });
+      const result = await h.agent.verifyBundle("bundle");
+      expect(evidenceVerdict(result)).toBe("unresolved");
+      expect(result.ok).toBe(false);
+      expect(signal?.aborted).toBe(true);
+      settle(h.honest);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(h.readAnchor).not.toHaveBeenCalledWith(nativeEvidence);
+    }, 2_000);
+
+    test("a native read that never settles is unresolved", async () => {
+      const h = await harness({ config: timeout, receipt: "honest",
+        readNative: () => new Promise(() => {}) });
+      expect(evidenceVerdict(await h.agent.verifyBundle("bundle"))).toBe("unresolved");
+    }, 2_000);
+
+    test("a rejection after expiry is ignored, not an unhandled rejection", async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const h = await harness({ config: timeout, receipt: "honest",
+          readNative: () => new Promise((_resolve, reject) =>
+            setTimeout(() => reject(new SubstrateError("late fault")), 60)) });
+        expect(evidenceVerdict(await h.agent.verifyBundle("bundle"))).toBe("unresolved");
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+    }, 2_000);
+
+    test("getReputation settles and excludes the bundle as unresolved", async () => {
+      const h = await harness({ config: timeout, receipt: () => new Promise(() => {}) });
+      const reputation = await h.agent.getReputation(sellerDid, ["bundle"]);
+      const exclusion = reputation.exclusions.find((entry) => entry.ref === "bundle");
+      expect(exclusion?.reason).toMatch(/dacs-4-evidence\/dacs4:payment:.* unresolved$/);
+    }, 2_000);
+
+    // Node's setTimeout fires after ~1 ms for any delay above 2^31 - 1.
+    test("accepts the timer maximum and still admits a receipt that arrives after 30 ms", async () => {
+      const h = await harness({ config: { attestationAnchorReceiptTimeoutMs: 2_147_483_647 },
+        receipt: (honest) => new Promise((resolve) => setTimeout(() => resolve(honest), 30)) });
+      expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    }, 2_000);
+
+    test.each([0, -1, 1.5, Number.NaN, "20", 2_147_483_648, Number.MAX_SAFE_INTEGER,
+    ])("rejects timeout %o at construction", async (value) => {
+      await expect(harness({ receipt: "honest",
+        config: { attestationAnchorReceiptTimeoutMs: value as number } }))
+        .rejects.toThrow(/attestationAnchorReceiptTimeoutMs/);
+    });
+  });
+
+  test("native refs and callback-absent behavior retain direct reads", async () => {
+    const absent = await harness({ locator: "settlement-j1" });
+    const configured = await harness({ locator: "settlement-j1", receipt: () => {
+      throw new Error("native reads must not call the receipt callback");
+    } });
+    expect(await configured.agent.verifyBundle("bundle")).toEqual(await absent.agent.verifyBundle("bundle"));
+    expect(configured.callback).not.toHaveBeenCalled();
+    for (const h of [absent, configured]) {
+      expect(h.readAnchor).toHaveBeenCalledWith("settlement-j1");
+      expect(h.readAnchor).toHaveBeenCalledWith("agreement-j1");
+      expect(h.evidenceCalls()).toHaveLength(0);
+    }
+  });
+
+  test("callback absent preserves successful verification of an all-native bundle", async () => {
+    for (const configured of [false, true]) {
+      const h = await harness({ receipt: configured ? "honest" : undefined });
+      h.fx.bundle.outcome = "aborted-by-self";
+      h.fx.bundle.settlementEvidence = [];
+      h.fx.bundle.phaseSummary = [];
+      await resignFixture(h.fx, [{ party: buyerDid, sign: signBuyer },
+        { party: sellerDid, sign: signSeller }]);
+      expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+      expect(h.readAnchor).toHaveBeenCalledWith("agreement-j1");
+      expect(h.evidenceCalls()).toHaveLength(0);
+      if (h.callback) expect(h.callback).not.toHaveBeenCalled();
+    }
+  });
+
+  // The unreleased predecessor key. Dropping it silently would leave every
+  // PC-2 ref unresolved with no hint why.
+  test("the replaced resolveAttestationAnchorWriter key is refused at construction", () => {
+    const adapter = { readAnchor: async () => null,
+      resolveAnchorByName: async () => ({ status: "absent" }) } as never;
+    const writer = () => sellerDid;
+    for (const config of [
+      { demosRpc: "mem", resolveAttestationAnchorWriter: writer },
+      { demosRpc: "mem", resolveAttestationAnchorWriter: writer,
+        resolveAttestationAnchorReceipt: () => null },
+      Object.assign(Object.create({ resolveAttestationAnchorWriter: writer }),
+        { demosRpc: "mem" }),
+    ]) {
+      expect(() => buildAgent(adapter, config as AgentConfig)).toThrow(DacsError);
+      expect(() => buildAgent(adapter, config as AgentConfig)).toThrow(
+        /AgentConfig\.resolveAttestationAnchorWriter .*AgentConfig\.resolveAttestationAnchorReceipt/);
+    }
+    // An explicit undefined configures nothing, as for every optional key.
+    expect(() => buildAgent(adapter, { demosRpc: "mem",
+      resolveAttestationAnchorWriter: undefined } as AgentConfig)).not.toThrow();
+  });
+
+  test("receipt callback is captured once and cannot mutate verification input", async () => {
+    const h = await harness({ receipt: (honest, input) => {
+      (input.ref as { contentHash: string }).contentHash = "0".repeat(64);
+      (input.parties as unknown[]).length = 0;
+      return honest;
+    } });
+    h.config.resolveAttestationAnchorReceipt = () => null;
+    expect(await h.agent.verifyBundle("bundle")).toMatchObject({ ok: true, fullyVerified: true });
+    expect(h.callback).toHaveBeenCalledTimes(1);
+    expect(h.fx.bundle.parties).toHaveLength(2);
   });
 });
