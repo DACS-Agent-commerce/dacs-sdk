@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "b08a4bf05c89f09b5be3975859f20858cb17418d"
+        "blob": "a2a4c2eac48a7242e1bf2aba5053c857dadb3223"
       },
       "DELTA-LEDGER.json": {
-        "blob": "8a2b25b50c458fad24b0bc28d3075372cee639d2"
+        "blob": "3eeb3df4669cc4bcf63e14cb62e957e9cd1a9ce7"
       },
       "DELTA-MAP.md": {
-        "blob": "0bca8daac89668625a0d537db6c068e99faa8311"
+        "blob": "71a72dbd2e6231a241e1f7069dac2badd290aa1d"
       },
       "DELTA-NOTES.md": {
         "blob": "62c6e0fb4149484f0f453f6768f2b089c1023a04"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "275a605cb17a68b964439f77cae6e4893510e7c7"
+        "blob": "908479a3d1ad462e10a0b0ae2187ef6599941b65"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "834c7417fce63bfc0bea792da694e7edbafc5762"
+        "blob": "c142c4ab4bf8e47e6a2d3c1eb63c73d1a29910e5"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1265,7 +1265,7 @@
         "blob": "aaf304c17d42f5decc0e1299f03ec38f0cd36f8d"
       },
       "src/signatures.mjs": {
-        "blob": "6396455c3d3c436bc078c433d520245e7d99ae4a"
+        "blob": "ea2845c8b7caf1b411be2e29a70005a94e4218c0"
       },
       "src/switch-files.mjs": {
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
@@ -1869,6 +1869,9 @@
       },
       "test/seller-session-delegation-job-id.test.mjs": {
         "blob": "512d6488ae8a6a8890b227cc90a934528853bd4a"
+      },
+      "test/signatures-claim-ref.test.mjs": {
+        "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"
       },
       "test/sqlite-floor-iterators.test.mjs": {
         "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"
