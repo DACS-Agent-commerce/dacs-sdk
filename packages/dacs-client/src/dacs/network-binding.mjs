@@ -31,14 +31,14 @@ const CONTEXT_KEYS = ['network', 'endpoint', 'transportAuthority', 'connectionId
 const RECORD_KEYS = ['bindingVersion', 'bindingId', ...EXPECTED_KEYS, 'connectionId', 'source', 'observedAt', 'expiresAt'];
 
 export class NetworkBindingError extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, { cause } = {}) {
+    super(message, cause === undefined ? undefined : { cause });
     this.name = 'NetworkBindingError';
     this.code = code;
   }
 }
 
-const fail = (code, message) => { throw new NetworkBindingError(code, message); };
+const fail = (code, message, cause) => { throw new NetworkBindingError(code, message, cause === undefined ? undefined : { cause }); };
 const exactMatch = (pattern, value) => typeof value === 'string' && pattern.exec(value)?.[0] === value;
 
 function record(value, code = 'malformed_observation') {
@@ -191,7 +191,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
 
   async function context(deadline) {
     let actual;
-    try { actual = await bounded(() => reader.getContext(), deadline); } catch { fail('unavailable', 'Transport context is unavailable'); }
+    try { actual = await bounded(() => reader.getContext(), deadline); } catch (error) { fail('unavailable', 'Transport context is unavailable', error); }
     const value = contextOf(actual);
     if (value.network !== expected.network || value.endpoint !== expected.endpoint
       || value.transportAuthority !== expected.transportAuthority) fail('transport_mismatch', 'The active transport differs from the reviewed network, endpoint or authority');
@@ -205,7 +205,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
     let receipt;
     try {
       receipt = await bounded(() => reader.getBlockByNumber(height, Object.freeze({ cache: 'no-store', redirect: 'error' })), deadline);
-    } catch { fail('unavailable', 'The identity read is unavailable'); }
+    } catch (error) { fail('unavailable', 'The identity read is unavailable', error); }
     const read = record(receipt);
     exactKeys(read, ['value', 'context', 'observedAt', 'fromCache', 'redirected'], 'malformed_observation');
     if (read.fromCache !== false) fail('cached_observation', 'Cached or unspecified-cache identity reads are rejected');
