@@ -1,5 +1,7 @@
 import { VERSION } from "../version.js";
 import { PAY_D402_AVAILABILITY } from "../rails/index.js";
+import { readBoundedDemosJson } from "../rails/demosRpc.js";
+import nodeBuildPin from "../substrate/demosNodeBuild.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip" | "blocked";
@@ -37,11 +39,18 @@ export interface DoctorOptions {
   now?: () => Date;
   nodeVersion?: string;
   adapterFactory?: (config: { rpc: string; secret?: string }) => DoctorAdapter;
+  /** Fetch used for the node build read; defaults to the global `fetch`. */
+  fetchImpl?: typeof fetch;
 }
 
 const RUNTIME_NODE = "runtime.node";
 const RPC_REACHABLE = "rpc.reachable";
 const SUBSTRATE_ADAPTER_LOAD = "substrate.adapter-load";
+const NODE_BUILD = "node.build";
+const NODE_BUILD_UNKNOWN_SUMMARY = "node build unknown (no build RPC)";
+const NODE_BUILD_TIMEOUT_MS = 5_000;
+const NODE_BUILD_MAX_BYTES = 4 * 1024;
+const COMMIT_SHA_SUFFIX_RE = /([0-9a-f]{40})$/i;
 const SUPPORTED_NODE_RANGE_FALLBACK = "^20.19.0 || >=22.12.0";
 
 function check(
@@ -174,6 +183,78 @@ async function defaultAdapterFactory(config: {
   return new DemosAdapter(config);
 }
 
+interface NodeBuildReply {
+  version: string | undefined;
+  commitSha: string;
+}
+
+/**
+ * Read the node build from `GET <rpc origin>/version`.
+ * Bytes are limited before decoding and the whole read stops at a short deadline.
+ * Throws with the real cause (HTTP status, timeout, byte limit, bad JSON) when the
+ * reply is not usable; the commit must end in a 40-hex sha or the reply is refused.
+ */
+async function readNodeBuild(rpc: string, fetchImpl: typeof fetch): Promise<NodeBuildReply> {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error("node build read timed out")),
+    NODE_BUILD_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetchImpl(`${new URL(rpc).origin}/version`, {
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      throw new Error(`node /version returned HTTP ${response.status}`);
+    }
+    const reply = await readBoundedDemosJson(response, NODE_BUILD_MAX_BYTES, controller.signal);
+    const fields = typeof reply === "object" && reply !== null && !Array.isArray(reply)
+      ? (reply as { version?: unknown; commit?: unknown })
+      : {};
+    const commitSha = typeof fields.commit === "string"
+      ? COMMIT_SHA_SUFFIX_RE.exec(fields.commit)?.[1]?.toLowerCase()
+      : undefined;
+    if (commitSha === undefined) {
+      throw new Error("node /version reply has no commit ending in a 40-hex sha");
+    }
+    return {
+      version: typeof fields.version === "string" ? fields.version : undefined,
+      commitSha,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Compare the node's build to the pin: `pass` on a match, `warn` on a difference, `skip` when unknown. */
+async function nodeBuildCheck(
+  rpc: string,
+  fetchImpl: typeof fetch,
+  secrets: Array<string | undefined>,
+): Promise<DoctorCheck> {
+  let build: NodeBuildReply;
+  try {
+    build = await readNodeBuild(rpc, fetchImpl);
+  } catch (err) {
+    // fetch reports refused, DNS and TLS failures only as the cause of "fetch failed".
+    const cause = err instanceof Error && err.cause !== undefined
+      ? `: ${sanitizeError(err.cause, secrets)}`
+      : "";
+    return check(NODE_BUILD, "skip", NODE_BUILD_UNKNOWN_SUMMARY, {
+      detail: `${sanitizeError(err, secrets)}${cause}`,
+    });
+  }
+  const data = { version: build.version, commit: build.commitSha, pinned: nodeBuildPin.commitSha };
+  return build.commitSha === nodeBuildPin.commitSha
+    ? check(NODE_BUILD, "pass", "Node build matches the pinned build", { data })
+    : check(NODE_BUILD, "warn", "Node build differs from the pinned build", {
+        data,
+        remediation: `Reply shapes were recorded against ${nodeBuildPin.repository}; re-record them if the node changed.`,
+      });
+}
+
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
   const checks: DoctorCheck[] = [];
   const generatedAt = (options.now?.() ?? new Date()).toISOString();
@@ -266,6 +347,15 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
         );
       }
     }
+  }
+
+  if (!options.offline && options.rpc) {
+    checks.push(
+      await nodeBuildCheck(options.rpc, options.fetchImpl ?? fetch, [
+        options.walletSecret,
+        ...rpcSensitiveNeedles(options.rpc),
+      ]),
+    );
   }
 
   if (!options.walletSecret) {

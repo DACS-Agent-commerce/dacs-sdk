@@ -999,6 +999,13 @@ broadcasting. StorageProgram binding resolution and read-visible anchor
 completion currently report `blocked` until the resolver/completion work lands
 (tracked by dacs-sdk #58 and #57).
 
+With `--rpc`, the `node.build` check reads the node's `GET /version` (4 KiB
+limit, 5 second deadline) and compares its commit with the build the SDK's
+recorded node replies were captured against (`src/substrate/demosNodeBuild.json`).
+A match is `pass`; a different build is `warn`; a node that cannot be reached, has
+no `/version` endpoint or sends an unusable reply is `skip` with `node build
+unknown (no build RPC)`. This check never changes the exit code.
+
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.
 
