@@ -9,10 +9,8 @@ import { boundedCall } from './bounded-call.mjs';
 import { SELLER_CONTEXT_PATH, SellerTransportError, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 
-const ACQUIRE_TIMEOUT_MS = 10_000;
-const POLICY_HOLD_WRITES = 2;
-const LIVE_STATES = ['intent', 'admitted', 'running'];
-const HASH = /^[0-9a-f]{64}$/;
+const ACQUIRE_TIMEOUT_MS = 10_000, POLICY_HOLD_WRITES = 2;
+const LIVE_STATES = ['intent', 'admitted', 'running'], HASH = /^[0-9a-f]{64}$/;
 
 // Per transaction instance: the live-begin reader below, kept off the frozen API so that nothing outside the module can take it for authority.
 const instanceReaders = new WeakMap();
