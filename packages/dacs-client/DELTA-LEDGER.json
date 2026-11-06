@@ -6314,6 +6314,23 @@
           "after": "17e556eaaa8199a80b20fa91c1563ef50fbb85b9"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): refuse a general sign request for a transaction hash in the Node wallet",
+      "sha": "bb40abfdb08ef522f2e8ed19cf8ba315c4911ad5",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "859efccb847f22e549c4e34667c49bcad1a34350",
+          "after": "4ba56c73af306778fef8531dd80bf48404d581b6"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+          "before": "0b931d7660acc1a9369014510d9353ea491fa8a0",
+          "after": "9cdd17e0eceae6b901b2c075823c6dce714496c9"
+        }
+      ]
     }
   ]
 }
