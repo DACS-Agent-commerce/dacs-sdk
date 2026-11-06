@@ -6387,6 +6387,57 @@
           "after": "f85d5b731a200483b9c5e95efa5f818b947e0e60"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2ab expose the held seller composition and packed wallet",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "e081789da16ac68bfbb76978b8cea7000a0bb9a4",
+          "after": "7e61b54257846f628b2984bc6bee811470401dc2"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "c24bb9c6d829d4ead3c806eab84268c64047961c",
+          "after": "b34577464d20d0b9c566876a35d50c2a26b96b65"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/fresh-node-child.mjs",
+          "before": "a398b50dda2846da3e06e0d9948d99126b47773b",
+          "after": "65308beab83304e56d651604f59faf6feaab6541"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/packed-install.mjs",
+          "before": "aef655a4d572cc793fde0d5f952278371470adc7",
+          "after": "0519336d2f31674a642da8079aa7365d384f9a95"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "768ebf54a4154a3474b684f4e564c174b34dd29e",
+          "after": "42a1d94960ea6b671d6ed387007bd899a2b4e33b"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff",
+          "after": "d9d7a16e68b7d780ecc5766d23523d239756aa27"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": null,
+          "after": "dd4ed9c05f74261c828a740996444d3b3a88c167"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": null,
+          "after": "7b598204121d8e58bb55c3b4225ee5cdd05be0c5"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f85d5b731a200483b9c5e95efa5f818b947e0e60",
+          "after": "d54a02c9580fe133738ec19c3ec19b323be0a66c"
+        }
+      ]
     }
   ]
 }

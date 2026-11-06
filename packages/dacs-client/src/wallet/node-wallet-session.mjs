@@ -12,7 +12,7 @@ import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
 import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory } from '../public-admission.mjs';
 import { observeWithDeadline, OutboundError } from '../util/http.mjs';
-import { createDevnetAgreementTransport, createSourceObserver } from './devnet-native-transport.mjs';
+import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
@@ -23,6 +23,10 @@ const NODE_WALLET_NETWORK = TP1_APPROVED_IDENTITY_RECORD.network;
 const IDENTITY_RECORD_DIGEST = createHash('sha256').update(canonicalize(TP1_APPROVED_IDENTITY_RECORD)).digest('hex');
 const TRANSPORT_AUTHORITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
 const PASSIVE_METHODS = ['getPublicAccount', 'getWriteProfile', 'isLocked', 'lock'];
+// The facade members that only read or observe; every other function member is an effect entry (DN-4). `binding` is split by phase.
+const PASSIVE_TRANSPORT_METHODS = ['readRpc', 'observeBinding', 'chainReader', 'nativeTransferClaimed', 'nativeTransferCancelled',
+  'nativeTransferRefused', 'nativeNonceConsumer', 'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
+const READBACK_PHASE = 'readback';
 const NODE_INFO_MESSAGES = Object.freeze(['getNetworkInfo', 'getNetworkParameters']);
 const OBSERVER_PROVENANCE_PREFIX = `dacs-node-observer:${TP1_APPROVED_IDENTITY_RECORD.recordId}`;
 const RPC_FAILED = 'node_wallet_rpc_failed';
@@ -44,6 +48,30 @@ const refuseContent = cause => new EmbeddedWalletError('payload_mismatch', 'the 
 const liveLeases = new WeakSet();
 
 const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
+
+/** Capability identity checks (return a boolean, never throw) and the transport's profile and publication constants, re-exported so a kit imports one source. */
+export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTransport,
+  DEVNET_AGREEMENT_PROFILE, DEVNET_AGREEMENT_KIND, DEVNET_AGREEMENT_SOURCE, DEVNET_SETTLEMENT_KIND, DEVNET_SETTLEMENT_POLICY,
+  DEVNET_DELIVERY_KIND, DEVNET_DELIVERY_POLICY, DEVNET_DEMO_ARTIFACT_KIND, DEVNET_DEMO_ARTIFACT_POLICY, DEVNET_DEMO_ARTIFACT_TYPES } from './devnet-native-transport.mjs';
+
+/**
+ * Returns a frozen facade over a registered transport, itself registered so the `isDevnet*Transport` checks accept it. Active members (`rpc`, `walletBinding`,
+ * `recoverStorageWrite`, `cancelNativeTransfer` and `binding` for every phase but `readback`) run the admission wrapper and reject `profile_not_admitted` while held;
+ * the passive members listed in the README keep their signatures. `readback` is read once, before the call, so a request changed afterwards cannot move it
+ * between the two classes. Options: `{admission, transport}`. Throws TypeError(admission_required | admission_input_untrusted | an unregistered transport) and
+ * OperationError(runtime_unsupported); active calls reject with `profile_not_admitted`, `runtime_unsupported` or the transport's own error.
+ */
+export function createHeldTransportFacade({ admission, transport } = {}) {
+  const wrapped = admitPublicFactory(() => transport, { passive: PASSIVE_TRANSPORT_METHODS, purchase: true })({ admission });
+  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => name !== 'actionsAdmitted'));
+  const facade = Object.freeze({ ...members, binding(request, ...args) {
+    try {
+      return request?.phase === READBACK_PHASE ? transport.binding({ ...request, phase: READBACK_PHASE }, ...args) : wrapped.binding(request, ...args);
+    } catch (error) { return Promise.reject(error); }
+  } });
+  registerHeldTransportFacade(facade, transport);
+  return facade;
+}
 
 /**
  * Returns `{next(identity)}`: a stamp source whose stamps for one identity are strictly increasing
@@ -301,20 +329,59 @@ const checkConstruction = admitPublicFactory(options => ({ options }), { purchas
  * on every outcome. Rejects with TypeError(admission_required | admission_input_untrusted), OperationError(runtime_unsupported | invalid_mnemonic |
  * node_wallet_sdk_unreviewed | node_wallet_sdk_preloaded | transport errors), or the SDK session's own refusal.
  */
-export async function createNodeWalletSession(options = {}) {
+export function createNodeWalletSession(options = {}) {
+  return buildNodeComposition(options, false);
+}
+
+/** A Listing CREATE is the seller's own public offer; the confirmed-write policy decides only its other writes. */
+function isListingCreate({ content }) {
+  const write = content.data?.[1];
+  return content.type === 'storageProgram' && write?.operation === 'CREATE_STORAGE_PROGRAM' && write.metadata?.artifactKind === 'Listing';
+}
+
+// The transport's confirmed-write callback: a confirmation by another sender, or a Listing CREATE, passes without the policy; every other one calls it once,
+// and `false` or a throw refuses `approval_required` (the transport broadcasts nothing then).
+function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
+  return async answer => {
+    const transaction = answer.response.data.transaction;
+    if (transaction.content.from !== ownAddress() || isListingCreate(transaction)) return true;
+    try { return await approveConfirmedWrite(answer); }
+    catch (cause) { return fail('approval_required', cause); }
+  };
+}
+
+/**
+ * Returns a Promise for `{wallet, walletFactory, transport, observer, internalCauseOf, close}`: the session of `createNodeWalletSession` over a seller transport.
+ * `transport` is the registered held facade of `createHeldTransportFacade`; `observer` is `createNodeObserver({owner, clock})` over the same owner, with no fence.
+ * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}` and the required
+ * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed). A confirmation by another sender, or of a Listing CREATE,
+ * is answered `true` without calling it; every other seller confirmation calls it once, and `false` or a throw (kept as `cause`) refuses `approval_required`.
+ * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value or the transport's own refusal of the publications.
+ */
+export function createNodeSellerComposition(options = {}) {
+  return buildNodeComposition(options, true);
+}
+
+async function buildNodeComposition(options, seller) {
   const key = options?.key;
   let keyCopy, transport, session;
   try {
-    const { owner, journal, approve, clock = { now: () => Date.now() } } = checkConstruction(options).options;
+    const { owner, journal, approve, approveConfirmedWrite, publications, clock = { now: () => Date.now() } } = checkConstruction(options).options;
     const admission = { ...options.admission };
+    if (seller && approveConfirmedWrite !== null && typeof approveConfirmedWrite !== 'function') throw new TypeError('approveConfirmedWrite must be a function or an explicit null');
     if (!(key instanceof Uint8Array)) fail('invalid_mnemonic');
     keyCopy = Uint8Array.from(key);
     const { Demos, validateMnemonic } = await loadNodeDemos();
     const expected = readExpectedPins(admission.binding, owner);
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
     const fetchImpl = (...args) => { const attempt = attempts.getStore(); if (attempt) attempt.dispatched = true; return owner.fetchImpl(...args); };
-    transport = createDevnetAgreementTransport({ expected, transportOwner: owner, journal, fetchImpl, now: () => clock.now(),
-      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation } });
+    const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, now: () => clock.now(),
+      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation } };
+    transport = seller
+      ? createDevnetDemoTransport({ ...transportOptions, settlementPublication: publications?.settlementPublication, deliveryPublication: publications?.deliveryPublication,
+        demoArtifactPublication: publications?.demoArtifactPublication,
+        ...(approveConfirmedWrite === null ? {} : { approveConfirmedWrite: routeConfirmedWrite(approveConfirmedWrite, () => session.getPublicAccount().address) }) })
+      : createDevnetAgreementTransport(transportOptions);
     const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const stamps = createRpcStampSource(clock);
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
@@ -325,7 +392,9 @@ export async function createNodeWalletSession(options = {}) {
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
-    return Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, async close() { session.lock(); await transport.close(); } });
+    return Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf,
+      ...(seller ? { transport: createHeldTransportFacade({ admission, transport }), observer: createNodeObserver({ owner, clock }) } : {}),
+      async close() { session.lock(); await transport.close(); } });
   } catch (error) {
     try { session?.lock(); await transport?.close(); } catch { /* the construction error is the one to report */ }
     throw error;

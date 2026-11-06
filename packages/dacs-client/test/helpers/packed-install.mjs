@@ -28,8 +28,8 @@ export function switchedCopy(t) {
   return directory;
 }
 
-/** Installs the core archive, the archive of `clientDir` and the dacs-node archive in an empty app; returns the app path, a runner that asserts exit 0 and the dacs-node archive's `file:` URL. */
-export function installPackedPair(t, { clientDir = packageDir } = {}) {
+/** Installs three archives offline; installedDependencyGraph selects npm's installed lock (including CI's --no-save demosdk version). Returns app, runner and node archive URL. */
+export function installPackedPair(t, { clientDir = packageDir, installedDependencyGraph = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-consumer-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const run = (command, args, cwd, env = {}) => {
@@ -52,7 +52,7 @@ export function installPackedPair(t, { clientDir = packageDir } = {}) {
   writeFileSync(join(app, 'package.json'), JSON.stringify(manifest));
   // Stage exact installed runtime packages as local artifacts. This test owns
   // its fresh npm cache and never needs ambient registry tarballs or a network.
-  const lock = JSON.parse(readFileSync(join(sdkDir, 'package-lock.json')));
+  const lock = JSON.parse(readFileSync(join(sdkDir, installedDependencyGraph ? 'node_modules/.package-lock.json' : 'package-lock.json')));
   lock.name = manifest.name;
   lock.packages[''] = manifest;
   for (const path of Object.keys(lock.packages)) {
@@ -75,9 +75,13 @@ export function installPackedPair(t, { clientDir = packageDir } = {}) {
     ['@kynesyslabs/dacs-node', node, nodeDir]]) {
     const pkg = JSON.parse(readFileSync(join(source, 'package.json')));
     lock.packages['node_modules/' + name] = { version: pkg.version, resolved: dependencies[name], integrity: packed.integrity,
-      dependencies: pkg.dependencies, peerDependencies: pkg.peerDependencies, peerDependenciesMeta: pkg.peerDependenciesMeta, engines: pkg.engines };
+      dependencies: pkg.dependencies, optionalDependencies: pkg.optionalDependencies,
+      peerDependencies: pkg.peerDependencies, peerDependenciesMeta: pkg.peerDependenciesMeta, engines: pkg.engines };
   }
   writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
+  // Recompute flags after removing workspace roots, so the seller's mandatory
+  // SQLite dependency does not survive as a required dependency of this app.
+  if (installedDependencyGraph) run('npm', ['install', '--package-lock-only', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
   run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
   return { app, run, nodeArchive: dependencies['@kynesyslabs/dacs-node'] };
 }

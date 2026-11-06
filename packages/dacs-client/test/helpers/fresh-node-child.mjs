@@ -14,10 +14,10 @@ const CHILD_TIMEOUT_MS = 120_000;
 const FORBIDDEN_ARGUMENT = /^--(?:import|loader|experimental-loader|require)\b/;
 
 /** Returns `{status, stdout, stderr, result}`; `result` is the parsed result.json, or null when the child wrote none. */
-export function runFreshChild(t, source, args = []) {
+export function runFreshChild(t, source, args = [], { directory: consumerDirectory } = {}) {
   for (const arg of args) assert.doesNotMatch(String(arg), FORBIDDEN_ARGUMENT);
-  const directory = mkdtempSync(join(tmpdir(), 'dacs-client-fresh-child-'));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = consumerDirectory ?? mkdtempSync(join(tmpdir(), 'dacs-client-fresh-child-'));
+  if (!consumerDirectory) t.after(() => rmSync(directory, { recursive: true, force: true }));
   const script = join(directory, 'child.mjs');
   writeFileSync(script, source);
   const env = { ...process.env };
