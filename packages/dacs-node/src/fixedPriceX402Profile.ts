@@ -835,6 +835,13 @@ async function buyerAgreementOrderRecord(
   if (x402.status === "ok" && payDem.status === "ok") {
     throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-order-profile-conflict");
   }
+  // Like the transport and multirail lookups: a damaged or unsupported row in
+  // either store refuses rather than letting the other store's order win.
+  for (const result of [x402, payDem]) {
+    if (result.status !== "ok" && result.status !== "missing") {
+      throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-order-corrupt");
+    }
+  }
   const loaded = x402.status === "ok" ? x402 : payDem;
   if (loaded.status !== "ok" || loaded.record.role !== "buyer" ||
       loaded.record.buyer !== context.authority ||
@@ -935,15 +942,18 @@ function createAgreementAnchorProvider(
         captureAgreementPublication(context.database.loadEffectInput(
           "artifact-publication", effectId,
         ));
+        // The fee-budget grant is checked here, before the write is handed to
+        // Demos, so a missing or unbound grant stays a local refusal.
+        const anchorOptions = dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
+          logicalAddress: record.logicalAddress,
+          contentHash: record.agreementHash,
+          envelopeHash: sha256Hex(canonicalize(record.artifact)),
+        });
         submitting = true;
         await context.demos.adapter.anchorWriteOnce(
           record.logicalAddress,
           record.artifact,
-          dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
-            logicalAddress: record.logicalAddress,
-            contentHash: record.agreementHash,
-            envelopeHash: sha256Hex(canonicalize(record.artifact)),
-          }),
+          anchorOptions,
         );
         return { disposition: "submitted" as const };
       } catch (error) {
@@ -952,8 +962,9 @@ function createAgreementAnchorProvider(
             reason: "agreement publication outcome is ambiguous" };
         }
         if (error instanceof DacsFixedPriceX402ProfileError) {
-          return { disposition: "rejected" as const,
-            reason: `agreement publication refused before submission: ${error.reasonCode}` };
+          // The runtime caps reason codes at 80 characters after its own
+          // prefix, so pass the bare code: a longer phrase would cut it off.
+          return { disposition: "rejected" as const, reason: error.reasonCode };
         }
         return { disposition: "indeterminate" as const,
           reason: "agreement publication failed before submission" };
