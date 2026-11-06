@@ -29,6 +29,7 @@ const STAGE_DISPATCHED_NO_ACK = 'dispatched_no_ack';
 const OS_AMOUNT = /^(?:0|[1-9][0-9]*)$/;
 const SIGNATURE_DOMAIN = Buffer.from('demos-tx:v1:');
 const CHAIN_ID_FIELD = /^[0-9]+:$/;
+const TRANSACTION_HASH_SHAPE = /^(?:demos-tx:v1:[0-9]+:)?[0-9a-f]{64}$/i;
 
 // The error each failed request's closed envelope was made from, keyed by that envelope object.
 const causes = new WeakMap();
@@ -120,7 +121,13 @@ function signsTransactionHash(message, hash) {
     && signed.subarray(hashStart).equals(hashBytes) && CHAIN_ID_FIELD.test(signed.subarray(SIGNATURE_DOMAIN.length, hashStart).toString('latin1'));
 }
 
-const isOsAmount = value => typeof value === 'string' && OS_AMOUNT.test(value);
+// Whether `message` has the shape of a transaction signature's input: a bare SHA-256 hex hash, or that hash after the signatureDomain prefix.
+// A transaction signature is the same Ed25519 signature over those bytes, so a general request to sign them would hand out a spendable signature.
+function hasTransactionHashShape(message) {
+  return TRANSACTION_HASH_SHAPE.test(Buffer.from(message).toString('latin1'));
+}
+
+const isOsAmount =value => typeof value === 'string' && OS_AMOUNT.test(value);
 
 // Runs synchronously, so nothing can change the transaction between these checks and the inner signature.
 function checkFinalContent({ transaction, finalContent }, message) {
@@ -161,6 +168,17 @@ function nodeDemosClass(Demos, transport, rpcUrl, stamps, attempts) {
     /** Signs like the SDK, but refuses before the inner signature unless `options.finalContent(content)` accepts the finalized content. */
     sign(transaction, { finalContent, ...sdkOptions } = {}) {
       return signScope.run({ transaction, finalContent }, () => super.sign(transaction, sdkOptions));
+    }
+
+    /**
+     * Signs like the SDK. Only the session's own RPC authentication passes `raw`; a call without it is a general signing request, which
+     * rejects `payload_mismatch` before any signature when the message has the shape of a transaction hash.
+     */
+    async signMessage(message, options) {
+      if (options?.raw !== true && hasTransactionHashShape(message)) {
+        throw new EmbeddedWalletError('payload_mismatch', 'a general signing request may not sign a transaction hash; nothing was signed');
+      }
+      return super.signMessage(message, options);
     }
 
     async connect(url) {
@@ -235,7 +253,8 @@ const checkConstruction = admitPublicFactory(options => ({ options }), { purchas
  * selected caller-owned journal. `internalCauseOf` returns the error a failed request's envelope was closed over (its `cause` chain holds the original
  * failure, which the public envelope never carries), or undefined. Before the SDK's inner transaction signature the session checks that the signed message
  * is the transaction hash, that the hash is the SHA-256 of the content and that the finalized content is exactly the approved send; otherwise the request
- * fails `payload_mismatch` and nothing is signed. `close()` locks the wallet and closes its transport; the host closes its owner and journal.
+ * fails `payload_mismatch` and nothing is signed. A general `sign` request for a transaction-hash-shaped message (bare or signatureDomain-prefixed
+ * SHA-256 hex) also fails `payload_mismatch`, because that signature would be a valid transaction signature. `close()` locks the wallet and closes its transport; the host closes its owner and journal.
  * Options: `{admission, owner, journal, key, approve, clock}`; `key` is the UTF-8 mnemonic as a Uint8Array, and it and every copy of it are zero-filled
  * on every outcome. Rejects with TypeError(admission_required | admission_input_untrusted), OperationError(runtime_unsupported | invalid_mnemonic |
  * node_wallet_sdk_unreviewed | node_wallet_sdk_preloaded | transport errors), or the SDK session's own refusal.

@@ -814,6 +814,43 @@ async function buyerOrderRecord(
   return loaded.record;
 }
 
+/**
+ * The Agreement publication record is shared by the x402 and native DEM
+ * profiles, so its owning order lives in exactly one of the two coordinator
+ * stores. Only the identity fields common to both order shapes are returned.
+ */
+type BuyerAgreementOrderIdentity = Pick<
+  FixedPriceX402OrderRecord,
+  "role" | "jobId" | "buyer" | "seller" | "localBindingHash"
+>;
+
+async function buyerAgreementOrderRecord(
+  context: Readonly<DacsLiveRoleOperationContextV1>,
+  jobId: string,
+): Promise<Readonly<BuyerAgreementOrderIdentity>> {
+  const [x402, payDem] = await Promise.all([
+    context.database.createLiveCoordinatorStore("buyer").load("buyer", jobId),
+    context.database.createPayDemCoordinatorStore("buyer").load("buyer", jobId),
+  ]);
+  if (x402.status === "ok" && payDem.status === "ok") {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-order-profile-conflict");
+  }
+  // Like the transport and multirail lookups: a damaged or unsupported row in
+  // either store refuses rather than letting the other store's order win.
+  for (const result of [x402, payDem]) {
+    if (result.status !== "ok" && result.status !== "missing") {
+      throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-order-corrupt");
+    }
+  }
+  const loaded = x402.status === "ok" ? x402 : payDem;
+  if (loaded.status !== "ok" || loaded.record.role !== "buyer" ||
+      loaded.record.buyer !== context.authority ||
+      loaded.record.seller !== context.peerAuthority) {
+    throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-order-missing");
+  }
+  return loaded.record;
+}
+
 export async function loadDacsFixedPriceX402BuyerAgreementPublicationV1(
   context: Readonly<DacsLiveRoleOperationContextV1>,
   order: Readonly<FixedPriceX402OrderRecord>,
@@ -834,7 +871,7 @@ export async function loadDacsFixedPriceX402BuyerAgreementPublicationV1(
       record.writer !== context.authority || record.logicalAddress !== logicalAddress) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-agreement-corrupt");
   }
-  const loaded = await buyerOrderRecord(context, record.jobId);
+  const loaded = await buyerAgreementOrderRecord(context, record.jobId);
   if (loaded.localBindingHash !== order.localBindingHash) {
     throw new DacsFixedPriceX402ProfileError("fixed-price-buyer-agreement-corrupt");
   }
@@ -858,7 +895,7 @@ function createAgreementAnchorProvider(
         record.writer !== context.authority) {
       throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-publication-conflict");
     }
-    const order = await buyerOrderRecord(context, record.jobId);
+    const order = await buyerAgreementOrderRecord(context, record.jobId);
     if (record.localBindingHash !== order.localBindingHash) {
       throw new DacsFixedPriceX402ProfileError("fixed-price-agreement-publication-conflict");
     }
@@ -867,6 +904,9 @@ function createAgreementAnchorProvider(
 
   const provider: FixedPriceAgreementAnchorProvider = {
     async anchorAgreement(input, fence) {
+      // Only a failure once the write is handed to Demos can be ambiguous;
+      // anything earlier is a local refusal and keeps its own reason.
+      let submitting = false;
       try {
         if (!isAgreementArtifact(input.artifact) ||
             input.artifact.jobId.length === 0 ||
@@ -876,7 +916,7 @@ function createAgreementAnchorProvider(
           return { disposition: "rejected" as const,
             reason: "agreement publication is malformed" };
         }
-        const order = await buyerOrderRecord(context, input.artifact.jobId);
+        const order = await buyerAgreementOrderRecord(context, input.artifact.jobId);
         const record: DacsFixedPriceX402BuyerAgreementPublicationV1 = {
           publicationVersion: AGREEMENT_PUBLICATION_VERSION,
           jobId: order.jobId,
@@ -902,19 +942,32 @@ function createAgreementAnchorProvider(
         captureAgreementPublication(context.database.loadEffectInput(
           "artifact-publication", effectId,
         ));
+        // The fee-budget grant is checked here, before the write is handed to
+        // Demos, so a missing or unbound grant stays a local refusal.
+        const anchorOptions = dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
+          logicalAddress: record.logicalAddress,
+          contentHash: record.agreementHash,
+          envelopeHash: sha256Hex(canonicalize(record.artifact)),
+        });
+        submitting = true;
         await context.demos.adapter.anchorWriteOnce(
           record.logicalAddress,
           record.artifact,
-          dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
-            logicalAddress: record.logicalAddress,
-            contentHash: record.agreementHash,
-            envelopeHash: sha256Hex(canonicalize(record.artifact)),
-          }),
+          anchorOptions,
         );
         return { disposition: "submitted" as const };
-      } catch {
+      } catch (error) {
+        if (submitting) {
+          return { disposition: "indeterminate" as const,
+            reason: "agreement publication outcome is ambiguous" };
+        }
+        if (error instanceof DacsFixedPriceX402ProfileError) {
+          // The runtime caps reason codes at 80 characters after its own
+          // prefix, so pass the bare code: a longer phrase would cut it off.
+          return { disposition: "rejected" as const, reason: error.reasonCode };
+        }
         return { disposition: "indeterminate" as const,
-          reason: "agreement publication outcome is ambiguous" };
+          reason: "agreement publication failed before submission" };
       }
     },
     async reconcileAgreementAnchor(input, fence) {
