@@ -309,6 +309,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     return Object.freeze({ effect, operationId: effect.operationId, attempt: effect.attempt, rev: running.rev, complete: (outcome, ownership) => complete(issued, effect, outcome, ownership) });
   }
   async function reserveContext(jobId, reserveWire) {
+    assertKitOperationAdmitted('reserveContext');
     if (typeof reserveWire !== 'function') throw new TypeError('context reservation needs the admitted wire reserve');
     const lease = await acquireBounded(jobEffectMutex(jobId));
     try { return await reserveUnderLease(jobId, reserveWire, lease); } finally { lease.release(); }
@@ -343,6 +344,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
   // The completion the capability carries, on its own handle only. A caller that holds the job lease passes it: complete then neither
   // acquires nor releases it, and D8b runs once the lease ends. Otherwise complete takes the lease itself and releases it before D8b.
   async function complete(issued, effect, outcome, ownership) {
+    assertKitOperationAdmitted('complete');
     const borrowed = ownership === undefined ? null : heldLease(ownership?.jobLease, issued.jobId);
     const lease = borrowed === null ? await jobEffectMutex(issued.jobId).acquire() : null;
     let settled;

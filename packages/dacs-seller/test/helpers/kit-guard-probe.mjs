@@ -137,6 +137,7 @@ async function effectEntries() {
     now: never('the clock'), ready: never('readiness'), deadlines: { policyMs: 10000 } });
   await attempt('begin', () => admission.begin());
   await attempt('runningCheck', () => admission.runningCheck());
+  await attempt('reserveContext', () => admission.reserveContext());
   admissionStore.close();
   await attempt('createSellerHttpHandler', () => createSellerHttpHandler({}));
   await attempt('createSellerAgentClient', () => createSellerAgentClient({}));
