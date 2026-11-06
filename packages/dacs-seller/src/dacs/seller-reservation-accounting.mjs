@@ -34,10 +34,10 @@ export function createReservationAccounting({ store, now, limits }) {
     }
   }
 
-  // The job belongs to the parties already holding it; an existing purchase must hold this exact tuple.
+  // The job belongs to the parties and Agreement already holding it; an existing purchase must hold this exact tuple.
   // Returns whether the job has its purchase (job row) already.
   function checkJobWithin(payload, keepProfile) {
-    if (ledger.ownerConflictWithin(payload)) fail('peer_job_conflict', 409);
+    if (ledger.jobConflictWithin(payload)) fail('peer_job_conflict', 409);
     const tuple = canonicalize(keepProfile);
     if (canonicalize(payload.profile) !== tuple) fail('tp1_purchase_profile_mismatch', 500);
     const purchase = ledger.purchaseWithin(payload.jobId);

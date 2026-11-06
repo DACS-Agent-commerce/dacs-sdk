@@ -327,9 +327,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     jobCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${ledgerJobs('jobs')})`).n,
     contextHeldWithin: (jobId) => Boolean(get(`${ledgerJobs('contextRecords')} WHERE job = ?`, jobId)),
     contextCountWithin: () => get(`SELECT COUNT(*) AS n FROM (${ledgerJobs('contextRecords')})`).n,
-    // A job belongs to the buyer, seller and Listing pin of every record that holds it.
-    ownerConflictWithin: (p) => db.prepare(`SELECT buyer, seller, pin FROM (${ledgerSources('owners').join(' UNION ALL ')}) WHERE job = ?`)
-      .all(p.jobId).some(row => row.buyer !== p.buyer || row.seller !== p.seller || canonicalize(JSON.parse(row.pin)) !== canonicalize(p.listingPin)),
+    // A job belongs to the buyer, seller and Listing pin of every record that holds it. A job row also fixes the
+    // Agreement, which a context step does not carry (its agreementHash slot is the context scope hash).
+    jobConflictWithin: (p) => {
+      const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
+      if (job && p.path !== CONTEXT && job.context !== canonicalize(requestIdentity(p))) return true;
+      return db.prepare(`SELECT buyer, seller, pin FROM (${ledgerSources('owners').join(' UNION ALL ')}) WHERE job = ?`)
+        .all(p.jobId).some(row => row.buyer !== p.buyer || row.seller !== p.seller || canonicalize(JSON.parse(row.pin)) !== canonicalize(p.listingPin));
+    },
     // Only a job row establishes a purchase; its kept tuple, or null for an old-path job kept without one.
     purchaseWithin: (jobId) => get('SELECT k.profile FROM peer_jobs j LEFT JOIN kit_purchase_profiles k ON k.job = j.job WHERE j.job = ?', jobId),
   });
@@ -513,12 +518,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         }
         const context = canonicalize(requestIdentity(p));
         const contextStep = p.path === CONTEXT;
-        // The context step is checked against the job's parties and pin only:
-        // its agreementHash slot is the context scope hash, not the Agreement.
-        const parties = (value) => { const { agreementHash, ...rest } = value; return canonicalize(rest); };
-        if (job && (contextStep ? parties(JSON.parse(job.context)) !== parties(requestIdentity(p)) : job.context !== context)) fail('peer_job_conflict', 409);
-        // Before the Agreement the job belongs to the parties of every record that holds it (an admission or an accounting hold).
-        if (ledger.ownerConflictWithin(p)) fail('peer_job_conflict', 409);
+        // One rule for both reserve paths: the parties and pin of every record that holds the job, and the job row's
+        // Agreement (a context step is checked against the parties and pin only).
+        if (ledger.jobConflictWithin(p)) fail('peer_job_conflict', 409);
         const effectKey = effectIdentity(p);
         if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
         // The SDK buyer coordinator reconciles before publishing a proposal.
