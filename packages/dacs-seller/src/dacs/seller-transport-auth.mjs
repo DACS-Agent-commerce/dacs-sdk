@@ -244,10 +244,11 @@ export const RESERVATION_LEDGER = Object.freeze({
 // markPendingContextEffectsUncertain: the caller holds the seller state lock, so no other
 // process owns this journal. Every context step still `pending` at open belongs to an owner
 // that is gone and becomes `uncertain`, which `resume` can take. Only the host sets it.
-export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), markPendingContextEffectsUncertain = false }) {
+export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, wireOperationView = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), markPendingContextEffectsUncertain = false }) {
   if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
   if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
   if (!uint(maxChallenges) || maxChallenges === 0 || typeof contextSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
+  if (typeof wireOperationView !== 'function') throw new Error('wire operation reader must be a function');
   if (!uint(maxContextRecords) || maxContextRecords === 0) throw new Error('positive context capacity required');
   if (![maxNoncesPerBuyerPerWindow, nonceWindowMs].every(n => uint(n) && n > 0)) throw new Error('positive nonce limits required');
   const parent = dirname(path);
@@ -319,6 +320,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // RESERVATION_LEDGER's sources in this store: the context admission table exists only once a first admission commits.
   const ledgerSources = (kind) => { const admitted = admissions(); return RESERVATION_LEDGER[kind].filter(sql => admitted || !sql.includes('peer_context_admissions')); };
   const ledgerJobs = (kind) => `SELECT job FROM (${ledgerSources(kind).join(' UNION ')})`;
+  // Whether the wire's own record holds the request's operation: any attempt, whatever its state. No reader or no view is no record.
+  const wireHoldsWithin = (p) => ![undefined, null, 'none'].includes(wireOperationView({ seller: p.seller, jobId: p.jobId, path: p.path })?.state);
   // Every read runs in the caller's transaction.
   const ledger = Object.freeze({
     buyerUnitsWithin: (buyer, time) => get(`SELECT COUNT(*) AS n FROM (${ledgerSources('buyerUnits').join(' UNION ALL ')})
@@ -340,9 +343,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // The refusals of the old reserve path that read journal state, shared so both paths apply each one.
     sessionTerminalWithin: (jobId) => TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId })),
     // A terminal session refuses a fresh proposal or context start; an operation already reserved is a retry, which
-    // still reaches the wire for its recover or completed answer.
+    // still reaches the wire for its recover or completed answer. A row the wire answered (new, recover, completed)
+    // is reserved. A `reserving` row is reserved only if the wire's own record holds the operation (an attempt, not a
+    // nonce key alone): after a crash before publication, or a refusal whose write failed, the wire would answer `new`.
+    // With no reader, or no record, the retry is refused.
     terminalStartWithin: (p, operationId) => (p.path === PROPOSAL || p.path === CONTEXT) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId })) &&
-      !get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state <> 'refused'", p.jobId, operationId),
+      !get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state IN ('new', 'recover', 'completed')", p.jobId, operationId) &&
+      !(get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state = 'reserving'", p.jobId, operationId) && wireHoldsWithin(p)),
     // A mutating route has one effect per job. An accounted reservation holds it unless the wire definitely refused it
     // (a definite refusal is no effect); a `reserving` row left by a crash holds it too.
     accountedSlotWithin: (jobId, route) => !READ_ROUTES.has(route) &&

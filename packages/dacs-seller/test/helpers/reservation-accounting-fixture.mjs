@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, contentHash, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, finalizeFixedPriceAgreementContributions, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, admitPreAgreementRequest, bindTp1Profile, checkWireRequest, openWireEnvelope, openWireRequestJournal, TP1_APPROVED_IDENTITY_RECORD, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, admitPreAgreementRequest, bindTp1Profile, checkWireRequest, inspectWireOperation, openWireEnvelope, openWireRequestJournal, TP1_APPROVED_IDENTITY_RECORD, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { createSellerTransportStore } from '../../src/dacs/seller-transport-auth.mjs';
 import { testWallet } from './protocol-fixture.mjs';
 import { FIXTURE_PROFILE, TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
@@ -31,7 +31,9 @@ export async function accountingFixture(t, options = {}) {
   const path = join(dir, 'transport.sqlite');
   let time = T0, sequence = 0;
   const now = () => time;
-  let store = createSellerTransportStore({ path, now, ...options });
+  // The store reads the wire's own record of an operation, as the host does with its journal.
+  const wireOperationView = target => inspectWireOperation(journal, target);
+  let store = createSellerTransportStore({ path, now, wireOperationView, ...options });
   const db = new DatabaseSync(path);
   const journal = openWireRequestJournal(journalDir, { clock: now, leaseMs: 300000 });
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: TEST_CONNECTION, readAuthority: authorityReader() });
@@ -99,7 +101,7 @@ export async function accountingFixture(t, options = {}) {
   };
   return { dir, path, db, journal, journalDir, payload, admit, admitContext, payment, args, reserve, rows, files, nonces, now,
     store: () => store, setTime: value => { time = value; },
-    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, ...options }); },
+    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, wireOperationView, ...options }); },
     tuples: () => db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n,
     payments: () => db.prepare('SELECT * FROM kit_payment_transactions').all(),
     jobRows: () => db.prepare('SELECT * FROM peer_jobs ORDER BY rowid').all(),
