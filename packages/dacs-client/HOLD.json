@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "f0296ff15ed70f7c7ec0157ca44ac77445365cc8"
+        "blob": "c8721ac617466f9ce4d1ae8bb1da9d1bbce71776"
       },
       "DELTA-LEDGER.json": {
         "blob": "a9afcf2ea73eb06b9589948fce65c290cb0293e4"
       },
       "DELTA-MAP.md": {
-        "blob": "eb50191c80848dc35949581980ae48c4e07d1104"
+        "blob": "9efeebe09307e5ede13d69c0399c74bcf0fa5a64"
       },
       "DELTA-NOTES.md": {
-        "blob": "d91e5482a2b1068e34f65cda807160b495fbe502"
+        "blob": "b11aecbc3695038e9089f4dc476956911e5b3a90"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "df2cd29f49b8bc971132d04e818626724ded7e8c"
+        "blob": "879fdf1077f19c98842b903c2ae5cad6d4a33b80"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"

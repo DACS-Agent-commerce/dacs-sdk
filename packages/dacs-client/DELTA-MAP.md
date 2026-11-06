@@ -241,7 +241,7 @@ The chain reader gains `findTransferAtNonce(address, nonce, { limit, signal })`:
 
 ## D11 — Handed-off cancel
 
-`cancel` for a handed-off payment that is not native stays open until the payment's nonce slot is used, then reads that slot's transaction back; it ends the purchase as cancelled only with `DACS_NONCE_SLOT_PROOF=account` (default `off`, which keeps it open). The change is in `src/purchases.mjs` and `src/config.mjs`; `test/config-nonce-slot-proof.test.mjs` pins the setting, and `test/client/nonce-slot-cancel.test.ts` in the SDK tests the cancel.
+`cancel` for a handed-off payment that is not native stays open until the payment's nonce slot is used, then reads that slot's transaction back and takes it as proof only when its canonical body reads confirmed (a failed or pending body leaves the purchase open); it ends the purchase as cancelled only with `DACS_NONCE_SLOT_PROOF=account` (default `off`, which keeps it open). The change is in `src/purchases.mjs` and `src/config.mjs`; `test/config-nonce-slot-proof.test.mjs` pins the setting, and `test/client/nonce-slot-cancel.test.ts` in the SDK tests the cancel.
 
 ## WF — W-finish (W-FINISH §5)
 
@@ -3212,6 +3212,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the confirmed-body cancel check in the delta records and package pins | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the confirmed-body cancel check in the delta records and package pins | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the confirmed-body cancel check in the delta records and package pins | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the confirmed-body cancel fix in the freeze pins and delta inventory | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the confirmed-body cancel fix in the freeze pins and delta inventory | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the confirmed-body cancel fix in the freeze pins and delta inventory | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the confirmed-body cancel fix in the freeze pins and delta inventory | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 record the confirmed-body cancel fix in the freeze pins and delta inventory | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the confirmed-body cancel fix in the freeze pins and delta inventory | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 

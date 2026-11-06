@@ -240,7 +240,7 @@ The chain reader gains `findTransferAtNonce(address, nonce, { limit, signal })`:
 
 ## D11 — Handed-off cancel
 
-`cancel` for a handed-off payment that is not native stays open until the payment's nonce slot is used, then reads that slot's transaction back; it ends the purchase as cancelled only with `DACS_NONCE_SLOT_PROOF=account` (default `off`, which keeps it open). The change is in `src/purchases.mjs` and `src/config.mjs`; `test/config-nonce-slot-proof.test.mjs` pins the setting, and `test/client/nonce-slot-cancel.test.ts` in the SDK tests the cancel.
+`cancel` for a handed-off payment that is not native stays open until the payment's nonce slot is used, then reads that slot's transaction back and takes it as proof only when its canonical body reads confirmed (a failed or pending body leaves the purchase open); it ends the purchase as cancelled only with `DACS_NONCE_SLOT_PROOF=account` (default `off`, which keeps it open). The change is in `src/purchases.mjs` and `src/config.mjs`; `test/config-nonce-slot-proof.test.mjs` pins the setting, and `test/client/nonce-slot-cancel.test.ts` in the SDK tests the cancel.
 
 ## WF — W-finish (W-FINISH §5)
 
