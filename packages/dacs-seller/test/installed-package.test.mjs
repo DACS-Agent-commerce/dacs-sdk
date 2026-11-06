@@ -21,6 +21,7 @@ const ENTRY_MODULES = ['src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-co
 const ADDED_HELPERS = ['src/dacs/process-lease.mjs', 'src/devnet-demo/approval-ledger-append.mjs', 'src/util/bounded-resolution.mjs', 'src/dacs/fixture-settlement.mjs'];
 // Operator-side sources that need the operator's wallet, journal or custody.
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
+const SELLER_BIN = 'bin/dacs-seller.mjs';
 const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerContextClient', 'createSellerContextRoute', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
@@ -74,7 +75,8 @@ test('operator-custody.mjs stays out of the packed files and no shipped module i
 
 test('the seller pack ships every source module but the operator ones, and everything each shipped module imports', () => {
   const packed = sellerPackFiles().sort();
-  assert.deepEqual(packed, [...shippedModules(), ...DOCUMENTS].sort());
+  assert.deepEqual(packed.filter((path) => path.startsWith('src/')), shippedModules());
+  assert.deepEqual(packed.filter((path) => !path.startsWith('src/')), [SELLER_BIN, ...DOCUMENTS].sort());
   for (const file of ADDED_HELPERS) assert.ok(packed.includes(file), `${file} ships`);
   for (const file of NOT_SHIPPED) assert.ok(!packed.includes(file), `${file} is not part of the package`);
   for (const path of packed) assert.doesNotMatch(path, /(?:^|\/)(?:wallet|embedded-wallet|test|port-sources)\/|operator-custody|seller-issuance/, `${path} is a run-time seller module`);
@@ -84,6 +86,22 @@ test('the seller pack ships every source module but the operator ones, and every
       assert.ok(packed.includes(target), `${file} imports ${target}, which ships`);
     }
   }
+});
+
+test('the packed seller ships the dacs-seller bin, the CLI modules and durable-file.mjs, and the installed bin prints usage', () => {
+  const manifest = JSON.parse(readFileSync(join(packageDirectory, 'package.json'), 'utf8'));
+  assert.deepEqual(manifest.bin, { 'dacs-seller': './' + SELLER_BIN });
+  const packed = sellerPackFiles();
+  for (const file of [SELLER_BIN, 'src/cli/main.mjs', 'src/cli/config.mjs', 'src/devnet-demo/durable-file.mjs']) assert.ok(packed.includes(file), file);
+  const app = process.env.DACS_SELLER_SMOKE_DIR;
+  assert.ok(app, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
+  assert.equal(staleSetupReason(app), null, 'setup must provision these exact sources, lock and runtime');
+  const child = spawnSync(join(app, 'node_modules', '.bin', 'dacs-seller'), ['--help'], {
+    cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { PATH: process.env.PATH },
+  });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+  assert.match(child.stdout, /Usage: dacs-seller/);
+  assert.match(child.stdout, /--data-dir/);
 });
 
 test('P10-T15 the packed archive contains no authority fixture', () => {
@@ -121,9 +139,9 @@ test('the packed seller installs outside the repository, refuses to start while 
   const { sellerPack } = JSON.parse(readFileSync(join(app, 'prepared.json'), 'utf8'));
   assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
 
-  // Exactly the shipped modules, the governing documents, the manifest, README and LICENSE.
+  // Exactly the shipped modules, the bin, the governing documents, the manifest, README and LICENSE.
   const packed = sellerPack.files.map((entry) => entry.path).sort();
-  assert.deepEqual(packed, [...shippedModules(), ...DOCUMENTS].sort());
+  assert.deepEqual(packed, [...shippedModules(), SELLER_BIN, ...DOCUMENTS].sort());
   for (const file of ENTRY_MODULES) assert.ok(packed.includes(file), `${file} is shipped`);
 
   assert.ok(!existsSync(join(app,'node_modules','@kynesyslabs','dacs-seller','test')),'test files are not shipped');
