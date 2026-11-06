@@ -1,0 +1,16 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+test("with this PR's delta records, `check-provenance.mjs --local-only` exits 0 on the PR head and on the head merged with current main; the last ledger entry names a source or test change; no copied path has two newest records or a recorded final blob other than head; any stale, parallel, conflicting or control-only-last record fails with the path named", () => {
+ const env={...process.env};delete env.NODE_TEST_CONTEXT;
+ const ledger=JSON.parse(readFileSync(new URL('../DELTA-LEDGER.json',import.meta.url),'utf8'));
+ assert.ok(ledger.changes.at(-1).files.some(file=>/packages\/dacs-client\/(src|test)\//.test(file.path)&&file.before!==file.after),'last ledger record names a source or test change');
+ const result=spawnSync(process.execPath,['packages/dacs-client/scripts/check-provenance.mjs','--local-only'],{cwd:fileURLToPath(new URL('../../..',import.meta.url)),encoding:'utf8',env});
+ assert.equal(result.status,0,result.stdout+result.stderr);
+ const cases=["^launch review: unrelated main commits and a PR merge preserve client provenance$","^the ledger gate refuses each fault in a PR's own delta records,","^parallel records of different blobs conflict until a later record chooses one$","^a control-only last record is refused with the ledger path"].join('|');
+ const negatives=spawnSync(process.execPath,['--test','--test-name-pattern',cases,'packages/dacs-client/scripts/delta-provenance.test.mjs','packages/dacs-client/scripts/delta-frontier.test.mjs','packages/dacs-client/scripts/delta-continuity.test.mjs'],{cwd:fileURLToPath(new URL('../../..',import.meta.url)),encoding:'utf8',env});
+ assert.equal(negatives.status,0,negatives.stdout+negatives.stderr);
+ assert.match(negatives.stdout,/^# pass 4$/m,'all four required ledger cases ran');
+});
