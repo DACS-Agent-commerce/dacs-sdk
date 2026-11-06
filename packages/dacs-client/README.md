@@ -1,6 +1,6 @@
 # @kynesyslabs/dacs-client
 
-JavaScript ESM services for experimental host integrations and read-only diagnostics of retained DACS testnet operations using their original chain/RPC. This private package candidate is outside the repository's three-package release set. It is not a registry installation or a purchase-capable release. TypeScript, browser, wallet-session, public remote-seller transport and full agreement-capability transport integrations are outside this candidate's supported surface.
+JavaScript ESM services for experimental host integrations and read-only diagnostics of retained DACS testnet operations using their original chain/RPC. This private package candidate is outside the repository's three-package release set. It is not a registry installation or a purchase-capable release. TypeScript, browser, public remote-seller transport and full agreement-capability transport integrations are outside this candidate's supported surface.
 
 Use the SDK workspace after `npm ci` and `npm run build`, or install paired local artifacts into a JavaScript ESM application:
 
@@ -70,6 +70,12 @@ Passive: none
 - `purchaseNext`, `protocolView` and `PURCHASE_STATUS_HELP` read the hold constant on every call or read: historical held text while held, the full text once admitted.
 - `OFFLINE_AGREEMENT_MODE` and `DEVNET_NATIVE_COMMITMENT_MARKER` are constants. `isOfflineWalletAgreement` returns a boolean; `deriveStorageAddress` returns text and throws `TypeError` for a non-text owner.
 - Every other export states its own contract in its doc comment. Failures are the exported error classes (`OperationError`, `NotWiredError`, `OutboundError`, the seller and wallet errors), which keep their cause. No export hands out a fixture identity, a simulation header or an unqualified chain reader.
+
+## Node wallet session
+
+`@kynesyslabs/dacs-client/node-wallet` exports `createNodeTransportOwner`, `createRpcStampSource` and the asynchronous `createNodeWalletSession`. Construct the owner on a canonical HTTPS root and bind the SDK-approved TP-1 record to `owner.currentLocal()`. Pass `{admission: {binding, currentLocal: owner.currentLocal}, owner, journal, key, approve, clock}`; `key` is UTF-8 mnemonic bytes and is consumed and zero-filled on every outcome. Build the composition before any other import of demosdk.
+
+The returned `wallet.request` is held until P35 (`profile_not_admitted`); purchase runtime is Node `^22.13.0 || >=23.4.0`. `getPublicAccount`, `getWriteProfile`, `isLocked` and `lock` remain passive. The synchronous `walletFactory({anchorJournal})` selects a journal for the same wallet identity; it exposes the same held request API. `close()` locks that wallet and closes its transport; the host closes its owner and journal. All SDK posts use the bounded native transport in process. Native broadcasts are never repeated after broadcast intent; restart reads back the original evidence. Durable pre-confirmation recovery and the final effect gate are prerequisites for lifting the hold.
 
 ## Factory integration
 
