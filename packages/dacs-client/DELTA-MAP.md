@@ -1082,6 +1082,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` | aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff |
 | | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` | dc910b5daebea851fa7dda232bce86bf82ca6115 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | f85d5b731a200483b9c5e95efa5f818b947e0e60 |
+| WF | fix(client): drop unused parameters in the observer and source-read tests | Git commit selector 609f5627549b546407d87cc8292ee1349f65e965 |
+| | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` | 5dd4a76396883d20a1bd2146a60a4df89baa0d20 |
+| | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` | 4734c66eb0b25db13d505cc6cc9df63f4237d09c |
 
 ## Complete commit and file inventory
 
@@ -3395,6 +3398,13 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a2aa add the fence-free observer and bounded source reads | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` |
 | delta(client): WF P21a2aa add the fence-free observer and bounded source reads | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` |
 | delta(client): WF P21a2aa add the fence-free observer and bounded source reads | `packages/dacs-client/test/public-api.test.mjs:1` |
+| 609f5627549b546407d87cc8292ee1349f65e965 | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` |
+| 609f5627549b546407d87cc8292ee1349f65e965 | `packages/dacs-client/test/node-wallet-source-reads.test.mjs:1` |
+| delta(client): WF P21a2aa record the lint fix to the observer and source-read tests and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a2aa record the lint fix to the observer and source-read tests and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a2aa record the lint fix to the observer and source-read tests and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a2aa record the lint fix to the observer and source-read tests and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a2aa record the lint fix to the observer and source-read tests and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
