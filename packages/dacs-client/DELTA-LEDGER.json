@@ -6132,6 +6132,22 @@
           "after": "3aeea852dffad587c333c12b28aa112733a7e853"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): classify a signed 408 or 429 outside the table rows as unknown",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+          "before": "9e086f4add1dd0f39d97a2f406e76456a0976483",
+          "after": "8ca70e7f5d3217388527c8dcab289193b2848780"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+          "before": "3aeea852dffad587c333c12b28aa112733a7e853",
+          "after": "6982df671d7d2040341fd534d075b1225fc000f6"
+        }
+      ]
     }
   ]
 }

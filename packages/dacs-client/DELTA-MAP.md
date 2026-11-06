@@ -1028,6 +1028,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/index.mjs:1` | b8234d43cd1d70e1a78029f548e01469f51f0a56 |
 | | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:9`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:26`, `packages/dacs-client/test/readback-review-decisions.test.mjs:95`, `packages/dacs-client/test/readback-review-decisions.test.mjs:98`, `packages/dacs-client/test/readback-review-decisions.test.mjs:137`, `packages/dacs-client/test/readback-review-decisions.test.mjs:145`, `packages/dacs-client/test/readback-review-decisions.test.mjs:148`, `packages/dacs-client/test/readback-review-decisions.test.mjs:181`, `packages/dacs-client/test/readback-review-decisions.test.mjs:204`, `packages/dacs-client/test/readback-review-decisions.test.mjs:206`, `packages/dacs-client/test/readback-review-decisions.test.mjs:217` | 6ef2bd3df352fcca8200df647c7d0345cd5eac8f |
 | | `packages/dacs-client/test/seller-response-classification.test.mjs:1` | 3aeea852dffad587c333c12b28aa112733a7e853 |
+| WF | fix(client): classify a signed 408 or 429 outside the table rows as unknown | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/seller-response-class.mjs:1` | 8ca70e7f5d3217388527c8dcab289193b2848780 |
+| | `packages/dacs-client/test/seller-response-classification.test.mjs:1` | 6982df671d7d2040341fd534d075b1225fc000f6 |
 
 ## Complete commit and file inventory
 
@@ -3216,6 +3219,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P13b1a verify seller answers on their exact bytes and classify them by K5's table | `packages/dacs-client/src/index.mjs:1` |
 | delta(client): WF P13b1a verify seller answers on their exact bytes and classify them by K5's table | `packages/dacs-client/test/readback-review-decisions.test.mjs:4`, `packages/dacs-client/test/readback-review-decisions.test.mjs:9`, `packages/dacs-client/test/readback-review-decisions.test.mjs:12`, `packages/dacs-client/test/readback-review-decisions.test.mjs:14`, `packages/dacs-client/test/readback-review-decisions.test.mjs:26`, `packages/dacs-client/test/readback-review-decisions.test.mjs:95`, `packages/dacs-client/test/readback-review-decisions.test.mjs:98`, `packages/dacs-client/test/readback-review-decisions.test.mjs:137`, `packages/dacs-client/test/readback-review-decisions.test.mjs:145`, `packages/dacs-client/test/readback-review-decisions.test.mjs:148`, `packages/dacs-client/test/readback-review-decisions.test.mjs:181`, `packages/dacs-client/test/readback-review-decisions.test.mjs:204`, `packages/dacs-client/test/readback-review-decisions.test.mjs:206`, `packages/dacs-client/test/readback-review-decisions.test.mjs:217` |
 | delta(client): WF P13b1a verify seller answers on their exact bytes and classify them by K5's table | `packages/dacs-client/test/seller-response-classification.test.mjs:1` |
+| fix(client): classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/HOLD.json:1` |
+| fix(client): classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/README.md:1` |
+| fix(client): classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/src/dacs/seller-response-class.mjs:1` |
+| fix(client): classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/test/seller-response-classification.test.mjs:1` |
 
 ## Original moved files
 
