@@ -24,7 +24,7 @@ function world(t, { observe, native = false, resolve = async () => true, failMar
     const db=openDatabase(file);connections.push(db);
     const ops=createOperationStore({db,handoffSecret:'TEST-only-d15-review-secret-000000000'}),real=createCoordinateStore({db});
     const coordinates=failMarker?{...real,recordObservation:(id,obs,...args)=>obs.nativeLaneResolved ? false : real.recordObservation(id,obs,...args)}:real;
-    const purchases=createPurchaseService({db,ops,coordinates,config:{},chain,protocol,store,purposes});
+    const purchases=createPurchaseService({db,ops,coordinates,config:{nonceSlotProof:'account'},chain,protocol,store,purposes});
     active={db,ops,coordinates,purchases};
   };
   open();
