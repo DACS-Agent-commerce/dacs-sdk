@@ -340,6 +340,19 @@ describe("a refused recovery writes nothing, so a crash cannot leave an intent b
     expect(submit).toHaveBeenCalledTimes(1);
   });
 
+  test.each([
+    ["an empty key", ""],
+    ["a key of another job", settlementKey(evmRequest.rail, "other-job", 0)],
+  ])("a recovery under %s is refused before any log call", async (_label, badKey) => {
+    const log = tracingLog(createInMemorySettlementLog());
+    const submit = vi.fn(async () => evmPaid);
+    await expect(storeAt(log, 1_000).recover!(badKey, binding, submit, async () => replayAuthorization()))
+      .rejects.toThrow(/does not match its idempotency key/);
+    expect(log.events).toEqual([]);
+    expect(await log.readOutcome!(key)).toBeNull();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   test("an unresolved intent is still acquired for reconcile at the lease boundary only", async () => {
     const log = createInMemorySettlementLog();
     await crashInsideRail(log);
