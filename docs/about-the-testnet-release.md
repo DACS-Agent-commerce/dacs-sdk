@@ -8,13 +8,14 @@ text service from a seller's agent and pay for it in DEM on the Demos testnet.
 It is a trial. Testnet DEM has no value, the release does not yet meet every
 rule of the DACS Standard, and its external security review is on hold.
 
-**Known problem: a failed payment can be reported as paid.** The SDK this draft is
-built on treats an "included" status as paid without independently checking
-execution. Node source inspection does not establish that the deployed node
-reports failed payments as "included"; its status behaviour remains
-unqualified. A separate SDK change, not yet in this draft, is meant to count a payment only once it executed; until it lands and
-a composition review has checked it, do not rely on a payment being reported as paid (L2 and
-G10 below). The checked current behaviour here is the buyer rail; a composition review must
+**Known limits of the payment check.** The buyer rail does not treat an
+"included" status as paid on its own: after inclusion it reads the transaction
+record bound to the signed transfer and counts the payment only when that record
+shows the transfer executed. A payment whose record shows it failed is reported
+as failed and is not sent again. Node source inspection does not establish that
+the deployed node reports failed payments as "included"; its status behaviour remains
+unqualified, and a composition review has not yet checked it (L2 and G10 below).
+The checked current behaviour here is the buyer rail; a composition review must
 separately check whether the seller's payment observer rejects failed
 execution before delivery.
 
@@ -78,13 +79,12 @@ anything is approved or signed.
 ## Where it falls short of the Standard
 
 Each shortfall has an ID in the declaration. Where a user meets one, the
-release is meant to show the label in the last column. Labels marked
-"Intended" depend on a change that is not in this draft yet.
+release is meant to show the label in the last column.
 
 | ID | What it means | Label |
 |---|---|---|
 | L1 | The Standard revision it follows is not yet released for live use, so this is a testnet profile, not a release | "Testnet profile TP-1 · not a DACS live profile" |
-| L2 | The SDK treats an included status as paid without independently checking execution. The deployed node's handling of execution failures is not qualified; source inspection does not establish that failed transfers are included. The release is meant to count a payment only once the testnet shows it executed; the Standard does not count a failed payment as settled either. That check is a separate SDK change that is not in this draft, and a composition review has not checked it, so today the buyer rail can report a failed payment as paid. The seller observer is separately not checked, for composition qualification. The release also does not independently prove the network's final agreement on a payment | Intended, pending the SDK's executed-payment check and composition qualification: "Payment executed on Demos testnet; BFT finality not independently proven". Until that check lands, this label would also appear on a failed payment reported as included |
+| L2 | The buyer rail does not treat an included status as paid on its own: after inclusion it reads the transaction record bound to the signed transfer and counts the payment only when that record shows the transfer executed; the Standard does not count a failed payment as settled either. The deployed node's handling of execution failures is not qualified; source inspection does not establish that failed transfers are included. The seller observer is separately not checked, for composition qualification. The release also does not independently prove the network's final agreement on a payment | "Payment executed on Demos testnet; BFT finality not independently proven" |
 | L3 | The release checks the Listing the buyer asked for, but cannot prove it is the latest version or that it is still current | "Listing currency not proven" |
 | L4 | A seller's Demos agent key is self-certified: the Standard does not yet say how to prove who controls it | "Seller key: self-certified Demos agent key" |
 | G1 | Agreement terms are stored where anyone can read them on testnet | "Agreement terms are publicly readable on testnet" |
@@ -92,8 +92,8 @@ release is meant to show the label in the last column. Labels marked
 | G7 | No refunds. Listings cannot be amended, renewed or withdrawn | "Refunds are not supported in TP-1" |
 | G8 | No external security review (on hold) | "Testnet only · not security-reviewed · no real value" |
 | G9 | The Standard asks the seller for a delivery evidence record. Whether this release produces and verifies it is not yet established (a composition review checks it), so delivery is not claimed to conform | "Delivery evidence not produced in TP-1 (until a composition review shows it is produced and verified)" |
-| G10 | If a failed payment is reported as included, the buyer rail counts it as paid (L2). Once the SDK's check lands, the release is meant to keep such a purchase open as unresolved and not send the payment again. That is the safe outcome, but it is not yet the final failure record the Standard asks for, and no test has shown it yet | Intended, pending the SDK's executed-payment check and composition qualification: "Payment failed on Demos testnet · purchase held as unresolved; the payment is not sent again". Until then a failed payment reported as included is counted as paid and this label is not shown |
-| G11 | The wire requires canonical lowercase DID claims and refuses uppercase `DID:` even though the base's reader rule recognizes it | "TP-1 wire requires lowercase DID claims" |
+| G10 | A failed payment reported as included is not counted as paid (L2). When the transaction record shows the transfer failed, the buyer rail records it as a permanent failure, as the Standard asks, and the payment is not sent again. When the record cannot be read or does not decide, the purchase is kept open as unresolved and the payment is not sent again. The deployed node and the seller observer are not yet checked for composition qualification | "Payment failed on Demos testnet · the payment is not sent again; an undecided payment is held as unresolved" |
+| G11 | The wire reads a `DID:` scheme in any letter case as `did:` before verification, as the base's reader rule asks; the rest of a DID claim must be canonical lowercase | "TP-1 wire reads a DID: scheme in any letter case; the rest of a DID claim must be lowercase" |
 
 Five more differences (G2, G3, G4, G6 and G12) are about how sessions, vetting
 records, profile checks, exact-bytes checks and wire signing domains work inside the protocol. They
