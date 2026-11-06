@@ -4,8 +4,8 @@ import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 // callers can distinguish "unavailable" from "invalid". A caller's abort
 // rejects with the caller's own reason, unchanged.
 export class OutboundError extends Error {
-  constructor(kind, message, { status } = {}) {
-    super(message);
+  constructor(kind, message, { status, cause } = {}) {
+    super(message, cause === undefined ? undefined : { cause });
     this.kind = kind; // 'unavailable' | 'invalid' | 'not-found' | 'timeout' (observeWithDeadline)
     this.status = status;
   }
@@ -35,13 +35,13 @@ export function settleOnAbort(pending, signal, discardLate = () => {}) {
   });
 }
 
-const unavailable = (message, cause) => Object.assign(new OutboundError('unavailable', message), { cause });
+const unavailable = (message, cause) => new OutboundError('unavailable', message, { cause });
 
 // Every exit reports one shape: the caller's abort reason first, then this
 // request's own timeout, else the failure found at that exit.
 function settled({ signal, timeout }, error) {
   if (signal?.aborted) return signal.reason;
-  if (timeout.aborted) return new OutboundError('unavailable', 'request timed out');
+  if (timeout.aborted) return unavailable('request timed out', timeout.reason);
   return error;
 }
 
