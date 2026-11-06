@@ -722,6 +722,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   };
 }
 
+// The raw store each server auth was made over: `authentication.store` is the guarded wrapper, which names no owner.
+const authenticationStores = new WeakMap();
+
+/** The raw transport store `authentication` (from createSellerTransportServerAuth) journals in; `undefined` for any other value. */
+export const transportStoreOf = (authentication) => authenticationStores.get(authentication);
+
 /** Create request validation and response signing over a supplied store; throw on invalid configuration. */
 export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = MAX_TRANSPORT_LIFETIME_MS, requireDelegation = false }) {
   assertKitOperationAdmitted('createSellerTransportServerAuth');
@@ -760,7 +766,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   });
   const pin = clone(listingPin);
   store.bind({ seller: sellerSigner.claim, listingPin: pin });
-  return {
+  const authentication = {
     seller: sellerSigner.claim,
     listingPin: pin,
     store: guardedStore,
@@ -828,6 +834,8 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
       return signedHeader(payload, sellerSigner);
     },
   };
+  authenticationStores.set(authentication, store);
+  return authentication;
 }
 
 // A delegated app supplies only its session signer and the wallet-signed

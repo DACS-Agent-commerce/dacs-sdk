@@ -95,8 +95,8 @@ function readRequest(req, timeoutMs) {
 // `context` (seller-context-route.mjs, seller context route) mounts the
 // Vet and Agreement-context route. Without it the route table is unchanged.
 // `wire` (a createWireContext context) moves the mounted routes of WIRE_ROUTE_PATHS onto `./wire`, with
-// the raw transport store as their only journal. It needs `authentication`, naming the same seller and delegation rule,
-// for the challenge and the context step.
+// the raw transport store as their only journal. It needs `authentication`, naming the same seller and delegation rule and
+// made over the context's store, for the challenge and the context step; the context must be made for this `agent`.
 export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire = null } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
   if (wire !== null && !authentication) throw new Error('the wire routes need the old authentication of the routes still on it');
