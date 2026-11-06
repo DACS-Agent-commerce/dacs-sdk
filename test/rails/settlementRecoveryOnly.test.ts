@@ -89,9 +89,10 @@ const bridges: Array<[string, SettleRequest, (store: SettlementIdempotencyStore,
 /** A log that records the claim stages and releases it hands out, and lets a test hook each call. */
 const tracingLog = (
   inner: SettlementLog,
-  hooks: Partial<Pick<SettlementLog, "claimIntent" | "releaseIntent">> = {},
+  hooks: Partial<Pick<SettlementLog, "claimIntent" | "claimExistingIntent" | "releaseIntent">> = {},
 ): SettlementLog & { events: string[] } => {
   const events: string[] = [];
+  const claimExisting = hooks.claimExistingIntent ?? inner.claimExistingIntent?.bind(inner);
   return {
     events,
     readOutcome: (key) => inner.readOutcome!(key),
@@ -100,6 +101,14 @@ const tracingLog = (
       events.push(claimed.status === "acquired" ? `claim:${claimed.lease.stage}` : `claim:${claimed.status}`);
       return claimed;
     },
+    // Omitted when the inner log has none, so a log without it can be traced too.
+    ...(claimExisting === undefined ? {} : {
+      claimExistingIntent: async (input: Parameters<NonNullable<SettlementLog["claimExistingIntent"]>>[0]) => {
+        const claimed = await claimExisting(input);
+        events.push(claimed.status === "acquired" ? `claimExisting:${claimed.lease.stage}` : `claimExisting:${claimed.status}`);
+        return claimed;
+      },
+    }),
     isCurrent: (input) => inner.isCurrent(input),
     grantRecovery: async (input) => {
       const grant = await inner.grantRecovery(input);
@@ -122,6 +131,14 @@ const binding: SettlementBinding = {
   network: "eip155:84532", finality: { model: "block-depth", finalityBlocks: 12 }, effectIdentity: "nonce-1",
 };
 const key = settlementKey(binding.railId, binding.jobId, binding.phaseIndex);
+const replayAuthorization = (overrides: Record<string, unknown> = {}) => ({
+  disposition: "replay-authorized" as const,
+  bindingHash: settlementBindingHash(binding),
+  effectIdentity: "nonce-1",
+  protection: "deterministic-external-idempotency" as const,
+  assertReplaySafe: async () => {},
+  ...overrides,
+});
 const storeAt = (log: SettlementLog, now: number) => createIdempotencyStore(log, { now: () => now, leaseDurationMs: LEASE_MS });
 /** Leave an unresolved intent in `log`: a submit that dies at t=1000 without an outcome. */
 const crashInsideRail = async (log: SettlementLog) => {
@@ -149,12 +166,12 @@ describe("a recovery request never takes a fresh claim", () => {
     }
   });
 
-  test.each(bridges)("the built-in store over an empty log refuses with no submit (%s)", async (_name, request, buildBridge) => {
+  test.each(bridges)("the built-in store over an empty log refuses with no submit and no write (%s)", async (_name, request, buildBridge) => {
     const log = tracingLog(createInMemorySettlementLog());
     const bridge = buildBridge(createIdempotencyStore(log));
     await expect(bridge.settle({ ...request, recoveryOnly: true })).rejects.toThrow(RECOVERY_REFUSED);
     expect(bridge.submits()).toBe(0);
-    expect(log.events).toEqual(["claim:fresh", "release:released"]);
+    expect(log.events).toEqual(["claimExisting:absent"]);
   });
 
   test.each(bridges.slice(0, 2))("a refusal leaves no stuck state: it repeats, then a plain request pays (%s)", async (_name, request, buildBridge) => {
@@ -166,7 +183,7 @@ describe("a recovery request never takes a fresh claim", () => {
   });
 
   test("a record released after a not-invoked attempt is refused and stays released", async () => {
-    const log = createInMemorySettlementLog();
+    const log = tracingLog(createInMemorySettlementLog());
     let answer: unknown = evmNotInvoked;
     const rail = countingEvmRail(async () => answer);
     const settle = evmErc20Settle(rail, evmCfg, { store: createIdempotencyStore(log) });
@@ -177,6 +194,7 @@ describe("a recovery request never takes a fresh claim", () => {
     expect(rail.calls).toBe(1);
     const evmKey = settlementKey(evmRequest.rail, evmRequest.jobId, 0);
     expect(Object.keys((await log.readOutcome!(evmKey))!)).toEqual(["bindingHash"]);
+    expect(log.events).toEqual(["claim:fresh", "release:released", "claimExisting:absent"]);
 
     answer = evmPaid;
     await expect(settle(evmRequest)).resolves.toMatchObject({ ok: true, txHash: "0xpaid" });
@@ -190,7 +208,7 @@ describe("a recovery request never takes a fresh claim", () => {
     let claimWaiting!: () => void;
     const waiting = new Promise<void>((resolve) => { claimWaiting = resolve; });
     const gated = tracingLog(inner, {
-      claimIntent: async (input) => { claimWaiting(); await claimBarrier; return inner.claimIntent(input); },
+      claimExistingIntent: async (input) => { claimWaiting(); await claimBarrier; return inner.claimExistingIntent!(input); },
     });
     let finishWorker!: () => void;
     const workerGate = new Promise<void>((resolve) => { finishWorker = resolve; });
@@ -212,19 +230,30 @@ describe("a recovery request never takes a fresh claim", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  test("a crash between the refusing claim and its release never submits and later needs an operator", async () => {
+  test("a recovery in flight does not make another store's first run refuse", async () => {
     const inner = createInMemorySettlementLog();
-    const failingRelease = tracingLog(inner, {
-      releaseIntent: async () => { throw new Error("process died before the release"); },
+    let openClaim!: () => void;
+    const claimBarrier = new Promise<void>((resolve) => { openClaim = resolve; });
+    let claimWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => { claimWaiting = resolve; });
+    // Hold the recovery's claim after it ran, so a write it made would still be in place.
+    const holdAfter = <T>(claimed: () => Promise<T>) => async () => {
+      const answer = await claimed();
+      claimWaiting();
+      await claimBarrier;
+      return answer;
+    };
+    const gated = tracingLog(inner, {
+      claimIntent: (input) => holdAfter(() => inner.claimIntent(input))(),
+      claimExistingIntent: (input) => holdAfter(() => inner.claimExistingIntent!(input))(),
     });
+    const recovering = createIdempotencyStore(gated).recover!(key, binding, vi.fn(async () => evmPaid));
+    await waiting;
     const submit = vi.fn(async () => evmPaid);
-    await expect(storeAt(failingRelease, 1_000).recover!(key, binding, submit)).rejects.toThrow(/before the release/);
-
-    const later = tracingLog(inner);
-    await expect(storeAt(later, 1_000 + 2 * LEASE_MS).recover!(key, binding, submit, async () => null))
-      .rejects.toThrow(/operator action required/);
-    expect(later.events).toEqual(["claim:reconcile"]);
-    expect(submit).not.toHaveBeenCalled();
+    await expect(createIdempotencyStore(inner).once(key, binding, submit)).resolves.toMatchObject({ txHash: "0xpaid" });
+    openClaim();
+    await expect(recovering).rejects.toThrow(RECOVERY_REFUSED);
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 
   test("a recovery joins an in-flight first run in the same process and adopts its result", async () => {
@@ -238,6 +267,98 @@ describe("a recovery request never takes a fresh claim", () => {
     await expect(first).resolves.toMatchObject({ txHash: "0xpaid" });
     await expect(recovering).resolves.toMatchObject({ txHash: "0xpaid" });
     expect(submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("a refused recovery writes nothing, so a crash cannot leave an intent behind", () => {
+  const AFTER_EVERY_LEASE_MS = 365 * 24 * 60 * 60 * 1000;
+  const LATER = [1_000 + 2 * LEASE_MS, 1_000 + AFTER_EVERY_LEASE_MS];
+  /** A log whose release (the old refusal's second step) dies; a recovery that never writes never reaches it. */
+  const dyingRelease = (inner: SettlementLog) => tracingLog(inner, {
+    releaseIntent: async () => { throw new Error("process died before the release"); },
+  });
+  /** Leave a record released after a not-invoked attempt, as a rail's clean refusal does. */
+  const releaseNotInvoked = async (log: SettlementLog) => {
+    await expect(storeAt(log, 1_000).once(key, binding, async () => evmNotInvoked))
+      .resolves.toMatchObject({ ok: false });
+  };
+
+  test.each([
+    ["an empty log", async () => {}],
+    ["a record released after a not-invoked attempt", releaseNotInvoked],
+  ])("a replay-authorizing reconcile cannot pay after a refused recovery on %s", async (_label, prepare) => {
+    const inner = createInMemorySettlementLog();
+    await prepare(inner);
+    const submit = vi.fn(async () => evmPaid);
+    await expect(storeAt(dyingRelease(inner), 1_000).recover!(key, binding, submit)).rejects.toThrow(RECOVERY_REFUSED);
+    for (const now of LATER) {
+      const later = tracingLog(inner);
+      await expect(storeAt(later, now).recover!(key, binding, submit, async () => replayAuthorization()))
+        .rejects.toThrow(RECOVERY_REFUSED);
+      expect(later.events).toEqual(["claimExisting:absent"]);
+    }
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  test.each(bridges)("a restarted %s bridge still refuses, with no submit", async (_name, request, buildBridge) => {
+    const log = createInMemorySettlementLog();
+    await expect(buildBridge(storeAt(dyingRelease(log), 1_000)).settle({ ...request, recoveryOnly: true }))
+      .rejects.toThrow(RECOVERY_REFUSED);
+    for (const now of LATER) {
+      const restarted = buildBridge(storeAt(log, now));
+      await expect(restarted.settle({ ...request, recoveryOnly: true })).rejects.toThrow(RECOVERY_REFUSED);
+      expect(restarted.submits()).toBe(0);
+    }
+  });
+
+  test.each(bridges.slice(0, 2))("a refused %s recovery leaves the first run able to pay once", async (_name, request, buildBridge) => {
+    const log = createInMemorySettlementLog();
+    await expect(buildBridge(storeAt(dyingRelease(log), 1_000)).settle({ ...request, recoveryOnly: true }))
+      .rejects.toThrow(RECOVERY_REFUSED);
+    const firstRun = buildBridge(storeAt(log, 1_000 + 2 * LEASE_MS));
+    await expect(firstRun.settle(request)).resolves.toMatchObject({ ok: true, txHash: "0xpaid" });
+    expect(firstRun.submits()).toBe(1);
+  });
+
+  test("a refused recovery under other terms does not retain those terms against the first run", async () => {
+    const log = createInMemorySettlementLog();
+    const submit = vi.fn(async () => evmPaid);
+    await expect(storeAt(log, 1_000).recover!(key, { ...binding, amount: "2000000" }, submit)).rejects.toThrow(RECOVERY_REFUSED);
+    expect(await log.readOutcome!(key)).toBeNull();
+    await expect(storeAt(log, 1_000).once(key, binding, submit)).resolves.toMatchObject({ txHash: "0xpaid" });
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  test("a log without claimExistingIntent refuses a recovery with no write, and still serves a first run", async () => {
+    const { claimExistingIntent: _omitted, ...withoutExisting } = createInMemorySettlementLog();
+    const log = tracingLog(withoutExisting);
+    const submit = vi.fn(async () => evmPaid);
+    await expect(storeAt(log, 1_000).recover!(key, binding, submit)).rejects.toThrow(/requires a log with claimExistingIntent/);
+    expect(log.events).toEqual([]);
+    expect(await log.readOutcome!(key)).toBeNull();
+    await expect(storeAt(log, 1_000).once(key, binding, submit)).resolves.toMatchObject({ txHash: "0xpaid" });
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  test("an unresolved intent is still acquired for reconcile at the lease boundary only", async () => {
+    const log = createInMemorySettlementLog();
+    await crashInsideRail(log);
+    const input = { key, bindingHash: settlementBindingHash(binding), owner: "recoverer", leaseDurationMs: LEASE_MS };
+    const expiresAt = 1_000 + LEASE_MS;
+    expect(await log.claimExistingIntent!({ ...input, now: expiresAt - 1 })).toMatchObject({ status: "held" });
+    expect(await log.claimExistingIntent!({ ...input, now: expiresAt })).toMatchObject({
+      status: "acquired", lease: { stage: "reconcile", generation: 2 },
+    });
+  });
+
+  test("claimExistingIntent reports other terms and outcomes, and installs nothing on a miss", async () => {
+    const log = createInMemorySettlementLog();
+    const input = { key, bindingHash: settlementBindingHash(binding), owner: "recoverer", now: 1_000, leaseDurationMs: LEASE_MS };
+    expect(await log.claimExistingIntent!(input)).toEqual({ status: "absent" });
+    expect(await log.readOutcome!(key)).toBeNull();
+    await storeAt(log, 1_000).once(key, binding, async () => evmPaid);
+    expect(await log.claimExistingIntent!(input)).toMatchObject({ status: "outcome" });
+    expect(await log.claimExistingIntent!({ ...input, bindingHash: "00".repeat(32) })).toEqual({ status: "conflict" });
   });
 });
 
@@ -373,15 +494,6 @@ describe("a recovery request reconciles an unresolved intent", () => {
     expect(restarted.submits()).toBe(0);
   });
 
-  const replayAuthorization = (overrides: Record<string, unknown> = {}) => ({
-    disposition: "replay-authorized" as const,
-    bindingHash: settlementBindingHash(binding),
-    effectIdentity: "nonce-1",
-    protection: "deterministic-external-idempotency" as const,
-    assertReplaySafe: async () => {},
-    ...overrides,
-  });
-
   test("a bound replay authorization submits exactly once, under a granted replay lease", async () => {
     const inner = createInMemorySettlementLog();
     await crashInsideRail(inner);
@@ -389,7 +501,7 @@ describe("a recovery request reconciles an unresolved intent", () => {
     const submit = vi.fn(async () => { log.events.push("submit"); return evmPaid; });
     await expect(storeAt(log, 1_000 + 2 * LEASE_MS).recover!(key, binding, submit, async () => replayAuthorization()))
       .resolves.toMatchObject({ txHash: "0xpaid" });
-    expect(log.events).toEqual(["claim:reconcile", "grant:granted", "submit"]);
+    expect(log.events).toEqual(["claimExisting:reconcile", "grant:granted", "submit"]);
   });
 
   test.each([
@@ -415,7 +527,26 @@ describe("recovery guards against a log or store that breaks the protocol", () =
       },
     });
     const submit = vi.fn(async () => evmPaid);
-    await expect(createIdempotencyStore(log).recover!(key, binding, submit)).rejects.toThrow(/invalid acquired generation/);
+    await expect(createIdempotencyStore(log).once(key, binding, submit)).rejects.toThrow(/invalid acquired generation/);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a fresh lease", async (inner: SettlementLog) => inner.claimIntent({
+      key, bindingHash: settlementBindingHash(binding), owner: "other", now: 1_000, leaseDurationMs: LEASE_MS,
+    }), /invalid acquired generation/],
+    ["a replay lease", async (inner: SettlementLog) => {
+      const claimed = await inner.claimIntent({
+        key, bindingHash: settlementBindingHash(binding), owner: "other", now: 1_000, leaseDurationMs: LEASE_MS,
+      });
+      return claimed.status === "acquired" ? { ...claimed, lease: { ...claimed.lease, stage: "replay" } } : claimed;
+    }, /invalid acquired generation/],
+    ["an absent answer with extra keys", async () => ({ status: "absent", written: true }), /invalid shape/],
+  ])("a log whose claimExistingIntent answers %s is rejected before the rail", async (_label, answer, expected) => {
+    const inner = createInMemorySettlementLog();
+    const log = tracingLog(inner, { claimExistingIntent: async () => (await answer(inner)) as never });
+    const submit = vi.fn(async () => evmPaid);
+    await expect(storeAt(log, 1_000).recover!(key, binding, submit)).rejects.toThrow(expected);
     expect(submit).not.toHaveBeenCalled();
   });
 

@@ -686,8 +686,11 @@ pinned. No-repayment across a whole-process crash additionally requires a durabl
 alone cannot prove whether a lost rail response moved value. A `jobId` the
 `sessionStore` has no record of (or a run without one) settles only by recovery:
 `resumeSettlement` adopts or reconciles what the rail's own idempotency store
-recorded, and is refused when that store holds nothing for the job, so a crash
-before the rail recorded its intent needs operator action. A resume id is not a
+recorded, and is refused, with nothing written, when that store holds no
+unresolved intent for the job, so a crash before the rail recorded its intent,
+or a release after a not-invoked attempt, needs operator action. Recovery needs
+a store with `recover()` over a settlement log with `claimExistingIntent` (the
+built-in in-memory log has both); a custom log without it cannot recover. A resume id is not a
 fresh id: omit `jobId` to start a new session. The legacy native-ref
 input remains available for callers with a separate trusted pin.
 
