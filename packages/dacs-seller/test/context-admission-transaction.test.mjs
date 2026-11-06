@@ -33,7 +33,8 @@ const outcome = { status: 200, text: ' {"disposition":"present","fixture":true} 
 const SCOPE = { agreement: 'context-scope-vector' };
 const vetRef = tag => ({ vetRecordRef: { anchor: { kind: 'storage-program', locator: `vet-${tag}` }, contentHash: hash(tag) } });
 const presented = (jobId, input = {}, scope = SCOPE) => ({ status: 200, text: JSON.stringify({ disposition: 'present', value: { scope, input: { jobId, buyer: vetRef('buyer'), seller: vetRef('seller'), ...input } } }) });
-const nonPass = { status: 409, text: JSON.stringify({ disposition: 'rejected', code: 'party_vet_non_pass', errorClass: 'permanent' }) };
+// The agent stores a Vet non-pass as a 200 context answer (transportOutcome does not count that code as a rejection).
+const nonPass = { status: 200, text: JSON.stringify({ disposition: 'rejected', reason: 'buyer Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' }) };
 const deferred = () => {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
@@ -601,7 +602,13 @@ async function crashAfterPublish(w, p, answer) {
   assert.equal(w.row(p.input.jobId).state, 'running');
   return capability;
 }
-const COMPLETED_CLASSES = [['success', jobId => presented(jobId)], ['vet-non-pass', () => nonPass], ['other', () => ({ status: 200, text: '{"disposition":"indeterminate"}' })]];
+const COMPLETED_CLASSES = [['success', jobId => presented(jobId)], ['vet-non-pass', () => nonPass], ['other', () => ({ status: 200, text: '{"disposition":"indeterminate"}' })],
+  ['other', jobId => ({ ...presented(jobId), status: 503 })]];
+const ENVELOPE = JSON.stringify({ error: 'party_vet_non_pass', message: 'buyer Vet decision: fail' });
+const presentedWith = (jobId, extra, inValue = false) => {
+  const { value, ...rest } = JSON.parse(presented(jobId).text);
+  return { status: 200, text: JSON.stringify(inValue ? { ...rest, value: { ...value, ...extra } } : { ...rest, value, ...extra }) };
+};
 const OTHER_OUTCOMES = [
   ['a present answer for another scope', jobId => presented(jobId, {}, { agreement: 'another' })],
   ['a present answer for another job', () => presented(job(0x99))],
@@ -620,7 +627,18 @@ const OTHER_OUTCOMES = [
   ['a JSON array', () => ({ status: 200, text: '[]' })],
   ['a JSON scalar', () => ({ status: 200, text: '7' })],
   ['JSON null', () => ({ status: 200, text: 'null' })],
+  // The buyer reads a stored response by its status first: a valid body at another status is not the answer the body says.
+  ...[409, 201, 503, '200', undefined].map(status => [`a valid present answer stored with status ${String(status)}`, jobId => ({ ...presented(jobId), status })]),
+  ...[409, 503].map(status => [`a Vet non-pass rejection stored with status ${status}`, () => ({ ...nonPass, status })]),
+  ...[200, 503, 429, 408].map(status => [`the Vet non-pass error envelope stored with status ${status}`, () => ({ status, text: ENVELOPE })]),
+  ['a present answer with an extra top-level key', jobId => presentedWith(jobId, { extra: true })],
+  ['a present answer whose value has an extra key', jobId => presentedWith(jobId, { extra: true }, true)],
+  ['an indeterminate answer that carries the Vet non-pass error', () => ({ status: 200, text: '{"disposition":"indeterminate","error":"party_vet_non_pass"}' })],
+  ['an absent answer that carries the Vet non-pass error', () => ({ status: 422, text: '{"disposition":"absent","error":"party_vet_non_pass"}' })],
+  ['a refusal envelope with another error', () => ({ status: 422, text: '{"error":"other_refusal"}' })],
 ];
+// The Vet non-pass error envelope of the statuses the buyer reads as a refusal, at both ends of the range.
+const ENVELOPE_NON_PASS = [409, 422, 400, 499].map(status => ['vet-non-pass', () => ({ status, text: ENVELOPE }), `the Vet non-pass error envelope stored with status ${status}`]);
 
 test('P09b-T01 at 12 counted starts, D4 compensates to aborted, releases the hold and fails the challenge with `unpaid_start_limit`', async t => {
   const w = world(t, { contextStartLimits: { maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 12 } }), p = w.prepare();
@@ -927,7 +945,7 @@ test('P09b-T34 `admissionRecord` reads back the row\'s `contextScopeHash` (never
 });
 
 test('P09b-T36 compensation reads the context outcome first: a successful completed outcome settles with `contextOutcome` `success` and is never aborted; a Vet non-pass outcome settles `vet-non-pass`; D8a records the same classes on an ordinary completion; an inspection that throws or reports another binding keeps the row `compensating` with its cause and `ready:false`, also after two sweeps and a restart. Round 4: through both D8a and compensation, `success` is recorded only for a `present` answer whose scope hashes to the row\'s `contextScopeHash`, for the row\'s job, naming both Vet record references. A `present` answer for another scope or job, or missing either reference, a completed `indeterminate`, `absent` or non-Vet `rejected` answer, and outcome text that is not a JSON object each record `other`. T37 covers the D7→D8a crash for all three completed classes, asserting one settlement and one effective hold release by `holdId`; P11b2-T17 checks the slot side. The `none` class needs C3\'s `executed` proof, so P11d3 adds that case (H-19)', async t => {
-  const cases = [...COMPLETED_CLASSES, ...OTHER_OUTCOMES.map(([label, make]) => ['other', make, label])];
+  const cases = [...COMPLETED_CLASSES, ...ENVELOPE_NON_PASS, ...OTHER_OUTCOMES.map(([label, make]) => ['other', make, label])];
   for (const [expected, make, label = expected] of cases) {
     const byD8a = world(t), q = byD8a.prepare(); await (await running(byD8a, q)).complete(make(q.input.jobId));
     assert.equal(byD8a.admission.admissionRecord(q.input.jobId).contextOutcome, expected, `D8a: ${label}`); assert.equal(byD8a.calls.effective, 1, label);
