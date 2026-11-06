@@ -11,7 +11,7 @@
         "docs/alternative-payment-projection.md", "docs/demos-cci-identities.md",
         "docs/fixed-price-offline-coordinator.md", "docs/fixed-price-x402-coordinator.md",
         "docs/settlement-verified-reputation.md", "docs/rfq-negotiation-core.md",
-        "docs/pay-solana-spl.md", "docs/pay-ap2.md", "docs/filesystem-store-safety.md",
+        "docs/pay-solana-spl.md", "docs/pay-ap2.md", "docs/pay-dem-execution.md", "docs/filesystem-store-safety.md",
         "docs/x402-seller-paywall.md", "docs/wallet-spend-authority.md", "docs/raw-json-admission.md"
       ]
     },
