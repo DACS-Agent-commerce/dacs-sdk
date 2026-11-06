@@ -1184,3 +1184,94 @@ test("P11a1-T28: table: route (payments with a cached completed answer, commitme
     }
   }
 });
+
+/** The stub agent's recovery of a retained effect, with the clock moved to `at(request)` before it claims: records what each claim granted. */
+function claimAt(w, at, outcome = {}) {
+  const claims = [];
+  w.agent.reconcileTransport = async ({ request, transport }) => {
+    w.agent.calls.reconciled++;
+    w.state.time = at(request);
+    claims.push(transport.claim().live);
+    transport.settle({ status: 200, value: request.path === PATHS.proposals ? { disposition: 'complete', contribution: { signed: true } } : { status: 'committed', jobId: request.jobId }, ...outcome });
+  };
+  return claims;
+}
+
+/** A proposal whose effect an unsignable answer left uncertain. */
+async function uncertainProposal(w, label) {
+  const job = await proposeJob(w, label);
+  w.agent.fenced = null;
+  assert.equal((await job.post()).body.error, 'outgoing_body_rejected');
+  w.agent.fenced = undefined;
+  return job;
+}
+
+/** A commitment (or signature commitment) effect a process death before `finish` left uncertain, after a restart. */
+async function uncertainCommitment(w, path, label) {
+  const job = await proposeJob(w, label);
+  assert.equal((await job.post()).status, 200);
+  w.handle.finishFails = true;
+  const body = { jobId: job.jobId }, ids = { jobId: job.jobId, agreementHash: job.agreementHash };
+  assert.ok((await w.post(path, body, ids)).status >= 500);
+  w.reopen();
+  return { job, sign: () => w.buyerWire.signRequest(path, body, ids) };
+}
+
+const CLOCKS = [['one millisecond before expiry', -1, true], ['at expiry', 0, false], ['one millisecond after expiry', 1, false]];
+
+test('a retained proposal effect is claimed read-only once its request has expired at the claim, though it was live at admission', async (t) => {
+  const w = await world(t);
+  for (const [label, delta, live] of CLOCKS) {
+    const job = await uncertainProposal(w, `late-claim-proposals-${label}`);
+    const signed = await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash });
+    const claims = claimAt(w, () => signed.payload.expiresAt + delta);
+    const answer = await w.send(PATHS.proposals, signed);
+    w.state.time = NOW;
+    assert.deepEqual({ status: answer.status, claims }, { status: 200, claims: [live] }, label);
+  }
+});
+
+test('a retained commitment effect, after a restart, is claimed read-only once its request has expired at the claim, on commitments and on commitments/signature', async (t) => {
+  for (const [route, path, options] of [['commitments', PATHS.commitments, {}], ['commitments/signature', PATHS.commitmentSignature, { commitOnSignature: true }]]) {
+    const w = await world(t, options);
+    for (const [label, delta, live] of CLOCKS) {
+      const { sign } = await uncertainCommitment(w, path, `late-claim-${route}-${label}`);
+      const signed = await sign();
+      const claims = claimAt(w, () => signed.payload.expiresAt + delta);
+      const answer = await w.send(path, signed);
+      w.state.time = NOW;
+      assert.deepEqual({ status: answer.status, claims }, { status: 200, claims: [live] }, `${route}: ${label}`);
+    }
+  }
+});
+
+test('a retained proposal effect claimed read-only is never settled for retry or removal: the refusal is 408 peer_expired, the effect stays uncertain, and a live request then reconciles it', async (t) => {
+  for (const outcome of [{ retry: true }, { noEffect: true }]) {
+    const w = await world(t);
+    const job = await uncertainProposal(w, `late-settle-${Object.keys(outcome)[0]}`);
+    const signed = await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash });
+    claimAt(w, () => signed.payload.expiresAt, outcome);
+    const refused = await w.send(PATHS.proposals, signed);
+    w.state.time = NOW;
+    assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 408, error: 'peer_expired' }, Object.keys(outcome)[0]);
+    const db = new DatabaseSync(w.storePath, { readonly: true });
+    try { assert.deepEqual(db.prepare('SELECT state FROM peer_effects').all(), [{ state: 'uncertain' }], 'the effect is neither set to retry nor deleted'); } finally { db.close(); }
+    const claims = claimAt(w, () => NOW);
+    assert.equal((await job.post()).status, 200);
+    assert.deepEqual(claims, [true], 'a live request claims it live');
+  }
+});
+
+test('a retained proposal effect under a delegation is claimed read-only once the delegation has expired at the claim', async (t) => {
+  const w = await world(t);
+  for (const [label, delta, live] of [['one millisecond before the delegation expires', -1, true], ['when it expires', 0, false]]) {
+    const job = await uncertainProposal(w, `late-claim-delegated-${label}`);
+    const expiresAt = NOW + 20_000, text = JSON.stringify(job.body);
+    const delegation = w.delegationFor({ jobId: job.jobId, expiresAt });
+    const payload = w.payloadFor(PATHS.proposals, text, { jobId: job.jobId, agreementHash: job.agreementHash, expiresAt });
+    const claims = claimAt(w, () => expiresAt + delta);
+    const answer = await w.send(PATHS.proposals, { text, header: w.headerFor(payload, { signer: SESSION, delegation }), payload });
+    w.state.time = NOW;
+    assert.deepEqual({ status: answer.status, claims }, { status: 200, claims: [live] }, label);
+  }
+});
