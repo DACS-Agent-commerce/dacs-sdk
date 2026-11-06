@@ -6331,6 +6331,62 @@
           "after": "9cdd17e0eceae6b901b2c075823c6dce714496c9"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "e081789da16ac68bfbb76978b8cea7000a0bb9a4"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "4ba56c73af306778fef8531dd80bf48404d581b6",
+          "after": "c24bb9c6d829d4ead3c806eab84268c64047961c"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+          "before": "e8eb401ca45efce0cc79b1f5b2cc8f8cee657015",
+          "after": "11db4783591d76f54036ef9c5d176ef9f54cc62e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/queued-owner.mjs",
+          "before": null,
+          "after": "99a66f8772b4b5df092c71a16b32fa78bef08199"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-crash-child.mjs",
+          "before": null,
+          "after": "7c8a4c6aed3fa1972facb04dac75ae9fcec13db9"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-transport.mjs",
+          "before": null,
+          "after": "1cf670f33c82826d75e6c58edfcb89b9531906d6"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-read-world.mjs",
+          "before": null,
+          "after": "84e7b1a92a3ba4082e775ba1aa4671958168a027"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": null,
+          "after": "aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": null,
+          "after": "dc910b5daebea851fa7dda232bce86bf82ca6115"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "f84e34a6b89f25ac0fe93cb5c62c11f17a63cef2",
+          "after": "f85d5b731a200483b9c5e95efa5f818b947e0e60"
+        }
+      ]
     }
   ]
 }

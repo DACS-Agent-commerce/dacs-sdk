@@ -10,8 +10,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
-import { admitPublicFactory } from '../public-admission.mjs';
-import { createDevnetAgreementTransport } from './devnet-native-transport.mjs';
+import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory } from '../public-admission.mjs';
+import { observeWithDeadline, OutboundError } from '../util/http.mjs';
+import { createDevnetAgreementTransport, createSourceObserver } from './devnet-native-transport.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
@@ -22,6 +23,8 @@ const NODE_WALLET_NETWORK = TP1_APPROVED_IDENTITY_RECORD.network;
 const IDENTITY_RECORD_DIGEST = createHash('sha256').update(canonicalize(TP1_APPROVED_IDENTITY_RECORD)).digest('hex');
 const TRANSPORT_AUTHORITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
 const PASSIVE_METHODS = ['getPublicAccount', 'getWriteProfile', 'isLocked', 'lock'];
+const NODE_INFO_MESSAGES = Object.freeze(['getNetworkInfo', 'getNetworkParameters']);
+const OBSERVER_PROVENANCE_PREFIX = `dacs-node-observer:${TP1_APPROVED_IDENTITY_RECORD.recordId}`;
 const RPC_FAILED = 'node_wallet_rpc_failed';
 const RPC_INVALID = 'node_wallet_rpc_invalid';
 const STAGE_NOT_DISPATCHED = 'not_dispatched';
@@ -104,6 +107,45 @@ export function createNodeTransportOwner({ endpoint, transportAuthority, fetchIm
 
 // A transport failure seen by the SDK: a closed public message, the transport's own error as `cause`,
 // and whether the request reached the network (`stage`).
+/**
+ * Returns the fence-free, read-only observer for a node owner: {observe({signal}),
+ * readNodeInfo(message, {signal}), provenance()}. Its expected identity and block-one fallback
+ * come only from TP1_APPROVED_IDENTITY_RECORD. It acquires no connection fence, takes no
+ * journal lock and signs nothing, so it works while a fence is held and before any journal or
+ * custody is opened. observe resolves {local, chainIdentity, provenance} for the owner's current
+ * connection once the node's chain matches the record; readNodeInfo resolves the node's answer
+ * to getNetworkInfo or getNetworkParameters and refuses every other message (readonly_only).
+ * Every node reply is limited to 4 MiB before decoding and each call to one 10 s deadline
+ * (tp1_authority_timeout, cause kept); a caller's abort rejects with its own reason and starts
+ * no further read. A reader failure keeps its original error. provenance() names the connection
+ * generation (the owner's connectionId) and throws transport_closed after close.
+ * Throws TypeError for an owner without currentLocal, getContext and fetchImpl.
+ */
+export function createNodeObserver({ owner, clock = { now: () => Date.now() } } = {}) {
+  const source = createSourceObserver({ record: TP1_APPROVED_IDENTITY_RECORD, owner, now: () => clock.now(), timeoutMs: AUTHORITY_READ_DEADLINE_MS });
+  const provenanceOf = connectionId => `${OBSERVER_PROVENANCE_PREFIX}:${connectionId}`;
+  async function withinDeadline(read, signal) {
+    try { return await observeWithDeadline(read, { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal }); }
+    catch (error) {
+      if (error instanceof OutboundError && error.kind === 'timeout') throw new OperationError('tp1_authority_timeout', 'the node did not answer within the observation deadline', undefined, { cause: error });
+      throw error;
+    }
+  }
+  return Object.freeze({
+    provenance: () => provenanceOf(owner.currentLocal().connectionId),
+    observe: ({ signal } = {}) => withinDeadline(async ({ signal: stop }) => {
+      const { endpoint, transportAuthority, connectionId, chainIdentity } = await source.bind({ signal: stop });
+      return { local: { endpoint, transportAuthority, connectionId }, chainIdentity, provenance: provenanceOf(connectionId) };
+    }, signal),
+    async readNodeInfo(message, { signal } = {}) {
+      if (!NODE_INFO_MESSAGES.includes(message)) fail('readonly_only');
+      const answer = await withinDeadline(({ signal: stop }) => source.post({ method: 'nodeCall', params: [{ message, data: {} }] }, {}, { signal: stop }), signal);
+      if (answer?.result !== 200) fail('upstream_unavailable');
+      return answer.response;
+    },
+  });
+}
+
 class NodeRpcFailure extends Error {
   constructor(cause, stage) {
     super(RPC_FAILED, { cause });
