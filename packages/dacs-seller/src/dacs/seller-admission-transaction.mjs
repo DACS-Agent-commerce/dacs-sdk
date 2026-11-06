@@ -57,15 +57,23 @@ function bundlePresenter(text, presentationHash, nonce) {
   } catch { return null; }
 }
 const namesVetRecord = (party) => isAttestationRef(party?.vetRecordRef);
-// SA-8's class of a completed context outcome, from its exact stored text and never by the absence of a refusal. `success` is only a `present`
-// answer whose scope hashes to the row's contextScopeHash, for the row's job, naming both Vet records by exact signed-record references; `vet-non-pass` is the explicit
-// `party_vet_non_pass` refusal (or that error in the HTTP envelope); everything else, text that is no JSON object included, is `other`.
-function contextOutcomeClass(row, outcomeText) {
+const hasExactKeys = (value, keys) => isRecord(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+// The statuses the buyer's reader turns into a named refusal from the `{ error }` envelope (seller-http.mjs); 408 and 429 are retryable, never a refusal.
+const isRefusalStatus = (status) => Number.isInteger(status) && status >= 400 && status <= 499 && status !== 408 && status !== 429;
+// SA-8's class of a completed context outcome, from the exact stored response `{ status, text }` read as the buyer reads it, and never by the
+// absence of a refusal. `success` is only status 200 with exactly `{ disposition: 'present', value: { input, scope } }`, the scope hashing to the
+// row's contextScopeHash, for the row's job, naming both Vet records by exact signed-record references. `vet-non-pass` is the explicit
+// `party_vet_non_pass` rejection at status 200, or that `error` alone in the envelope of a refusal status; everything else, a text that is no
+// JSON object or a status the buyer would not read as that answer included, is `other`.
+function contextOutcomeClass(row, outcome) {
   let answer;
-  try { answer = JSON.parse(outcomeText); } catch { return 'other'; }
+  try { answer = JSON.parse(outcome?.text); } catch { return 'other'; }
   if (!isRecord(answer)) return 'other';
-  if (answer.disposition !== 'present') return (answer.disposition === 'rejected' && answer.code === PARTY_VET_NON_PASS) || answer.error === PARTY_VET_NON_PASS ? 'vet-non-pass' : 'other';
-  const { scope, input } = answer.value ?? {};
+  if (isRefusalStatus(outcome.status)) return answer.disposition === undefined && answer.error === PARTY_VET_NON_PASS ? 'vet-non-pass' : 'other';
+  if (outcome.status !== 200) return 'other';
+  if (answer.disposition === 'rejected') return answer.code === PARTY_VET_NON_PASS ? 'vet-non-pass' : 'other';
+  if (answer.disposition !== 'present' || !hasExactKeys(answer, ['disposition', 'value']) || !hasExactKeys(answer.value, ['input', 'scope'])) return 'other';
+  const { scope, input } = answer.value;
   try {
     return input?.jobId === row.jobId && namesVetRecord(input.buyer) && namesVetRecord(input.seller) && sha256Hex(canonicalize(scope)) === row.contextScopeHash ? 'success' : 'other';
   } catch { return 'other'; }
@@ -397,7 +405,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     }
     if (!['open', 'effect-authorized'].includes(row.attemptFence)) fail('context_admission_closed');
     completeWire(effect, outcome);
-    return settleWithin(row, contextOutcomeClass(row, outcome.text));
+    return settleWithin(row, contextOutcomeClass(row, outcome));
   }
   // The completion the capability carries, on its own handle only. A caller that holds the job lease passes it: complete then neither
   // acquires nor releases it, and D8b runs once the lease ends. Otherwise complete takes the lease itself and releases it before D8b.
@@ -424,7 +432,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     if (view?.state === 'none') return null;
     if (!['pending', 'ended', 'completed'].includes(view?.state)) fail('context_outcome_unavailable', 503);
     if (view.binding !== row.contextBinding) fail('context_outcome_binding_mismatch');
-    return view.state === 'completed' ? contextOutcomeClass(row, view.outcome?.text) : null;
+    return view.state === 'completed' ? contextOutcomeClass(row, view.outcome) : null;
   }
   // The exact two sink addresses C3 must cover: the retained presenters' composite addresses, checked against the row's parties.
   function sinkAddresses({ jobId, buyer, seller, vetPresenters, vetAddresses }) {

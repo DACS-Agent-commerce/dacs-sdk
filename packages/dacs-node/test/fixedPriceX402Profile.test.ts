@@ -838,6 +838,121 @@ describe("fixed-price x402 generated profile policy", () => {
     })).toBe(true);
   });
 
+  it("finds the buyer order for the Agreement in whichever profile store holds it", async () => {
+    const value = await buyerFixture();
+    const missing = { status: "missing" as const };
+    const found = { status: "ok" as const, record: value.record };
+    function routed(x402: unknown, payDem: unknown, options: { grant?: false } = {}) {
+      const database = (value.context as { database: object }).database;
+      const store = (loaded: unknown) => ({ load: async () => structuredClone(loaded) });
+      return {
+        ...(value.context as object),
+        database: new Proxy(database, {
+          get(target, key) {
+            if (key === "createLiveCoordinatorStore") return () => store(x402);
+            if (key === "createPayDemCoordinatorStore") return () => store(payDem);
+            if (key === "loadEffectInput" && options.grant === false) {
+              const load = (Reflect.get(target, key, target) as
+                (kind: string, id: string) => unknown).bind(target);
+              // Hide only the fee-budget grant; the Agreement clock is a
+              // session record too and must stay readable.
+              return (kind: string, id: string) => {
+                const loaded = load(kind, id);
+                return kind === "session" && typeof loaded === "object" &&
+                  loaded !== null && "budgetId" in loaded ? undefined : loaded;
+              };
+            }
+            const member = Reflect.get(target, key, target) as unknown;
+            return typeof member === "function" ? member.bind(target) : member;
+          },
+        }),
+      } as never;
+    }
+    function signedDraft(policy: ReturnType<typeof createDacsFixedPriceX402BuyerAgreementPolicyV1>) {
+      const artifact = {
+        ...policy.buildDraft({
+          operation: value.operation,
+          retained: value.retained,
+          session: value.session,
+        }),
+        signatures: [{
+          party: BUYER,
+          algorithm: "ed25519" as const,
+          value: Buffer.alloc(64, 1).toString("base64url"),
+        }, {
+          party: SELLER,
+          algorithm: "ed25519" as const,
+          value: Buffer.alloc(64, 2).toString("base64url"),
+        }],
+      };
+      return {
+        logicalAddress: fixedPriceAgreementLogicalAddress(JOB_ID),
+        agreementHash: contentHash(artifact as unknown as Record<string, unknown>),
+        artifact: artifact as never,
+      };
+    }
+
+    const conflict = createDacsFixedPriceX402BuyerAgreementPolicyV1({
+      context: routed(found, found),
+      now: () => NOW,
+    });
+    await expect(conflict.anchor.anchorAgreement(signedDraft(conflict), {} as never))
+      .resolves.toEqual({
+        disposition: "rejected",
+        reason: "fixed-price-buyer-order-profile-conflict",
+      });
+    const absent = createDacsFixedPriceX402BuyerAgreementPolicyV1({
+      context: routed(missing, missing),
+      now: () => NOW,
+    });
+    await expect(absent.anchor.anchorAgreement(signedDraft(absent), {} as never))
+      .resolves.toEqual({
+        disposition: "rejected",
+        reason: "fixed-price-buyer-order-missing",
+      });
+    for (const damaged of [
+      { status: "corrupt" as const, reason: "row does not decode" },
+      { status: "unsupported" as const, version: 99 },
+    ]) {
+      for (const [x402, payDem] of [[damaged, found], [found, damaged]]) {
+        const policy = createDacsFixedPriceX402BuyerAgreementPolicyV1({
+          context: routed(x402, payDem),
+          now: () => NOW,
+        });
+        await expect(policy.anchor.anchorAgreement(signedDraft(policy), {} as never))
+          .resolves.toEqual({
+            disposition: "rejected",
+            reason: "fixed-price-buyer-order-corrupt",
+          });
+      }
+    }
+    // A missing fee-budget grant is found before the write is handed to Demos.
+    const ungranted = createDacsFixedPriceX402BuyerAgreementPolicyV1({
+      context: routed(missing, found, { grant: false }),
+      now: () => NOW,
+    });
+    await expect(ungranted.anchor.anchorAgreement(signedDraft(ungranted), {} as never))
+      .resolves.toEqual({
+        disposition: "indeterminate",
+        reason: "agreement publication failed before submission",
+      });
+    expect(value.anchorWriteOnce).not.toHaveBeenCalled();
+
+    const payDemContext = routed(missing, found);
+    const payDem = createDacsFixedPriceX402BuyerAgreementPolicyV1({
+      context: payDemContext,
+      now: () => NOW,
+    });
+    const anchored = signedDraft(payDem);
+    await expect(payDem.anchor.anchorAgreement(anchored, {} as never))
+      .resolves.toEqual({ disposition: "submitted" });
+    expect(value.anchorWriteOnce).toHaveBeenCalledTimes(1);
+    await expect(loadDacsFixedPriceX402BuyerAgreementPublicationV1(
+      payDemContext,
+      value.record,
+    )).resolves.toMatchObject({ agreementHash: anchored.agreementHash });
+  });
+
   it("authenticates the finalized commitment before deriving exact buyer x402 authority", async () => {
     const value = await buyerFixture();
     const agreementPolicy = createDacsFixedPriceX402BuyerAgreementPolicyV1({
