@@ -922,3 +922,28 @@ test('a retained proposal effect under a delegation is claimed read-only once th
     assert.deepEqual({ status: answer.status, claims }, { status: 200, claims: [live] }, label);
   }
 });
+
+test('the wire authenticator reserves read-only once the request has expired, reads the clock in readbackOnly(), and treats a request it did not admit as expired', async (t) => {
+  const w = await world(t);
+  const auth = wireAuthenticator(w.handle.wire, w.agent, w.handle.authentication);
+  const admit = async (label) => {
+    const job = await proposeJob(w, label);
+    const signed = await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash });
+    let request = null;
+    const opened = await auth.open({ header: signed.header, method: 'POST', path: PATHS.proposals, rawBody: Buffer.from(signed.text), body: JSON.parse(signed.text), onOpened: (admitted) => { request = admitted; } });
+    return { request, opened, signed };
+  };
+  const live = await admit('reserve-live');
+  assert.equal(live.opened.readbackOnly(), false);
+  assert.equal(auth.store.reserve(live.request, live.opened.body, live.opened.reserveOptions).disposition, 'perform', 'a live request reserves');
+  const lapsing = await admit('reserve-lapsing'), unadmitted = await admit('reserve-unadmitted');
+  const rowsBefore = w.rows();
+  w.state.time = lapsing.signed.payload.expiresAt - 1;
+  assert.equal(lapsing.opened.readbackOnly(), false, 'one millisecond before expiry');
+  w.state.time = lapsing.signed.payload.expiresAt;
+  assert.equal(lapsing.opened.readbackOnly(), true, 'at expiry');
+  assert.throws(() => auth.store.reserve(lapsing.request, lapsing.opened.body, lapsing.opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'an expired request starts no effect');
+  w.state.time = NOW;
+  assert.throws(() => auth.store.reserve({ ...unadmitted.request }, unadmitted.opened.body, unadmitted.opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'a request this authenticator did not admit starts no effect');
+  assert.deepEqual(w.rows(), rowsBefore, 'the refusals left nothing behind');
+});
