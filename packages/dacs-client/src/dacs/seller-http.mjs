@@ -9,7 +9,7 @@
 // refusal or failed bootstrap becomes SellerRefusedError; unsigned, malformed,
 // interrupted, ambiguous, held, suspended or readback-only answers are
 // unavailable, with their class and cause kept.
-import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
 import { SellerAgentError } from './seller-agent-error.mjs';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
@@ -216,8 +216,18 @@ export class SellerRefusedError extends Error {
   }
 }
 
-// No request carries a capability the client minted, and the adapter's durable records establish no new-purchase request yet.
-const REQUEST_PROVENANCE = Object.freeze({ continuation: false, newPurchase: false });
+/** Extra sends allowed after an unknown answer within one call (DC-CW6). */
+export const SELLER_UNKNOWN_RETRIES = 2;
+/** Milliseconds between the sends of one call (DC-CW6). */
+export const SELLER_RETRY_DELAY_MS = 5000;
+// Route deadlines (K5): 15 s by default; the context route is held to 240-300 s.
+const SELLER_ROUTE_TIMEOUT_MS = 15000;
+const SELLER_CONTEXT_TIMEOUT_MS = Object.freeze({ min: 240000, max: 300000 });
+const SELLER_MAX_TIMEOUT_MS = 300000;
+const CONTEXT_PATH = DACS_SELLER_HTTP_PATHS.context;
+const SELLER_CLOCK = Object.freeze({ now: () => performance.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) });
+// A refusal raised by the request records (stale row, purchase no longer authorizing): not a seller answer.
+const recordRefusals = new WeakSet();
 const SELLER_OPERATOR_MESSAGE = 'the seller reports this operation is unresolved and needs the seller operator; it is not retried automatically';
 const UNAVAILABLE_ANSWER_MESSAGE = 'seller agent response is unavailable or unauthenticated; the operation outcome may be unknown';
 const { RESULT, PROGRESS, DEFINITE, FAILED_BOOTSTRAP } = SELLER_ANSWER_CLASS;
@@ -234,8 +244,15 @@ function answerOrError(verdict, answer, status) {
   throw new SellerUnavailableError(code === SELLER_EFFECT_UNRESOLVED ? SELLER_OPERATOR_MESSAGE : UNAVAILABLE_ANSWER_MESSAGE, statusCause(status), verdict);
 }
 
-// classifyAnswer is the injectable K5 classifier; the default is the real one.
-export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer }) {
+/**
+ * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
+ * classifyAnswer is the injectable K5 classifier; the default is the real one. requestRecords is the adapter's durable
+ * record store (`start(path, body)` returns the attempt `{text, continuation, newPurchase, check(), finish(answerClass)}`
+ * and `failure(error)` records a refusal); with it each call sends its stored bytes and retries unknown answers, without
+ * it a call sends once.
+ * clock supplies `now()` and `sleep(ms)` so a test injects time.
+ */
+export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = SELLER_ROUTE_TIMEOUT_MS, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords, clock = SELLER_CLOCK }) {
   const base = new URL(String(url).replace(/\/$/, ''));
   if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
@@ -246,17 +263,43 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
   if (authentication && prefix) throw new Error('authenticated seller transport uses the exact /dacs/v1 paths');
   let lastFailureCause, lastFailureDispatched, hasDispatched = false;
 
+  const routeDeadlineMs = (path) => path === CONTEXT_PATH
+    ? Math.max(SELLER_CONTEXT_TIMEOUT_MS.min, Math.min(timeoutMs, SELLER_CONTEXT_TIMEOUT_MS.max))
+    : Math.min(timeoutMs, SELLER_MAX_TIMEOUT_MS);
+
+  // An unknown answer is sent again with the stored bytes and a fresh nonce, at most SELLER_UNKNOWN_RETRIES times,
+  // SELLER_RETRY_DELAY_MS apart and never past the route deadline. `start` runs before every send, so a purchase that
+  // stopped authorizing the request during the delay signs nothing.
   async function post(path, body) {
+    const deadline = clock.now() + routeDeadlineMs(path);
+    for (let retry = 0; ; retry++) {
+      const attempt = requestRecords?.start(path, body);
+      try {
+        const answer = await send(path, body, attempt, deadline - clock.now());
+        attempt?.finish(answer.answerClass);
+        return answer.body;
+      } catch (error) {
+        if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
+        attempt?.finish(error.answerClass);
+        if (!attempt || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
+      }
+      await clock.sleep(SELLER_RETRY_DELAY_MS);
+    }
+  }
+
+  async function send(path, requestBody, attempt, remainingMs) {
     lastFailureCause = undefined;
     lastFailureDispatched = undefined;
     let phase = 'other', signal;
     try {
-      const text = JSON.stringify(body);
+      const text = attempt?.text ?? JSON.stringify(requestBody);
+      const body = attempt ? JSON.parse(text) : requestBody;
       if (Buffer.byteLength(text) > MAX_BODY) throw new Error('request exceeds byte limit');
       // One deadline covers signing too: the wire's authority and proof reads and the host's signer have none of their own.
-      signal = AbortSignal.timeout(timeoutMs);
+      signal = AbortSignal.timeout(Math.max(1, Math.ceil(remainingMs)));
       phase = 'client-sign';
       const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal }), signal) : null;
+      try { attempt?.check(); } catch (refusal) { recordRefusals.add(refusal); throw refusal; }
       phase = 'other';
       hasDispatched = true;
       const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
@@ -289,12 +332,15 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       // The record exists only here, after the wire verified the exact bytes: the HTTP status it checked and the body it admitted.
       if (receipt) {
         phase = 'classified';
-        return answerOrError(classifyAnswer({ status: response.status, signed: true, body: receipt.body }, { path, dispatched: true, ...REQUEST_PROVENANCE }), receipt.body, response.status);
+        // Provenance and request kind come only from the adapter's own record of this request, never from the answer or a caller.
+        const verdict = classifyAnswer({ status: response.status, signed: true, body: receipt.body }, { path, dispatched: true, continuation: attempt?.continuation ?? false, newPurchase: attempt?.newPurchase ?? false });
+        return { body: answerOrError(verdict, receipt.body, response.status), answerClass: verdict.answerClass };
       }
       if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
       if (!response.ok) throw new Error('seller did not return success');
-      return answer;
+      return { body: answer, answerClass: RESULT };
     } catch (error) {
+      if (recordRefusals.has(error)) throw error;
       if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }
@@ -307,6 +353,10 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
 
   return {
     origin,
+    // The route adapter for callers without a named method yet (the context and challenge routes belong to the bootstrap callers).
+    request: post,
+    // Records, for the operator, why a request that was started never reached the seller.
+    recordFailure: (error) => requestRecords?.failure(error),
     // The durable Agreement coordinator retains only disposition/reason.
     // Its caller records the last failed HTTP call's bounded cause separately.
     get failureCause() { return lastFailureCause; },
