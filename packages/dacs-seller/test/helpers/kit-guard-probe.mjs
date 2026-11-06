@@ -129,6 +129,16 @@ async function effectEntries() {
   await attempt('issue', () => ledger.issue());
   await attempt('issueForOperator', () => ledger.issueForOperator());
   ledgerDb.close();
+  const { createContextAdmissionTransaction } = await import('../../src/dacs/seller-admission-transaction.mjs');
+  const { createSellerTransportStore: createAdmissionStore } = await import('../../src/dacs/seller-transport-auth.mjs');
+  const admissionStore = createAdmissionStore({ path: join(privateTemporaryDirectory(), 'transport.sqlite') });
+  const admission = createContextAdmissionTransaction({ store: admissionStore, policy: { reserve: never('the policy'), release: never('the policy') },
+    effectEvidence: never('evidence'), inspectContextOutcome: never('the outcome inspection'), completeWire: never('the wire completion'),
+    now: never('the clock'), ready: never('readiness'), deadlines: { policyMs: 10000 } });
+  await attempt('begin', () => admission.begin());
+  await attempt('runningCheck', () => admission.runningCheck());
+  await attempt('reserveContext', () => admission.reserveContext());
+  admissionStore.close();
   await attempt('createSellerHttpHandler', () => createSellerHttpHandler({}));
   await attempt('createSellerAgentClient', () => createSellerAgentClient({}));
   await attempt('createSellerTransportServerAuth', () => createSellerTransportServerAuth({}));
