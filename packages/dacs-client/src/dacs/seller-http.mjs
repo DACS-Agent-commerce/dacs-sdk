@@ -269,10 +269,13 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
 
   // An unknown answer is sent again with the stored bytes and a fresh nonce, at most SELLER_UNKNOWN_RETRIES times,
   // SELLER_RETRY_DELAY_MS apart and never past the route deadline. `start` runs before every send, so a purchase that
-  // stopped authorizing the request during the delay signs nothing.
+  // stopped authorizing the request during the delay signs nothing, and a sleep that wakes at or past the deadline
+  // gives back the last unknown answer before another attempt is recorded.
   async function post(path, body) {
     const deadline = clock.now() + routeDeadlineMs(path);
+    let unknown;
     for (let retry = 0; ; retry++) {
+      if (unknown && clock.now() >= deadline) throw unknown;
       const attempt = requestRecords?.start(path, body);
       try {
         const answer = await send(path, body, attempt, deadline - clock.now());
@@ -282,6 +285,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
         if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
         attempt?.finish(error.answerClass);
         if (!attempt || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
+        unknown = error;
       }
       await clock.sleep(SELLER_RETRY_DELAY_MS);
     }

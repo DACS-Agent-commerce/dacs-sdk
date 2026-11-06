@@ -113,6 +113,16 @@ test("a context-shaped body keeps generatedAt across retries (K5-C3)", async (t)
   sameBodies(s.fetches); assert.equal(JSON.parse(s.fetches[1].body).scope.generatedAt, bodyFor(PATHS.context).scope.generatedAt);
 });
 
+test("a retry sleep that wakes at or past the route deadline records and sends nothing more and rethrows the unknown answer", async (t) => {
+  for (const [route, wake] of [[P, 15000], [P, 20000], [PATHS.context, CONTEXT_LIMITS.min + 1000]]) {
+    const s = await storedWorld(t, route === PATHS.context ? { accepted: false } : {});
+    s.clock.sleep = async ms => { s.delays.push(ms); s.advance(wake); };
+    await assert.rejects(s.client({ respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).request(route, bodyFor(route)), e => e.answerClass === 'unknown', `${route} ${wake}`);
+    assert.equal(s.fetches.length, 1, route); assert.equal(s.w.state.signs.length, 1, route);
+    assert.equal(s.record(route).attempts, 1, route); assert.equal(s.record(route).lastClass, 'unknown', route);
+  }
+});
+
 test("a retry after the delay re-checks admission and the row and signs nothing for a purchase cancelled, expired or re-held during the delay", async (t) => {
   for (const mode of ['cancelled', 'expired', 'held', 'suspended']) {
     const s = await storedWorld(t);

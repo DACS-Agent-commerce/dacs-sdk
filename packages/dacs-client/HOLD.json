@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "28e7fa451279f5525cfa919e8fd7f7905a4ca47d"
+        "blob": "69b8f9fc70d377934d0816ee31888b2530a13c58"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1175,7 +1175,7 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "e9ae634270a864049943fc107503cf7831da4acb"
+        "blob": "5b50b3d347a2cec7ea4c6a4e108bc487a19ba68c"
       },
       "src/dacs/seller-response-class.mjs": {
         "blob": "8ca70e7f5d3217388527c8dcab289193b2848780"
@@ -1898,7 +1898,7 @@
         "blob": "642219516e80498d69b7b31c11ae82721a2d73ab"
       },
       "test/seller-stored-request.test.mjs": {
-        "blob": "8f231f6102facaa62dad45d5fac984357ba11980"
+        "blob": "53fdb217b04d43f879c51cb1169ab5ae66b20520"
       },
       "test/sqlite-floor-iterators.test.mjs": {
         "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"
