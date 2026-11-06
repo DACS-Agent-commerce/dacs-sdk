@@ -23,7 +23,11 @@ concurrency:
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    # The node 22 leg can run on the project's own one-job runners (label dacs-pool), but only when the repository
+    # variable SDK_SELF_HOSTED is 'on' and the code comes from this repository (pushes, merge queue, and pull
+    # requests whose head branch is in this repo). Fork pull requests and every other case use ubuntu-latest.
+    # Deleting the variable sends new runs back to ubuntu-latest.
+    runs-on: ${{ (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
