@@ -1135,3 +1135,42 @@ test('admission-live-begin-owner-is-removed-only-by-its-own-begin', async t => {
   gate.barrier.resolve(null); await firstRejected; await w.admission.jobEffectMutex(a.input.jobId).run(() => {}); await flush();
   assert.equal(owned(w, a.input.jobId, 1), false); assert.equal(w.row(a.input.jobId).state, 'aborted');   // P09bb's C2-C4 settle it under the same lease
 });
+
+// K11: every entry that reaches the wire, the journal or the policy refuses while the guard is off, before it takes the job lease.
+const guard = await import('../src/kit-operation-guard.mjs');
+const guardOff = (promise, entry) => assert.rejects(promise, { code: 'kit_operation_guard_off', entry });
+
+test('admission-reserve-refused-while-the-guard-is-off-on-an-admitted-row', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input);
+  const before = w.row(p.input.jobId); t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  guard.setKitOperationGuardForTest('off');
+  await guardOff(w.admission.reserveContext(p.input.jobId, w.reserveWire), 'reserveContext');
+  await guardOff(w.admission.reserveContext(p.input.jobId, null), 'reserveContext');
+  assert.equal(w.calls.wire, 0); assert.deepEqual(w.row(p.input.jobId), before);
+  await w.admission.jobEffectMutex(p.input.jobId).run(() => {});
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  assert.equal((await w.admission.reserveContext(p.input.jobId, w.reserveWire)).attempt, 0); assert.equal(w.calls.wire, 1);
+});
+
+test('admission-complete-refused-while-the-guard-is-off-on-a-running-row', async t => {
+  const w = world(t), p = w.prepare(), capability = await running(w, p); t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  const before = w.row(p.input.jobId);
+  guard.setKitOperationGuardForTest('off');
+  await guardOff(capability.complete(outcome), 'complete');
+  await guardOff(capability.complete(null), 'complete');
+  assert.equal(w.calls.complete.length, 0); assert.equal(w.calls.release, 0); assert.equal(w.holds.size, 1); assert.deepEqual(w.row(p.input.jobId), before);
+  await w.admission.jobEffectMutex(p.input.jobId).run(() => {});
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  await capability.complete(outcome);
+  assert.equal(w.row(p.input.jobId).state, 'settled'); assert.equal(w.calls.complete.length, 1); assert.equal(w.holds.size, 0);
+});
+
+test('admission-live-begin-owner-is-held-while-the-d4-hooks-run-and-removed-after-a-hook-refusal-is-recorded', async t => {
+  const seen = [], capacity = { fitsNewPurchase: () => true, allocateWithin: () => {} };
+  const w = world(t, { capacity }), p = w.prepare(), { jobId } = p.input;
+  w.admission.addAcceptanceHook(() => { seen.push(['hook', owned(w, jobId, 1), w.row(jobId).state]); throw Object.assign(new Error('hook-full'), { code: 'peer_store_capacity', status: 503 }); });
+  await reject(w.admission.begin(p.input), 'peer_store_capacity', 503);
+  assert.deepEqual(seen, [['hook', true, 'admitted']]);
+  await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
+  assert.equal(w.row(jobId).state, 'compensating'); assert.equal(owned(w, jobId, 1), false);
+});
