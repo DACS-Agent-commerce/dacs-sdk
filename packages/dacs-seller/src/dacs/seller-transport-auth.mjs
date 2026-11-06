@@ -337,6 +337,21 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     },
     // Only a job row establishes a purchase; its kept tuple, or null for an old-path job kept without one.
     purchaseWithin: (jobId) => get('SELECT k.profile FROM peer_jobs j LEFT JOIN kit_purchase_profiles k ON k.job = j.job WHERE j.job = ?', jobId),
+    // The refusals of the old reserve path that read journal state, shared so both paths apply each one.
+    sessionTerminalWithin: (jobId) => TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId })),
+    // A terminal session refuses a fresh proposal or context start; an operation already reserved is a retry, which
+    // still reaches the wire for its recover or completed answer.
+    terminalStartWithin: (p, operationId) => (p.path === PROPOSAL || p.path === CONTEXT) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId })) &&
+      !get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state <> 'refused'", p.jobId, operationId),
+    // A mutating route has one effect per job. An accounted reservation holds it unless the wire definitely refused it
+    // (a definite refusal is no effect); a `reserving` row left by a crash holds it too.
+    accountedSlotWithin: (jobId, route) => !READ_ROUTES.has(route) &&
+      Boolean(get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND route = ? AND state <> 'refused'", jobId, route)),
+    // The old path's slot for the request's job and route: the wire journal has no record of that effect, so it
+    // would run the effect a second time.
+    oldSlotWithin: (p) => !READ_ROUTES.has(p.path) && Boolean(get('SELECT 1 FROM peer_slots WHERE slot = ?', `${p.jobId}:${p.path}`)),
+    // Only the first proposal, the first payment and a context start make a job; any other route needs its job row.
+    unknownJobWithin: (p) => ![PROPOSAL, PAYMENT, CONTEXT].includes(p.path) && !get('SELECT 1 FROM peer_jobs WHERE job = ?', p.jobId),
   });
   // Legacy slots identify mutating effects. Legacy reads have no job identity;
   // any such unmapped effect conservatively prevents job-row reclamation.
@@ -529,7 +544,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (!job && p.path !== PROPOSAL && !contextStep && !unknownState) fail('peer_unknown_job', 404);
         const slot = `${p.jobId}:${p.path}`;
         const occupied = READ_ROUTES.has(p.path) ? null : get('SELECT effect FROM peer_slots WHERE slot = ?', slot);
-        if (occupied && occupied.effect !== effectKey) fail('peer_operation_conflict', 409);
+        if ((occupied && occupied.effect !== effectKey) || ledger.accountedSlotWithin(p.jobId, p.path)) fail('peer_operation_conflict', 409);
         const existing = get('SELECT * FROM peer_effects WHERE effect = ?', effectKey);
         // Fresh nonces for retained effects are read-only, including uncertainty.
         // The exception is an effect the agent answered as not final yet
@@ -545,9 +560,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const time = now();
         if (!uint(time)) fail('peer_clock_invalid', 503);
         const retired = [];
-        if (!retained && !existing && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+        if (!retained && !existing && p.path === PROPOSAL && ledger.sessionTerminalWithin(p.jobId)) fail('context_session_terminal', 409);
         if (contextStep && !retained) {
-          if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+          if (ledger.sessionTerminalWithin(p.jobId)) fail('context_session_terminal', 409);
           retired.push(...reclaimableContexts(time));
           if (!ledger.contextHeldWithin(p.jobId) && ledger.contextCountWithin() - retired.length >= maxContextRecords) { if(contextDecision)contextPresentationProblem(p,body);return {contextRefusal:'peer_context_capacity',status:503}; }
         }
