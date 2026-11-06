@@ -9,10 +9,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { identityDouble, identityFor, mnemonicFor } from './helpers/init-identity-fixture.mjs';
 
-// Every FileHandle.sync reports its path to `hooks.sync` while a test has set it; `hooks.link` is an error every link throws.
-const hooks = { sync: null, link: null };
+// Every FileHandle.sync reports its path to `hooks.sync` while a test has set it; `hooks.link` is an error every link throws;
+// `hooks.open` runs before each open with its path and may throw.
+const hooks = { sync: null, link: null, open: null };
 const realOpen = fsp.open;
 fsp.open = async (...args) => {
+  await hooks.open?.(args[0]);
   const handle = await realOpen(...args);
   const realSync = handle.sync.bind(handle);
   handle.sync = async () => { await hooks.sync?.(args[0]); return realSync(); };
@@ -118,7 +120,7 @@ test('a repeated init gets false from both publications, prints the stored claim
   const before = await Promise.all(['seller-key.json', 'seller.json'].map(name => readFile(join(dataDirectory, name))));
   const second = identityDouble(9);
   assert.equal(await initialize(dataDirectory, second), first);
-  assert.deepEqual(second.generated, [mnemonicFor(9)]);
+  assert.deepEqual(second.generated, []);
   const after = await Promise.all(['seller-key.json', 'seller.json'].map(name => readFile(join(dataDirectory, name))));
   assert.deepEqual(after, before);
   assert.deepEqual((await readdir(dataDirectory)).sort(), ['seller-key.json', 'seller.json']);
@@ -260,6 +262,76 @@ test('a config publication that returns false checks the existing seller.json\'s
     assert.equal((await refusal(initialize(dataDirectory))).code, code);
     assert.equal(await readFile(join(dataDirectory, 'seller.json'), 'utf8'), text);
   }
+});
+
+const failingGenerator = seed => Object.assign(identityDouble(seed), { generateWalletMnemonic: async () => { throw new Error('TEST generator failed'); } });
+const noTemporaryFile = created => path => {
+  if (!String(path).endsWith('.tmp')) return;
+  created.push(path);
+  throw Object.assign(new Error('TEST no space left'), { code: 'ENOSPC' });
+};
+
+test('a rerun on a complete install generates no mnemonic and creates no temporary file, so a failing generator or a full disk does not stop it', async t => {
+  const { dataDirectory } = await fixture(t);
+  const first = await initialize(dataDirectory, identityDouble(3));
+  const before = await Promise.all(['seller-key.json', 'seller.json'].map(name => readFile(join(dataDirectory, name))));
+  const created = [];
+  hooks.open = noTemporaryFile(created);
+  try { assert.equal(await initialize(dataDirectory, failingGenerator(9)), first); } finally { hooks.open = null; }
+  assert.deepEqual(created, []);
+  assert.deepEqual(await Promise.all(['seller-key.json', 'seller.json'].map(name => readFile(join(dataDirectory, name)))), before);
+  assert.deepEqual((await readdir(dataDirectory)).sort(), ['seller-key.json', 'seller.json']);
+});
+
+test('a rerun with the key stored and no config generates no mnemonic and writes the config for the stored key', async t => {
+  const { dataDirectory } = await fixture(t);
+  await initialize(dataDirectory, identityDouble(3));
+  await rm(join(dataDirectory, 'seller.json'));
+  assert.equal(await initialize(dataDirectory, failingGenerator(9)), expectedOutput(3));
+  assert.ok((await readdir(dataDirectory)).includes('seller.json'));
+});
+
+test('a rerun with the config stored and no key generates and publishes the key and keeps the stored config', async t => {
+  const { dataDirectory } = await fixture(t);
+  await initialize(dataDirectory, identityDouble(3));
+  await rm(join(dataDirectory, 'seller-key.json'));
+  const config = await readFile(join(dataDirectory, 'seller.json'));
+  const generating = identityDouble(8);
+  assert.equal(await initialize(dataDirectory, generating), expectedOutput(8));
+  assert.deepEqual(generating.generated, [mnemonicFor(8)]);
+  assert.deepEqual(await readFile(join(dataDirectory, 'seller.json')), config);
+});
+
+test('a key or config another run stores after init checked for it and before it publishes gets false from the publication, and init prints the stored identity', async t => {
+  const { dataDirectory } = await fixture(t);
+  await initialize(dataDirectory, identityDouble(3));
+  const storedConfig = await readFile(join(dataDirectory, 'seller.json'));
+  await rm(join(dataDirectory, 'seller.json'));
+  await rm(join(dataDirectory, 'seller-key.json'));
+  const storedAfterCheck = async (name, content) => {
+    hooks.open = async path => {
+      if (!String(path).startsWith(join(dataDirectory, name) + '.')) return;
+      hooks.open = null;
+      await writeFile(join(dataDirectory, name), content, { mode: 0o600 });
+    };
+  };
+  const generating = identityDouble(9);
+  try {
+    await storedAfterCheck('seller-key.json', keyRecord(mnemonicFor(5)));
+    // The config is raced as well: it is stored as soon as the key publication has lost.
+    const { runInit } = await load();
+    let output = '';
+    const racing = { ...generating, deriveWalletIdentity: async mnemonic => {
+      await storedAfterCheck('seller.json', storedConfig);
+      return generating.deriveWalletIdentity(mnemonic);
+    } };
+    await runInit({ dataDirectory, identity: racing, stdout: { write: text => { output += text; } } });
+    assert.equal(output, expectedOutput(5));
+  } finally { hooks.open = null; }
+  assert.deepEqual(generating.generated, [mnemonicFor(9)]);
+  assert.equal(await storedSeed(dataDirectory), 5);
+  assert.deepEqual(await readFile(join(dataDirectory, 'seller.json')), storedConfig);
+  assert.deepEqual((await readdir(dataDirectory)).sort(), ['seller-key.json', 'seller.json']);
 });
 
 test('init syncs exactly the key file, the config file, the data directory and its parent, in that order, and nothing above the parent, before printing, including a run where both publications return false; it succeeds when the grandparent cannot be opened (mode 0311, non-root), where a walk up to `/` would fail on `open(grandparent)` with EACCES', async t => {

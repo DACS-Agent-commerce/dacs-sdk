@@ -70,6 +70,12 @@ async function publish(path, text) {
   }
 }
 
+// Whatever is already at `path`, even a dangling link, is verified by the caller, so a rerun on stored files needs no free
+// temporary file and no new text. Only a missing file is published, and a publication that loses a race to another run is fine.
+async function publishIfAbsent(path, textOf) {
+  if (await lstatOrNull(path) === null) await publish(path, await textOf());
+}
+
 // Reads at most CONFIG_MAX_BYTES + 1 bytes of a regular file that is not a symbolic link; parseSellerConfig refuses an oversized result.
 async function readConfigBytes(path) {
   let handle;
@@ -127,7 +133,8 @@ const syncBarrier = (keyPath, configPath, dataDirectory) => durably(async () => 
  * Creates the private data directory (its parent must exist), then the seller key and a `seller.json` of unset
  * operator fields, each published whole and never replaced, and writes `claim: <claim>` and `address: <address>`
  * to `stdout` only after both files and their directories are synced. A repeat, a rerun after a crash and a run
- * that loses a race verify the stored files and print the stored key's identity. `identity` supplies
+ * that loses a race verify the stored files and print the stored key's identity; a file that is already stored
+ * is neither generated nor written again. `identity` supplies
  * `generateWalletMnemonic()`, `validateMnemonic(text)` and `deriveWalletIdentity(mnemonic)`.
  * Throws `seller_identity_unavailable` without `identity`; `data_directory_unsafe{detail}`, `data_directory_parent_missing`,
  * `seller_data_directory_unavailable` (a filesystem failure, with its cause), `init_durability_failed` (a sync failure,
@@ -137,9 +144,9 @@ export async function runInit({ dataDirectory, identity, stdout }) {
   if (identity === undefined) throw refusal('seller_identity_unavailable');
   await ensurePrivateDirectory(dataDirectory);
   const keyPath = join(dataDirectory, SELLER_KEY_FILE), configPath = join(dataDirectory, SELLER_CONFIG_FILE);
-  await publish(keyPath, await generatedKeyRecordText(identity));
+  await publishIfAbsent(keyPath, () => generatedKeyRecordText(identity));
   const { claim, address } = await storedIdentity(keyPath, identity);
-  await publish(configPath, configTemplateText(dataDirectory));
+  await publishIfAbsent(configPath, () => configTemplateText(dataDirectory));
   assertConfigBindsDirectory(parseSellerConfig(await readConfigBytes(configPath)), dataDirectory);
   await syncBarrier(keyPath, configPath, dataDirectory);
   stdout.write(`claim: ${claim}\naddress: ${address}\n`);
