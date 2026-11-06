@@ -139,14 +139,48 @@ describe("dacs doctor node build check", () => {
   it("reads GET /version on the node origin with an abort signal and without credentials", async () => {
     const fetchImpl = stubFetch(async () => jsonReply(recordedVersionReply.body));
 
-    const report = await doctorWith(fetchImpl, "https://user:pass@node.example/v2/path-secret?token=query-secret");
+    const report = await doctorWith(fetchImpl, "https://user:pass@node.example/");
 
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://node.example/version");
     expect(init.method ?? "GET").toBe("GET");
+    expect(init.redirect).toBe("manual");
     expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(nodeBuildCheck(report).status).toBe("pass");
     expect(JSON.stringify(report)).not.toContain("pass@");
-    expect(JSON.stringify(report)).not.toContain("query-secret");
+  });
+
+  it("skips without a /version request when the RPC URL is routed", async () => {
+    for (const rpc of [
+      "https://node.example/tenant/rpc",
+      "https://user:pass@node.example/v2/path-secret?token=query-secret",
+      "https://node.example/?tenant=a",
+    ]) {
+      const fetchImpl = stubFetch(async () => jsonReply(recordedVersionReply.body));
+
+      const report = await doctorWith(fetchImpl, rpc);
+
+      const check = nodeBuildCheck(report);
+      expect(check.status, rpc).toBe("skip");
+      expect(check.summary).toBe(UNKNOWN_SUMMARY);
+      expect(check.detail).toContain("routed");
+      expect(fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/version")), rpc).toHaveLength(0);
+      expect(JSON.stringify(report)).not.toContain("query-secret");
+    }
+  });
+
+  it("skips when /version redirects instead of following it", async () => {
+    const fetchImpl = stubFetch(async () => new Response(null, {
+      status: 302,
+      headers: { location: "https://other.example/version" },
+    }));
+
+    const check = nodeBuildCheck(await doctorWith(fetchImpl));
+
+    expect(check.status).toBe("skip");
+    expect(check.summary).toBe(UNKNOWN_SUMMARY);
+    expect(check.detail).toContain("redirected");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("gives up at the deadline and reports an unknown build", async () => {

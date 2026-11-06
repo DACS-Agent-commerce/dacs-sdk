@@ -189,7 +189,7 @@ interface NodeBuildReply {
 }
 
 /**
- * Read the node build from `GET <rpc origin>/version`.
+ * Read the node build from `GET <rpc origin>/version` (redirects are not followed).
  * Bytes are limited before decoding and the whole read stops at a short deadline.
  * Throws with the real cause (HTTP status, timeout, byte limit, bad JSON) when the
  * reply is not usable; the commit must end in a 40-hex sha or the reply is refused.
@@ -203,8 +203,13 @@ async function readNodeBuild(rpc: string, fetchImpl: typeof fetch): Promise<Node
   try {
     const response = await fetchImpl(`${new URL(rpc).origin}/version`, {
       method: "GET",
+      redirect: "manual",
       signal: controller.signal,
     });
+    if (response.status >= 300 && response.status < 400) {
+      void response.body?.cancel().catch(() => undefined);
+      throw new Error(`node /version redirected (HTTP ${response.status}), so it is not tied to the RPC backend`);
+    }
     if (!response.ok) {
       void response.body?.cancel().catch(() => undefined);
       throw new Error(`node /version returned HTTP ${response.status}`);
@@ -236,6 +241,13 @@ async function nodeBuildCheck(
 ): Promise<DoctorCheck> {
   let build: NodeBuildReply;
   try {
+    // `/version` is on the origin; with a routed RPC URL it may be a different backend.
+    const { pathname, search } = new URL(rpc);
+    if ((pathname !== "" && pathname !== "/") || search !== "") {
+      return check(NODE_BUILD, "skip", NODE_BUILD_UNKNOWN_SUMMARY, {
+        detail: "The RPC URL is routed (it has a path or query), so the origin's /version may come from a different backend; no request was made.",
+      });
+    }
     build = await readNodeBuild(rpc, fetchImpl);
   } catch (err) {
     // fetch reports refused, DNS and TLS failures only as the cause of "fetch failed".
