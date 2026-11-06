@@ -238,6 +238,10 @@ Payment evidence shape: `checkNativePaymentEvidence` in `src/dacs/native-payment
 
 The chain reader gains `findTransferAtNonce(address, nonce, { limit, signal })`: one `getTransactionHistory` page, each row classified by one closed check (`slotRow`), answering `found` with a hash the caller reads back, or `unknown`. A failed row is skipped unread; an own confirmed row needs the wallet's own signing key, a block number, a bare 64-hex hash and a readable nonce, and own rows must be newest first by nonce. It is on the reader object only: no package export and no caller. `test/chain-nonce-slot.test.mjs` covers every row check. The ledger records the two earlier commits of this reader by full commit hash, because their subjects carry no delta prefix.
 
+## D11 — Nonce-slot proof configuration
+
+The preparatory configuration accepts `DACS_NONCE_SLOT_PROOF=off|account`, defaults to `off`, and rejects other values. `test/config-nonce-slot-proof.test.mjs` pins that contract. Cancellation remains the predecessor's implementation in this part; the following stacked part adds the cancellation consumer and its SDK scenarios. Historical cancellation records remain in the ledger, followed by the split's explicit removal record.
+
 ## WF — W-finish (W-FINISH §5)
 
 Client commits that move the buyer client onto the new wire and its public API use the id `WF`, with subjects `delta(client): WF <PR id> <summary>`. The earlier D-ids keep their original scope.

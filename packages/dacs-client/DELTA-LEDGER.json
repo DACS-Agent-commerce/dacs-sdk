@@ -5978,6 +5978,62 @@
           "after": "e587e56909e76be617f438ac8d478698cdb3b4da"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "feat(client): cancel a handed-off non-native payment only once its nonce slot is used",
+      "sha": "3bd5c3707ce40c74d9cb442aff8a7bb9029c7982",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/config.mjs",
+          "before": "9cd6491ab5be7d26d16e4c9732de638452e3e29a",
+          "after": "ecf6e88e28749d3b52dc37cd1c12405e9b2720db"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "c2cecbe570de30465a266e0feda4bbb60485ccf4",
+          "after": "c1ec03e3f35448f703abacaae1933b59abea71f3"
+        },
+        {
+          "path": "packages/dacs-client/test/config-nonce-slot-proof.test.mjs",
+          "before": null,
+          "after": "bf7857fd64954e52143050d7307a26c18d0e6a37"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 load the nonce slot config test through a scratch switch directory",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/config-nonce-slot-proof.test.mjs",
+          "before": "bf7857fd64954e52143050d7307a26c18d0e6a37",
+          "after": "eaa78ba0cb607ed12ef8a6f9a2410f574b624a4d"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the merged purchases.mjs blob of the handed-off cancel and the held admission wrapper",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "debc333708d0ac77e36addb07640a5fdb2b3be72",
+          "after": "debc333708d0ac77e36addb07640a5fdb2b3be72"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "refactor(client): D11 split cancellation from nonce slot configuration",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "debc333708d0ac77e36addb07640a5fdb2b3be72",
+          "after": "cf5ffa1bcf4e41c741c2a3a89edda7b3de31740b"
+        }
+      ],
+      "sha": "a3d6ac0a087011e7a258e7d12dd068c882370576"
     }
   ]
 }
