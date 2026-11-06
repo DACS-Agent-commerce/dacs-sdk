@@ -134,6 +134,12 @@ describe("pull-request demosdk step", () => {
     expect(calls.some((call) => call.startsWith("install") && call.includes(`@kynesyslabs/demosdk@${PINNED}`))).toBe(true);
   });
 
+  it("installs the pinned version without running install scripts", () => {
+    const { calls } = runPinnedStep(registryReplying([PINNED]));
+    const install = calls.find((call) => call.startsWith("install"));
+    expect(install).toContain("--ignore-scripts");
+  });
+
   it("runs the client loading suite by its own file name after the pinned install", () => {
     const { result, calls } = runPinnedStep(registryReplying([PINNED]));
     expect(result.status).toBe(0);
