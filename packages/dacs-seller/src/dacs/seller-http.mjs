@@ -224,9 +224,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           // A cached refresh owns no pending reservation. Recheck its live
           // authority inside the agent's job fence, including after restore.
           // A wire request is rechecked by the wire on a fresh clock first; the old
-          // authentication knows no wire request, and its expiry bounds its delegation's.
+          // authentication knows no wire request, and its expiry bounds its delegation's. The wire's expiry, once seen at any
+          // call, is kept: a clock that later reads earlier does not let a refresh go on.
           if (auth === wireAuth) await opened.recheck();
-          const transport = Object.freeze({ check: auth === wireAuth ? () => { if (request.expiresAt <= wire.now()) throw new WireError('peer_expired', 408); } : () => authentication.assertLive(request) });
+          const transport = Object.freeze({ check: auth === wireAuth ? () => { if (opened.readbackOnly()) throw new WireError('peer_expired', 408); } : () => authentication.assertLive(request) });
           const answer = await route(agent, body, { transport }), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }
