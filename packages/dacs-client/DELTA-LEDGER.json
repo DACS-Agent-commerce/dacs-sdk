@@ -5980,6 +5980,157 @@
       ]
     },
     {
+      "delta": "D11",
+      "subject": "feat(client): cancel a handed-off non-native payment only once its nonce slot is used",
+      "sha": "3bd5c3707ce40c74d9cb442aff8a7bb9029c7982",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/config.mjs",
+          "before": "9cd6491ab5be7d26d16e4c9732de638452e3e29a",
+          "after": "ecf6e88e28749d3b52dc37cd1c12405e9b2720db"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "c2cecbe570de30465a266e0feda4bbb60485ccf4",
+          "after": "c1ec03e3f35448f703abacaae1933b59abea71f3"
+        },
+        {
+          "path": "packages/dacs-client/test/config-nonce-slot-proof.test.mjs",
+          "before": null,
+          "after": "bf7857fd64954e52143050d7307a26c18d0e6a37"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 load the nonce slot config test through a scratch switch directory",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/config-nonce-slot-proof.test.mjs",
+          "before": "bf7857fd64954e52143050d7307a26c18d0e6a37",
+          "after": "eaa78ba0cb607ed12ef8a6f9a2410f574b624a4d"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the merged purchases.mjs blob of the handed-off cancel and the held admission wrapper",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "debc333708d0ac77e36addb07640a5fdb2b3be72",
+          "after": "debc333708d0ac77e36addb07640a5fdb2b3be72"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "refactor(client): D11 split cancellation from nonce slot configuration",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "debc333708d0ac77e36addb07640a5fdb2b3be72",
+          "after": "cf5ffa1bcf4e41c741c2a3a89edda7b3de31740b"
+        }
+      ],
+      "sha": "a3d6ac0a087011e7a258e7d12dd068c882370576"
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 restore handed-off cancellation above nonce slot configuration",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "cf5ffa1bcf4e41c741c2a3a89edda7b3de31740b",
+          "after": "debc333708d0ac77e36addb07640a5fdb2b3be72"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): cancel takes the nonce slot's transaction as proof only when its body is confirmed",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "debc333708d0ac77e36addb07640a5fdb2b3be72",
+          "after": "8affaaac5cf2437c182821204b3f45667745d8f2"
+        }
+      ],
+      "sha": "2561440c1c62f81e08ac0b6e3c3524457c2a0528"
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the confirmed-body cancel check in the delta records and package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "8affaaac5cf2437c182821204b3f45667745d8f2",
+          "after": "8affaaac5cf2437c182821204b3f45667745d8f2"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): verify_deal ends a mismatched purchase only where the network counts one nonce per account",
+      "sha": "f0440c6e9b671e87054467f0e9349f77e8228f0c",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "8affaaac5cf2437c182821204b3f45667745d8f2",
+          "after": "5cfbfdb37ddd87d02e63858ceb59a5cbedaef481"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "5582b173bd445f8aab89428aa33191696fa5a3f6",
+          "after": "5f1ae4f5f43d9db66de72fffbf10cd6087610f51"
+        },
+        {
+          "path": "packages/dacs-client/test/purchase-review-races.test.mjs",
+          "before": "0f6b4617a40d7d1a888b9f065abc794d9b00b5b4",
+          "after": "e335d978c5b071fad0e993debddefb2e0db1f73b"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the verify_deal mismatch gate in the delta records and package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "5cfbfdb37ddd87d02e63858ceb59a5cbedaef481",
+          "after": "5cfbfdb37ddd87d02e63858ceb59a5cbedaef481"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): an unproven verify_deal mismatch does not pin its hash when re-reported",
+      "sha": "188af4dc40684000f808d1dd5c92e51b9af892ab",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "5cfbfdb37ddd87d02e63858ceb59a5cbedaef481",
+          "after": "93ec1d4ba6bf5285c5da423817b610e2f36b1647"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "5f1ae4f5f43d9db66de72fffbf10cd6087610f51",
+          "after": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4"
+        }
+      ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 record the unproven mismatch re-report fix in the delta records and package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "93ec1d4ba6bf5285c5da423817b610e2f36b1647",
+          "after": "93ec1d4ba6bf5285c5da423817b610e2f36b1647"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P13a1 sign and verify seller traffic through the wire",
       "files": [
