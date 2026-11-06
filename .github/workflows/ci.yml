@@ -23,11 +23,15 @@ concurrency:
 
 jobs:
   build-test:
-    # The node 22 leg can run on the project's own one-job runners (label dacs-pool), but only when the repository
-    # variable SDK_SELF_HOSTED is 'on' and the code comes from this repository (pushes, merge queue, and pull
-    # requests whose head branch is in this repo). Fork pull requests and every other case use ubuntu-latest.
-    # Deleting the variable sends new runs back to ubuntu-latest.
-    runs-on: ${{ (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
+    # The node 22 leg can run on the project's own one-job runners (label dacs-pool), only when ALL of these hold:
+    #   - the repository variable SDK_SELF_HOSTED is 'on';
+    #   - the account that triggered the run is listed in the repository variable SDK_SELF_HOSTED_AUTHORS
+    #     (comma-separated logins);
+    #   - for pull requests: the head branch is in this repository and the PR author is listed too.
+    # Fork pull requests, everyone else's runs and every other job use ubuntu-latest. The runners themselves refuse
+    # any job outside the same rules before it starts, so editing this line can't widen them.
+    # Deleting SDK_SELF_HOSTED sends new runs back to ubuntu-latest.
+    runs-on: ${{ (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && (github.event_name == 'push' || github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login))))) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
