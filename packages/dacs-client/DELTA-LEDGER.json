@@ -6314,6 +6314,17 @@
           "after": "17e556eaaa8199a80b20fa91c1563ef50fbb85b9"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "delta(client): D11 cancel ends a purchase on the nonce slot only when the read-back body matches the slot hash, payer and nonce",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "93ec1d4ba6bf5285c5da423817b610e2f36b1647",
+          "after": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd"
+        }
+      ]
     }
   ]
 }
