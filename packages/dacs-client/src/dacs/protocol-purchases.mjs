@@ -300,9 +300,12 @@ const isCounter = (value) => Number.isSafeInteger(value) && value >= 0;
 // What a flow's decisions rest on: the status and every protocol member except the request records, the revision and the
 // chain pointers and tuple bytes that are kept without progress (`keepChainPointers`, `keepCommitmentTuple`).
 function progressOf(operation) {
-  const { sellerRequests, revision, chainReadback, chainReadbackHeld, ...progress } = operation.state?.protocol ?? {};
+  const progress = { ...operation.state?.protocol };
+  for (const key of ['sellerRequests', 'revision', 'chainReadback', 'chainReadbackHeld']) delete progress[key];
   if (progress.commitment) {
-    const { anchoredB64, anchoredHash, ...summary } = progress.commitment;
+    const summary = { ...progress.commitment };
+    delete summary.anchoredB64;
+    delete summary.anchoredHash;
     progress.commitment = summary;
   }
   return canonicalize({ status: operation.status, progress });

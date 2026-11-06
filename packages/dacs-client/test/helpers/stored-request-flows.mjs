@@ -19,7 +19,8 @@ const FLOW_PATHS = { agreement: PATHS.proposals, commit: PATHS.commitments, sign
  */
 export async function sellerFlow(t, kind) {
   const s = await storedWorld(t, { paid: true, configureTerms(terms, listing) {
-    const { signature, ...unsigned } = listing;
+    const unsigned = { ...listing };
+    delete unsigned.signature;
     terms.listing = { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(unsigned) };
     terms.price = { amount: '1', currency: 'DEM', amountOs: '1000000000' };
     terms.seller.payee = terms.seller.claim.slice('did:demos:agent:'.length);
