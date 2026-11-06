@@ -947,3 +947,20 @@ test('the wire authenticator reserves read-only once the request has expired, re
   assert.throws(() => auth.store.reserve({ ...unadmitted.request }, unadmitted.opened.body, unadmitted.opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'a request this authenticator did not admit starts no effect');
   assert.deepEqual(w.rows(), rowsBefore, 'the refusals left nothing behind');
 });
+
+test('a request the wire authenticator has seen expired stays expired when the clock later reads earlier', async (t) => {
+  const w = await world(t);
+  const auth = wireAuthenticator(w.handle.wire, w.agent, w.handle.authentication);
+  const job = await proposeJob(w, 'clock-regression');
+  const signed = await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash });
+  let request = null;
+  const opened = await auth.open({ header: signed.header, method: 'POST', path: PATHS.proposals, rawBody: Buffer.from(signed.text), body: JSON.parse(signed.text), onOpened: (admitted) => { request = admitted; } });
+  const rowsBefore = w.rows();
+  assert.equal(opened.readbackOnly(), false, 'live at admission');
+  w.state.time = signed.payload.expiresAt;
+  assert.equal(opened.readbackOnly(), true, 'at expiry');
+  w.state.time = NOW;
+  assert.equal(opened.readbackOnly(), true, 'a clock corrected to an earlier time does not revive it');
+  assert.throws(() => auth.store.reserve(request, opened.body, opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'and it still starts no effect');
+  assert.deepEqual(w.rows(), rowsBefore, 'nothing was reserved');
+});

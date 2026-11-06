@@ -143,12 +143,16 @@ export function wireAuthenticator(wire, agent, authentication) {
   // The store is called again after admission (a retained effect is claimed and settled inside the agent's job fence, after
   // asynchronous waits), so a request is read-only from the moment it or its delegation expires, as the old guarded store
   // decided on every call. A request this authenticator did not admit is expired.
-  const limits = new WeakMap();
+  // An expiry once seen is kept, as the old guard's read-back set kept it: a clock that later reads earlier (a correction)
+  // never makes the request live again.
+  const limits = new WeakMap(), lapsed = new WeakMap();
   const lapse = (request) => {
+    if (lapsed.has(request)) return lapsed.get(request);
     const at = wire.now(), admittedLimits = limits.get(request);
     if (admittedLimits === undefined || !Number.isSafeInteger(at) || at < 0) return 'peer_expired';
-    if (admittedLimits.delegation <= at) return 'peer_delegation_expired';
-    return admittedLimits.request <= at ? 'peer_expired' : null;
+    const code = admittedLimits.delegation <= at ? 'peer_delegation_expired' : admittedLimits.request <= at ? 'peer_expired' : null;
+    if (code !== null) lapsed.set(request, code);
+    return code;
   };
   const expired = (request) => lapse(request) !== null;
   const store = Object.freeze({
