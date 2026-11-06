@@ -13,7 +13,7 @@ import { OperationError } from '../client-errors.mjs';
 import { admitPublicFactory } from '../public-admission.mjs';
 import { createDevnetAgreementTransport } from './devnet-native-transport.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
-import { createDevnetAgreementWalletTransport, createSdkWalletSession } from '../public/portal/embedded-wallet/sdk-provider.mjs';
+import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
 // A comparison value inside the descriptor only: `_doPost` checks the URL it is given equals the
 // descriptor's `rpcUrl` and never fetches it, and `bindingRelay` replaces the binding fetches.
@@ -26,6 +26,15 @@ const RPC_FAILED = 'node_wallet_rpc_failed';
 const RPC_INVALID = 'node_wallet_rpc_invalid';
 const STAGE_NOT_DISPATCHED = 'not_dispatched';
 const STAGE_DISPATCHED_NO_ACK = 'dispatched_no_ack';
+const OS_AMOUNT = /^(?:0|[1-9][0-9]*)$/;
+const SIGNATURE_DOMAIN = Buffer.from('demos-tx:v1:');
+const CHAIN_ID_FIELD = /^[0-9]+:$/;
+
+// The error each failed request's closed envelope was made from, keyed by that envelope object.
+const causes = new WeakMap();
+const recordCause = (envelope, error) => { causes.set(envelope, error); };
+const internalCauseOf = envelope => causes.get(envelope);
+const refuseContent = cause => new EmbeddedWalletError('payload_mismatch', 'the finalized transaction differs from what was approved; nothing was signed', { cause });
 
 // Every lease an owner hands out and has not yet seen released; `release` removes it.
 const liveLeases = new WeakSet();
@@ -101,11 +110,57 @@ class NodeRpcFailure extends Error {
   }
 }
 
+// Whether `message` is what demosdk signs for a transaction with this hash: the bare hash, or, once the
+// node's signatureDomain fork is active, `demos-tx:v1:<decimal chain id>:<hash>`.
+function signsTransactionHash(message, hash) {
+  const signed = Buffer.from(message), hashBytes = Buffer.from(hash, 'utf8');
+  if (signed.equals(hashBytes)) return true;
+  const hashStart = signed.length - hashBytes.length;
+  return hashStart > SIGNATURE_DOMAIN.length && signed.subarray(0, SIGNATURE_DOMAIN.length).equals(SIGNATURE_DOMAIN)
+    && signed.subarray(hashStart).equals(hashBytes) && CHAIN_ID_FIELD.test(signed.subarray(SIGNATURE_DOMAIN.length, hashStart).toString('latin1'));
+}
+
+const isOsAmount = value => typeof value === 'string' && OS_AMOUNT.test(value);
+
+// Runs synchronously, so nothing can change the transaction between these checks and the inner signature.
+function checkFinalContent({ transaction, finalContent }, message) {
+  if (typeof transaction?.hash !== 'string' || !(message instanceof Uint8Array) || !signsTransactionHash(message, transaction.hash)) throw new Error('the signed message is not the transaction hash');
+  if (createHash('sha256').update(JSON.stringify(transaction.content)).digest('hex') !== transaction.hash) throw new Error('the transaction hash is not the SHA-256 of its content');
+  const debit = finalContent(transaction.content);
+  if (!isOsAmount(debit?.totalDebitOs) || !isOsAmount(debit.feeDebitOs)) throw new Error('the finalized debit is not canonical OS amounts');
+}
+
+// The SDK's crypto, except that a signature made inside `sign` is first checked against the approval;
+// outside `sign` (RPC authentication) every call passes through.
+function guardedCrypto(inner, signScope) {
+  const sign = (algorithm, message) => {
+    const scope = signScope.getStore();
+    if (scope) {
+      try { checkFinalContent(scope, message); } catch (cause) { throw cause instanceof EmbeddedWalletError ? cause : refuseContent(cause); }
+    }
+    return inner.sign(algorithm, message);
+  };
+  return new Proxy(inner, { get(target, key) {
+    if (key === 'sign') return sign;
+    const value = Reflect.get(target, key, target);
+    return typeof value === 'function' ? value.bind(target) : value;
+  } });
+}
+
 function nodeDemosClass(Demos, transport, rpcUrl, stamps, attempts) {
+  const signScope = new AsyncLocalStorage(), guards = new WeakMap();
   return class NodeDemos extends Demos {
     constructor() {
       super();
       this.storagePrograms.read = async () => fail('node_wallet_read_unsupported');
+    }
+
+    get crypto() { return guards.get(this) ?? null; }
+    set crypto(inner) { guards.set(this, inner && guardedCrypto(inner, signScope)); }
+
+    /** Signs like the SDK, but refuses before the inner signature unless `options.finalContent(content)` accepts the finalized content. */
+    sign(transaction, { finalContent, ...sdkOptions } = {}) {
+      return signScope.run({ transaction, finalContent }, () => super.sign(transaction, sdkOptions));
     }
 
     async connect(url) {
@@ -163,11 +218,11 @@ function decodeMnemonic(keyBytes) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(keyBytes); } catch (cause) { return fail('invalid_mnemonic', cause); }
 }
 
-// Binding reads for the SDK session go to the transport in process; a refusal keeps its code.
+// Binding reads for the SDK session go to the transport in process; a refusal keeps its code and the original error as `cause`.
 function createBindingRelay(transport) {
   return async (body, headers) => {
     try { return new Response(JSON.stringify(await transport.walletBinding(body, headers))); }
-    catch (error) { return new Response(JSON.stringify({ error: error.code ?? 'network_binding_unavailable' }), { status: 409 }); }
+    catch (error) { return Object.assign(new Response(JSON.stringify({ error: error.code ?? 'network_binding_unavailable' }), { status: 409 }), { cause: error }); }
   };
 }
 
@@ -175,9 +230,12 @@ function createBindingRelay(transport) {
 const checkConstruction = admitPublicFactory(options => ({ options }), { purchase: true });
 
 /**
- * Returns a Promise for `{wallet, walletFactory({anchorJournal}), close()}`. `wallet.request` is wrapped by the admission wrapper and the four
+ * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), close()}`. `wallet.request` is wrapped by the admission wrapper and the four
  * passive methods keep their signatures. `walletFactory` is synchronous and returns another view of the same wallet that records anchors in the
- * selected caller-owned journal. `close()` locks the wallet and closes its transport; the host closes its owner and journal.
+ * selected caller-owned journal. `internalCauseOf` returns the error a failed request's envelope was closed over (its `cause` chain holds the original
+ * failure, which the public envelope never carries), or undefined. Before the SDK's inner transaction signature the session checks that the signed message
+ * is the transaction hash, that the hash is the SHA-256 of the content and that the finalized content is exactly the approved send; otherwise the request
+ * fails `payload_mismatch` and nothing is signed. `close()` locks the wallet and closes its transport; the host closes its owner and journal.
  * Options: `{admission, owner, journal, key, approve, clock}`; `key` is the UTF-8 mnemonic as a Uint8Array, and it and every copy of it are zero-filled
  * on every outcome. Rejects with TypeError(admission_required | admission_input_untrusted), OperationError(runtime_unsupported | invalid_mnemonic |
  * node_wallet_sdk_unreviewed | node_wallet_sdk_preloaded | transport errors), or the SDK session's own refusal.
@@ -200,13 +258,13 @@ export async function createNodeWalletSession(options = {}) {
     const stamps = createRpcStampSource(clock);
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
     session = createSdkWalletSession({ DemosCtor: nodeDemosClass(Demos, transport, transactionTransport.rpcUrl, stamps, attempts), approve, transactionTransport,
-      validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity) });
+      validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
     await session.importMnemonic(decodeMnemonic(keyCopy));
     const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => ({
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
-    return Object.freeze({ wallet: walletFactory(), walletFactory, async close() { session.lock(); await transport.close(); } });
+    return Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, async close() { session.lock(); await transport.close(); } });
   } catch (error) {
     try { session?.lock(); await transport?.close(); } catch { /* the construction error is the one to report */ }
     throw error;
