@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "74a8ec3605e3d49494eed73cacd57be1f86f709a"
+        "blob": "a3a3470c10aa41de8ca7065b3cb10f6f7ed58718"
       },
       "DELTA-LEDGER.json": {
-        "blob": "11db8cc0afb209e88511d406db82b2a562657a71"
+        "blob": "f60c9c1b86e13bd1d544308d35509fa1b87a37fa"
       },
       "DELTA-MAP.md": {
-        "blob": "921f25893b3c025be0b11ae2d4e8c0060becf8b0"
+        "blob": "0720879fa4bbd1f8d422c96587d381453a20da7e"
       },
       "DELTA-NOTES.md": {
-        "blob": "75d217cf19ab79123d3dcaa75255ccecd4d05a80"
+        "blob": "c7303088d716721deaf16dbd96c28004e37cae82"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "af39f38311edd745e3dc0c76744d4fe5e205424d"
+        "blob": "c9b6eeebe08a33cb62a3af4c873039a2295c74c7"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,10 +1058,10 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "78cc4a32d4d4ec0ec5ff89543fb65c1a5f0a39a0"
+        "blob": "18c34c2ad151e80a81542dc835ea5b078a1ea373"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "4f4e3b4e63a48c1643f3e56f6d2fe0532424ae18"
+        "blob": "a7ead52ab5d8d73397a80743c1aa7cbd8350f8ca"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1109,7 +1109,7 @@
         "blob": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2"
       },
       "src/dacs/chain.mjs": {
-        "blob": "d038c47516fd96b5ccfb57ea2fdfe11d12bd6c19"
+        "blob": "4918f9b53808ff1f9311b70ef892155ed5659eef"
       },
       "src/dacs/commit-on-signature.mjs": {
         "blob": "6eb54096a53a281766e7846cb46d7c5eeec7d532"
@@ -1323,6 +1323,9 @@
       },
       "test/buyer-chain-indeterminate.test.mjs": {
         "blob": "5e2e079c0c7bcb73c0711d0c825f54e6dc72dd6d"
+      },
+      "test/chain-nonce-slot.test.mjs": {
+        "blob": "e587e56909e76be617f438ac8d478698cdb3b4da"
       },
       "test/commitment-contradiction-classifier.test.mjs": {
         "blob": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
