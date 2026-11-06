@@ -29,8 +29,9 @@ jobs:
     #   - the event is pull_request and the head branch is in this repository;
     #   - the PR author AND the account that triggered the run are both listed in the repository variable
     #     SDK_SELF_HOSTED_AUTHORS (comma-separated logins, no spaces; unset or empty means nobody);
-    #   - the pull request does not carry the label ci-hosted (urgent work stays on hosted runners; the label is read
-    #     when the run starts, so adding it later needs a new run to move a waiting job).
+    #   - the pull request does not carry the label ci-hosted (urgent work stays on hosted runners). The labels come
+    #     from the event that started the run, and a re-run replays that event, so a label added later only takes
+    #     effect on the next push (or a close and reopen).
     # Pushes and merge-queue runs (which can contain other people's merged code), fork pull requests, everyone
     # else's runs and every other job use ubuntu-latest.
     # This expression is only a routing filter: a branch can edit its own copy of this file. The boundary is on the
