@@ -7,7 +7,7 @@ import { contentHash, createFixedPriceAgreementSigningPlan } from '@kynesyslabs/
 import { DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, admitWireResponseBody, authorizeWireRequest, checkWireRequest, isReadRoute, openWireEnvelope, signWireResponse } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { isSmallOrderPublicKey } from './demos-claims.mjs';
-import { SellerTransportError, validateBody } from './seller-transport-auth.mjs';
+import { SellerTransportError, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
 
 // The routes that continue a committed purchase: the wire admits them only on the purchase's commitment, Agreement and Listing.
 const CONTINUING_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature, DACS_SELLER_HTTP_PATHS.bundleBuyerCopy]);
@@ -20,8 +20,9 @@ const COMMITMENT_RECEIPT_TIMEOUT_MS = 10000;
 export const WIRE_ROUTE_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.state, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature, ...CONTINUING_PATHS]);
 // The routes that start or commit a purchase carry the host's own `allocated` flag (false until the purchase allocation exists).
 const STAGE_PATHS = new Set([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature]);
-// The contexts createWireContext made: the handler takes no other.
-const wireContexts = new WeakSet();
+// The contexts createWireContext made, each with the agent and raw store it was made over: the handler takes no other, and
+// only a pair it serves with the same agent and the same store.
+const wireContexts = new WeakMap();
 
 const partyClaim = (artifact, role) => artifact.parties?.find((party) => party?.role === role)?.primaryClaim;
 const retainedRecord = (path, { jobId, agreementHash, buyer, seller }) => ({ jobId, agreementHash, buyer, seller, ...(STAGE_PATHS.has(path) ? { allocated: false } : {}) });
@@ -110,7 +111,7 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
   const context = Object.freeze({ binding, signer, journal, store, requireDelegation, readCommitmentReceipt,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
     retainedFor: (input) => retainedFor(agent, input), continuationFor: (input) => continuationFor(agent, input, signedListing) });
-  wireContexts.add(context);
+  wireContexts.set(context, { agent, store });
   return context;
 }
 
@@ -163,12 +164,15 @@ async function admitWireRoute(wire, agent, { header, method, path, rawBody, body
  * (`{ body, read, readbackOnly(), reserveOptions, recheck() }`; a read route reserves nowhere, an effect route reserves with the
  * request's tuple), `sign` signs an answer under the tuple kept for the job (`undefined` for a request that names another seller,
  * which cannot be signed for: its refusal goes out unsigned), `encode` admits the text a stored answer keeps, and `store` is the
- * raw transport store. Throws for a `wire` that createWireContext did not make, or whose seller or delegation rule differs from
- * `authentication`'s.
+ * raw transport store. Throws for a `wire` that createWireContext did not make, whose seller or delegation rule differs from
+ * `authentication`'s, or that was made for another agent than `agent` or another transport store than `authentication`'s:
+ * its checks would read one agent's and one store's records while the other serves and journals the request.
  */
 export function wireAuthenticator(wire, agent, authentication) {
-  if (!wireContexts.has(wire)) throw new TypeError('the wire option must be a createWireContext context');
+  const owner = wireContexts.get(wire);
+  if (owner === undefined) throw new TypeError('the wire option must be a createWireContext context');
   if (wire.signer.claim !== authentication?.seller || wire.requireDelegation !== authentication.requireDelegation) throw new Error('the wire context and the old authentication must name the same seller and delegation rule');
+  if (owner.agent !== agent || owner.store !== transportStoreOf(authentication)) throw new Error('the wire context must be made for the handler\'s agent and the old authentication\'s transport store');
   return Object.freeze({
     store: wire.store,
     encode: admitAnswerText,

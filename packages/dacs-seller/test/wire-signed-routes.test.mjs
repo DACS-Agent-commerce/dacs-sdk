@@ -614,6 +614,49 @@ test('the wire context is checked where it is made and where the handler takes i
   assert.doesNotThrow(() => handlerWith(createWireContext(valid)));
 });
 
+test('the handler takes a wire context only for its own agent and for the transport store its old authentication journals in', async (t) => {
+  const w = await world(t);
+  const { binding, signer, journal, store } = w.handle.wire;
+  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false };
+  const handlerWith = (wire, { agent = w.agent, authentication = w.handle.authentication } = {}) => createSellerHttpHandler(agent, { authentication, wire });
+  const MADE_FOR = /handler's agent and the old authentication's transport store/;
+  const otherStore = async (seller_ = seller.claim) => {
+    const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-other-store-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    mkdirSync(join(directory, 'transport'), { mode: 0o700 });
+    const other = createSellerTransportStore({ path: join(directory, 'transport', 'transport.sqlite'), now: w.clock });
+    t.after(() => other.close());
+    if (seller_ !== null) other.bind({ seller: seller_, listingPin: PIN });
+    return other;
+  };
+  assert.throws(() => handlerWith(createWireContext({ ...valid, agent: stubAgent() })), MADE_FOR, 'a context made for another agent');
+  assert.throws(() => handlerWith(w.handle.wire, { agent: stubAgent() }), MADE_FOR, 'a handler for another agent');
+  const [elsewhere, foreign, unbound] = [await otherStore(), await otherStore(buyer.claim), await otherStore(null)];
+  assert.throws(() => handlerWith(createWireContext({ ...valid, store: elsewhere })), MADE_FOR, 'another transport store');
+  assert.throws(() => handlerWith(createWireContext({ ...valid, store: foreign })), MADE_FOR, 'a store bound to another seller');
+  assert.throws(() => handlerWith(createWireContext({ ...valid, store: unbound })), MADE_FOR, 'a store bound to no seller');
+  assert.throws(() => handlerWith(w.handle.wire, { authentication: { ...w.handle.authentication } }), MADE_FOR, 'a copy of the old authentication');
+  const own = await otherStore();
+  const ownAuthentication = createSellerTransportServerAuth({ sellerSigner: SELLER, listingPin: PIN, store: own, now: w.clock });
+  assert.throws(() => handlerWith(w.handle.wire, { authentication: ownAuthentication }), MADE_FOR, 'an old authentication over another store');
+  assert.doesNotThrow(() => handlerWith(createWireContext({ ...valid, store: own }), { authentication: ownAuthentication }), 'a context and an authentication over the same other store');
+  const context = createWireContext(valid);
+  assert.doesNotThrow(() => { handlerWith(context); handlerWith(context); }, 'two handlers of one agent on one context');
+});
+
+test('a context made for one agent never authorizes a request another agent serves: the handler is refused before the other agent is called', async (t) => {
+  const w = await world(t);
+  const job = await proposeJob(w, 'mismatched-agent');
+  assert.equal((await job.post()).status, 200);
+  const other = stubAgent();
+  assert.throws(() => createSellerHttpHandler(other, { authentication: w.handle.authentication, wire: w.handle.wire }), /handler's agent/);
+  assert.equal(w.effects(other.calls), 0, 'the other agent was never called');
+  assert.equal(other.transportAgreementOf(job.jobId), null, 'the other agent holds nothing for the job');
+  const state = await w.post(PATHS.state, identityBody(job.jobId, job.agreementHash), { jobId: job.jobId, agreementHash: job.agreementHash });
+  assert.equal(state.status, 200, 'the agent the context was made for still serves it');
+  assert.equal(w.agent.calls.states, 1);
+});
+
 test('P11a1-T20: the harness\'s old-domain proposal is refused; only the wire domain is accepted', async (t) => {
   const w = await world(t);
   const job = await proposeJob(w, 't20');
