@@ -168,3 +168,39 @@ for (const name of ['public/portal/embedded-wallet/sdk-provider.mjs', 'util/http
   assert.ok(map.includes(locations(path)), `${path}: the map lists every edited line`);
 }
 });
+
+const TRANSACTION_SHAPED_HASH = 'ab'.repeat(32);
+const generalSign = (w, message) => w.session.wallet.request({ method: 'sign', params: [message] });
+const assertMismatch = result => { assert.equal(result.success, false, JSON.stringify(result)); assert.equal(result.error.code, 'payload_mismatch'); };
+
+test('admitted, a general sign request for the hash of a sent transaction is refused payload_mismatch and returns no signature', async t => {
+  const w = await world(t);
+  assert.equal((await w.send()).success, true);
+  const sent = w.node.broadcasts[0];
+  const result = await generalSign(w, sent.hash);
+  assertMismatch(result);
+  assert.equal(result.data, null);
+});
+
+test('admitted, a general sign request for a bare 64-hex string is refused payload_mismatch', async t => {
+  assertMismatch(await generalSign(await world(t), TRANSACTION_SHAPED_HASH));
+});
+
+test('admitted, a general sign request for a domain-prefixed transaction hash is refused payload_mismatch', async t => {
+  assertMismatch(await generalSign(await world(t), `demos-tx:v1:7:${TRANSACTION_SHAPED_HASH}`));
+});
+
+test('admitted, a general sign request for ordinary text still returns an ed25519 signature', async t => {
+  const result = await generalSign(await world(t), 'hello from the host');
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(result.data.type, 'ed25519');
+  assert.match(result.data.signature, /^[0-9a-f]{128}$/);
+});
+
+test('admitted, authenticated node requests are still signed after the sign guard', async t => {
+  const w = await world(t);
+  assert.equal((await w.send()).success, true);
+  const authenticated = w.node.calls.filter(call => call.headers.signature);
+  assert.ok(authenticated.length > 0, 'the send makes authenticated node calls');
+  for (const call of authenticated) assert.match(call.headers.signature, /^(?:0x)?[0-9a-f]{128}$/);
+});
