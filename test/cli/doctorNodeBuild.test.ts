@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { runDoctor, type DoctorCheck, type DoctorReport } from "../../src/cli/index.js";
+import { formatDoctorText, runDoctor, type DoctorCheck, type DoctorReport } from "../../src/cli/index.js";
 import nodeBuildPin from "../../src/substrate/demosNodeBuild.json" with { type: "json" };
 
 const RPC = "https://node2.demos.sh";
@@ -9,6 +9,7 @@ const NODE_BUILD_CHECK = "node.build";
 const UNKNOWN_SUMMARY = "node build unknown (no build RPC)";
 const OTHER_SHA = "0123456789abcdef0123456789abcdef01234567";
 const REPORT_EXIT_WITH_BLOCKED_CHECKS = 5;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
 
 const recordedVersionReply = JSON.parse(readFileSync(
   new URL("../substrate/fixtures/demos-node-replies/node-version.json", import.meta.url),
@@ -125,6 +126,52 @@ describe("dacs doctor node build check", () => {
 
     expect(check.status).toBe("skip");
     expect(check.summary).toBe(UNKNOWN_SUMMARY);
+  });
+
+  it("keeps reply bytes out of the detail and the output when the reply is not JSON", async () => {
+    const hostile = "\u001b[2J\u001b[1;1H\u009b31m\u0007\u0000 forged line";
+    const report = await doctorWith(stubFetch(async () => new Response(hostile)));
+
+    const check = nodeBuildCheck(report);
+    expect(check.status).toBe("skip");
+    expect(check.detail).toBe("version reply is not JSON");
+    expect(formatDoctorText(report).replace(/\n/g, "")).not.toMatch(CONTROL_CHARS);
+    expect(JSON.parse(JSON.stringify(report)).checks.find((c: DoctorCheck) => c.id === NODE_BUILD_CHECK).detail)
+      .not.toMatch(CONTROL_CHARS);
+  });
+
+  it("strips control characters from reply-derived text in the check and the output", async () => {
+    const withControls = await doctorWith(stubFetch(async () => jsonReply({
+      version: "1.2\u001b[2J.3\u0085",
+      commit: `<x>${OTHER_SHA}`,
+    })));
+    const failed = await doctorWith(stubFetch(async () => {
+      throw new TypeError("fetch failed\u001b[2J", { cause: new Error("bad\u009b31m\r\ncause") });
+    }));
+
+    expect(nodeBuildCheck(withControls).data).toMatchObject({ version: "1.2[2J.3", commit: OTHER_SHA });
+    expect(nodeBuildCheck(failed).detail).toBe("fetch failed[2J: bad31mcause");
+    for (const report of [withControls, failed]) {
+      expect(formatDoctorText(report).replace(/\n/g, "")).not.toMatch(CONTROL_CHARS);
+      expect(JSON.stringify(nodeBuildCheck(report))).not.toMatch(CONTROL_CHARS);
+    }
+  });
+
+  it("reports a timeout, not a JSON error, when the deadline fires mid-body", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"version":"1.'));
+      },
+    })));
+
+    const pending = doctorWith(fetchImpl);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const check = nodeBuildCheck(await pending);
+
+    expect(check.status).toBe("skip");
+    expect(check.detail).toContain("timed out");
+    expect(check.detail).not.toContain("JSON");
   });
 
   it("refuses an oversized reply by bytes before decoding it", async () => {

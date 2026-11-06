@@ -163,6 +163,11 @@ export function rpcSensitiveNeedles(rpc?: string): string[] {
   }
 }
 
+/** Drop C0/C1 control characters (no exceptions) from text that comes from a node reply. */
+function stripControlChars(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
 function sanitizeError(err: unknown, secrets: Array<string | undefined> = []): string {
   const raw = err instanceof Error ? err.message : String(err);
   return sanitizeText(raw, secrets);
@@ -214,7 +219,16 @@ async function readNodeBuild(rpc: string, fetchImpl: typeof fetch): Promise<Node
       void response.body?.cancel().catch(() => undefined);
       throw new Error(`node /version returned HTTP ${response.status}`);
     }
-    const reply = await readBoundedDemosJson(response, NODE_BUILD_MAX_BYTES, controller.signal);
+    let reply: unknown;
+    try {
+      reply = await readBoundedDemosJson(response, NODE_BUILD_MAX_BYTES, controller.signal);
+    } catch (err) {
+      // A deadline that fires mid-body can surface as a truncated-JSON error.
+      if (controller.signal.aborted) throw controller.signal.reason;
+      // Never pass on the parse error: it quotes bytes of the reply.
+      if (err instanceof SyntaxError) throw new Error("version reply is not JSON");
+      throw err;
+    }
     const fields = typeof reply === "object" && reply !== null && !Array.isArray(reply)
       ? (reply as { version?: unknown; commit?: unknown })
       : {};
@@ -225,7 +239,7 @@ async function readNodeBuild(rpc: string, fetchImpl: typeof fetch): Promise<Node
       throw new Error("node /version reply has no commit ending in a 40-hex sha");
     }
     return {
-      version: typeof fields.version === "string" ? fields.version : undefined,
+      version: typeof fields.version === "string" ? stripControlChars(fields.version) : undefined,
       commitSha,
     };
   } finally {
@@ -255,7 +269,7 @@ async function nodeBuildCheck(
       ? `: ${sanitizeError(err.cause, secrets)}`
       : "";
     return check(NODE_BUILD, "skip", NODE_BUILD_UNKNOWN_SUMMARY, {
-      detail: `${sanitizeError(err, secrets)}${cause}`,
+      detail: stripControlChars(`${sanitizeError(err, secrets)}${cause}`),
     });
   }
   const data = { version: build.version, commit: build.commitSha, pinned: nodeBuildPin.commitSha };
@@ -263,7 +277,7 @@ async function nodeBuildCheck(
     ? check(NODE_BUILD, "pass", "Node build matches the pinned build", { data })
     : check(NODE_BUILD, "warn", "Node build differs from the pinned build", {
         data,
-        remediation: `Reply shapes were recorded against ${nodeBuildPin.repository}; re-record them if the node changed.`,
+        remediation: `This node runs a different build than the one this SDK was tested against (${nodeBuildPin.repository}). Nothing to change if calls work; if node discovery or calls fail, report it with this check's output.`,
       });
 }
 

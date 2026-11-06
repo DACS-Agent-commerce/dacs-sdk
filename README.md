@@ -1001,8 +1001,8 @@ completion currently report `blocked` until the resolver/completion work lands
 
 With `--rpc`, the `node.build` check reads the node's `GET /version` (4 KiB
 limit, 5 second deadline, redirects not followed) and compares its commit with
-the build the SDK's recorded node replies were captured against
-(`src/substrate/demosNodeBuild.json`). It only runs when the RPC URL has no path
+the build the SDK's recorded node replies were captured against (the pin ships
+inside the package). It only runs when the RPC URL has no path
 or query (for example `https://node2.demos.sh`), because `/version` is read from
 the origin and a routed URL such as `https://host/tenant/rpc` may reach a
 different backend. A match is `pass`; a different build is `warn`; a routed RPC
