@@ -743,10 +743,24 @@ test("every path the core package packs is inside the core allow-list", () => {
 });
 
 test("the core allow-list names the shipped conformance records exactly, not by pattern", () => {
-  const record = "conformance/tp1-node-observations/block0-2026-10-20.json";
-  assert.doesNotThrow(() => validateFiles(core, { exports: {} }, ["package.json", record]));
-  for (const sibling of ["conformance/tp1-node-observations/other.json", "conformance/other.json", "vectors/other.json", "docs/other.md"]) {
+  for (const shipped of ["conformance/tp1-register.json", "conformance/tp1-provenance-ids.json"]) {
+    assert.doesNotThrow(() => validateFiles(core, { exports: {} }, ["package.json", shipped]));
+  }
+  for (const sibling of ["conformance/other.json", "vectors/other.json", "docs/other.md"]) {
     assert.throws(() => validateFiles(core, { exports: {} }, [sibling]), /outside allow-list/);
+  }
+});
+
+test("the core allow-list does not admit node observation records, which the package no longer ships", () => {
+  for (const record of ["manifest.json", "manifest-2026-10-20.json", "block0-2026-10-20.json", "missing-tx.json", "other.json"]) {
+    assert.throws(() => validateFiles(core, { exports: {} }, [`conformance/tp1-node-observations/${record}`]), /outside allow-list/);
+  }
+});
+
+test("requiredExports names every public subpath of the core and node manifests", () => {
+  for (const definition of packages.filter(p => p.name === "@kynesyslabs/dacs" || p.name === "@kynesyslabs/dacs-node")) {
+    const { exports } = JSON.parse(readFileSync(new URL(`../../${definition.directory}/package.json`, import.meta.url), "utf8"));
+    assert.deepEqual([...definition.requiredExports].sort(), Object.keys(exports).sort(), definition.name);
   }
 });
 
