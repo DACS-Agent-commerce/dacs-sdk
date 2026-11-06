@@ -97,7 +97,7 @@ test('readRpc and observeBinding cancelled while queued for the journal lock or 
     assert.deepEqual(identityWorld.node.calls.map(heightOf), [0], `${name} read on after its identity read was cancelled`);
 
     const fallbackWorld = sourceReadWorld(t), stopAtFallback = cancellation(reason);
-    fallbackWorld.node.intercept = row => { stopAtFallback.abort(); return jsonResponse(JSON.stringify({ result: 400, response: 'error' })); };
+    fallbackWorld.node.intercept = () => { stopAtFallback.abort(); return jsonResponse(JSON.stringify({ result: 400, response: 'error' })); };
     await assert.rejects(call(fallbackWorld, { signal: stopAtFallback.signal }), error => error === reason, `${name} released between block zero and the fallback read`);
     await fallbackWorld.transport.close();
     assert.deepEqual(fallbackWorld.node.calls.map(heightOf), [0], `${name} started the fallback read after cancellation`);
