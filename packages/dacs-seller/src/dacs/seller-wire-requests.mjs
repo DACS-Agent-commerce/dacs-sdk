@@ -89,12 +89,13 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
  * follows the recheck at once. Nothing is reserved here and the wire journal is never written. Calls `onOpened(request)` as soon
  * as the envelope is verified, so a refusal after it can be signed.
  * Returns `{ body, readbackOnly, profile }`: the admitted body, whether only an expired delegation authenticated the request,
- * and the request's own tuple, which a reservation keeps or compares.
+ * and the request's own tuple, which a reservation keeps or compares. Records in `limits` the times the admitted request and its
+ * delegation expire, for the store calls that follow admission.
  * Throws the wire's own refusal with its code, status and cause, `peer_unknown_job` 404 for a job the host holds nothing for
  * (only after the exchange checks pass), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with no kept
  * tuple, or the seller's body refusal.
  */
-async function admitWireRoute(wire, agent, { header, method, path, rawBody, body, onOpened }) {
+async function admitWireRoute(wire, agent, limits, { header, method, path, rawBody, body, onOpened }) {
   const opened = await openWireEnvelope(header, 'request', { binding: wire.binding, local: wire.local(), purchaseProfile: null, requireDelegation: wire.requireDelegation });
   assertNoSmallOrderSigner(opened);
   const request = opened.payload;
@@ -120,6 +121,7 @@ async function admitWireRoute(wire, agent, { header, method, path, rawBody, body
   // whose store row is gone) is never answered, and never reserved, where a new reservation would adopt the request's tuple.
   if (held && kept === null) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
   validateBody(request, checked.body);
+  limits.set(request, { request: request.expiresAt, delegation: opened.delegation?.payload.expiresAt ?? Infinity });
   return { body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, profile: request.profile };
 }
 
@@ -128,7 +130,8 @@ async function admitWireRoute(wire, agent, { header, method, path, rawBody, body
  * (`{ body, read, readbackOnly(), reserveOptions }`; a read route reserves nowhere, an effect route reserves with the request's
  * tuple), `sign` signs an answer under the tuple kept for the job (`undefined` for a request that names another seller, which
  * cannot be signed for: its refusal goes out unsigned), `encode` admits the text a stored answer keeps, and `store` is the raw
- * transport store. Throws for a `wire` that createWireContext did not make, whose seller or delegation rule differs from
+ * transport store with the admitted request's expiry applied at each call (an expired request reserves and claims read-only and
+ * settles no retry or removal). `readbackOnly()` reads the clock each time too. Throws for a `wire` that createWireContext did not make, whose seller or delegation rule differs from
  * `authentication`'s, or that was made for another agent than `agent` or another transport store than `authentication`'s:
  * its checks would read one agent's and one store's records while the other serves and journals the request.
  */
@@ -137,12 +140,36 @@ export function wireAuthenticator(wire, agent, authentication) {
   if (owner === undefined) throw new TypeError('the wire option must be a createWireContext context');
   if (wire.signer.claim !== authentication?.seller || wire.requireDelegation !== authentication.requireDelegation) throw new Error('the wire context and the old authentication must name the same seller and delegation rule');
   if (owner.agent !== agent || owner.store !== transportStoreOf(authentication)) throw new Error('the wire context must be made for the handler\'s agent and the old authentication\'s transport store');
+  // The store is called again after admission (a retained effect is claimed and settled inside the agent's job fence, after
+  // asynchronous waits), so a request is read-only from the moment it or its delegation expires, as the old guarded store
+  // decided on every call. A request this authenticator did not admit is expired.
+  const limits = new WeakMap();
+  const lapse = (request) => {
+    const at = wire.now(), admittedLimits = limits.get(request);
+    if (admittedLimits === undefined || !Number.isSafeInteger(at) || at < 0) return 'peer_expired';
+    if (admittedLimits.delegation <= at) return 'peer_delegation_expired';
+    return admittedLimits.request <= at ? 'peer_expired' : null;
+  };
+  const expired = (request) => lapse(request) !== null;
+  const store = Object.freeze({
+    reserve: (request, body, options = {}) => wire.store.reserve(request, body, expired(request) ? { ...options, journaledOnly: true } : options),
+    // An expired request may still take an effect to read it back, never to run it again.
+    claim: (reservation, request, options = {}) => wire.store.claim(reservation, request, expired(request) ? { ...options, live: false } : options),
+    // Settle against the claim's granted mode: a read-only claim never leaves an effect to run again or deletes it.
+    reconcile: (reservation, request, status, text, options = {}) => {
+      if (reservation?.live === false && (options.retry || options.noEffect)) throw new SellerTransportError(lapse(request) ?? 'peer_expired', 408);
+      return wire.store.reconcile(reservation, request, status, text, options);
+    },
+    finish: (...args) => wire.store.finish(...args),
+    assertPending: (reservation) => wire.store.assertPending(reservation),
+  });
   return Object.freeze({
-    store: wire.store,
+    store,
     encode: admitAnswerText,
     open: async (input) => {
-      const { body, readbackOnly, profile } = await admitWireRoute(wire, agent, input);
-      return { body, read: isReadRoute(input.path), readbackOnly: () => readbackOnly, reserveOptions: { journaledOnly: readbackOnly, keepProfile: profile } };
+      let opened = null;
+      const { body, readbackOnly, profile } = await admitWireRoute(wire, agent, limits, { ...input, onOpened: (request) => { opened = request; input.onOpened(request); } });
+      return { body, read: isReadRoute(input.path), readbackOnly: () => readbackOnly || expired(opened), reserveOptions: { journaledOnly: readbackOnly, keepProfile: profile } };
     },
     sign: (request, status, text) => (request.seller !== wire.signer.claim ? undefined
       : signWireResponse(request, status, text, { signer: wire.signer, binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId), now: wire.now() })),
