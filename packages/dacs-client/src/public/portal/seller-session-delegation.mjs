@@ -4,6 +4,7 @@
 // already shows, and the expiry is within fixed bounds. Pure and DOM-free so
 // it can be unit tested in Node. See docs/SELLER-SESSION-DELEGATION.md.
 
+import { isCanonicalJobId } from '@kynesyslabs/dacs';
 import { assertSellerSessionLifetime, SELLER_SESSION_MAX_LIFETIME_MS } from '../../dacs/seller-session-limits.mjs';
 
 export const SELLER_SESSION_DELEGATION_PREFIX = 'dacs-chatgpt-plugin:seller-session-delegation:v1:';
@@ -59,7 +60,7 @@ export function checkSellerSessionDelegation(request, terms, { now = Date.now() 
   if (!CLAIM.test(payload.seller) || payload.seller !== terms?.seller?.claim) refuse('the seller differs from this purchase');
   const listing = terms?.listing ?? {};
   if (payload.listingPin.listingId !== listing.listingId || payload.listingPin.version !== listing.version || payload.listingPin.contentHash !== listing.contentHash) refuse('the Listing differs from this purchase');
-  if (typeof payload.jobId !== 'string' || payload.jobId !== terms?.protocol?.jobId) refuse('the job differs from this purchase');
+  if (!isCanonicalJobId(payload.jobId) || !isCanonicalJobId(terms?.protocol?.jobId) || payload.jobId !== terms.protocol.jobId) refuse('the job differs from this purchase');
   const session = payload.sessionPublicKey;
   if (typeof session !== 'string' || !HEX64.test(session) || `did:demos:agent:${session}` === payload.buyer || `did:demos:agent:${session}` === payload.seller) refuse('the session key is malformed or reuses a party key');
   if (!uint(payload.notBefore) || !uint(payload.expiresAt) || payload.expiresAt <= payload.notBefore) refuse('the validity window is malformed');

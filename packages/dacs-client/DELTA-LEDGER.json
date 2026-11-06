@@ -6331,6 +6331,22 @@
           "after": "9cdd17e0eceae6b901b2c075823c6dce714496c9"
         }
       ]
+    },
+    {
+      "delta": "D21",
+      "subject": "delta(client): D21 require canonical job IDs in the seller session delegation check",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/seller-session-delegation.mjs",
+          "before": "ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42",
+          "after": "f49ef6762e99abfa5cfd09950124492c693b7c37"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-session-delegation-job-id.test.mjs",
+          "before": null,
+          "after": "512d6488ae8a6a8890b227cc90a934528853bd4a"
+        }
+      ]
     }
   ]
 }
