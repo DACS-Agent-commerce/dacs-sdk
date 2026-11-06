@@ -342,7 +342,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   if (markPendingContextEffectsUncertain && admissions()) {
     transaction(() => run("UPDATE peer_effects SET state = 'uncertain' WHERE state = 'pending' AND effect IN (SELECT effect FROM peer_context_admissions)"));
   }
-  function reclaimableJobs(needed, jobId, time) {
+  // `skip` holds jobs another plan already frees, so one job never counts as leaving twice.
+  function reclaimableJobs(needed, jobId, time, skip = new Set()) {
     // Unmapped legacy effects fence all reclamation; empty bindings need no terminal evidence.
     if (!needed || get('SELECT 1 FROM peer_effects e WHERE NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.effect = e.effect) LIMIT 1')) return [];
     const jobs = db.prepare(`SELECT j.job FROM peer_jobs j WHERE
@@ -364,7 +365,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))))
       ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job AND a.admitted_at > ?)' : ''}`)
       .iterate(time, time - nonceWindowMs, ...(admissions() ? [time - CHALLENGE_RATE_WINDOW_MS] : []))) {
-      if (!jobs.includes(job) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: job }))) jobs.push(job);
+      if (!jobs.includes(job) && !skip.has(job) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: job }))) jobs.push(job);
       if (jobs.length === needed) break;
     }
     return jobs;
@@ -561,9 +562,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const newJob = !job && !contextStep && !retained;
         // A job takes a slot unless a record already holds one: a context step's admission takes it for the job.
         // A retired context whose job has no job row leaves the ledger with it, and frees that job's slot.
-        const freedJobs = retired.filter(row => !get('SELECT 1 FROM peer_jobs WHERE job = ?', row.job)).length;
-        const neededJobs = !retained && !ledger.jobHeldWithin(p.jobId) ? Math.max(0, ledger.jobCountWithin() - freedJobs - maxJobs + 1) : 0;
-        const retiredJobs = reclaimableJobs(neededJobs, undefined, time);
+        const freedJobs = new Set(retired.filter(row => !get('SELECT 1 FROM peer_jobs WHERE job = ?', row.job)).map(row => row.job));
+        const neededJobs = !retained && !ledger.jobHeldWithin(p.jobId) ? Math.max(0, ledger.jobCountWithin() - freedJobs.size - maxJobs + 1) : 0;
+        const retiredJobs = reclaimableJobs(neededJobs, undefined, time, freedJobs);
         // A context start now takes a job slot; like its context capacity refusal, this one consumes the recognized challenge.
         if (retiredJobs.length < neededJobs) {
           if (!contextStep) fail('peer_job_capacity', 503);

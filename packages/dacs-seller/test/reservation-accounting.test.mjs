@@ -340,6 +340,62 @@ test('the old path still retires a terminal admission-only job to free a job slo
   assert.deepEqual(f.jobRows().map(row => row.job), [JOB2]);
 });
 
+// A (admission only) and B (a job row) are held, with any live jobs beside them; the host then restarts with a cap of one.
+const JOB4 = '01ARZ3NDEKTSV4RRFFQ69G5FAX';
+const overCap = async (t, terminalJobs, live = []) => {
+  let terminal = [];
+  const options = { maxJobs: 4, maxContextRecords: 4, contextSessionState: ({ jobId }) => terminal.includes(jobId) ? 'finalised' : null };
+  const f = await accountingFixture(t, options);
+  oldContextStep(f, JOB);
+  for (const jobId of [JOB2, ...live]) f.store().finish(oldReserve(f, f.payload({ jobId })), 200, '{}');
+  Object.assign(options, { maxJobs: 1, maxContextRecords: 1 });
+  f.setTime(T0 + 7200000); f.reopen(); terminal = terminalJobs;
+  return f;
+};
+const ledgerJobs = (f) => f.db.prepare(`SELECT job FROM peer_jobs UNION SELECT job FROM peer_context_admissions
+  UNION SELECT jobId FROM kit_job_holds ORDER BY job`).all().map(row => row.job);
+const startC = (f, extra = {}) => f.store().reserve(contextPayload(f, { buyer: OTHER.claim, jobId: JOB3 }), { scope: { jobId: JOB3 } }, { admit: f.now, ...extra });
+
+test('a job count above the cap after a restart counts a retired admission-only job once: the context start is refused with nothing retired', async t => {
+  const f = await overCap(t, [JOB]);
+  const before = ledgerJobs(f);
+  assert.deepEqual(before, [JOB, JOB2].sort());
+  assert.throws(() => startC(f), refused('peer_job_capacity', 503));
+  assert.deepEqual(ledgerJobs(f), before);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions WHERE job = ?').get(JOB3).n, 0);
+});
+
+test('a dry check of a context start above the cap after a restart is refused the same way and writes nothing', async t => {
+  const f = await overCap(t, [JOB]);
+  const before = ledgerJobs(f);
+  assert.throws(() => startC(f, { dryRun: true }), refused('peer_job_capacity', 503));
+  assert.deepEqual(ledgerJobs(f), before);
+});
+
+test('a retirable job is not skipped when an admission-only job is also in the plan: both leave and the context start is admitted', async t => {
+  const f = await overCap(t, [JOB, JOB2]);
+  assert.equal(startC(f).disposition, 'perform');
+  assert.deepEqual(ledgerJobs(f), [JOB3]);
+});
+
+test('a ledger over the cap by two with only one job able to leave still refuses a context start', async t => {
+  const f = await overCap(t, [JOB], [JOB4]);
+  const before = ledgerJobs(f);
+  assert.equal(before.length, 3);
+  assert.throws(() => startC(f), refused('peer_job_capacity', 503));
+  assert.deepEqual(ledgerJobs(f), before);
+});
+
+test('a retired admission-only job frees its slot at the limit without a restart: the context start is admitted beside the live job', async t => {
+  let terminal = false;
+  const f = await accountingFixture(t, { maxJobs: 2, maxContextRecords: 1, contextSessionState: ({ jobId }) => terminal && jobId === JOB ? 'finalised' : null });
+  oldContextStep(f, JOB);
+  f.store().finish(oldReserve(f, f.payload({ jobId: JOB2 })), 200, '{}');
+  f.setTime(T0 + 7200000); terminal = true;
+  assert.equal(startC(f).disposition, 'perform');
+  assert.deepEqual(ledgerJobs(f), [JOB2, JOB3].sort());
+});
+
 test('accounting-payment-tuple-commit-cuts', async t => {
   for (const table of ['kit_job_holds', 'kit_payment_transactions', 'kit_reservations', 'peer_jobs', 'kit_purchase_profiles']) {
     const f = await accountingFixture(t);
