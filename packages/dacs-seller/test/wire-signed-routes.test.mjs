@@ -616,8 +616,8 @@ test('the wire context is checked where it is made and where the handler takes i
 
 test('the handler takes a wire context only for its own agent and for the transport store its old authentication journals in', async (t) => {
   const w = await world(t);
-  const { binding, signer, journal, store } = w.handle.wire;
-  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false };
+  const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
+  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
   const handlerWith = (wire, { agent = w.agent, authentication = w.handle.authentication } = {}) => createSellerHttpHandler(agent, { authentication, wire });
   const MADE_FOR = /handler's agent and the old authentication's transport store/;
   const otherStore = async (seller_ = seller.claim) => {
@@ -1299,4 +1299,44 @@ test('the wire authenticator reserves read-only once the request has expired, re
   w.state.time = NOW;
   assert.throws(() => auth.store.reserve({ ...unadmitted.request }, unadmitted.opened.body, unadmitted.opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'a request this authenticator did not admit starts no effect');
   assert.deepEqual(w.rows(), rowsBefore, 'the refusals left nothing behind');
+});
+
+test('a request the wire authenticator has seen expired stays expired when the clock later reads earlier', async (t) => {
+  const w = await world(t);
+  const auth = wireAuthenticator(w.handle.wire, w.agent, w.handle.authentication);
+  const job = await proposeJob(w, 'clock-regression');
+  const signed = await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash });
+  let request = null;
+  const opened = await auth.open({ header: signed.header, method: 'POST', path: PATHS.proposals, rawBody: Buffer.from(signed.text), body: JSON.parse(signed.text), onOpened: (admitted) => { request = admitted; } });
+  const rowsBefore = w.rows();
+  assert.equal(opened.readbackOnly(), false, 'live at admission');
+  w.state.time = signed.payload.expiresAt;
+  assert.equal(opened.readbackOnly(), true, 'at expiry');
+  w.state.time = NOW;
+  assert.equal(opened.readbackOnly(), true, 'a clock corrected to an earlier time does not revive it');
+  assert.throws(() => auth.store.reserve(request, opened.body, opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'and it still starts no effect');
+  assert.deepEqual(w.rows(), rowsBefore, 'nothing was reserved');
+});
+
+test('a cached payment refresh that finds its request expired at the job fence stays refused when the clock later reads earlier', async (t) => {
+  const w = await continuingWorld(t);
+  const checks = [];
+  let refreshing = false;
+  w.agent.submitPayment = async (body, options = {}) => {
+    w.agent.calls.payments++;
+    const check = () => { try { options.transport.check(); return 'live'; } catch (error) { return error.code; } };
+    if (refreshing) {
+      checks.push(check());
+      w.state.time = NOW + 1000;
+      checks.push(check());
+      w.state.time = NOW;
+      checks.push(check());
+    }
+    return { status: 'payment-evidenced', delivery: { status: 'delivered' } };
+  };
+  assert.equal((await w.request(PATHS.payments)).status, 200, 'the first payment completes');
+  refreshing = true;
+  const text = JSON.stringify(w.bodyFor(PATHS.payments)), payload = w.payloadFor(PATHS.payments, text, { jobId: w.jobId, agreementHash: w.agreementHash, expiresAt: NOW + 1000 });
+  assert.equal((await w.send(PATHS.payments, { text, payload, header: w.headerFor(payload) })).status, 200, 'the replay refreshes the cached answer');
+  assert.deepEqual(checks, ['live', 'peer_expired', 'peer_expired'], 'the expiry the fence saw is kept');
 });
