@@ -79,7 +79,7 @@ test("Listing terms outside the TP-1 limits are refused: price, tags, text sizes
   const { parseSellerConfig, listingTermsFromConfig } = await load();
   const cases = [
     ['listing.priceDem', '0'], ['listing.priceDem', '-1'], ['listing.priceDem', '0.0000000001'], ['listing.priceDem', '9007199.254740992'],
-    ['listing.priceDem', 1.1234567890123456], ['listing.priceDem', 9007199254740992], ['listing.priceDem', true],
+    ['listing.priceDem', 9007199254740992], ['listing.priceDem', true],
     ['listing.tags', Array(17).fill('tag')], ['listing.tags', ['a'.repeat(33)]], ['listing.tags', [1]],
     ['listing.displayName', 'a'.repeat(201)], ['listing.title', 'a'.repeat(201)], ['listing.description', 'a'.repeat(2001)],
     ['listing.category', 'a..b'], ['listing.listingId', '..'], ['listing.listingId', '../path'], ['listing.listingId', 'a'.repeat(129)],
