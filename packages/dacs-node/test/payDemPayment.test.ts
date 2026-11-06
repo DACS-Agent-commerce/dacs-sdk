@@ -947,6 +947,62 @@ describe("native DEM buyer payment track", () => {
     await retained.release();
   });
 
+  it("keeps a rail that skips the pre-broadcast hook ambiguous, not stopped", async () => {
+    const directory = root();
+    const database = await open(join(directory, "buyer.sqlite"));
+    putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+    let broadcasts = 0;
+    // The hook is optional on the rail type: this rail prepares, never calls
+    // it, broadcasts, then fails. Nothing may claim no DEM moved.
+    const rail: PayDemRail = {
+      address: PAYER,
+      async settle(input) {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 8,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          denomination: "os",
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        broadcasts += 1;
+        throw new Error("lost response after broadcast");
+      },
+    };
+    const payment = createDacsPayDemBuyerPaymentTrackV1({
+      walletSpendAuthority: createAccountingTestWalletSpendAuthorityV1({
+        wallet: PAYER_WALLET,
+        chainId: "demos",
+        asset: "DEM",
+        maximumConcurrentEffects: 1,
+      }),
+      database,
+      workerId: "buyer-dem-hook-skipped",
+      rail,
+      resolveAuthority: () => AUTHORITY,
+      reconcile: () => ({ status: "indeterminate", reasonCode: "not-required" }),
+      publishNotice: vi.fn(),
+    });
+    const coordinator = createFixedPricePayDemBuyerCoordinator({
+      store: database.createPayDemCoordinatorStore("buyer"),
+      workerId: "buyer-coordinator-hook-skipped",
+      operations: { agreement: success, payment },
+    });
+
+    await coordinator.startOrder(ORDER);
+    await coordinator.runPending({ limit: 2 });
+
+    expect(broadcasts).toBe(1);
+    expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment).toMatchObject({
+      state: "indeterminate",
+      reasonCode: "pay-dem-settlement-ambiguous",
+    });
+  });
+
   it("keeps the generated Demos record prepared when wallet reserve is denied", async () => {
     const directory = root();
     const database = await open(join(directory, "buyer.sqlite"));

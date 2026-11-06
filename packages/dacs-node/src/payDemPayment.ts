@@ -837,8 +837,10 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         let claim: Extract<WalletSpendReservationClaimV1, { status: "reserved" }> |
           undefined;
         let claimFailure: DacsLiveEffectExecutionControlV1 | undefined;
-        // Set once the pre-broadcast hook has passed: only then can the rail
-        // have handed the signed transfer to Demos.
+        // The rail type makes the pre-broadcast hook optional. A failure is
+        // named "before broadcast" only when the hook was entered and did not
+        // pass; a rail that skipped the hook may already have broadcast.
+        let broadcastHookEntered = false;
         let broadcastReleased = false;
         let reserveFailed = false;
         const reserveWallet = async (): Promise<NonNullable<typeof claim>> => {
@@ -918,6 +920,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               preparedCheckpointed = true;
             },
             assertCurrentBeforeBroadcast: async () => {
+              broadcastHookEntered = true;
               await beginPreparedEffect();
               await fence.assertCurrent();
               broadcastReleased = true;
@@ -943,7 +946,9 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           if (claimFailure !== undefined) return claimFailure;
           // Still indeterminate either way: a prepared checkpoint may exist and
           // only reconciliation can retire it. The reason says how far it got.
-          if (broadcastReleased) return control("pay-dem-settlement-ambiguous");
+          if (!broadcastHookEntered || broadcastReleased) {
+            return control("pay-dem-settlement-ambiguous");
+          }
           return control(reserveFailed
             ? "pay-dem-wallet-reservation-failed"
             : "pay-dem-stopped-before-broadcast");
