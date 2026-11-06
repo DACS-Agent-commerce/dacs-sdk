@@ -7,7 +7,7 @@ import { constants, closeSync, lstatSync, openSync, realpathSync } from 'node:fs
 import { dirname, isAbsolute } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
-import { isTp1WireProfile } from '@kynesyslabs/dacs/wire';
+import { isTp1WireProfile, wireOperationBinding } from '@kynesyslabs/dacs/wire';
 import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
@@ -320,8 +320,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // RESERVATION_LEDGER's sources in this store: the context admission table exists only once a first admission commits.
   const ledgerSources = (kind) => { const admitted = admissions(); return RESERVATION_LEDGER[kind].filter(sql => admitted || !sql.includes('peer_context_admissions')); };
   const ledgerJobs = (kind) => `SELECT job FROM (${ledgerSources(kind).join(' UNION ')})`;
-  // Whether the wire's own record holds the request's operation: any attempt, whatever its state. No reader or no view is no record.
-  const wireHoldsWithin = (p) => ![undefined, null, 'none'].includes(wireOperationView({ seller: p.seller, jobId: p.jobId, path: p.path })?.state);
+  // Whether the wire's own record holds the request's operation under this request's binding: any attempt, whatever its
+  // state. An operation is only {seller, jobId, path}, so a request with another context scope or Agreement hash shares
+  // it and the wire would refuse it later; only the binding tells it from a retry. No reader, no view or another binding is no record.
+  const wireHoldsWithin = (p) => {
+    const view = wireOperationView({ seller: p.seller, jobId: p.jobId, path: p.path });
+    return ![undefined, null, 'none'].includes(view?.state) && view.binding === wireOperationBinding(p);
+  };
   // Every read runs in the caller's transaction.
   const ledger = Object.freeze({
     buyerUnitsWithin: (buyer, time) => get(`SELECT COUNT(*) AS n FROM (${ledgerSources('buyerUnits').join(' UNION ALL ')})
@@ -343,13 +348,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // The refusals of the old reserve path that read journal state, shared so both paths apply each one.
     sessionTerminalWithin: (jobId) => TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId })),
     // A terminal session refuses a fresh proposal or context start; an operation already reserved is a retry, which
-    // still reaches the wire for its recover or completed answer. A row the wire answered (new, recover, completed)
-    // is reserved. A `reserving` row is reserved only if the wire's own record holds the operation (an attempt, not a
-    // nonce key alone): after a crash before publication, or a refusal whose write failed, the wire would answer `new`.
-    // With no reader, or no record, the retry is refused.
+    // still reaches the wire for its recover or completed answer. A retry is a row of the operation the wire answered
+    // (new, recover, completed) or, still `reserving`, one the wire's own record holds (an attempt, not a nonce key
+    // alone: after a crash before publication, or a refusal whose write failed, the wire would answer `new`), and in
+    // both cases the wire's record carries this request's binding (another context scope or Agreement hash is a fresh start).
+    // With no reader, no record or another binding, the request is refused.
     terminalStartWithin: (p, operationId) => (p.path === PROPOSAL || p.path === CONTEXT) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId })) &&
-      !get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state IN ('new', 'recover', 'completed')", p.jobId, operationId) &&
-      !(get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state = 'reserving'", p.jobId, operationId) && wireHoldsWithin(p)),
+      !(get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state IN ('new', 'recover', 'completed', 'reserving')", p.jobId, operationId) && wireHoldsWithin(p)),
     // A mutating route has one effect per job. An accounted reservation holds it unless the wire definitely refused it
     // (a definite refusal is no effect); a `reserving` row left by a crash holds it too.
     accountedSlotWithin: (jobId, route) => !READ_ROUTES.has(route) &&

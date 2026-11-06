@@ -824,11 +824,12 @@ test('a fresh accounted proposal or context start for a terminal session is refu
 // An operation is the seller, job and route, so a retry is a request on a route that job already reserved.
 test('a session that turns terminal after an accounted proposal refuses the job\'s context start and still answers the proposal retry', async t => {
   const [f, session] = await terminalFixture(t);
-  await f.reserve(f.args());
+  await f.reserve(await f.admit());
   session.state = 'finalised';
-  await assert.rejects(f.reserve(f.args(contextPayload(f))), refused('context_session_terminal', 409));
+  await assert.rejects(f.reserve(await f.admitContext()), refused('context_session_terminal', 409));
   assert.equal(f.rows().length, 1);
-  assert.equal((await f.reserve(f.args())).state, 'new');
+  f.setTime(T0 + 400000);
+  assert.equal((await f.reserve(await f.admit())).state, 'recover');
   assert.equal(f.rows().length, 2);
 });
 
@@ -838,6 +839,48 @@ test('a refused accounted reservation does not make its operation a retry for a 
   session.state = 'finalised';
   await assert.rejects(f.reserve(f.args()), refused('context_session_terminal', 409));
   assert.equal(f.rows().length, 1);
+});
+
+// An operation is only {seller, jobId, path}: a start with another context scope hash or Agreement hash shares the operation of
+// an earlier row, and only the wire's recorded binding tells it from a retry. It is refused before any charge, not by the wire after one.
+test('a terminal session refuses a start whose binding differs from the one the wire holds, before any charge, on a new or a reserving row', async t => {
+  for (const state of ['new', 'reserving']) for (const restart of [false, true]) {
+    const [f, session] = await terminalFixture(t);
+    if (state === 'reserving') casFailure(f);
+    const first = f.reserve(await f.admitContext());
+    if (state === 'reserving') { await assert.rejects(first, /TEST result write failed/); dropCasFailure(f); } else await first;
+    session.state = 'finalised';
+    if (restart) f.reopen();
+    assert.equal(f.rows()[0].state, state);
+    const files = f.files(), view = inspectWireOperation(f.journal, f.payload({ path: CONTEXT }));
+    const other = await f.admitContext(contextPayload(f, { agreementHash: sha256Hex('other scope') }));
+    f.setTime(T0 + 400000);
+    await assert.rejects(f.reserve(other), refused('context_session_terminal', 409), `${state} ${restart}`);
+    assert.equal(f.rows().length, 1); assert.deepEqual(f.files(), files); assert.equal(f.holds().length, 1);
+    assert.deepEqual(inspectWireOperation(f.journal, other.payload), view);
+    // The same binding is still the retry.
+    assert.equal((await f.reserve(await f.admitContext())).state, 'recover', `${state} ${restart}`);
+    assert.equal(f.rows().length, 2);
+  }
+});
+
+test('a terminal session refuses a proposal with another Agreement hash for the job without charging it', async t => {
+  const [f, session] = await terminalFixture(t);
+  await f.reserve(await f.admit());
+  session.state = 'finalised';
+  f.setTime(T0 + 400000);
+  await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: OTHER_AGREEMENT }))), refused('peer_job_conflict', 409));
+  assert.equal(f.rows().length, 1);
+});
+
+test('a terminal session refuses a retry the wire cannot show a binding for, on a row the wire answered', async t => {
+  for (const view of [() => null, () => ({ state: 'none' })]) {
+    const [f, session] = await terminalFixture(t, { wireOperationView: view });
+    await f.reserve(await f.admit());
+    session.state = 'finalised';
+    await assert.rejects(f.reserve(await f.admit()), refused('context_session_terminal', 409));
+    assert.equal(f.rows().length, 1); assert.equal(f.rows()[0].state, 'new');
+  }
 });
 
 // A `reserving` row is a retry only when the wire's own record holds the operation. Each start goes through the real wire.
