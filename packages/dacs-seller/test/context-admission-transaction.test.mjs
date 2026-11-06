@@ -522,6 +522,28 @@ test('admission-caller-admitted-at-refused', async t => {
   assert.equal(w.changes(), before); assert.equal(w.calls.reserve, 0); assert.equal(w.row(p.input.jobId), null);
 });
 
+test('admission-stored-admission-must-name-the-rows-seller-and-listing', async t => {
+  const otherPin = { ...PIN, version: 2 }, sellerEntry = admission => admission.participants.find(entry => entry.role === 'seller');
+  const variants = {
+    'another seller': admission => { sellerEntry(admission).claim = OTHER; },
+    'another Listing version': admission => { admission.listingPin = otherPin; },
+    'another Listing hash': admission => { admission.listingPin = { ...PIN, contentHash: hash('another-listing') }; },
+    'a Listing pin with an extra member': admission => { admission.listingPin = { ...PIN, extra: true }; },
+    'no Listing': admission => { delete admission.listingPin; },
+    'no seller entry': admission => { admission.participants = admission.participants.filter(entry => entry.role !== 'seller'); },
+    'two seller entries': admission => { admission.participants.push(structuredClone(sellerEntry(admission))); },
+    'no participants': admission => { delete admission.participants; },
+  };
+  for (const [name, change] of Object.entries(variants)) {
+    const w = world(t), p = w.prepare(), before = w.changes(); change(p.input.accepted.admission);
+    await reject(w.admission.begin(p.input), 'context_challenge_attempt_invalid', 409);
+    assert.equal(w.row(p.input.jobId), null, name); assert.equal(w.calls.reserve, 0, name); assert.equal(w.changes(), before, name);
+    assert.equal(w.store.challenges.retained(p.input.nonce).state, 'attempted', name);
+  }
+  const w = world(t), p = w.prepare(); p.input.accepted.admission.participants.find(entry => entry.role === 'seller').claim = `${SELLER}?jurisdiction=GB`;
+  await w.admission.begin(p.input); assert.equal(w.store.challenges.retained(p.input.nonce).state, 'accepted');
+});
+
 test('admission-continuation-retains-envelope-parties', async t => {
   const w = world(t), p = w.prepare(0x11, BUYER, { presenter: EQUIVALENT_BUYER });
   await reject(w.admission.begin({ ...p.input, sellerBundlePresentedBy: undefined }), 'context_challenge_attempt_invalid', 409);

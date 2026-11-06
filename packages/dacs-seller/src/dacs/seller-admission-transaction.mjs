@@ -96,9 +96,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     throw new TypeError('admission needs the store, policy, evidence, completion, clock, readiness and deadline ports');
   }
   const mutexes = new Map(), leases = new WeakMap(), acceptanceHooks = [];
-  // The live-begin owners: the one `begin` per job that is between D2's commit and the end of its D3/D4 work, late policy settlement and
-  // failure recording included. Closure-private: only `ownedIntent`, which P09bb's sweep reads from inside this closure, answers from it,
-  // and no age or lease stands in for it. `admissionTransactionInternals` hands the same reader to this package's tests only.
+  // The live-begin owners: the one `begin` per job between D2's commit and the end of its D3/D4 work, late policy settlement and failure
+  // recording included. Closure-private: P09bb's sweep reads `ownedIntent` from inside this closure, and no age or lease stands in for it.
   const liveBegins = new Map();
   const ownedIntent = (jobId, rev) => liveBegins.get(jobId)?.rev === rev;
   let hooksSealed = false;
@@ -169,6 +168,11 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       || challenge.presentationHash !== presentationHash || challenge.owner?.generation !== owner.generation || challenge.owner?.attemptId !== owner.attemptId) fail('context_challenge_attempt_invalid');
   }
 
+  // The ledger reads the seller and the Listing from the admission itself, so only here are they held to the row's own.
+  const admissionNames = (admission, seller, listingPin) => {
+    const sellers = Array.isArray(admission?.participants) ? admission.participants.filter((entry) => entry?.role === 'seller') : [];
+    return sellers.length === 1 && sameCanonicalClaimIdentity(sellers[0].claim, seller) && pinValid(admission.listingPin) && canonicalize(admission.listingPin) === canonicalize(listingPin);
+  };
   // A request checked without touching the store: its detached copy and the row's immutable binding to the wire operation and the Vet parties.
   function startRow(request, time) {
     if (!isRecord(request) || !isRecord(request.accepted)) throw new TypeError('begin needs a request that carries the accepted challenge record');
@@ -178,7 +182,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     const presenter = bundlePresenter(input.accepted.buyerBundleText, presentationHash, nonce);
     if (!isCanonicalJobId(jobId) || ![nonce, presentationHash, contextScopeHash].every(isHash) || !isRecord(owner) || !pinValid(listingPin)
       || ![buyer, seller, sellerBundlePresentedBy].every(isCanonicalClaimReference) || !isTp1WireProfile(purchaseProfile)
-      || (delegationExpiresAt !== null && !isUint(delegationExpiresAt)) || presenter === null
+      || (delegationExpiresAt !== null && !isUint(delegationExpiresAt)) || presenter === null || !admissionNames(input.accepted.admission, seller, listingPin)
       || !sameCanonicalClaimIdentity(presenter, buyer) || !sameCanonicalClaimIdentity(sellerBundlePresentedBy, seller)) fail('context_challenge_attempt_invalid');
     const vetPresenters = { buyer: presenter, seller: sellerBundlePresentedBy };
     return { input, row: { jobId, buyer, seller, listingPin, contextScopeHash, nonce, presentationHash, holdId: randomUUID(), state: 'intent', rev: 1, compensation: null,
@@ -531,10 +535,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
   return api;
 }
 
-/**
- * Seller-internal, not a root export and not on the transaction: the private readers of one transaction instance, for this package's tests.
- * `ownedIntent(jobId, rev)` is true only while the one `begin` that committed that intent revision is still working on it.
- */
+/** Seller-internal, not on the transaction: one instance's private `ownedIntent(jobId, rev)` (true only while the `begin` that committed that intent revision still works on it), for this package's tests. */
 export function admissionTransactionInternals(transaction) {
   const readers = instanceReaders.get(transaction);
   if (readers === undefined) throw new TypeError('admissionTransactionInternals needs a transaction made by createContextAdmissionTransaction');
