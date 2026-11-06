@@ -71,6 +71,8 @@ export function expectedBlob(records, independent) {
 }
 export function checkDeltas(packageDir=pkg) {
   const failures=[]; const active=ledger(); const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
+  const last=active.changes.at(-1);
+  if(last && !last.files.some(file=>/^packages\/dacs-client\/(src|test)\//.test(file.path))) failures.push(`${prefix}DELTA-LEDGER.json: last record names no source or test change`);
   const archived=readFileSync(join(pkg,'evidence/publication-history.json'));
   if(createHash('sha256').update(archived).digest('hex')!==HISTORY_SHA256) failures.push('archived source/delta evidence digest differs');
   const evidence=JSON.parse(archived);
@@ -97,7 +99,7 @@ export function checkDeltas(packageDir=pkg) {
     if(same.some(sha=>sha==null||c.sha==null||sha===c.sha)) failures.push(`duplicate delta subject ${c.subject}`);
     selectors.set(c.subject,[...same,c.sha]);
     // A D11 record that names its full commit hash needs no delta prefix in the subject: the hash already selects the commit.
-    if(!['D10','D9','D1','D11','D15','D16','D18','D19','WF'].includes(c.delta)||!(c.subject.startsWith(`delta(client): ${c.delta} `)||(c.delta==='D11'&&(c.sha!=null||c.subject.startsWith('fix(client): D11 '))))) failures.push(`invalid delta ${c.subject}`);
+    if(!['D10','D9','D1','D11','D15','D16','D18','D19','WF'].includes(c.delta)||!(c.subject.startsWith(`delta(client): ${c.delta} `)||(c.delta==='D11'&&(c.sha!=null||c.subject.startsWith('fix(client): D11 ')))||(c.sha!=null&&c.subject.startsWith('fix(client): ')))) failures.push(`invalid delta ${c.subject}`);
     const matches=history.filter(h=>selects(c,h));
     if(matches.length!==1) failures.push(`delta commit selector must resolve once: ${c.sha==null?c.subject:`${c.sha} ${c.subject}`}`);
     if(matches.length===1) {
