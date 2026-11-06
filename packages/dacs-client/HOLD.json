@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "c22169fda4cacf2d150de66c291c191267a94c68"
+        "blob": "b71e436881f4a50e1556efb13dd26f68cf8a3529"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1157,7 +1157,7 @@
         "blob": "a97ba79759d398277adb6a316c74112aa8d2a240"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "59fb22f510c27ffbe977db910b7c73d3c3f2726a"
+        "blob": "d5b1b5ffe6c32d5292195025b6bc17c59823fe6b"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1739,7 +1739,7 @@
         "blob": "504131cea52f01a11311e619e01576a9939f87b6"
       },
       "test/helpers/stored-request-flows.mjs": {
-        "blob": "128ace501f6aa5f4ff68cf7d8067ea62d19e9998"
+        "blob": "f7b21b70231518c359487627ed207c4bc39dbc2d"
       },
       "test/helpers/wallet-extension-probe-dom.mjs": {
         "blob": "82ed93b9e4d001302b7fc8ea6e57b5ee5c04467c"
