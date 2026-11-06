@@ -18,6 +18,7 @@ import {
   rawPublicKey,
 } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
+import { readBoundedDemosJson } from "../rails/demosRpc.js";
 import {
   assertDemosCciResponseBounds,
   parseClaimRef,
@@ -80,7 +81,12 @@ const WRITE_ONCE_VISIBILITY_TIMEOUT_MS = 120_000;
 const WRITE_ONCE_VISIBILITY_POLL_MS = 500;
 const DAHR_INCLUSION_TIMEOUT_MS = 120_000;
 const DAHR_INCLUSION_POLL_MS = 500;
-const STORAGE_SEARCH_PAGE_SIZE = 100;
+/** @internal Items requested per storage-program search page; also the most one page may hold. */
+export const STORAGE_SEARCH_PAGE_SIZE = 100;
+/** @internal Wire bytes allowed for one storage-program search reply, including its RPC envelope. */
+export const STORAGE_SEARCH_MAX_RESPONSE_BYTES = 1024 * 1024;
+/** @internal Deadline for one storage-program search request, in milliseconds. */
+export const STORAGE_SEARCH_TIMEOUT_MS = 15_000;
 const STORAGE_SEARCH_MAX_PAGES = 100;
 const RECEIPT_HISTORY_PAGE_SIZE = 100;
 const RECEIPT_HISTORY_MAX_PAGES = 100;
@@ -719,7 +725,9 @@ export class DemosAdapter implements SubstrateAdapter {
    * demosdk 4.0.x's `StorageProgram.searchByName()` catches every transport/RPC
    * error and returns `[]`, which makes a lookup failure indistinguishable from
    * genuine absence. Immutable publication must fail closed, so this adapter
-   * uses the same public nodeCall request while preserving failures.
+   * uses the same public nodeCall request while preserving failures. Each
+   * page reply is byte-bounded before decode, limited to one page of items and
+   * given a deadline (see requestStorageSearchPage).
    */
   private async searchStorageProgramsByName(
     query: string,
@@ -728,10 +736,8 @@ export class DemosAdapter implements SubstrateAdapter {
     const found = new Map<string, StorageProgramListItem>();
     for (let page = 0; page < STORAGE_SEARCH_MAX_PAGES; page += 1) {
       const offset = page * STORAGE_SEARCH_PAGE_SIZE;
-      const response = await fetch(this.config.rpc, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const payload = await this.requestStorageSearchPage(
+        JSON.stringify({
           method: "nodeCall",
           params: [
             {
@@ -748,23 +754,25 @@ export class DemosAdapter implements SubstrateAdapter {
             },
           ],
         }),
-      });
-      if (!response.ok) {
+      );
+      if (
+        !isRecord(payload) ||
+        payload.result !== 200 ||
+        !Array.isArray(payload.response)
+      ) {
         throw new SubstrateError(
-          `storage-program search failed with HTTP ${response.status}`,
-        );
-      }
-      const payload = (await response.json()) as {
-        result?: number;
-        response?: unknown;
-      };
-      if (payload.result !== 200 || !Array.isArray(payload.response)) {
-        throw new SubstrateError(
-          `storage-program search returned an invalid RPC response (result=${String(payload.result)})`,
+          `storage-program search returned an invalid RPC response (result=${
+            isRecord(payload) ? String(payload.result) : "none"
+          })`,
         );
       }
 
       const pageItems = payload.response as StorageProgramListItem[];
+      if (pageItems.length > STORAGE_SEARCH_PAGE_SIZE) {
+        throw new SubstrateError(
+          `storage-program search returned more items than requested (${pageItems.length} > ${STORAGE_SEARCH_PAGE_SIZE})`,
+        );
+      }
       for (const item of pageItems) {
         if (
           !item ||
@@ -784,6 +792,53 @@ export class DemosAdapter implements SubstrateAdapter {
     throw new SubstrateError(
       `storage-program search exceeded ${STORAGE_SEARCH_MAX_PAGES} pages`,
     );
+  }
+
+  /**
+   * POST one search request and decode its reply. The reply is limited to
+   * STORAGE_SEARCH_MAX_RESPONSE_BYTES before it is decoded, and the whole
+   * request, body included, must finish within STORAGE_SEARCH_TIMEOUT_MS.
+   * Rejects on HTTP failure, byte excess, invalid JSON or timeout; the caller
+   * checks the RPC envelope.
+   */
+  private async requestStorageSearchPage(requestBody: string): Promise<unknown> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const cause = new SubstrateError("storage-program search timed out");
+        controller.abort(cause);
+        reject(cause);
+      }, STORAGE_SEARCH_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([
+        (async () => {
+          const response = await fetch(this.config.rpc, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: requestBody,
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            void response.body?.cancel().catch(() => undefined);
+            throw new SubstrateError(
+              `storage-program search failed with HTTP ${response.status}`,
+            );
+          }
+          return await readBoundedDemosJson(
+            response,
+            STORAGE_SEARCH_MAX_RESPONSE_BYTES,
+            controller.signal,
+          );
+        })(),
+        timedOut,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      // Also cancels an abandoned body once the request has settled.
+      controller.abort();
+    }
   }
 
   private async resolveChainIdentity(): Promise<string> {
