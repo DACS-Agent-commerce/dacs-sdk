@@ -31,7 +31,7 @@ type Gate = 'off' | 'account';
 type View = 'int' | 'node2';
 type Variant = { signer: 'wallet' | 'alt' | 'mixed'; nonceOwner: 'account' | 'signer' };
 type Opts = { historyDown?: boolean; noSeam?: boolean; lag?: number; cap?: number; oldestFirst?: boolean; base?: number;
-  failPayment?: 'consumes' | 'free' | null; amountDem?: boolean; bodyNonceOff?: boolean; bodyStatus?: 'failed' | 'pending'; badHash?: boolean; farGap?: number; tsOf?: (a: any, i: number) => number | undefined };
+  failPayment?: 'consumes' | 'free' | null; amountDem?: boolean; bodyNonceOff?: boolean; bodyStatus?: 'failed' | 'pending'; bodyHash?: string; bodyPayer?: string; bodyDown?: boolean; badHash?: boolean; farGap?: number; tsOf?: (a: any, i: number) => number | undefined };
 // Node payloads, history rows and operation records are untyped JSON here.
 type Row = { name: string; transfers: number; rejected: number; doublePay: boolean; paidCancelled: boolean; doublePayMismatch: boolean; extra: any };
 type World = ReturnType<typeof world>;
@@ -92,7 +92,11 @@ function world(view: View, variant: Variant, gate: Gate, o: Opts = {}) {
       const content = project(a); if (o.bodyNonceOff) content.nonce = view === 'node2' ? String(a.nonce + 1) : a.nonce + 1;
       // bodyStatus: the observation reads the transaction confirmed; every later read of its body (cancel's own) shows another status.
       const reads = (chain.reads[a.hash] = (chain.reads[a.hash] ?? 0) + 1);
-      return ok({ hash: a.hash, status: a.failed ? 'failed' : o.bodyStatus && reads > 1 ? o.bodyStatus : 'confirmed', blockNumber: 10, content });
+      // bodyPayer and bodyDown: every later read answers another payer, or fails. bodyHash: only cancel's first read of the body answers
+      // another transaction's hash, so a repeated cancel reads the agreeing body.
+      if (o.bodyDown && reads > 1) throw new Error('body unavailable');
+      if (o.bodyPayer && reads > 1) { content.from = o.bodyPayer; content.from_ed25519_address = o.bodyPayer; }
+      return ok({ hash: o.bodyHash && reads === 2 ? o.bodyHash : a.hash, status: a.failed ? 'failed' : o.bodyStatus && reads > 1 ? o.bodyStatus : 'confirmed', blockNumber: 10, content });
     }
     if (message === 'getBlockByNumber') return ok({ number: 10, status: 'confirmed', content: { ordered_transactions: chain.applied.map((a: any) => a.hash), timestamp: 1761900000 } });
     throw new Error(`unexpected ${message}`);
@@ -424,6 +428,34 @@ describe.each(SETTINGS)('cancel of a handed-off non-native payment, signer $vari
       }
     }
   }, 120_000);
+});
+
+// The slot's transaction body is read back by hash: cancel ends the purchase only when that body is the slot's own transaction.
+describe.each(['int', 'node2'] as const)('cancel reads the nonce slot body back, view %s', (view) => {
+  const walletKey: Variant = { signer: 'wallet', nonceOwner: 'account' };
+  const afterSlotTaken = async (name: string, o: Opts) => {
+    const w = world(view, walletKey, 'account', o);
+    return (await openAfterSlotTaken(name, w, () => w.external())).extra;
+  };
+  test('a body that agrees with the slot ends the purchase cancelled', async () => {
+    expect(await afterSlotTaken('agree', {})).toEqual({ resolve: true, op1: 'cancelled' });
+  });
+  test.each([
+    ['a body whose hash is another transaction\'s hash', { bodyHash: 'c'.repeat(64) }],
+    ['a body from another payer than the observation', { bodyPayer: OTHER }],
+    ['a body whose nonce is not the slot\'s nonce', { bodyNonceOff: true }],
+    ['a body read that fails', { bodyDown: true }],
+  ] as [string, Opts][])('%s leaves the purchase payment_uncertain', async (name, o) => {
+    expect(await afterSlotTaken(name, o)).toEqual({ resolve: false, op1: 'payment_uncertain' });
+  });
+  test('a repeated cancel after a disagreeing body reads the slot again and ends the purchase cancelled', async () => {
+    const w = world(view, walletKey, 'account', { bodyHash: 'c'.repeat(64) });
+    const op1 = w.buy('one'); await w.handoff(op1); await attempt(() => w.cancel(op1)); w.external();
+    const first = await attempt(() => w.cancel(op1)), open = w.status(op1);
+    const again = await attempt(() => w.cancel(op1));
+    expect([cancelled(first), open, cancelled(again), w.status(op1)]).toEqual([false, 'payment_uncertain', true, 'cancelled']);
+    w.close();
+  });
 });
 
 // verify_deal's mismatch branch, read directly: where the network may count a nonce per signing key (gate off) a different transfer at the
