@@ -6363,6 +6363,22 @@
           "after": "f0696e4cc8a8d54e4833adde9e465638d792a03c"
         }
       ]
+    },
+    {
+      "delta": "D20",
+      "subject": "delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal-intent/intent.mjs",
+          "before": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e",
+          "after": "3d60f6151608b59fda215fb362bb54a5721c82ce"
+        },
+        {
+          "path": "packages/dacs-client/test/intent-canonical-depth.test.mjs",
+          "before": null,
+          "after": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
+        }
+      ]
     }
   ]
 }
