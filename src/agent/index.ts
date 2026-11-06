@@ -34,6 +34,7 @@ export {
 } from "./Agent.js";
 export {
   verifyBundleCore,
+  AttestationRefRejection,
   type VerifyBundleDeps,
   type SignatureVerdict,
   type RefCheck,
@@ -369,6 +370,7 @@ export {
   pinSessionRecipeSelection,
   recoverSessionRecipePin,
   isDurableSessionRecipeRegistrySnapshot,
+  selectDurableSessionRecipe,
   isDurableSessionRecipePin,
   type DurableRecipePartyIdentity,
   type DurableRecipeRequirementPath,

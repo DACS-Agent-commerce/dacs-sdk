@@ -13,6 +13,10 @@ import { normalizeDemosAddress } from '../signatures.mjs';
 const LOCATOR = /^stor-[0-9a-f]{40}$/;
 const CHAIN_IDENTITY = /^(?:0x)?([0-9a-f]{64})$/;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+const HISTORY_PAGE_SIZE = 100;
+const HISTORY_STATUSES = ['confirmed', 'failed'];
+const SLOT_UNKNOWN = Object.freeze({ status: 'unknown' });
+const TX_HASH = /^[0-9a-f]{64}$/;
 
 // A fixture endpoint advertises itself with this header; evidence read from it
 // is labelled simulated and can never be reported as live chain evidence.
@@ -73,6 +77,44 @@ export function balanceOsFromNode(value, encoding) {
 
 const chainIdentityOf = (value) => (typeof value === 'string' ? CHAIN_IDENTITY.exec(value.trim().toLowerCase())?.[1] ?? null : null);
 
+const demosAddressOrNull = (value) => {
+  try { return normalizeDemosAddress(value); } catch { return null; }
+};
+
+// One getTransactionHistory row of `wallet`'s history, as the nonce-slot read
+// counts it: 'skip' (not evidence about the wallet's nonce), 'unknown' (the
+// whole page cannot be trusted) or { nonce, hash } (the wallet's own
+// confirmed row). The checks are closed: a row is the wallet's only when every
+// one of them holds.
+// - The status is confirmed or failed, as demosHistory.ts reads it. A failed
+//   row is never proof that its nonce was taken and is skipped before anything
+//   else in it is read.
+// - The payer is read as observePayDemTransferCore reads it:
+//   from_ed25519_address when present, else from (a present one that is
+//   unreadable is not replaced by from). A readable other payer is skipped.
+//   An unreadable payer may be the wallet, so it is 'unknown' (a known
+//   fail-closed trade-off: anyone paying the wallet from such a key keeps
+//   that page unknown).
+// - An own confirmed row must be signed by the wallet's key: a row signed by
+//   another key is 'unknown' as a precaution, since which nonce it charged
+//   is not read here. It also needs a block number (a non-negative safe
+//   integer, as demosHistory.ts requires), a node hash (bare lowercase hex, as
+//   every recorded node row carries it) and a nonce nodeProjectedNonce reads.
+function slotRow(tx, wallet) {
+  if (!isRecord(tx) || !HISTORY_STATUSES.includes(tx.status)) return 'unknown';
+  if (tx.status === 'failed') return 'skip';
+  const { content } = tx;
+  if (!isRecord(content)) return 'unknown';
+  const payer = demosAddressOrNull(content.from_ed25519_address === undefined ? content.from : content.from_ed25519_address);
+  if (payer === null) return 'unknown';
+  if (payer !== wallet) return 'skip';
+  const nonce = nodeProjectedNonce(content.nonce);
+  const ownBlock = Number.isSafeInteger(tx.blockNumber) && tx.blockNumber >= 0;
+  const ownHash = typeof tx.hash === 'string' && TX_HASH.test(tx.hash);
+  if (demosAddressOrNull(content.from) !== wallet || !ownBlock || !ownHash || nonce === null) return 'unknown';
+  return { nonce, hash: tx.hash };
+}
+
 export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null, timeoutMs = 10000, fetchImpl = globalThis.fetch }) {
   const base = rpcUrl.replace(/\/$/, '');
   const origin = new URL(base).origin;
@@ -85,9 +127,10 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return response;
   };
 
-  function nodePayload(message, data, fetcher = observingFetch) {
+  function nodePayload(message, data, fetcher = observingFetch, signal) {
     return fetchBoundedJson(base, {
       fetchImpl: fetcher,
+      signal,
       method: 'POST',
       body: { method: 'nodeCall', params: [{ message, data }] },
       timeoutMs,
@@ -96,8 +139,8 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     });
   }
 
-  async function nodeCall(message, data) {
-    const payload = await nodePayload(message, data);
+  async function nodeCall(message, data, { signal } = {}) {
+    const payload = await nodePayload(message, data, observingFetch, signal);
     if (!payload || payload.result !== 200 || !Object.hasOwn(payload, 'response')) {
       throw new OutboundError('unavailable', `Demos RPC ${message} returned a non-200 result`);
     }
@@ -107,13 +150,14 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   // One block read with this answer's own simulation marker. A non-200 answer
   // is no block (some nodes answer block zero with an error); a failed
   // request still throws.
-  async function blockRead(blockNumber) {
+  async function blockRead(blockNumber, signal) {
     let marked = false;
     const payload = await nodePayload('getBlockByNumber', { blockNumber }, async (input, init) => {
       const response = await observingFetch(input, init);
       marked = Boolean(response.headers.get(SIMULATION_HEADER));
       return response;
-    });
+    }, signal);
+    signal?.throwIfAborted();
     const answered = isRecord(payload) && payload.result === 200 && Object.hasOwn(payload, 'response');
     return { block: answered && isRecord(payload.response) ? payload.response : null, marked };
   }
@@ -125,13 +169,13 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
   // simulated fixture without a real chain identity and is reported as such.
   // This is one RPC's answer: it exposes a wrong network behind an honest RPC,
   // not a dishonest RPC. Nothing here is carried in a signed transaction.
-  async function networkIdentity() {
-    const zero = await blockRead(0);
+  async function networkIdentity({ signal } = {}) {
+    const zero = await blockRead(0, signal);
     if (loopback && zero.marked) return { mode: 'simulated-fixture', identity: null };
     const genesisNumber = zero.block ? zero.block.number ?? zero.block.id : undefined;
     let identity = zero.block && (genesisNumber === undefined || genesisNumber === 0) ? chainIdentityOf(zero.block.hash) : null;
     if (!identity) {
-      const { block } = await blockRead(1);
+      const { block } = await blockRead(1, signal);
       if (block?.number === 1 && block.status === 'confirmed' && typeof block.hash === 'string' && block.hash.trim() && isRecord(block.content)) {
         identity = chainIdentityOf(block.content.previousHash);
       }
@@ -174,8 +218,43 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return nonceFromNode(response);
   }
 
-  async function getTransaction(hash) {
-    return nodeCall('getTxByHash', { hash });
+  async function getTransaction(hash, options) {
+    return nodeCall('getTxByHash', { hash }, options);
+  }
+
+  // Which of the address's own confirmed transactions took `nonce`, read from
+  // one page of the node's history of the address. The answer is a locator,
+  // not finality: the caller reads the transaction back by its hash
+  // (observeTransfer). Each row is classified by slotRow; `limit` is the page
+  // size asked for, a whole number from 1 to HISTORY_PAGE_SIZE (the SDK's
+  // DEMOS_HISTORY_MAX_PAGE_SIZE, which cannot be imported here because its
+  // module loads demosdk).
+  // Returns { status: 'found', hash } for exactly one own row at the nonce on
+  // a page whose own rows are newest first by nonce, else { status: 'unknown' }.
+  // It never answers free or skipped: the node orders the history by signed
+  // timestamp, so a page can drop the slot's row and still hold own rows on
+  // both sides of it.
+  // Throws OutboundError 'invalid' for a nonce or page size out of range and
+  // WalletFormatError for a malformed address (both before any request),
+  // OutboundError 'invalid' for a history that is not a list within the page,
+  // and whatever nodeCall throws (timeout, refused, oversized, the caller's
+  // abort) with its own kind.
+  async function findTransferAtNonce(address, nonce, { limit = HISTORY_PAGE_SIZE, signal } = {}) {
+    if (!Number.isSafeInteger(nonce) || nonce < 0) throw new OutboundError('invalid', 'the nonce is not a non-negative safe integer');
+    if (!Number.isInteger(limit) || limit < 1 || limit > HISTORY_PAGE_SIZE) throw new OutboundError('invalid', `the history page size is not a whole number from 1 to ${HISTORY_PAGE_SIZE}`);
+    const wallet = normalizeDemosAddress(address);
+    const history = await nodeCall('getTransactionHistory', { address: wallet, type: 'all', start: 0, limit }, { signal });
+    if (!Array.isArray(history) || history.length > limit) throw new OutboundError('invalid', 'transaction history is not a list within the page size');
+    let found = null, last = Infinity;
+    for (const tx of history) {
+      const row = slotRow(tx, wallet);
+      if (row === 'unknown') return SLOT_UNKNOWN;
+      if (row === 'skip') continue;
+      if (row.nonce > last || (row.nonce === nonce && found !== null)) return SLOT_UNKNOWN;
+      last = row.nonce;
+      if (row.nonce === nonce) found = row.hash;
+    }
+    return found !== null ? { status: 'found', hash: found } : SLOT_UNKNOWN;
   }
 
   // Exact account balance in OS, read as the deployment's
@@ -242,10 +321,23 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return payload;
   }
 
-  const observer = createPayDemSellerObserver({ rpc: base, timeoutMs, maxResponseBytes: 4 * 1024 * 1024, fetchImpl: observingFetch });
+  const transferObserver = (fetcher) => createPayDemSellerObserver({ rpc: base, timeoutMs, maxResponseBytes: 4 * 1024 * 1024, fetchImpl: fetcher });
+  const observer = transferObserver(observingFetch);
+
+  // Each request keeps its own timeoutMs; there is no whole-observation
+  // deadline. A caller's signal is added to every request of a per-call
+  // observer; once aborted, the observation rejects with its reason.
+  async function observeTransfer(hash, { signal } = {}) {
+    if (!signal) return observer.observeDemosTransfer(hash);
+    signal.throwIfAborted();
+    const result = await transferObserver((input, init) => observingFetch(input, { ...init, signal: AbortSignal.any([init.signal, signal]) })).observeDemosTransfer(hash);
+    signal.throwIfAborted();
+    return result;
+  }
 
   return {
     network,
+    observer: '@kynesyslabs/dacs observePayDemTransferCore (single-node consistent view; not a validator-quorum proof)',
     rpcOrigin: origin,
     // Source-pinned expected chain identity (src/config.mjs), or null.
     pinnedIdentity: chainIdentityOf(pinnedIdentity),
@@ -258,7 +350,8 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     getAddressBalance,
     getTransactionFees,
     getTransaction,
+    findTransferAtNonce,
     getIdentities,
-    observeTransfer: (hash) => observer.observeDemosTransfer(hash),
+    observeTransfer,
   };
 }
