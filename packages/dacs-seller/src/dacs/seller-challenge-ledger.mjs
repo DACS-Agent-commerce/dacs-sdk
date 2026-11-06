@@ -164,6 +164,11 @@ function replayAnswer(row, input) {
  * `accept` stores only the canonical bytes of the presentation the row was attempted with (its stored hash, its nonce
  * and its canonical buyer) and refuses any other record as `context_challenge_attempt_invalid`; a stored record
  * that does not match its row answers `session_admission_unavailable` on continuation.
+ * `accept` also binds the job to the accepted presentation in the same transaction and throws
+ * SellerTransportError `seller_job_bound` when another nonce already bound the job. `jobBinding(jobId)`
+ * returns the detached frozen `{ jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt }` or null.
+ * Opening the ledger binds every job that has an `accepted` row and no binding yet (a store written before the
+ * binding existed) to its earliest accepted row, by `attemptedAt` then nonce, before any caller or reclamation can run.
  * `closeLostValidations()` returns how many earlier-generation attempts it closed. `retained(nonce)`
  * returns a detached frozen row or null; its caller compares the buyer and the exact bundle bytes.
  * Construction throws TypeError for an unusable port, generation or limit.
@@ -180,10 +185,19 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     origin TEXT NOT NULL CHECK (origin IN ('route', 'operator')), issuedAt INTEGER NOT NULL, expiresAt INTEGER NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('issued', 'attempted', 'accepted', 'failed')),
     presentationHash TEXT, owner TEXT, attemptedAt INTEGER, failure TEXT, accepted TEXT);
-    CREATE INDEX IF NOT EXISTS kit_challenges_job ON kit_challenges(jobId)`);
+    CREATE INDEX IF NOT EXISTS kit_challenges_job ON kit_challenges(jobId);
+    CREATE TABLE IF NOT EXISTS kit_job_bindings (
+    jobId TEXT PRIMARY KEY, nonce TEXT NOT NULL, buyer TEXT NOT NULL, presentationHash TEXT NOT NULL,
+    buyerBundleHash TEXT NOT NULL, admittedAt INTEGER NOT NULL)`);
   const one = (sql, ...args) => db.prepare(sql).get(...args);
   const all = (sql, ...args) => db.prepare(sql).all(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args).changes;
+  // A store written before the bindings existed: bind each such job to its earliest accepted row. Nothing is written on a bound store.
+  if (one("SELECT 1 FROM kit_challenges WHERE state = 'accepted' AND jobId NOT IN (SELECT jobId FROM kit_job_bindings)")) {
+    run(`INSERT INTO kit_job_bindings (jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt)
+      SELECT jobId, nonce, buyer, presentationHash, json_extract(accepted, '$.buyerBundleHash'), json_extract(accepted, '$.admittedAt')
+      FROM kit_challenges WHERE state = 'accepted' ORDER BY attemptedAt, nonce ON CONFLICT (jobId) DO NOTHING`);
+  }
 
   function readClock(headroomMs = 0) {
     const time = now();
@@ -327,7 +341,17 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (row === null) return false;
     const text = acceptedText(record, row);
     if (text === null) fail('context_challenge_attempt_invalid');
-    return run("UPDATE kit_challenges SET state = 'accepted', accepted = ? WHERE nonce = ? AND state = 'attempted' AND owner = ?", text, nonce, row.owner) === 1;
+    if (one('SELECT 1 FROM kit_job_bindings WHERE jobId = ?', row.jobId)) fail('seller_job_bound');
+    if (run("UPDATE kit_challenges SET state = 'accepted', accepted = ? WHERE nonce = ? AND state = 'attempted' AND owner = ?", text, nonce, row.owner) !== 1) return false;
+    const { buyerBundleHash, admittedAt } = JSON.parse(text);
+    run('INSERT INTO kit_job_bindings (jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt) VALUES (?, ?, ?, ?, ?, ?)',
+      row.jobId, nonce, row.buyer, row.presentationHash, buyerBundleHash, admittedAt);
+    return true;
+  }
+
+  function jobBinding(jobId) {
+    const binding = typeof jobId === 'string' ? one('SELECT * FROM kit_job_bindings WHERE jobId = ?', jobId) : undefined;
+    return binding ? deepFreeze({ ...binding }) : null;
   }
 
   function recordFailedWithin(owner, nonce, code, status = 409) {
@@ -355,5 +379,6 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     recordFailedWithin,
     closeLostValidations,
     retained,
+    jobBinding,
   });
 }
