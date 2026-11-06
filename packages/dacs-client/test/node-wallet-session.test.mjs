@@ -156,3 +156,51 @@ test('construction snapshots admission and the consumed key before its first awa
  assert.equal((await wallet.request({method:'sign',params:['TEST-snapshot']})).success,true);
  assert.ok(replacement.some(value=>value!==0),'the replacement buffer was not consumed');replacement.fill(0);
 });
+
+test("the delta map records the transport owner's port source and every edited line of sdk-provider.mjs, util/http.mjs and network-binding.mjs", async () => {
+const { ledger, locations } = await import('../scripts/delta-map.mjs');
+const map = readFileSync(new URL('../DELTA-MAP.md', import.meta.url), 'utf8');
+assert.match(map, /frontend `d6f0e16` `http-mcp\/src\/devnet-demo\/operator-network\.mjs:197-224`/);
+const record = ledger().changes.find(change => change.subject.startsWith('delta(client): WF P21a1bb '));
+for (const name of ['public/portal/embedded-wallet/sdk-provider.mjs', 'util/http.mjs', 'dacs/network-binding.mjs']) {
+  const path = `packages/dacs-client/src/${name}`;
+  assert.ok(record.files.some(file => file.path === path && file.before !== file.after), `${path} has a P21a1bb delta record`);
+  assert.ok(map.includes(locations(path)), `${path}: the map lists every edited line`);
+}
+});
+
+const TRANSACTION_SHAPED_HASH = 'ab'.repeat(32);
+const generalSign = (w, message) => w.session.wallet.request({ method: 'sign', params: [message] });
+const assertMismatch = result => { assert.equal(result.success, false, JSON.stringify(result)); assert.equal(result.error.code, 'payload_mismatch'); };
+
+test('admitted, a general sign request for the hash of a sent transaction is refused payload_mismatch and returns no signature', async t => {
+  const w = await world(t);
+  assert.equal((await w.send()).success, true);
+  const sent = w.node.broadcasts[0];
+  const result = await generalSign(w, sent.hash);
+  assertMismatch(result);
+  assert.equal(result.data, null);
+});
+
+test('admitted, a general sign request for a bare 64-hex string is refused payload_mismatch', async t => {
+  assertMismatch(await generalSign(await world(t), TRANSACTION_SHAPED_HASH));
+});
+
+test('admitted, a general sign request for a domain-prefixed transaction hash is refused payload_mismatch', async t => {
+  assertMismatch(await generalSign(await world(t), `demos-tx:v1:7:${TRANSACTION_SHAPED_HASH}`));
+});
+
+test('admitted, a general sign request for ordinary text still returns an ed25519 signature', async t => {
+  const result = await generalSign(await world(t), 'hello from the host');
+  assert.equal(result.success, true, JSON.stringify(result));
+  assert.equal(result.data.type, 'ed25519');
+  assert.match(result.data.signature, /^[0-9a-f]{128}$/);
+});
+
+test('admitted, authenticated node requests are still signed after the sign guard', async t => {
+  const w = await world(t);
+  assert.equal((await w.send()).success, true);
+  const authenticated = w.node.calls.filter(call => call.headers.signature);
+  assert.ok(authenticated.length > 0, 'the send makes authenticated node calls');
+  for (const call of authenticated) assert.match(call.headers.signature, /^(?:0x)?[0-9a-f]{128}$/);
+});
