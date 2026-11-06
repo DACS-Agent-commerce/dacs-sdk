@@ -840,6 +840,58 @@ test('a refused accounted reservation does not make its operation a retry for a 
   assert.equal(f.rows().length, 1);
 });
 
+// A `reserving` row is a retry only when the wire's own record holds the operation. Each start goes through the real wire.
+const starts = {
+  proposal: { first: f => f.args(), retry: f => f.admit() },
+  context: { first: f => f.args(contextPayload(f)), retry: f => f.admitContext() },
+};
+
+test('a crash after the row commits but before the reservation publishes does not make a terminal session\'s fresh start a retry', async t => {
+  for (const start of Object.keys(starts)) for (const restart of [false, true]) {
+    const [f, session] = await terminalFixture(t);
+    await assert.rejects(f.reserve({ ...starts[start].first(f), checked: { reserve: crash } }), error => error === cause);
+    session.state = 'finalised';
+    if (restart) f.reopen();
+    const input = await starts[start].retry(f), files = f.files();
+    await assert.rejects(f.reserve(input), refused('context_session_terminal', 409), start);
+    assert.equal(f.rows().length, 1); assert.equal(f.rows()[0].state, 'reserving'); assert.deepEqual(f.files(), files);
+    assert.equal(inspectWireOperation(f.journal, input.payload).state, 'none');
+  }
+});
+
+test('a crash after the reservation published but before the row moved on still answers the terminal session\'s retry with recover', async t => {
+  for (const start of Object.keys(starts)) for (const restart of [false, true]) {
+    const [f, session] = await terminalFixture(t); casFailure(f);
+    await assert.rejects(f.reserve(await starts[start].retry(f)), /TEST result write failed/);
+    dropCasFailure(f); session.state = 'finalised';
+    if (restart) f.reopen();
+    assert.equal(f.rows()[0].state, 'reserving');
+    f.setTime(T0 + 400000);
+    assert.equal((await f.reserve(await starts[start].retry(f))).state, 'recover', start);
+    assert.equal(f.rows().length, 2);
+  }
+});
+
+test('a wire refusal whose refused write failed does not make a terminal session\'s fresh start a retry', async t => {
+  for (const start of Object.keys(starts)) {
+    const [f, session] = await terminalFixture(t); casFailure(f);
+    await assert.rejects(f.reserve({ ...starts[start].first(f), checked: { reserve: refuses } }), error => error === wireRefusal && error.cause?.message.includes('TEST result write failed'));
+    dropCasFailure(f); session.state = 'finalised'; f.reopen();
+    assert.equal(f.rows()[0].state, 'reserving');
+    const input = await starts[start].retry(f);
+    await assert.rejects(f.reserve(input), refused('context_session_terminal', 409), start);
+    assert.equal(f.rows().length, 1); assert.equal(inspectWireOperation(f.journal, input.payload).state, 'none');
+  }
+});
+
+test('a terminal session with no wire reader refuses a fresh start whose only row is reserving', async t => {
+  const [f, session] = await terminalFixture(t, { wireOperationView: () => null });
+  await assert.rejects(f.reserve({ ...f.args(), checked: { reserve: crash } }), error => error === cause);
+  session.state = 'finalised';
+  await assert.rejects(f.reserve(f.args()), refused('context_session_terminal', 409));
+  assert.equal(f.rows().length, 1);
+});
+
 test('an accounted proposal holds its job and route against the old path: reserve and classify refuse, also after restart and a crash', async t => {
   for (const mode of ['new', 'restart', 'crash']) {
     const f = await accountingFixture(t);
