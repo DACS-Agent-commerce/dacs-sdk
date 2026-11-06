@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, contentHash, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, finalizeFixedPriceAgreementContributions, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, bindTp1Profile, checkWireRequest, openWireEnvelope, openWireRequestJournal, TP1_APPROVED_IDENTITY_RECORD, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, admitPreAgreementRequest, bindTp1Profile, checkWireRequest, openWireEnvelope, openWireRequestJournal, TP1_APPROVED_IDENTITY_RECORD, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { createSellerTransportStore } from '../../src/dacs/seller-transport-auth.mjs';
 import { testWallet } from './protocol-fixture.mjs';
 import { FIXTURE_PROFILE, TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
@@ -40,7 +40,7 @@ export async function accountingFixture(t, options = {}) {
     buyer: BUYER.claim, seller: SELLER.claim, listingPin: PIN, jobId: JOB, agreementHash: sha256Hex('agreement'),
     nonce: Buffer.from(String(++sequence).padStart(24, '0')).toString('base64url'), profile: FIXTURE_PROFILE,
     bodyHash: sha256Hex('{}'), expiresAt: time + 30000, ...change });
-  const admit = async (p = payload(), change = {}, delegated = false) => {
+  const openSigned = async (p, delegated) => {
     const signer = delegated ? SESSION : BUYER;
     const signature = signer.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.request + canonicalize(p))).toString('base64url');
     const delegationPayload = { version: '1', kind: 'seller-session-delegation', buyer: BUYER.claim, seller: SELLER.claim,
@@ -48,10 +48,21 @@ export async function accountingFixture(t, options = {}) {
       notBefore: T0 - 1000, expiresAt: T0 + 60000, profile: FIXTURE_PROFILE };
     const delegation = { payload: delegationPayload,
       signature: BUYER.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(delegationPayload))).toString('base64url') };
-    const opened = await openWireEnvelope(Buffer.from(canonicalize({ payload: p, signature, ...(delegated ? { delegation } : {}) })).toString('base64url'), 'request', { binding, local: TEST_CONNECTION, purchaseProfile: FIXTURE_PROFILE });
+    return openWireEnvelope(Buffer.from(canonicalize({ payload: p, signature, ...(delegated ? { delegation } : {}) })).toString('base64url'), 'request', { binding, local: TEST_CONNECTION, purchaseProfile: FIXTURE_PROFILE });
+  };
+  const admit = async (p = payload(), change = {}, delegated = false) => {
+    const opened = await openSigned(p, delegated);
     const checked = await checkWireRequest(opened, { binding, local: TEST_CONNECTION, purchaseProfile: FIXTURE_PROFILE,
       method: 'POST', path: p.path, rawBody: Buffer.from('{}'), now: time, seller: SELLER.claim, listingPin: p.listingPin,
       retained: { buyer: p.buyer, seller: p.seller, jobId: p.jobId, agreementHash: p.agreementHash, allocated: false }, ready: true, requestJournal: journal, ...change });
+    return { checked, payload: p, route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE };
+  };
+  // The context start through the wire's pre-Agreement admission, which carries the context scope hash instead of an Agreement.
+  const admitContext = async (p = payload({ path: CONTEXT, agreementHash: sha256Hex('context scope') }), change = {}, delegated = false) => {
+    const opened = await openSigned(p, delegated);
+    const checked = await admitPreAgreementRequest(opened, { binding, local: TEST_CONNECTION, purchaseProfile: FIXTURE_PROFILE,
+      route: 'context', method: 'POST', path: p.path, rawBody: Buffer.from('{}'), now: time, seller: SELLER.claim, listingPin: p.listingPin,
+      retained: { buyer: p.buyer, seller: p.seller, jobId: p.jobId, agreementHash: p.agreementHash, accepted: false }, ready: true, requestJournal: journal, ...change });
     return { checked, payload: p, route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE };
   };
   const args = (p = payload(), change = {}) => ({ checked: { reserve: async () => ({ state: 'new' }) }, payload: p,
@@ -86,7 +97,7 @@ export async function accountingFixture(t, options = {}) {
       ...change,
     });
   };
-  return { dir, path, db, journal, journalDir, payload, admit, payment, args, reserve, rows, files, nonces, now,
+  return { dir, path, db, journal, journalDir, payload, admit, admitContext, payment, args, reserve, rows, files, nonces, now,
     store: () => store, setTime: value => { time = value; },
     reopen: () => { store.close(); store = createSellerTransportStore({ path, now, ...options }); },
     tuples: () => db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n,

@@ -8,6 +8,8 @@ import { completeWireEffect, inspectWireOperation, wireOperationId, wireRequestH
 import { RESERVATION_LEDGER, SellerTransportError, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { createReservationAccounting } from '../src/dacs/seller-reservation-accounting.mjs';
+import { listingPin } from '../src/dacs/purchase-protocol.mjs';
+import { fixtureListing } from './fixtures/listings.mjs';
 import { accountingFixture, T0, JOB, JOB2, BUYER, SELLER, OTHER, PIN, PAYMENTS, CONTEXT, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 
@@ -59,27 +61,31 @@ test('P11b1-T02 a full job capacity refuses a new job and admits a retry for an 
   assert.equal(f.rows().length, 2); assert.equal(f.nonces().length, 2); assert.equal(f.tuples(), 1);
 });
 
+// A wrong binding that reaches the wire: the context start of a job, presented again with another scope hash. (A changed
+// Agreement on a job that has its job row is refused by the store, before a row; see the job Agreement tests.)
+const otherScope = f => f.payload({ path: CONTEXT, agreementHash: sha256Hex('changed context scope') });
+
 test('P11b1-T03 120 wrong-binding reservations through the real wire are each counted with one file, and the 121st is refused before a row or file', async t => {
   const f = await accountingFixture(t);
-  await f.reserve(await f.admit());
+  await f.reserve(await f.admitContext());
   f.setTime(T0 + 60000);
   for (let i = 0; i < 120; i++) {
-    const input = await f.admit(f.payload({ agreementHash: sha256Hex('changed retained agreement') }));
+    const input = await f.admitContext(otherScope(f));
     await assert.rejects(f.reserve(input), refused('peer_operation_mismatch', 409));
   }
   const rows = f.rows().slice(1);
   assert.equal(rows.length, 120); assert.ok(rows.every(row => row.class === 'general' && row.code === 'peer_operation_mismatch'));
   assert.equal(f.nonces().length, 121);
-  await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: sha256Hex('changed retained agreement') }))), refused('peer_buyer_nonce_limit'));
+  await assert.rejects(f.reserve(await f.admitContext(otherScope(f))), refused('peer_buyer_nonce_limit'));
   assert.equal(f.rows().length, 121); assert.equal(f.nonces().length, 121);
 });
 
 test('P11b1-T04 wrong-binding requests and pending polls are each counted as general, files equal rows', async t => {
   const f = await accountingFixture(t);
-  await f.reserve(await f.admit());
+  await f.reserve(await f.admitContext());
   for (let i = 0; i < 20; i++) {
-    await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: sha256Hex('other binding') }))), refused('peer_operation_mismatch'));
-    await assert.rejects(f.reserve(await f.admit()), refused('seller_effect_pending'));
+    await assert.rejects(f.reserve(await f.admitContext(otherScope(f))), refused('peer_operation_mismatch'));
+    await assert.rejects(f.reserve(await f.admitContext()), refused('seller_effect_pending'));
   }
   assert.equal(f.rows().length, 41); assert.equal(f.nonces().length, 41);
   assert.ok(f.rows().every(row => row.class === 'general' && row.allocationId === null));
@@ -596,6 +602,9 @@ const LIMITS = [
   { name: 'context records', options: { maxContextRecords: 1 }, contender: f => contextPayload(f, { buyer: OTHER.claim, jobId: JOB2 }),
     counts: w => w.context, refusal: refused('peer_context_capacity', 503) },
   { name: 'job owner', options: {}, contender: f => f.payload({ buyer: OTHER.claim }), counts: w => w.job, refusal: refused('peer_job_conflict', 409) },
+  // Only a job row fixes the Agreement; a context admission or an accounting hold carries none.
+  { name: 'job Agreement', options: {}, contender: f => f.payload({ agreementHash: sha256Hex('other agreement') }), counts: w => w.job && !w.context,
+    refusal: refused('peer_job_conflict', 409) },
 ];
 const READERS = [
   { name: 'old', read: (f, p) => Promise.resolve().then(() => oldReserve(f, p)) },
@@ -710,4 +719,71 @@ test('a job that already holds the only context record is issued a fresh challen
     assert.throws(() => issueChallenge(f, JOB2), refused('peer_context_capacity', 503), holder.name);
     assert.equal(presented(f, challenge).reserve().disposition, holder.retry, holder.name);
   }
+});
+
+// One job identity rule for both paths: a job row fixes the job's Agreement, so another Agreement for the job is refused
+// before any charge, unit, file or write.
+const OTHER_AGREEMENT = sha256Hex('other agreement');
+const state = f => ({ rows: f.rows().length, files: f.files(), jobs: f.jobRows(), tuples: f.tuples(), holds: f.holds().length });
+
+test('a proposal that crashed after its commit keeps the job on its Agreement: another Agreement is refused before any charge, also after restart, and the same one is admitted', async t => {
+  const f = await accountingFixture(t);
+  await assert.rejects(f.reserve(f.args(f.payload(), { checked: { reserve: crash } })), error => error === cause);
+  for (const restart of [false, true]) {
+    if (restart) f.reopen();
+    const before = state(f);
+    await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: OTHER_AGREEMENT }))), refused('peer_job_conflict', 409));
+    assert.deepEqual(state(f), before);
+  }
+  assert.equal(JSON.parse(f.jobRows()[0].context).agreementHash, f.payload().agreementHash);
+  assert.equal((await f.reserve(await f.admit())).state, 'new');
+});
+
+test('the old path wrote the job with its Agreement: an accounted request for another Agreement is refused with no row or file, and the old path agrees', async t => {
+  const f = await accountingFixture(t);
+  f.store().finish(oldReserve(f, f.payload()), 200, '{}');
+  const before = state(f);
+  await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: OTHER_AGREEMENT }))), refused('peer_job_conflict', 409));
+  assert.deepEqual(state(f), before); assert.deepEqual(f.files(), []);
+  assert.throws(() => oldReserve(f, f.payload({ agreementHash: OTHER_AGREEMENT })), refused('peer_job_conflict', 409));
+});
+
+test('a completed accounted proposal fixes the Agreement for the job\'s payment on another route, which publishes no file', async t => {
+  const f = await accountingFixture(t);
+  const pin = listingPin(fixtureListing(SELLER, { now: T0 }));
+  assert.equal((await f.reserve(await f.admit(f.payload({ listingPin: pin })))).state, 'new');
+  const before = state(f);
+  await assert.rejects(f.reserve(await f.payment(JOB)), refused('peer_job_conflict', 409));
+  assert.deepEqual(state(f), before);
+});
+
+test('a proposal refused before publication still holds the job on its Agreement', async t => {
+  const f = await accountingFixture(t);
+  const expired = Object.assign(new Error('TEST expired'), { code: 'peer_expired', status: 408 });
+  await assert.rejects(f.reserve(f.args(f.payload(), { checked: { reserve: async () => { throw expired; } } })), error => error === expired);
+  assert.equal(f.rows()[0].code, 'peer_expired');
+  const before = state(f);
+  await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: OTHER_AGREEMENT }))), refused('peer_job_conflict', 409));
+  assert.deepEqual(state(f), before);
+});
+
+test('another Agreement is refused while the first proposal is still awaiting its reservation, and the first then completes', async t => {
+  const f = await accountingFixture(t);
+  let open; const gate = new Promise(resolve => { open = resolve; });
+  const first = f.reserve(f.args(f.payload(), { checked: { reserve: async () => { await gate; return { state: 'new' }; } } }));
+  const before = state(f);
+  await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: OTHER_AGREEMENT }))), refused('peer_job_conflict', 409));
+  assert.deepEqual(state(f), before);
+  open();
+  assert.equal((await first).state, 'new');
+  assert.equal(f.rows()[0].state, 'new');
+});
+
+test('a job with a job row still admits its own context start, the same Agreement, and a full-window refusal comes before the Agreement check', async t => {
+  const f = await accountingFixture(t, { maxNoncesPerBuyerPerWindow: 3 });
+  assert.equal((await f.reserve(f.args(f.payload()))).state, 'new');
+  assert.equal((await f.reserve(f.args(contextPayload(f)))).state, 'new');
+  assert.doesNotThrow(() => oldReserve(f, contextPayload(f)));
+  assert.equal(f.jobRows().length, 1);
+  await assert.rejects(f.reserve(f.args(f.payload({ agreementHash: OTHER_AGREEMENT }))), refused('peer_buyer_nonce_limit', 429));
 });
