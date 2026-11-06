@@ -3,7 +3,7 @@
   "packages": [
     {
       "name": "@kynesyslabs/dacs", "directory": ".",
-      "requiredExports": [".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate"],
+      "requiredExports": [".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire"],
       "allow": [
         "package.json", "README.md", "LICENSE", "SECURITY.md",
         "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map",
@@ -15,19 +15,13 @@
         "docs/x402-seller-paywall.md", "docs/wallet-spend-authority.md", "docs/raw-json-admission.md",
         "docs/pay-dem-execution.md", "docs/testnet-profile-tp1.md", "docs/about-the-testnet-release.md", "docs/dacs-seller-http-v1.md",
         "vectors/dacs-seller-http-v1.json",
-        "conformance/tp1-register.json", "conformance/tp1-provenance-ids.json",
-        "conformance/tp1-node-observations/manifest.json", "conformance/tp1-node-observations/manifest-2026-10-20.json",
-        "conformance/tp1-node-observations/block0.json", "conformance/tp1-node-observations/block0-2026-10-20.json",
-        "conformance/tp1-node-observations/block1.json", "conformance/tp1-node-observations/block1-2026-10-20.json",
-        "conformance/tp1-node-observations/genesis-string-zero.json", "conformance/tp1-node-observations/genesis-string-zero-2026-10-20.json",
-        "conformance/tp1-node-observations/network.json", "conformance/tp1-node-observations/network-2026-10-20.json",
-        "conformance/tp1-node-observations/missing-status.json", "conformance/tp1-node-observations/missing-tx.json"
+        "conformance/tp1-register.json", "conformance/tp1-provenance-ids.json"
       ]
     },
     {
       "name": "@kynesyslabs/dacs-node", "directory": "packages/dacs-node",
       "preparationBlockers": ["non-registry dependency in devDependencies: file:../.. (@kynesyslabs/dacs)"],
-      "requiredExports": [".", "./transport", "./sqlite", "./demos-loader", "./vectors/dacs-http-envelope-v1.json"],
+      "requiredExports": [".", "./transport", "./sqlite", "./public-fetch", "./public-json", "./secrets", "./demos-loader", "./vectors/dacs-http-envelope-v1.json"],
       "allow": ["package.json", "README.md", "LICENSE", "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map", "vectors/dacs-http-envelope-v1.json"]
     },
     {
