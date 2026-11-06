@@ -8,6 +8,9 @@ const RESERVATION_LEASE_MS = 300000;
 const RESULTS = new Set(['new', 'recover', 'completed']);
 const CAPACITY_CLASSES = new Set(['general', 'purchase']);
 const GENERAL_CAPACITY = Object.freeze({ class: 'general', allocationId: null });
+const PAYMENT_PATH = '/dacs/v1/payments';
+// A transaction's key as the transport store keeps it: no 0x prefix, lower case.
+const transactionOf = value => typeof value === 'string' && /^(?:0x)?[0-9a-fA-F]{64}$/.test(value) ? value.replace(/^0x/, '').toLowerCase() : null;
 const uint = value => Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0);
 const fail = (code, status) => { throw new SellerTransportError(code, status); };
 // K5 step 8 (amend1 D19): a refusal of the wire or the host carries a string code and an HTTP status; a system error's code (EIO) has no status.
@@ -108,7 +111,10 @@ export function createReservationAccounting({ store, now, limits }) {
     if (typeof checked?.reserve !== 'function' || typeof payload !== 'object' || payload === null || route !== payload.path ||
         operationId !== wireOperationId(payload) || (paymentTx !== null && (typeof paymentTx !== 'string' || paymentTx.length === 0)) ||
         (checkCapacityWithin !== undefined && typeof checkCapacityWithin !== 'function')) fail('wire_input_invalid', 500);
-    return { checked, payload, route, operationId, paymentTx, keepProfile, checkCapacityWithin };
+    // The payment route carries its transaction claim, the admitted body's own txHash, and no other route carries one.
+    const claim = route === PAYMENT_PATH ? transactionOf(checked.body?.txHash) : null;
+    if (route === PAYMENT_PATH ? paymentTx === null || claim === null || transactionOf(paymentTx) !== claim : paymentTx !== null) fail('wire_input_invalid', 500);
+    return { checked, payload, route, operationId, paymentTx: claim, keepProfile, checkCapacityWithin };
   }
 
   return {

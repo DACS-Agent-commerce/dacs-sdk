@@ -10,7 +10,7 @@ import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { createReservationAccounting } from '../src/dacs/seller-reservation-accounting.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
-import { accountingFixture, T0, JOB, JOB2, BUYER, SELLER, OTHER, PIN, PAYMENTS, CONTEXT, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
+import { accountingFixture, T0, JOB, JOB2, BUYER, SELLER, OTHER, PIN, PAYMENTS, PAYMENT_TX, CONTEXT, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 
 const refused = (code, status) => ({ code, ...(status === undefined ? {} : { status }) });
@@ -161,8 +161,7 @@ test('P11b1-T10 one payment transaction for two jobs suspends credit for both in
     t.after(() => durable.close());
     let intake = 0;
     for (const [index, jobId] of jobs.entries()) {
-      const input = await f.payment(jobId);
-      input.paymentTx = sha256Hex('one payment transaction');
+      const input = await f.payment(jobId, {}, sha256Hex('one payment transaction'));
       const effect = await f.reserve(input);
       assert.equal(effect.state, 'new'); intake++;
       assert.equal(await durable.withJob(jobId, () => durable.bindSettlement(input.paymentTx, jobId, { phaseIndex: 0, jobId, evidenceHash: sha256Hex(jobId) })), index === 0);
@@ -181,10 +180,10 @@ test('P11b1-T10 one payment transaction for two jobs suspends credit for both in
 
 test('P11b1-T11 a second payment claim after the operation completed is accounted as general and runs no intake', async t => {
   const f = await accountingFixture(t);
-  const input = await f.payment(); input.paymentTx = sha256Hex('first claim');
+  const input = await f.payment(JOB, {}, sha256Hex('first claim'));
   const effect = await f.reserve(input); let intake = 1;
   completeWireEffect(f.journal, effect, { status: 200, text: '{"status":"delivered"}' });
-  const retry = await f.payment(); retry.paymentTx = sha256Hex('second claim');
+  const retry = await f.payment(JOB, {}, sha256Hex('second claim'));
   const result = await f.reserve(retry); if (result.state !== 'completed') intake++;
   assert.equal(result.state, 'completed'); assert.equal(intake, 1);
   assert.equal(f.rows()[1].class, 'general'); assert.equal(f.rows()[1].state, 'completed'); assert.equal(f.nonces().length, 2);
@@ -411,16 +410,40 @@ test('accounting-payment-tuple-commit-cuts', async t => {
   for (const table of ['kit_job_holds', 'kit_payment_transactions', 'kit_reservations', 'peer_jobs', 'kit_purchase_profiles']) {
     const f = await accountingFixture(t);
     f.db.exec(`CREATE TRIGGER cut_insert BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'TEST insert cut'); END`);
-    await assert.rejects(f.reserve(f.args(undefined, { paymentTx: sha256Hex('payment commit cut') })), /TEST insert cut/);
+    await assert.rejects(f.reserve(f.args(f.payload({ path: PAYMENTS }))), /TEST insert cut/);
     f.reopen(); f.assertEmpty(); assert.equal(claimCount(f), 0);
   }
   // Deferred FK violation reaches COMMIT after all step-6 statements succeeded.
   const f = await accountingFixture(t);
   f.db.exec('CREATE TABLE commit_guard (job TEXT REFERENCES kit_purchase_profiles(job) DEFERRABLE INITIALLY DEFERRED)');
-  await assert.rejects(f.reserve(f.args(undefined, { paymentTx: sha256Hex('commit failure'), checkCapacityWithin: ({ run }) => {
+  await assert.rejects(f.reserve(f.args(f.payload({ path: PAYMENTS }), { checkCapacityWithin: ({ run }) => {
     run('INSERT INTO commit_guard VALUES (?)', 'TEST-missing-job'); return { class: 'general', allocationId: null };
   } })), /FOREIGN KEY constraint failed/);
   f.reopen(); f.assertEmpty(); assert.equal(claimCount(f), 0);
+});
+
+test('a payment reservation carries its own transaction claim and no other route carries one', async t => {
+  const f = await accountingFixture(t);
+  const pay = f.payload({ path: PAYMENTS });
+  const wrong = sha256Hex('another transaction');
+  await assert.rejects(f.reserve(f.args(pay, { paymentTx: null })), refused('wire_input_invalid', 500));
+  await assert.rejects(f.reserve(f.args(pay, { paymentTx: undefined })), refused('wire_input_invalid', 500));
+  await assert.rejects(f.reserve(f.args(pay, { paymentTx: wrong })), refused('wire_input_invalid', 500));
+  await assert.rejects(f.reserve(f.args(pay, { checked: { reserve: async () => ({ state: 'new' }), body: {} } })), refused('wire_input_invalid', 500));
+  await assert.rejects(f.reserve(f.args(pay, { checked: { reserve: async () => ({ state: 'new' }), body: { txHash: 'not a transaction' }, }, paymentTx: 'not a transaction' })), refused('wire_input_invalid', 500));
+  for (const path of [f.payload().path, CONTEXT, BUYER_COPY]) {
+    await assert.rejects(f.reserve(f.args(f.payload({ path }), { paymentTx: PAYMENT_TX })), refused('wire_input_invalid', 500));
+  }
+  f.assertEmpty(); assert.equal(claimCount(f), 0);
+});
+
+test('an admitted payment reservation records its transaction row, in the form the transport store keeps', async t => {
+  const f = await accountingFixture(t);
+  const pay = f.payload({ path: PAYMENTS });
+  const upper = '0x' + PAYMENT_TX.toUpperCase();
+  assert.equal((await f.reserve(f.args(pay, { checked: { reserve: async () => ({ state: 'new' }), body: { payerPayingKey: pay.buyer, txHash: upper } }, paymentTx: upper }))).state, 'new');
+  assert.deepEqual(f.payments(), [{ tx: PAYMENT_TX, jobId: JOB, operationId: wireOperationId(pay) }]);
+  assert.equal(f.rows().length, 1);
 });
 
 test('a charged hold cannot be deleted while a reservation references it', async t => {
