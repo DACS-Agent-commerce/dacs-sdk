@@ -1,9 +1,8 @@
 // The kit's one durable challenge ledger (K1). It issues seller challenge nonces, consumes a nonce on
 // its first authenticated presentation attempt, records which attempt owns the validation, and keeps
 // either the one accepted presentation with its admission or the definite refusal.
-// The transport store builds it on its own SQLite handle for the host and the context route (the agent keeps its own
-// ledgers until it moves here). The caller owns the SQLite handle, the immediate-transaction helper, the startup lock
-// and the terminal-state view.
+// The transport store builds it on its own SQLite handle for the host, the context route and the seller agent. The
+// caller owns the SQLite handle, the immediate-transaction helper, the startup lock and the terminal-state view.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { canonicalize, identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';

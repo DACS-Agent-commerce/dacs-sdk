@@ -495,10 +495,17 @@ per-client limiter so one client cannot exhaust the shared request budget.
   on a Listing its own revocation check finds not revoked, and only under
   `sessionAdmission`, before anything of it is kept, read, signed or sent.
   - **Issuing.** `host.issueSessionChallenge({ jobId, buyer })` keeps a fresh
-    256-bit nonce for that job and buyer, valid for ten minutes, before it
-    returns `{ jobId, buyer, sessionNonce, issuedAt, expiresAt }`. The operator
-    hands it to the buyer, whose bundle carries it as `sessionNonce` (CORE
-    SN-1..SN-3; delivering the challenge to the buyer is up to the operator).
+    256-bit nonce for that job and buyer, valid for ten minutes, in the one
+    challenge ledger the host's transport store keeps (the same ledger the
+    context route issues into; this operator entry stays until the host mounts
+    that route) before it returns `{ jobId, buyer, sessionNonce, issuedAt,
+    expiresAt }`. The operator hands it to the buyer, whose bundle carries it
+    as `sessionNonce` (CORE SN-1..SN-3; delivering the challenge to the buyer
+    is up to the operator). An open challenge for the same job and buyer is
+    returned again; the ledger's hourly limits apply (five per buyer, twelve
+    overall), and a job whose challenge was consumed takes no new one
+    (`context_job_closed`). Without a `sessionAdmission` the issuer refuses
+    `session_admission_unavailable` before anything is kept.
   - **Generation.** Only the seller generates the nonce, using its own CSPRNG.
     Supplying `sessionNonce` to the issuer is refused. The buyer copies the
     returned value into its bundle and signs afterward (CORE SN-1..SN-3).
@@ -506,12 +513,16 @@ per-client limiter so one client cannot exhaust the shared request budget.
     nonce its bundle carries, durably and before the attempt is validated:
     before its signature, its buyer and job binding, the revocation check and
     `admit` (CORE SN-4, IBH-4). A refused attempt consumes it too, a `503`
-    included, so after a refused attempt the buyer asks the operator for a
-    new challenge. After an admitted one, the buyer sends the admitted
-    presentation again (a new challenge would be another bundle, refused as
-    `session_not_admitted`). Configuration, Listing validity and rail selection
-    gates come first, as does a presentation with no session nonce
-    (`session_not_admitted`, DACS-1 §6.3.2); those refusals consume nothing.
+    included, and closes the job to new challenges, so after a refused attempt
+    the buyer starts again with a new job. After an admitted one, the buyer
+    sends the admitted presentation again (a new challenge would be another
+    bundle, refused as `session_not_admitted`). The ledger's own code stays in
+    the refusal's message (`context_challenge_consumed`, `_failed`, `_expired`,
+    `_mismatch`); a presentation under validation answers
+    `session_admission_unavailable` (`503`). Configuration, Listing validity
+    and rail selection gates come first, as does a presentation with no
+    session nonce (`session_not_admitted`, DACS-1 §6.3.2); those refusals
+    consume nothing.
     Buyer-access and malformed-bundle refusals consume a recognized challenge.
   - **Later presentations.** Any later presentation that carries the nonce is
     refused (`session_not_admitted`): another one, a re-signed one, or one
@@ -766,9 +777,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   see the root exports above) itself: the challenge
   a session needs is the one `host.issueSessionChallenge` issued, which the
   operator delivers to the buyer. The host keeps every issued challenge
-  with its seller state. Expired unattempted challenges may be reclaimed;
-  accepted presentations retain their exact admission checkpoint for replay.
-  Retired unsigned admissions release active capacity within bounded history.
+  in the transport store's one challenge ledger, beside the seller state.
+  Expired unattempted challenges may be reclaimed; accepted presentations
+  retain their exact admission checkpoint and their job binding for replay.
   The operator issues challenges only for buyers about to present.
 - The devnet source transport and wallet custody are not part of this
   package (the payment-evidence journal composes the operator's own wallet
