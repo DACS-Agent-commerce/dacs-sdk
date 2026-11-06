@@ -470,7 +470,7 @@ jobs:
       - name: Typecheck and test against demosdk 4.0.18
         if: matrix.node-version == '22'
         run: |
-          npm install --no-save --no-audit @kynesyslabs/demosdk@4.0.18
+          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
           test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
           npm run typecheck
           npm run host:typecheck
