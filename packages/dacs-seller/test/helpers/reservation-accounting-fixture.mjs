@@ -17,6 +17,7 @@ export const JOB2 = '01M5YKPJG048H248H248H248H2';
 export const PROPOSALS = '/dacs/v1/agreements/proposals';
 export const PAYMENTS = '/dacs/v1/payments';
 export const CONTEXT = '/dacs/v1/agreements/context';
+export const PAYMENT_TX = sha256Hex('default payment transaction');
 export const BUYER = testWallet(1), SELLER = testWallet(2);
 export const OTHER = testWallet(4);
 const SESSION = testWallet(3);
@@ -67,14 +68,16 @@ export async function accountingFixture(t, options = {}) {
       retained: { buyer: p.buyer, seller: p.seller, jobId: p.jobId, agreementHash: p.agreementHash, accepted: false }, ready: true, requestJournal: journal, ...change });
     return { checked, payload: p, route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE };
   };
-  const args = (p = payload(), change = {}) => ({ checked: { reserve: async () => ({ state: 'new' }) }, payload: p,
-    route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE, ...change });
+  // A payment request carries its transaction in the admitted body and claims it; `change` may override either.
+  const args = (p = payload(), change = {}) => ({ checked: { reserve: async () => ({ state: 'new' }), body: p.path === PAYMENTS ? { payerPayingKey: p.buyer, txHash: PAYMENT_TX } : {} },
+    payload: p, route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE, ...(p.path === PAYMENTS ? { paymentTx: PAYMENT_TX } : {}), ...change });
   const reserve = (input) => store.reservationAccounting.reserveAccounted(input);
   const rows = () => db.prepare('SELECT * FROM kit_reservations ORDER BY rowid').all();
   const files = () => readdirSync(journalDir).sort();
   const nonces = () => files().filter(name => name.startsWith('k-'));
   // Each payment passes the real continuation gate with a signed Agreement, Listing and commitment.
-  const payment = async (jobId = JOB, change = {}) => {
+  const payment = async (jobId = JOB, change = {}, tx = sha256Hex('payment of ' + jobId)) => {
+    const rawBody = Buffer.from(JSON.stringify({ payerPayingKey: BUYER.claim, txHash: tx }));
     const listing = fixtureListing(SELLER, { now: T0 });
     const draft = deriveFixedPriceAgreement(agreementInput({ jobId, listing, buyerBundle: fixtureIdentityBundle(BUYER, T0 - 1000), generatedAt: T0 - 1000 }));
     const plan = createFixedPriceAgreementSigningPlan(draft);
@@ -92,12 +95,13 @@ export async function accountingFixture(t, options = {}) {
         contentHash: contentHash(record), transactionRef: { kind: 'demos', value: 'TEST commitment write' }, writer: SELLER.claim, nonce: '1',
         state: 'finalized', observationDisposition: 'established', observedAt: T0,
         blockRef: { id: 'TEST-block', height: '1', timestamp: T0 }, evidence: { kind: 'TEST-finality', value: 'TEST-proof' } } };
-    return admit(payload({ path: PAYMENTS, jobId, agreementHash, listingPin: pin }), {
-      commitment: Buffer.from(JSON.stringify(commitment)), agreement: Buffer.from(JSON.stringify(agreement)), signedListing: Buffer.from(JSON.stringify(listing)),
+    const input = await admit(payload({ path: PAYMENTS, jobId, agreementHash, listingPin: pin, bodyHash: sha256Hex(rawBody) }), {
+      rawBody, commitment: Buffer.from(JSON.stringify(commitment)), agreement: Buffer.from(JSON.stringify(agreement)), signedListing: Buffer.from(JSON.stringify(listing)),
       retained: { buyer: BUYER.claim, seller: SELLER.claim, jobId, agreementHash },
       readCommitmentReceipt: Object.assign(async () => 'valid', { chainIdentity: FIXTURE_PROFILE.chainIdentity }),
       ...change,
     });
+    return { ...input, paymentTx: tx };
   };
   return { dir, path, db, journal, journalDir, payload, admit, admitContext, payment, args, reserve, rows, files, nonces, now,
     store: () => store, setTime: value => { time = value; },
