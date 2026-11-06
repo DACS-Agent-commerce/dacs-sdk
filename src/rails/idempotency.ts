@@ -131,10 +131,11 @@ export interface SettlementLog {
   }>): Promise<SettlementIntentClaim>;
   /**
    * Like `claimIntent`, but only for an intent that is already unresolved, and
-   * atomic: it never installs a record or a lease. A key never seen, or whose
-   * attempt was released as not-invoked, answers `absent` and writes nothing;
-   * an expired unresolved intent is acquired as stage `reconcile`. Required to
-   * recover (`recover()` is refused without it).
+   * atomic: it never installs a new intent or a fresh lease. A key never seen,
+   * or whose attempt was released as not-invoked, answers `absent` and leaves
+   * the log unchanged; an expired unresolved intent is acquired, which does
+   * write: it takes a current lease of stage `reconcile`. Required to recover
+   * (`recover()` is refused without it).
    */
   claimExistingIntent?(input: Readonly<{
     key: string;
