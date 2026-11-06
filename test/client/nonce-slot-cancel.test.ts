@@ -114,11 +114,12 @@ function world(view: View, variant: Variant, gate: Gate, o: Opts = {}) {
   const handoff = (op: any) => purchases.prepareHandoff({ operationId: op.id, token: ops.handoffTokenFor(op.id) });
   const cancel = (op: any) => purchases.cancel({ accountId: 'TEST-buyer', operationId: op.id });
   const verifyHash = (op: any, txHash: string) => purchases.verifyDeal({ accountId: 'TEST-buyer', operationId: op.id, txHash });
+  const verifyReportedHash = (op: any) => purchases.verifyDeal({ accountId: 'TEST-buyer', operationId: op.id });
   const verify = (op: any, payload: any) => verifyHash(op, hashOf(payload));
   const status = (op: any) => ops.get('TEST-buyer', op.id)?.status;
   const toPayee = () => chain.applied.filter((a: any) => a.to === PAYEE && !a.failed).length;
   const landed = (p: any) => Boolean(p) && chain.applied.some((a: any) => a.hash === hashOf(p) && !a.failed);
-  return { chain, broadcast, mine, external, inbound, farFail, buy, handoff, cancel, verify, verifyHash, status, toPayee, landed, close: () => { db.close(); rmSync(dir, { recursive: true, force: true }); } };
+  return { chain, coordinates, broadcast, mine, external, inbound, farFail, buy, handoff, cancel, verify, verifyHash, verifyReportedHash, status, toPayee, landed, close: () => { db.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
 const attempt = async (fn: () => Promise<any>) => { try { return await fn(); } catch (e: any) { return { threw: e?.code ?? String(e.message) }; } };
@@ -286,7 +287,7 @@ const SCENARIOS: Array<[string, Scenario]> = [
   }],
   ['an own-key transaction after an unlisted payment signed by another key does not end the purchase', async (world) => [await paidRow('D', world, {}, (x) => x.external())]],
   // The release lands, 100 later rows (the wallet's own, or inbound) push its row off the one page the reader asks for, and cancel is called again.
-  ['a release that has left the one page the reader asks for is still a way out through `verify_deal`', async (world) => {
+  ['a release that has left the one page the reader asks for is still a way out through `verify_deal` with the gate on, and with it off the purchase stays open', async (world) => {
     const rows: Row[] = [];
     for (const [name, later] of [['E own', (x: World) => { for (let i = 0; i < 100; i++) x.external(); }], ['E inbound', (x: World) => x.inbound(...Array.from({ length: 100 }, (_, i) => i + 1))]] as const) {
       const w = world(); const op1 = w.buy('one'); await w.handoff(op1); const c = await decline(w, op1); later(w);
@@ -296,13 +297,14 @@ const SCENARIOS: Array<[string, Scenario]> = [
     }
     return rows;
   }],
-  ['a decliner who sends the release and calls `verify_deal` with its hash is free', async (world) => {
+  ['a decliner who sends the release and calls `verify_deal` with its hash is free with the gate on, and stays blocked with it off', async (world) => {
     const w = world(); const op1 = w.buy('one'); await w.handoff(op1); const c = await decline(w, op1);
     const st = w.status(op1); const early = await attempt(() => w.handoff(w.buy('two'))); const v = c.release ? await attempt(() => w.verify(op1, c.release)) : { threw: 'no release' };
     return [row('F', w, { resolve: 'not called', op1AtResolve: st, rebuyBefore: outcome(early), verifyRelease: verdict(v), op1: w.status(op1), rebuyAfter: outcome(await attempt(() => w.handoff(w.buy('three')))) })];
   }],
-  // verify_deal's mismatch branch rests on the same assumption as the gate (one nonce per account, every such transaction listed).
-  ['a payload that lands after `verify_deal` freed the wallet is rejected for a wallet that signs with its own key', async (world) => {
+  // verify_deal's mismatch branch frees the wallet only under the gate (one nonce per account, every such transaction listed); with it off
+  // the purchase stays payment_uncertain, so a payload that lands afterwards cannot be a second payment.
+  ['a payload that lands after `verify_deal` freed the wallet (gate on) or left it blocked (gate off) is never a second payment for a wallet that signs with its own key', async (world) => {
     const w = world(); const op1 = w.buy('one'); const old = (await w.handoff(op1)).payload; const c = await decline(w, op1);
     const v = await attempt(() => w.verify(op1, c.release)); w.broadcast(old); w.mine(); const r2 = await buyAgain(w);
     return [row('F late', w, { verifyRelease: verdict(v), op1: w.status(op1), rebuy: outcome(r2) }, { p1: old, p2: r2.payload })];
@@ -352,8 +354,8 @@ const SCENARIOS: Array<[string, Scenario]> = [
   ['a lower own row stamped after the payment, with the slot\'s row off the page, never ends the purchase', async (world) => [
     await paidRow('T3', world, { tsOf: (_a: any, i: number) => i === 5 ? 6.5 : undefined }, (x) => { for (let i = 0; i < 99; i++) x.external(); }),
   ]],
-  // With the gate off the answer names the slot's transaction (a release would be refused); verify_deal with it frees the wallet.
-  ['a decliner whose slot their own other transaction took is given its hash, and `verify_deal` with it frees the wallet', async (world) => {
+  // With the gate off the answer names the slot's transaction (a release would be refused); verify_deal with it leaves the purchase open.
+  ['a decliner whose slot their own other transaction took is given its hash, and `verify_deal` with it does not free the wallet', async (world) => {
     const w = world(); const op1 = w.buy('one'); await w.handoff(op1); await attempt(() => w.cancel(op1)); w.external();
     const c2 = await attempt(() => w.cancel(op1)); const v = c2.slotTxHash ? await attempt(() => w.verifyHash(op1, c2.slotTxHash)) : { threw: 'no hash' };
     return [row('H', w, { release: Boolean(c2.release), verify: verdict(v), op1: w.status(op1), rebuy: outcome(await buyAgain(w)) })];
@@ -394,9 +396,9 @@ const EXPECTED: Array<[string, number, number, any]> = [
     : [n, 1, 0, { cancel: false, op1: 'payment_uncertain', rebuy: 'unresolved_payment' }]),
 ];
 // The other rows (wallet key), by name: [transfers, the first purchase's final status] with the gate on, then with it off where that differs.
-const cuts = [1, 'cancelled', 0, 'payment_uncertain'], open = [0, 'payment_uncertain'], mismatch = [0, 'payment_mismatch'];
+const cuts = [1, 'cancelled', 0, 'payment_uncertain'], open = [0, 'payment_uncertain'], mismatch = [0, 'payment_mismatch', 0, 'payment_uncertain'];
 const ENDS: Record<string, any[]> = { ...Object.fromEntries(['X0', 'X4', 'X5', 'X9 release first', 'A', 'B', 'X20 release', 'X22 release'].map((n) => [n, cuts])),
-  X7: [0, 'payment_uncertain'], C: [0, 'payment_uncertain'], T3: [1, 'payment_uncertain'], H: [1, 'cancelled', 1, 'payment_mismatch'], D: [2, 'settled_verified'], 'E own': mismatch, 'E inbound': mismatch, F: mismatch, 'F late': [1, 'payment_mismatch'], G: [0, 'broadcast_reported'],
+  X7: [0, 'payment_uncertain'], C: [0, 'payment_uncertain'], T3: [1, 'payment_uncertain'], H: [1, 'cancelled', 0, 'payment_uncertain'], D: [2, 'settled_verified'], 'E own': mismatch, 'E inbound': mismatch, F: mismatch, 'F late': [1, 'payment_mismatch', 0, 'payment_uncertain'], G: [0, 'broadcast_reported'],
   'X20 landed': [1, 'settled_verified'], 'X21 at the slot': open, 'X21 at N+50': open, 'X22 lag': [1, 'payment_uncertain'], X23: [1, 'payment_uncertain'], X24: [1, 'payment_uncertain'] };
 // Rows that end paid twice, or paid and cancelled, with the gate on where the node counts a nonce per signing key: the gate stays off there.
 const KNOWN_WITH_GATE_ON: Record<Variant['signer'], string[]> = { wallet: [], alt: ['B', 'D', 'T3'], mixed: ['X9 release first', 'X9 old first', 'A', 'B', 'D', 'T3'] };
@@ -418,8 +420,36 @@ describe.each(SETTINGS)('cancel of a handed-off non-native payment, signer $vari
         if (ENDS[r.name]) expect([r.name, r.transfers, r.extra.op1], view).toEqual([r.name, ...(gate === 'account' ? [t, s] : [offT, offS])]);
         if (full && (gate === 'account' || !ENDS[r.name])) expect([r.name, r.transfers, r.rejected, r.extra], view).toEqual(full);
         expect(Boolean(ENDS[r.name] || full), `${view}: ${r.name} has no expected end`).toBe(true);
-        if (r.name === 'H' && gate === 'off') expect(r.extra, view).toMatchObject({ release: false, verify: 'mismatch' });
+        if (r.name === 'H' && gate === 'off') expect(r.extra, view).toMatchObject({ release: false, verify: 'mismatch_unproven', rebuy: 'unresolved_payment' });
       }
     }
   }, 120_000);
+});
+
+// verify_deal's mismatch branch, read directly: where the network may count a nonce per signing key (gate off) a different transfer at the
+// approved slot leaves the purchase payment_uncertain and the wallet blocked, whichever key signed it; the gate on is what ends it.
+describe.each(['int', 'node2'] as const)('verify_deal on a transfer that took the approved slot, view %s', (view) => {
+  const declined = async (variant: Variant, gate: Gate) => {
+    const w = world(view, variant, gate); const op1 = w.buy('one'); await w.handoff(op1); const c = await decline(w, op1);
+    return { w, op1, v: await w.verify(op1, c.release) };
+  };
+  test.each(['wallet', 'alt'] as const)('with the gate off, a %s-signed transfer keeps the purchase uncertain and blocks the wallet', async (signer) => {
+    const { w, op1, v } = await declined({ signer, nonceOwner: 'signer' }, 'off');
+    expect([v.verification.outcome, w.status(op1)]).toEqual(['mismatch_unproven', 'payment_uncertain']);
+    expect(outcome(await attempt(() => w.handoff(w.buy('two'))))).toBe('unresolved_payment');
+    w.close();
+  });
+  test('with the gate off, the mismatching hash is detached so a hash can be reported again', async () => {
+    const { w, op1, v } = await declined({ signer: 'wallet', nonceOwner: 'account' }, 'off');
+    expect(w.coordinates.get(op1.id).reportedTxHash).toBeNull();
+    expect(verdict(await attempt(() => w.verifyReportedHash(op1)))).toBe('hash_required');
+    expect(verdict(await attempt(() => w.verifyHash(op1, v.verification.txHash)))).toBe('mismatch_unproven');
+    w.close();
+  });
+  test('with the gate on, the same transfer ends the purchase payment_mismatch and frees the wallet', async () => {
+    const { w, op1, v } = await declined({ signer: 'wallet', nonceOwner: 'account' }, 'account');
+    expect([v.verification.outcome, w.status(op1)]).toEqual(['mismatch', 'payment_mismatch']);
+    expect(outcome(await attempt(() => w.handoff(w.buy('two'))))).toBe('payload');
+    w.close();
+  });
 });
