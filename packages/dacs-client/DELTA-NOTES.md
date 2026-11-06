@@ -234,6 +234,10 @@ Negotiate-phase timing: the seller no longer records negotiate phase 0 when its 
 
 Payment evidence shape: `checkNativePaymentEvidence` in `src/dacs/native-payment-evidence-consumer.mjs` requires the seller-signed artifact to be a plain object and `paymentTxRefs` to be an array of exactly one plain-object entry before it reads any member, and hashes the artifact only after the scope checks pass. A malformed artifact now returns the same scope-mismatch failure as any other scope mismatch instead of throwing a TypeError. `test/native-payment-evidence-shape.test.mjs` checks null, primitive and array entries, non-array values, missing, empty and two-entry lists, a non-object or unhashable artifact, malformed amount, finality and signature members, and a well-formed artifact.
 
+## D11 — Nonce-slot reader
+
+The chain reader gains `findTransferAtNonce(address, nonce, { limit, signal })`: one `getTransactionHistory` page, each row classified by one closed check (`slotRow`), answering `found` with a hash the caller reads back, or `unknown`. A failed row is skipped unread; an own confirmed row needs the wallet's own signing key, a block number, a bare 64-hex hash and a readable nonce, and own rows must be newest first by nonce. It is on the reader object only: no package export and no caller. `test/chain-nonce-slot.test.mjs` covers every row check. The ledger records the two earlier commits of this reader by full commit hash, because their subjects carry no delta prefix.
+
 ## WF — W-finish (W-FINISH §5)
 
 Client commits that move the buyer client onto the new wire and its public API use the id `WF`, with subjects `delta(client): WF <PR id> <summary>`. The earlier D-ids keep their original scope.
