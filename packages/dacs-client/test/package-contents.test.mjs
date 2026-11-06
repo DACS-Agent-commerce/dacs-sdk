@@ -21,12 +21,13 @@ function entryPointClosure() {
   }
   visit('src/index.mjs');
   visit('src/wallet/durable-journal.mjs');
+  visit('src/wallet/node-wallet-session.mjs');
   return [...files].sort();
 }
 
-// The loading modules are reached only by dynamic import from the Node wallet session, not from the two entry points.
-const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs', 'src/wallet/node-demos-loading.mjs'];
-test('npm pack ships only the two entry points, their reviewed import closure and the two internal loading modules', t => {
+// The quiet hook is registered by URL, so no import reaches it; the three entry points determine the rest of the closure.
+const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
+test('npm pack ships the three entry points, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const path of ['src', 'package.json', 'README.md', 'LICENSE']) {
@@ -44,6 +45,7 @@ test('npm pack ships only the two entry points, their reviewed import closure an
   const [pack] = JSON.parse(result.stdout);
   const files = pack.files.map(file => file.path).sort();
   for (const path of files) {
+    if (path === 'src/public/portal/embedded-wallet/sdk-provider.mjs') continue; // the session's one reviewed portal module
     assert.doesNotMatch(path, /(?:^|\/)(?:public|portal|portal-intent|config|seller-agent|seller-durable-state|switch-files|FIX-REPORT|\.fix-tmp|\.rr-tmp|\.stack)(?:[/.]|$)/, path);
   }
   assert.deepEqual(files, [...entryPointClosure(), ...LOADING_MODULES, 'package.json', 'README.md', 'LICENSE'].sort());
