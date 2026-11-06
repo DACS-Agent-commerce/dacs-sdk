@@ -6,24 +6,28 @@ import { randomUUID } from 'node:crypto';
 import { canonicalize, compositeVerificationAddress, isAttestationRef, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
-import { boundedCall } from './bounded-call.mjs';
+import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
 import { SELLER_CONTEXT_PATH, SellerTransportError, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS } from './session-admission.mjs';
 
-const ACQUIRE_TIMEOUT_MS = 10_000;
-const POLICY_HOLD_WRITES = 2;
+const ACQUIRE_TIMEOUT_MS = 10_000, POLICY_HOLD_WRITES = 2;
+const LIVE_STATES = ['intent', 'admitted', 'running'], HASH = /^[0-9a-f]{64}$/;
+// The rows whose context outcome a pass inspects first, and the most one sweep waits on one row's pass before it moves on.
+const OUTCOME_STATES = ['admitted', 'running', 'compensating'], SWEEP_ROW_TIMEOUT_MS = 30_000;
 const DELEGATION_GRACE_MS = 30_000;
-const LIVE_STATES = ['intent', 'admitted', 'running'];
-const CLOSED_STATES = ['aborted', 'settled'];
 // C3 kinds that prove no effect; every other kind, absence and age included, is undetermined.
 const NO_EFFECT_KINDS = ['no-intent', 'proven-unsigned'];
 // K1's triggers (a) to (d) and the cause each leaves on the fenced row.
 const TRIGGER_CODES = { a: 'context_start_failed', b: 'peer_operation_mismatch', c: 'context_delegation_grace', d: 'context_operator_abort' };
 const ORPHANED_INTENT_CODE = 'context_intent_orphaned';
 const PARTY_VET_NON_PASS = 'party_vet_non_pass';
+// Cleanup state by row state, as `cleanup = { releasePending, holdCall, cause, tries }`:
+//   intent: holdCall none or pending | admitted, running: settled | compensating: none, pending or settled; releasePending false in all four
+//   aborted, settled: holdCall none or settled, never pending; releasePending true until a release succeeds (or no D3 call ever started)
+// Open work is a compensating row, a pending release or a pending D3 call. `cause` is the last failure of the last pass over the row,
+// `tries` counts failed releases; the next pass that finishes clears the cause, so it holds readiness false only while the failure lasts.
 const OPEN_CLEANUP = `json_extract(record, '$.cleanup.releasePending') = 1 OR json_extract(record, '$.cleanup.holdCall') = 'pending'
   OR json_extract(record, '$.cleanup.cause') IS NOT NULL`;
-const HASH = /^[0-9a-f]{64}$/;
 
 // Per transaction instance: the live-begin reader below, kept off the frozen API so that nothing outside the module can take it for authority.
 const instanceReaders = new WeakMap();
@@ -77,15 +81,18 @@ function contextOutcomeClass(row, outcomeText) {
  * `begin(request)` is D2-D4: it resolves `{ jobId, rev }` once the intent, the policy hold and the acceptance are durable. A D3 or D4 failure
  * is rejected at once and then compensated (C1-C4) under the same lease.
  * `reserveContext(jobId, reserveWire)` is D5: it resolves the wire's completed result (which grants no capability; its source is the
- * caller's to revalidate) or the attempt's capability
+ * caller's to revalidate; the row first settles on the journal's own completed outcome, when it holds one) or the attempt's capability
  * `{ effect, operationId, attempt, rev, complete(outcome, { jobLease }) }`. `runningCheck(jobId, attempt, rev)` is the synchronous D6 fence.
  * `jobEffectMutex(jobId)` is `{ acquire(), run(work) }` over opaque leases. `addAcceptanceHook(hook)` registers a synchronous hook that
  * runs inside D4's transaction and refuses by throwing; the first `begin` seals registration.
  * `compensate(jobId, trigger)` fences the row for trigger `a`, `b`, `c` (only from the delegation's expiry plus 30,000 ms) or `d`, then runs C2-C4 under the
  * job mutex; it settles a completed context outcome, aborts only on proof of no effect, and otherwise keeps the row `compensating` with its cause.
- * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`); a startup sweep throws TypeError while
- * a begin is live, and a periodic one leaves a live begin's intent alone. `cleanupPending()` is true while a row is compensating, or holds a pending
- * release, a pending policy call or a cleanup cause. `admissionRecord(jobId)` is the frozen read-only projection, or null.
+ * It throws TypeError for a job that is not canonical or a trigger that is not one of those four strings; for an unknown job it writes nothing.
+ * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). It waits at most 10,000 ms for a
+ * row's lease and 30,000 ms for its pass, records a row it could not finish on that row and goes on to the next; it rejects with an AggregateError
+ * after visiting every row when it could not record one. A periodic sweep called while one runs answers that one; a startup sweep rejects with
+ * TypeError while a begin is live or a sweep runs, and a periodic one leaves a live begin's intent alone. `cleanupPending()` is true while a row is
+ * compensating, or holds a pending release, a pending policy call or a cleanup cause. `admissionRecord(jobId)` is the frozen read-only projection, or null.
  * Throws TypeError for an unusable option; operations reject with a SellerTransportError (guard errors keep their own class) that keeps its cause.
  */
 export function createContextAdmissionTransaction({ store, policy, capacity = null, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
@@ -100,7 +107,10 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
   // recording included. Closure-private: P09bb's sweep reads `ownedIntent` from inside this closure, and no age or lease stands in for it.
   const liveBegins = new Map();
   const ownedIntent = (jobId, rev) => liveBegins.get(jobId)?.rev === rev;
-  let hooksSealed = false;
+  // Jobs whose D3 call is known to have ended while their row still says `pending`: every earlier process's, once a startup sweep holds
+  // the state lock, and this process's own when recording the call's end failed. Only these are settled-unknown.
+  const endedCalls = new Set();
+  let hooksSealed = false, sweeping = null;
   if (capacity !== null) acceptanceHooks.push(({ jobId, buyer, seller, listingPin }) => { capacity.allocateWithin({ jobId, buyer, seller, listingPin }); });
 
   const read = (jobId) => {
@@ -209,29 +219,30 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       challenges.recordFailedWithin(owner, nonce, code, status);
     });
   }
-  // D8b/D8c and C4b/C4c: release the hold (idempotent at the policy), then clear releasePending. A failed release keeps it, with cause and count,
-  // and only while the row still has releasePending: a completion's release and a sweep's can overlap, and a failure that lands after the other
-  // one cleared the row would leave a cause that nothing clears.
-  // A hold whose D3 call never started has nothing to release, and a release for it would only write a policy line.
-  async function releaseHold(row) {
-    const change = (patch) => transaction(() => {
-      const current = read(row.jobId), next = patch(current.cleanup);
-      if (next !== null) update(current, { cleanup: { ...current.cleanup, ...next } });
+  // Changes only a row's cleanup notes, on the row as it now stands; `change(cleanup)` answers the fields to set, or null to write nothing.
+  function patchCleanup(jobId, change) {
+    return transaction(() => {
+      const current = read(jobId), next = current === null ? null : change(current.cleanup);
+      return next === null ? current : update(current, { cleanup: { ...current.cleanup, ...next } });
     });
+  }
+  const noteCause = (jobId, cause) => { patchCleanup(jobId, () => ({ cause: storedCause(cause) })); };
+  const clearCause = (jobId) => { patchCleanup(jobId, (cleanup) => (cleanup.cause === null ? null : { cause: null })); };
+  // D8b/D8c and C4b/C4c: release the hold by its holdId (idempotent at the policy) within the policy deadline, then clear releasePending
+  // and the cause. A failure, a late one included, only counts a try with its cause, and only while the row still has releasePending: a
+  // completion's release and a sweep's can overlap. A hold whose D3 call never started is cleared without a policy line. Answers whether
+  // nothing is left to release.
+  async function releaseHold(jobId) {
+    const row = read(jobId);
+    if (row?.cleanup.releasePending !== true) return true;
     if (row.cleanup.holdCall !== 'none') {
-      try { await policy.release({ jobId: row.jobId, hold: row.holdId }); }
-      catch (cause) { change((cleanup) => (cleanup.releasePending ? { cause: storedCause(cause), tries: cleanup.tries + 1 } : null)); return; }
+      try { await boundedCall(() => policy.release({ jobId, hold: row.holdId }), { timeoutMs: deadlines.policyMs }); } catch (cause) {
+        patchCleanup(jobId, (cleanup) => (cleanup.releasePending ? { cause: storedCause(cause), tries: cleanup.tries + 1 } : null));
+        return false;
+      }
     }
-    change(({ holdCall }) => ({ releasePending: false, cause: null, holdCall: holdCall === 'none' ? 'none' : 'settled' }));
-  }
-  // The sweep and C4b: never while this process's D3 call is open; only a startup sweep, under the state lock, may treat it as settled-unknown.
-  async function releaseCleanup(row, startup) {
-    if (row.cleanup.holdCall === 'pending' && !startup) noteCause(row, new SellerTransportError('context_hold_call_pending', 503));
-    else await releaseHold(row);
-  }
-  // Records why a row's cleanup could not finish, on the row as it now stands.
-  function noteCause(row, cause) {
-    return transaction(() => { const current = read(row.jobId); return update(current, { cleanup: { ...current.cleanup, cause: storedCause(cause) } }); });
+    patchCleanup(jobId, () => ({ releasePending: false, cause: null }));
+    return true;
   }
 
   // D2: the intent commits in one transaction, or its refusal fails the owning challenge alone and nothing else is written.
@@ -283,14 +294,11 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       return Object.freeze({ jobId: admitted.jobId, rev: admitted.rev });
     });
   }
-  // What the deadline outran: the call's own end is awaited under the lease, so compensation sees its result. The row keeps an uncertain
-  // call's cause until the hold it may have appended late is released.
-  async function settleLateCall({ jobId }, call, error) {
+  // What the deadline outran: the call's own end is awaited under the lease, so compensation sees its result. When recording that end
+  // fails, the end is still known to this process, and a later pass settles it.
+  async function settleLateCall({ jobId }, call) {
     await call.settled;
-    transaction(() => {
-      const current = read(jobId);
-      update(current, { cleanup: { ...current.cleanup, holdCall: 'settled', cause: error.code === 'seller_budget_unavailable' ? storedCause(error.cause ?? error) : current.cleanup.cause } });
-    });
+    try { patchCleanup(jobId, () => ({ holdCall: 'settled' })); } catch (fault) { endedCalls.add(jobId); throw fault; }
   }
   // D3 and D4 under the job lease. The caller's answer settles as soon as D4 or its failure is recorded; the lease is held on until a
   // policy call that the deadline outran has settled, so neither cleanup nor a later reserve can race a late hold. A failure is then
@@ -307,8 +315,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       let fault = null;
       try { recordStartFailure(input, error); } catch (storeFault) { fault = storeFault; }
       answer.reject(fault ?? error);
-      if (call !== null) await settleLateCall(input, call, error);
-      await settleRow(input.jobId, false);
+      if (call !== null) await settleLateCall(input, call);
+      await reconcile(input.jobId);
     }
   }
   async function begin(request) {
@@ -333,7 +341,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     }
   }
   // D5 under the lease: the wire reserves once, then the exact revision moves to the issued attempt. Losing that CAS to C1 ends the
-  // attempt null (nothing was signed) and answers closed.
+  // attempt null (nothing was signed) and answers closed. A completed answer is reconciled under the same lease before it is returned,
+  // so the row settles on the journal's own completed outcome where the answer arrives and never waits for a sweep.
   async function reserveUnderLease(jobId, reserveWire, lease) {
     const row = read(jobId);
     if (row === null || !['admitted', 'running'].includes(row.state)) fail('context_admission_closed');
@@ -342,7 +351,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       if (error?.code === 'peer_operation_mismatch') transaction(() => fenceWithin(jobId, row.rev, error));
       throw error;
     }
-    if (effect?.state === 'completed') return effect;
+    if (effect?.state === 'completed') { await reconcile(jobId); return effect; }
     if (!['new', 'recover'].includes(effect?.state) || !isHash(effect.operationId) || !isUint(effect.attempt)) throw new TypeError('the wire reservation is neither new, recover nor completed');
     const running = transaction(() => {
       const current = read(jobId);
@@ -400,13 +409,13 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     try { settled = publish(issued, effect, outcome); } finally { lease?.release(); }
     if (settled === null) return;
     // A lost callback leaves releasePending durable, which the sweep retries.
-    if (borrowed !== null) borrowed.afterRelease.push(() => { void releaseHold(settled).catch(() => {}); });
-    else await releaseHold(settled);
+    if (borrowed !== null) borrowed.afterRelease.push(() => { void releaseHold(settled.jobId).catch(() => {}); });
+    else await releaseHold(settled.jobId);
   }
 
-  // D8 from `running` or `compensating`: the row settles with the context outcome's class and its hold is released afterwards.
+  // D8 from `admitted`, `running` or `compensating`: the row settles with the context outcome's class and its hold is released afterwards.
   function settleWithin(row, contextOutcome) {
-    return transaction(() => update(row, { state: 'settled', contextOutcome, cleanup: { ...row.cleanup, releasePending: true, cause: null } }));
+    return transaction(() => update(row, { state: 'settled', contextOutcome, cleanup: { ...row.cleanup, releasePending: true } }));
   }
   // The context outcome comes first. It is the class of a completed outcome under this row's own binding, or null while there is none.
   // An inspection that fails, or that reports another binding, throws and settles nothing.
@@ -440,29 +449,38 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     }
     return addresses.map((address) => ({ address, kind: byAddress.get(address).kind }));
   }
-  // C3 to C4a, or D8 on a completed outcome; undetermined evidence keeps the row `compensating` with its cause and its hold.
-  async function settleCompensating(row) {
-    try {
-      const contextOutcome = recordedOutcomeClass(row);
-      if (contextOutcome !== null) return settleWithin(row, contextOutcome);
-      const evidence = await noEffectEvidence(row);
-      const proven = transaction(() => update(row, { compensation: { ...row.compensation, proof: 'no-effect', evidence } }));
-      return transaction(() => update(proven, { state: 'aborted', cleanup: { ...proven.cleanup, releasePending: true, cause: null } }));
-    } catch (cause) { return noteCause(row, cause); }
+  // C3 (C3r after a restart) to C4a for a compensating row with no completed outcome. The proof and the abort are two commits on the exact
+  // revision that was read; the evidence is read fresh every time, so a saved proof never authorizes the abort.
+  async function abortOnNoEffect(row) {
+    if (row.cleanup.holdCall === 'pending') fail('context_hold_call_pending', 503);
+    const evidence = await noEffectEvidence(row);
+    const proven = transaction(() => {
+      const current = read(row.jobId);
+      if (current?.rev !== row.rev || current.state !== 'compensating') fail('context_admission_closed');
+      return update(current, { compensation: { ...current.compensation, proof: 'no-effect', evidence } });
+    });
+    return transaction(() => update(proven, { state: 'aborted', cleanup: { ...proven.cleanup, releasePending: true } }));
   }
-  // Sweep step 4: a running row whose journal holds a completed outcome settles; otherwise it stays as it was.
-  function settleRunning(row) {
-    try {
-      const contextOutcome = recordedOutcomeClass(row);
-      return contextOutcome === null ? row : settleWithin(row, contextOutcome);
-    } catch (cause) { return noteCause(row, cause); }
+  // A pending D3 call whose end is known is settled-unknown: compensation then releases its hold, if it appended one, by holdId.
+  function adoptEndedCall(row) {
+    if (row?.cleanup.holdCall !== 'pending' || !endedCalls.has(row.jobId)) return row;
+    const adopted = patchCleanup(row.jobId, () => ({ holdCall: 'settled' }));
+    endedCalls.delete(row.jobId);
+    return adopted;
   }
-  // C2 onwards, with the caller holding the job mutex: settle or abort a row that is running or compensating, then finish its release.
-  async function settleRow(jobId, startup) {
-    let row = read(jobId);
-    if (row?.state === 'running') row = settleRunning(row);
-    if (row?.state === 'compensating') row = await settleCompensating(row);
-    if (CLOSED_STATES.includes(row?.state) && row.cleanup.releasePending) await releaseCleanup(row, startup);
+  // The one reconciliation pass over a row, run by a failed begin, a completed wire answer, compensate and the sweep, always under the
+  // job lease: adopt an ended D3 call; settle on the context outcome first (D8, never an abort); abort a compensating row only on proof
+  // of no effect; then release. A pass that finishes clears the row's cause; one that cannot finish records why and keeps the row.
+  async function reconcile(jobId) {
+    try {
+      let row = adoptEndedCall(read(jobId));
+      if (OUTCOME_STATES.includes(row?.state)) {
+        const contextOutcome = recordedOutcomeClass(row);
+        if (contextOutcome !== null) row = settleWithin(row, contextOutcome);
+        else if (row.state === 'compensating') await abortOnNoEffect(row);
+      }
+      if (await releaseHold(jobId)) clearCause(jobId);
+    } catch (cause) { noteCause(jobId, cause); }
   }
   // Trigger (c): the delegation's expiry plus the grace is checked to be a safe integer first. A direct request has no expiry, so no grace trigger.
   function graceElapsed({ delegationExpiresAt }) {
@@ -471,26 +489,23 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     if (!isUint(eligibleAt)) fail('peer_clock_invalid', 503);
     return clock() >= eligibleAt;
   }
-  // C1 for a trigger on a live row, in one transaction with the trigger's own check. Returns whether this call fenced the row. An unsafe
-  // trigger (c) sum or clock keeps the row, with its cause.
-  function startCompensation(jobId, trigger) {
-    try {
-      return transaction(() => {
-        const row = read(jobId);
-        if (!LIVE_STATES.includes(row?.state) || (trigger === 'c' && !graceElapsed(row))) return false;
-        return fenceWithin(jobId, row.rev, new SellerTransportError(TRIGGER_CODES[trigger], 409));
-      });
-    } catch (error) {
-      if (error.code !== 'peer_clock_invalid') throw error;
-      noteCause(read(jobId), error);
-      return false;
-    }
+  // C1 for a trigger on a live row, in one transaction with the trigger's own check. Answers whether this call fenced the row. An unsafe
+  // trigger (c) sum or seller clock throws `peer_clock_invalid` and fences nothing.
+  function fenceForTrigger(jobId, trigger) {
+    return transaction(() => {
+      const row = read(jobId);
+      return LIVE_STATES.includes(row?.state) && (trigger !== 'c' || graceElapsed(row)) && fenceWithin(jobId, row.rev, new SellerTransportError(TRIGGER_CODES[trigger], 409));
+    });
   }
   async function compensate(jobId, trigger) {
     assertKitOperationAdmitted('compensate');
-    if (!isCanonicalJobId(jobId) || !Object.hasOwn(TRIGGER_CODES, trigger)) throw new TypeError('compensation needs a canonical job and trigger a, b, c or d');
-    startCompensation(jobId, trigger);
-    await jobEffectMutex(jobId).run(() => settleRow(jobId, false));
+    if (!isCanonicalJobId(jobId) || typeof trigger !== 'string' || !Object.hasOwn(TRIGGER_CODES, trigger)) throw new TypeError('compensation needs a canonical job and trigger a, b, c or d');
+    try { fenceForTrigger(jobId, trigger); } catch (error) {
+      if (error.code !== 'peer_clock_invalid') throw error;
+      noteCause(jobId, error);
+      return;
+    }
+    await jobEffectMutex(jobId).run(() => reconcile(jobId));
   }
 
   const ownedByLiveBegin = (row) => row?.state === 'intent' && ownedIntent(row.jobId, row.rev);
@@ -501,20 +516,42 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       if (row?.state === 'intent' && (startup || !ownedByLiveBegin(row))) fenceWithin(jobId, row.rev, new SellerTransportError(ORPHANED_INTENT_CODE, 409));
     });
   }
+  // One row of the sweep, with its own lease wait and pass deadline: a row that hangs keeps its lease and its pass, is recorded with its
+  // cause, and never holds up the rows after it. Throws only when that record itself cannot be written.
   async function sweepRow(jobId, startup) {
-    fenceOrphanedIntent(jobId, startup);
-    await settleRow(jobId, startup);
-    if (startCompensation(jobId, 'c')) await settleRow(jobId, startup);
-  }
-  async function sweep({ startup }) {
-    if (typeof startup !== 'boolean') throw new TypeError('sweep needs { startup } as a boolean');
-    if (startup && liveBegins.size > 0) throw new TypeError('the startup sweep runs before any begin');
-    if (startup) challenges.closeLostValidations();
-    const unfinished = db.prepare(`SELECT jobId FROM kit_context_admissions WHERE state IN ('intent', 'compensating', 'admitted', 'running') OR ${OPEN_CLEANUP}`).all();
-    for (const { jobId } of unfinished) {
-      if (!startup && ownedByLiveBegin(read(jobId))) continue;
-      try { await jobEffectMutex(jobId).run(() => sweepRow(jobId, startup)); } catch (error) { noteCause(read(jobId), error); }
+    if (!startup && ownedByLiveBegin(read(jobId))) return;
+    let lease;
+    try { lease = await acquireBounded(jobEffectMutex(jobId)); } catch (cause) { noteCause(jobId, cause); return; }
+    const pass = boundedWork(async () => {
+      fenceOrphanedIntent(jobId, startup);
+      await reconcile(jobId);
+      if (fenceForTrigger(jobId, 'c')) await reconcile(jobId);
+    }, { timeoutMs: SWEEP_ROW_TIMEOUT_MS });
+    void pass.settled.then(() => lease.release());
+    try { await pass.result; } catch (cause) {
+      noteCause(jobId, isBoundedCallTimeout(cause) ? new SellerTransportError('context_cleanup_timeout', 503, { cause }) : cause);
     }
+  }
+  async function sweepPass(startup) {
+    if (startup) {
+      challenges.closeLostValidations();
+      const pending = db.prepare(`SELECT jobId FROM kit_context_admissions WHERE json_extract(record, '$.cleanup.holdCall') = 'pending'`).all();
+      for (const { jobId } of pending) endedCalls.add(jobId);
+    }
+    const unfinished = db.prepare(`SELECT jobId FROM kit_context_admissions WHERE state IN ('intent', 'compensating', 'admitted', 'running') OR ${OPEN_CLEANUP}`).all();
+    const faults = [];
+    for (const { jobId } of unfinished) {
+      try { await sweepRow(jobId, startup); } catch (fault) { faults.push(fault); }
+    }
+    if (faults.length > 0) throw new AggregateError(faults, 'the sweep could not record the state of every row it visited');
+  }
+  // Not behind the kit operation guard: the sweep starts no effect, and with the guard off it only finishes the cleanup of rows that exist.
+  function sweep(options) {
+    const startup = options?.startup;
+    if (typeof startup !== 'boolean') return Promise.reject(new TypeError('sweep needs { startup } as a boolean'));
+    if (startup && (liveBegins.size > 0 || sweeping !== null)) return Promise.reject(new TypeError('the startup sweep runs before any begin or other sweep'));
+    sweeping ??= sweepPass(startup).finally(() => { sweeping = null; });
+    return sweeping;
   }
   // A begin that is running is not unfinished cleanup; every other open compensation, release, policy call or cause is.
   function cleanupPending() {

@@ -612,6 +612,8 @@ const OTHER_OUTCOMES = [
   ['a present answer whose references lack an anchor', jobId => presented(jobId, { buyer: { vetRecordRef: { contentHash: hash('buyer') } }, seller: { vetRecordRef: { contentHash: hash('seller') } } })],
   ['a present answer whose seller reference has an unknown anchor kind', jobId => presented(jobId, { seller: { vetRecordRef: { anchor: { kind: 'elsewhere', locator: 'x' }, contentHash: hash('seller') } } })],
   ['a present answer whose buyer reference has a malformed content hash', jobId => presented(jobId, { buyer: { vetRecordRef: { anchor: { kind: 'https', locator: 'x' }, contentHash: 'not-a-hash' } } })],
+  ['a present answer whose seller reference carries an extra key', jobId => presented(jobId, { seller: { vetRecordRef: { ...vetRef('seller').vetRecordRef, extra: true } } })],
+  ['a present answer whose buyer reference names a malformed signer', jobId => presented(jobId, { buyer: { vetRecordRef: { ...vetRef('buyer').vetRecordRef, signer: 'not-a-claim' } } })],
   ['an absent answer', () => ({ status: 200, text: '{"disposition":"absent"}' })],
   ['a rejection that is not a Vet non-pass', () => ({ status: 409, text: '{"disposition":"rejected","code":"other_refusal"}' })],
   ['text that is not JSON', () => ({ status: 200, text: 'not json' })],
@@ -962,8 +964,8 @@ test('P09b-T37 table: durable cut (D1, D2, hold line, D4, D7 before D8a, C1, C3 
   assert.equal(d4.row(u.input.jobId).holdId, kept.holdId); assert.equal(d4.admission.admissionRecord(u.input.jobId).contextOutcome, 'success'); assert.equal(d4.calls.reserve, 1); assert.equal(d4.calls.effective, 1);
   // D7 before D8a, C1 and C3 before C4a, each with every completed class: restart, then C1 before the sweep or the sweep alone; one settlement, one release.
   for (const [expected, make] of COMPLETED_CLASSES) {
-    for (const cut of ['D7 then C1 then sweep', 'C1 then restart', 'C3 evidence was read first']) {
-      const w = world(t), p = w.prepare(); await crashAfterPublish(w, p, make(p.input.jobId));
+    for (const cut of ['D7 then C1 then sweep', 'C1 then restart', 'C3 evidence was read first', 'the startup sweep alone']) {
+      const w = world(t), p = w.prepare(); await crashAfterPublish(w, p, make(p.input.jobId)); const { holdId } = w.row(p.input.jobId);
       if (cut === 'C1 then restart') w.compensating(p.input.jobId);
       if (cut === 'C3 evidence was read first') { w.compensating(p.input.jobId); w.control.inspect = () => ({ state: 'none' }); await w.admission.sweep({ startup: false }); w.control.inspect = null; }
       w.reopen(); if (cut === 'D7 then C1 then sweep') await w.admission.compensate(p.input.jobId, 'd');
@@ -971,6 +973,7 @@ test('P09b-T37 table: durable cut (D1, D2, hold line, D4, D7 before D8a, C1, C3 
       assert.equal(record.state, cut === 'C3 evidence was read first' ? 'aborted' : 'settled', label);
       if (record.state === 'settled') { assert.equal(record.contextOutcome, expected, label); assert.equal(w.calls.effective, 1, label); assert.equal(w.calls.evidence.length, 0, label); }
       assert.equal(w.holds.size, 0, label); const stable = w.row(p.input.jobId); await sweepTwice(w); assert.deepEqual(w.row(p.input.jobId), stable, label);
+      assert.equal(stable.holdId, holdId, label);
     }
   }
 });
@@ -1136,6 +1139,117 @@ test('admission-live-begin-owner-is-removed-only-by-its-own-begin', async t => {
   assert.equal(owned(w, a.input.jobId, 1), false); assert.equal(w.row(a.input.jobId).state, 'aborted');   // P09bb's C2-C4 settle it under the same lease
 });
 
+// Moves the mocked clock on in steps until `promise` settles, letting every pending turn run between steps; fails if it never settles.
+async function driveUntil(t, promise, stepMs = 1000) {
+  let done = false; promise.then(() => { done = true; }, () => { done = true; });
+  for (let step = 0; step < 200 && !done; step++) { await flush(); t.mock.timers.tick(stepMs); }
+  await flush(); assert.equal(done, true, 'the call settled within the mocked deadlines');
+  return promise;
+}
+const killedAtTheHoldLine = async (w, p) => {
+  w.control.beforeReserve = () => { w.control.killed = true; w.db.close(); return null; };
+  await assert.rejects(w.admission.begin(p.input), Error); w.control.beforeReserve = null; w.reopen();
+};
+
+test('admission-sweep-moves-past-a-row-whose-evidence-lease-or-release-never-answers', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const never = new Promise(() => {});
+  for (const hang of ['evidence', 'lease', 'release']) {
+    const w = world(t);
+    if (hang === 'release') { const base = w.policy; w.options.policy = { reserve: base.reserve, release: request => (request.jobId === job(0x11) ? never : base.release(request)) }; w.reopen(); }
+    const a = w.prepare(0x11), b = w.prepare(0x22); await w.admission.begin(a.input); await w.admission.begin(b.input);
+    if (hang === 'release') await driveUntil(t, w.admission.compensate(a.input.jobId, 'd'));
+    else w.compensating(a.input.jobId);
+    if (hang === 'evidence') w.control.evidence = record => (record.jobId === a.input.jobId ? never : w.evidenceOf(record, 'no-intent'));
+    if (hang === 'lease') void w.admission.jobEffectMutex(a.input.jobId).run(() => never);
+    w.control.clock = T0 + HOUR + 30000;
+    await driveUntil(t, w.admission.sweep({ startup: false }));
+    assert.equal(w.row(b.input.jobId).state, 'aborted', hang); assert.equal(w.holds.has(w.row(b.input.jobId).holdId), false, hang);
+    assert.notEqual(w.row(a.input.jobId).cleanup.cause, null, hang); assert.equal(w.holds.has(w.row(a.input.jobId).holdId), true, hang); assert.equal(w.admission.cleanupPending(), true, hang);
+  }
+  const w = world(t), p = w.prepare(); await running(w, p); w.compensating(p.input.jobId);
+  const first = w.admission.sweep({ startup: false }), second = w.admission.sweep({ startup: false });
+  assert.strictEqual(second, first); await assert.rejects(w.admission.sweep({ startup: true }), TypeError);
+  await first; assert.equal(w.calls.evidence.length, 1, 'two overlapping sweeps make one pass'); assert.equal(w.row(p.input.jobId).state, 'aborted');
+});
+
+test('admission-completed-wire-answer-settles-the-row-where-it-arrives', async t => {
+  for (const [expected, make] of COMPLETED_CLASSES) {
+    for (const from of ['admitted', 'running']) {
+      const label = `${expected} from ${from}`, w = world(t), p = w.prepare(); p.input.delegationExpiresAt = null; await w.admission.begin(p.input);
+      if (from === 'running') await w.admission.reserveContext(p.input.jobId, w.reserveWire);
+      const answer = make(p.input.jobId), done = { state: 'completed', operationId: hash('wire-operation'), outcome: answer };
+      w.control.inspect = jobId => ({ state: 'completed', binding: w.row(jobId).contextBinding, outcome: answer });
+      assert.strictEqual(await w.admission.reserveContext(p.input.jobId, async () => done), done, label);
+      const settled = w.admission.admissionRecord(p.input.jobId);
+      assert.equal(settled.state, 'settled', label); assert.equal(settled.contextOutcome, expected, label); assert.equal(w.holds.size, 0, label);
+      assert.equal(w.calls.effective, 1, label); assert.equal(w.calls.evidence.length, 0, label); assert.equal(w.admission.cleanupPending(), false, label);
+      await sweepTwice(w); w.reopen(); await sweepTwice(w, true);
+      assert.deepEqual(w.admission.admissionRecord(p.input.jobId), settled, label); assert.equal(w.calls.effective, 1, label);
+    }
+  }
+});
+
+test('admission-an-ended-policy-call-is-settled-by-a-later-periodic-sweep-without-another-restart', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const failures = [
+    ['the startup evidence read fails', w => { w.control.evidence = () => { throw new Error('journal unreadable'); }; }, w => { w.control.evidence = null; }],
+    ['the startup release fails', w => { w.control.unavailable = new Error('policy ledger unavailable'); }, w => { w.control.unavailable = null; }],
+    ['the startup adoption commit fails', (w, p) => w.cut('before-commit', () => w.row(p.input.jobId)?.cleanup.holdCall === 'settled'), () => {}],
+  ];
+  for (const [label, arrange, recover] of failures) {
+    const w = world(t), p = w.prepare(); await killedAtTheHoldLine(w, p); assert.equal(w.row(p.input.jobId).cleanup.holdCall, 'pending', label);
+    arrange(w, p); await driveUntil(t, w.admission.sweep({ startup: true }));
+    assert.equal(w.holds.size, 1, label); assert.equal(w.admission.cleanupPending(), true, label);
+    recover(w); await driveUntil(t, w.admission.sweep({ startup: false }));
+    assert.equal(w.row(p.input.jobId).state, 'aborted', label); assert.equal(w.row(p.input.jobId).cleanup.holdCall, 'settled', label);
+    assert.equal(w.holds.size, 0, label); assert.equal(w.calls.effective, 1, label); assert.equal(w.admission.cleanupPending(), false, label);
+  }
+  // This process's own late call: recording its end fails, and the begin that owned it ends.
+  const w = world(t), p = w.prepare(), entered = deferred(), barrier = deferred();
+  w.control.beforeReserve = () => { entered.resolve(); return barrier.promise; };
+  const rejected = reject(w.admission.begin(p.input), 'seller_budget_unavailable', 503); await entered.promise; t.mock.timers.tick(POLICY_MS); await rejected;
+  w.cut('before-commit', () => w.row(p.input.jobId).cleanup.holdCall === 'settled'); barrier.resolve(null); await drained(w, p.input.jobId); await flush();
+  assert.equal(w.row(p.input.jobId).cleanup.holdCall, 'pending'); assert.equal(owned(w, p.input.jobId, 1), false); assert.equal(w.holds.size, 1);
+  await driveUntil(t, w.admission.sweep({ startup: false }));
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(w.admission.cleanupPending(), false);
+});
+
+test('admission-a-fault-that-ends-leaves-no-cause-on-a-live-row', async t => {
+  const w = world(t), p = w.prepare(); await running(w, p);
+  const faults = [['an inspection fault', () => { w.control.inspect = () => { throw new Error('journal unreadable'); }; }, () => { w.control.inspect = null; }, 'operation_uncertain'],
+    ['a seller clock fault', () => { w.control.clock = -1; }, () => { w.control.clock = T0; }, 'peer_clock_invalid']];
+  for (const [label, arrange, recover, code] of faults) {
+    for (const pass of [() => w.admission.sweep({ startup: false }), () => w.admission.compensate(p.input.jobId, 'c')]) {
+      arrange(); await pass();
+      assert.equal(w.row(p.input.jobId).cleanup.cause.code, code, label); assert.equal(w.admission.cleanupPending(), true, label);
+      recover(); await pass();
+      assert.equal(w.row(p.input.jobId).state, 'running', label); assert.equal(w.row(p.input.jobId).cleanup.cause, null, label); assert.equal(w.admission.cleanupPending(), false, label);
+    }
+  }
+  assert.equal(w.holds.size, 1); assert.equal(w.calls.release, 0);
+});
+
+test('admission-sweep-reports-a-row-it-could-not-record-and-still-reaches-the-rows-after-it', async t => {
+  const w = world(t), a = w.prepare(0x11), b = w.prepare(0x22); await running(w, a); await w.admission.begin(b.input); w.compensating(a.input.jobId);
+  w.control.evidence = record => { if (record.jobId === a.input.jobId) throw new Error('journal unreadable'); return w.evidenceOf(record, 'no-intent'); };
+  w.control.clock = T0 + HOUR + 30000;
+  const exec = w.db.exec.bind(w.db), fault = new Error('diagnostic write failed');
+  w.db.exec = sql => { if (sql === 'COMMIT' && w.row(a.input.jobId).cleanup.cause !== null) throw fault; return exec(sql); };
+  await assert.rejects(w.admission.sweep({ startup: false }), error => error instanceof AggregateError && error.errors.length === 1 && error.errors[0] === fault);
+  assert.equal(w.row(b.input.jobId).state, 'aborted'); assert.equal(w.holds.has(w.row(b.input.jobId).holdId), false);
+  assert.equal(w.row(a.input.jobId).state, 'compensating'); assert.equal(w.admission.cleanupPending(), true);
+});
+
+test('admission-compensate-and-sweep-refuse-malformed-arguments-and-an-unknown-job-is-a-no-op', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input); w.control.clock = T0 + 1; const before = w.changes();
+  for (const trigger of [['c'], ['d'], 'constructor', 'e', null]) await assert.rejects(w.admission.compensate(p.input.jobId, trigger), TypeError, String(trigger));
+  await assert.rejects(w.admission.compensate('not a job', 'd'), TypeError);
+  await w.admission.compensate(job(0x77), 'd'); assert.equal(w.row(job(0x77)), null);
+  for (const options of [undefined, {}, { startup: 'yes' }, { startup: 1 }]) await assert.rejects(w.admission.sweep(options), TypeError);
+  assert.equal(w.changes() - before, 0); assert.equal(w.row(p.input.jobId).state, 'admitted');
+});
+
 // K11: every entry that reaches the wire, the journal or the policy refuses while the guard is off, before it takes the job lease.
 const guard = await import('../src/kit-operation-guard.mjs');
 const guardOff = (promise, entry) => assert.rejects(promise, { code: 'kit_operation_guard_off', entry });
@@ -1165,6 +1279,15 @@ test('admission-complete-refused-while-the-guard-is-off-on-a-running-row', async
   assert.equal(w.row(p.input.jobId).state, 'settled'); assert.equal(w.calls.complete.length, 1); assert.equal(w.holds.size, 0);
 });
 
+test('admission-sweep-with-the-guard-off-finishes-an-existing-release-and-starts-nothing', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input); w.control.unavailable = new Error('policy ledger unavailable');
+  await w.admission.compensate(p.input.jobId, 'd'); assert.equal(w.row(p.input.jobId).cleanup.releasePending, true); assert.equal(w.holds.size, 1);
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1')); guard.setKitOperationGuardForTest('off'); w.control.unavailable = null;
+  await guardOff(w.admission.compensate(p.input.jobId, 'd'), 'compensate'); assert.equal(w.row(p.input.jobId).cleanup.releasePending, true);
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).cleanup.releasePending, false); assert.equal(w.holds.size, 0); assert.equal(w.calls.reserve, 1); assert.equal(w.calls.wire, 0);
+});
+
 test('admission-live-begin-owner-is-held-while-the-d4-hooks-run-and-removed-after-a-hook-refusal-is-recorded', async t => {
   const seen = [], capacity = { fitsNewPurchase: () => true, allocateWithin: () => {} };
   const w = world(t, { capacity }), p = w.prepare(), { jobId } = p.input;
@@ -1172,5 +1295,6 @@ test('admission-live-begin-owner-is-held-while-the-d4-hooks-run-and-removed-afte
   await reject(w.admission.begin(p.input), 'peer_store_capacity', 503);
   assert.deepEqual(seen, [['hook', true, 'admitted']]);
   await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
-  assert.equal(w.row(jobId).state, 'compensating'); assert.equal(owned(w, jobId, 1), false);
+  // The refusal is compensated under the same lease: no effect happened, so the row aborts and its hold is released.
+  assert.equal(w.row(jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(owned(w, jobId, 1), false);
 });
