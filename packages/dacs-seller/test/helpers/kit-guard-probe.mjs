@@ -113,6 +113,7 @@ async function effectEntries() {
     sessionState: never('a terminal observation'), admissionCounts: never('the counts'), ready: never('readiness'), stopped: never('the stop check') });
   const { createSellerAgentClient, createSellerHttpHandler } = await import('../../src/dacs/seller-http.mjs');
   const { createSellerTransportClientAuth, createSellerTransportServerAuth } = await import('../../src/dacs/seller-transport-auth.mjs');
+  const { createSellerWireClientAuth } = await import('../../src/dacs/seller-wire-client-auth.mjs');
   const { createSellerDurableState } = await import('../../src/dacs/seller-durable-state.mjs');
   const { createSignedCreateJournal, createPaymentEvidenceWalletJournal } = await import('../../src/dacs/payment-evidence-wallet-journal.mjs');
   const { createNativePaymentEvidenceConsumer } = await import('../../src/dacs/native-payment-evidence-consumer.mjs');
@@ -125,7 +126,7 @@ async function effectEntries() {
   const { storageWriteRpcSigner } = await import('../../src/devnet-demo/storage-write-recovery.mjs');
   const { createReservationAccounting } = await import('../../src/dacs/seller-reservation-accounting.mjs');
   const accounting = createReservationAccounting({ store: {}, now: () => 0,
-    limits: { maxJobs: 1, maxContextRecords: 1, maxNoncesPerBuyerPerWindow: 1, nonceWindowMs: 1 }, contextRecords: () => 0 });
+    limits: { maxJobs: 1, maxContextRecords: 1, maxNoncesPerBuyerPerWindow: 1 } });
 
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
@@ -147,6 +148,7 @@ async function effectEntries() {
   await attempt('createSellerAgentClient', () => createSellerAgentClient({}));
   await attempt('createSellerTransportServerAuth', () => createSellerTransportServerAuth({}));
   await attempt('createSellerTransportClientAuth', () => createSellerTransportClientAuth({}));
+  await attempt('createSellerWireClientAuth', () => createSellerWireClientAuth({}));
   await attempt('reserveAccounted', () => accounting.reserveAccounted({}));
   await attempt('createNativePaymentEvidenceConsumer', () => createNativePaymentEvidenceConsumer({ anchorEvidence: async () => { effects.sends++; } }));
   await attempt('createDevnetDemoAgreementContextProvider', () => createDevnetDemoAgreementContextProvider({}));

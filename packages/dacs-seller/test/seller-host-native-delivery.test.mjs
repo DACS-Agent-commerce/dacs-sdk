@@ -3354,8 +3354,7 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
     return agent.submitPayment(body, options);
   } };
   const { wire, createBuyer } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: w.buyerKey, seller: w.sellerKey, store, now,
-    readCommitmentReceipt: w.capabilities().readCommitmentReceipt });
-  wire.requireDelegation = true;
+    readCommitmentReceipt: w.capabilities().readCommitmentReceipt, requireDelegation: true });
   const handler = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({
     sellerSigner: w.sellerKey, listingPin: pin, store, now, requireDelegation: true,
   }) });

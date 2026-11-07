@@ -31,10 +31,8 @@ export const clientAuthFor = (host) => createSellerTransportClientAuth({ buyerSi
 export async function postSigned(host, auth, path, body) {
   const text = JSON.stringify(body);
   const { header } = await auth.request(path, body, text);
-  const response = await fetch(host.url + path, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header }, body: text });
-  return { status: response.status, text: await response.text(), signed: response.headers.has(SELLER_TRANSPORT_HEADER) };
+  return postHeader(host, path, header, text);
 }
-
 
 /** One POST of `text` to `host` under an already-built header: the status, the answer text and whether the answer carries a seller signature. */
 export async function postHeader(host, path, header, text) {

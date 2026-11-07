@@ -26,7 +26,7 @@ async function fixture(t,{wrap=agent=>agent}={}){
  // `vetMode` is an agent option: the host fixes it and takes no such option.
  const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;delete config.vetMode;
  delete config.challengeLedger; // the host builds its own ledger
- const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
+ const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){const wrapped=new WeakMap();testWrapper=agent=>{if(!wrapped.has(agent))wrapped.set(agent,value(agent));return wrapped.get(agent);};}\nconst REQUIRED =').replace('now, agent, requireDelegation: false','now, agent: testWrapper(agent), requireDelegation: false').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,tp1Network:testNetwork()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
@@ -160,6 +160,18 @@ test('host close destroys a connection that never finishes its request headers',
  }finally{socket.destroy();}
 });
 
+test('a class-instance tp1Network whose connection() reads its own private field answers a signed proposal, state read and commitment, each signed and verified by the buyer',async t=>{
+ const f=await fixture(t),network=testNetwork(),receivers=[];
+ class OperatorNetwork{#current=network.connection();connection(){receivers.push(this);return {...this.#current};}readAuthority(scope){return network.readAuthority(scope);}}
+ const tp1Network=new OperatorNetwork(),host=await f.start({tp1Network}),request=await f.proposal(host),client=f.client(host,request);
+ const reads=[receivers.length];
+ const answer=await client.propose(request);assert.equal(answer.disposition,'complete');reads.push(receivers.length);
+ assert.equal(typeof await client.agreementState(request.transportIdentity),'object');reads.push(receivers.length);
+ await anchorAgreement(f,request,answer);
+ assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');reads.push(receivers.length);
+ for(let i=1;i<reads.length;i++)assert.ok(reads[i]-reads[i-1]>=2,`request ${i} read the connection again`);
+ assert.ok(receivers.every(receiver=>receiver===tp1Network),'every read ran on tp1Network');
+});
 test('wrapped native artifact readbacks keep their capability receiver',async t=>{
  const f=await fixture(t),native=f.native;
  const artifactAnchor={...native,reads:0,verifies:0,
