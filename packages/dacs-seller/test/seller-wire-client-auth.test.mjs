@@ -15,7 +15,7 @@ import { fixtureListing } from './fixtures/listings.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
-import { testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { startSellerHost } from '../src/host.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
@@ -36,8 +36,8 @@ const SESSION_LEAD_MS = 30_000;
 const SESSION_LIFETIME_MS = 3_600_000;
 
 /** A wire client auth for `pin` over the fixture binding, with the signer's calls counted. */
-async function wireClient({ pin = PIN, agreementHash = AGREEMENT_HASH, ...overrides } = {}) {
-  const { binding, connection, endpointProof } = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: pin, clock: () => NOW });
+async function wireClient({ pin = PIN, agreementHash = AGREEMENT_HASH, readAuthority, ...overrides } = {}) {
+  const { binding, connection, endpointProof } = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: pin, clock: () => NOW, ...(readAuthority === undefined ? {} : { readAuthority }) });
   const signs = { calls: 0 };
   const signer = { claim: BUYER.claim, sign: (bytes) => { signs.calls++; return BUYER.sign(bytes); } };
   const options = { signer, binding, connection, endpointProof, publicEndpoint: FIXTURE_ENDPOINT, seller: seller.claim, resolveJob: () => ({ listingPin: pin, agreementHash }), now: () => NOW, ...overrides };
@@ -132,6 +132,42 @@ test('a configuration with a missing binding, endpoint proof, seller or job reso
   const { options } = await wireClient();
   for (const [name, value] of [['binding', null], ['endpointProof', undefined], ['seller', undefined], ['resolveJob', undefined], ['connection', undefined], ['publicEndpoint', 'http://seller.example.invalid'], ['signer', { claim: BUYER.claim }]]) {
     assert.throws(() => createSellerWireClientAuth({ ...options, [name]: value }), /configuration is invalid/, name);
+  }
+});
+
+const STALLED = () => new Promise(() => {});
+const SIGNING_TIMEOUT_MS = 20;
+
+test('a stalled authority read, job lookup, evidence lookup or fallback signer ends as a signing timeout before anything is signed', async () => {
+  let authorityStalled = false;
+  const readAuthority = (scope) => (authorityStalled ? STALLED() : authorityReader()(scope));
+  const fallback = { request: STALLED, verifyResponse: () => assert.fail('nothing was signed') };
+  const cases = [
+    ['authority reader', PATHS.state, { readAuthority }, () => { authorityStalled = true; }],
+    ['resolveJob', PATHS.state, { resolveJob: STALLED }],
+    ['evidenceFor', PATHS.state, { evidenceFor: STALLED }],
+    ['fallback', SELLER_CONTEXT_PATH, { fallback }],
+  ];
+  for (const [name, path, overrides, stall = () => {}] of cases) {
+    const client = await wireClient({ ...overrides, signingTimeoutMs: SIGNING_TIMEOUT_MS });
+    stall();
+    await assert.rejects(client.auth.request(path, bodyFor(path), JSON.stringify(bodyFor(path))), { name: 'WireError', code: 'wire_client_signing_timeout', status: 500 }, name);
+    assert.equal(client.signs.calls, 0, name);
+  }
+});
+
+test('a client whose signing stalls ends before dispatch as an unavailable seller, with no request sent', async () => {
+  const sent = [];
+  const client = await wireClient({ resolveJob: STALLED, signingTimeoutMs: SIGNING_TIMEOUT_MS });
+  const agent = createSellerAgentClient({ url: 'http://127.0.0.1:9', authentication: client.auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: async (...args) => { sent.push(args); return new Response('{}'); } });
+  await assert.rejects(agent.agreementState({ jobId: JOB }), { name: 'SellerUnavailableError' });
+  assert.equal(sent.length, 0);
+});
+
+test('a signing deadline that is not a timer-sized integer is refused at construction', async () => {
+  const { options } = await wireClient();
+  for (const value of [0, -1, 1.5, '20', null, Number.POSITIVE_INFINITY, 2 ** 31]) {
+    assert.throws(() => createSellerWireClientAuth({ ...options, signingTimeoutMs: value }), /configuration is invalid/, String(value));
   }
 });
 
