@@ -5,8 +5,8 @@
 // {status, signed: true, body} exists only after the wire verified the exact
 // received bytes. Anything else (no record, signed not true, a malformed
 // record) is unknown. Each status, code, route and provenance cell has exactly
-// one class; an unlisted signed 5xx, 408 or 429 is unknown, any other unlisted
-// signed 4xx with an error is a definite refusal.
+// one class; an unlisted signed 5xx is unknown, an unlisted signed 4xx with an
+// error is a definite refusal.
 import { DACS_SELLER_HTTP_PATHS as PATHS } from '@kynesyslabs/dacs/wire';
 
 /** The classes of a seller answer: a frozen map of constant name to class string. */
@@ -51,8 +51,6 @@ const ROWS = new Map([
 const BUNDLE_ROWS = new Map([['503 bundle_finalization_unavailable', HELD], ['422 not_delivered', HELD]]);
 // A 429 is a failed bootstrap on the context step and a definite refusal on challenge issuance.
 const RATE_LIMIT_ROWS = new Map([[PATHS.context, FAILED_BOOTSTRAP], [PATHS.contextChallenge, DEFINITE]]);
-// A timeout or rate limit says nothing about the request's own merit and clears on its own: unlisted, it is unknown, never a refusal.
-const RETRYABLE_4XX = new Set([408, 429]);
 
 const answer = (answerClass, code) => ({ answerClass, code });
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -74,7 +72,7 @@ function classifySigned(status, body, { path, continuation, newPurchase }) {
   const key = `${status} ${code}`;
   if (BUNDLE_PATHS.has(path) && BUNDLE_ROWS.has(key)) return answer(BUNDLE_ROWS.get(key), code);
   if (ROWS.has(key)) return answer(ROWS.get(key), code);
-  return answer(status >= 400 && status < 500 && !RETRYABLE_4XX.has(status) && code !== undefined ? DEFINITE : UNKNOWN, code);
+  return answer(status >= 400 && status < 500 && code !== undefined ? DEFINITE : UNKNOWN, code);
 }
 
 /**

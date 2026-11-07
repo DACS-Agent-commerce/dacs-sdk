@@ -92,7 +92,7 @@ Each answer is verified on its exact received bytes, then classified by its HTTP
 | Answer | Class |
 |---|---|
 | signed 200 | `result`; on payments and proposals, `held`, `indeterminate`, `waiting`, or `payment-evidenced` with delivery pending, is `progress`, never final |
-| 409 `peer_request_replayed`; 503 `seller_effect_pending`; 503 `context_attempt_pending`; 408 `peer_expired`; any other signed 408; a signed 429 on any route but context and challenge; any other signed 5xx; an unsigned answer; a timeout | `unknown` |
+| 409 `peer_request_replayed`; 503 `seller_effect_pending`; 503 `context_attempt_pending`; 408 `peer_expired`; any other signed 5xx; an unsigned answer; a timeout | `unknown` |
 | 503 `seller_stopped` | `suspended` |
 | 503 `bundle_finalization_unavailable` and 422 `not_delivered` on the bundle routes | `held` |
 | 503 `seller_not_ready` on a new purchase (no request is known to be one yet) | `not-started` |
@@ -102,7 +102,7 @@ Each answer is verified on its exact received bytes, then classified by its HTTP
 | 408 `peer_delegation_expired` | `readback-only` |
 | 409 `context_challenge_failed`, `context_challenge_consumed`, `context_challenge_expired`, `context_challenge_mismatch`, `context_job_closed`, `context_admission_closed`; 429 on the context route | `failed-bootstrap` |
 | 429 on the challenge route | `definite` |
-| any other signed 4xx (not 408 or 429) with an `error` code | `definite` |
+| any other signed 4xx with an `error` code | `definite` |
 | a TLS failure before the request left | `not-sent` |
 
 ## Factory integration
