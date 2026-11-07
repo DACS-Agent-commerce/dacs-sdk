@@ -6641,7 +6641,7 @@
         {
           "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
           "before": null,
-          "after": "f59384d783444e82e2b2458c565ac81b576ff2f7"
+          "after": "77e197ff1b12c3d5e4405816fd0ca34390d74efa"
         },
         {
           "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
@@ -6656,7 +6656,51 @@
         {
           "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
           "before": null,
+          "after": "6c75a478fc43da0771bdb786427d4de34afa6bd6"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(wallet): refuse a signer reservation record the journal cannot hold before writing",
+      "sha": "4bba02f8b41c38b13d3b1358b71354ed53d56587",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "77e197ff1b12c3d5e4405816fd0ca34390d74efa",
+          "after": "f59384d783444e82e2b2458c565ac81b576ff2f7"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "6c75a478fc43da0771bdb786427d4de34afa6bd6",
           "after": "0f43918cb45c07f7acf9c1c1e5dda8e328654a01"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "fix(client): measure signer reservation records against the journal's own record limit",
+      "sha": "fee6c6a786e12532bae7abb62ed5f482d95f03b8",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a284092528a7f3564c8def91dd5fee530ae04b93",
+          "after": "eb51e40f75731f88d50905f2aa4b6b4fa80cbcc8"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "f59384d783444e82e2b2458c565ac81b576ff2f7",
+          "after": "1d687234da2ff434291fcea67c4488d8e6614f4d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "70c7c3ba010ad83c7b4a76eac9fc55c7116d05cf",
+          "after": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "0f43918cb45c07f7acf9c1c1e5dda8e328654a01",
+          "after": "c0e9061d13141e783f3fdb484b97f66f9b45253c"
         }
       ]
     }
