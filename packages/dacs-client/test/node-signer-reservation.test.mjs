@@ -13,10 +13,10 @@ test.after(() => { trap.restore(); assert.deepEqual(trap.attempts, []); });
 // Imported late so that, before the module exists, each test fails on its own instead of the whole file failing to load.
 const module = await import('../src/wallet/signer-reservation.mjs').catch(error => ({ error }));
 const create = journal => { if (module.error) throw module.error; return module.createSignerReservations(options(journal)); };
-function world(t, wrap = journal => journal) {
+function world(t, wrap = journal => journal, limits = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'signer-reservation-')), path = join(directory, 'wallet.sqlite');
-  const journal = open(path, 'create'), handles = [journal];
-  const reopen = () => { const next = open(path); handles.push(next); return next; };
+  const journal = open(path, 'create', limits), handles = [journal];
+  const reopen = () => { const next = open(path, 'open', limits); handles.push(next); return next; };
   t.after(() => { for (const handle of handles) handle.close(); rmSync(directory, { recursive: true, force: true }); });
   const wrapped = wrap(journal);
   // Insert-only steps go through the same deterministic cut as the mutable puts.
@@ -309,14 +309,14 @@ test('a reused attempt id cannot overwrite a different signer attempt even if bo
 });
 
 // A projection under the 256 KiB text limit whose serialized transaction record is over the journal's record limit.
-function oversizedSigned() {
+function oversizedSigned(bytes = 262000) {
   const make = filler => {
     const content = { type: 'storageProgram', from: signer, nonce: 1, timestamp: T0, data: ['CREATE', { program: filler }] };
     const hash = digest(JSON.stringify(content));
     return { txHash: hash, inputDigest: digest('TEST-public-input'), projectionText: JSON.stringify({ content, hash, signature: { type: 'ed25519', data: JSON.parse(signed().projectionText).signature.data } }) };
   };
   const base = Buffer.byteLength(make('').projectionText);
-  return make('a'.repeat(262000 - base));
+  return make('a'.repeat(bytes - base));
 }
 
 test('a projection that fits the text limit but not the journal record limit refuses before any attempt is written, and the reservation stays usable', async t => {
@@ -337,4 +337,40 @@ test('an approval intent whose approval could not later be recorded refuses befo
   const intent = await w.reservations.bindApprovalIntent(reservation, 'x'.repeat(100 * 1024));
   const approval = await w.reservations.bindApproval(intent, { ledgerId: 'L'.repeat(256), requestText: 'x'.repeat(100 * 1024) });
   assert.equal((await w.reservations.bindSigned(approval, signed())).active.txHash, signed().txHash);
+});
+
+test("a journal configured with a smaller record limit refuses an intent it could not hold and a projection it could not store, before any write", async t => {
+  const tiny = world(t, undefined, { maxValueBytes: 800 }), { reservation: unbound } = await tiny.reservations.reserve(args());
+  await rejectCode(tiny.reservations.bindApprovalIntent(unbound, 'TEST-exact-request'), 'signer_reservation_invalid');
+  assert.deepEqual(await tiny.reservations.current(signer), unbound, 'the intent was not stored');
+  const w = world(t, undefined, { maxValueBytes: 4096 }), reservation = await approved(w), large = oversizedSigned(4000);
+  await rejectCode(w.reservations.bindSigned(reservation, large), 'signer_reservation_invalid');
+  assert.equal(await w.journal.get(dispatchKey(reservation.active.attemptId)), undefined, 'no bind-started attempt blocks the signer');
+  assert.equal((await w.reservations.bindSigned(reservation, signed())).active.txHash, signed().txHash);
+});
+
+test('a journal configured above the default record limit binds an approval and signed bytes that the default limit could not hold', async t => {
+  const w = world(t, undefined, { maxValueBytes: 1024 * 1024 }), request = 'x'.repeat(200 * 1024), { reservation } = await w.reservations.reserve(args());
+  const intent = await w.reservations.bindApprovalIntent(reservation, request);
+  const approval = await w.reservations.bindApproval(intent, { ledgerId: 'L'.repeat(256), requestText: request });
+  assert.equal((await w.reservations.bindSigned(approval, signed())).active.txHash, signed().txHash);
+});
+
+test('an approval intent refuses when its ownership record would outgrow the limit at a later revision, and a text that fits at the widest revision binds after repeated intents', async t => {
+  const limit = 4096, ledgerId = '\u0001'.repeat(256);
+  const sizeAt = (reservation, text, revision) => Buffer.byteLength(JSON.stringify({ ...reservation, revision, active: { ...reservation.active, txHash: 'f'.repeat(64),
+    approvalIntent: { requestText: text }, approval: { ledgerId, requestText: text } } }));
+  let w = world(t, undefined, { maxValueBytes: limit }), { reservation } = await w.reservations.reserve(args());
+  // Every text byte is counted twice, so an odd remainder is fixed by one more byte in the operation key.
+  if ((limit - sizeAt(reservation, '', 8)) % 2) { w = world(t, undefined, { maxValueBytes: limit }); ({ reservation } = await w.reservations.reserve(args('TEST-evidence-ab'))); }
+  const text = 'x'.repeat((limit - sizeAt(reservation, '', 8)) / 2);
+  assert.equal(sizeAt(reservation, text, 8), limit, 'fits when the link is measured at the revision after this intent');
+  assert.equal(sizeAt(reservation, text, 10), limit + 1, 'the link, after seven intents and the approval, is one byte over');
+  await rejectCode(w.reservations.bindApprovalIntent(reservation, text), 'signer_reservation_invalid');
+  assert.deepEqual(await w.reservations.current(signer), reservation, 'the intent was not stored');
+  const fitting = text.slice(8);
+  let current = reservation;
+  for (let call = 0; call < 7; call++) current = await w.reservations.bindApprovalIntent(current, fitting);
+  current = await w.reservations.bindApproval(current, { ledgerId, requestText: fitting });
+  assert.equal((await w.reservations.bindSigned(current, signed())).active.txHash, signed().txHash);
 });

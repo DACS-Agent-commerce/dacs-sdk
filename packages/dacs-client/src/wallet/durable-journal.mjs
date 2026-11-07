@@ -319,5 +319,5 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     db.close();
   }
 
-  return { journalId, instance, path, get, put, entries, withWalletLock, appendUnderLock, withOwnedOrAcquiredLane, inspectLocks, releaseAbandonedLock, close };
+  return { journalId, instance, path, maxValueBytes, get, put, entries, withWalletLock, appendUnderLock, withOwnedOrAcquiredLane, inspectLocks, releaseAbandonedLock, close };
 }

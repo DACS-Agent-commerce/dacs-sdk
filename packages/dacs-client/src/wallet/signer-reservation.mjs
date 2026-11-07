@@ -11,7 +11,8 @@
 // attempt (bind-started) -> immutable transaction -> signed stage -> ownership link, and only the last step makes the
 // bytes visible to the caller, so any earlier prefix stays unexposed (its reconciliation is a later card's).
 // A put that throws is read back before anything is decided; an unreadable answer keeps ownership. The sizes of every
-// record a sequence will write (intent, then bind) are checked against the journal's record limit before its first write.
+// record a sequence will write (intent, then bind) are checked against the journal's own `maxValueBytes` (256 KiB when it
+// reports none) before its first write; the ownership record is measured at the widest revision, as every later write widens it.
 //
 // Lock order: the kit writer lock, then the signer lock, then the approval policy; the signer lock is never re-entered.
 import { createHash } from 'node:crypto';
@@ -21,7 +22,8 @@ const FORMAT = 'dacs-signer-reservation/v2';
 const KEY_ROOT = 'devnet/signer-reservation';
 const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_ID_BYTES = 256;
-const MAX_RECORD_BYTES = 256 * 1024; // the journal's default per-record limit; a record over it is refused before the first write of its sequence
+const DEFAULT_RECORD_BYTES = 256 * 1024; // the limit assumed for a journal that does not report its own `maxValueBytes`
+const WIDEST_REVISION = Number.MAX_SAFE_INTEGER; // a record that must stay writable at every later revision is measured with the widest one
 const MAX_HISTORY = 1024;
 const OPERATIONS = ['payment-evidence', 'native', 'artifact'];
 const STAGES = ['bind-started', 'signed', 'confirm-started', 'confirm-answered', 'broadcast-started', 'broadcast-answered',
@@ -39,7 +41,6 @@ const isText = (value, limit = MAX_ID_BYTES) => typeof value === 'string' && val
 const transactionKey = txHash => `${KEY_ROOT}-tx/${txHash}`;
 const attemptKey = attemptId => `${KEY_ROOT}-dispatch/${attemptId}`;
 const retiredKey = attemptId => `${KEY_ROOT}-retired/${attemptId}`;
-const fits = record => Buffer.byteLength(JSON.stringify(record)) <= MAX_RECORD_BYTES;
 const hasPossibleDispatch =attempt => attempt.history.some(entry => POSSIBLE_DISPATCH_STAGES.has(entry.stage));
 const sameOperation = (left, right) => ['operation', 'operationKey', 'nonce'].every(key => left[key] === right[key]);
 
@@ -58,6 +59,9 @@ function check(condition, message) { if (!condition) fail('signer_reservation_in
 export function createSignerReservations({ journal, pins, clock = { now: () => Date.now() } } = {}) {
   check(['get', 'put', 'entries', 'withWalletLock', 'appendUnderLock'].every(name => typeof journal?.[name] === 'function'), 'durable journal required');
   check(pins?.network === 'demos-testnet' && isHex64(pins.chainIdentity) && isText(pins.pinVersion) && typeof clock.now === 'function', 'trusted pins and clock required');
+  const recordLimit = journal.maxValueBytes ?? DEFAULT_RECORD_BYTES;
+  check(Number.isSafeInteger(recordLimit) && recordLimit >= 64, 'invalid journal record limit');
+  const fits = record => Buffer.byteLength(JSON.stringify(record)) <= recordLimit;
   const manualApprovals = new Map();
   const keyOf = signer => { check(isAddress(signer), 'invalid signer'); return `${KEY_ROOT}/${JSON.stringify([pins.network, pins.chainIdentity, signer])}`; };
   const header = signer => ({ format: FORMAT, network: pins.network, chainIdentity: pins.chainIdentity, pinVersion: pins.pinVersion, signer });
@@ -207,9 +211,10 @@ export function createSignerReservations({ journal, pins, clock = { now: () => D
     return withCurrentOwner(reservation, owner => {
       check(isText(requestText, MAX_TEXT_BYTES) && owner.active.txHash === null, 'invalid approval intent');
       check(owner.active.approvalIntent === null || owner.active.approvalIntent.requestText === requestText, 'intent cannot be rebuilt');
-      // The ownership record later also holds the approval (same text, any valid ledger id) and the hash: refuse an intent that could not be bound.
+      // The ownership record later also holds the approval (same text, any valid ledger id) and the hash, and is rewritten at
+      // every later revision (repeated intents, approval, link, each stage): refuse an intent that could not be bound.
       const widest = { ledgerId: '\u0001'.repeat(MAX_ID_BYTES), requestText };
-      check(fits({ ...owner, revision: owner.revision + 1, active: { ...owner.active, txHash: 'f'.repeat(64), approvalIntent: { requestText }, approval: widest } }), 'approval intent too large to record');
+      check(fits({ ...owner, revision: WIDEST_REVISION, active: { ...owner.active, txHash: 'f'.repeat(64), approvalIntent: { requestText }, approval: widest } }), 'approval intent too large to record');
       return swapOwner(owner, { ...owner.active, approvalIntent: { requestText } });
     });
   }

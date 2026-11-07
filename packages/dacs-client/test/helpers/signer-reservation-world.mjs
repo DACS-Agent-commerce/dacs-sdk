@@ -15,7 +15,7 @@ export const dispatchKey = id => `devnet/signer-reservation-dispatch/${id}`;
 export const transactionKey = hash => `devnet/signer-reservation-tx/${hash}`;
 export const args = (operationKey = 'TEST-evidence-a', attemptId = 'TEST-attempt-a') => ({ signer, operation: 'payment-evidence', operationKey, attemptId, readChainNonce: async () => 0 });
 export const options = journal => ({ journal, pins, clock: { now: () => T0 } });
-export const open = (path, mode = 'open') => openDurableWalletJournal({ path, mode, lockTimeoutMs: 0 });
+export const open = (path, mode = 'open', limits = {}) => openDurableWalletJournal({ path, mode, lockTimeoutMs: 0, ...limits });
 /** A signed projection whose hash, signer, nonce and signature shape satisfy the reservation's own validation. */
 export function signed(nonce = 1) {
   const content = { type: 'storageProgram', from: signer, nonce, timestamp: T0, data: ['CREATE', { program: 'TEST-public-evidence' }] };
