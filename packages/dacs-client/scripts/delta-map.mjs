@@ -96,18 +96,36 @@ export function checkDeltas(packageDir=pkg) {
     const same=selectors.get(c.subject)??[];
     if(same.some(sha=>sha==null||c.sha==null||sha===c.sha)) failures.push(`duplicate delta subject ${c.subject}`);
     selectors.set(c.subject,[...same,c.sha]);
-    if(!['D10','D9','D1','D11','D15','D16'].includes(c.delta)||!(c.subject.startsWith(`delta(client): ${c.delta} `)||(c.delta==='D11'&&c.subject.startsWith('fix(client): D11 ')))) failures.push(`invalid delta ${c.subject}`);
+    if(!['D10','D9','D1','D11','D15','D16','D18','D19','WF'].includes(c.delta)||!(c.subject.startsWith(`delta(client): ${c.delta} `)||(c.delta==='D11'&&c.subject.startsWith('fix(client): D11 ')))) failures.push(`invalid delta ${c.subject}`);
     const matches=history.filter(h=>selects(c,h));
     if(matches.length!==1) failures.push(`delta commit selector must resolve once: ${c.sha==null?c.subject:`${c.sha} ${c.subject}`}`);
     if(matches.length===1) {
       const sha=matches[0].sha;
       for(const f of c.files) {
-        recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,after:f.after}]);
+        recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,before:f.before,after:f.after}]);
         for(const [rev,want] of [[`${sha}^`,f.before],[sha,f.after]]) {
           let actual=null;try{actual=git('rev-parse','--verify',`${rev}:${f.path}`);}catch{}
           if(actual!==want) failures.push(`${f.path}: delta ${c.delta} blob differs at ${rev}`);
         }
       }
+    }
+  }
+  // A merge can already have discarded a reviewed blob before the next
+  // record. Check every record against its ancestors, not just its actual
+  // parent or the terminal blob. Resolve all records first: ledger order and
+  // unrelated sibling records must not determine continuity.
+  const independent=shas=>git('merge-base','--independent',...shas).split('\n');
+  const ancestors=new Map();
+  for(const [path,records] of recorded) {
+    let baseline=null;try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
+    for(const {sha,before} of records) {
+      if(!ancestors.has(sha)) ancestors.set(sha,new Set(git('rev-list',`${BASELINE}..${sha}^`).split('\n')));
+      const previous=records.filter(record=>ancestors.get(sha).has(record.sha));
+      const expected=previous.length?expectedBlob(previous,independent):{blob:baseline};
+      // Divergent newest ancestors require an explicit resolution record.
+      // Its actual parent/commit bytes are checked above; once recorded,
+      // that resolution constrains every descendant in turn.
+      if(!expected.conflict&&before!==expected.blob) failures.push(`${path}: delta parent is discontinuous at ${sha}`);
     }
   }
   const inventory=[...(data.supersededCommits??[]),...JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'))];
@@ -148,11 +166,8 @@ export function checkDeltas(packageDir=pkg) {
     if(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash)failures.push(`${path}: index differs from HEAD for moved source/test`);
   }
   // Merges are not record subjects, so HEAD, the index and the working bytes
-  // must all hold the newest recorded blob. A merge that keeps a stale side,
-  // rolls back or deletes a recorded file fails here; a later record that
-  // starts from the merged blob is accepted, since a record's starting blob
-  // is not compared with the expected blob.
-  const independent=shas=>git('merge-base','--independent',...shas).split('\n');
+  // must all hold the newest recorded blob; a merge that keeps a stale side,
+  // rolls back or deletes a recorded file fails here.
   for(const path of allowed) {
     let expected=null;
     if(recorded.has(path)) {

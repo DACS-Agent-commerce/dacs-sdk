@@ -59,6 +59,10 @@ import {
   type X402TransferObservation,
 } from "../../src/seller/paymentIntake.js";
 import {
+  SELLER_FULFILMENT_VET_MODES,
+  type SellerFulfilmentVetMode,
+} from "../../src/seller/fulfilmentAuditSource.js";
+import {
   createX402SellerSpine,
   type X402SellerCommittedSessionScope,
   type X402SellerPaymentPermitAuthorization,
@@ -231,7 +235,9 @@ interface Harness {
   counts: { delivery: number; evidence: number; final: number; render: number };
 }
 
-function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
+function makeHarness(
+  options: { deliveryReady?: boolean; sellerVerifiesOwnRecord?: true; vetMode?: SellerFulfilmentVetMode } = {},
+): Harness {
   const buyerBundle = identity(BUYER, `cci-xm:evm:base:${PAYER}`);
   const sellerBundle = identity(SELLER);
   const railRef: PaymentRailRef = {
@@ -356,6 +362,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
   const sellerVetRef = structuredClone(
     (agreement.parties as Array<{ vetRecordRef: AttestationRef }>)[1]!.vetRecordRef,
   );
+  if (options.sellerVerifiesOwnRecord) sellerVetRef.signer = SELLER;
   const agreementHash = contentHash(agreement);
   const commitmentRef = `dacs3:commit:${JOB_ID}`;
   const commitmentContentHash = "cd".repeat(32);
@@ -659,7 +666,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
               vetRecordRef: structuredClone(sellerVetRef),
               evaluatedParty: SELLER,
               requirement: { requirementVersion: "1" as const, required: [] },
-              verifier: BUYER,
+              verifier: options.sellerVerifiesOwnRecord ? SELLER : BUYER,
               freshness: [],
               dealSpecific: [],
             },
@@ -795,6 +802,7 @@ function makeHarness(options: { deliveryReady?: boolean } = {}): Harness {
   };
   const fulfilmentDeps: Omit<DurableSellerFulfilmentDeps, "receiptStore"> = {
     ...baseFulfilmentDeps,
+    vetMode: options.vetMode,
     submitDelivery: async (input) => {
       const result = await baseFulfilmentDeps.submitDelivery(input);
       durableDelivery = structuredClone(result);
@@ -999,6 +1007,18 @@ async function authorize(harness: Harness): Promise<X402SellerPaymentPermitAutho
 }
 
 describe("createX402SellerSpine", () => {
+  it("the x402 spine does not forward a caller's vetMode: seller-verified seller provenance stays refused", async () => {
+    const harness = makeHarness({
+      sellerVerifiesOwnRecord: true,
+      vetMode: SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator,
+    });
+    const authorization = await authorize(harness);
+
+    await expect(harness.spine.fulfil(harness.fulfilmentContext(authorization)))
+      .resolves.toEqual({ disposition: "failed", reason: "audit-source-mismatch" });
+    expect(harness.counts.delivery).toBe(0);
+  });
+
   it("returns at delivery-ready and lets a restarted host finalise explicitly", async () => {
     const harness = makeHarness({ deliveryReady: true });
     const authorization = await authorize(harness);
