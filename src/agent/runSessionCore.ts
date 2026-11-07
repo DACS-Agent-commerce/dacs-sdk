@@ -19,6 +19,7 @@ import {
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { signedBytes } from "../crypto/index.js";
+import { isSettlementBridge, settlementBridgeTraits } from "../rails/idempotency.js";
 import { ARTIFACT_SEPARATORS } from "../artifacts/registry.js";
 import {
   isComponentSignature,
@@ -327,6 +328,12 @@ export interface SessionDeps {
    * settles only through it when it is given a job id the SessionStore has no
    * record of (or has no SessionStore), or when a first run finds its Agreement
    * already anchored and the SessionStore has no record of the job.
+   *
+   * It must be a function an SDK settle bridge returned (`payDemSettle`,
+   * `evmErc20Settle`, `x402Settle` or `settleFromRail`): those are the only
+   * functions known to honour `recoveryOnly`, and any other function is refused
+   * before a payment is made. A pay-dem bridge over a rail built without
+   * `journalPreparedTransfer` is refused, as `settle` is, before the listing is read.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -1908,7 +1915,7 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
     stableDataProperty(input, "sessionStore", "deps.sessionStore"),
   );
 
-  return Object.freeze({
+  const captured = Object.freeze({
     buyerId,
     buyerIdentityBundle,
     authenticateBuyerIdentityBundle: stableDataMethod<
@@ -2031,6 +2038,30 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
     trustListing: trustListing as boolean | undefined,
     sessionStore,
   });
+  recordBridgeRegistrations(input, captured);
+  return captured;
+}
+
+/** Captured deps whose `resumeSettlement` is an SDK settle bridge. */
+const bridgeBackedResume = new WeakSet<object>();
+/** Captured deps whose `settle` or `resumeSettlement` is a pay-dem bridge over a rail with no prepared-transfer journal. */
+const unjournaledBridge = new WeakSet<object>();
+
+/**
+ * The bound copies in `captured` carry no registration, so read it from the
+ * caller's own functions. The rail that pays a first run is the one whose journal
+ * recovery reads, so `settle` counts as well as `resumeSettlement`.
+ */
+function recordBridgeRegistrations(input: SessionDeps, captured: Readonly<SessionDeps>): void {
+  const resumeSeam = stableDataProperty(input, "resumeSettlement", "deps.resumeSettlement");
+  const settleSeam = stableDataProperty(input, "settle", "deps.settle");
+  if (isSettlementBridge(resumeSeam)) bridgeBackedResume.add(captured);
+  if (
+    settlementBridgeTraits(resumeSeam)?.journaled === false ||
+    settlementBridgeTraits(settleSeam)?.journaled === false
+  ) {
+    unjournaledBridge.add(captured);
+  }
 }
 
 function deepFreezeJson<T extends object>(value: T): Readonly<T> {
@@ -3028,6 +3059,17 @@ async function runSessionCoreWithFence(
   protocolString(terms.deliveryFormat, "session delivery format", {
     allowColon: true,
   });
+  // Without a prepared-transfer journal a crash after the broadcast leaves no record to
+  // recover from, so a pay-dem session does not start on such a rail. Only the pay-dem
+  // bridge declares `journaled`, so this holds whatever rail id the terms carry.
+  if (unjournaledBridge.has(deps)) {
+    throw new DacsError(
+      "pay-dem settlement through runSession requires a rail built with journalPreparedTransfer; " +
+        (resumeJobId === undefined
+          ? "nothing was anchored or paid"
+          : "this call anchored and paid nothing, but an earlier run of this job may have paid"),
+    );
+  }
 
   const stored = await deps.readListing(listingRef);
   if (stored == null || typeof stored !== "object" || Array.isArray(stored)) {
@@ -4429,6 +4471,12 @@ async function runSessionCoreWithFence(
       throw new CounterpartyError(
         `settlement for ${jobId} requires authenticated rail reconciliation (${label}); ` +
           "resumeSettlement is required to reconcile it",
+      );
+    }
+    // Only an SDK settle bridge is known to honour `recoveryOnly`.
+    if (!bridgeBackedResume.has(deps)) {
+      throw new CounterpartyError(
+        `settlement for ${jobId} recovery requires deps.resumeSettlement built by an SDK settle bridge (no payment is made)`,
       );
     }
     let priorAttempts: SettlementRecoveryAttempt[] = [];

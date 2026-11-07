@@ -22,9 +22,12 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   evmErc20Settle: mocks.evmErc20Settle,
 }));
 
-import type {
-  SettlementBinding,
-  SettlementIdempotencyStore,
+import {
+  isSettlementBridge,
+  registerSettlementBridge,
+  settlementBridgeTraits,
+  type SettlementBinding,
+  type SettlementIdempotencyStore,
 } from "../../src/rails/idempotency.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
@@ -348,6 +351,21 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       { network: "demos", railId: DEM_RAIL_ID },
       {},
     );
+  });
+
+  test("the descriptor wrapper carries the registration and declared traits of the executor it binds", async () => {
+    mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle: vi.fn() });
+    const descriptor = await authenticatedDefinition();
+    const dispatch = async (executor: (req: never) => Promise<never>) => {
+      mocks.payDemSettle.mockReturnValue(executor);
+      return settleFromRail(descriptor, { demosRpc: "https://demos.example", demosSecret: "test-secret" });
+    };
+    const unused = async (): Promise<never> => { throw new Error("unused"); };
+
+    const unjournaled = await dispatch(registerSettlementBridge(async () => unused(), { journaled: false }));
+    expect(settlementBridgeTraits(unjournaled)).toEqual({ journaled: false });
+    expect(settlementBridgeTraits(await dispatch(registerSettlementBridge(async () => unused())))).toEqual({});
+    expect(isSettlementBridge(await dispatch(async () => unused()))).toBe(false);
   });
 
   test("captures recovery authorities before the optional peer connects", async () => {
