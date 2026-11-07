@@ -67,6 +67,15 @@ test("file policy rejects extra files and requires every export, type and binary
   assert.throws(() => validateFiles(core, { ...p, exports: { ...p.exports, "./bad": "../outside.js" } }, files), /target/);
 });
 
+test("every document the root manifest ships is on the core allow-list", () => {
+  const shipped = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).files;
+  const documents = shipped.filter(file => file.startsWith("docs/"));
+  assert.ok(documents.includes("docs/pay-dem-execution.md"));
+  const p = manifest(); const files = members(p);
+  for (const document of documents) assert.doesNotThrow(() => validateFiles(core, p, [...files, document]), document);
+  assert.throws(() => validateFiles(core, p, [...files, "docs/not-shipped.md"]), /outside allow-list/);
+});
+
 test("wildcard exports enumerate packed files, JSON exports carry their type, empty patterns fail", () => {
   const p = { exports: { ".": "./src/index.mjs", "./src/*": "./src/*", "./package.json": "./package.json" } };
   const files = ["src/index.mjs", "src/nested/helper.mjs", "src/schema.json", "package.json"];
@@ -92,7 +101,8 @@ test("only declared Node 22 surfaces may reject node:sqlite on Node 20", () => {
   assert.equal(expectedNode20Rejection(p, ".", error, "22.21.1"), false);
   assert.equal(expectedNode20Rejection({ ...p, name: core.name }, ".", error, "20.19.0"), false);
   assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, ".", error, "20.19.0"), false);
-  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./durable-journal", error, "20.19.0"), true);
+  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./wallet/durable-journal", error, "20.19.0"), true);
+  assert.equal(expectedNode20Rejection({ ...p, name: packages[2].name }, "./durable-journal", error, "20.19.0"), false);
   for (const message of ["No such built-in module: node:sqlite-extra", "No such built-in module: node:sqlite/extra", "other failure involving node:sqlite"]) {
     assert.equal(expectedNode20Rejection(p, ".", { ...error, message }, "20.19.0"), false);
   }
@@ -266,6 +276,17 @@ test("wildcard exports pair every condition with the same concrete subpath", () 
   assert.throws(() => validateFiles(core, p, ["package.json", "dist/a.d.ts"]), /missing|no packed/);
 });
 
+test("each pinned preparation manifest hash matches its package's current manifest", () => {
+  const snapshot = value => createHash("sha256").update(JSON.stringify(value, (_, member) => member && typeof member === "object" && !Array.isArray(member) ?
+    Object.fromEntries(Object.entries(member).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : member)).digest("hex");
+  const pinned = packages.filter(definition => definition.preparationManifestSha256);
+  assert.ok(pinned.some(definition => definition.name === "@kynesyslabs/dacs-seller"));
+  for (const definition of pinned) {
+    const source = JSON.parse(readFileSync(new URL(`../../${definition.directory}/package.json`, import.meta.url), "utf8"));
+    assert.equal(snapshot(source), definition.preparationManifestSha256, `${definition.name}: update preparationManifestSha256`);
+  }
+});
+
 test("nested internal lock entries must resolve to supplied tarballs", () => {
   const name = `node_modules/${packages[1].name}/node_modules/${core.name}`;
   for (const resolved of ["https://registry.npmjs.org/@kynesyslabs/dacs/-/dacs-0.1.0-alpha.0.tgz", undefined, "file:/tmp/other.tgz"]) {
@@ -306,10 +327,10 @@ test("strict release rejects a private package even when the surviving subset im
   assert.ok(!logs.some(line => line.includes("Release checks passed")));
 }));
 
-test("preparation dry run reports not ready without failing on missing/private packages", { timeout: 120_000 }, () => fixture(async root => {
+test("preparation dry run reports not ready without failing on private packages", { timeout: 120_000 }, () => fixture(async root => {
   await sourceTree(root);
   await changeManifest(root, packages[2], { private: true });
-  await rm(join(root, packages[3].directory), { recursive: true });
+  await changeManifest(root, packages[3], { private: true });
   const logs = [];
   const result = await release("dry-run", { root, log: line => logs.push(line) });
   assert.equal(result.ready, false);
@@ -606,29 +627,149 @@ test("public packages cannot import the optional driver at module load", { timeo
 }));
 
 
-test("the held private snapshot's preparation inventory cannot admit a new packed path", { timeout: 120_000 }, () => fixture(async root => {
+const client = packages[2];
+const clientNotReady = [`${client.name}: private package is not releasable`, `${client.name}: release identity or publish policy is invalid`];
+
+// The other packages come from the fixture tree; the named one is the real private package.
+async function treeWithRealPackage(root, definition) {
   await sourceTree(root);
-  const dir = join(root, packages[2].directory);
+  const dir = join(root, definition.directory);
   await rm(dir, { recursive: true });
-  await cp(new URL("../../packages/dacs-client/", import.meta.url), dir, { recursive: true });
+  await cp(new URL(`../../${definition.directory}/`, import.meta.url), dir, { recursive: true });
+  return dir;
+}
+const treeWithRealClient = root => treeWithRealPackage(root, client);
+
+test("the private client package prepares as not ready with exact blockers", { timeout: 120_000 }, () => fixture(async root => {
+  await treeWithRealClient(root);
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.artifacts.length, 5);
+  assert.deepEqual(result.notReady, clientNotReady);
+  assert.equal(result.artifacts.find(a => a.manifest.name === client.name).releasable, false);
+}));
+
+test("a changed client manifest is refused, even for a harmless field", { timeout: 120_000 }, () => fixture(async root => {
+  await treeWithRealClient(root);
+  for (const damage of [{ license: "UNLICENSED" }, { description: "changed description" }]) {
+    await changeManifest(root, client, damage);
+    const result = await prepare(root, join(root, `scratch-${Object.keys(damage)[0]}`), () => {});
+    assert.ok(result.errors.includes(clientNotReady[1]), `${Object.keys(damage)[0]} change must refuse the identity blocker`);
+    assert.equal(result.artifacts.length, 4);
+  }
+}));
+
+test("files beside the client that its manifest does not list are not packed", { timeout: 120_000 }, () => fixture(async root => {
+  const dir = await treeWithRealClient(root);
+  await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
+  await writeFile(join(dir, "src/unreviewed.mjs"), "export const extra = true;");
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.deepEqual(result.errors, []);
+  const packed = result.artifacts.find(a => a.manifest.name === client.name).files;
+  assert.ok(!packed.some(file => file.includes("unreviewed")));
+}));
+
+test("a client manifest that lists a path outside the allow-list cannot pack it", { timeout: 120_000 }, () => fixture(async root => {
+  const dir = await treeWithRealClient(root);
+  await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
+  const listed = JSON.parse(await readFile(join(dir, "package.json"), "utf8")).files;
+  await changeManifest(root, client, { files: [...listed, "unreviewed.mjs"] });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.ok(result.errors.includes(`${client.name}: outside allow-list: unreviewed.mjs`));
+  assert.equal(result.artifacts.length, 4);
+}));
+
+test("the held private snapshot's preparation inventory cannot admit a new packed path", { timeout: 120_000 }, () => fixture(async root => {
+  const dir = await treeWithRealClient(root);
   const baseline = await prepare(root, join(root, "baseline"), () => {});
   assert.deepEqual(baseline.errors, []);
   assert.equal(baseline.artifacts.length, 5);
-  const identityReason = `${packages[2].name}: release identity or publish policy is invalid`;
-  assert.ok(baseline.notReady.includes(identityReason), "held snapshot diagnostics name the package exactly once");
+  const identityReason = clientNotReady[1];
+  assert.equal(baseline.notReady.filter(reason => reason === identityReason).length, 1, "held snapshot diagnostics name the package exactly once");
   const heldManifest = await readFile(join(dir, "package.json"));
-  await changeManifest(root, packages[2], { license: "UNLICENSED" });
+  await changeManifest(root, client, { license: "UNLICENSED" });
   const damaged = await prepare(root, join(root, "damaged-manifest"), () => {});
   assert.ok(damaged.errors.some(e => e.includes("identity or publish policy")), "only the exact held manifest gets baseline exceptions");
   assert.ok(damaged.errors.includes(identityReason), "unexpected source and packed identity defects keep one package prefix");
   await writeFile(join(dir, "package.json"), heldManifest);
   await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
   // The held manifest lists its packed files, so the new path must be listed to be packed.
-  await changeManifest(root, packages[2], { files: [...(JSON.parse(heldManifest).files ?? []), "unreviewed.mjs"] });
+  await changeManifest(root, client, { files: [...(JSON.parse(heldManifest).files ?? []), "unreviewed.mjs"] });
   const changed = await prepare(root, join(root, "changed"), () => {});
   assert.ok(changed.errors.some(e => e.includes("outside allow-list")));
   assert.equal(changed.artifacts.length, 4);
 }));
+
+const seller = packages[3];
+const sellerNotReady = [`${seller.name}: private package is not releasable`, `${seller.name}: release identity or publish policy is invalid`];
+const treeWithRealSeller = root => treeWithRealPackage(root, seller);
+
+test("the private seller package prepares as not ready with exact blockers and its real files", { timeout: 120_000 }, () => fixture(async root => {
+  await treeWithRealSeller(root);
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.artifacts.length, 5);
+  assert.deepEqual(result.notReady, sellerNotReady);
+  const packed = result.artifacts.find(a => a.manifest.name === seller.name);
+  assert.equal(packed.releasable, false);
+  for (const file of ["PROFILE.json", "ADMISSION.md", "SOURCES.md", "src/index.mjs"]) assert.ok(packed.files.includes(file), `${file} is packed`);
+  assert.ok(!packed.files.includes("src/devnet-demo/operator-custody.mjs"), "excluded demo custody module stays out");
+}));
+
+test("a changed seller manifest is refused, even for a harmless field", { timeout: 120_000 }, () => fixture(async root => {
+  await treeWithRealSeller(root);
+  for (const damage of [{ license: "UNLICENSED" }, { description: "changed description" }]) {
+    await changeManifest(root, seller, damage);
+    const result = await prepare(root, join(root, `scratch-${Object.keys(damage)[0]}`), () => {});
+    assert.ok(result.errors.includes(sellerNotReady[1]), `${Object.keys(damage)[0]} change must refuse the identity blocker`);
+    assert.equal(result.artifacts.length, 4);
+  }
+}));
+
+test("a missing seller manifest is an error, not an accepted blocker", { timeout: 120_000 }, () => fixture(async root => {
+  await sourceTree(root);
+  await rm(join(root, seller.directory), { recursive: true });
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.deepEqual(result.errors, [`${seller.name}: missing package manifest`]);
+}));
+
+test("files beside the seller that its manifest does not list are not packed", { timeout: 120_000 }, () => fixture(async root => {
+  const dir = await treeWithRealSeller(root);
+  await writeFile(join(dir, "unreviewed.mjs"), "export const extra = true;");
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.deepEqual(result.errors, []);
+  const packed = result.artifacts.find(a => a.manifest.name === seller.name).files;
+  assert.ok(!packed.includes("unreviewed.mjs"));
+}));
+
+test("a seller source file outside the allow-list cannot be packed", { timeout: 120_000 }, () => fixture(async root => {
+  const dir = await treeWithRealSeller(root);
+  await writeFile(join(dir, "src/unreviewed.json"), "{}");
+  const result = await prepare(root, join(root, "scratch"), () => {});
+  assert.ok(result.errors.includes(`${seller.name}: outside allow-list: src/unreviewed.json`));
+  assert.equal(result.artifacts.length, 4);
+}));
+
+function packedCorePaths() {
+  const root = new URL("../../", import.meta.url);
+  const [pack] = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: root, encoding: "utf8" }));
+  return pack.files.map(f => f.path);
+}
+
+test("every path the core package packs is inside the core allow-list", () => {
+  const outside = packedCorePaths().filter(file => {
+    try { validateFiles(core, { exports: {} }, [file]); return false; } catch (error) { return /outside allow-list/.test(error.message); }
+  });
+  assert.deepEqual(outside, []);
+});
+
+test("the core allow-list names the shipped conformance records exactly, not by pattern", () => {
+  const record = "conformance/tp1-node-observations/block0-2026-10-20.json";
+  assert.doesNotThrow(() => validateFiles(core, { exports: {} }, ["package.json", record]));
+  for (const sibling of ["conformance/tp1-node-observations/other.json", "conformance/other.json", "vectors/other.json", "docs/other.md"]) {
+    assert.throws(() => validateFiles(core, { exports: {} }, [sibling]), /outside allow-list/);
+  }
+});
 
 
 test("generator admission preserves the cause when a required packed dependency is missing", async () => {
@@ -1216,5 +1357,16 @@ test("module-sync export conditions are refused because Node 22 resolves them be
     const p = { ...manifest(def), exports };
     assert.throws(() => validateManifest(p, def), /module-sync/);
     assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", "dist/sync.js"]), /module-sync/);
+  }
+});
+
+test("each private package's recorded preparation manifest hash is the hash of its checked-in manifest", () => {
+  const snapshot = p => createHash("sha256").update(JSON.stringify(p, (_, value) => value && typeof value === "object" && !Array.isArray(value) ?
+    Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value)).digest("hex");
+  const recorded = packages.filter(p => p.preparationManifestSha256);
+  assert.deepEqual(recorded.map(p => p.name), ["@kynesyslabs/dacs-client", "@kynesyslabs/dacs-seller"]);
+  for (const definition of recorded) {
+    const manifestPath = new URL(`../../${definition.directory}/package.json`, import.meta.url);
+    assert.equal(snapshot(JSON.parse(readFileSync(manifestPath, "utf8"))), definition.preparationManifestSha256, `${definition.name}: update preparationManifestSha256 in scripts/release-policy.json`);
   }
 });
