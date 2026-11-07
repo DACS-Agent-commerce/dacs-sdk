@@ -57,7 +57,7 @@ test('a command that succeeds exits 0 and receives the canonical data directory;
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const received = [];
   const commands = {
-    ok: { run: async options => { received.push(options); }, effect: false },
+    ok: { run: async ({ dataDirectory }) => { received.push({ dataDirectory }); }, effect: false },
     refuse: { run: async () => { throw new SellerConfigError('seller_config_directory_mismatch', 'keyPath'); }, effect: false },
     long: { run: async () => { throw new SellerConfigError('seller_config_invalid', 'x'.repeat(1000)); }, effect: false },
     other: { run: async () => { throw Object.assign(new Error('TEST secret detail'), { code: 'seller_key_unavailable' }); }, effect: false },

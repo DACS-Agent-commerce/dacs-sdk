@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { buildListingDraft } from '../src/dacs/listing.mjs';
 import { SELLER_POLICY_DEFAULTS } from '../src/devnet-demo/operator-approval.mjs';
@@ -186,4 +189,21 @@ test('seller.json accepts unset operator fields for init', async () => {
   assert.deepEqual(parseSellerConfig(bytes(value)), { ...value, maxJobs: 10000, maxRecords: 10000 });
   const partial = config(); for (const field of Object.keys(partial.listing)) partial.listing[field] = null;
   assert.doesNotThrow(() => parseSellerConfig(bytes(partial)));
+});
+
+test('init\'s output parses, and every use refuses it with seller_config_incomplete naming each unset field', async t => {
+  const { parseSellerConfig, assertSellerConfigComplete } = await load();
+  const { runInit } = await import('../src/cli/init.mjs');
+  const { identityDouble } = await import('./helpers/init-identity-fixture.mjs');
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-config-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dataDirectory = join(root, 'seller');
+  await runInit({ dataDirectory, identity: identityDouble(), stdout: { write() {} } });
+  const initial = parseSellerConfig(readFileSync(join(dataDirectory, 'seller.json')));
+  const unset = ['rpcUrl', 'publicOrigin', 'listener', 'listing', 'service', 'sellerApproval'];
+  assert.throws(() => assertSellerConfigComplete(initial), fieldError(unset.join(','), 'seller_config_incomplete'));
+  const complete = parseSellerConfig(bytes(config()));
+  assert.equal(complete.directoryOrigin, null);
+  assert.doesNotThrow(() => assertSellerConfigComplete(complete));
+  assert.throws(() => assertSellerConfigComplete(parseSellerConfig(bytes(set(config(), 'listing.title', null)))), fieldError('listing.title', 'seller_config_incomplete'));
 });

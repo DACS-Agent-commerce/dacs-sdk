@@ -6,7 +6,12 @@ import { buildListingDraft, normalizeDemAmount } from '../dacs/listing.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from '../dacs/seller-durable-state.mjs';
 import { sellerApprovalSettings, SELLER_POLICY_DEFAULTS } from '../devnet-demo/operator-approval.mjs';
 
-const CONFIG_MAX_BYTES = 65_536;
+// The size limit of seller.json, the format string it carries and the names of the two files in the data directory.
+export const CONFIG_MAX_BYTES = 65_536;
+export const SELLER_CONFIG_FORMAT = 'dacs-seller-config/v1';
+export const SELLER_KEY_FILE = 'seller-key.json';
+export const SELLER_CONFIG_FILE = 'seller.json';
+const NULL_IS_A_CHOICE_FIELD = 'directoryOrigin';
 const SERVICE_TEXT_MAX_BYTES = 16_384;
 const MAX_TAGS = 16, MAX_TAG_LENGTH = 32, MAX_SHORT_TEXT = 200, MAX_DESCRIPTION = 2000;
 const MAX_PRICE_SIGNIFICANT_DIGITS = 15, MAX_PORT = 65535;
@@ -148,10 +153,10 @@ export function parseSellerConfig(bytes) {
   }
   checkRawValues(bytes);
   closed(config, CONFIG_KEYS, '', CONFIG_KEYS.filter(key => key !== 'maxRecords' && key !== 'maxJobs'));
-  requireValue(config.format === 'dacs-seller-config/v1', 'format');
+  requireValue(config.format === SELLER_CONFIG_FORMAT, 'format');
   absolutePath(config.dataDirectory, 'dataDirectory');
   absolutePath(config.keyPath, 'keyPath');
-  requireValue(config.keyPath === join(config.dataDirectory, 'seller-key.json'), 'keyPath');
+  requireValue(config.keyPath === join(config.dataDirectory, SELLER_KEY_FILE), 'keyPath');
   if (config.rpcUrl !== null) httpsUrl(config.rpcUrl, 'rpcUrl');
   for (const key of ['publicOrigin', 'directoryOrigin']) if (config[key] !== null) origin(config[key], key);
   if (config.listener !== null) listenerConfig(config.listener);
@@ -168,9 +173,27 @@ export function parseSellerConfig(bytes) {
 
 /** Checks a config against canonical --data-dir before stores or locks open; throws seller_config_directory_mismatch naming the field. */
 export function assertConfigBindsDirectory(config, dataDirectory) {
-  for (const [field, expected] of [['dataDirectory', dataDirectory], ['keyPath', join(dataDirectory, 'seller-key.json')]]) {
+  for (const [field, expected] of [['dataDirectory', dataDirectory], ['keyPath', join(dataDirectory, SELLER_KEY_FILE)]]) {
     if (config[field] !== expected) fail(field, undefined, 'seller_config_directory_mismatch');
   }
+}
+
+// The paths of the null fields in a parsed config, except those where null is a real choice.
+function unsetFields(value, prefix) {
+  return Object.entries(value).flatMap(([key, child]) => {
+    const field = pathOf(prefix, key);
+    if (child === null) return field === NULL_IS_A_CHOICE_FIELD ? [] : [field];
+    return typeof child === 'object' && !Array.isArray(child) ? unsetFields(child, field) : [];
+  });
+}
+
+/**
+ * Checks that a parsed config has every operator field set. Throws seller_config_incomplete whose `field` lists
+ * each unset path, comma-separated. A null `directoryOrigin` is the choice to skip the Directory hint, not an unset field.
+ */
+export function assertSellerConfigComplete(config) {
+  const unset = unsetFields(config, '');
+  if (unset.length > 0) fail(unset.join(','), undefined, 'seller_config_incomplete');
 }
 
 /** Returns canonical-comparable Listing terms from a complete config and seller claim; throws on an invalid price. */

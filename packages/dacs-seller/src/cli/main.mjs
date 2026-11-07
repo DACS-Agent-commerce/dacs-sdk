@@ -2,15 +2,18 @@ import { lstat, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, normalize } from 'node:path';
 import { sellerDiagnostic } from '../seller-diagnostics.mjs';
 import { SellerConfigError } from './config.mjs';
+import { runInit } from './init.mjs';
 
 const EXIT_OK = 0, EXIT_REFUSED = 1, EXIT_USAGE = 2;
 const MAX_REPORTED_FIELD_LENGTH = 128;
 // Filesystem causes worth naming to the operator; anything else is reported generically.
 const REPORTED_FILESYSTEM_CODES = ['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'ELOOP', 'ENAMETOOLONG', 'EIO'];
-// The closed command table, { name: { run({ dataDirectory }), effect } }. Later cards add their commands here.
-const COMMANDS = Object.freeze({});
+// Refusals whose filesystem cause is reported beside their code.
+const FILESYSTEM_REFUSAL_CODES = ['seller_data_directory_unavailable', 'init_durability_failed'];
+// The closed command table, { name: { run({ dataDirectory, stdout, identity }), effect } }. Later cards add their commands here.
+const COMMANDS = Object.freeze({ init: Object.freeze({ run: runInit, effect: false }) });
 const USAGE = 'Usage: dacs-seller <command> --data-dir <absolute canonical path>\n'
-  + '       dacs-seller --help\nNo commands are available yet.\n';
+  + '       dacs-seller --help\nCommands:\n  init  create the private data directory, the seller key and seller.json\n';
 const usageError = message => Object.assign(new TypeError(message), { code: 'cli_usage' });
 
 async function canonicalDirectory(value) {
@@ -69,24 +72,26 @@ export async function parseCliArguments(argv) {
 
 function refusalReport(error) {
   if (error instanceof SellerConfigError) return { code: error.code, field: error.field.slice(0, MAX_REPORTED_FIELD_LENGTH) };
-  if (error.code === 'seller_data_directory_unavailable') {
+  if (FILESYSTEM_REFUSAL_CODES.includes(error.code)) {
     const reason = REPORTED_FILESYSTEM_CODES.includes(error.cause?.code) ? error.cause.code : 'filesystem-error';
     return { code: error.code, reason };
   }
-  return sellerDiagnostic(error.code);
+  return sellerDiagnostic(error.code, { detail: error.detail });
 }
 
 /**
  * Runs the closed command table (`commands` is for tests) and returns the exit
  * code: 0 success, 1 refusal or failed check (reported on stderr as bounded
  * JSON), 2 usage error. Unknown commands and options are refused before any file is opened.
+ * `identity` is the wallet identity seam (`generateWalletMnemonic`, `validateMnemonic`,
+ * `deriveWalletIdentity`) that `init` needs; without it `init` refuses `seller_identity_unavailable`.
  */
-export async function main(argv, { stdout = process.stdout, stderr = process.stderr, commands = COMMANDS } = {}) {
+export async function main(argv, { stdout = process.stdout, stderr = process.stderr, commands = COMMANDS, identity } = {}) {
   try {
     const parsed = parseSyntax(argv);
     if (parsed.help) { stdout.write(USAGE); return EXIT_OK; }
     if (!Object.hasOwn(commands, parsed.command)) throw usageError('unknown command');
-    await commands[parsed.command].run({ dataDirectory: await canonicalDirectory(parsed.dataDirectory) });
+    await commands[parsed.command].run({ dataDirectory: await canonicalDirectory(parsed.dataDirectory), stdout, identity });
     return EXIT_OK;
   } catch (error) {
     if (error?.code === 'cli_usage') { stderr.write(error.message + '\n' + USAGE); return EXIT_USAGE; }
