@@ -27,7 +27,7 @@ import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '..
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE_CHAIN_IDENTITY } from '../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
-import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
+import { checkWireRequest, inspectWireOperation, openWireEnvelope, openWireRequestJournal, wireOperationId, DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 import { wireRouteFixture } from './helpers/wire-continuation-fixture.mjs';
 import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
@@ -69,7 +69,7 @@ const presentChallenge = (party, presentedAt, sessionNonce) => {
 // its `GET /storage-program` omits `createdByTx`/`interactionTxs`, its blocks
 // carry `validation_data: {signatures}`, and its name index shows a program
 // only once its block is applied. Build no live test on these shapes.
-function demosNode() {
+function demosNode(clockNow = () => NOW) {
   const ID = DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
   const blocks = [{ number: 0, status: 'confirmed', hash: ID, content: { timestamp: 0, ordered_transactions: [] }, validation_data: { simulated: true, chainIdentity: ID } }];
   // `nonces`: the last nonce each writer signed; `accountNonces`: the nonce of
@@ -86,7 +86,7 @@ function demosNode() {
   // delivery runner refuses the record as not monotonic.
   let clock = Math.ceil(NOW / 1000);
   const include = (tx) => {
-    clock = Math.max(clock + 2, Math.ceil(NOW / 1000));
+    clock = Math.max(clock + 2, Math.ceil(clockNow() / 1000));
     const number = blocks.length;
     blocks.push({ number, status: 'confirmed', hash: core.sha256Hex(`TEST-block:${number}:${tx.hash}`), content: { timestamp: clock, ordered_transactions: [tx.hash] },
       validation_data: { simulated: true, chainIdentity: ID } });
@@ -215,17 +215,25 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     startHost = host.startSellerHost;
   }
   if (finishHook) {
-    const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), ['setFinishHook'], source =>
-      source.replace('const REQUIRED =', 'let finishHook; function setFinishHook(value) { finishHook = value; }\nconst REQUIRED =')
-        .replace('const authentication = createSellerTransportServerAuth(', 'const finish = store.finish.bind(store); store.finish = (...args) => { finishHook(); return finish(...args); };\nconst authentication = createSellerTransportServerAuth('));
-    hostModule.setFinishHook(finishHook);
+    const httpUrl = await privateModuleUrl(new URL('../src/dacs/seller-http.mjs', import.meta.url), ['setFinishHook'], source =>
+      source.replace('const ROUTES =', 'let finishHook; function setFinishHook(value) { finishHook = value; }\nconst ROUTES =')
+        .replace('const finishWith = (outcome) => {', 'const finishWith = (outcome) => { finishHook();'));
+    (await import(httpUrl)).setFinishHook(finishHook);
+    const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), [], source =>
+      source.replace("from './dacs/seller-http.mjs'", `from '${httpUrl}'`));
     startHost = hostModule.startSellerHost;
   }
-  const sellerKey = key(17), buyerKey = key(12), now = NOW, steward = railSteward(), node = demosNode();
-  // The host's and the buyer client's clock: wall time, never behind the
-  // node's latest block (the node stamps its blocks at least 2 s apart, so
-  // they can run ahead of wall time).
-  const clock = () => Math.max(NOW, node.latestBlockMs());
+  let reservationTime = NOW;
+  const sellerKey = key(17), buyerKey = key(12), now = NOW, steward = railSteward(), node = demosNode(() => reservationTime);
+  // The injected clock advances through wire leases and stays at least as late as the node's blocks.
+  const clock = () => Math.max(reservationTime, NOW, node.latestBlockMs());
+  const wireLeaseMs = 300000;
+  const wireJournal = () => openWireRequestJournal(join(dataDirectory, 'wire-journal'), { clock, leaseMs: wireLeaseMs });
+  // These retry scenarios exercise recovery after the pending attempt's lease, without sleeping.
+  const advancePastPending = (jobId) => {
+    const view = inspectWireOperation(wireJournal(), { seller: sellerKey.claim, jobId, path: '/dacs/v1/payments' });
+    if (view.state === 'pending') reservationTime = Math.max(clock(), view.leaseUntil);
+  };
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey,now:clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
@@ -624,7 +632,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
     return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
-      claim: async (txHash) => { try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
+      claim: async (txHash) => { advancePastPending(jobId); try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
         catch (error) { return { error: error.code, status: error.status, causeCode:error.causeCode }; } } };
   };
   const restart = async () => { await host.close(); hosts.splice(hosts.indexOf(host), 1); host = await start(); };
@@ -641,13 +649,19 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // own reserve, then the host starts again.
   const crashMidClaim = async (p, txHash) => {
     await host.close(); hosts.splice(hosts.indexOf(host), 1);
-    const body = { jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE };
-    const signed = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim,
-      resolveJob: () => ({ listingPin: pin, agreementHash: p.agreementHash }), now: clock }).request('/dacs/v1/payments', body, JSON.stringify(body));
+    advancePastPending(p.jobId);
+    const signed = await signedClaim(p, txHash);
+    const buyerWire = await wireBuyer({ buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint });
     const store = seller.createSellerTransportStore({ path: join(dataDirectory, 'transport', 'transport.sqlite'), now: clock });
     try {
-      const request = seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store, now: clock }).readRequest(signed.header);
-      assert.equal(store.reserve(request, body, { keepProfile: FIXTURE_PROFILE }).disposition, 'perform', 'the claim is reserved, as a running request is');
+      const opened = await openWireEnvelope(signed.header, 'request', { binding: buyerWire.binding, local: buyerWire.connection(), purchaseProfile: FIXTURE_PROFILE });
+      const checked = await checkWireRequest(opened, { binding: buyerWire.binding, local: buyerWire.connection(), purchaseProfile: FIXTURE_PROFILE,
+        method: 'POST', path: signed.request.path, rawBody: signed.rawBody, now: clock(), seller: sellerKey.claim, listingPin: pin,
+        retained: { buyer: buyerKey.claim, seller: sellerKey.claim, jobId: p.jobId, agreementHash: p.agreementHash },
+        ready: true, requestJournal: wireJournal(), ...await evidenceFor(signed.request.path, p.jobId), readCommitmentReceipt });
+      const effect = await store.reservationAccounting.reserveAccounted({ checked, payload: signed.request, route: signed.request.path,
+        operationId: wireOperationId(signed.request), paymentTx: txHash, keepProfile: FIXTURE_PROFILE });
+      assert.ok(['new', 'recover'].includes(effect.state), 'the real wire owns the interrupted attempt');
     } finally { store.close(); }
     host = await start();
   };
@@ -671,6 +685,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   };
   // A buyer-signed payment claim as the transport authenticates it.
   const signedClaim = async (p, txHash) => {
+    advancePastPending(p.jobId);
     const body = { jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }, text = JSON.stringify(body);
     const buyerWire = await wireBuyer({ buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint });
     const { payload, header } = await buyerWire.signRequest('/dacs/v1/payments', body, { jobId: p.jobId, agreementHash: p.agreementHash, text });
