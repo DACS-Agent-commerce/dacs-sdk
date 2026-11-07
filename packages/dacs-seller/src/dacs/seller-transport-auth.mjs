@@ -673,6 +673,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       const text = keptProfileText(jobId);
       return text === null ? null : JSON.parse(text);
     },
+    // Whether the job's seller context session has ended (the policy `assertPending` and `claim` apply to proposal work);
+    // it reads only the session reader, so it holds whichever tables accounted the job.
+    sessionTerminal(jobId) {
+      requireJobId(jobId);
+      return TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId }));
+    },
     // The context step's pre-Agreement admission record for a job, or null:
     // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.
     contextAdmission(jobId) {

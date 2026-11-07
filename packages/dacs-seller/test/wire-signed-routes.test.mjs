@@ -114,7 +114,7 @@ async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader()
   t.after(() => rm(directory, { recursive: true, force: true }));
   mkdirSync(join(directory, 'transport'), { mode: 0o700 });
   const storePath = join(directory, 'transport', 'transport.sqlite');
-  const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [] };
+  const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [], session: null };
   // The wire measures the time an admission takes with `performance.now`: the test moves it forward by `elapsedMs`.
   const monotonicNow = performance.now.bind(performance);
   mock.method(performance, 'now', () => monotonicNow() + state.elapsedMs);
@@ -162,7 +162,7 @@ async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader()
   t.after(() => { mock.restoreAll(); syncBuiltinESMExports(); });
   const mount = () => {
     if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
-    const store = createSellerTransportStore({ path: storePath, maxJobs, maxRecords, now: clock, wireOperationView: target => inspectWireOperation(handle.wire.journal, target) });
+    const store = createSellerTransportStore({ path: storePath, maxJobs, maxRecords, now: clock, contextSessionState: () => state.session, wireOperationView: target => inspectWireOperation(handle.wire.journal, target) });
     const accounted = store.reservationAccounting.reserveAccounted.bind(store.reservationAccounting);
     store.reservationAccounting.reserveAccounted = input => accounted({ ...input, checked: { ...input.checked, reserve: async () => {
       try { return await input.checked.reserve(); } finally { state.readsAtReserve = state.authorityReads; }
@@ -1590,4 +1590,66 @@ test('host wire outcome end record survives a cut before outcome publication', a
   assert.equal(w.journalFiles().some(name => name.endsWith('.done')), false);
   w.reopen(); assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1);
   assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'completed']);
+});
+
+// The terminal-context fence of the old store, on the wire's job-fence checks.
+const TERMINAL_SESSIONS = ['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate'];
+const codeOf = (work) => { try { work(); return null; } catch (error) { return `${error.code} ${error.status}`; } };
+
+test('wire proposal fence: a context session that ends after accounting refuses the work before it signs, in every terminal state, and a live session is admitted', async (t) => {
+  const w = await world(t);
+  for (const terminal of [null, ...TERMINAL_SESSIONS]) {
+    w.state.session = null;
+    const job = await proposeJob(w, `terminal-fence-${terminal}`);
+    // The real agent reads the session after its Vet and context waits, just before it signs: it is admitted live and ends here.
+    w.agent.onWork = () => { w.state.session = terminal; };
+    const answer = await job.post();
+    w.agent.onWork = () => {};
+    assert.equal(w.agent.transportAgreementOf(job.jobId) !== null, terminal === null, `${terminal}: the contribution is retained only for a live session`);
+    assert.deepEqual({ status: answer.status, error: answer.body.error }, terminal === null ? { status: 200, error: undefined } : { status: 503, error: 'operation_uncertain' }, String(terminal));
+  }
+});
+
+test('wire proposal fence: a retained proposal is not claimed live in a terminal session, a claim made before it ends is refused at its next check, and read-only recovery goes on', async (t) => {
+  const w = await world(t);
+  const observed = [];
+  const recover = (afterClaim) => async ({ request, transport }) => {
+    w.agent.calls.reconciled++;
+    let claim;
+    try { claim = transport.claim(); } catch (error) { observed.push({ refused: codeOf(() => { throw error; }) }); return; }
+    w.state.session = afterClaim;
+    observed.push({ live: claim.live, check: codeOf(() => claim.check()) });
+    transport.settle({ status: 200, value: { disposition: 'complete', contribution: { signed: true } } });
+  };
+  const retried = async (label, session, { expire = false } = {}) => {
+    w.state.time = NOW; w.state.session = null;
+    const job = await uncertainProposal(w, `terminal-recovery-${label}`);
+    const signed = await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash });
+    w.state.session = session;
+    if (expire) w.agent.reconcileTransport = async (input) => { w.state.time = signed.payload.expiresAt; return recover(session)(input); };
+    return w.send(PATHS.proposals, signed);
+  };
+  w.agent.reconcileTransport = recover(null);
+  assert.equal((await retried('live-session', null)).status, 200);
+  w.agent.reconcileTransport = recover(null);
+  assert.equal((await retried('terminal-at-claim', 'aborted-by-other')).status, 503);
+  w.agent.reconcileTransport = recover('vet-failed');
+  assert.equal((await retried('terminal-after-claim', null)).status, 200);
+  w.agent.reconcileTransport = recover('aborted-by-other');
+  const readOnly = await retried('read-only', 'aborted-by-other', { expire: true });
+  w.state.time = NOW;
+  assert.equal(readOnly.status, 200);
+  assert.deepEqual(observed, [
+    { live: true, check: null },
+    { refused: 'seller_unavailable 503' },
+    { live: true, check: 'context_session_terminal 409' },
+    { live: false, check: null },
+  ]);
+});
+
+test('wire proposal fence: a terminal session fences proposal work only, not the commitment of a held job', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'terminal-fence-commitments');
+  assert.equal((await job.post()).status, 200);
+  w.state.session = 'aborted-by-other';
+  assert.equal((await w.post(PATHS.commitments, { jobId: job.jobId }, { jobId: job.jobId, agreementHash: job.agreementHash })).status, 200);
 });

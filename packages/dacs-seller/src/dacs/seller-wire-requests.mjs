@@ -105,7 +105,7 @@ function admitAnswerText(text) {
  * only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
  */
 export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt }) {
-  const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
+  const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   const context = Object.freeze({ binding, signer, journal, store, requireDelegation, readCommitmentReceipt,
@@ -192,6 +192,9 @@ export function wireAuthenticator(wire, agent, authentication) {
   };
   const expired = (request) => lapse(request) !== null;
   const refuse = (code = 'peer_reconciliation_conflict', status = 503) => { throw new SellerTransportError(code, status); };
+  // As the old store's guards did, proposal work ends with its context session; the session is read at each check, after the
+  // agent's own waits, because accounting's start check cannot cover work that follows it. Other routes are not fenced by it.
+  const sessionEnded = (request) => request.path === DACS_SELLER_HTTP_PATHS.proposals && wire.store.sessionTerminal(request.jobId);
   // Inspection fences a capability already issued by reserve(); it never grants permission to recover.
   const owned = (reservation) => {
     const kept = reservations.get(reservation);
@@ -231,11 +234,14 @@ export function wireAuthenticator(wire, agent, authentication) {
     claim: (reservation, request, { live = true } = {}) => {
       const kept = owned(reservation);
       if (kept.request !== request || reservation.disposition !== 'uncertain' || claimed.has(reservation)) return refuse();
-      claimed.add(reservation);
       const canAct = live && !expired(request);
+      // Read-only recovery is not fenced: it settles nothing and signs nothing.
+      if (canAct && sessionEnded(request)) return refuse('seller_unavailable', 503);
+      claimed.add(reservation);
       const check = () => {
         owned(reservation);
         if (canAct && expired(request)) return refuse(lapse(request), 408);
+        if (canAct && sessionEnded(request)) return refuse('context_session_terminal', 409);
       };
       const claim = Object.freeze({ ...reservation, live: canAct, check });
       reservations.set(claim, kept);
@@ -251,6 +257,7 @@ export function wireAuthenticator(wire, agent, authentication) {
     assertPending: (reservation) => {
       const { request } = owned(reservation);
       if (expired(request)) return refuse(lapse(request), 408);
+      if (sessionEnded(request)) return refuse('context_session_terminal', 409);
     },
   });
   return Object.freeze({
