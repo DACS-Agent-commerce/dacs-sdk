@@ -1079,6 +1079,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | D22 | delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/signatures.mjs:32` | ea2845c8b7caf1b411be2e29a70005a94e4218c0 |
 | | `packages/dacs-client/test/signatures-claim-ref.test.mjs:1` | f0696e4cc8a8d54e4833adde9e465638d792a03c |
+| D20 | delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/public/portal-intent/intent.mjs:96`, `packages/dacs-client/src/public/portal-intent/intent.mjs:115` | 3d60f6151608b59fda215fb362bb54a5721c82ce |
+| | `packages/dacs-client/test/intent-canonical-depth.test.mjs:1` | bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c |
 
 ## Complete commit and file inventory
 
@@ -3397,6 +3400,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/src/signatures.mjs:32` |
 | delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/test/signatures-claim-ref.test.mjs:1` |
+| delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | `packages/dacs-client/src/public/portal-intent/intent.mjs:96`, `packages/dacs-client/src/public/portal-intent/intent.mjs:115` |
+| delta(client): D20 admit nesting depth 128 in the portal intent canonical JSON | `packages/dacs-client/test/intent-canonical-depth.test.mjs:1` |
 
 ## Original moved files
 
@@ -3441,7 +3452,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/devnet-demo/operator-approval.mjs` | `http-mcp/src/devnet-demo/operator-approval.mjs` | 14fe5209bdc2fff3a21ce4a13d12756fef1ce091 | unchanged | 14fe5209bdc2fff3a21ce4a13d12756fef1ce091 |
 | `packages/dacs-client/src/devnet-demo/stop-request.mjs` | `http-mcp/src/devnet-demo/stop-request.mjs` | 9013bb2f8b75088b04f6e477beb28388cee156a8 | unchanged | 9013bb2f8b75088b04f6e477beb28388cee156a8 |
 | `packages/dacs-client/src/devnet-demo/storage-write-recovery.mjs` | `http-mcp/src/devnet-demo/storage-write-recovery.mjs` | 339752ef02b10b9f2740e833f9b6a1be239ed2b8 | unchanged | 339752ef02b10b9f2740e833f9b6a1be239ed2b8 |
-| `packages/dacs-client/src/public/portal-intent/intent.mjs` | `http-mcp/public/portal-intent/intent.mjs` | a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e | unchanged | a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e |
+| `packages/dacs-client/src/public/portal-intent/intent.mjs` | `http-mcp/public/portal-intent/intent.mjs` | a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e | changed by D20 | 3d60f6151608b59fda215fb362bb54a5721c82ce |
 | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs` | `http-mcp/public/portal/embedded-wallet/sdk-provider.mjs` | b7183e63a75b68cda34c2b30a4d532963794b13f | changed by D11, WF | fb364397ed046fb1211d620fb5dfa68563715c1a |
 | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs` | `http-mcp/public/portal/seller-session-delegation.mjs` | ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42 | changed by D21 | 1a36a9a9d65cd6723b1f149005c0338a87ffddee |
 | `packages/dacs-client/src/public/portal/seller-session-limits.mjs` | `http-mcp/public/portal/seller-session-limits.mjs` | deleted before publication | unchanged | deleted |
