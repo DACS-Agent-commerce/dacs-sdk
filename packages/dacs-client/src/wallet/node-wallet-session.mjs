@@ -52,6 +52,8 @@ const refuseContent = cause => new EmbeddedWalletError('payload_mismatch', 'the 
 
 // Every lease an owner hands out and has not yet seen released; `release` removes it.
 const liveLeases = new WeakSet();
+// The fence of the effect pass whose work is running: a fence acquisition inside it reuses that fence instead of queueing behind it.
+const passFence = new AsyncLocalStorage();
 // Every token `admitTp1Authority` has made; a copy of one is not in it.
 const tokens = new WeakSet();
 
@@ -105,7 +107,8 @@ function readCanonicalRoot(endpoint) {
 
 /**
  * Returns the owner of the one connection to `endpoint`: `{local, currentLocal(), getContext(), acquireConnectionFence(claim), fetchImpl, close()}`.
- * Fences are granted one at a time in request order; `release` frees a fence once. `fetchImpl` reaches only the endpoint origin and refuses redirects.
+ * Fences are granted one at a time in request order; `release` frees a fence once. Inside `runInEffectPass`, an acquisition shares the pass's own fence
+ * and is granted at once; its `release` frees nothing. `fetchImpl` reaches only the endpoint origin and refuses redirects.
  * Throws OperationError(transport_mismatch) for an endpoint that is not a canonical HTTPS root or an authority that is not a plain token. After `close()`,
  * `currentLocal`, `getContext`, `fetchImpl` and `acquireConnectionFence` throw transport_closed and queued waiters are rejected.
  */
@@ -119,6 +122,8 @@ export function createNodeTransportOwner({ endpoint, transportAuthority, fetchIm
   const currentLocal = () => { if (closed) fail('transport_closed'); return local; };
   async function acquireConnectionFence() {
     currentLocal();
+    // Inside an effect pass that holds this owner's fence, the transport's own acquisitions share it; its release frees nothing.
+    if (held.has(passFence.getStore())) return Object.freeze({ context, release() {} });
     const preceding = tail;
     let unlock;
     tail = new Promise(resolve => { unlock = resolve; });
@@ -294,7 +299,7 @@ function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired }
   };
   const runInEffectPass = (handle, work) => {
     if (typeof work !== 'function') fail('invalid_params');
-    return scope.run(handle, work);
+    return scope.run(handle, () => passFence.run(passes.get(handle)?.fence, work));
   };
   async function awaitStep(step, { deadline, phase, signal, timeoutCode }) {
     const late = cause => refuseGate(timeoutCode, 'the effect pass deadline passed', cause);

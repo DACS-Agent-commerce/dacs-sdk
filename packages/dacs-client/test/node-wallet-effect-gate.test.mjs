@@ -391,3 +391,30 @@ test("reopen signed-held transaction without automatic transmission", async t =>
   assert.equal(w.node.broadcasts.length, 0, JSON.stringify(again));
   assert.equal((await w.lane()).signedTransaction.hash, held.signedTransaction.hash, 'the retained bytes are unchanged');
 });
+
+test("a pass that holds the exported owner's own fence completes native sends and session anchors: the transport's nested acquisitions inside the pass reuse that fence, and it is free once the pass ends", { timeout: 20_000 }, async t => {
+  for (const seller of [true, false]) for (const send of [sendNative, sendAnchor]) {
+    const w = await gateWorld(t, { seller, directOwner: true, ...(seller ? { qualify: async () => w.currentOwner().local.connectionId } : {}) });
+    const events = [], pass = await openPass(w, { events });
+    const result = await pass.run(() => send(w));
+    assert.equal(result.success, true, `${seller ? 'seller' : 'buyer'} ${send.name}: ${JSON.stringify(result)}`);
+    assert.ok(events.includes('authority:sign'), 'the pass ran its fresh authority check');
+    await assertFenceFree(w.currentOwner());
+  }
+});
+
+test("a nested fence acquisition reuses only the pass's own fence: a caller outside the pass still waits for it, and is granted once the pass releases it", { timeout: 20_000 }, async t => {
+  const w = await gateWorld(t, { directOwner: true }), owner = w.currentOwner(), pass = await openPass(w);
+  let granted = false;
+  const outside = owner.acquireConnectionFence().then(lease => { granted = true; return lease; });
+  await pass.run(async () => {
+    const nested = await owner.acquireConnectionFence();
+    assert.equal(nested.context, owner.getContext());
+    nested.release();
+    await new Promise(setImmediate);
+    assert.equal(granted, false, 'the caller outside the pass waits while the pass holds its fence');
+    assert.equal(pass.lease.context, owner.getContext(), 'releasing the nested lease did not release the pass fence');
+  });
+  (await outside).release();
+  assert.equal(granted, true);
+});

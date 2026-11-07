@@ -6543,6 +6543,27 @@
           "after": "7cf6b00589e4818b4fbd876ab327421a6e90cfba"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 let an effect pass share its fence with the transport and re-pin the release manifest",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "1561f9d46da0be7ddfa2f45a3ca5d5d52bac82fe",
+          "after": "d7936b2ba890b2431ce8681de72fe572ed1119b4"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "793feb91d7aff472458e7463b9442f09697c74e3",
+          "after": "10beba68fcc095df465df8e74e5e0e27fe8dd251"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": "b6c87c9639a25759561443cf9014e3e0f402bf94",
+          "after": "beb390b8c98523aeaa14210e43c207be82bf4696"
+        }
+      ]
     }
   ]
 }
