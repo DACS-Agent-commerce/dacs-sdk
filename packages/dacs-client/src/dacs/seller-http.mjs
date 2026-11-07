@@ -257,7 +257,8 @@ function answerOrError(verdict, answer, status) {
 /**
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
  * classifyAnswer is the injectable K5 classifier; the default is the real one. requestRecords is the adapter's durable
- * record store (`start(path, body)` returns the attempt `{text, continuation, newPurchase, check(), finish(answerClass)}`
+ * record store (`start(path, body)` returns `{text, stored, continuation, newPurchase, check(), finish(answerClass)}`;
+ * `stored: true` identifies a durably recorded effect attempt, while reads use false,
  * and `failure(error)` records a refusal). Authenticated calls with stored attempts retry unknown dispatches twice; all other calls send once.
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
@@ -377,7 +378,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     origin,
     // The route adapter for callers without a named method yet (the context and challenge routes belong to the bootstrap callers).
     request: post,
-    // Records, for the operator, why a request that was started never reached the seller.
+    // Records the bounded outcome of a failure that the caller otherwise swallows.
     recordFailure: (error) => requestRecords?.failure(error),
     // The durable Agreement coordinator retains only disposition/reason.
     // Its caller records the last failed HTTP call's bounded cause separately.
