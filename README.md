@@ -15,6 +15,9 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 - **Optionally integrates with** [`@kynesyslabs/demosdk`](https://www.npmjs.com/package/@kynesyslabs/demosdk) for substrate primitives (anchoring, DAHR, channels, bridges) behind a thin substrate-adapter seam (Demos is the first adapter).
 - **Tested against** the canonical conformance vectors in [`DACS-Agent-commerce/DACS-Standard`](https://github.com/DACS-Agent-commerce/DACS-Standard) — the normative source of truth.
 - **Presence oracle update:** see [adoption scope and remaining runtime boundary](./docs/presence-conformance-adoption.md).
+- **Testnet release:** see [About the DACS testnet release](./docs/about-the-testnet-release.md) for what it is in plain
+  terms, and the [TP-1 declaration](./docs/testnet-profile-tp1.md) for the ways it is known to fall short of the
+  Standard so far (composition checks qualify and complete that list).
 
 ## Layering
 
@@ -565,8 +568,14 @@ state remains the finality authority; an `included`, `confirmed`, or `finalized`
 transaction-body label is accepted only when that status and confirmed-block
 membership agree. RPC time and decoded JSON size are bounded (15 seconds and
 64 MiB by default, both configurable), including the potentially larger
-confirmed-block response. The native-send payload disambiguates the denomination
-fork:
+confirmed-block response.
+
+For TP-1, this description does not establish rejection of an `included`
+transfer whose execution failed: [L2 in the TP-1 declaration](docs/testnet-profile-tp1.md#live-use-rules-tp-1-does-not-meet)
+currently covers the buyer rail only, and a composition review must separately
+qualify the seller observer before delivery.
+
+The native-send payload disambiguates the denomination fork:
 post-fork string amounts are OS (including an exactly matching numeric
 `content.amount` projection), while legacy numeric payload amounts are DEM and
 are converted at `1 DEM = 1,000,000,000 OS`. The payer is the transaction's
@@ -896,7 +905,8 @@ co-signed; single-signature suppression is available only for an honest abort.
 `lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
 §10.4.3(a) read step for consumers. It fetches the buyer and seller logical
 bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
-ignores content returned for another job. Lookup is discovery, not trust: pass
+ignores content returned for another job. It rejects a `jobId` that is not a
+canonical JID-1 job ID before making any read. Lookup is discovery, not trust: pass
 each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
 that returns its `.valid` boolean to `bundleConsistency` before using the
 resulting two-sided verdict.
@@ -963,6 +973,14 @@ prefix is intentional: these strings must not be used as the current DACS
 address grammar. New code should use the typed address helper exported by the
 relevant producer, such as `compositeVerificationAddress`,
 `fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
+
+The public `attestationAddress`, `paymentEvidenceAddress`, `ratingAddress`, and
+`bundleAddress` builders validate a canonical JID-1 uppercase ULID before
+assembling an address or hashing a job-specific preimage. The `jid1*` helpers
+retain the same boundary. To read historical non-JID-1 artifacts, select
+`legacyAttestationAddress`, `legacyPaymentEvidenceAddress`, `legacyRatingAddress`,
+or `legacyBundleAddress` explicitly; these preserve the historical address bytes
+and segment checks. New current-profile jobs use the public builders.
 
 ## Doctor
 
@@ -1091,11 +1109,47 @@ the consumer's `node_modules`, performs a frozen rematerialization with an empty
 cache and an unreachable loopback registry, and reruns the substrate-free
 `canonical` and `artifacts` imports. CI uploads the
 core tarball and `provenance.json` for the exact checkout SHA. The release-set
-verifier additionally requires byte-identical core, Node host and generator
-tarballs at one version with identical compatibility metadata. It emits exact
+verifier additionally requires byte-identical tarballs at one version, with
+identical compatibility metadata, for every package of the five-package policy
+that is ready; a private or absent package is reported "not ready" and skipped.
+With `--strict`, which only the gated publish workflow passes, it refuses unless
+all five are releasable at the planned version and every package's internal
+dependencies come earlier in the policy order. It emits exact
 checksums, one CycloneDX SBOM per package and combined release provenance. These
 are qualified package candidates, not evidence that the packages were published
 to npm.
+
+Registry/container acceptance writes evidence to the new directory passed to
+`--output-dir`. Handled failures after preflight (an exit, SIGINT or SIGTERM)
+retain partial evidence in that directory. Power loss or SIGKILL can leave the
+reserved directory empty, and the temporary copies staged under the runner's
+temporary directory may not survive a reboot. Run on a host with Docker/Compose,
+curl 8.4+ and GNU mv. Create the parent first and choose a fresh output
+directory for each run:
+
+```sh
+mkdir -p registry-container-artifacts
+review_parent=$(mktemp -d registry-container-artifacts/review.XXXXXX)
+npm run acceptance:registry-container -- --output-dir "$review_parent/evidence"
+```
+
+The ignored `registry-container-artifacts/` path keeps evidence out of the Git
+worktree. A directory outside the repository also works; other in-repository
+paths appear as untracked files.
+Acceptance requires explicit completion and consistent policy outcomes. npm HTTP
+responses have byte and time limits. Commands wrapped with `run_bounded` have
+deadlines. Failed runs retain collected evidence, including structured
+`doctor.json`, `doctor.log` and the recorded exit status when available.
+The acceptance audits the generated consumer's tree by advisory ID against
+`scripts/registry-container-audit-baseline.json`. On pull requests an advisory
+ID outside that baseline is a warning, unless it is high or critical on a
+direct dependency of the consumer; the scheduled drift job, manual runs and
+release paths fail on it (see the audit policy in [SECURITY.md](./SECURITY.md)).
+`Publish gated npm prerelease` publishes only after that acceptance passes with
+drift enforced. It replaces `publish-prerelease.yml`, which older refs still
+contain, so publication credentials must belong only to the new workflow and its
+`npm-prerelease-gated` environment (owner steps in the runbook below).
+Production publication remains blocked by #191.
 
 Maintainer-controlled prerelease publication and first-release credential
 bootstrap are documented in
