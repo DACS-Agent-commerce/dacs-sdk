@@ -69,10 +69,20 @@ test('an already exhausted deadline creates no attempt and never calls the signe
   const client = s.client({ timeoutMs: 0 });
   await assert.rejects(client.propose(bodyFor(P)), timeout);
   assert.equal(s.record(P), undefined); assert.equal(s.w.state.signs.length, 0); assert.equal(s.fetches.length, 0);
+  assert.equal(client.failureCause, 'timeout'); assert.equal(client.failureDispatched, false);
 });
 
 test('authenticated read calls have no stored attempt and send once', async t => {
   const s = await storedWorld(t);
   await assert.rejects(s.client({ respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).agreementState({ jobId: s.w.job.jobId }));
   assert.equal(s.record(PATHS.state), undefined); assert.equal(s.fetches.length, 1); assert.deepEqual(s.delays, []);
+});
+
+
+test('a late retry wake preserves the prior response cause for the error and transport observer', async t => {
+  const s = await storedWorld(t);
+  s.clock.sleep = async ms => { s.delays.push(ms); s.advance(15000); };
+  const client = s.client({ respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) });
+  await assert.rejects(client.propose(bodyFor(P)), e => e.answerClass === 'unknown' && e.causeCode === 'status-5xx');
+  assert.equal(client.failureCause, 'status-5xx'); assert.equal(s.fetches.length, 1);
 });

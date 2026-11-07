@@ -284,8 +284,11 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     let unknown;
     for (let retry = 0; ; retry++) {
       if (clock.now() >= deadline) {
-        lastFailureCause = 'timeout';
-        throw unknown ?? new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, 'timeout', { answerClass: SELLER_ANSWER_CLASS.NOT_SENT });
+        if (unknown) throw unknown;
+        lastFailureCause = 'timeout'; lastFailureDispatched = false;
+        const unsent = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, 'timeout', { answerClass: SELLER_ANSWER_CLASS.NOT_SENT });
+        preDispatchFailures.add(unsent);
+        throw unsent;
       }
       const attempt = requestRecords?.start(path, body);
       try {
