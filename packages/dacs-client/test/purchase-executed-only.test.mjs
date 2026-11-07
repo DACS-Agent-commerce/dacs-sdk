@@ -47,11 +47,11 @@ function assertUnsettled(w,status) {
  assert.equal(s.coordinate.reportedTxHash,HASH,'the same hash stays retained for readback');
 }
 
-test('executed-only control: a confirmed body in the observed block settles, labelled a single-node observation',async t=>{
+test('executed-only control: a confirmed body in the observed block settles, attributed to its undeclared host reader',async t=>{
  const w=world(t),{operation,verification}=await w.verify();
  assert.equal(verification.outcome,'verified');assert.equal(operation.status,'settled_verified');
  assert.equal(verification.txStatus,'confirmed');assert.equal(verification.slotConsumed,true);
- assert.match(verification.observer,/single-node consistent view; not a validator-quorum proof/);
+ assert.equal(verification.observer,'host-supplied chain reader (observer not declared)');
  assert.ok(w.state().coordinate.verifiedAt);assert.equal(w.state().consumed,1);
 });
 
