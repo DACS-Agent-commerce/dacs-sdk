@@ -4,6 +4,8 @@
 // rebroadcasts nothing itself. A new export fails the sweep until it is added
 // here. src/index.mjs only re-exports functions classified below.
 export const EXPORT_CLASSIFICATION = Object.freeze({
+  'src/cli/config.mjs': { effect: {}, pure: ['SellerConfigError', 'assertConfigBindsDirectory', 'listingTermsFromConfig', 'listingTermsFromListing', 'parseSellerConfig'] },
+  'src/cli/main.mjs': { effect: {}, pure: ['main', 'parseCliArguments'] },
   'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall', 'isBoundedCallTimeout'] },
   'src/dacs/bounded-reads.mjs': { effect: {  }, pure: ['readFailureCode', 'readRetainedBounded'] },
   'src/dacs/commit-on-signature.mjs': { effect: { signatureCommitmentAnchor: ['signatureCommitmentAnchor'] }, pure: ['commitOnSignatureConfig', 'verifyAgreementCreateAuthorization', 'verifySignatureAgreement'] },
