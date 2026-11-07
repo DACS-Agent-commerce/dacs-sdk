@@ -86,7 +86,7 @@ function heldSection(source, p) {
     p();
     p(`Historical source probe (archived as text): ${code(hold.liftRequires.probe)} (requires the separate source repository to reproduce its historical run). ${hold.liftRequires.probeResult}`);
     p();
-    p("Gate: `packages/dacs-client/scripts/check-hold.mjs` runs from the package test script and provenance regressions. The record and gate pin the complete private package and change together for reviewed package updates. Package exports remain empty; package HEAD, index and working bytes and regular-file modes are checked. Other SDK files and unrelated commits are unrestricted, including PR merge commits after main advances. This check imports no package entry point and does not establish absence of external callers or grant live admission.");
+    p("Gate: `packages/dacs-client/scripts/check-hold.mjs` runs from the package test script and provenance regressions. The record and gate pin the complete private package and change together for reviewed package updates. Package exports are limited to the reviewed root and durable-journal entry points; package HEAD, index and working bytes and regular-file modes are checked. Other SDK files and unrelated commits are unrestricted, including PR merge commits after main advances. This check imports no package entry point and does not establish absence of external callers or grant live admission.");
     p();
     const repins = record.step1Freeze.plannedRepins;
     p(`Planned re-pins: ${repins.what} ${repins.changes.map((change) => `${code(change.id)}: ${change.what}`).join(" ")} ${repins.mergePolicy}`);

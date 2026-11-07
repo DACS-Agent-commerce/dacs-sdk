@@ -1,0 +1,188 @@
+name: Publish gated npm prerelease
+
+# This file and its `npm-prerelease-gated` environment replace
+# `publish-prerelease.yml` and its `npm-prerelease` environment. A manual
+# dispatch runs the workflow file at the chosen ref, so an older tag still runs
+# that ungated file. Publication credentials (npm trusted publishing and any
+# NPM_TOKEN) therefore belong to this file and environment only, names no older
+# ref contains; see docs/npm-prerelease-release.md.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_version:
+        description: Exact prerelease version from package.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dacs-npm-prerelease
+  cancel-in-progress: false
+
+jobs:
+  # The registry/container acceptance with advisory-ID drift enforced: an
+  # advisory ID outside the #191 baseline fails it (exit 3), as on the
+  # scheduled drift job, and never only warns. It gets no secrets and no OIDC
+  # token; only the publish job, which needs it, can request one.
+  registry-container-acceptance:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/registry-container-acceptance.yml
+    with:
+      enforce-audit-drift: true
+
+  # GitHub creates a missing environment the first time a job names it, with no
+  # reviewers and no deployment rule. This job names none, and fails unless
+  # npm-prerelease-gated already exists with the runbook's owner step 1
+  # protection; the publish job needs it, so it never creates the environment.
+  publish-environment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Require the protected publish environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/require-publish-environment.sh
+
+  # Every suite that must pass on the tagged commit runs here, with a limit of
+  # its own, so the publish job's 45 minutes, which the publisher's deadline
+  # counts from, hold only the release set and the publish. This job has no
+  # environment, no OIDC token and no secret. A rerun of only the failed
+  # `publish` job keeps this job's result.
+  verify:
+    needs: [registry-container-acceptance, publish-environment]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.21.1"
+
+      - name: Install exact source lock
+        run: npm ci
+
+      - name: Require a clean build tree
+        run: |
+          test ! -e dist
+          test ! -e packages/dacs-node/dist
+          test ! -e packages/create-dacs-agent/dist
+
+      - name: Build workspace packages
+        run: |
+          npm run build
+          npm run host:build
+          npm run generator:build
+
+      - name: Conformance, types and tests
+        run: |
+          npm run conformance:sync
+          npm run typecheck
+          npm run host:typecheck
+          npm run generator:typecheck
+          npm test
+          npm run host:test
+          npm run generator:test
+          npm test --workspace @kynesyslabs/dacs-client
+
+      - name: Prepare locked seller consumer
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
+
+      - name: Test seller internal primitives and journals
+        env:
+          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
+        run: npm run seller:test
+
+      - name: Test release gate regressions
+        run: npm run release:test
+
+  publish:
+    needs: [registry-container-acceptance, publish-environment, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: npm-prerelease-gated
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - name: Record the publish job start
+        run: echo "DACS_PUBLISH_JOB_STARTED_AT=$(date +%s%3N)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.21.1"
+          registry-url: https://registry.npmjs.org
+
+      - name: Pin supported npm publishing client
+        run: npm install --global --ignore-scripts npm@11.19.0
+
+      - name: Admit reviewed main-line prerelease tag
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "$CONFIRM_VERSION" = "$version"
+          test "$GITHUB_REF_TYPE" = tag
+          test "$GITHUB_REF_NAME" = "v$version"
+          case "$version" in *-*) ;; *) exit 1 ;; esac
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          node -e 'const fs=require("node:fs"); const {packages}=JSON.parse(fs.readFileSync("scripts/release-policy.json")); const manifests=packages.map(p=>JSON.parse(fs.readFileSync(p.directory+"/package.json"))); if(manifests.some(p=>p.version!==process.argv[1]||p.publishConfig?.access!=="public"||p.publishConfig?.provenance!==true)) process.exit(1)' "$version"
+
+      - name: Install exact source lock
+        run: npm ci
+
+      - name: Require a clean build tree
+        run: |
+          test ! -e dist
+          test ! -e packages/dacs-node/dist
+          test ! -e packages/create-dacs-agent/dist
+
+      - name: Build workspace packages
+        run: |
+          npm run build
+          npm run host:build
+          npm run generator:build
+
+      - name: Verify package lifecycle and exact release set
+        run: |
+          npm run package:lifecycle:verify
+          mkdir -p package-artifacts
+          npm run release:set:verify -- --output-dir package-artifacts/release-set --strict
+
+      - name: Upload exact reviewed release set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dacs-npm-prerelease-${{ github.sha }}-${{ github.run_attempt }}
+          path: package-artifacts/release-set/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish or safely resume the exact release set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DACS_NPM_PUBLISH_CONFIRM: publish:${{ inputs.confirm_version }}:next
+        run: |
+          bash scripts/require-publish-environment.sh
+          node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at "$DACS_PUBLISH_JOB_STARTED_AT"

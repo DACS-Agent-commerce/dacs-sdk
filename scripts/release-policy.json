@@ -12,7 +12,16 @@
         "docs/fixed-price-offline-coordinator.md", "docs/fixed-price-x402-coordinator.md",
         "docs/settlement-verified-reputation.md", "docs/rfq-negotiation-core.md",
         "docs/pay-solana-spl.md", "docs/pay-ap2.md", "docs/filesystem-store-safety.md",
-        "docs/x402-seller-paywall.md", "docs/wallet-spend-authority.md", "docs/raw-json-admission.md"
+        "docs/x402-seller-paywall.md", "docs/wallet-spend-authority.md", "docs/raw-json-admission.md",
+        "docs/pay-dem-execution.md", "docs/testnet-profile-tp1.md", "docs/about-the-testnet-release.md", "docs/dacs-seller-http-v1.md",
+        "vectors/dacs-seller-http-v1.json",
+        "conformance/tp1-register.json", "conformance/tp1-provenance-ids.json",
+        "conformance/tp1-node-observations/manifest.json", "conformance/tp1-node-observations/manifest-2026-10-20.json",
+        "conformance/tp1-node-observations/block0.json", "conformance/tp1-node-observations/block0-2026-10-20.json",
+        "conformance/tp1-node-observations/block1.json", "conformance/tp1-node-observations/block1-2026-10-20.json",
+        "conformance/tp1-node-observations/genesis-string-zero.json", "conformance/tp1-node-observations/genesis-string-zero-2026-10-20.json",
+        "conformance/tp1-node-observations/network.json", "conformance/tp1-node-observations/network-2026-10-20.json",
+        "conformance/tp1-node-observations/missing-status.json", "conformance/tp1-node-observations/missing-tx.json"
       ]
     },
     {
@@ -24,17 +33,19 @@
     {
       "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "c305bd1222e86a0962ca239adfb58e712e0e9c06392bf52df6d726109efb22ce",
-      "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid", "missing public export .", "release versions differ: 0.0.0 vs 0.1.0-alpha.0"],
-      "preparationFileListSha256": "eab1bbc42fd417315f554d5351520c7ff027112e470d385ac72e7e27d403348c",
-      "requiredExports": ["."],
+      "preparationManifestSha256": "bdb89f968f4962bacf7f4fca24848162e6d416d385548d82c3bcea9870e42ad5",
+      "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid"],
+      "preparationFileListSha256": "46fcf692ab5fdf9cd469e71140c5492d4166ce91c871d4f224f58bc4a5d38936",
+      "requiredExports": [".", "./wallet/durable-journal"],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
     },
     {
       "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
-      "preparationBlockers": ["missing package manifest"],
+      "preparationBlockers": ["private package is not releasable"],
+      "preparationManifestSha256": "2f2048209a109684a3b7ab2d085a3a846005f3075d0f641abae6c817087a7cdd",
+      "preparationSnapshotBlockers": ["@kynesyslabs/dacs-seller: release identity or publish policy is invalid"],
       "requiredExports": ["."],
-      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
+      "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md"]
     },
     {
       "name": "create-dacs-agent", "directory": "packages/create-dacs-agent",
