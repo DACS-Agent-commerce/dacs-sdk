@@ -1,0 +1,124 @@
+{
+  "status": "catalog checks passed",
+  "acceptance": "blocked",
+  "source_head": "3904d704fb540e6e1d7dd502a0be29f20569c92d",
+  "catalog_files_checked": 40,
+  "links_checked": 17,
+  "sbom_schema_checked": 12,
+  "sbom_schema_invalid": [
+    "native-candidate.npm.cdx.json"
+  ],
+  "original_raw_files_checked": 0,
+  "trees": [
+    {
+      "tree": "bare-core",
+      "physical_components": 16,
+      "package_rows": 0,
+      "source_range_rows": 0,
+      "primary_sbom_exit": 0
+    },
+    {
+      "tree": "bare-node",
+      "physical_components": 55,
+      "package_rows": 0,
+      "source_range_rows": 0,
+      "primary_sbom_exit": 0
+    },
+    {
+      "tree": "bare-generator",
+      "physical_components": 1,
+      "package_rows": 0,
+      "source_range_rows": 0,
+      "primary_sbom_exit": 0
+    },
+    {
+      "tree": "live-buyer",
+      "physical_components": 959,
+      "package_rows": 145,
+      "source_range_rows": 195,
+      "primary_sbom_exit": 1
+    },
+    {
+      "tree": "live-seller",
+      "physical_components": 959,
+      "package_rows": 145,
+      "source_range_rows": 195,
+      "primary_sbom_exit": 1
+    },
+    {
+      "tree": "native-alpha2",
+      "physical_components": 4,
+      "package_rows": 0,
+      "source_range_rows": 0,
+      "primary_sbom_exit": 0
+    },
+    {
+      "tree": "native-candidate",
+      "physical_components": 80,
+      "package_rows": 0,
+      "source_range_rows": 0,
+      "primary_sbom_exit": 0
+    }
+  ],
+  "fresh_generated_tests": [],
+  "replacement_evidence": {
+    "files_checked": 335,
+    "trees": [
+      {
+        "tree": "bare-core",
+        "package_rows": 0,
+        "source_range_rows": 0,
+        "installed": 16
+      },
+      {
+        "tree": "bare-node",
+        "package_rows": 0,
+        "source_range_rows": 0,
+        "installed": 55
+      },
+      {
+        "tree": "bare-generator",
+        "package_rows": 0,
+        "source_range_rows": 0,
+        "installed": 1
+      },
+      {
+        "tree": "live-buyer",
+        "package_rows": 145,
+        "source_range_rows": 195,
+        "installed": 959
+      },
+      {
+        "tree": "live-seller",
+        "package_rows": 145,
+        "source_range_rows": 195,
+        "installed": 959
+      },
+      {
+        "tree": "native-alpha2",
+        "package_rows": 0,
+        "source_range_rows": 0,
+        "installed": 4
+      },
+      {
+        "tree": "native-candidate",
+        "package_rows": 0,
+        "source_range_rows": 0,
+        "installed": 80
+      }
+    ],
+    "status": "verified replacement collection; historical archive gap preserved"
+  },
+  "raw_evidence": "not run: archives unavailable (owner decision, 2026-10-16)",
+  "fresh_probes": "not run: archives unavailable (owner decision, 2026-10-16)",
+  "literal_pin_probes": [],
+  "round2_probes": "not run: archives unavailable (owner decision, 2026-10-16)",
+  "open_checks": [
+    "D-2: supporting file dependency specifications is an optional owner decision; no generated doctor defect established."
+  ],
+  "blocked": [
+    "Primary live npm SBOM commands still fail on optional range conflicts.",
+    "D-1 also requires the primary output to pass the CycloneDX 1.5 schema with every bom-ref unique.",
+    "Engines: 16 installed production packages per live tree reject the advertised Node floors."
+  ]
+}

@@ -1,0 +1,120 @@
+[
+  {
+    "surface": "Demos connection, RPC and reads",
+    "needed": [
+      "connect",
+      "nodeCall",
+      "rpcCall",
+      "getAddress",
+      "getAddressInfo",
+      "getAddressNonce",
+      "getNetworkInfo",
+      "getBlockByNumber",
+      "getTxByHash",
+      "getTransactionHistory"
+    ],
+    "available": true,
+    "evidence": "native client declarations and implementation; DemosAdapter and demosRuntime call sites",
+    "gap": "Transport and response-envelope parity remain unqualified. Native transport uses Node fetch and ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 is set, while the broad client honors the proxy. An unconnected or failed native nodeCall returns a {result:500} envelope instead of throwing. Not-found and failure envelopes must be qualified per method.",
+    "owner": "local qualification"
+  },
+  {
+    "surface": "Ed25519 authority",
+    "needed": [
+      "connectWallet",
+      "crypto.getIdentity",
+      "crypto.sign",
+      "signMessage"
+    ],
+    "available": true,
+    "evidence": "Native Ed25519Authority returns declared public/private key buffers; SDK uses Ed25519 by default.",
+    "gap": "No key derivation or signature execution was permitted in this assessment.",
+    "owner": "local qualification; maintainers provide compatibility fixtures"
+  },
+  {
+    "surface": "Native DEM transfer",
+    "needed": [
+      "transfer",
+      "confirm",
+      "broadcast",
+      "waitForNonce"
+    ],
+    "available": true,
+    "evidence": "payDem captures these native methods; native client declares all four.",
+    "gap": "No transfer, confirmation, broadcast, nonce polling or chain execution was performed. Native waitForNonce rejects on the first failed nonce read, while the broad client keeps polling until its deadline; native getAddressNonce rejects a malformed nonce, while the broad client returns 0. tools/native-nonce-poll.mjs pins both differences with scripted reads. Decide whether the native package or the local adapter retries, and keep the fail-closed nonce parse.",
+    "owner": "local qualification"
+  },
+  {
+    "surface": "Storage Programs",
+    "needed": [
+      "StorageProgram.deriveStorageAddress",
+      "StorageProgram.createStorageProgram",
+      "StorageProgram.writeStorage",
+      "StorageProgram.publicACL",
+      "storagePrograms.sign",
+      "storagePrograms.read",
+      "tx.confirm",
+      "tx.broadcast"
+    ],
+    "available": true,
+    "evidence": "Declared native/storage surface; pure-data builder comparisons passed.",
+    "gap": "Signed payload, fee, failure-envelope and authenticated read parity remain unqualified.",
+    "owner": "local qualification"
+  },
+  {
+    "surface": "Identity reads",
+    "needed": [
+      "Identities.getIdentities",
+      "Identities.getDemosIdsByWeb2Identity",
+      "Identities.getDemosIdsByWeb3Identity"
+    ],
+    "available": true,
+    "evidence": "Native identity-read surface; existing SDK rejects domain reverse lookup before the call.",
+    "gap": "Local TypeScript narrowing must reflect the existing domain rejection; no new domain API needed for current behavior.",
+    "owner": "local type adaptation and qualification"
+  },
+  {
+    "surface": "DAHR",
+    "needed": [
+      "web2.createDahr",
+      "Web2Proxy.startProxy"
+    ],
+    "available": true,
+    "evidence": "Native client includes both methods and a txHash-bearing result. SDK calls stopProxy only when it exists.",
+    "gap": "Request, response-evidence, authorization and failure semantics remain unqualified.",
+    "owner": "local qualification"
+  },
+  {
+    "surface": "Raw escape hatch",
+    "needed": [
+      "broadcastAndWait"
+    ],
+    "available": false,
+    "evidence": "DemosRawClient requires this member, but owned runtime source has no call to it; native client has no such member.",
+    "gap": "Choose an explicit local public-type change or a compatibility wrapper; retaining the exact raw contract would require a compatible member.",
+    "owner": "local API decision; upstream only if exact raw contract is required"
+  },
+  {
+    "surface": "Experimental D402",
+    "needed": [
+      "D402Client"
+    ],
+    "available": false,
+    "evidence": "payD402 dynamically imports the separate demosdk d402/client entry; current generated rails are pay-dem and x402.",
+    "gap": "Keep the experimental capability separate and optional; a native-compatible companion is an upstream request only if that capability must be retained without the broad tree.",
+    "owner": "local capability separation; conditional upstream companion"
+  },
+  {
+    "surface": "Broader Demos features",
+    "needed": [
+      "multichain adapters",
+      "PQC authority",
+      "TLSNotary",
+      "full programmatic facade"
+    ],
+    "available": false,
+    "evidence": "Native package exports and README intentionally exclude these surfaces.",
+    "gap": "No current generated native/x402 dependency requirement established for these features.",
+    "owner": "outside current live migration contract"
+  }
+]

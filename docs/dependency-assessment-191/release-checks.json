@@ -1,0 +1,663 @@
+{
+  "engines": {
+    "tool": "tools/engines-check.cjs",
+    "rule": "A package is outside when its engines.node range does not contain every version of the consumer engines.node range (npm semver subset). An unparsable range counts as outside, as engine-strict rejects it.",
+    "probes": [
+      "20.19.0",
+      "20.19.1",
+      "22.12.0",
+      "22.22.1",
+      "23.0.0",
+      "24.0.0",
+      "24.14.0",
+      "25.0.0"
+    ],
+    "probe_basis": "20.19.0 and 22.12.0 are the advertised floors; 20.19.1 is the generated Dockerfile base image; 22.22.1 is the last 22.x release below the ^22.22.2 floor; 23.0.0, 24.0.0 and 25.0.0 open the next three majors, and 24.14.0 is the last 24.x minor below the ^24.15.0 floor. The last four were added after collection: rejected_probes were recomputed from each row's recorded engines_node with npm semver 7.7.4. Probes do not change which packages are outside or the checked counts.",
+    "collection": "2026-10-16, Node 22.23.3 and npm 10.9.9; trees reinstalled with npm ci --ignore-scripts --omit=optional --omit=dev from locks whose installed inventories equal the committed physical SBOMs location for location and version for version.",
+    "trees": [
+      {
+        "tree": "live-buyer",
+        "advertised": "^20.19.0 || >=22.12.0",
+        "checked": 959,
+        "effective_node_range": "^22.22.2 || ^24.15.0",
+        "outside": [
+          {
+            "location": "node_modules/@npmcli/agent",
+            "name": "@npmcli/agent",
+            "version": "5.0.2",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@npmcli/fs",
+            "name": "@npmcli/fs",
+            "version": "6.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@npmcli/redact",
+            "name": "@npmcli/redact",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/bundle",
+            "name": "@sigstore/bundle",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/core",
+            "name": "@sigstore/core",
+            "version": "4.0.1",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/sign",
+            "name": "@sigstore/sign",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/tuf",
+            "name": "@sigstore/tuf",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/verify",
+            "name": "@sigstore/verify",
+            "version": "4.1.2",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@tufjs/models",
+            "name": "@tufjs/models",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/better-sqlite3",
+            "name": "better-sqlite3",
+            "version": "12.6.2",
+            "engines_node": "20.x || 22.x || 23.x || 24.x || 25.x",
+            "rejected_probes": []
+          },
+          {
+            "location": "node_modules/cacache",
+            "name": "cacache",
+            "version": "21.0.1",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/make-fetch-happen",
+            "name": "make-fetch-happen",
+            "version": "16.0.1",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/minipass-fetch",
+            "name": "minipass-fetch",
+            "version": "6.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/proc-log",
+            "name": "proc-log",
+            "version": "7.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/sigstore",
+            "name": "sigstore",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/ssri",
+            "name": "ssri",
+            "version": "14.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/tuf-js",
+            "name": "tuf-js",
+            "version": "6.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          }
+        ]
+      },
+      {
+        "tree": "live-seller",
+        "advertised": "^20.19.0 || >=22.12.0",
+        "checked": 959,
+        "effective_node_range": "^22.22.2 || ^24.15.0",
+        "outside": [
+          {
+            "location": "node_modules/@npmcli/agent",
+            "name": "@npmcli/agent",
+            "version": "5.0.2",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@npmcli/fs",
+            "name": "@npmcli/fs",
+            "version": "6.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@npmcli/redact",
+            "name": "@npmcli/redact",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/bundle",
+            "name": "@sigstore/bundle",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/core",
+            "name": "@sigstore/core",
+            "version": "4.0.1",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/sign",
+            "name": "@sigstore/sign",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/tuf",
+            "name": "@sigstore/tuf",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@sigstore/verify",
+            "name": "@sigstore/verify",
+            "version": "4.1.2",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/@tufjs/models",
+            "name": "@tufjs/models",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/better-sqlite3",
+            "name": "better-sqlite3",
+            "version": "12.6.2",
+            "engines_node": "20.x || 22.x || 23.x || 24.x || 25.x",
+            "rejected_probes": []
+          },
+          {
+            "location": "node_modules/cacache",
+            "name": "cacache",
+            "version": "21.0.1",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/make-fetch-happen",
+            "name": "make-fetch-happen",
+            "version": "16.0.1",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/minipass-fetch",
+            "name": "minipass-fetch",
+            "version": "6.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/proc-log",
+            "name": "proc-log",
+            "version": "7.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/sigstore",
+            "name": "sigstore",
+            "version": "5.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/ssri",
+            "name": "ssri",
+            "version": "14.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          },
+          {
+            "location": "node_modules/tuf-js",
+            "name": "tuf-js",
+            "version": "6.0.0",
+            "engines_node": "^22.22.2 || ^24.15.0 || >=26.0.0",
+            "rejected_probes": [
+              "20.19.0",
+              "20.19.1",
+              "22.12.0",
+              "22.22.1",
+              "23.0.0",
+              "24.0.0",
+              "24.14.0",
+              "25.0.0"
+            ]
+          }
+        ]
+      },
+      {
+        "tree": "native-candidate",
+        "advertised": "^20.19.0 || >=22.12.0",
+        "checked": 80,
+        "effective_node_range": "^20.19.0 || ^22.12.0 || 23.x || 24.x || 25.x",
+        "outside": [
+          {
+            "location": "node_modules/better-sqlite3",
+            "name": "better-sqlite3",
+            "version": "12.6.2",
+            "engines_node": "20.x || 22.x || 23.x || 24.x || 25.x",
+            "rejected_probes": []
+          }
+        ]
+      }
+    ],
+    "effective_range_rule": "effective_node_range is the intersection of the advertised range and every installed engines.node range in that tree, checked with npm semver 7.7.4: it is a subset of each of those ranges, and for every Node version from 18.0.0 to 30.40.6 it accepts exactly the versions that all of them accept."
+  },
+  "cyclonedx_schema": {
+    "source": "CycloneDX/specification commit c320fc0f0b46873864927d9d5684eea7ba439728 (tag 1.5), schema/ directory",
+    "validator": "JSON Schema Draft 7; tools/validate.py recomputes every result",
+    "schemas": [
+      {
+        "path": "cyclonedx/bom-1.5.schema.json",
+        "sha256": "067f7824b08653839ea050ae9e09ca48375eadc2652b0e2a299476e7db90335b"
+      },
+      {
+        "path": "cyclonedx/spdx.schema.json",
+        "sha256": "4f6e2b05c05d26a4f2dc5879fbc2fca94b0a28db46289d0c51345621b71cfbfc"
+      },
+      {
+        "path": "cyclonedx/jsf-0.82.schema.json",
+        "sha256": "8bae002c25e723db7ee1f26afde680ae1a2b1a8f6b4b4b0fd65dc3becb090aae"
+      }
+    ],
+    "files": {
+      "bare-core.npm.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "bare-core.physical.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "bare-generator.npm.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "bare-generator.physical.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "bare-node.npm.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "bare-node.physical.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "live-buyer.physical.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "live-seller.physical.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "native-alpha2.npm.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "native-alpha2.physical.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      },
+      "native-candidate.npm.cdx.json": {
+        "valid": false,
+        "errors": [
+          "dependencies: uniqueItems"
+        ],
+        "duplicate_bom_refs": {
+          "@noble/hashes@1.8.0": 4,
+          "@scure/bip39@1.6.0": 2
+        }
+      },
+      "native-candidate.physical.cdx.json": {
+        "valid": true,
+        "errors": [],
+        "duplicate_bom_refs": {}
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[
+  {
+    "label": "core",
+    "source_head": "3904d704fb540e6e1d7dd502a0be29f20569c92d",
+    "tarball": "<collection>/tarballs/kynesyslabs-dacs-0.1.0-alpha.0.tgz",
+    "sha256": "4869dba268da368d20268accf941ab1ae2842e9258173f3c9972d8c390388355"
+  },
+  {
+    "label": "node",
+    "source_head": "3904d704fb540e6e1d7dd502a0be29f20569c92d",
+    "tarball": "<collection>/tarballs/kynesyslabs-dacs-node-0.1.0-alpha.0.tgz",
+    "sha256": "c564e7d4fac483cd7e8a4b502c38bfd8a347f93652a271688b60f866c6d0c2ce"
+  },
+  {
+    "label": "generator",
+    "source_head": "3904d704fb540e6e1d7dd502a0be29f20569c92d",
+    "tarball": "<collection>/tarballs/create-dacs-agent-0.1.0-alpha.0.tgz",
+    "sha256": "a4eb37ecfa4274b432b08cac44d58d16617928de131acd852114b8c0f7355437"
+  }
+]
