@@ -1,0 +1,26 @@
+{
+  "format": "dacs-node-read-observations/v1",
+  "endpoint": "https://node2.demos.sh",
+  "capturedAt": "2026-10-18",
+  "sourceCommit": "61b8e75aa8db5e408c49e1c3a89db4d673f45578",
+  "version": "0.9.8",
+  "branch": "stabilisation",
+  "dirty": true,
+  "builtAt": "2026-10-14T16:45:24Z",
+  "deploymentArtifactDigest": null,
+  "deploymentOverlay": null,
+  "qualification": "Observed responses only. Deployment bytes and overlay were not supplied; this is not a reproducible or qualified node build.",
+  "executionFailedTransaction": {
+    "observed": false,
+    "sourceInference": "The inspected chainTransactions.ts getTransactionStatus maps stored records to included without checking execution. Its comment says execution failures are not recorded and surface as unknown. This is not evidence that failed execution is included by the deployed node; no live failed transfer was initiated or captured."
+  },
+  "sha256": {
+    "network.json": "47be850fce3fdf95e46eb5f5d416953f4e639a3a158b29e8764e8e2901ca4b8f",
+    "block0.json": "6848c441edbd9b44d0f1582ce183f67f6f9fc64680e7ad1d16ac6cf2f0e4a5dd",
+    "block1.json": "0b350247dced20d8ed1ba4f596dcacd326265951c43139eb52fe925b9a8299ec",
+    "genesis-string-zero.json": "9aa5f1b2aa3f0726f4ac607f8911327fc5fada874f0974272f45d2269bf9c504",
+    "missing-status.json": "cd6fda91b9c09f49a6eca81cb9ef5a01bf7317b2eebeeb11b4433fb479666520",
+    "missing-tx.json": "2396d15399404c623c75e267c14556e2a5727c2f6e6bcbe64d314b044afb2279"
+  },
+  "timestampNotes": "Original network/block/missing reads retain exact UTC timestamps; the original string-zero genesis read records the review date only."
+}

@@ -11,6 +11,7 @@ import { diagnosticProtocolView as protocolView } from '../src/dacs/protocol-pur
 import { deliveryDeadlineView } from '../src/dacs/delivery-deadline-watch.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
+import { inTransaction, hasSqliteModule } from './helpers/sqlite-engine-floor.mjs';
 
 function database(t) {
   const dir = mkdtempSync(join(tmpdir(), 'dacs-diagnostic-store-')), path = join(dir, 'state.sqlite');
@@ -36,12 +37,14 @@ test('updating an active SELECT iterator returns success exactly when the writes
   finally { reopened.close(); }
 });
 
+// The engine floors lack FTS5 and RTREE, so a case that needs one skips there.
+const MODULE_MISSING = 'this Node SQLite build does not include the requested optional module';
+const lacksModule = (db, definition) => !hasSqliteModule(db, definition.split('(')[0]);
+
 for (const module of ['fts5(body)', 'rtree(id, minX, maxX)']) {
   test(`unrelated ${module} virtual and shadow tables permit ordinary transactions`, t => {
     const { db, store } = database(t);
-    if (!db.prepare('PRAGMA module_list').all().some(row => row.name === module.split('(')[0])) {
-      return t.skip('this Node SQLite build does not include the requested optional module');
-    }
+    if (lacksModule(db, module)) return t.skip(MODULE_MISSING);
     db.exec(`CREATE VIRTUAL TABLE search USING ${module}`);
     assert.equal(store.transaction(db, () => db.prepare('INSERT INTO records(id) VALUES (?)').run('one').changes), 1);
     assert.equal(db.prepare('SELECT count(*) n FROM records').get().n, 1);
@@ -104,13 +107,15 @@ test('guards are reused at host scale and refresh for added or recreated tables'
   db.exec("INSERT INTO added VALUES ('outside')");
 });
 
-for (const [name, ddl, seed, write] of [
-  ['FTS5 delete', 'CREATE VIRTUAL TABLE search USING fts5(body)', "INSERT INTO search VALUES ('TEST-existing')", 'DELETE FROM search'],
-  ['RTree insert', 'CREATE VIRTUAL TABLE search USING rtree(id,minX,maxX)', 'INSERT INTO search VALUES (1,0,1)', 'INSERT INTO search VALUES (2,0,1)'],
-  ['CTAS', 'CREATE TABLE search(body TEXT)', "INSERT INTO search VALUES ('TEST-existing')", "CREATE TABLE escaped AS SELECT 'TEST-after' AS body"],
+for (const [name, module, seed, write] of [
+  ['FTS5 delete', 'fts5(body)', "INSERT INTO search VALUES ('TEST-existing')", 'DELETE FROM search'],
+  ['RTree insert', 'rtree(id,minX,maxX)', 'INSERT INTO search VALUES (1,0,1)', 'INSERT INTO search VALUES (2,0,1)'],
+  ['CTAS', null, "INSERT INTO search VALUES ('TEST-existing')", "CREATE TABLE escaped AS SELECT 'TEST-after' AS body"],
 ]) {
   test(`automatic rollback prevents ${name} writes on reopen`, t => {
     const { db, path, store } = database(t);
+    if (module && lacksModule(db, module)) return t.skip(MODULE_MISSING);
+    const ddl = module ? `CREATE VIRTUAL TABLE search USING ${module}` : 'CREATE TABLE search(body TEXT)';
     db.exec(`${ddl}; ${seed}; INSERT INTO records(id) VALUES ('TEST-existing')`);
     const prepared = db.prepare(write);
     assert.throws(() => store.transaction(db, () => {
@@ -133,7 +138,7 @@ test('detach and reattach of the same persistent file is refused on every call',
     db.prepare('ATTACH DATABASE ? AS aux').run(`${path}.aux`);
     assert.throws(() => store.transaction(db, () => assert.fail('callback ran')),
       { code: 'purchase_store_persistent_attachment' });
-    assert.equal(db.isTransaction, false);
+    assert.equal(inTransaction(db), false);
     db.exec('DETACH aux');
     store.transaction(db, () => db.prepare('INSERT INTO records(id) VALUES (?)').run(`TEST-${attempt}`));
   }
