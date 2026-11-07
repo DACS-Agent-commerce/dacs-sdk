@@ -1,5 +1,5 @@
 import {
-  bundleAddress,
+  legacyBundleAddress,
   canonicalize,
   contentHash,
   stripSignature,
@@ -424,7 +424,7 @@ function deriveReputationCore(
     .map((b) => ({
       anchor: {
         kind: "storage-program" as const,
-        locator: bundleAddress(b.jobId, b.anchoredByRole),
+        locator: legacyBundleAddress(b.jobId, b.anchoredByRole),
       },
       contentHash: bundleContentHash(b),
     }))
