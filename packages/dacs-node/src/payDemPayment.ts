@@ -532,7 +532,7 @@ function capturePrepared(
   if (!plainObject(value) || !exactKeys(value, [
     "txHash", "nonce", "payer", "payee", "amountOs", "network",
     "maxTotalDebitOs", "recovery",
-  ], ["denomination", "confirmedTotalDebitOs"]) || typeof value.txHash !== "string" ||
+  ], ["denomination", "confirmedTotalDebitOs", "confirmedRecordFeeOs"]) || typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) ||
       !Number.isSafeInteger(value.nonce) || (value.nonce as number) < 0 ||
       value.payer !== payment.payer || value.payee !== payment.payee ||
@@ -546,6 +546,11 @@ function capturePrepared(
           !INTEGER_RE.test(value.confirmedTotalDebitOs) ||
           BigInt(value.confirmedTotalDebitOs) < BigInt(payment.amountOs) ||
           BigInt(value.confirmedTotalDebitOs) > BigInt(payment.maxTotalDebitOs))) ||
+      // The record's declared fee is kept beside the real debit, never alone (#604).
+      (value.confirmedRecordFeeOs !== undefined &&
+        (value.confirmedTotalDebitOs === undefined ||
+          typeof value.confirmedRecordFeeOs !== "string" ||
+          !/^(?:0|[1-9][0-9]*)$/.test(value.confirmedRecordFeeOs))) ||
       canonicalize(value.recovery) !== canonicalize(recoveryContext(payment))) {
     throw new DacsPayDemBuyerPaymentError("pay-dem-prepared-transfer-invalid");
   }
@@ -560,7 +565,7 @@ function captureSettlement(
   if (!plainObject(value) || !exactKeys(value, [
     "ok", "txHash", "chainId", "payer", "payee", "finality",
     "blockNumber", "txRefKind", ...(requireNetworkFee ? ["networkFeeOs"] : []),
-  ], requireNetworkFee ? [] : ["networkFeeOs"]) ||
+  ], requireNetworkFee ? ["recordFeeOs"] : ["networkFeeOs", "recordFeeOs"]) ||
       value.ok !== true || typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) || value.chainId !== payment.network ||
       canonicalAddress(value.payer) !== payment.payer ||
@@ -572,6 +577,9 @@ function captureSettlement(
           !/^(?:0|[1-9][0-9]*)$/.test(value.networkFeeOs) ||
           BigInt(payment.amountOs) + BigInt(value.networkFeeOs) >
             BigInt(payment.maxTotalDebitOs))) ||
+      (Object.hasOwn(value, "recordFeeOs") &&
+        (!Object.hasOwn(value, "networkFeeOs") || typeof value.recordFeeOs !== "string" ||
+          !/^(?:0|[1-9][0-9]*)$/.test(value.recordFeeOs))) ||
       !Number.isSafeInteger(value.blockNumber) || (value.blockNumber as number) < 0 ||
       value.txRefKind !== "demos") {
     throw new DacsPayDemBuyerPaymentError("pay-dem-settlement-invalid");
