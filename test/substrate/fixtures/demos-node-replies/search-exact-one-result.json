@@ -1,0 +1,28 @@
+{
+  "recording": {
+    "capturedAt": "2026-11-06",
+    "node": {
+      "version": "0.9.9 RC",
+      "commit": "<stabilisation>e6af8f4023fa4e77f482503dae97f1ca00834bf9"
+    },
+    "request": "POST https://node2.demos.sh/ nodeCall searchStoragePrograms, query \"dacs3%3Acommit%3A01M5Y3MEF9CHTJS67KDBTMB140\", exactMatch true, limit 3, offset 0",
+    "httpStatus": 200,
+    "scrubbed": []
+  },
+  "body": {
+    "result": 200,
+    "response": [
+      {
+        "storageAddress": "stor-cffaa62d9cef33e5b2257dd1417dc150e624cd78",
+        "programName": "dacs3%3Acommit%3A01M5Y3MEF9CHTJS67KDBTMB140",
+        "encoding": "json",
+        "sizeBytes": 748,
+        "storageLocation": "onchain",
+        "createdAt": "2026-10-27T07:22:36.555Z",
+        "updatedAt": "2026-10-27T07:22:36.555Z"
+      }
+    ],
+    "extra": "",
+    "require_reply": false
+  }
+}

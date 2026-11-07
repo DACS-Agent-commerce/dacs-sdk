@@ -141,7 +141,10 @@ wire, from the `binding` of `bindTp1Profile` and the `endpointProof` of
 signed discovery document), and `resolveJob(jobId)` gives the approved job's
 `{ listingPin, agreementHash }`. Pass a `createSellerTransportClientAuth` as its
 `fallback` to sign the challenge and the context step, which still use the old
-server auth; without a `fallback` they are refused before anything is signed. A host mounts the Vet and Agreement context
+server auth; without a `fallback` they are refused before anything is signed. Signing (the
+`resolveJob` and `evidenceFor` lookups, the buyer's authority read and a
+`fallback`) must finish within `signingTimeoutMs` (default 10,000 ms), or the
+request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
 route by passing `createSellerContextRoute({ ... })` as the `context` option of
 `createSellerHttpHandler(agent, { authentication, context })`. The handler's
 `agent` comes only from `createSellerAgent`
