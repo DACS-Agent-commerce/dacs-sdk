@@ -1,5 +1,5 @@
 import type { SessionDeps } from "../../src/agent/runSessionCore.js";
-import { registerSettlementBridge } from "../../src/rails/idempotency.js";
+import { declareSettlementBridge } from "../../src/rails/idempotency.js";
 
 /**
  * `runSession` recovers only through an SDK settle bridge. A fixture that scripts
@@ -9,6 +9,6 @@ import { registerSettlementBridge } from "../../src/rails/idempotency.js";
  */
 export function registerResumeSeam<T extends Partial<SessionDeps>>(deps: T): T {
   const resume = deps.resumeSettlement;
-  if (typeof resume === "function") registerSettlementBridge(resume);
+  if (typeof resume === "function") declareSettlementBridge(resume);
   return deps;
 }

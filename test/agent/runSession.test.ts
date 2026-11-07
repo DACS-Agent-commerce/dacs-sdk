@@ -34,7 +34,7 @@ import { signedBytes } from "../../src/crypto/index.js";
 import {
   inheritSettlementBridge,
   isSettlementBridge,
-  registerSettlementBridge,
+  declareSettlementBridge,
   settlementBridgeTraits,
 } from "../../src/rails/idempotency.js";
 import { registerResumeSeam } from "../support/restartableSettlement.js";
@@ -3009,7 +3009,7 @@ describe("runSession reaches only a registered SDK bridge", () => {
       let listed = 0;
       const deps = makeDeps({
         settle,
-        resumeSettlement: registerSettlementBridge(resumeSettlement, traits),
+        resumeSettlement: declareSettlementBridge(resumeSettlement, traits),
         sessionStore: undefined,
         readListing: async () => { listed += 1; return LISTING; },
       });
@@ -3032,7 +3032,7 @@ describe("runSession reaches only a registered SDK bridge", () => {
       const { calls, settle } = counting();
       let listed = 0;
       const deps = makeDeps({
-        settle: registerSettlementBridge(settle, { journaled: false }),
+        settle: declareSettlementBridge(settle, { journaled: false }),
         sessionStore: undefined,
         readListing: async () => { listed += 1; return LISTING; },
       });
@@ -3051,7 +3051,7 @@ describe("runSession reaches only a registered SDK bridge", () => {
     });
 
     test("a wrapper around a bridge carries what the bridge declared", () => {
-      const bridge = registerSettlementBridge(async () => PAID, { journaled: false });
+      const bridge = declareSettlementBridge(async () => PAID, { journaled: false });
       const wrapper = inheritSettlementBridge(bridge, async () => PAID);
       expect(settlementBridgeTraits(wrapper)).toEqual({ journaled: false });
       expect(isSettlementBridge(inheritSettlementBridge(async () => PAID, async () => PAID))).toBe(false);

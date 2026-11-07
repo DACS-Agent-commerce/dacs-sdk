@@ -6,7 +6,7 @@ import {
   createIdempotencyStore,
   createInMemorySettlementLog,
   isSettlementBridge,
-  registerSettlementBridge,
+  declareSettlementBridge,
   settlementBindingHash,
   settlementBridgeTraits,
   settlementKey,
@@ -599,13 +599,13 @@ describe("the resume registry", () => {
   });
 
   test("registering a bridge again keeps what it declared", () => {
-    const bridge = registerSettlementBridge(async () => evmPaid, { journaled: false });
-    expect(registerSettlementBridge(bridge)).toBe(bridge);
+    const bridge = declareSettlementBridge(async () => evmPaid, { journaled: false });
+    expect(declareSettlementBridge(bridge)).toBe(bridge);
     expect(settlementBridgeTraits(bridge)).toEqual({ journaled: false });
   });
 
   test("a bridge that declares nothing has empty traits and a bare function has none", () => {
-    expect(settlementBridgeTraits(registerSettlementBridge(async () => evmPaid))).toEqual({});
+    expect(settlementBridgeTraits(declareSettlementBridge(async () => evmPaid))).toEqual({});
     expect(settlementBridgeTraits(async () => evmPaid)).toBeUndefined();
   });
 });

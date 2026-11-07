@@ -40,7 +40,7 @@ import {
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
-import { registerSettlementBridge } from "../../src/rails/idempotency.js";
+import { declareSettlementBridge } from "../../src/rails/idempotency.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
@@ -641,7 +641,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const settle = async () => { throw new Error("settle must not run on a resume"); };
     const options = { terms: TERMS, jobId: "job-public-resume", settle };
 
-    await expect(agent.runSession(ref, { ...options, resumeSettlement: registerSettlementBridge(refuse) as never }))
+    await expect(agent.runSession(ref, { ...options, resumeSettlement: declareSettlementBridge(refuse) as never }))
       .rejects.toThrow(/no recorded settlement/);
     expect(seen).toEqual([true]);
 
@@ -657,7 +657,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     let calls = 0;
     const resume = async () => { calls += 1; throw new Error("unused"); };
     const options = { terms: PAY_DEM_TERMS, jobId: "job-public-journal", settle: resume };
-    await expect(agent.runSession(ref, { ...options, resumeSettlement: registerSettlementBridge(resume, { journaled: false }) as never }))
+    await expect(agent.runSession(ref, { ...options, resumeSettlement: declareSettlementBridge(resume, { journaled: false }) as never }))
       .rejects.toThrow(/requires a rail built with journalPreparedTransfer/);
     expect(calls).toBe(0);
   });
@@ -666,7 +666,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const { agent, store } = publicAgent();
     const ref = await anchorListing(store);
     let calls = 0;
-    const rebuildSettle = () => registerSettlementBridge(async () => { calls += 1; throw new Error("unused"); }, { journaled: false });
+    const rebuildSettle = () => declareSettlementBridge(async () => { calls += 1; throw new Error("unused"); }, { journaled: false });
     for (const rail of ["pay-dem", "demos-native:DEM"]) {
       for (let restart = 0; restart < 2; restart += 1) {
         const terms = { ...TERMS, price: { ...TERMS.price, rail } };
@@ -682,7 +682,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
     const { agent, store } = publicAgent();
     const ref = await anchorListing(store);
     const seen: Array<boolean | undefined> = [];
-    const rebuildBridge = () => registerSettlementBridge(async (req: { recoveryOnly?: boolean }) => {
+    const rebuildBridge = () => declareSettlementBridge(async (req: { recoveryOnly?: boolean }) => {
       seen.push(req.recoveryOnly);
       throw new Error("no recorded settlement; refusing a fresh payment");
     }, { journaled: true });
