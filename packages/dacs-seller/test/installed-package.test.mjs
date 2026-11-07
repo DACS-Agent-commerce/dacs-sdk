@@ -106,9 +106,8 @@ test('the packed seller ships the dacs-seller bin, the CLI modules and durable-f
 
 // The runtimes the installed bin must run init on: the one running this test, and an explicit Node 20.19 when one is given.
 const INIT_RUNTIMES = [process.execPath, ...(process.env.DACS_SELLER_NODE_20_19 ? [process.env.DACS_SELLER_NODE_20_19] : [])];
-const INIT_SKIP_REASON = 'the installed bin has no wallet identity to init with until the node-identity entry (P21a, which also owns its no-SQLite check) is wired into main';
 
-test('the packed bin runs init on Node 20.19 and on the purchase range, and the identity entry it imports loads no SQLite', { skip: INIT_SKIP_REASON }, t => {
+test('the packed bin runs init on Node 20.19 and on the purchase range, and the identity entry it imports loads no SQLite', t => {
   const app = process.env.DACS_SELLER_SMOKE_DIR;
   assert.ok(app, 'prepare a locked installed consumer');
   for (const runtime of INIT_RUNTIMES) {
@@ -118,22 +117,17 @@ test('the packed bin runs init on Node 20.19 and on the purchase range, and the 
       cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { ...process.env, NODE_OPTIONS: '' },
     });
     assert.equal(child.status, 0, child.stderr);
-    assert.match(child.stdout, /^claim: did:demos:agent:[0-9a-f]{64}\naddress: [0-9a-f]+\n$/);
+    assert.match(child.stdout, /^claim: did:demos:agent:[0-9a-f]{64}\naddress: (?:0x)?[0-9a-f]{64}\n$/);
     assert.equal(child.stderr, '');
+    assert.deepEqual(readdirSync(join(work, 'seller')).sort(), ['seller-key.json', 'seller.json']);
   }
-});
-
-test('the packed bin refuses init with seller_identity_unavailable until an identity is wired, and creates nothing', t => {
-  const app = process.env.DACS_SELLER_SMOKE_DIR;
-  assert.ok(app, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
-  const work = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-installed-init-')));
-  t.after(() => rmSync(work, { recursive: true, force: true }));
-  const child = spawnSync(join(app, 'node_modules', '.bin', 'dacs-seller'), ['init', '--data-dir', join(work, 'seller')], {
-    cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { PATH: process.env.PATH },
-  });
-  assert.equal(child.status, 1, child.stderr);
-  assert.equal(child.stderr, '{"code":"seller_identity_unavailable"}\n');
-  assert.deepEqual(readdirSync(work), []);
+  const probe = `import { createRequire } from 'node:module';
+    const { generateWalletMnemonic, deriveWalletIdentity } = await import('@kynesyslabs/dacs-seller/src/cli/node-identity.mjs');
+    await deriveWalletIdentity(await generateWalletMnemonic());
+    process.stdout.write(JSON.stringify(Object.keys(createRequire(import.meta.url).cache).filter(path => /sqlite/i.test(path))));`;
+  const loaded = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS, env: { PATH: process.env.PATH } });
+  assert.equal(loaded.status, 0, loaded.stderr);
+  assert.equal(loaded.stdout, '[]');
 });
 
 test('P10-T15 the packed archive contains no authority fixture', () => {
