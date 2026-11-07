@@ -87,7 +87,7 @@ Payment and bundle requests (the wire's continuing routes) and the two ordinary 
 
 ### Seller answer classification
 
-Each answer is verified on its exact received bytes, then classified by its HTTP status and `error` code, the route, and the request's provenance. The transport builds the record `{status, signed: true, body}` only after verification; an unsigned or unverified answer is `unknown`. A `result` or `progress` answer is returned. Every other class throws: `definite` and `failed-bootstrap` as `SellerRefusedError` (`code` is the seller's code), the rest as `SellerUnavailableError` (`answerCode` is the seller's code). Both carry `answerClass`. Nothing is retried automatically.
+Each answer is verified on its exact received bytes, then classified by its HTTP status and `error` code, the route, and the request's provenance. The transport builds the record `{status, signed: true, body}` only after verification; an unsigned or unverified answer is `unknown`. A `result` or `progress` answer is returned. Every other class throws: `definite` and `failed-bootstrap` as `SellerRefusedError` (`code` is the seller's code), the rest as `SellerUnavailableError` (`answerCode` is the seller's code). Both carry `answerClass`. Each seller route stores its exact request bytes under the purchase revision (`state.protocol.sellerRequests`) before the first send; the two read routes store nothing. Each call sends once. An unknown outcome stays unknown; a later explicit call reuses the stored bytes. A separate retry layer may add authenticated repeated sends.
 
 | Answer | Class |
 |---|---|
@@ -95,7 +95,7 @@ Each answer is verified on its exact received bytes, then classified by its HTTP
 | 409 `peer_request_replayed`; 503 `seller_effect_pending`; 503 `context_attempt_pending`; 408 `peer_expired`; any other signed 408; a signed 429 on any route but context and challenge; any other signed 5xx; an unsigned answer; a timeout | `unknown` |
 | 503 `seller_stopped` | `suspended` |
 | 503 `bundle_finalization_unavailable` and 422 `not_delivered` on the bundle routes | `held` |
-| 503 `seller_not_ready` on a new purchase (no request is known to be one yet) | `not-started` |
+| 503 `seller_not_ready` on a request the adapter's own records show to be new: the challenge or the context route, no capability, no accepted context, and no earlier attempt that may have been sent | `not-started` |
 | 503 `seller_not_ready` on any other request | `unknown` |
 | 409 `peer_operation_mismatch` | `definite` |
 | 500 `seller_effect_unresolved` | `held`: needs the seller operator |
