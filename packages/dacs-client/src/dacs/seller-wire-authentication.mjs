@@ -40,6 +40,7 @@ export function createSellerWireAuthentication({ admission, sessionSigner, deleg
         assertPurchaseActionsAdmitted();
         if (canonicalize(currentLocal()) !== localDigest) throw new OperationError('tp1_local_binding_changed', 'the actor connection changed before signing');
         if (!isReadRoute(path) && now() >= retainedDelegation.payload.expiresAt) throw new WireError('peer_delegation_expired', 500);
+        signal?.throwIfAborted(); checkDeadline();
         const signature = await sessionSigner.sign(bytes);
         signal?.throwIfAborted(); checkDeadline();
         return signature;

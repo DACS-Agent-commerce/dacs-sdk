@@ -6,7 +6,7 @@ import { signatureCommitmentAnchor } from '../src/dacs/commit-on-signature.mjs';
 const P = PATHS.proposals;
 const timeout = e => e.causeCode === 'timeout';
 
-for (const boundary of ['storage', 'evidence', 'authority', 'host-sign', 'signed', 'check']) {
+for (const boundary of ['storage', 'evidence', 'authority', 'connection-check', 'host-sign', 'signed', 'check']) {
   test(`one absolute deadline stops a send after ${boundary} consumes the budget`, async t => {
     t.mock.method(AbortSignal, 'timeout', () => new AbortController().signal);
     const s = await storedWorld(t); let authentication = s.auth, requestRecords = s.records(), path = P;
@@ -18,6 +18,10 @@ for (const boundary of ['storage', 'evidence', 'authority', 'host-sign', 'signed
       authentication = s.w.createSellerWireAuthentication({ ...s.w.options, evidence: async () => {
         s.advance(15000); return { commitment: bytes(s.made.anchored), agreement: bytes(s.made.agreement), signedListing: bytes(s.made.listing) };
       } });
+    }
+    if (boundary === 'connection-check') {
+      let reads = 0;
+      authentication = s.w.createSellerWireAuthentication({ ...s.w.options, admission: { ...s.w.admission, currentLocal() { if (++reads === 2) s.advance(15000); return s.w.local; } } });
     }
     if (boundary === 'host-sign') authentication = s.w.createSellerWireAuthentication({ ...s.w.options, sessionSigner: { claim: s.w.session.claim,
       async sign(bytes) { s.w.state.signs.push(bytes); s.advance(15000); return s.w.session.sign(bytes); } } });
