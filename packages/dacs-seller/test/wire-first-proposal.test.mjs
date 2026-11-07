@@ -10,6 +10,7 @@ import { testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { createSellerAgentClient as createBuyerSellerAgentClient } from '../../dacs-client/src/dacs/seller-http.mjs';
 import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
 import { createWireContext } from '../src/dacs/seller-wire-requests.mjs';
 import { SELLER_TRANSPORT_HEADER, createSellerTransportStore, createSellerTransportServerAuth } from '../src/dacs/seller-transport-auth.mjs';
@@ -25,7 +26,8 @@ const JOURNAL_LEASE_MS = 300_000;
 // The real buyer coordinator, wire authentication, HTTP client, handler and durable
 // transport store. The agent retains the exact proposal; contribution/anchor work
 // is deliberately unreachable so each case stops at the boundary under review.
-async function firstProposalWorld(t) {
+// `clientPackage` drives the buyer's own HTTP client (packages/dacs-client) instead of the seller package's.
+async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) {
   mock.method(Date, 'now', () => T0);
   t.after(() => mock.restoreAll());
   const directory = await mkdtemp(join(tmpdir(), 'TEST-first-proposal-'));
@@ -48,7 +50,7 @@ async function firstProposalWorld(t) {
   let request, proposal = null;
   const effects = { proposals: 0, reads: 0, anchors: 0 };
   const responses = [];
-  const faults = { before: async () => {}, answer: async (answer) => answer };
+  const faults = { before: async () => {}, answer: async (answer) => answer, verify: (auth, ...args) => auth.verifyResponse(...args) };
   const agent = { claim: seller.claim, listingPin: pin,
     transportAgreementOf: () => proposal?.plan.draft ?? null,
     continuationEvidenceOf: () => null,
@@ -63,9 +65,9 @@ async function firstProposalWorld(t) {
     journal, store, ready: () => true, now: clock, agent, requireDelegation: false,
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
   const handler = createSellerHttpHandler(agent, { authentication: serverAuth, wire: hostWire });
-  const client = createSellerAgentClient({ url: 'http://127.0.0.1:1', authentication: {
+  const client = (clientPackage ? createBuyerSellerAgentClient : createSellerAgentClient)({ url: 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
     request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return signed; },
-    verifyResponse: (...args) => authentication.verifyResponse(...args),
+    verifyResponse: (...args) => faults.verify(authentication, ...args),
   }, fetchImpl: async (url, options) => {
     const path = new URL(url).pathname;
     await faults.before(path);
@@ -174,4 +176,41 @@ test('P11b1L2-T08: unknown-job from proposal publication stays rejected with no 
   assert.equal(result.disposition, 'rejected');
   assert.equal(result.stage, 'proposal-publication');
   assert.equal(w.effects.proposals, 1);
+});
+
+test('P11b1L2-T09: the buyer package client waits for the wire verifier, so a verified unknown-job answer publishes and a verified refusal stays rejected', async (t) => {
+  const w = await firstProposalWorld(t, { clientPackage: true });
+  const result = await w.run();
+  assert.equal(result.disposition, 'waiting', JSON.stringify({ result, responses: w.responses }));
+  assert.deepEqual(w.effects, { proposals: 1, reads: 2, anchors: 0 });
+  const refused = await firstProposalWorld(t, { clientPackage: true });
+  refused.faults.answer = () => refused.signedError('peer_unknown_job', 409);
+  assert.equal((await refused.run()).disposition, 'rejected');
+  assert.equal(refused.effects.proposals, 0);
+});
+
+test('P11b1L2-T10: the buyer package client treats unsigned, invalidly signed and changed-body unknown-job answers as unavailable, with no proposal', async (t) => {
+  const w = await firstProposalWorld(t, { clientPackage: true });
+  for (const kind of ['unsigned', 'signature', 'body']) {
+    w.faults.answer = async (answer) => {
+      if (kind === 'unsigned') delete answer.headers[SELLER_TRANSPORT_HEADER];
+      if (kind === 'signature') answer.headers[SELLER_TRANSPORT_HEADER] = 'TEST-invalid-signature';
+      if (kind === 'body') answer.text = JSON.stringify({ error: 'peer_unknown_job', message: 'TEST changed body' });
+      return answer;
+    };
+    assert.equal((await w.run()).disposition, 'indeterminate', kind);
+    assert.equal(w.client.failureCause, 'response-auth', kind);
+    assert.deepEqual(w.effects, { proposals: 0, reads: 0, anchors: 0 });
+  }
+});
+
+test('P11b1L2-T11: a wire verifier that never answers ends the buyer package client call at its deadline with no proposal', async (t) => {
+  const w = await firstProposalWorld(t, { clientPackage: true, timeoutMs: 100 });
+  w.faults.verify = () => new Promise(() => {});
+  // The abort timer is unref'd; nothing else keeps the test's event loop alive while the verifier hangs.
+  const alive = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(alive));
+  assert.equal((await w.run()).disposition, 'indeterminate');
+  assert.equal(w.client.failureCause, 'timeout');
+  assert.deepEqual(w.effects, { proposals: 0, reads: 0, anchors: 0 });
 });
