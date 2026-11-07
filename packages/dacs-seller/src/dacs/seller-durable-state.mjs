@@ -372,7 +372,10 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           if (challenge?.kind !== 'session-challenge' || row.id !== `session-challenge:${challenge.sessionNonce}`) fail('seller_state_corrupt');
           if (challenge.attempt?.admitted !== true) continue;
           const binding = effect(`session-job:${challenge.jobId}`);
-          yield { ...challenge, buyerBundleHash: binding?.buyerBundleHash ?? load(challenge.jobId)?.session.buyerBundleHash };
+          const buyerBundleHash = binding?.buyerBundleHash ?? load(challenge.jobId)?.session.buyerBundleHash;
+          // An old wrapperless admission with no session or binding names no bundle: nothing to restore, and it never authorizes.
+          if (challenge.attempt.accepted === undefined && buyerBundleHash === undefined) continue;
+          yield { ...challenge, buyerBundleHash };
         }
       },
       loadSession: (jobId) => load(jobId)?.session ?? null,

@@ -109,7 +109,7 @@ function legacyAcceptance(legacy) {
       || !isCanonicalClaimReference(row.buyer) || !isHash(row.presentationHash) || !isHash(buyerBundleHash)
       || ![row.issuedAt, row.expiresAt, admittedAt].every(isUint) || row.expiresAt <= row.issuedAt
       || (row.accepted !== null && !acceptedIsComplete(row.accepted, row))) fail('context_challenge_attempt_invalid');
-    return { row, buyerBundleHash, admittedAt };
+    return { row, buyerBundleHash, admittedAt, retired: legacy.attempt.retired === true };
   } catch (error) {
     if (error instanceof SellerTransportError) throw error;
     fail('context_challenge_attempt_invalid');
@@ -278,7 +278,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   }
 
   function importAccepted(legacy) {
-    const { row, buyerBundleHash, admittedAt } = legacyAcceptance(legacy);
+    const { row, buyerBundleHash, admittedAt, retired } = legacyAcceptance(legacy);
     return transaction(() => {
       const binding = jobBinding(row.jobId), existing = retained(row.nonce), proof = archived(row.nonce);
       if (binding && (binding.nonce !== row.nonce || !sameCanonicalClaimIdentity(binding.buyer, row.buyer)
@@ -288,7 +288,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
         return false;
       }
       if (binding) fail('seller_job_bound');
-      run(`INSERT INTO kit_challenges (nonce, jobId, buyer, challengeScopeHash, origin, issuedAt, expiresAt, state,
+      // A retired admission is history: its proof and binding stay, but it takes no active row, so it never charges challenge capacity.
+      if (!retired) run(`INSERT INTO kit_challenges (nonce, jobId, buyer, challengeScopeHash, origin, issuedAt, expiresAt, state,
         presentationHash, owner, attemptedAt, failure, accepted) VALUES (?, ?, ?, NULL, 'operator', ?, ?, 'accepted', ?, NULL, ?, NULL, ?)`,
       row.nonce, row.jobId, row.buyer, row.issuedAt, row.expiresAt, row.presentationHash, row.attemptedAt, JSON.stringify(row.accepted));
       archiveWithin(row);

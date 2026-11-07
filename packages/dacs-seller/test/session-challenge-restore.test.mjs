@@ -224,3 +224,43 @@ test('legacy admission records with missing required fields refuse migration', a
     assert.equal(count(w, 'kit_challenges'), 0);
   }
 });
+
+const counts = w => ({ active: count(w, 'kit_challenges'), proofs: count(w, 'kit_accepted_challenges'), bindings: count(w, 'kit_job_bindings') });
+
+test('a legacy admission with no wrapper, session or bundle hash neither stops startup nor authorizes anything', async t => {
+  const w = await acceptedFixture(t, { legacy: true, save: false });
+  const body = structuredClone(w.legacyBody); delete body.attempt.accepted;
+  w.writeLegacy(body);
+  for (let start = 0; start < 2; start++) {
+    const fresh = await w.open();
+    assert.deepEqual(counts(w), { active: 0, proofs: 0, bindings: 0 });
+    assert.equal(w.store.challenges.retainedForSession(w.nonce), null);
+    await assert.rejects(fresh.stagedProposal(w.input), /not a challenge this seller issued/);
+    fresh.close(); w.f.reopenStore();
+  }
+  assert.equal(w.admission.calls.filter(([name]) => name === 'admit').length, 1);
+});
+
+test('a retired legacy admission keeps its proof and job binding without taking active challenge capacity', async t => {
+  const w = await acceptedFixture(t, { legacy: true, save: false });
+  const body = structuredClone(w.legacyBody); body.attempt.retired = true;
+  w.writeLegacy(body);
+  for (let start = 0; start < 2; start++) {
+    const fresh = await w.open();
+    assert.deepEqual(counts(w), { active: 0, proofs: 1, bindings: 1 });
+    assert.equal(w.store.challenges.retained(w.nonce), null);
+    assert.equal(w.store.challenges.retainedForSession(w.nonce).accepted.buyerBundleHash, w.challenge.accepted.buyerBundleHash);
+    assert.equal(w.store.challenges.jobBinding(JOB).nonce, w.nonce);
+    await assert.rejects(fresh.stagedProposal(w.input), /not a challenge this seller issued/);
+    fresh.close(); w.f.reopenStore();
+  }
+  assert.equal(w.admission.calls.filter(([name]) => name === 'admit').length, 1);
+});
+
+test('a retired legacy admission whose session was saved still restores it from the retained proof', async t => {
+  const w = await acceptedFixture(t, { legacy: true });
+  const body = structuredClone(w.legacyBody); body.attempt.retired = true;
+  w.writeLegacy(body);
+  assert.equal((await w.open()).stageOf(JOB), 'proposed');
+  assert.deepEqual(counts(w), { active: 0, proofs: 1, bindings: 1 });
+});
