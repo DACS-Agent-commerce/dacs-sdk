@@ -5961,6 +5961,7 @@
     {"delta":"D11","subject":"fix(client): D11 record the deleted guarded SQLite files after the 06e merge","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":null,"after":null},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":null,"after":null}]},
     {"delta":"D11","subject":"fix(client): D11 rebuild part 07 package pins from one manifest","files":[{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"783054d82aa355f84bbc6563a698cb3804406ccc","after":"4c8be31a5c5efea2b63374e7d3af501003e92c3d"}]},
     {"delta":"D11","subject":"fix(client): D11 record the blobs chosen by carrying the part below into part-07","files":[{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"243ddb171958e6193d1f2a009bc6f13726f4ba22","after":"243ddb171958e6193d1f2a009bc6f13726f4ba22"}]},
-    {"delta":"D11","subject":"fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge","files":[{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"90d7c74c97c9d236baf685c7481a4b0f8c3d1300","after":"90d7c74c97c9d236baf685c7481a4b0f8c3d1300"}]}
+    {"delta":"D11","subject":"fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge","files":[{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"90d7c74c97c9d236baf685c7481a4b0f8c3d1300","after":"90d7c74c97c9d236baf685c7481a4b0f8c3d1300"}]},
+    {"delta":"D11","subject":"fix(client): D11 record the blobs chosen by carrying the part below into part-08","files":[{"path":"packages/dacs-client/test/package-contents.test.mjs","before":"243ddb171958e6193d1f2a009bc6f13726f4ba22","after":"243ddb171958e6193d1f2a009bc6f13726f4ba22"}]}
   ]
 }

@@ -1034,6 +1034,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 243ddb171958e6193d1f2a009bc6f13726f4ba22 |
 | D11 | fix(client): D11 record the merged package-contents.test.mjs blob after the 08 merge | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 90d7c74c97c9d236baf685c7481a4b0f8c3d1300 |
+| D11 | fix(client): D11 record the blobs chosen by carrying the part below into part-08 | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 243ddb171958e6193d1f2a009bc6f13726f4ba22 |
 
 ## Complete commit and file inventory
 
@@ -3186,6 +3188,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep the merged hold merge policy after the 08 merge | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 keep the merged hold merge policy after the 08 merge | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 keep the merged hold merge policy after the 08 merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-08 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-08 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-08 | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-08 | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-08 | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
