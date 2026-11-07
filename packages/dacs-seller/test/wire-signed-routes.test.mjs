@@ -1613,7 +1613,7 @@ test('wire proposal fence: a context session that ends after accounting refuses 
 test('wire proposal fence: a retained proposal is not claimed live in a terminal session, a claim made before it ends is refused at its next check, and read-only recovery goes on', async (t) => {
   const w = await world(t);
   const observed = [];
-  const recover = (afterClaim) => async ({ request, transport }) => {
+  const recover = (afterClaim) => async ({ transport }) => {
     w.agent.calls.reconciled++;
     let claim;
     try { claim = transport.claim(); } catch (error) { observed.push({ refused: codeOf(() => { throw error; }) }); return; }
@@ -1645,6 +1645,64 @@ test('wire proposal fence: a retained proposal is not claimed live in a terminal
     { live: true, check: 'context_session_terminal 409' },
     { live: false, check: null },
   ]);
+});
+
+// A session source that cannot be read: the accessor answers each read with a fresh fault, and an assignment ends the fault.
+const SESSION_FAULTS = {
+  throws: () => { throw new Error('the session reader is down'); },
+  thenable: () => ({ then() {} }),
+  rejecting: () => Promise.reject(new Error('the session reader failed late')),
+  'resolved terminal': () => Promise.resolve('aborted-by-other'),
+  number: () => 7,
+  object: () => ({ state: 'aborted-by-other' }),
+  undefined: () => undefined,
+};
+const failSession = (w, read) => Object.defineProperty(w.state, 'session', { configurable: true, enumerable: true, get: read,
+  set(value) { Object.defineProperty(w.state, 'session', { configurable: true, enumerable: true, writable: true, value }); } });
+
+test('wire proposal fence: an unreadable session source is never read as not terminal at the live claim, its next check or the pending assertion', async (t) => {
+  const w = await world(t);
+  const observed = [], original = w.agent.reconcileTransport;
+  const probe = async ({ transport }) => {
+    w.agent.calls.reconciled++;
+    let claim;
+    // The store's admission-time start check reads the source too, so the fault starts at the agent's own claim.
+    if (w.failBeforeClaim) failSession(w, w.fault);
+    try { claim = transport.claim(); } catch (error) { observed.push({ label: w.label, claim: codeOf(() => { throw error; }), cause: error.cause instanceof Error }); return; }
+    failSession(w, w.fault);
+    observed.push({ label: w.label, live: claim.live, check: codeOf(() => claim.check()) });
+    w.state.session = null;
+    transport.settle({ status: 200, value: { disposition: 'complete', contribution: { signed: true } } });
+  };
+  assert.equal(w.handle.store.sessionTerminal(jobFor('no-session')), false, 'an explicit null is no session');
+  for (const [label, fault] of Object.entries(SESSION_FAULTS)) {
+    w.fault = fault; w.label = label;
+    failSession(w, fault);
+    assert.throws(() => w.handle.store.sessionTerminal(jobFor(`direct-${label}`)), { code: 'session_admission_unavailable', status: 503 }, `${label}: the reader refuses`);
+    // Before the pending assertion: the agent reads the session after its waits, just before it signs.
+    w.state.session = null;
+    const job = await proposeJob(w, `unreadable-pending-${label}`);
+    w.agent.onWork = () => failSession(w, fault);
+    const answer = await job.post();
+    w.agent.onWork = () => {};
+    w.state.session = null;
+    assert.equal(w.agent.transportAgreementOf(job.jobId), null, `${label}: nothing is signed or retained`);
+    assert.deepEqual({ status: answer.status, error: answer.body.error }, { status: 503, error: 'operation_uncertain' }, `${label}: pending assertion`);
+    // At the live claim, and at the check of a claim made before the source failed.
+    w.agent.reconcileTransport = probe;
+    for (const stage of ['claim', 'check']) {
+      w.state.time = NOW; w.state.session = null;
+      const retained = await uncertainProposal(w, `unreadable-${stage}-${label}`);
+      const signed = await w.buyerWire.signRequest(PATHS.proposals, retained.body, { jobId: retained.jobId, agreementHash: retained.agreementHash });
+      w.failBeforeClaim = stage === 'claim';
+      await w.send(PATHS.proposals, signed);
+      w.state.session = null;
+    }
+    w.agent.reconcileTransport = original;
+  }
+  w.state.time = NOW;
+  assert.deepEqual(observed.filter((entry) => 'claim' in entry), Object.keys(SESSION_FAULTS).map((label) => ({ label, claim: 'session_admission_unavailable 503', cause: true })));
+  assert.deepEqual(observed.filter((entry) => 'check' in entry), Object.keys(SESSION_FAULTS).map((label) => ({ label, live: true, check: 'session_admission_unavailable 503' })));
 });
 
 test('wire proposal fence: a terminal session fences proposal work only, not the commitment of a held job', async (t) => {

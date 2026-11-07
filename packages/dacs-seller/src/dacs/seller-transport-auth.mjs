@@ -674,10 +674,19 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       return text === null ? null : JSON.parse(text);
     },
     // Whether the job's seller context session has ended (the policy `assertPending` and `claim` apply to proposal work);
-    // it reads only the session reader, so it holds whichever tables accounted the job.
+    // it reads only the session reader, so it holds whichever tables accounted the job. An unreadable source is never "not
+    // terminal": a throw, a thenable or a non-null non-string answer is refused `session_admission_unavailable` 503 with its
+    // cause, and only an explicit null reads as no session.
     sessionTerminal(jobId) {
       requireJobId(jobId);
-      return TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId }));
+      const unavailable = (cause) => new SellerTransportError('session_admission_unavailable', 503, { cause });
+      let state;
+      try { state = contextSessionState({ jobId }); } catch (cause) { throw unavailable(cause); }
+      if (state === null) return false;
+      if (typeof state === 'string') return TERMINAL_CONTEXT_STATES.has(state);
+      // A rejected answer is observed so it cannot surface later; no eventual value is used.
+      try { if (typeof state?.then === 'function') state.then(undefined, () => {}); } catch { /* the refusal below is the answer */ }
+      throw unavailable(new TypeError('the seller session reader answered a non-string state'));
     },
     // The context step's pre-Agreement admission record for a job, or null:
     // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.
