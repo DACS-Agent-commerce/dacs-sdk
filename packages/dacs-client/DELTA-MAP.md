@@ -215,7 +215,7 @@ Admission reads one closed policy for main and listed TEMP. Persistent main acce
 
 Regressions cover initialized TEMP OFF, unqualified OFF followed by main WAL, repair/retry, absent/discarded/reopened TEMP, four native result defaults, and the real lease rollback marker. Earlier main journal/durability and result-format regressions are retained. Historical extraction records use the existing archive fields solely to audit immutable published history.
 
-Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions; it cannot be reached, so its steps run unchecked but read-only (the fence is closed, so a write fails). The guard now runs its predicate once more when its body returns, so a guard whose liveness ended during such a step throws instead of returning. Tests: `test/sqlite-iterator-before-install.test.mjs`, `test/purchase-tx-iterator-before-store.test.mjs`.
+Engine floors (Node 22.13.0 and 23.4.0): their iterators carry their own `next`, which shadowed the statement boundary's prototype patch, and a collection could finalize a statement that only its iterator used. The statement boundary now wraps an iterator's own `next` at creation, and the commit barrier keeps its statement alive with its iterator. An iterator created before the boundary is installed still keeps its own native `next` on those versions; it cannot be reached, so its steps run unchecked but read-only (the fence is closed, so a write fails). The guard now runs its predicate once more when its body returns, so a guard whose liveness ended during such a step throws instead of returning. Tests: `test/sqlite-iterator-before-install.test.mjs`, `test/purchase-tx-iterator-before-store.test.mjs`. Their early iterators are started through `test/helpers/held-iterators.mjs` (checked by `test/held-iterators.test.mjs`), which keeps each statement alive until teardown so a collection cannot finalize it.
 
 Engine floors, tests and refusal: a new iterator whose own `next` is not a function cannot be wrapped, so the statement boundary refuses it with a TypeError instead of returning it unguarded. The `LegacyDatabase` fixture now gives its iterators their own `next` and `return`, and the readback review tests also run with that iterator layout on any Node version (`readback-review-decisions.floor.test.mjs`). The domain-store crash wrapper is deferred until its crash suite and worker fixtures exist at the same stack layer.
 
@@ -1040,6 +1040,11 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` | a5497646bd1d81fe09d9cd5da3bc34ed988c76be |
 | | `packages/dacs-client/test/purchase-tx-iterator-before-store.test.mjs:1` | ef7988d676cddff1e9a0cbcf7cfa2734b2325388 |
 | | `packages/dacs-client/test/sqlite-iterator-before-install.test.mjs:1` | fc93248388336aabfe7f9d8e37379258fb6323db |
+| D11 | fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/held-iterators.test.mjs:1` | dfa1d876799370023af2eea2bf7fdd1aa090d917 |
+| | `packages/dacs-client/test/helpers/held-iterators.mjs:1` | e2a2214527bc2030196591b073115c41aa561848 |
+| | `packages/dacs-client/test/purchase-tx-iterator-before-store.test.mjs:1` | d895ff4527713bc0121f6be3660e6bc6387819bd |
+| | `packages/dacs-client/test/sqlite-iterator-before-install.test.mjs:1` | e31c2d36048e7a823bf7990be46edba5bc569456 |
 
 ## Complete commit and file inventory
 
@@ -3206,6 +3211,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 re-check guard liveness when the guarded body returns | `packages/dacs-client/src/util/sqlite-statement-boundary.mjs:1` |
 | fix(client): D11 re-check guard liveness when the guarded body returns | `packages/dacs-client/test/purchase-tx-iterator-before-store.test.mjs:1` |
 | fix(client): D11 re-check guard liveness when the guarded body returns | `packages/dacs-client/test/sqlite-iterator-before-install.test.mjs:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/test/held-iterators.test.mjs:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/test/helpers/held-iterators.mjs:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/test/purchase-tx-iterator-before-store.test.mjs:1` |
+| fix(client): D11 keep the statements behind early iterators alive in the iterator fence tests | `packages/dacs-client/test/sqlite-iterator-before-install.test.mjs:1` |
 
 ## Original moved files
 

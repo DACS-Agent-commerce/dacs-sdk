@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "05c4ddc037d4f07001ec4e418480ef106fdc77b6"
+        "blob": "8f427894e159c6087334555d825f36ee502220f2"
       },
       "DELTA-LEDGER.json": {
-        "blob": "a7a5e3093e41ff020fa91489674a5dd10eb22205"
+        "blob": "663dfcaff0ff4ceb388c578cebb24b23aa2f1616"
       },
       "DELTA-MAP.md": {
-        "blob": "a3c7ed1e2c634384c630c9c21017084478075e55"
+        "blob": "e13b09df1106dd6e37ee3d212918ecac53d3005c"
       },
       "DELTA-NOTES.md": {
-        "blob": "4489a432b544845a97eaf58d4bea3f36fb9e96cc"
+        "blob": "902c7ec0873cc268c90089e227f4031542ffa33a"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "5ebe35f3c23de6308c0a6b83558a6e401b2318f2"
+        "blob": "aa018ff452aa0bfa80fad28b1c7314f70a6a293b"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1420,6 +1420,9 @@
       "test/fixtures/wallet.mjs": {
         "blob": "4ee7eacda377c731fd70105eaa3bf862421e01c3"
       },
+      "test/held-iterators.test.mjs": {
+        "blob": "dfa1d876799370023af2eea2bf7fdd1aa090d917"
+      },
       "test/helpers/agreement-context-integration.mjs": {
         "blob": "3bbc74d4d3f72101e8b3d3b2ff27449ba4105add"
       },
@@ -1527,6 +1530,9 @@
       },
       "test/helpers/harness.mjs": {
         "blob": "91c8b39a12d3065895533ecc1f158180ccb71ba2"
+      },
+      "test/helpers/held-iterators.mjs": {
+        "blob": "e2a2214527bc2030196591b073115c41aa561848"
       },
       "test/helpers/journal-child-process.mjs": {
         "blob": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
@@ -1799,7 +1805,7 @@
         "blob": "53fbeca69a87846aa9d32845aab011cbf451dd84"
       },
       "test/purchase-tx-iterator-before-store.test.mjs": {
-        "blob": "ef7988d676cddff1e9a0cbcf7cfa2734b2325388"
+        "blob": "d895ff4527713bc0121f6be3660e6bc6387819bd"
       },
       "test/purchase-tx-nesting.test.mjs": {
         "blob": "124ddbf578822f8bfe3298e01e83626f40de071d"
@@ -1829,7 +1835,7 @@
         "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"
       },
       "test/sqlite-iterator-before-install.test.mjs": {
-        "blob": "fc93248388336aabfe7f9d8e37379258fb6323db"
+        "blob": "e31c2d36048e7a823bf7990be46edba5bc569456"
       },
       "test/sqlite-iterator-own-methods.test.mjs": {
         "blob": "cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8"

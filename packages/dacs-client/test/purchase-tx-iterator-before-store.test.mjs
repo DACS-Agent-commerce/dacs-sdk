@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { useFloorIteratorsEverywhere } from './helpers/sqlite-floor-iterators.mjs';
+import { holdIterators } from './helpers/held-iterators.mjs';
 import { DEFAULT_PROFILE, configure, durableIds } from './helpers/purchase-tx-fixtures.mjs';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 
@@ -17,11 +18,12 @@ const dir = mkdtempSync(join(tmpdir(), 'dacs-purchase-iterator-')), path = join(
 const db = new DatabaseSync(path);
 configure(db, DEFAULT_PROFILE);
 db.exec("CREATE TABLE records (id TEXT PRIMARY KEY); INSERT INTO records VALUES ('TEST-existing')");
-const earlyRead = db.prepare('SELECT id FROM records').iterate();
-const earlyWrite = db.prepare("INSERT INTO records VALUES ('TEST-early') RETURNING id").iterate();
+const earlyIterators = holdIterators();
+const earlyRead = earlyIterators.iterate(db.prepare('SELECT id FROM records'));
+const earlyWrite = earlyIterators.iterate(db.prepare("INSERT INTO records VALUES ('TEST-early') RETURNING id"));
 // The first store installs the statement guard, after both iterators exist.
 const store = createSqlitePurchaseStore();
-test.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+test.after(() => { earlyIterators.release(); db.close(); rmSync(dir, { recursive: true, force: true }); });
 
 test('an iterator created before the store cannot write inside a purchase transaction', () => {
   assert.ok(Object.hasOwn(earlyWrite, 'next'));
