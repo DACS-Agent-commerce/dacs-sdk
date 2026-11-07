@@ -1030,6 +1030,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) | deleted |
 | D11 | fix(client): D11 rebuild part 07 package pins from one manifest | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 4c8be31a5c5efea2b63374e7d3af501003e92c3d |
+| D11 | fix(client): D11 record the blobs chosen by carrying the part below into part-07 | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 243ddb171958e6193d1f2a009bc6f13726f4ba22 |
 
 ## Complete commit and file inventory
 
@@ -3168,6 +3170,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 accept the recorded deletion of the guarded SQLite files in callback history | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 accept the recorded deletion of the guarded SQLite files in callback history | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 accept the recorded deletion of the guarded SQLite files in callback history | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-07 | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-07 | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-07 | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-07 | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the blobs chosen by carrying the part below into part-07 | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
