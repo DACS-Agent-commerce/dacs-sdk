@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, test, vi } from "vitest";
 
 import { buildAgent } from "../../src/agent/Agent.js";
@@ -151,7 +152,7 @@ describe("Agent logical Listing discovery (#54)", () => {
     const sign = vi.fn();
     const adapter = {
       readAnchor: async (address: string) =>
-        address === nativeAddress ? record : null,
+        admittedFixture(address === nativeAddress ? record : null),
       createAnchorHistoryPageFetcher: (expectedOwner: string) => {
         expect(expectedOwner).toBe(owner);
         return async () => ({

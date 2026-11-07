@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runInNewContext } from "node:vm";
+import { canonicalizeWireJson } from "../../src/canonical/jcs.js";
 
 import {
   canonicalize,
@@ -17,6 +18,13 @@ import {
 
 // §7.1 / §7.2 canonicalize vectors (DACS-Standard §14).
 describe("canonicalize (§7.1)", () => {
+  it("keeps transport strings exact while CF-1 still normalizes artifact values", () => {
+    const value = { z: ["cafe\u0301"], a: "key%3A\u0301x" };
+    expect(canonicalizeWireJson(value)).toBe('{"a":"key%3A\u0301x","z":["cafe\u0301"]}');
+    expect(canonicalize(value)).toBe('{"a":"key%3Áx","z":["café"]}');
+    expect(() => canonicalizeWireJson({ value: "\ud800" })).toThrow(/surrogate/);
+  });
+
   it("canon-key-order: object members ordered by UTF-16 code unit of key", () => {
     expect(canonicalize({ b: 1, a: 2, A: 3 })).toBe('{"A":3,"a":2,"b":1}');
   });
@@ -186,6 +194,41 @@ describe("canonicalize (§7.1)", () => {
     );
   });
 
+});
+
+// RFC 8785 §3.2.2.2 escaping and UTF-16 validity behind every signature and
+// content hash; distinct strings must never share canonical bytes.
+describe("RFC 8785 strings in both canonical forms", () => {
+  const forms = [
+    ["canonicalize", canonicalize],
+    ["canonicalizeWireJson", canonicalizeWireJson],
+  ] as const;
+
+  it.each(forms)("%s escapes every C0 control exactly as RFC 8785", (_name, form) => {
+    for (let code = 0; code < 0x20; code += 1) {
+      const value = `a${String.fromCharCode(code)}b`;
+      // \b \t \n \f \r use their short forms; every other control is lowercase \u00XX.
+      expect(form(value)).toBe(JSON.stringify(value));
+      expect(form({ [value]: value })).toBe(JSON.stringify({ [value]: value }));
+    }
+    expect(form("a\u0001b")).toBe('"a\\u0001b"');
+    expect(form("a\u001fb")).toBe('"a\\u001fb"');
+    expect(form("a\u0001b")).not.toBe(form("a0001b"));
+    expect(form("a\u0001b")).not.toBe(form("ab"));
+    expect(form("a\rb")).not.toBe(form("ab"));
+    expect(form("a\u007fb")).toBe('"a\u007fb"');
+  });
+
+  it.each(forms)("%s rejects every unpaired surrogate and accepts boundary pairs", (_name, form) => {
+    for (const bad of ["\ud800a", "\ud800", "\udbffx", "\udbff", "\udc00", "\udfff", "a\udfff", "\udfff\ud800"]) {
+      expect(() => form(bad)).toThrow(/unpaired UTF-16 surrogate/);
+      expect(() => form({ [bad]: 1 })).toThrow(/unpaired UTF-16 surrogate/);
+    }
+    for (const ok of ["𐀀", "𐏿", "􏰀", "􏿿"]) {
+      expect(form(ok)).toBe(JSON.stringify(ok));
+    }
+    expect(form("퟿")).toBe(JSON.stringify("퟿"));
+  });
 });
 
 function nestedArrays(depth: number): unknown {

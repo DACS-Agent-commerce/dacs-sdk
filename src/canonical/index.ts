@@ -1,3 +1,4 @@
+export { admitArtifactJson, snapshotAdmittedArtifact } from "./admittedArtifact.js";
 export {
   admitRawJson,
   RawJsonAdmissionError,

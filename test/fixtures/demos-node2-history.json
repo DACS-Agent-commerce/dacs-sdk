@@ -1,0 +1,247 @@
+{
+  "source": "https://node2.demos.sh, read-only nodeCall getTransactionHistory and GET /storage-program",
+  "capturedAt": "2026-10-15",
+  "owner": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+  "notes": [
+    "Rows are real node2 responses for one owner, newest first. Payload data, gcr_edits and signature bytes are elided; the fetcher does not read them.",
+    "The confirmed rows carry decimal-string timestamps, rpc_address and attrs, which the ac8f45f node source does not produce.",
+    "The failed rows carry a blockNumber; the fetcher skips failed rows before reading it.",
+    "The last row is a real confirmed CREATE carrying DACS logicalAddress metadata (live row 589, captured 2026-10-16)."
+  ],
+  "historyRows": [
+    {
+      "content": {
+        "type": "storageProgram",
+        "from": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "to": "stor-7ce1698f26f04376314c20a8b3c0a126bc325496",
+        "from_ed25519_address": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "amount": 0,
+        "nonce": "649",
+        "timestamp": "1791950770677",
+        "transaction_fee": {
+          "network_fee": 1000000000,
+          "rpc_fee": 1000000000,
+          "additional_fee": 0,
+          "rpc_address": null
+        },
+        "data": [
+          "storageProgram",
+          {
+            "operation": "WRITE_STORAGE",
+            "storageAddress": "stor-7ce1698f26f04376314c20a8b3c0a126bc325496",
+            "data": {
+              "elided": "payload data"
+            },
+            "encoding": "json"
+          }
+        ],
+        "gcr_edits": []
+      },
+      "signature": {
+        "type": "ed25519",
+        "data": "elided"
+      },
+      "ed25519_signature": null,
+      "hash": "37e04ece64071cae00cfb56e70e535a26e54819909c6869eee6ebba7b1f339ee",
+      "status": "confirmed",
+      "blockNumber": 528326,
+      "attrs": {
+        "reference_block": 528324
+      }
+    },
+    {
+      "content": {
+        "type": "storageProgram",
+        "from": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "to": "stor-7ce1698f26f04376314c20a8b3c0a126bc325496",
+        "from_ed25519_address": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "amount": 0,
+        "nonce": "631",
+        "timestamp": "1790827805485",
+        "transaction_fee": {
+          "network_fee": 1000000000,
+          "rpc_fee": 1000000000,
+          "additional_fee": 0,
+          "rpc_address": null
+        },
+        "data": [
+          "storageProgram",
+          {
+            "operation": "CREATE_STORAGE_PROGRAM",
+            "storageAddress": "stor-7ce1698f26f04376314c20a8b3c0a126bc325496",
+            "programName": "pathos-receipts-2026-10-s1",
+            "encoding": "json",
+            "data": {
+              "elided": "payload data"
+            },
+            "acl": {
+              "mode": "owner"
+            },
+            "salt": "8a195435d60eb85d79a5b120d0c59259",
+            "metadata": {
+              "schema": "receipt-anchor:1",
+              "prev_program_address": "stor-5e3eebfc01d33ca1240c50a0ea6c97d7cb005f43",
+              "prev_program_head": "acabca6ea7c43cb5f3fc1aed8a632fa6100b5201cd82357a52c0078246578b29"
+            },
+            "storageLocation": "onchain"
+          }
+        ],
+        "gcr_edits": []
+      },
+      "signature": {
+        "type": "ed25519",
+        "data": "elided"
+      },
+      "ed25519_signature": null,
+      "hash": "88fde134be731a7338e30f52b153c9075fd1ae7940e5d2814a62c75adb6e9152",
+      "status": "confirmed",
+      "blockNumber": 418745,
+      "attrs": {
+        "reference_block": 418743
+      }
+    },
+    {
+      "content": {
+        "type": "storageProgram",
+        "from": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "to": "stor-9cef04859dcd1104f619a8e0dfee81ab27224185",
+        "from_ed25519_address": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "amount": 0,
+        "nonce": "478",
+        "timestamp": "1789843776796",
+        "transaction_fee": {
+          "network_fee": 1000000000,
+          "rpc_fee": 1000000000,
+          "additional_fee": 0,
+          "rpc_address": null
+        },
+        "data": [
+          "storageProgram",
+          {
+            "operation": "WRITE_STORAGE",
+            "storageAddress": "stor-9cef04859dcd1104f619a8e0dfee81ab27224185",
+            "data": {
+              "elided": "payload data"
+            },
+            "encoding": "json"
+          }
+        ],
+        "gcr_edits": []
+      },
+      "signature": {
+        "type": "ed25519",
+        "data": "elided"
+      },
+      "ed25519_signature": null,
+      "hash": "94b088a1164b04d11700da21902b87f80285cd7a6b6097d8289e2eb64bc8d8f2",
+      "status": "failed",
+      "blockNumber": 325033,
+      "attrs": {
+        "code": "TX_NONCE_INVALID_LOW",
+        "message": "Invalid nonce edit. Expected 479, got 478",
+        "reference_block": 325032
+      }
+    },
+    {
+      "content": {
+        "type": "storageProgram",
+        "from": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "to": "stor-9cef04859dcd1104f619a8e0dfee81ab27224185",
+        "from_ed25519_address": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "amount": 0,
+        "nonce": "478",
+        "timestamp": "1789842816915",
+        "transaction_fee": {
+          "network_fee": 1000000000,
+          "rpc_fee": 1000000000,
+          "additional_fee": 0,
+          "rpc_address": null
+        },
+        "data": [
+          "storageProgram",
+          {
+            "operation": "WRITE_STORAGE",
+            "storageAddress": "stor-9cef04859dcd1104f619a8e0dfee81ab27224185",
+            "data": {
+              "elided": "payload data"
+            },
+            "encoding": "json"
+          }
+        ],
+        "gcr_edits": []
+      },
+      "signature": {
+        "type": "ed25519",
+        "data": "elided"
+      },
+      "ed25519_signature": null,
+      "hash": "fd9344f4f8575be9c485bf61755e1e46f72658295142101d1277fa6ecc392213",
+      "status": "failed",
+      "blockNumber": 325033,
+      "attrs": {
+        "code": "TX_NONCE_INVALID_LOW",
+        "message": "Invalid nonce edit. Expected 479, got 478",
+        "reference_block": 325032
+      }
+    },
+    {
+      "content": {
+        "type": "storageProgram",
+        "from": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "to": "stor-0c8a191536d3908a8816c2312bdb4cfcd316e513",
+        "from_ed25519_address": "0x6bb11b21d18ba9bb03c4c50085326da4d2192c0cfbb6b575cc42d6dcddc0cda2",
+        "amount": 0,
+        "nonce": "275",
+        "timestamp": "1787336850628",
+        "transaction_fee": {
+          "network_fee": 1000000000,
+          "rpc_fee": 1000000000,
+          "additional_fee": 0,
+          "rpc_address": null
+        },
+        "data": [
+          "storageProgram",
+          {
+            "operation": "CREATE_STORAGE_PROGRAM",
+            "storageAddress": "stor-0c8a191536d3908a8816c2312bdb4cfcd316e513",
+            "programName": "dacs4%3Apayment%3A01M0JS1ZPVGE2HJ3N83DVTPV8P%3Ax402%3Abase-sepolia%3A2",
+            "encoding": "json",
+            "data": {
+              "elided": "payload data"
+            },
+            "acl": {
+              "mode": "public"
+            },
+            "salt": "",
+            "metadata": {
+              "contentHash": "d0e2e23cd1b9530c006fcfd8000b8e51d2df10f1b4f98c19872babbcb2c9a9c9",
+              "envelopeHash": "60bb273e09fdbba43e46da6a83ff7a3ed50ca0464f029feb949c76226d0acfae",
+              "logicalAddress": "dacs4:payment:01M0JS1ZPVGE2HJ3N83DVTPV8P:x402%3Abase-sepolia:2"
+            },
+            "storageLocation": "onchain"
+          }
+        ],
+        "gcr_edits": []
+      },
+      "signature": {
+        "type": "ed25519",
+        "data": "elided"
+      },
+      "ed25519_signature": null,
+      "hash": "0c69c35b044d6a879d2d972dcbf70bbf10571e14ad8c6c4ab1e4e4c91cd50a8f",
+      "status": "confirmed",
+      "blockNumber": 144862,
+      "attrs": {
+        "reference_block": 144861
+      }
+    }
+  ],
+  "missingStorageProgram": {
+    "status": 404,
+    "body": {
+      "success": false,
+      "error": "Storage program not found: stor-0000000000000000000000000000000000000000",
+      "errorCode": "NOT_FOUND"
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import { admittedFixture } from "../helpers/admitted.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -205,7 +206,7 @@ function adapter(owner: string, state: Backend): BoundArtifactAdapter {
     },
     async readAnchor(address) {
       const value = state.records.get(address);
-      return value ? structuredClone(value) : null;
+      return admittedFixture(value ? structuredClone(value) : null);
     },
   };
 }
