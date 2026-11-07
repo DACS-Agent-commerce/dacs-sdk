@@ -364,7 +364,7 @@ export function createNodeSellerComposition(options = {}) {
 
 async function buildNodeComposition(options, seller) {
   const key = options?.key;
-  let keyCopy, transport, session;
+  let keyCopy, transport, session, sellerAddress;
   try {
     const { owner, journal, approve, approveConfirmedWrite, publications, clock = { now: () => Date.now() } } = checkConstruction(options).options;
     const admission = { ...options.admission };
@@ -380,7 +380,7 @@ async function buildNodeComposition(options, seller) {
     transport = seller
       ? createDevnetDemoTransport({ ...transportOptions, settlementPublication: publications?.settlementPublication, deliveryPublication: publications?.deliveryPublication,
         demoArtifactPublication: publications?.demoArtifactPublication,
-        ...(approveConfirmedWrite === null ? {} : { approveConfirmedWrite: routeConfirmedWrite(approveConfirmedWrite, () => session.getPublicAccount().address) }) })
+        ...(approveConfirmedWrite === null ? {} : { approveConfirmedWrite: routeConfirmedWrite(approveConfirmedWrite, () => sellerAddress) }) })
       : createDevnetAgreementTransport(transportOptions);
     const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const stamps = createRpcStampSource(clock);
@@ -388,6 +388,8 @@ async function buildNodeComposition(options, seller) {
     session = createSdkWalletSession({ DemosCtor: nodeDemosClass(Demos, transport, transactionTransport.rpcUrl, stamps, attempts), approve, transactionTransport,
       validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
     await session.importMnemonic(decodeMnemonic(keyCopy));
+    // Routing identity outlives signing custody, which passive wallet.lock() clears.
+    if (seller) sellerAddress = session.getPublicAccount().address;
     const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => ({
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),

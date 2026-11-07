@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { cpSync, existsSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { installPackedPair, sdkDir } from './helpers/packed-install.mjs';
-import { runFreshChild } from './helpers/fresh-node-child.mjs';
+import { childOwnStderr, runFreshChild } from './helpers/fresh-node-child.mjs';
 
 let installed;
 const cleanups = [];
@@ -32,7 +32,8 @@ test('the packed client, dacs-node and core installed outside the checkout with 
     writeFileSync('result.json', JSON.stringify({exports:Object.keys(api).sort()}));
   `, [], { directory: app });
   assert.equal(child.status, 0, child.stderr);
-  assert.equal(child.stdout + child.stderr, '');
+  assert.equal(child.stdout, '');
+  assert.equal(childOwnStderr(child.stderr), '');
   for (const name of ['createNodeSellerComposition', 'createHeldTransportFacade', 'createNodeObserver', 'isDevnetDemoTransport']) assert.ok(child.result.exports.includes(name));
 });
 
@@ -76,6 +77,6 @@ test('in a fresh child in the consumer directory, the packed node-wallet entry c
   `, [], { directory: app });
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout, '');
-  assert.equal(child.stderr, '');
+  assert.equal(childOwnStderr(child.stderr), '');
   assert.deepEqual(child.result, { broadcasts: 1 });
 });

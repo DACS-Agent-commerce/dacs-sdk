@@ -6466,6 +6466,37 @@
           "after": "da2946d04f52ac899dfd805ec55b02ddcb3213da"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 keep seller identity and packed runtime checks stable",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "b34577464d20d0b9c566876a35d50c2a26b96b65",
+          "after": "acaa5486c9fafb7d178aa37f16d517d80919fa47"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/fresh-node-child.mjs",
+          "before": "65308beab83304e56d651604f59faf6feaab6541",
+          "after": "c5b141ceb517de732d91608ba14b679ba5ee53fd"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-fresh-child.test.mjs",
+          "before": "6a818fd66d7d90ba6196381033269fbfff8b4647",
+          "after": "396b4f470820de6aa77cce86839ce5a287b31ccd"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-packed.test.mjs",
+          "before": "dd4ed9c05f74261c828a740996444d3b3a88c167",
+          "after": "fc9f5943d11b41eed2ded177c8e0982f1a5e0360"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "7b598204121d8e58bb55c3b4225ee5cdd05be0c5",
+          "after": "116879d4872c10a8d0c65ad5bb3cada05e5052aa"
+        }
+      ]
     }
   ]
 }

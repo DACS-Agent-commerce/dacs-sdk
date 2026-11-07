@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import { contentHash, listingAddress, logicalToStorageProgramName } from '@kynesyslabs/dacs';
-import { api, mnemonicBytes, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs';
+import { api, agreementRequest, mnemonicBytes, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs';
 import { createWorld } from './helpers/native-create-world.mjs';
 import { installNoEgress } from './helpers/no-egress.mjs';
 import * as nativeTransport from '../src/wallet/devnet-native-transport.mjs';
@@ -182,6 +182,57 @@ test("the confirmed-write callback is installed with the seller/Listing routing:
   await other.capability.close();
   assert.equal(calls, 0);
   assert.equal(w.node.broadcasts.length, 0);
+});
+
+test('seller confirmation routing keeps its imported identity after wallet lock for native and Agreement writes', async t => {
+  for (const kind of ['native', 'Agreement']) for (const outcome of ['allow', 'deny', 'throw', 'manual']) {
+    await t.test(`${kind}: ${outcome}`, async t => {
+      let calls = 0;
+      const cause = new Error('TEST-locked-policy');
+      const policy = () => { calls++; if (outcome === 'throw') throw cause; return outcome === 'allow'; };
+      const w = await seller(t, { sessionOptions: { approveConfirmedWrite: outcome === 'manual' ? null : policy } });
+      const wallet = await signingWallet(w);
+      const payload = kind === 'native' ? w.request.params[0] : (await agreementRequest(w)).params[0].transaction;
+      const tx = signedTransaction(wallet, payload);
+      w.session.wallet.lock();
+      assert.equal(w.session.wallet.getPublicAccount(), null);
+      if (outcome === 'allow' || outcome === 'manual') {
+        assert.equal((await confirmThroughFacade(w, wallet, tx)).answer.response.data.valid, true);
+      } else {
+        await assert.rejects(confirmThroughFacade(w, wallet, tx), error =>
+          error.code === 'approval_required' && (outcome !== 'throw' || error.cause === cause));
+      }
+      assert.equal(calls, outcome === 'manual' ? 0 : 1);
+      assert.equal(w.node.broadcasts.length, 0);
+    });
+  }
+});
+
+test('an own Listing confirmation skips seller policy after wallet lock', async t => {
+  let calls = 0;
+  const w = await seller(t, { sessionOptions: { approveConfirmedWrite: () => { calls++; return false; } } });
+  const wallet = await signingWallet(w), tx = listingCreate(w, wallet);
+  w.session.wallet.lock();
+  assert.equal(w.session.wallet.getPublicAccount(), null);
+  assert.equal((await confirmThroughFacade(w, wallet, tx)).answer.response.data.valid, true);
+  assert.equal(calls, 0);
+  assert.equal(w.node.broadcasts.length, 0);
+});
+
+test('foreign native and storage confirmations skip seller policy after wallet lock', async t => {
+  for (const kind of ['native', 'Listing']) await t.test(kind, async t => {
+    let calls = 0;
+    const w = await seller(t, { sessionOptions: { approveConfirmedWrite: () => { calls++; return false; } } });
+    const other = createWorld({ journal: w.journal() });
+    t.after(() => other.capability.close());
+    const tx = kind === 'Listing' ? listingCreate(w, other.wallet)
+      : signedTransaction(other.wallet, { ...w.request.params[0], content: { ...w.request.params[0].content, from: other.wallet.address } });
+    w.session.wallet.lock();
+    assert.equal(w.session.wallet.getPublicAccount(), null);
+    assert.equal((await confirmThroughFacade(w, other.wallet, tx)).answer.response.data.valid, true);
+    assert.equal(calls, 0);
+    assert.equal(w.node.broadcasts.length, 0);
+  });
 });
 
 test('every non-readback binding phase, including broadcast, is held and rechecked after admission await', async t => {
