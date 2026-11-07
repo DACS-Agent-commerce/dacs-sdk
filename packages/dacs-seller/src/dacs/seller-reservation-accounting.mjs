@@ -23,13 +23,14 @@ const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isI
  * The store owns the schema and BEGIN IMMEDIATE; every check and hook runs within that same transaction.
  */
 export function createReservationAccounting({ store, now, limits }) {
-  if (![limits?.maxJobs, limits?.maxContextRecords, limits?.maxNoncesPerBuyerPerWindow].every(value => uint(value) && value > 0) ||
+  if (![limits?.maxRecords, limits?.maxJobs, limits?.maxContextRecords, limits?.maxNoncesPerBuyerPerWindow].every(value => uint(value) && value > 0) ||
       typeof now !== 'function') throw new TypeError('positive reservation limits required');
   const { get, run, transaction, ledger } = store;
 
   // Steps 2 to 4 count every ledger record, whichever path wrote it. A job, or its context record, already held
   // by any record takes no second slot.
   function checkLimitsWithin(payload, contextStart, at) {
+    if (ledger.recordCountWithin(at) >= limits.maxRecords) fail('peer_store_capacity', 503);
     if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
     if (!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) fail('peer_job_capacity', 503);
     if (contextStart && !ledger.contextHeldWithin(payload.jobId) && ledger.contextCountWithin() >= limits.maxContextRecords) {
@@ -124,7 +125,7 @@ export function createReservationAccounting({ store, now, limits }) {
      * reservation's own refusal (a string code and an HTTP status), after recording it as refused{code}; any other
      * failure leaves the charged row `reserving`, never refunded.
      * The store decides whether the job and its context record are new; the context route is the context start.
-     * Throws before any row on an absent keepProfile, an unsafe clock, a full buyer window, job or context
+     * Throws before any row on an absent keepProfile, an unsafe clock, a full store, buyer window, job or context
      * capacity, a job held by other parties, a tuple mismatch, a replayed nonce key, or a refusal from checkCapacityWithin.
      * checkCapacityWithin is step 5: synchronous, run inside the transaction, returning {class, allocationId};
      * its SQL writes roll back with the rest. Without it every row is general capacity.
