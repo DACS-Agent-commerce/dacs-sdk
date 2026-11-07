@@ -914,13 +914,14 @@ test('P10-T18 through the real guarded store\'s classify, its dry-run reserve an
   assert.equal(replay.text, first.text, 'and replays its answer');
   assert.equal(w.effects().writes, 1, 'without new work');
 
-  w.store.reserve(await proposal(other), {}, {});
+  // Explicitly select the legacy path through the fixture tuple adapter.
+  w.store.reserve(await proposal(other), {}, { keepProfile: undefined });
   const dryRuns = async (store, label) => {
     const [matching, different, untupled, legacy, brandNew] = await Promise.all([proposal(job), proposal(job), proposal(other), proposal(other), proposal(jobId('t18-new'))]);
     assert.equal(store.classify(matching, {}, { keepProfile: PROFILE }), 'known', `${label}: the matching tuple answers as reserve would`);
     assert.throws(() => store.classify(different, {}, { keepProfile: OTHER_PROFILE }), MISMATCH, `${label}: a different tuple is refused`);
     assert.throws(() => store.classify(untupled, {}, { keepProfile: PROFILE }), MISMATCH, `${label}: an existing job with no kept tuple is refused`);
-    assert.equal(store.classify(legacy, {}), 'known', `${label}: an absent tuple is the legacy path`);
+    assert.equal(store.classify(legacy, {}, { keepProfile: undefined }), 'known', `${label}: an absent tuple is the legacy path`);
     assert.equal(store.classify(brandNew, {}, { keepProfile: PROFILE }), 'start', `${label}: a new job classifies start`);
     assert.equal(tuples(), 1, `${label}: a dry run keeps no tuple`);
   };

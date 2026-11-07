@@ -241,7 +241,7 @@ test(card('T14'), async t => {
 
 test(card('T20'), async t => {
   for (const reopen of [false, true]) for (const variant of ['unknown', 'consumed', 'mismatched']) await t.test(`${variant} reopened=${reopen}`, async t => {
-    const f = await fixture(t, { store: { maxRecords: 1 } }), input = await f.input(), body = structuredClone(input.body);
+    const f = await fixture(t, { store: { maxRecords: 1, maxJobs: 2 } }), input = await f.input(), body = structuredClone(input.body);
     // Leave a completed, expired transport nonce at capacity before each signed refusal.
     const prior = f.request({scope:f.scope(JOB2)}, '/dacs/v1/agreements/proposals');
     const reservation = f.store.reserve(prior, {}); f.store.finish(reservation, 200, '{}');

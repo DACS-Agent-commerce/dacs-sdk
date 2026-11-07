@@ -1,3 +1,4 @@
+import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 import { issueChallenge, attemptChallenge } from './helpers/challenge-api.mjs';
 import test from 'node:test';
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';

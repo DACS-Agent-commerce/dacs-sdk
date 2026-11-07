@@ -1,3 +1,4 @@
+import { withFixtureProfile } from './wire-authority-fixture.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { purchaseSupport } from '../../src/dacs/listing.mjs';

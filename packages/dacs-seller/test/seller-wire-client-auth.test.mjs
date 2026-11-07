@@ -142,6 +142,7 @@ async function runningHost(t) {
   delete config.durableDirectory;
   delete config.commitOnSignature;
   delete config.vetMode;
+  delete config.challengeLedger; // The host owns and opens its D21 ledger.
   const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { f, host };

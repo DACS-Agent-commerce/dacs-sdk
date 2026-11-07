@@ -243,7 +243,8 @@ export const RESERVATION_LEDGER = Object.freeze({
   owners: Object.freeze([
     "SELECT job, json_extract(context, '$.buyer') AS buyer, json_extract(context, '$.seller') AS seller, json_extract(context, '$.listingPin') AS pin FROM peer_jobs",
     'SELECT job, buyer, seller, listing_pin AS pin FROM peer_context_admissions',
-    'SELECT jobId AS job, buyer, seller, listing_pin AS pin FROM kit_job_holds']),
+    'SELECT jobId AS job, buyer, seller, listing_pin AS pin FROM kit_job_holds',
+    "SELECT jobId AS job, buyer, json_extract(record, '$.seller') AS seller, json_extract(record, '$.listingPin') AS pin FROM kit_context_admissions"]),
 });
 const NO_DELEGATION = Object.freeze({ assertStillLive: () => {} });
 // The route's default unpaid-start limits (seller-context-route.mjs SELLER_CONTEXT_LIMITS).
@@ -399,14 +400,16 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_transactions t WHERE t.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM kit_job_holds h WHERE h.jobId = j.job)
+      AND NOT EXISTS (SELECT 1 FROM kit_context_admissions k WHERE k.jobId = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_slots s WHERE s.slot >= j.job || ':' AND s.slot < j.job || ';')
       ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
       LIMIT ?`).all(...(jobId === undefined ? [] : [jobId]), needed).map(row => row.job);
     if (time === undefined || jobs.length === needed) return jobs;
     // Complete terminal jobs, admission-only ones included, retire only after every nonce and context retention window.
-    // An accounted job's hold never retires here.
+    // Accounted holds and K1 admission rows never retire here.
     for (const { job } of db.prepare(`SELECT job FROM (SELECT job FROM peer_jobs${admissions() ? ' UNION SELECT job FROM peer_context_admissions' : ''}) j
-      WHERE NOT EXISTS (SELECT 1 FROM kit_job_holds h WHERE h.jobId = j.job) AND NOT EXISTS (
+      WHERE NOT EXISTS (SELECT 1 FROM kit_job_holds h WHERE h.jobId = j.job)
+      AND NOT EXISTS (SELECT 1 FROM kit_context_admissions k WHERE k.jobId = j.job) AND NOT EXISTS (
       SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = j.job
       AND (e.state IS NULL OR e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n
         LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = m.effect
@@ -421,14 +424,15 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // Plan reclamation with reads only. Full-capacity refusals must execute no
   // mutations, even ones a transaction could roll back. Only terminal context
   // effects may leave retention; unresolved effects and live requests fence it.
-  function reclaimableContexts(time) {
+  function reclaimableContexts(time, count = reservationLedger.contextCountWithin()) {
     if (!admissions()) return [];
-    const needed = Math.max(0, reservationLedger.contextCountWithin() - maxContextRecords + 1);
+    const needed = Math.max(0, count - maxContextRecords + 1);
     if (!needed) return [];
     const rows = [];
     for (const row of db.prepare(`SELECT a.job, a.effect FROM peer_context_admissions a
       JOIN peer_effects e ON e.effect = a.effect WHERE a.admitted_at <= ? AND e.state = 'complete'
       AND NOT EXISTS (SELECT 1 FROM kit_job_holds h WHERE h.jobId = a.job)
+      AND NOT EXISTS (SELECT 1 FROM kit_context_admissions k WHERE k.jobId = a.job)
       AND NOT EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
         WHERE n.effect = a.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))`).iterate(time - CHALLENGE_RATE_WINDOW_MS, time, time - nonceWindowMs)) {
       if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: row.job }))) rows.push(row);
@@ -451,8 +455,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // The ledger's unpaid-start counts over the union of this journal's admission records and the K1 admission rows (SA-5):
   // a start counts once admitted, compensated ones included; an intent that never admitted has no `admittedAt`.
   function admissionCounts() {
-    const time = now(), since = time - CHALLENGE_RATE_WINDOW_MS;
-    return { contextRecords: reservationLedger.contextCountWithin() - reclaimableContexts(time).length,
+    const time = now(), since = time - CHALLENGE_RATE_WINDOW_MS, contextCount = reservationLedger.contextCountWithin();
+    return { contextRecords: contextCount - reclaimableContexts(time, contextCount).length,
       starts: starts(since), buyerStarts: buyer => starts(since, buyer) };
   }
   const { maxStartsPerHour, maxStartsPerBuyerPerHour } = contextStartLimits;
@@ -524,7 +528,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // tp1_purchase_profile_mismatch and rolls back the whole reservation. The kept tuple leaves
     // with its job.
     reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, keepProfile, challengeNonce = null } = {}) {
-      if (keepProfile === undefined && p?.path !== CONTEXT) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
       requireJobId(p?.jobId);
       const profileText = keepProfile === undefined ? null : purchaseProfileText(keepProfile);
       if (profileText !== null && p.path === CONTEXT) fail('tp1_purchase_profile_mismatch', 500);
@@ -586,7 +589,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (contextStep && !retained) {
           if (reservationLedger.sessionTerminalWithin(p.jobId)) fail('context_session_terminal', 409);
           retired.push(...reclaimableContexts(time));
-          if (!reservationLedger.contextHeldWithin(p.jobId) && admissionCounts().contextRecords >= maxContextRecords) fail('peer_context_capacity', 503);
+          if (!reservationLedger.contextHeldWithin(p.jobId) && reservationLedger.contextCountWithin() - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
         }
         // Only expired completed/no-effect nonces are reclaimable. Unknown or
         // pending effects remain fenced, even after request expiry.
