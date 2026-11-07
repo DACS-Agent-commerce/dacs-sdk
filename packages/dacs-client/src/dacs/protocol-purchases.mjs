@@ -132,6 +132,7 @@ export function assertAgreementPaymentHeld(operation) {
 // One line per stage; the layers below keep transfer, DACS purchase evidence,
 // delivery, completed copies and human acceptance apart.
 export const STAGE_HELP = {
+  suspended: 'The seller or this host stopped work on this purchase, so retries are suspended and the outcome stays unknown. Readback still works. To resume, call protocolRecheck with resumeSuspensionId set to the suspension id shown here; admission is checked again first. Do not pay again.',
   identity: 'Open the approval link and present your wallet identity to start the DACS Agreement. Nothing is signed for payment and nothing is paid at this step.',
   'agreement-signing': 'Sign the Agreement and its anchor authorization in your wallet (approval link). Nothing is paid at this step.',
   'agreement-anchored': 'Both parties signed the Agreement and it is anchored, but the seller\'s finalized commitment has not been read back yet. Payment is not possible before that; re-open the approval link or call verify_deal to re-check.',
@@ -161,6 +162,7 @@ const buyerCopyReadBack = (p) => p?.bundle?.buyerCopyReadBack === true;
 const shownStage = (p) => (p?.stage === 'completed' && !buyerCopyReadBack(p) ? 'awaiting-countersignature' : p?.stage);
 
 export function protocolStageHelp(operation) {
+  if (operation?.state?.protocol?.sellerSuspension) return STAGE_HELP.suspended;
   const notSaved = operation?.state?.protocol?.notSaved;
   if (notSaved) return `This check's result was not saved: another check saved newer progress for this purchase first (saved step: ${notSaved.savedStage ?? 'unset'}). Call verify_deal again, or re-check in the approval link, to read the saved state.`;
   if (shownStage(operation?.state?.protocol) === 'awaiting-countersignature' && operation.state.protocol.bundle?.buyerSignature) return COUNTERSIGNED_HELP;
@@ -221,6 +223,7 @@ export function protocolView(operation, deadlineOptions = {}) {
     substrate: operation.terms.protocol.substrate,
     stage,
     revision: p.revision ?? 0,
+    ...(p.sellerSuspension ? { sellerSuspension: p.sellerSuspension } : {}),
     ...(notSaved ? { notSaved: { savedRevision: notSaved.savedRevision, savedStage: notSaved.savedStage } } : {}),
     next: protocolStageHelp(operation),
     agreement: p.agreement ? { hash: p.agreement.hash, ref: p.agreement.ref, ...p.agreement.terms, ...(isOfflineWalletAgreement(operation) ? { anchorReceipt: p.agreement.anchorReceipt, nativeAddress: p.agreement.anchorReceipt?.nativeAddress } : {}) } : null,
@@ -319,9 +322,11 @@ function storedRequestBody(record, path) {
  * Creates the request records of one flow, bound to its `{get(), set(next)}` holder over the purchase row (DC-CW5).
  * `start(path, body)` runs in one transaction: it reloads the row, refuses a purchase that no longer authorizes the
  * request, stores the exact bytes (or finds the stored ones) and counts the attempt by revision compare-and-set, then
- * returns the attempt `{text, stored, continuation, newPurchase, check(), finish(answerClass)}` (`stored` is false for reads). Throws StaleProtocolCheck when
+ * returns the attempt `{text, stored, continuation, newPurchase, check(), finish(answerClass, cause)}` (`stored` is false for reads;
+ * `finish('suspended', cause)` records the suspension with the outcome in one write). Throws StaleProtocolCheck when
  * the row moved on, stored_request_mismatch when the body differs from the stored one, stored_request_corrupt when the
- * stored bytes fail their hash, and invalid_state when the purchase is ended, expired or suspended.
+ * stored bytes fail their hash, and invalid_state when the purchase is ended, expired or suspended. A profile_not_admitted
+ * refusal with queued work also records a suspension (K8). `suspendQueued(cause)` records one for a caller that saw the re-hold, `resume(id)` clears it.
  * `failure(error)` records a swallowed failure for the operator, retaining its bounded class and cause.
  */
 export function createSellerRequestRecords({ db, ops, transaction, holder, now }) {
@@ -337,10 +342,36 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     if ((ENDED_STATUSES.has(row.status) && !settled) || (['agreement_pending', 'awaiting_approval'].includes(row.status) && !(Date.parse(row.expiresAt) > now()))
       || (row.state.protocol.sellerSuspension && SELLER_REQUEST_POLICY[path]?.durable)) throw new OperationError('invalid_state', 'the purchase no longer authorizes this seller request');
   }
-  function write(row, path, record) {
+  // Request-only writes advance the revision and keep the progress generation, so no flow's snapshot goes stale.
+  function writeProtocol(row, patch, event, data) {
     const protocol = row.state.protocol;
-    return ops.transition(row.id, row.status, row.status, { state: { protocol: { ...protocol, revision: (protocol.revision ?? 0) + 1, progressGeneration: progressGenerationOf(row), sellerRequests: { ...protocol.sellerRequests, [path]: record } } },
-      event: 'seller_request_recorded', data: { path, attemptId: record.attemptId, lastClass: record.lastClass } });
+    return ops.transition(row.id, row.status, row.status, { state: { protocol: { ...protocol, ...patch, revision: (protocol.revision ?? 0) + 1, progressGeneration: progressGenerationOf(row) } }, event, data });
+  }
+  const write = (row, path, record) => writeProtocol(row, { sellerRequests: { ...row.state.protocol.sellerRequests, [path]: record } },
+    'seller_request_recorded', { path, attemptId: record.attemptId, lastClass: record.lastClass });
+  // Queued work: a request whose outcome is still unknown (answered unknown or suspended), or buyer contributions waiting to be sent.
+  const UNRESOLVED_CLASSES = new Set([SELLER_ANSWER_CLASS.UNKNOWN, SELLER_ANSWER_CLASS.SUSPENDED]);
+  const hasQueuedWork = (protocol) => Boolean(protocol.signatures) || Object.values(protocol.sellerRequests ?? {}).some((record) => UNRESOLVED_CLASSES.has(record.lastClass));
+  // One transaction on the stored row: a newer save of the same status and stage does not drop the suspension, a moved stage writes nothing.
+  // With an attempt id the route's unknown outcome becomes `suspended`; the attempt counts are untouched, so it stays possibly dispatched.
+  function recordSuspension(cause, path, { attemptId, queuedOnly = false } = {}) {
+    const saved = transaction(db, () => {
+      const seen = holder.get(), row = ops.get(seen.accountId, seen.id), protocol = row?.state.protocol;
+      if (!row || row.status !== seen.status || protocol.stage !== seen.state.protocol.stage) throw new StaleProtocolCheck(seen);
+      if (queuedOnly && !hasQueuedWork(protocol)) return row;
+      const prior = protocol.sellerRequests?.[path];
+      const outcome = attemptId && prior?.attemptId === attemptId && prior.lastClass === SELLER_ANSWER_CLASS.UNKNOWN
+        ? { sellerRequests: { ...protocol.sellerRequests, [path]: { ...prior, lastClass: SELLER_ANSWER_CLASS.SUSPENDED } } } : {};
+      return writeProtocol(row, { ...outcome, sellerSuspension: { id: randomUUID(), cause, path, at: new Date(now()).toISOString() } }, 'seller_suspended', { cause, path });
+    });
+    if (sameProgress(holder.get(), saved)) holder.set(saved);
+  }
+  // An observed re-hold suspends queued work. The refusal keeps its own cause, and a failed suspension write does not replace it.
+  function suspendOnHold(path, work) {
+    try { return work(); } catch (error) {
+      if (error?.code === 'profile_not_admitted') { try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.cause ??= cause; } }
+      throw error;
+    }
   }
   function finishAttempt(path, attemptId, lastClass) {
     const saved = transaction(db, () => {
@@ -360,10 +391,21 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     if (prior.stage !== stage && !(SELLER_REQUEST_POLICY[path].retained && REPLAY_STAGES.has(stage))) throw new StaleProtocolCheck(row);
     return stored.text;
   }
-  const attemptFor = (path, text, newPurchase, finish) => ({ text, stored: SELLER_REQUEST_POLICY[path].durable, continuation: false, newPurchase, check: () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }, finish });
+  const attemptFor = (path, text, newPurchase, finish) => ({ text, stored: SELLER_REQUEST_POLICY[path].durable, continuation: false, newPurchase, check: () => suspendOnHold(path, () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }), finish });
   return {
+    /** Clears the suspension named `id` and nothing newer; throws StaleProtocolCheck when the row moved on or holds another id. */
+    resume(id) {
+      const saved = transaction(db, () => {
+        const row = reload();
+        if (!id || row.state.protocol.sellerSuspension?.id !== id) throw new StaleProtocolCheck(row);
+        return writeProtocol(row, { sellerSuspension: undefined }, 'seller_resumed', { id });
+      });
+      holder.set(saved);
+    },
+    /** Records a re-hold's suspension only when the purchase has queued work; throws StaleProtocolCheck when the stage moved. */
+    suspendQueued: (cause) => recordSuspension(cause, null, { queuedOnly: true }),
     start(path, body) {
-      const result = transaction(db, () => {
+      const result = suspendOnHold(path, () => transaction(db, () => {
         const row = reload();
         assertAuthorizes(row, path);
         const policy = SELLER_REQUEST_POLICY[path];
@@ -381,8 +423,9 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
         const newPurchase = policy.bootstrap && protocol.planned === undefined && attempts === clearAttempts;
         const saved = write(row, path, { path, stage: prior?.stage ?? protocol.stage, bodyB64: Buffer.from(text).toString('base64url'), bodyHash: sha256Hex(text),
           attemptId, attempts: attempts + 1, clearAttempts, lastClass: SELLER_ANSWER_CLASS.UNKNOWN });
-        return { row: saved, attempt: attemptFor(path, text, newPurchase, (answerClass) => finishAttempt(path, attemptId, answerClass)) };
-      });
+        const finish = (answerClass, cause) => (answerClass === SELLER_ANSWER_CLASS.SUSPENDED ? recordSuspension(cause ?? answerClass, path, { attemptId }) : finishAttempt(path, attemptId, answerClass));
+        return { row: saved, attempt: attemptFor(path, text, newPurchase, finish) };
+      }));
       holder.set(result.row);
       return result.attempt;
     },
@@ -1306,7 +1349,8 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     return settle('native-evidence', 'held', summary.reason, { stage: 'native-payment-evidence-held', nativeEvidence: summary, delivery: null });
   }
 
-  async function recheck(operation, coords) {
+  // A suspended purchase continues only on an explicit request naming its suspension, after admission and buyer access are checked again.
+  async function recheck(operation, coords, { resumeSuspensionId } = {}) {
     assertPurchaseActionsAdmitted();
     try{assertBuyerAccess(operation.terms.buyer.wallet, operation);}
     catch(error){
@@ -1315,6 +1359,11 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
         if(read)return operation;
       }
       throw error;
+    }
+    if (resumeSuspensionId) createSellerRequestRecords({ db, ops, transaction, holder: { get: () => operation, set: (row) => { operation = row; } }, now }).resume(resumeSuspensionId);
+    else {
+      const stored = ops.get(operation.accountId, operation.id);
+      if (stored?.state?.protocol?.sellerSuspension) return stored;
     }
     if (!available) return operation;
     const stage = operation.state?.protocol?.stage;
