@@ -481,7 +481,7 @@ jobs:
           npm run host:typecheck
           npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
           # Every client file this area promises under 4.0.18, named one by one; later changes append theirs. No glob selects one.
-          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs packages/dacs-client/test/node-wallet-demosdk.test.mjs packages/dacs-client/test/node-wallet-final-content.test.mjs packages/dacs-client/test/node-wallet-fresh-child.test.mjs
+          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs packages/dacs-client/test/node-wallet-demosdk.test.mjs packages/dacs-client/test/node-wallet-final-content.test.mjs packages/dacs-client/test/node-wallet-fresh-child.test.mjs packages/dacs-client/test/node-wallet-observer.test.mjs packages/dacs-client/test/node-wallet-source-reads.test.mjs
           node --test packages/dacs-client/test/delta-ledger-gate.test.mjs
 
   postgres-wallet-authority:

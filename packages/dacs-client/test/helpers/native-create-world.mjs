@@ -71,13 +71,15 @@ export function countingJournal(journal, events) {
 /**
  * The transport and its test wallet over `journal`. `onNode(message, call)` runs
  * before the scripted node answers any call and may pause or kill the process.
+ * `identityAnswer(chainIdentity)` replaces the node's answer to every block read.
  */
-export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {} }) {
+export function createWorld({ journal, owner = queuingFenceOwner(), onNode = async () => {}, identityAnswer = null }) {
   const wallet = deterministicWallet();
   const sent = { confirms: [], broadcasts: [] };
   const answerNode = async (init) => {
     const body = JSON.parse(init.body), call = body.params[0], message = call.message ?? call.extra;
     await onNode(message, call);
+    if (message === 'getBlockByNumber' && identityAnswer) return identityAnswer(PINS.chainIdentity);
     if (message === 'getBlockByNumber') return reply({ number: 0, status: 'confirmed', hash: PINS.chainIdentity }, '');
     if (message === 'getAddressNonce') return reply(0);
     if (message === 'getTransactionStatus') return reply({ state: 'unknown' }, '');

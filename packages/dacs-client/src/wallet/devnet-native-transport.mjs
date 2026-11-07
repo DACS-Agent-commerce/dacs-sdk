@@ -8,7 +8,7 @@ import { classifyStorageWriteSubmission, storageWriteAbsent, storageWriteAccount
 import { storageConfirmationShapeMatches, nativePayloadDigest } from './payload-helpers.mjs';
 import { createHash, randomBytes } from 'node:crypto';
 import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
-import { fetchBoundedJson, observeWithDeadline } from '../util/http.mjs';
+import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
 import { createDemosChainReader, nonceFromNode, nodeProjectedNonce } from '../dacs/chain.mjs';
 import { demosTransactionContentMatches } from '@kynesyslabs/dacs';
@@ -61,6 +61,10 @@ const REFUSALS_KEPT = 64;
 // One passive observation's deadline (observePassiveTransfer): its lock wait,
 // connection fence, binding reads and status, body and block reads.
 const PASSIVE_TRANSFER_TIMEOUT_MS = 10_000;
+// The largest reply any source read admits, identity blocks included. A caller's
+// `maxBytes` (readRpc) can only lower it. The binder accepts a read up to a minute old.
+const SOURCE_READ_MAX_BYTES = 4 * 1024 * 1024;
+const IDENTITY_MAX_AGE_MS = 60000;
 // A refused header set is the wallet's to fix, usually its clock. Relays answer
 // these codes with 409 (never a status the SDK resends) and this message only.
 const AUTH_REFUSALS = Object.freeze({
@@ -120,6 +124,77 @@ export function createDevnetSettlementTransport(options) { return constructTrans
 // storage-program deliverable. Its policy is explicit and absent by default.
 export function createDevnetDeliveryTransport(options) { return constructTransport(options,true,true,true); }
 export function createDevnetDemoTransport(options) { return constructTransport(options,true,true,true,true); }
+// The identity block reader behind every binder: the transport's, in normal and strict recovery
+// modes, and the observer's. Each dependency is a parameter and strictEnvelope has no default.
+function sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post, now }) {
+  if (typeof strictEnvelope !== 'boolean') throw new TypeError('the identity reader requires an explicit strictEnvelope');
+  return {
+    getContext: context,
+    async getBlockByNumber(height, policy) {
+      if (policy.cache !== 'no-store' || policy.redirect !== 'error') fail('invalid_policy','fresh bounded identity observation is required');
+      signal?.throwIfAborted();
+      const c = await context();
+      const answer = await post({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:height } }] }, {}, { signal });
+      // The binder owns the reviewed block-one predecessor policy and accepts
+      // only its literal `error` marker. Legacy admissions retain their exact
+      // two-field representation. A separately recorded/reviewed envelope
+      // token admits only Node2's observed four-field representation; it does
+      // not make the two shapes interchangeable. Normalize no other height,
+      // status, response shape, transport failure or malformed answer. A
+      // non-null fallback reached here has already been synchronously schema-
+      // checked and snapshotted by createDemosNetworkBinder above.
+      const plain = answer !== null && typeof answer === 'object' && !Array.isArray(answer);
+      const legacyTwoField = plain && Object.keys(answer).length === 2 && Object.hasOwn(answer,'result') && Object.hasOwn(answer,'response')
+        && answer.result === 400 && answer.response === 'error';
+      const observedFourField = rpcEnvelope(answer,400,'Block number not provided') && answer.response === 'error';
+      const reviewedShape = blockZeroErrorEnvelope === null ? legacyTwoField
+        : blockZeroErrorEnvelope === DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE && observedFourField;
+      const node2LiteralBlockZeroError = height === 0 && fallback !== null && reviewedShape;
+      if(strictEnvelope && !rpcEnvelope(answer,200,'') && !(node2LiteralBlockZeroError && observedFourField)) fail('malformed_observation','storage recovery requires an exact identity RPC envelope');
+      if(strictEnvelope && !node2LiteralBlockZeroError && !storageWriteIdentityMatches(answer.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
+      let value = node2LiteralBlockZeroError ? 'error' : answer;
+      if (height === 1 && blockOneLayout === DEVNET_NODE2_BLOCK_LAYOUT) {
+        const first = rpcEnvelope(answer,200,'') ? answer.response : null;
+        const firstIdentity = first?.content?.previousHash;
+        if (first?.number !== 1 || first?.id !== 2 || first?.status !== 'confirmed' || !HASH.test(first?.hash ?? '') || !HASH.test(firstIdentity ?? '') || first.hash === firstIdentity
+          || (Object.hasOwn(first,'previousHash') && first.previousHash !== firstIdentity)
+          || ['chainIdentity','genesisHash'].some((key)=>Object.hasOwn(first,key)&&first[key]!==firstIdentity)) fail('malformed_observation','the reviewed Node2 block-one layout differs');
+        signal?.throwIfAborted();
+        const secondAnswer = await post({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:2 } }] }, {}, { signal });
+        if(strictEnvelope && !storageWriteIdentityMatches(secondAnswer?.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
+        const second = rpcEnvelope(secondAnswer,200,'') ? secondAnswer.response : null;
+        const secondPrevious = second?.content?.previousHash;
+        if (second?.number !== 2 || second?.id !== 3 || second?.status !== 'confirmed' || !HASH.test(second?.hash ?? '') || second.hash === first.hash || secondPrevious !== first.hash
+          || (Object.hasOwn(second,'previousHash') && second.previousHash !== first.hash)
+          || ['chainIdentity','genesisHash'].some((key)=>Object.hasOwn(second,key)&&second[key]!==firstIdentity)) fail('malformed_observation','the reviewed Node2 block-two continuation differs');
+        if (second.hash !== reviewedBlockTwoHash) fail('identity_mismatch','the fresh Node2 block-two hash differs from exact admission review');
+        const { id:_databaseId, ...binderBlock } = first;
+        value = { ...answer, response:binderBlock };
+      }
+      return { value, context:c, observedAt:now(), fromCache:false, redirected:false };
+    },
+  };
+}
+/**
+ * Returns the fence-free, read-only identity observer for the SDK-approved `record` over an
+ * unopened transport `owner`: `bind({signal})` resolves a fresh network binding and
+ * `post(body, headers, {signal})` one bounded node reply (4 MiB before decoding, `timeoutMs`
+ * per read). Neither takes a connection fence or a journal lock, and neither signs. Both reject
+ * with the reader's or fetch's own error, or the caller's abort reason. Throws TypeError for an
+ * owner without currentLocal, getContext and fetchImpl, or a `timeoutMs` that is not a positive integer.
+ */
+export function createSourceObserver({ record, owner, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null, now = () => Date.now(), timeoutMs }) {
+  if (typeof owner?.currentLocal !== 'function' || typeof owner.getContext !== 'function' || typeof owner.fetchImpl !== 'function') throw new TypeError('an unopened transport owner is required');
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new TypeError('the observer read deadline must be a positive integer of milliseconds');
+  const { endpoint, transportAuthority } = owner.currentLocal();
+  const expected = { network:record.network, chainIdentity:record.chainIdentity, pinVersion:record.pinVersion, endpoint, transportAuthority };
+  const fallback = { blockZeroUnavailable:'literal-error', documentation:record.provenance.documentation };
+  const post = (body, headers = {}, { signal } = {}) => fetchBoundedJson(endpoint, { method:'POST', body, headers, fetchImpl:(...args) => owner.fetchImpl(...args),
+    timeoutMs, signal, maxBytes:SOURCE_READ_MAX_BYTES, expectedOrigin:new URL(endpoint).origin });
+  const bind = ({ signal } = {}) => createDemosNetworkBinder({ expected, fallback, now, timeoutMs, maxAgeMs:IDENTITY_MAX_AGE_MS,
+    reader:sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope:false, signal, context:async () => owner.getContext(), post, now }) }).bind();
+  return Object.freeze({ bind, post });
+}
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
   fetchImpl = globalThis.fetch, now = () => Date.now(), timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -183,69 +258,39 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     signal?.throwIfAborted();
     await context();
     return fetchBoundedJson(pinned.endpoint, { method:'POST', body, headers, fetchImpl,
-      timeoutMs, signal, maxBytes:4*1024*1024, expectedOrigin:new URL(pinned.endpoint).origin });
+      timeoutMs, signal, maxBytes:SOURCE_READ_MAX_BYTES, expectedOrigin:new URL(pinned.endpoint).origin });
   };
   // The node's reply as `rpc` hands it to a wallet: never with a node-supplied `writeProof`.
   const rawWithoutWriteProof = async (body, headers) => withoutNodeWriteProof(await raw(body, headers));
   // The pinned observer reads transaction and block facts concurrently.
   // Serialize their actual connection fences; this creates no write permit.
-  const observe = async (path,body,{signal}={}) => journal.withWalletLock('devnet/source-read/'+declaration?.bindingId,()=>fenced(async()=>{
-    signal?.throwIfAborted();
-    await makeBinder(false,signal).bind();
-    if(path !== '/' && !/^\/storage-program\/stor-[0-9a-f]{40}$/.test(path)) fail('readonly_only','only bounded native storage reads are supported');
-    if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !['getBlockByNumber','getTxByHash','getTransactionStatus','getAddressNonce','getAddressInfo','searchStoragePrograms','getNetworkInfo','getNetworkParameters'].includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads are supported');
-    return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,signal,maxBytes:4*1024*1024,expectedOrigin:new URL(pinned.endpoint).origin});
-  }));
+  // The work runs under the journal lock and the connection fence. An abort rejects the caller
+  // at once, even while it still waits for either; the locked work then starts no request, and
+  // a request in flight is abandoned at the abort, so both are released then. close() still
+  // waits for the locked work, which is the tracked promise.
+  const sourceRead = (signal, work) => {
+    const locked = tracked(() => journal.withWalletLock('devnet/source-read/'+declaration?.bindingId,()=>{
+      signal?.throwIfAborted();
+      return fenced(async()=>{ signal?.throwIfAborted(); return work(); });
+    }));
+    return signal ? settleOnAbort(locked, signal) : locked;
+  };
+  const observe = async (path,body,{signal,maxBytes=SOURCE_READ_MAX_BYTES}={}) => {
+    if(!Number.isSafeInteger(maxBytes) || maxBytes<1 || maxBytes>SOURCE_READ_MAX_BYTES) fail('invalid_params','a read byte limit is an integer from 1 to 4 MiB');
+    return sourceRead(signal,async()=>{
+      await makeBinder(false,signal).bind();
+      if(path !== '/' && !/^\/storage-program\/stor-[0-9a-f]{40}$/.test(path)) fail('readonly_only','only bounded native storage reads are supported');
+      if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !['getBlockByNumber','getTxByHash','getTransactionStatus','getAddressNonce','getAddressInfo','searchStoragePrograms','getNetworkInfo','getNetworkParameters'].includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads are supported');
+      return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,signal,maxBytes,expectedOrigin:new URL(pinned.endpoint).origin});
+    });
+  };
   const node = async (message, data, options) => {
     const answer = await raw({ method:'nodeCall', params:[{ message, data }] }, {}, options);
     if (answer?.result !== 200) fail('upstream_unavailable', 'the pinned node did not return a usable observation');
     return answer.response;
   };
-  const makeBinder = (strictEnvelope=false, signal) => createDemosNetworkBinder({ expected:pinned, fallback, now, timeoutMs, maxAgeMs:60000, reader:{
-    getContext:context,
-    async getBlockByNumber(height, policy) {
-      if (policy.cache !== 'no-store' || policy.redirect !== 'error') fail('invalid_policy','fresh bounded identity observation is required');
-      signal?.throwIfAborted();
-      const c = await context();
-      const answer = await raw({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:height } }] }, {}, { signal });
-      // The binder owns the reviewed block-one predecessor policy and accepts
-      // only its literal `error` marker. Legacy admissions retain their exact
-      // two-field representation. A separately recorded/reviewed envelope
-      // token admits only Node2's observed four-field representation; it does
-      // not make the two shapes interchangeable. Normalize no other height,
-      // status, response shape, transport failure or malformed answer. A
-      // non-null fallback reached here has already been synchronously schema-
-      // checked and snapshotted by createDemosNetworkBinder above.
-      const plain = answer !== null && typeof answer === 'object' && !Array.isArray(answer);
-      const legacyTwoField = plain && Object.keys(answer).length === 2 && Object.hasOwn(answer,'result') && Object.hasOwn(answer,'response')
-        && answer.result === 400 && answer.response === 'error';
-      const observedFourField = rpcEnvelope(answer,400,'Block number not provided') && answer.response === 'error';
-      const reviewedShape = blockZeroErrorEnvelope === null ? legacyTwoField
-        : blockZeroErrorEnvelope === DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE && observedFourField;
-      const node2LiteralBlockZeroError = height === 0 && fallback !== null && reviewedShape;
-      if(strictEnvelope && !rpcEnvelope(answer,200,'') && !(node2LiteralBlockZeroError && observedFourField)) fail('malformed_observation','storage recovery requires an exact identity RPC envelope');
-      if(strictEnvelope && !node2LiteralBlockZeroError && !storageWriteIdentityMatches(answer.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
-      let value = node2LiteralBlockZeroError ? 'error' : answer;
-      if (height === 1 && blockOneLayout === DEVNET_NODE2_BLOCK_LAYOUT) {
-        const first = rpcEnvelope(answer,200,'') ? answer.response : null;
-        const firstIdentity = first?.content?.previousHash;
-        if (first?.number !== 1 || first?.id !== 2 || first?.status !== 'confirmed' || !HASH.test(first?.hash ?? '') || !HASH.test(firstIdentity ?? '') || first.hash === firstIdentity
-          || (Object.hasOwn(first,'previousHash') && first.previousHash !== firstIdentity)
-          || ['chainIdentity','genesisHash'].some((key)=>Object.hasOwn(first,key)&&first[key]!==firstIdentity)) fail('malformed_observation','the reviewed Node2 block-one layout differs');
-        const secondAnswer = await raw({ method:'nodeCall', params:[{ message:'getBlockByNumber', data:{ blockNumber:2 } }] }, {}, { signal });
-        if(strictEnvelope && !storageWriteIdentityMatches(secondAnswer?.response)) fail('malformed_observation','storage recovery requires an exact identity block shape');
-        const second = rpcEnvelope(secondAnswer,200,'') ? secondAnswer.response : null;
-        const secondPrevious = second?.content?.previousHash;
-        if (second?.number !== 2 || second?.id !== 3 || second?.status !== 'confirmed' || !HASH.test(second?.hash ?? '') || second.hash === first.hash || secondPrevious !== first.hash
-          || (Object.hasOwn(second,'previousHash') && second.previousHash !== first.hash)
-          || ['chainIdentity','genesisHash'].some((key)=>Object.hasOwn(second,key)&&second[key]!==firstIdentity)) fail('malformed_observation','the reviewed Node2 block-two continuation differs');
-        if (second.hash !== reviewedBlockTwoHash) fail('identity_mismatch','the fresh Node2 block-two hash differs from exact admission review');
-        const { id:_databaseId, ...binderBlock } = first;
-        value = { ...answer, response:binderBlock };
-      }
-      return { value, context:c, observedAt:now(), fromCache:false, redirected:false };
-    },
-  } });
+  const makeBinder = (strictEnvelope=false, signal, bindTimeoutMs=timeoutMs) => createDemosNetworkBinder({ expected:pinned, fallback, now, timeoutMs:bindTimeoutMs, maxAgeMs:IDENTITY_MAX_AGE_MS,
+    reader:sourceBlockReader({ fallback, blockZeroErrorEnvelope, blockOneLayout, reviewedBlockTwoHash, strictEnvelope, signal, context, post:raw, now }) });
   const binder = makeBinder(),storageRecoveryBinder = makeBinder(true);
   const lane = (address) => `devnet/native-wallet/${JSON.stringify([pinned.network,pinned.chainIdentity,address])}`;
   const intent = (hash) => `devnet/native-transfer/${hash}`;
@@ -1068,8 +1113,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       // Server-only, read-free proof: even an acquiring lease or finishing RPC can still issue evidence.
       // An expired lease with no running confirm/broadcast can issue nothing (claimLease); fenced() frees it.
       isWalletIdle:(address)=>{ const l=byAddress.get(address); return ADDRESS.test(address??'') && !closed && (!l || (l.expiresAt<=now() && l.busy===0)) && inFlight.size===0; },
-      observeBinding:()=>tracked(()=>journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>fenced(()=>binder.bind()))),
-      readRpc:(path,body,options)=>tracked(()=>observe(path,body,options)),
+      // observeBinding({signal, timeoutMs}) and readRpc(path, body, {signal, maxBytes}) take the
+      // journal lock and the fence (sourceRead); a deadline or reply limit above the transport's is refused.
+      observeBinding:async({signal,timeoutMs:bindTimeoutMs=timeoutMs}={})=>{
+        if(!Number.isSafeInteger(bindTimeoutMs) || bindTimeoutMs<1 || bindTimeoutMs>timeoutMs) fail('invalid_params','an observation deadline is an integer from 1 to the transport timeout');
+        return sourceRead(signal,()=>makeBinder(false,signal,bindTimeoutMs).bind());
+      },
+      readRpc:(path,body,options)=>observe(path,body,options),
       chainReader:()=>{
         const reader=createDemosChainReader({rpcUrl:pinned.endpoint,network:pinned.network,pinnedIdentity:pinned.chainIdentity,fetchImpl:async(url,options={})=>new Response(JSON.stringify(await capability.readRpc(new URL(url).pathname,options.body?JSON.parse(options.body):undefined,{signal:options.signal})),{status:200,headers:{'content-type':'application/json'}})});
         async function observeTransfer(hash,purchase=false,options){
