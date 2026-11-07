@@ -2,7 +2,7 @@
 // the exchange is an in-process fetch, so no socket is opened.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSellerAgentClient, SellerRefusedError } from '../../packages/dacs-client/src/dacs/seller-http.mjs';
+import { createSellerAgentClient, SellerRefusedError, SellerUnavailableError } from '../../packages/dacs-client/src/dacs/seller-http.mjs';
 import { JOB, sellerTransportPair } from './fixtures.mjs';
 
 const SELLER_URL = 'http://127.0.0.1:9';
@@ -19,12 +19,13 @@ async function clientAnswered(t, status, answer) {
   return createSellerAgentClient({ url: SELLER_URL, authentication: clientAuth, fetchImpl });
 }
 
-test('K12-H5 today: the client classifies a signed 409 peer_request_replayed as SellerRefusedError', async (t) => {
+test('K12-H5 today: the client classifies a signed 409 peer_request_replayed as an unknown answer, not retried yet', async (t) => {
   const client = await clientAnswered(t, 409, { error: 'peer_request_replayed' });
   await assert.rejects(client.agreementState({ jobId: JOB }), (error) => {
-    assert.ok(error instanceof SellerRefusedError);
-    assert.equal(error.code, 'peer_request_replayed');
-    assert.equal(error.status, 409);
+    assert.ok(error instanceof SellerUnavailableError);
+    assert.ok(!(error instanceof SellerRefusedError));
+    assert.equal(error.answerClass, 'unknown');
+    assert.equal(error.answerCode, 'peer_request_replayed');
     return true;
   });
 });

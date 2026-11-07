@@ -85,6 +85,26 @@ Before the SDK's inner transaction signature, the session checks synchronously t
 Requests, delegation bytes and received response bytes go through `@kynesyslabs/dacs/wire` under the purchase's kept TP-1 profile. The client saves the delegation payload before it returns the wallet message, stores the wallet signature as canonical base64url, and refuses a purchase prepared under the old transport declaration with `seller_transport_changed`. The seller request timeout also bounds the wire's authority reads and the session signer: a seller call that has not finished signing by then sends nothing and fails with cause `timeout`, and a wallet message or delegation check that is still waiting for the authority fails with `seller_authority_timeout`.
 Payment and bundle requests (the wire's continuing routes) and the two ordinary read routes (`agreements/state`, `bundles/buyer-copy`) of a committed purchase are signed with the job's finalized commitment, its two-party Agreement and the signed Listing, as canonical bytes rebuilt from the purchase row. The commitment's anchored tuple is kept with its SHA-256 when the commitment verifies. A verified row with no usable kept bytes keeps them once from a fresh authenticated readback that matches the stored summary, and otherwise nothing is signed (`commitment_unverified`). The proof's receipt reader authenticates the commitment at every signing, so these requests sign under a `ready: false` proof and after the Listing's window ends, with no continuation capability. Challenge, context, proposals and commitment requests carry no commitment evidence, and a read before commitment keeps the wire's live Listing checks. `bundles/buyer-copy` has no such read before commitment, so the wire refuses it without evidence.
 
+### Seller answer classification
+
+Each answer is verified on its exact received bytes, then classified by its HTTP status and `error` code, the route, and the request's provenance. The transport builds the record `{status, signed: true, body}` only after verification; an unsigned or unverified answer is `unknown`. A `result` or `progress` answer is returned. Every other class throws: `definite` and `failed-bootstrap` as `SellerRefusedError` (`code` is the seller's code), the rest as `SellerUnavailableError` (`answerCode` is the seller's code). Both carry `answerClass`. Nothing is retried automatically.
+
+| Answer | Class |
+|---|---|
+| signed 200 | `result`; on payments and proposals, `held`, `indeterminate`, `waiting`, or `payment-evidenced` with delivery pending, is `progress`, never final |
+| 409 `peer_request_replayed`; 503 `seller_effect_pending`; 503 `context_attempt_pending`; 408 `peer_expired`; any other signed 408; a signed 429 on any route but context and challenge; any other signed 5xx; an unsigned answer; a timeout | `unknown` |
+| 503 `seller_stopped` | `suspended` |
+| 503 `bundle_finalization_unavailable` and 422 `not_delivered` on the bundle routes | `held` |
+| 503 `seller_not_ready` on a new purchase (no request is known to be one yet) | `not-started` |
+| 503 `seller_not_ready` on any other request | `unknown` |
+| 409 `peer_operation_mismatch` | `definite` |
+| 500 `seller_effect_unresolved` | `held`: needs the seller operator |
+| 408 `peer_delegation_expired` | `readback-only` |
+| 409 `context_challenge_failed`, `context_challenge_consumed`, `context_challenge_expired`, `context_challenge_mismatch`, `context_job_closed`, `context_admission_closed`; 429 on the context route | `failed-bootstrap` |
+| 429 on the challenge route | `definite` |
+| any other signed 4xx (not 408 or 429) with an `error` code | `definite` |
+| a TLS failure before the request left | `not-sent` |
+
 ## Factory integration
 
 Supply application inputs through host, including a synchronous operations-store factory. On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
