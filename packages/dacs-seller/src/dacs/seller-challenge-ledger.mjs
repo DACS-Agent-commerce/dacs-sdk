@@ -7,7 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { canonicalize, identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS, sessionAdmissionProblem } from './session-admission.mjs';
-import { SellerTransportError, TERMINAL_CONTEXT_STATES } from './seller-transport-auth.mjs';
+import { readSellerSessionState, SellerTransportError, TERMINAL_CONTEXT_STATES } from './seller-transport-auth.mjs';
 
 const CHALLENGE_WINDOW_MS = 3_600_000;
 /** The ledger's limits and their defaults; `limits` may override any of these names. */
@@ -163,12 +163,12 @@ function replayAnswer(row, input) {
  * `transaction(fn, rollback = false)` runs fn synchronously in BEGIN IMMEDIATE and returns its result.
  * `now()` is the seller clock in ms; `generation` identifies this process, drawn after the seller state
  * lock is held. `sessionState({ jobId })` answers synchronously with a state string or null. At issuance a throw,
- * a promise or any other answer refuses (it propagates and nothing is written); at reclamation such a row
+ * a promise or any other invalid answer refuses unavailable 503 with cause and no writes; at reclamation such a row
  * counts as an unknown state and is never reclaimed. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
  * over durable rows. `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
  * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
  * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class; the
- * `sessionState` port's own error or a TypeError for a malformed answer also propagates);
+ * unreadable `sessionState` refuses session_admission_unavailable 503 with its cause);
  * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
  * it, the guard and the stop check also run before a reused live nonce is returned.
  * `attempt(input)` returns `{ kind: 'validate', owner }`, `{ kind: 'continuation', accepted }` or
@@ -243,11 +243,9 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!db.inTransaction) throw new TypeError(`${entry} runs inside an open transaction`);
   }
 
-  // The job's state as the port answers it: a string or null. A throw, a promise or any other answer is not a state and propagates.
+  // Only explicit null means unknown; unreadable state keeps its unavailable cause.
   function readSessionState(jobId) {
-    const state = requireSynchronous(sessionState({ jobId }), 'sessionState');
-    if (state !== null && typeof state !== 'string') throw new TypeError('sessionState must answer a state string or null');
-    return state;
+    return readSellerSessionState(sessionState, jobId);
   }
 
   const isTerminalState = (state) => typeof state === 'string' && TERMINAL_CONTEXT_STATES.has(state);
