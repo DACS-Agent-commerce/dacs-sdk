@@ -1405,7 +1405,11 @@ test('host wire reads leave accounting and journal unchanged', async (t) => {
 
 test('host wire failed accounting commit publishes nothing', async (t) => {
   const w = await world(t), job = await proposeJob(w, 'accounting-rollback');
-  const failure = failSql(t, sql => sql.includes('INSERT INTO kit_reservations'));
+  const exec = DatabaseSync.prototype.exec;
+  const failure = t.mock.method(DatabaseSync.prototype, 'exec', function(sql) {
+    if (sql === 'COMMIT') throw new Error('TEST accounting commit interrupted');
+    return exec.call(this, sql);
+  });
   assert.equal((await job.post()).status, 503); failure.mock.restore();
   assert.deepEqual(accountingRows(w), []); assert.deepEqual(w.journalFiles(), []);
   assert.equal(w.rows().kit_purchase_profiles, 0); assert.equal(w.agent.calls.proposals, 0);
@@ -1561,4 +1565,29 @@ test('host wire crash after recovery claim retains the attempt until its lease e
     { jobId: job.jobId, agreementHash: job.agreementHash, expiresAt: w.state.time + MAX_SIGNED_LIFETIME_MS });
   assert.equal((await w.send(PATHS.proposals, { payload, text, header: w.headerFor(payload) })).status, 200);
   assert.equal(w.agent.calls.proposals, 1); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire crash after reservation result requires recovery before agent work', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-after-result');
+  const accounting = w.handle.store.reservationAccounting, reserve = accounting.reserveAccounted.bind(accounting);
+  accounting.reserveAccounted = async input => { await reserve(input); throw new Error('TEST cut after result CAS'); };
+  assert.equal((await job.post()).status, 503);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new']); assert.equal(w.agent.calls.proposals, 0);
+  w.reopen(); assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  w.state.time += JOURNAL_LEASE_MS;
+  assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 0); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire outcome end record survives a cut before outcome publication', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-end-outcome-cut'), link = fs.linkSync;
+  const cut = t.mock.method(fs, 'linkSync', (source, destination) => {
+    if (destination.endsWith('.done')) throw new Error('TEST cut before outcome publication');
+    return link(source, destination);
+  });
+  syncBuiltinESMExports(); assert.equal((await job.post()).status, 503);
+  cut.mock.restore(); syncBuiltinESMExports();
+  assert.equal(w.journalFiles().filter(name => name.endsWith('.end')).length, 1);
+  assert.equal(w.journalFiles().some(name => name.endsWith('.done')), false);
+  w.reopen(); assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'completed']);
 });

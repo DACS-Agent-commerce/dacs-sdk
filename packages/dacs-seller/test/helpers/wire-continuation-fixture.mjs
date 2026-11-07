@@ -49,10 +49,10 @@ export async function wireContinuationFixture(t) {
     agent: () => agent, reopen: async () => { agent.close(); agent = await f.open(); } };
 }
 
-/** The wire context of a seller over `store` and `agent`, made by `createWireContext` as the handler requires, with the buyer that signs for it. */
-export async function wireRouteFixture(t, { agent, listing, buyer, seller, store, now, readCommitmentReceipt = receiptReader(), requireDelegation = false }) {
-  const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-fixture-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+/** The wire context of a seller over `store` and `agent`, with the buyer that signs for it. Passing `journal` reuses retained host operations. */
+export async function wireRouteFixture(t, { agent, listing, buyer, seller, store, now, readCommitmentReceipt = receiptReader(), requireDelegation = false, journal = null }) {
+  const directory = journal === null ? await mkdtemp(join(tmpdir(), 'TEST-wire-fixture-')) : null;
+  if (directory !== null) t.after(() => rm(directory, { recursive: true, force: true }));
   const evidenceFor = async (path, id) => {
     if (!['/dacs/v1/payments', '/dacs/v1/bundles/request', '/dacs/v1/bundles/countersignature', '/dacs/v1/bundles/buyer-copy'].includes(path)) return {};
     const texts = agent.continuationEvidenceOf(id);
@@ -62,6 +62,6 @@ export async function wireRouteFixture(t, { agent, listing, buyer, seller, store
   const buyerWire = await createBuyer();
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing)));
   const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection: buyerWire.connection }, signer: seller, store, ready: () => true, now, agent, requireDelegation,
-    journal: openWireRequestJournal(directory, { leaseMs: 300000, clock: now }), signedListing, readCommitmentReceipt });
+    journal: journal ?? openWireRequestJournal(directory, { leaseMs: 300000, clock: now }), signedListing, readCommitmentReceipt });
   return { wire, buyerWire, createBuyer };
 }
