@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "5a0f8baab4b1c8881e9690703ddff1ff80d6953b"
+        "blob": "d19fa77970eea991b90f83795ca42f71d9982a48"
       },
       "DELTA-LEDGER.json": {
-        "blob": "662a9fae2005bb311d3ae94bb26f9cd4cda9d110"
+        "blob": "1eb8e13cedf2b0d110fbc4f8771bcc9bf8737051"
       },
       "DELTA-MAP.md": {
-        "blob": "8bb93213ab00fc45298b444ab979085bd0c218f4"
+        "blob": "ac2240c4eba931480101afb8b014c8d1ba34eb05"
       },
       "DELTA-NOTES.md": {
         "blob": "988fb4540b4dcc3f4f79c7e68ff2ab227b6cac02"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "e247b42f7dc134c8b7d0030103ec40234b2ef4d7"
+        "blob": "bf6c7e11df325f4d5527762c4fabea999c7e82e4"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "834c7417fce63bfc0bea792da694e7edbafc5762"
+        "blob": "021dc0934ddca6c5e6f36693c86e058eb2a972d2"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1244,7 +1244,7 @@
         "blob": "5e50adc64e0fd1aac587f26a9f372667cf5746c8"
       },
       "src/public/portal-intent/intent.mjs": {
-        "blob": "a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e"
+        "blob": "3d60f6151608b59fda215fb362bb54a5721c82ce"
       },
       "src/public/portal/embedded-wallet/sdk-provider.mjs": {
         "blob": "fb364397ed046fb1211d620fb5dfa68563715c1a"
@@ -1274,7 +1274,7 @@
         "blob": "aaf304c17d42f5decc0e1299f03ec38f0cd36f8d"
       },
       "src/signatures.mjs": {
-        "blob": "6396455c3d3c436bc078c433d520245e7d99ae4a"
+        "blob": "ea2845c8b7caf1b411be2e29a70005a94e4218c0"
       },
       "src/switch-files.mjs": {
         "blob": "42eb9b315d1674da3e00da5300f637e8b15fd9c8"
@@ -1765,6 +1765,9 @@
       "test/ingress-admission.test.mjs": {
         "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
       },
+      "test/intent-canonical-depth.test.mjs": {
+        "blob": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
+      },
       "test/native-adapter-auth.test.mjs": {
         "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"
       },
@@ -1890,6 +1893,9 @@
       },
       "test/seller-session-delegation-job-id.test.mjs": {
         "blob": "b0777e30c7cf6efedd45f3b645329057b18025e5"
+      },
+      "test/signatures-claim-ref.test.mjs": {
+        "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"
       },
       "test/sqlite-floor-iterators.test.mjs": {
         "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"
