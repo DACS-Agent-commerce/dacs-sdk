@@ -183,10 +183,10 @@ describe("dacs doctor node build check", () => {
     expect(check.detail).toContain("exceeds maxResponseBytes");
   });
 
-  it("reads GET /version on the node origin with an abort signal and without credentials", async () => {
+  it("reads GET /version on the node origin with an abort signal", async () => {
     const fetchImpl = stubFetch(async () => jsonReply(recordedVersionReply.body));
 
-    const report = await doctorWith(fetchImpl, "https://user:pass@node.example/");
+    const report = await doctorWith(fetchImpl, "https://node.example/");
 
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://node.example/version");
@@ -194,7 +194,25 @@ describe("dacs doctor node build check", () => {
     expect(init.redirect).toBe("manual");
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(nodeBuildCheck(report).status).toBe("pass");
-    expect(JSON.stringify(report)).not.toContain("pass@");
+  });
+
+  it("skips without a /version request when the RPC URL carries user information", async () => {
+    for (const rpc of [
+      "https://user:pass@node.example/",
+      "https://user:pass@node.example",
+      "https://token-only@node.example",
+    ]) {
+      const fetchImpl = stubFetch(async () => jsonReply(recordedVersionReply.body));
+
+      const report = await doctorWith(fetchImpl, rpc);
+
+      const check = nodeBuildCheck(report);
+      expect(check.status, rpc).toBe("skip");
+      expect(check.summary).toBe(UNKNOWN_SUMMARY);
+      expect(check.detail).toContain("credentials");
+      expect(fetchImpl.mock.calls.filter(([url]) => String(url).endsWith("/version")), rpc).toHaveLength(0);
+      expect(JSON.stringify(report)).not.toContain("pass@");
+    }
   });
 
   it("skips without a /version request when the RPC URL is routed", async () => {
