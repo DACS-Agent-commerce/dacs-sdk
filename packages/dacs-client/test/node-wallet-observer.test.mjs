@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { AUTHORITY_READ_DEADLINE_MS } from '../src/public-admission.mjs';
 import { runFreshChild } from './helpers/fresh-node-child.mjs';
+import { installNoEgress } from './helpers/no-egress.mjs';
 import { queuedOwner } from './helpers/queued-owner.mjs';
 import { api, scriptedNode, T0 } from './helpers/tp1-node-fixture.mjs';
 import { deferred, jsonResponse, MIB, ok, sizedReply } from './helpers/source-read-world.mjs';
 
 const CHAIN = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
+const egress = installNoEgress();
+test.after(() => { egress.restore(); assert.deepEqual(egress.attempts, []); });
 const OTHER_CHAIN = 'e'.repeat(64);
 const NODE_PATH = new URL('../src/wallet/node-wallet-session.mjs', import.meta.url).href;
 const WIRE_PATH = import.meta.resolve('@kynesyslabs/dacs/wire');
