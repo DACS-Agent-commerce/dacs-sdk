@@ -4,7 +4,7 @@
 //   node packages/dacs-client/scripts/check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]
 //
 // HOLD.json pins the complete package file set and the Git blob of every
-// ordinary file, including package.json bytes (exports: {}, no main or bin).
+// ordinary file, including the exact reviewed package.json bytes and explicit public exports.
 // HOLD.json and this gate are the reviewed control pair: changing a pin or
 // lifting the hold requires changing both in the same reviewed commit. The
 // gate pins both the canonical record and its exact bytes, with only its
@@ -12,7 +12,7 @@
 // the actual gate blob; a gate-only or record-only edit fails. The gate itself
 // is trusted executable code, as with any repository check.
 //
-// Only this private package is frozen. Other SDK files, commits and merge
+// Only this package is frozen. Other SDK files, commits and merge
 // commits may evolve without re-pinning these controls. This is a package
 // integrity check; it makes no claim to detect callers outside the package.
 // No package entry point is imported and no live admission is granted.
@@ -31,8 +31,8 @@ const USAGE = "usage: check-hold.mjs [--package-dir <dir>] [--repo-root <dir>]";
 class UsageError extends Error {}
 
 export const PINNED = Object.freeze({
-  holdSha256: "6eda50adefb0b95f2d636a46748da591606441e54f8fec21d7d966118007adeb",
-  holdBytesSha256: "83ad4407dc290384ce22c40f4a33d548c320269ebe2875c4c91b859a657f4e5f",
+  holdSha256: "be1ee1f6396775cbb3fa03ade28885756df66398741f4e7096884a4cf6630e7c",
+  holdBytesSha256: "cc231a60abe5f71d71d3de6e58759fc2b6fa4273fd8aaf57305de60cc4921ac1",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -41,6 +41,7 @@ export const PINNED = Object.freeze({
   delta: "D15",
   sourceRepository: "DACS-Agent-commerce/frontend",
   sourceCommit: "82bf8c4dabb2332a72f618f6cc29950e48d6feb6",
+  exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs" }),
   files: Object.freeze([
     Object.freeze({ path: "packages/dacs-client/src/purchases.mjs", sourcePath: "http-mcp/src/purchases.mjs", heldBlob: "ee71c89fcfa2ef7fa44716084a810e546343452c", lines: Object.freeze(["666", "789", "811", "905", "927-934"]) }),
     Object.freeze({ path: "packages/dacs-client/src/dacs/wallet-transactions.mjs", sourcePath: "http-mcp/src/dacs/wallet-transactions.mjs", heldBlob: "948107e13dba08f162dd3f1b27968b2eae96d799", lines: Object.freeze(["114"]) }),
@@ -237,7 +238,7 @@ function main() {
     if (!/^[0-9a-f]{40}$/.test(pin.blob) || gitBlob(readFileSync(join(args.packageDir, path))) !== pin.blob) failures.push(`${PACKAGE_PREFIX}${path}: changed bytes; package is frozen`);
   }
   const pkg = readJson(join(args.packageDir, "package.json"), "package.json", failures);
-  if (!pkg || JSON.stringify(pkg.exports) !== "{}" || Object.hasOwn(pkg, "main") || Object.hasOwn(pkg, "bin")) failures.push("package.json must retain exports: {} and no main or bin");
+  if (!pkg || JSON.stringify(pkg.exports) !== JSON.stringify(PINNED.exports) || Object.hasOwn(pkg, "main") || Object.hasOwn(pkg, "bin")) failures.push("package.json must retain the reviewed explicit exports and no main or bin");
 
   const top = sourceGit(["-C", args.repoRoot, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   if (realpathSync(top) !== args.repoRoot) throw new Error("repo-root is not the Git worktree root");
@@ -252,7 +253,7 @@ function finish(failures, summary) {
     process.exitCode = 1;
     return;
   }
-  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); exports: {}; package HEAD blobs verified against pins; package index and working files match HEAD; outside SDK files are unrestricted; no behavioural imports`);
+  console.log(`[check-hold] OK: package frozen; pinned purchase status: ${PINNED.status}: ${PINNED.id} (${PINNED.delta}); package files (${summary.files} files, reviewed control pair included); reviewed public exports; package HEAD blobs verified against pins; package index and working files match HEAD; outside SDK files are unrestricted; no behavioural imports`);
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
