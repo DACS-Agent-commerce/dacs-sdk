@@ -52,6 +52,7 @@ import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, usesNativePayment
 import { sourceDemoSellerTransportConfig } from './source-demo-seller-transport.mjs';
 import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_LIMITS } from '@kynesyslabs/dacs/wire';
 import { createSellerWireAuthentication } from './seller-wire-authentication.mjs';
+import { anchoredTupleMembers, createContinuationEvidence, keepCommitmentTuple, matchesCommitmentSummary } from './continuation-evidence.mjs';
 import { readDemDeliveryReady } from './dem-delivery-consumer.mjs';
 import { CHAIN_POINTER_ASK_LIMIT, CHAIN_READBACK_OPERATOR_ACTION, chainPointerAskDue, deliveryPointerDiffers, missingChainPointers, replacementAnswerProblem } from './seller-session-lifecycle.mjs';
 import { NATIVE_DEM_DELIVERY_SOURCE, nativeDemDeliveryConfig } from './native-dem-delivery-consumer.mjs';
@@ -354,7 +355,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
       if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
       authentication = createSellerWireAuthentication({ admission, sessionSigner: sellerTransport.sessionSignerFor(operation), delegation: p.sessionDelegation,
-        seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now,
+        seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(operation),
         job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
           deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
     }
@@ -367,6 +368,10 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   const readCurrentCommitment=(operation,{fresh=false,answer}={})=>chainReadback.readCommitment({
     agreement:operation.state.protocol.agreement.artifact,listing:operation.state.protocol.listing,seller:operation.terms.seller.claim,fresh,
     signedProjection:signedCreateFor(finalityCommitmentAddress(operation.terms.protocol.jobId),{retained:operation.state.protocol.chainReadback,answer})});
+  // Evidence for continuing requests and committed reads, rebuilt from the row. A verified row with no usable kept
+  // tuple bytes keeps them from one fresh authenticated readback (revision-neutral, so no flow's snapshot goes stale).
+  const continuationEvidence = createContinuationEvidence({ readCommitment: (operation) => readCurrentCommitment(operation, { fresh: true }),
+    keep: (operation, members) => keepCommitmentTuple({ db, ops, transaction }, operation, members) });
 
   // Terms + initial state for prepare (the caller already verified the Listing
   // and bound the network domain).
@@ -915,7 +920,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (readback.status === 'verified') {
       return note(current, 'commitment', 'verified', null, {
         stage: 'seller-committed',
-        commitment: { address: readback.address, ref: readback.ref, contentHash: readback.contentHash, signer: readback.signer, committedAt: readback.committedAt, verifiedAt: new Date(now()).toISOString(), substrate: 'source-native-one-node' },
+        commitment: { address: readback.address, ref: readback.ref, contentHash: readback.contentHash, signer: readback.signer, committedAt: readback.committedAt, verifiedAt: new Date(now()).toISOString(), substrate: 'source-native-one-node', ...anchoredTupleMembers(readback.anchored) },
         ...chainRetained(current, readback.chainSignedCreate ? { [readback.address]: readback.chainSignedCreate } : null),
       }, usesNativeAgreementPayment(current) ? { toStatus: 'awaiting_approval' } : {});
     }
@@ -962,7 +967,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const replay = chainReadback && operation.terms.protocol.sellerCommitment === DEVNET_NATIVE_COMMITMENT_MARKER && p.chainReadback?.[address] === undefined
       ? await replayedCommitAnswer(operation) : null;
     const readback = await readCurrentCommitment(operation, { fresh: !reuseVerified, answer: replay?.answer });
-    if (readback.status !== 'verified' || readback.contentHash !== p.commitment.contentHash || readback.signer !== p.commitment.signer || readback.committedAt !== p.commitment.committedAt) {
+    if (!matchesCommitmentSummary(readback, p.commitment)) {
       const why = [readback.reason, replay?.reason].filter(Boolean).join('; ');
       throw new OperationError('commitment_unverified', `the seller's finalized commitment did not verify on re-read (${readback.status}${why ? `: ${why}` : ''}); nothing was signed or sent`);
     }

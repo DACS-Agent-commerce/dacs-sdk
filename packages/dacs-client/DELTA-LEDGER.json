@@ -6495,6 +6495,47 @@
           "after": "e4a43f5d39bc6806039a4f3f7421d0874504effc"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P13a2 sign continuing routes and committed reads with the finalized commitment",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/buyer-chain-readback.mjs",
+          "before": "9f032dbe8861d6c495f0b26cd2d708ca1430e8a2",
+          "after": "540cf6a903cdb9d0f40bef3c22a70ee61c2b0540"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/continuation-evidence.mjs",
+          "before": null,
+          "after": "2f1540dbcd68897c5e95ae7c588684172c0eaf42"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "e43129e16f7d027fb24b9e2ecef24eb56a908393",
+          "after": "74db6f3632bfcb00c067941017012fc536da6524"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "767519509759e6d77c030f38e5601eab455922a0",
+          "after": "7de38417501b62e785e7a84181b057a76f5810fe"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+          "before": "d0403f064afb87caf0a366d62dca51a9410ad00a",
+          "after": "096b90fa41c0369bf138bbd18360b04951415116"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/wire-committed-purchase.mjs",
+          "before": null,
+          "after": "c458b4582cc4b2aef338c9525dd0b69a0ec1ff57"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-continuation-evidence.test.mjs",
+          "before": null,
+          "after": "d6407d953cdd85617b4bcce9c409d3d18beed67c"
+        }
+      ]
     }
   ]
 }
