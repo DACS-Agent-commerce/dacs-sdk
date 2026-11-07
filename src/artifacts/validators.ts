@@ -192,6 +192,13 @@ export function isExactJsonRecord(
   return isObj(value) && isExactJsonValue(value, new WeakSet<object>(), 0);
 }
 const isNonEmptyStr = (v: unknown): v is string => isStr(v) && v.length > 0;
+/**
+ * DACS-1 §6.3.4 Listing `max N chars` unit: Unicode scalar values of the
+ * value's CF-1 (NFC) form. `.length` counts UTF-16 code units, which differs on
+ * supplementary-plane and decomposed text.
+ */
+export const listingTextLength = (value: string): number =>
+  [...value.normalize("NFC")].length;
 /** CORE §B.1 canonical logical-address spelling for session identifiers. */
 export const isCanonicalJobId = (v: unknown): v is string =>
   isStr(v) && /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(v);
@@ -882,19 +889,19 @@ function isListingBody(
     isObj(v.seller) &&
     isIdentityBundle(v.seller.identity) &&
     isStr(v.seller.displayName) &&
-    v.seller.displayName.length <= 200 &&
+    listingTextLength(v.seller.displayName) <= 200 &&
     (v.seller.publicEndpoint === undefined ||
       isListingPublicEndpoint(v.seller.publicEndpoint)) &&
     isObj(v.offering) &&
     isStr(v.offering.title) &&
-    v.offering.title.length <= 200 &&
+    listingTextLength(v.offering.title) <= 200 &&
     isStr(v.offering.description) &&
-    v.offering.description.length <= 2_000 &&
+    listingTextLength(v.offering.description) <= 2_000 &&
     isStr(v.offering.category) &&
     v.offering.category.split(".").every((part) => part.length > 0) &&
     Array.isArray(v.offering.tags) &&
     v.offering.tags.length <= 16 &&
-    v.offering.tags.every((tag) => isStr(tag) && tag.length <= 32) &&
+    v.offering.tags.every((tag) => isStr(tag) && listingTextLength(tag) <= 32) &&
     isDeliverableSpec(v.offering.deliverable) &&
     isOptionalStr(v.offering.extendedDescriptionUrl) &&
     isOptionalStr(v.offering.extendedDescriptionHash) &&
