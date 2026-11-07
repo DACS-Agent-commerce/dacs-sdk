@@ -3,7 +3,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { checkSellerSessionDelegation, SELLER_SESSION_DELEGATION_PREFIX } from '../src/public/portal/seller-session-delegation.mjs';
+import { isCanonicalJobId as sdkIsCanonicalJobId } from '@kynesyslabs/dacs';
+import * as portal from '../src/public/portal/seller-session-delegation.mjs';
+
+const { checkSellerSessionDelegation, SELLER_SESSION_DELEGATION_PREFIX } = portal;
 
 const NOW = Date.UTC(2026, 9, 8, 12, 0, 0);
 const HOUR = 3600000;
@@ -59,6 +62,30 @@ for (const { name, jobId } of malformedJobIds) {
       (error) => error.code === 'delegation_refused' && /the job differs from this purchase/.test(error.message));
   });
 }
+
+// The portal module runs in a browser, so its local check must give the SDK's answer on every form.
+test('the local job ID check agrees with the SDK on every fixture entry and malformed form', () => {
+  const forms = [
+    ...vectors.flatMap((v) => [v.jobId, v.otherJobId, v.sessionId]),
+    ...malformedJobIds.map((entry) => entry.jobId),
+    CANONICAL_JOB_ID, OTHER_CANONICAL_JOB_ID, undefined, null, 0, {}, [CANONICAL_JOB_ID],
+  ];
+  assert.ok(forms.some((form) => sdkIsCanonicalJobId(form)));
+  assert.ok(forms.some((form) => !sdkIsCanonicalJobId(form)));
+  for (const form of forms) {
+    assert.equal(portal.isCanonicalJobId(form), sdkIsCanonicalJobId(form), `disagreement on ${JSON.stringify(form)}`);
+  }
+});
+
+test('the portal module imports nothing bare and nothing from node:', () => {
+  const source = readFileSync(new URL('../src/public/portal/seller-session-delegation.mjs', import.meta.url), 'utf8');
+  const specifiers = [...source.matchAll(/^\s*(?:import|export)\b[^'"]*?from\s*['"]([^'"]+)['"]|^\s*import\s*['"]([^'"]+)['"]/gm)].map((m) => m[1] ?? m[2]);
+  assert.ok(specifiers.length > 0);
+  for (const specifier of specifiers) {
+    assert.match(specifier, /^\.{1,2}\//, `${specifier} is not a relative import`);
+  }
+  assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|node:/);
+});
 
 test('two different canonical job IDs are a mismatch', () => {
   const { request, terms } = delegationFor(CANONICAL_JOB_ID, OTHER_CANONICAL_JOB_ID);
