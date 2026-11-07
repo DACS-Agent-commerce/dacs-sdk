@@ -1,0 +1,80 @@
+[
+  {
+    "id": "K12-H1",
+    "today": "the kit agent's proposal admission refuses a presentation carrying the client's self-derived nonce: session_not_admitted, \"the presentation nonce is not a challenge this seller issued\"",
+    "target": "the client presents the seller-issued nonce; accepted",
+    "owner": "P14a",
+    "flippedBy": null
+  },
+  {
+    "id": "K12-H2",
+    "today": "the client's context input check refuses the fresh seller presentation (K4-B2): \"seller identity differs\"",
+    "target": "the exact Listing bundle (K4-B1) is produced and accepted by both",
+    "owner": "P08a",
+    "flippedBy": "P08a"
+  },
+  {
+    "id": "K12-H3",
+    "today": "(i) the kit's default vetRecordProblem refuses a SELLER-signed seller record: \"the Vet record is not signed by its counterparty verifier\"; (ii) the client refuses a BUYER-signed seller ref: \"seller Vet ref is not signed by the bound phase orchestrator\"",
+    "target": "the W producer and every W consumer agree on seller-signed refs (K3-V14)",
+    "owner": "P08b",
+    "flippedBy": null
+  },
+  {
+    "id": "K12-H4-wire",
+    "today": "checkWireRequest refuses a delegated context request with no Agreement: peer_delegation_agreement_required 409 (K2-PRE-1)",
+    "target": "checkWireRequest refuses wire_route_requires_preagreement 500 (K2-T8) and admitPreAgreementRequest admits the valid request with no journal mutation until reserve() (K2-T1)",
+    "owner": "P03b",
+    "flippedBy": "P03b"
+  },
+  {
+    "id": "K12-H4-host",
+    "today": "the composed kit host mounts no wire context handler: an authenticated context request gets an unsigned 404 not_found",
+    "target": "the mounted handler completes the pre-Agreement admission and reservation sequence (K2, then K1, then K5, then reserve())",
+    "owner": "P12b1",
+    "flippedBy": null
+  },
+  {
+    "id": "K12-H5",
+    "today": "the client classifies a signed 409 peer_request_replayed as SellerRefusedError",
+    "target": "classified unknown; retried with the stored bytes",
+    "owner": "P13b1b",
+    "flippedBy": null
+  },
+  {
+    "id": "K12-H6a",
+    "today": "the kit's server-side transport auth accepts an old-domain signed request",
+    "target": "refused; the wire domain only",
+    "owner": "P11a1a",
+    "flippedBy": null
+  },
+  {
+    "id": "K12-H6b",
+    "today": "the client's request signer emits old-domain signing bytes",
+    "target": "wire domain only",
+    "owner": "P13a1",
+    "flippedBy": null
+  },
+  {
+    "id": "K12-H7",
+    "today": "a purchase through the public entries on the fixture node fails at the first incompatibility, with no work after it",
+    "target": "the purchase passes from challenge to verified Deliverable",
+    "owner": "P14a",
+    "flippedBy": null,
+    "current": {
+      "step": "plan",
+      "code": "agreement_context_held",
+      "layer": "response-auth",
+      "counters": {
+        "context": 1,
+        "proposals": 0,
+        "commitments": 0,
+        "commitmentSignature": 0,
+        "payments": 0,
+        "sellerSignatures": 0,
+        "walletEffects": 0
+      },
+      "updatedBy": "P06"
+    }
+  }
+]

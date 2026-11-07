@@ -320,8 +320,10 @@ export interface DemosTransferResult {
   failureProof?: DemosFailedRecordProof;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
-  /** Confirmed transfer amount plus network fee, in integer OS. */
+  /** Confirmed transfer amount plus the fee the chain debits, in integer OS. */
   totalDebitOs?: string;
+  /** The fee the confirmed record declares (`transaction_fee`), in integer OS; sent with `totalDebitOs`. */
+  recordFeeOs?: string;
   message?: string;
 }
 
@@ -657,6 +659,11 @@ export async function payDemSettleCore(
     "totalDebitOs",
     "pay-dem transfer result totalDebitOs",
   );
+  const recordFeeProperty = stableDataProperty(
+    response,
+    "recordFeeOs",
+    "pay-dem transfer result recordFeeOs",
+  );
   const failureProperty = stableDataProperty(response, "failureProof", "pay-dem failure proof");
   const failureProof = failureProperty.value === undefined ? undefined :
     snapshotCanonicalJsonRead(failureProperty.value, "pay-dem failure proof");
@@ -685,6 +692,13 @@ export async function payDemSettleCore(
       (totalDebitOs !== undefined && maxTotalDebitOs !== undefined &&
         totalDebitOs > maxTotalDebitOs)) {
     throw new DacsError("pay-dem transfer result has invalid total debit accounting");
+  }
+  // The record's declared fee travels with the real debit, never alone.
+  const recordFeeOs = recordFeeProperty.value;
+  if ((recordFeeOs === undefined) !== (totalDebitOs === undefined) ||
+      (recordFeeOs !== undefined &&
+        (typeof recordFeeOs !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(recordFeeOs)))) {
+    throw new DacsError("pay-dem transfer result has invalid record fee accounting");
   }
 
   // Observed inclusion (§9.5.9): a verifiable tx id AND the exact terminal
@@ -738,9 +752,11 @@ export async function payDemSettleCore(
     finality: Object.freeze({ model: "bft-final" }),
     blockNumber: blockNumber as number,
     txRefKind: "demos",
+    // networkFeeOs is what the chain debits beyond the amount; recordFeeOs is
+    // the fee the record declares, which can differ (#604).
     ...(totalDebitOs === undefined
       ? {}
-      : { networkFeeOs: (totalDebitOs - amountOs).toString() }),
+      : { networkFeeOs: (totalDebitOs - amountOs).toString(), recordFeeOs: recordFeeOs as string }),
   });
 }
 
@@ -806,8 +822,13 @@ export interface PayDemPreparedTransfer {
   denomination?: "os" | "dem";
   network: string;
   maxTotalDebitOs?: string;
-  /** Confirmed transfer amount plus network fee, retained before broadcast. */
+  /**
+   * Confirmed transfer amount plus the fee the chain debits (the payer's
+   * balance removals in the confirmed execution edits), retained before broadcast.
+   */
   confirmedTotalDebitOs?: string;
+  /** The fee the confirmed record declares (`transaction_fee`), retained with it; not what the chain debits. */
+  confirmedRecordFeeOs?: string;
   /** Exact PC-7 session/phase identity when invoked through payDemSettle. */
   recovery?: Readonly<PayDemSettlementRecoveryContext>;
 }
@@ -1205,6 +1226,62 @@ function nativeTransferBodyMatches(
     confirmedWireAmountOs(args[1], input.postFork) === input.amountOs;
 }
 
+/**
+ * What the chain debits the payer for a confirmed native send, in OS: the sum
+ * of the payer's balance removals in the transaction's execution edits
+ * (`content.gcr_edits`). The record's `transaction_fee` is the declared fee and
+ * is not what executes: a node2 record declares `network_fee` + `rpc_fee`
+ * (2 DEM) while its edits remove the amount and a 1 DEM gas burn
+ * (test/fixtures/demos-node2-records.json). An edit other than a balance or
+ * nonce edit, a rollback, a credit to the payer, a malformed account or
+ * amount, or edits without one removal of exactly the amount from the payer
+ * and one credit of exactly the amount to the payee give null.
+ */
+function confirmedEditDebitOs(
+  transaction: Record<string, unknown>,
+  input: Readonly<{ payer: string; payee: string; amountOs: bigint; postFork: boolean }>,
+): bigint | null {
+  const content = transaction.content;
+  if (content === null || typeof content !== "object" || Array.isArray(content)) return null;
+  const edits = (content as Record<string, unknown>).gcr_edits;
+  if (!Array.isArray(edits)) return null;
+  const payer = normalizedDemosAccount(input.payer);
+  const payee = normalizedDemosAccount(input.payee);
+  if (payer === null || payee === null || payer === payee) return null;
+  let debitOs = 0n;
+  let amountRemoved = 0;
+  let amountCredited = 0;
+  for (const edit of edits) {
+    if (edit === null || typeof edit !== "object" || Array.isArray(edit)) return null;
+    const entry = edit as Record<string, unknown>;
+    if (entry.type === "nonce") continue;
+    if (entry.type !== "balance" || entry.isRollback !== false) return null;
+    const account = normalizedDemosAccount(entry.account);
+    const amountOs = confirmedWireAmountOs(entry.amount, input.postFork);
+    if (account === null || amountOs === null) return null;
+    if (account === payer) {
+      if (entry.operation !== "remove") return null;
+      debitOs += amountOs;
+      if (amountOs === input.amountOs) amountRemoved += 1;
+    } else if (entry.operation === "add" && account === payee && amountOs === input.amountOs) {
+      amountCredited += 1;
+    } else if (entry.operation !== "add" && entry.operation !== "remove") {
+      return null;
+    }
+  }
+  return amountRemoved >= 1 && amountCredited === 1 && debitOs >= input.amountOs
+    ? debitOs
+    : null;
+}
+
+/** The confirmed transfer's real total debit and the fee its record declares, both in OS. */
+interface ConfirmedDebit {
+  /** Amount plus what the chain debits as fee: the payer's balance removals. */
+  totalDebitOs: bigint;
+  /** `transaction_fee` network + rpc + additional fee, as the record declares it. */
+  recordFeeOs: bigint;
+}
+
 function confirmedDebitFromValidity(
   value: unknown,
   input: Readonly<{
@@ -1214,7 +1291,7 @@ function confirmedDebitFromValidity(
     nonce: number;
     postFork: boolean;
   }>,
-): bigint | null {
+): ConfirmedDebit | null {
   const data = (
     value as {
       response?: {
@@ -1236,8 +1313,11 @@ function confirmedDebitFromValidity(
     )
   ) return null;
 
-  const feeOs = confirmedValidityFeeOs(value, input.postFork);
-  return feeOs === null ? null : input.amountOs + feeOs;
+  const recordFeeOs = confirmedValidityFeeOs(value, input.postFork);
+  const totalDebitOs = confirmedEditDebitOs(transaction as Record<string, unknown>, input);
+  return recordFeeOs === null || totalDebitOs === null
+    ? null
+    : { totalDebitOs, recordFeeOs };
 }
 
 type ObservedDemosExecution =
@@ -1697,7 +1777,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
             "pay-dem: confirmed transaction has no unambiguous bound OS debit; refusing broadcast under maxTotalDebitOs",
           );
         }
-        if (confirmedDebitOs > effectiveMaxTotalDebitOs) {
+        if (confirmedDebitOs.totalDebitOs > effectiveMaxTotalDebitOs) {
           throw new DacsError(
             "pay-dem: confirmed transaction exceeds maxTotalDebitOs; refusing broadcast",
           );
@@ -1722,7 +1802,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
           : { maxTotalDebitOs: effectiveMaxTotalDebitOs.toString() }),
         ...(confirmedDebitOs === null
           ? {}
-          : { confirmedTotalDebitOs: confirmedDebitOs.toString() }),
+          : {
+            confirmedTotalDebitOs: confirmedDebitOs.totalDebitOs.toString(),
+            confirmedRecordFeeOs: confirmedDebitOs.recordFeeOs.toString(),
+          }),
         ...(recovery === undefined ? {} : { recovery }),
       }) satisfies Readonly<PayDemPreparedTransfer>;
 
@@ -1826,7 +1909,10 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         blockNumber: terminal.blockNumber,
         ...(confirmedDebitOs === null
           ? {}
-          : { totalDebitOs: confirmedDebitOs.toString() }),
+          : {
+            totalDebitOs: confirmedDebitOs.totalDebitOs.toString(),
+            recordFeeOs: confirmedDebitOs.recordFeeOs.toString(),
+          }),
       });
     },
   };
@@ -1868,6 +1954,7 @@ const PAY_DEM_RESULT_KEYS = new Set([
   "blockNumber",
   "txRefKind",
   "networkFeeOs",
+  "recordFeeOs",
   "errorClass",
   "failureProof",
 ]);
@@ -1898,7 +1985,8 @@ function samePayDemResult(left: SettleResult, right: SettleResult): boolean {
     left.finality?.finalityBlocks === right.finality?.finalityBlocks &&
     left.blockNumber === right.blockNumber &&
     left.txRefKind === right.txRefKind &&
-    left.networkFeeOs === right.networkFeeOs;
+    left.networkFeeOs === right.networkFeeOs &&
+    left.recordFeeOs === right.recordFeeOs;
 }
 
 function capturePayDemResult(
@@ -1971,6 +2059,12 @@ function capturePayDemResult(
         !/^(?:0|[1-9][0-9]*)$/.test(networkFeeOs))) {
     throw new DacsError(`${label} has invalid Demos network-fee accounting`);
   }
+  const recordFeeOs = result.recordFeeOs;
+  if (recordFeeOs !== undefined &&
+      (networkFeeOs === undefined || typeof recordFeeOs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(recordFeeOs))) {
+    throw new DacsError(`${label} has invalid Demos record-fee accounting`);
+  }
 
   if (result.ok) {
     if (
@@ -2012,6 +2106,7 @@ function capturePayDemResult(
     ...(blockNumber === undefined ? {} : { blockNumber: blockNumber as number }),
     ...(result.txRefKind === undefined ? {} : { txRefKind: "demos" }),
     ...(networkFeeOs === undefined ? {} : { networkFeeOs }),
+    ...(recordFeeOs === undefined ? {} : { recordFeeOs }),
   };
 }
 
