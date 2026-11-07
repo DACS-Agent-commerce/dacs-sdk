@@ -6390,6 +6390,23 @@
     },
     {
       "delta": "WF",
+      "subject": "fix(client): drop unused parameters in the observer and source-read tests",
+      "sha": "609f5627549b546407d87cc8292ee1349f65e965",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "aa905dcb3de4fe3f4fffd2d2a30c422bd98df2ff",
+          "after": "5dd4a76396883d20a1bd2146a60a4df89baa0d20"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+          "before": "dc910b5daebea851fa7dda232bce86bf82ca6115",
+          "after": "4734c66eb0b25db13d505cc6cc9df63f4237d09c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a2ab expose the held seller composition and packed wallet",
       "files": [
         {

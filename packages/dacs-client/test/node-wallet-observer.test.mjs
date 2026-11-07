@@ -62,7 +62,7 @@ test('with a non-reentrant queued owner whose fence is held, a full observation 
   assert.equal(w.node.calls.length, 3, 'block zero, then block zero and the block-one fallback');
 });
 
-test('a connection replacement during an observation refuses; provenance is stable across observations on one generation and changes with it', async t => {
+test('a connection replacement during an observation refuses; provenance is stable across observations on one generation and changes with it', async () => {
   const w = observerWorld(), first = w.observer.provenance();
   assert.deepEqual(await w.observer.observe({}), { local: w.owner.local, chainIdentity: CHAIN, provenance: first });
   assert.equal((await w.observer.observe({})).provenance, first);
@@ -93,7 +93,7 @@ test('one aggregate deadline covers every read of an observation; past it the ob
   assert.deepEqual(w.node.calls.map(heightOf), [0, 1], 'the late answer started nothing');
 });
 
-test('a cancelled observation aborts its in-flight read, starts no queued read and returns no late decision', async t => {
+test('a cancelled observation aborts its in-flight read, starts no queued read and returns no late decision', async () => {
   const w = observerWorld(), late = deferred(), started = deferred(), reason = new Error('TEST-observation-cancelled'), controller = new AbortController();
   answerWith(w, { 0: () => { started.resolve(); return late.promise; } });
   const observation = w.observer.observe({ signal: controller.signal });
@@ -108,7 +108,7 @@ test('a cancelled observation aborts its in-flight read, starts no queued read a
   assert.equal(w.node.calls.length, 1, 'an already cancelled observation starts no read');
 });
 
-test('the expected identity and block-one fallback come from TP1_APPROVED_IDENTITY_RECORD; a node answering another chain or an oversized block is refused with its cause', async t => {
+test('the expected identity and block-one fallback come from TP1_APPROVED_IDENTITY_RECORD; a node answering another chain or an oversized block is refused with its cause', async () => {
   const refusals = [
     [{ 0: () => jsonResponse(JSON.stringify(ok(blockZero(OTHER_CHAIN)))) }, error => error.code === 'identity_mismatch'],
     [{ 0: literalError, 1: () => jsonResponse(JSON.stringify(ok(blockOne(OTHER_CHAIN)))) }, error => error.code === 'identity_mismatch'],
@@ -127,7 +127,7 @@ test('the expected identity and block-one fallback come from TP1_APPROVED_IDENTI
   await assert.rejects(supplied.observer.observe({}), { code: 'identity_mismatch' }, 'a caller-supplied identity is ignored');
 });
 
-test('readNodeInfo admits only getNetworkInfo and getNetworkParameters, bounded the same way', async t => {
+test('readNodeInfo admits only getNetworkInfo and getNetworkParameters, bounded the same way', async () => {
   const w = observerWorld();
   assert.deepEqual(await w.observer.readNodeInfo('getNetworkInfo', {}), { forks: { osDenomination: { activated: true } } });
   assert.deepEqual(await w.observer.readNodeInfo('getNetworkParameters'), { networkFee: 1, rpcFee: 0, additionalFee: 0 });
