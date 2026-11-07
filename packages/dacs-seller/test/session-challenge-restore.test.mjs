@@ -45,7 +45,7 @@ async function acceptedFixture(t, { legacy = false, save = true } = {}) {
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'kit_accepted_challenges'").get()) db.exec('DELETE FROM kit_accepted_challenges');
     });
   }
-  return { ...f, f, nonce, input, challenge, legacyBody, writeLegacy };
+  return { ...f, get store() { return f.store; }, f, nonce, input, challenge, legacyBody, writeLegacy };
 }
 
 test('legacy accepted challenges restore existing sessions after upgrade', async t => {
