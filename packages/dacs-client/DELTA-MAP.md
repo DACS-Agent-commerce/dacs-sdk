@@ -1119,6 +1119,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF P13b1a withdraw the signed 408 or 429 unknown classification for re-recording | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/seller-response-class.mjs:1` | 9e086f4add1dd0f39d97a2f406e76456a0976483 |
 | | `packages/dacs-client/test/seller-response-classification.test.mjs:1` | 3aeea852dffad587c333c12b28aa112733a7e853 |
+| WF | delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/seller-response-class.mjs:1` | 8ca70e7f5d3217388527c8dcab289193b2848780 |
+| | `packages/dacs-client/test/seller-response-classification.test.mjs:1` | 6982df671d7d2040341fd534d075b1225fc000f6 |
 
 ## Complete commit and file inventory
 
@@ -3503,6 +3506,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P13b1a withdraw the signed 408 or 429 unknown classification for re-recording | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P13b1a withdraw the signed 408 or 429 unknown classification for re-recording | `packages/dacs-client/src/dacs/seller-response-class.mjs:1` |
 | delta(client): WF P13b1a withdraw the signed 408 or 429 unknown classification for re-recording | `packages/dacs-client/test/seller-response-classification.test.mjs:1` |
+| delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/README.md:1` |
+| delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/src/dacs/seller-response-class.mjs:1` |
+| delta(client): WF P13b1a classify a signed 408 or 429 outside the table rows as unknown | `packages/dacs-client/test/seller-response-classification.test.mjs:1` |
 
 ## Original moved files
 

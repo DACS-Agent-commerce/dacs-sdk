@@ -146,12 +146,23 @@ test('the bootstrap codes and a 429 on the context route classify as definite fa
     for (const code of BOOTSTRAP_CODES) assert.equal(classOf(signed(409, { error: code }), ctx(PATHS.context, provenance)), CLASS.FAILED_BOOTSTRAP, code);
 });
 
-test('the same signed 429 on the challenge route is definite and retried only after the window moves', async (t) => {
-  const s = await sellerWorld(t);
+test('the same signed 429 on the challenge route is definite and retried only after the window moves', () => {
   assert.equal(classOf(signed(429, { error: 'peer_buyer_nonce_limit' }), ctx(PATHS.contextChallenge)), CLASS.DEFINITE);
   assert.equal(classOf(signed(429, { error: 'peer_buyer_nonce_limit' }), ctx(PATHS.context)), CLASS.FAILED_BOOTSTRAP);
-  refusedAs(await viaPost(s, PATHS.commitments, 429, { error: 'peer_buyer_nonce_limit' }), CLASS.DEFINITE, 'peer_buyer_nonce_limit', 429);
   assert.equal(classOf(signed(429, {}), ctx(PATHS.payments)), CLASS.UNKNOWN);
+});
+
+test('a signed 429 or an unlisted signed 408 on every other route is unknown and keeps its cause, so a rate limit never ends an agreement', async (t) => {
+  const s = await sellerWorld(t);
+  const retryable = [[429, 'peer_buyer_nonce_limit'], [429, 'seller_rate_limited'], [408, 'explicit_resume_expired'], [408, 'unlisted_code']];
+  for (const path of ALL_PATHS.filter((candidate) => candidate !== PATHS.context && candidate !== PATHS.contextChallenge))
+    for (const [status, code] of retryable) assert.equal(classOf(signed(status, { error: code }), ctx(path)), CLASS.UNKNOWN, `${status} ${code} ${path}`);
+  for (const path of Object.keys(CALLS))
+    for (const [status, code] of retryable) {
+      const outcome = await viaPost(s, path, status, { error: code });
+      unavailableAs(outcome, CLASS.UNKNOWN, 'status-4xx', code);
+      assert.equal(outcome.client.failureCause, 'status-4xx');
+    }
 });
 
 test('other signed 4xx with an error are definite refusals and unsigned 4xx are unknown', async (t) => {
@@ -239,7 +250,7 @@ test('every status, code, route and provenance cell maps to exactly one class', 
     [(cell) => cell.status === 409 && BOOTSTRAP_CODES.includes(cell.code), CLASS.FAILED_BOOTSTRAP], [(cell) => cell.status === 429 && cell.path === PATHS.context, CLASS.FAILED_BOOTSTRAP],
     [(cell) => cell.status === 429 && cell.path === PATHS.contextChallenge, CLASS.DEFINITE],
   ];
-  const unlisted = (cell) => (cell.status === 200 ? CLASS.RESULT : cell.status >= 400 && cell.status < 500 && cell.code !== undefined ? CLASS.DEFINITE : CLASS.UNKNOWN);
+  const unlisted = (cell) => (cell.status === 200 ? CLASS.RESULT : cell.status >= 400 && cell.status < 500 && ![408, 429].includes(cell.status) && cell.code !== undefined ? CLASS.DEFINITE : CLASS.UNKNOWN);
   const codes = [undefined, 'unlisted_code', 'peer_request_replayed', 'seller_effect_pending', 'context_attempt_pending', 'peer_expired', 'seller_stopped', 'seller_effect_unresolved', 'peer_delegation_expired', 'peer_operation_mismatch',
     'bundle_finalization_unavailable', 'not_delivered', 'seller_not_ready', ...BOOTSTRAP_CODES];
   let cells = 0;
