@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateCanonicalJobId } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS as PATHS, signWireResponse } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS as PATHS, openWireRequestJournal, signWireResponse } from '@kynesyslabs/dacs/wire';
 import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
 import { testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
@@ -20,6 +20,7 @@ const { setPurchaseAdmission } = await loadAdmissionDouble();
 setPurchaseAdmission('testnet-tp1');
 const { exchangeAgreement, planAgreement, listingPin } = await import('../../dacs-client/src/dacs/purchase-protocol.mjs');
 const T0 = Date.UTC(2026, 9, 27, 12);
+const JOURNAL_LEASE_MS = 300_000;
 
 // The real buyer coordinator, wire authentication, HTTP client, handler and durable
 // transport store. The agent retains the exact proposal; contribution/anchor work
@@ -46,6 +47,7 @@ async function firstProposalWorld(t) {
     resolveJob: () => ({ listingPin: pin, agreementHash: planned.plan.agreementHash, deadline: planned.draft.terms.deadline }) });
   let request, proposal = null;
   const effects = { proposals: 0, reads: 0, anchors: 0 };
+  const responses = [];
   const faults = { before: async () => {}, answer: async (answer) => answer };
   const agent = { claim: seller.claim, listingPin: pin,
     transportAgreementOf: () => proposal?.plan.draft ?? null,
@@ -56,8 +58,9 @@ async function firstProposalWorld(t) {
   const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: clock });
   t.after(() => store.close());
   const serverAuth = createSellerTransportServerAuth({ sellerSigner, listingPin: pin, store, now: clock });
+  const journal = openWireRequestJournal(await mkdtemp(join(directory, 'wire-')), { leaseMs: JOURNAL_LEASE_MS, clock });
   const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: sellerSigner,
-    journal: {}, store, ready: () => true, now: clock, agent, requireDelegation: false,
+    journal, store, ready: () => true, now: clock, agent, requireDelegation: false,
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
   const handler = createSellerHttpHandler(agent, { authentication: serverAuth, wire: hostWire });
   const client = createSellerAgentClient({ url: 'http://127.0.0.1:1', authentication: {
@@ -68,6 +71,7 @@ async function firstProposalWorld(t) {
     await faults.before(path);
     const answer = await exchange(handler, { url: path, text: options.body, header: options.headers[SELLER_TRANSPORT_HEADER] });
     const final = await faults.answer(answer, path);
+    responses.push({ path, status: final.status, error: JSON.parse(final.text).error, signed: Boolean(final.headers[SELLER_TRANSPORT_HEADER]) });
     return new Response(final.text, { status: final.status, headers: final.headers });
   } });
   const signedError = async (code, status) => {
@@ -80,14 +84,15 @@ async function firstProposalWorld(t) {
     agreementSignature: buyer.signBytes(Buffer.from(planned.agreementMessage)).toString('hex'), seller: client,
     anchorAdapter: { anchorAgreement: () => { effects.anchors++; throw new Error('TEST anchor must not run'); },
       reconcileAgreementAnchor: () => { throw new Error('TEST anchor read must not run'); }, verifyAnchorReceipt: () => 'indeterminate' } });
-  return { run, effects, faults, signedError, client, proposal: () => proposal };
+  return { run, effects, faults, signedError, client, responses, proposal: () => proposal };
 }
 
 test('P11b1L2-T01: the coordinator publishes its first proposal after a verified signed unknown-job state read', async (t) => {
   const w = await firstProposalWorld(t);
   const result = await w.run();
-  assert.equal(result.disposition, 'waiting');
+  assert.equal(result.disposition, 'waiting', JSON.stringify({ result, responses: w.responses }));
   assert.equal(result.stage, 'seller-contribution');
+  assert.deepEqual(w.responses[0], { path: PATHS.state, status: 404, error: 'peer_unknown_job', signed: true });
   assert.deepEqual(w.effects, { proposals: 1, reads: 2, anchors: 0 });
   assert.ok(w.proposal());
 });

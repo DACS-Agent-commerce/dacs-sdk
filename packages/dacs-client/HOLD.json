@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "729b1a1effdf8e27d71bc709929261ef5a36aae7"
+        "blob": "c0770b19887b0099adfcbdcdbd6ac1b28997c192"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1160,7 +1160,7 @@
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
       },
       "src/dacs/purchase-protocol.mjs": {
-        "blob": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b"
+        "blob": "8d7ca761300e216e0785b7e91aee208e39a3a12d"
       },
       "src/dacs/seller-agent-error.mjs": {
         "blob": "a701b193b0b8e1b01237d684ca33c4ee8ea001b6"
