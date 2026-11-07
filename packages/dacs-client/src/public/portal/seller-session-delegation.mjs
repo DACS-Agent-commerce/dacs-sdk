@@ -4,8 +4,12 @@
 // already shows, and the expiry is within fixed bounds. Pure and DOM-free so
 // it can be unit tested in Node. See docs/SELLER-SESSION-DELEGATION.md.
 
-import { isCanonicalJobId } from '@kynesyslabs/dacs';
 import { assertSellerSessionLifetime, SELLER_SESSION_MAX_LIFETIME_MS } from '../../dacs/seller-session-limits.mjs';
+
+// JID-1 canonical job ID: 26-character uppercase Crockford-Base32 ULID. Local
+// copy of the SDK's isCanonicalJobId, which a browser cannot import.
+const CANONICAL_JOB_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+export const isCanonicalJobId = (value) => typeof value === 'string' && CANONICAL_JOB_ID.test(value);
 
 export const SELLER_SESSION_DELEGATION_PREFIX = 'dacs-chatgpt-plugin:seller-session-delegation:v1:';
 export const SELLER_SESSION_DELEGATION_BOUNDS = Object.freeze({
