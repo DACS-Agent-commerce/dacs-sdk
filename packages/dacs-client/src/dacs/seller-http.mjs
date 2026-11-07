@@ -281,7 +281,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
   // One absolute deadline includes storage, authority reads, signing, delays and transport.
   async function post(path, body) {
     const deadline = clock.now() + routeDeadlineMs(path);
-    let unknown;
+    let unknown, unknownCause;
     for (let retry = 0; ; retry++) {
       if (clock.now() >= deadline) {
         if (unknown) throw unknown;
@@ -298,8 +298,10 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       } catch (error) {
         if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
         attempt?.finish(error.answerClass);
+        // A retry that fails before dispatch is recorded as unsent, but the call still owes the earlier send's unknown outcome.
+        if (unknown && error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT) { lastFailureCause = unknownCause; lastFailureDispatched = undefined; throw unknown; }
         if (!authentication || !attempt?.stored || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
-        unknown = error;
+        unknown = error; unknownCause = lastFailureCause;
       }
       await clock.sleep(SELLER_RETRY_DELAY_MS);
     }

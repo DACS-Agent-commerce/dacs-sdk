@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { storedWorld, PATHS, bodyFor } from './helpers/stored-request-fixture.mjs';
 import { signatureCommitmentAnchor } from '../src/dacs/commit-on-signature.mjs';
+import { SellerTlsUnusableError, sellerFailureAttempt } from '../src/dacs/seller-http.mjs';
 const P = PATHS.proposals;
 const timeout = e => e.causeCode === 'timeout';
 
@@ -35,12 +36,34 @@ for (const boundary of ['storage', 'evidence', 'authority', 'connection-check', 
   });
 }
 
-test('a retry storage overrun clears only that unsent attempt and retains the earlier unknown', async t => {
+const earlierUnknown = (client) => e => e.answerClass === 'unknown' && e.causeCode === 'status-5xx' && sellerFailureAttempt(e).dispatched === undefined
+  && client.failureCause === 'status-5xx' && client.failureDispatched === undefined;
+
+test('a retry storage overrun clears only that unsent attempt and returns the earlier unknown', async t => {
   t.mock.method(AbortSignal, 'timeout', () => new AbortController().signal);
   const s = await storedWorld(t); let starts = 0;
   const records = s.records(), requestRecords = { ...records, start(...args) { const attempt = records.start(...args); if (++starts === 2) s.advance(15000); return attempt; } };
-  await assert.rejects(s.client({ requestRecords, respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).propose(bodyFor(P)), timeout);
+  const client = s.client({ requestRecords, respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) });
+  await assert.rejects(client.propose(bodyFor(P)), earlierUnknown(client));
   assert.equal(s.fetches.length, 1); assert.equal(s.w.state.signs.length, 1);
+  assert.equal(s.record(P).attempts, 2); assert.equal(s.record(P).clearAttempts, 1);
+});
+
+test('a retry whose signer fails clears only that unsent attempt and returns the earlier unknown', async t => {
+  const s = await storedWorld(t); let signs = 0;
+  const authentication = s.w.createSellerWireAuthentication({ ...s.w.options, sessionSigner: { claim: s.w.session.claim, sign(bytes) { if (++signs === 2) throw new Error('TEST-sign'); return s.w.session.sign(bytes); } } });
+  const client = s.client({ authentication, respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) });
+  await assert.rejects(client.propose(bodyFor(P)), earlierUnknown(client));
+  assert.equal(signs, 2); assert.equal(s.fetches.length, 1); assert.deepEqual(s.delays, [5000]);
+  assert.equal(s.record(P).attempts, 2); assert.equal(s.record(P).clearAttempts, 1);
+});
+
+test('a retry stopped by the local certificate guard returns the earlier unknown', async t => {
+  const s = await storedWorld(t); let signs = 0;
+  const authentication = { ...s.auth, async request(...args) { if (++signs === 2) throw new SellerTlsUnusableError('TEST-TLS'); return s.auth.request(...args); } };
+  const client = s.client({ authentication, respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) });
+  await assert.rejects(client.propose(bodyFor(P)), earlierUnknown(client));
+  assert.equal(s.fetches.length, 1); assert.deepEqual(s.delays, [5000]);
   assert.equal(s.record(P).attempts, 2); assert.equal(s.record(P).clearAttempts, 1);
 });
 
