@@ -6,14 +6,15 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync } from 'node:fs';
+import fs, { mkdirSync, readdirSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, compositeVerificationAddress, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_CAPABILITIES, WireError, admitWireArtifact, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_CAPABILITIES, WireError, admitWireArtifact, inspectWireOperation, openWireRequestJournal, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { proposalForInput } from './helpers/proposal-admission-fixture.mjs';
@@ -152,16 +153,22 @@ async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader()
     agent.continuationEvidenceOf = (jobId) => fixture.agent().continuationEvidenceOf(jobId);
   }
   const handle = { store: null, handler: null, finishFails: false, wireOverrides: {} };
+  const link = fs.linkSync;
+  mock.method(fs, 'linkSync', (source, destination) => {
+    if (handle.finishFails && destination.endsWith('.end')) throw new Error('TEST process died before outcome publication');
+    return link(source, destination);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { mock.restoreAll(); syncBuiltinESMExports(); });
   const mount = () => {
     if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
-    const store = createSellerTransportStore({ path: storePath, maxJobs, maxRecords, now: clock });
+    const store = createSellerTransportStore({ path: storePath, maxJobs, maxRecords, now: clock, wireOperationView: target => inspectWireOperation(handle.wire.journal, target) });
     const finish = store.finish.bind(store);
     store.finish = (...args) => { if (handle.finishFails) throw new Error('TEST process died before the answer was stored'); return finish(...args); };
     const reserve = store.reserve.bind(store);
     store.reserve = (...args) => { state.readsAtReserve = state.authorityReads; return reserve(...args); };
-    const journalDirectory = join(directory, `wire-journal-${state.journals.length}`);
-    mkdirSync(journalDirectory, { mode: 0o700 });
-    state.journals.push(journalDirectory);
+    const journalDirectory = join(directory, 'wire-journal');
+    if (state.journals.length === 0) { mkdirSync(journalDirectory, { mode: 0o700 }); state.journals.push(journalDirectory); }
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: JOURNAL_LEASE_MS, clock });
     const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: pin, store, now: clock });
     const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
@@ -1339,4 +1346,176 @@ test('a cached payment refresh that finds its request expired at the job fence s
   const text = JSON.stringify(w.bodyFor(PATHS.payments)), payload = w.payloadFor(PATHS.payments, text, { jobId: w.jobId, agreementHash: w.agreementHash, expiresAt: NOW + 1000 });
   assert.equal((await w.send(PATHS.payments, { text, payload, header: w.headerFor(payload) })).status, 200, 'the replay refreshes the cached answer');
   assert.deepEqual(checks, ['live', 'peer_expired', 'peer_expired'], 'the expiry the fence saw is kept');
+});
+
+// P11b1L3: production HTTP dispatch over the real SQL store and wire journal.
+function accountingRows(w) {
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { return db.prepare('SELECT * FROM kit_reservations ORDER BY rowid').all(); } finally { db.close(); }
+}
+function accountingCut(w, change) {
+  const accounting = w.handle.store.reservationAccounting, reserve = accounting.reserveAccounted.bind(accounting);
+  accounting.reserveAccounted = input => reserve(change(input));
+}
+function failSql(t, match) {
+  const prepare = DatabaseSync.prototype.prepare;
+  return t.mock.method(DatabaseSync.prototype, 'prepare', function(sql) {
+    if (match(sql)) throw new Error('TEST accounting write interrupted');
+    return prepare.call(this, sql);
+  });
+}
+
+test('host wire effects account before publishing and invoking the agent', async (t) => {
+  const w = await continuingWorld(t);
+  w.agent.onWork = kind => {
+    if (kind === 'commit-read') return;
+    const row = accountingRows(w).at(-1);
+    assert.equal(row?.state, 'new', 'accounting committed before agent work');
+    assert.equal(inspectWireOperation(w.handle.wire.journal, { seller: seller.claim, jobId: row.jobId, path: row.route }).state, 'pending');
+  };
+  for (const path of EFFECTS.slice(1)) assert.equal((await w.request(path)).status, 200, path);
+  assert.deepEqual(accountingRows(w).map(row => row.route), EFFECTS);
+  assert.equal(w.rows().peer_effects, 0);
+  assert.equal(w.journalFiles().filter(name => name.startsWith('k-')).length, EFFECTS.length);
+});
+
+test('host wire reads leave accounting and journal unchanged', async (t) => {
+  const w = await continuingWorld(t), before = accountingRows(w), files = w.journalFiles();
+  for (const path of [PATHS.state, PATHS.bundleBuyerCopy]) assert.equal((await w.request(path)).status, 200);
+  assert.equal(before.length, 1);
+  assert.deepEqual(accountingRows(w), before); assert.deepEqual(w.journalFiles(), files);
+});
+
+test('host wire failed accounting commit publishes nothing', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-rollback');
+  const failure = failSql(t, sql => sql.includes('INSERT INTO kit_reservations'));
+  assert.equal((await job.post()).status, 503); failure.mock.restore();
+  assert.deepEqual(accountingRows(w), []); assert.deepEqual(w.journalFiles(), []);
+  assert.equal(w.rows().kit_purchase_profiles, 0); assert.equal(w.agent.calls.proposals, 0);
+  w.reopen(); assert.equal((await job.post()).status, 200); assert.equal(accountingRows(w).length, 1);
+});
+
+test('host wire restart after accounting commit retains the charge without publication', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-before-reserve');
+  accountingCut(w, input => ({ ...input, checked: { ...input.checked, reserve: async () => { throw new Error('TEST cut before reserve'); } } }));
+  assert.equal((await job.post()).status, 503);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving']);
+  assert.deepEqual(w.journalFiles(), []); assert.equal(w.agent.calls.proposals, 0);
+  w.reopen(); assert.equal((await job.post()).status, 200);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving', 'new']); assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('host wire nonce-only publication never authorizes recovery', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-nonce'), link = fs.linkSync;
+  const cut = t.mock.method(fs, 'linkSync', (source, destination) => {
+    if (/o-.*-0$/.test(destination)) throw new Error('TEST cut before attempt');
+    return link(source, destination);
+  });
+  syncBuiltinESMExports(); assert.equal((await job.post()).status, 503);
+  cut.mock.restore(); syncBuiltinESMExports();
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving']); assert.equal(w.journalFiles().length, 1);
+  w.reopen(); assert.equal((await job.post()).status, 200);
+  assert.equal(w.agent.calls.reconciled, 0); assert.equal(w.agent.calls.proposals, 1); assert.equal(accountingRows(w).length, 2);
+});
+
+test('host wire restart after publication retains the reserving row and attempt', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-after-reserve');
+  const failure = failSql(t, sql => sql.includes('UPDATE kit_reservations SET state'));
+  assert.equal((await job.post()).status, 503); failure.mock.restore();
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving']);
+  assert.equal(w.journalFiles().filter(name => /^o-.*-0$/.test(name)).length, 1); assert.equal(w.agent.calls.proposals, 0);
+  w.reopen(); assert.equal((await job.post()).body.error, 'seller_effect_pending'); w.state.time += JOURNAL_LEASE_MS;
+  assert.equal((await job.post()).status, 200);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving', 'refused', 'recover']);
+  assert.equal(w.agent.calls.proposals, 0); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire late refusal retains its accounting charge and original code', async (t) => {
+  for (const failedSave of [false, true]) {
+    const w = await world(t), job = await proposeJob(w, 'accounting-refusal-' + failedSave);
+    accountingCut(w, input => ({ ...input, checked: { ...input.checked, reserve: async () => { throw new WireError('peer_expired', 408); } } }));
+    const failure = failedSave ? failSql(t, sql => sql.includes('UPDATE kit_reservations SET state')) : null;
+    const answer = await job.post(); failure?.mock.restore();
+    assert.deepEqual([answer.status, answer.body.error], [408, 'peer_expired']);
+    assert.equal(accountingRows(w)[0].state, failedSave ? 'reserving' : 'refused');
+    assert.equal(accountingRows(w)[0].code, failedSave ? null : 'peer_expired');
+    assert.deepEqual(w.journalFiles(), []); assert.equal(w.agent.calls.proposals, 0);
+    w.reopen(); assert.equal(accountingRows(w).length, 1);
+  }
+});
+
+test('host wire restart reconciles an issued recovery attempt without repeating the effect', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-outcome-cut'); w.handle.finishFails = true;
+  assert.equal((await job.post()).status, 503); assert.equal(w.agent.calls.proposals, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new']);
+  w.reopen(); assert.equal((await job.post()).body.error, 'seller_effect_pending'); w.state.time += JOURNAL_LEASE_MS;
+  assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire lost response reuses the completed outcome after restart', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-lost-response'); w.signing.failures = 2;
+  assert.equal((await job.post()).status, 503); assert.deepEqual(accountingRows(w).map(row => row.state), ['new']);
+  assert.equal(w.journalFiles().filter(name => name.endsWith('.done')).length, 1);
+  w.reopen(); const answer = await job.post(); assert.equal(answer.status, 200);
+  assert.equal((await w.verified(answer)).body.disposition, 'complete');
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'completed']); assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('host wire retained progress stays pending until lease recovery', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-progress');
+  w.agent.retains = true; w.agent.answer = () => ({ disposition: 'waiting' });
+  assert.equal((await job.post()).body.disposition, 'waiting'); assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  assert.equal(w.agent.calls.proposals, 1); assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'refused']);
+  assert.equal(w.journalFiles().some(name => name.endsWith('.done') || name.endsWith('.end')), false);
+  w.reopen(); w.state.time += JOURNAL_LEASE_MS; assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire proven no-effect answer ends null without losing the charge', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-null'); w.agent.answer = () => ({ disposition: 'rejected' });
+  assert.equal((await job.post()).body.disposition, 'rejected'); assert.equal(w.journalFiles().filter(name => name.endsWith('.end')).length, 1);
+  assert.equal(w.journalFiles().some(name => name.endsWith('.done')), false);
+  w.reopen(); assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1); assert.equal(w.agent.calls.reconciled, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'recover']);
+});
+
+test('host wire binding mismatches and pending polls are accounted', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-polls');
+  w.agent.retains = true; w.agent.answer = () => ({ disposition: 'waiting' }); assert.equal((await job.post()).status, 200);
+  assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  accountingCut(w, input => ({ ...input, checked: { ...input.checked, reserve: async () => { throw new WireError('peer_operation_mismatch', 409); } } }));
+  assert.equal((await job.post()).body.error, 'peer_operation_mismatch');
+  assert.deepEqual(accountingRows(w).map(row => [row.class, row.state, row.code]), [
+    ['general', 'new', null], ['general', 'refused', 'seller_effect_pending'], ['general', 'refused', 'peer_operation_mismatch'],
+  ]); assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('host wire payments retain only the admitted transaction claim', async (t) => {
+  const w = await continuingWorld(t); assert.equal((await w.request(PATHS.payments)).status, 200);
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { assert.deepEqual(db.prepare('SELECT * FROM kit_payment_transactions').all(), [{ tx: w.bodyFor(PATHS.payments).txHash, jobId: w.jobId,
+    operationId: wireOperationId({ seller: seller.claim, jobId: w.jobId, path: PATHS.payments }) }]); } finally { db.close(); }
+  assert.equal(w.agent.calls.payments, 1);
+});
+
+test('host wire recovery claim preserves expiry and rejects repeated claims', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-expired-claim'); w.handle.finishFails = true;
+  assert.equal((await job.post()).status, 503); w.reopen(); w.state.time += JOURNAL_LEASE_MS;
+  w.agent.reconcileTransport = async ({ request, transport }) => {
+    w.state.time = request.expiresAt; assert.equal(transport.claim().live, false);
+    assert.throws(() => transport.claim(), { code: 'peer_reconciliation_conflict' }); w.state.time--;
+    assert.throws(() => transport.settle({ status: 200, value: {}, noEffect: true }), { code: 'peer_expired' });
+    transport.settle({ status: 200, value: { disposition: 'complete' } });
+  };
+  assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('host wire superseded worker cannot complete a newer attempt', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-superseded'); let unblock, entered;
+  const paused = new Promise(resolve => { entered = resolve; }), barrier = new Promise(resolve => { unblock = resolve; });
+  const receive = w.agent.receiveProposal;
+  w.agent.receiveProposal = async (...args) => { const result = await receive(...args); entered(); await barrier; return result; };
+  const first = job.post(); await paused; w.state.time += JOURNAL_LEASE_MS;
+  assert.equal((await job.post()).status, 200); unblock(); assert.equal((await first).status, 503);
+  assert.equal(w.agent.calls.proposals, 1); assert.equal(w.agent.calls.reconciled, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'recover']);
 });
