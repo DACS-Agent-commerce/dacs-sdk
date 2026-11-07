@@ -319,10 +319,10 @@ function storedRequestBody(record, path) {
  * Creates the request records of one flow, bound to its `{get(), set(next)}` holder over the purchase row (DC-CW5).
  * `start(path, body)` runs in one transaction: it reloads the row, refuses a purchase that no longer authorizes the
  * request, stores the exact bytes (or finds the stored ones) and counts the attempt by revision compare-and-set, then
- * returns the attempt `{text, continuation, newPurchase, check(), finish(answerClass)}`. Throws StaleProtocolCheck when
+ * returns the attempt `{text, stored, continuation, newPurchase, check(), finish(answerClass)}` (`stored` is false for reads). Throws StaleProtocolCheck when
  * the row moved on, stored_request_mismatch when the body differs from the stored one, stored_request_corrupt when the
  * stored bytes fail their hash, and invalid_state when the purchase is ended, expired or suspended.
- * `failure(error)` records, for the operator, a refusal that nothing else sees.
+ * `failure(error)` records a swallowed failure for the operator, retaining its bounded class and cause.
  */
 export function createSellerRequestRecords({ db, ops, transaction, holder, now }) {
   // The stored row; changes made only by request records or kept pointers are adopted, any other change is stale.
@@ -360,7 +360,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     if (prior.stage !== stage && !(SELLER_REQUEST_POLICY[path].retained && REPLAY_STAGES.has(stage))) throw new StaleProtocolCheck(row);
     return stored.text;
   }
-  const attemptFor = (path, text, newPurchase, finish) => ({ text, continuation: false, newPurchase, check: () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }, finish });
+  const attemptFor = (path, text, newPurchase, finish) => ({ text, stored: SELLER_REQUEST_POLICY[path].durable, continuation: false, newPurchase, check: () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }, finish });
   return {
     start(path, body) {
       const result = transaction(db, () => {
@@ -386,7 +386,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
       holder.set(result.row);
       return result.attempt;
     },
-    failure(error) { ops.record(holder.get().id, 'seller_request_refused', { code: error?.code ?? 'other' }); },
+    failure(error) { ops.record(holder.get().id, 'seller_request_failed', { code: error instanceof OperationError ? error.code : 'seller_unavailable', ...(Object.values(SELLER_ANSWER_CLASS).includes(error?.answerClass) ? { answerClass: error.answerClass } : {}), ...(sellerFailureCause(error?.causeCode) ? { causeCode: error.causeCode } : {}) }); },
   };
 }
 
