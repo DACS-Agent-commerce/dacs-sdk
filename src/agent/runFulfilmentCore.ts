@@ -25,7 +25,6 @@ import {
 import {
   canonicalize,
   contentHash,
-  encodeAddressSegment,
   sha256Hex,
 } from "../canonical/index.js";
 import { signedBytes, type DomainSeparator } from "../crypto/index.js";
@@ -45,10 +44,16 @@ import {
 } from "../seller/paymentIntake.js";
 import {
   SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+  SELLER_FULFILMENT_VET_MODES,
   isSellerFulfilmentAuditSource,
+  isSellerFulfilmentVetInvocationMismatch,
+  sellerFulfilmentVetBindingsOf,
+  sellerFulfilmentVetModeOf,
+  sellerFulfilmentVetRequirementMembers,
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
   type SellerFulfilmentSessionRecord,
+  type SellerFulfilmentVetMode,
   type SellerSessionPhaseEntry,
   type SellerSessionPhaseHandlerResult,
 } from "../seller/fulfilmentAuditSource.js";
@@ -445,6 +450,10 @@ interface SellerFulfilmentDepsBase {
 /** V2-only fulfilment dependencies with one atomic authenticated audit source. */
 export interface SellerFulfilmentDeps extends SellerFulfilmentDepsBase {
   auditSourceProfile: "v2";
+  /** Opt in only after strict presence replay; completed-bundle finalization is unsupported. */
+  acceptsPresenceOnlyVetRequirements?: true;
+  /** Set only by a trusted host; absent means `counterparty`, unsupported is refused. */
+  vetMode?: SellerFulfilmentVetMode;
   resolveAuditSource: SellerFulfilmentAuditSourceResolver;
 }
 
@@ -469,6 +478,8 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const resolveListingSource = source.resolveListing;
     const resolveAuditSourceSource = source.resolveAuditSource;
     const auditSourceProfile = source.auditSourceProfile;
+    const acceptsPresenceOnlyVetRequirements = source.acceptsPresenceOnlyVetRequirements === true ? true : undefined;
+    const vetMode = sellerFulfilmentVetModeOf(source.vetMode);
     const prepareDeliverySource = source.prepareDelivery;
     const submitDeliverySource = source.submitDelivery;
     const reconcileDeliverySource = source.reconcileDelivery;
@@ -493,6 +504,9 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
 
     if (auditSourceProfile !== "v2") {
       return { status: "invalid", reason: "fulfilment audit-source profile is unsupported" };
+    }
+    if (vetMode === null) {
+      return { status: "invalid", reason: "fulfilment Vet mode is unsupported" };
     }
 
     if (!receiptStoreSource || typeof receiptStoreSource !== "object" ||
@@ -575,6 +589,8 @@ function captureSellerFulfilmentDeps(source: SellerFulfilmentDeps): SellerFulfil
     const captured = Object.freeze({
       receiptStore,
       auditSourceProfile,
+      acceptsPresenceOnlyVetRequirements,
+      vetMode,
       resolveAgreement: bindCaptured(resolveAgreementSource, source),
       resolveListing: bindCaptured(resolveListingSource, source),
       resolveAuditSource: bindCaptured(resolveAuditSourceSource, source),
@@ -1455,6 +1471,8 @@ function auditSourceViolation(
   request: SellerFulfilmentRequest,
   deliveryPhaseIndex: number,
   expectedCommitmentAddress: string,
+  vetMode: SellerFulfilmentVetMode,
+  acceptsPresenceOnly?: true,
 ): string | null {
   if (!isSellerFulfilmentAuditSource(source)) {
     return "audit source is not the strict versioned operational provenance shape";
@@ -1488,30 +1506,9 @@ function auditSourceViolation(
       authorization.commitment.signer !== orchestrator.primaryClaim) {
     return "audit source does not bind the exact finalized AgreementCommitment";
   }
-  const partyVetBindings = session.parties.flatMap((party) =>
-    party.vetRecordRef === undefined
-      ? []
-      : [{ party, key: canonicalize(party.vetRecordRef) }]);
-  const uniquePartyVetBindings = new Map<
-    string,
-    { primaryClaim: string; bundleHash: string; roles: Set<string> }
-  >();
-  for (const binding of partyVetBindings) {
-    const existing = uniquePartyVetBindings.get(binding.key);
-    if (existing &&
-        (existing.primaryClaim !== binding.party.primaryClaim ||
-          existing.bundleHash !== binding.party.bundleHash)) {
-      return "one Vet record cannot represent different authenticated party identities";
-    }
-    if (existing) {
-      existing.roles.add(binding.party.role);
-    } else {
-      uniquePartyVetBindings.set(binding.key, {
-        primaryClaim: binding.party.primaryClaim,
-        bundleHash: binding.party.bundleHash,
-        roles: new Set([binding.party.role]),
-      });
-    }
+  const uniquePartyVetBindings = sellerFulfilmentVetBindingsOf(session.parties);
+  if (!uniquePartyVetBindings) {
+    return "one Vet record cannot represent different authenticated party identities";
   }
   const sessionVetRefs = [...uniquePartyVetBindings.keys()];
   const inventoryVetRefs = source.artifacts.vetRecords.map((ref) => canonicalize(ref));
@@ -1526,60 +1523,21 @@ function auditSourceViolation(
       !exact(sellerParty.vetRecordRef, agreement.seller.vetRecordRef)) {
     return "audit source party Vet references differ from the committed Agreement";
   }
-  if (source.artifacts.vetRequirements.some((invocation) => {
-    const key = canonicalize(invocation.vetRecordRef);
-    const binding = uniquePartyVetBindings.get(key);
-    const expectedResults = [...invocation.freshness, ...invocation.dealSpecific];
-    const requirementCandidates = [
-      ...invocation.requirement.required,
-      ...(invocation.requirement.oneOf ?? []).flat(),
-    ];
-    const seenResultRefs = new Set<string>();
-    const seenResultHashes = new Set<string>();
-    const listingOwned = binding?.roles.has("buyer") === true;
-    const expectedVerifier = listingOwned
-      ? sellerParty.primaryClaim
-      : binding?.roles.has("seller") === true
-        ? buyerParty.primaryClaim
-        : undefined;
-    const expectedCompositeAddress =
-      `dacs2:composite:${authorization.jobId}:${encodeAddressSegment(invocation.evaluatedParty)}`;
-    const uncoveredRequired = invocation.requirement.required.some(
-      (required) => !expectedResults.some((result) =>
-        result.scheme === required.scheme && exact(result.requirement, required)),
-    );
-    const uncoveredOneOf = (invocation.requirement.oneOf ?? []).some(
-      (group) => group.length === 0 || !group.some((alternative) =>
-        expectedResults.some((result) =>
-          result.scheme === alternative.scheme && exact(result.requirement, alternative))),
-    );
-    return !binding || expectedVerifier === undefined ||
-      invocation.evaluatedParty !== binding.primaryClaim ||
-      invocation.verifier !== expectedVerifier ||
-      invocation.vetRecordRef.anchor.kind !== "storage-program" ||
-      invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
-      (invocation.vetRecordRef.signer !== undefined &&
-        invocation.vetRecordRef.signer !== invocation.verifier) ||
-      (listingOwned && !exact(invocation.requirement, listing.buyerRequirement)) ||
-      invocation.dealSpecific.some((result) => result.sourceJobId !== authorization.jobId) ||
-      uncoveredRequired || uncoveredOneOf ||
-      expectedResults.some((result) => {
-        const refKey = canonicalize(result.ref);
-        const expectedResultAddress =
-          `dacs2:${result.sourceJobId}:${result.scheme}:` +
-          `${encodeAddressSegment(result.identifier)}:v${result.ref.recipeVersion}`;
-        const duplicate = seenResultRefs.has(refKey) ||
-          seenResultHashes.has(result.ref.contentHash);
-        seenResultRefs.add(refKey);
-        seenResultHashes.add(result.ref.contentHash);
-        return duplicate || result.scheme !== result.requirement.scheme ||
-          result.ref.anchor.kind !== "storage-program" ||
-          result.ref.anchor.locator !== expectedResultAddress ||
-          !requirementCandidates.some((candidate) => exact(candidate, result.requirement)) ||
-          (result.requirement.recipeVersion !== undefined &&
-            result.ref.recipeVersion !== result.requirement.recipeVersion);
-      });
-  })) {
+  const invocationContext = {
+    jobId: authorization.jobId,
+    buyerClaim: buyerParty.primaryClaim,
+    sellerClaim: sellerParty.primaryClaim,
+    buyerRequirement: listing.buyerRequirement,
+    bindings: uniquePartyVetBindings,
+    acceptsPresenceOnly,
+    vetMode,
+  };
+  if (acceptsPresenceOnly !== true && source.artifacts.vetRequirements.some((invocation) =>
+    sellerFulfilmentVetRequirementMembers(invocation.requirement).some((member) => !member.verificationRequired))) {
+    return "core delivery cannot finalize presence-only Vet requirements";
+  }
+  if (source.artifacts.vetRequirements.some((invocation) =>
+    isSellerFulfilmentVetInvocationMismatch(invocation, invocationContext))) {
     return "audit source Vet provenance differs from the authenticated party/orchestrator bindings";
   }
 
@@ -1798,6 +1756,7 @@ export function sellerFulfilmentAuditSourceViolation(
     request,
     deliveryPhaseIndex,
     expectedCommitmentAddress,
+    SELLER_FULFILMENT_VET_MODES.counterparty,
   );
 }
 
@@ -3482,6 +3441,8 @@ async function runFulfilmentCoreInner(
     request,
     request.deliveryPhaseIndex,
     expectedCommitmentAddress,
+    deps.vetMode ?? SELLER_FULFILMENT_VET_MODES.counterparty,
+    deps.acceptsPresenceOnlyVetRequirements,
   );
   if (auditViolation) return rejected("audit-source-mismatch", auditViolation);
   const derivedHash = sellerFulfilmentAuditSourceHash(auditSource);
