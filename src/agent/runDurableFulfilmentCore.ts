@@ -21,8 +21,11 @@ import {
 } from "../seller/paymentIntake.js";
 import {
   SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR,
+  SELLER_FULFILMENT_VET_MODES,
   isSellerFulfilmentAuditSource,
   isSellerFulfilmentSessionRecord,
+  sellerFulfilmentRetainedVetModeViolation,
+  sellerFulfilmentVetModeOf,
   type SellerFulfilmentAuditArtifactsV1,
   type SellerFulfilmentSessionRecord,
 } from "../seller/fulfilmentAuditSource.js";
@@ -1082,6 +1085,8 @@ function captureStore(source: FencedSessionStoreV2): FencedSessionStoreV2 {
 function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilmentDeps {
   const receiptStoreSource = source.receiptStore;
   const auditSourceProfile = source.auditSourceProfile;
+  const acceptsPresenceOnlyVetRequirements = source.acceptsPresenceOnlyVetRequirements === true ? true : undefined;
+  const vetMode = sellerFulfilmentVetModeOf(source.vetMode);
   const resolveAuditSourceSource = source.resolveAuditSource;
   const resolveAgreementSource = source.resolveAgreement;
   const resolveListingSource = source.resolveListing;
@@ -1112,6 +1117,9 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
       typeof auditSourceCommitmentSignerSource !== "object" ||
       auditSourceProfile !== "v2") {
     throw new TypeError("receipt store, audit profile, or fulfilment signer is unavailable");
+  }
+  if (vetMode === null) {
+    throw new TypeError("the durable fulfilment Vet mode is unsupported");
   }
   const claimSource = receiptStoreSource.claim;
   const inspectPermitSource = receiptStoreSource.inspectPermit;
@@ -1158,6 +1166,8 @@ function captureDeps(source: DurableSellerFulfilmentDeps): DurableSellerFulfilme
   }
   const captured: DurableSellerFulfilmentDeps = Object.freeze({
     auditSourceProfile,
+    acceptsPresenceOnlyVetRequirements,
+    vetMode,
     receiptStore: Object.freeze({
       claim: bindCaptured(claimSource, receiptStoreSource),
       inspectPermit: bindCaptured(inspectPermitSource, receiptStoreSource),
@@ -1694,6 +1704,11 @@ class DurableCoordinator {
   async establish(claim: unknown, handoff: unknown): Promise<void> {
     const authority = deriveConsumedAuthority(claim, handoff);
     assertRequestBindsConsumedAuthority(this.#request, authority);
+    // Every replay, handle projection and resume runs after establishment, so one check here keeps
+    // retained Vet provenance of the other mode from being continued.
+    const vetModeViolation = sellerFulfilmentRetainedVetModeViolation(
+      authority.handoff.auditSource, this.#deps.vetMode ?? SELLER_FULFILMENT_VET_MODES.counterparty);
+    if (vetModeViolation) throw new Error(`vet_mode_mismatch: ${vetModeViolation}`);
     if (this.#authority) {
       if (!exact(this.#authority.binding, authority.binding) ||
           this.#authority.handoffEncoded !== authority.handoffEncoded ||

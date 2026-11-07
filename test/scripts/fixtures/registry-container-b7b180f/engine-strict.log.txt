@@ -1,0 +1,50 @@
+npm warn ERESOLVE overriding peer dependency
+npm warn While resolving: @ton/ton@15.4.0
+npm warn Found: @ton/core@0.59.1
+npm warn node_modules/@toncodex/sdk/node_modules/@ton/core
+npm warn   @ton/core@"^0.59.0" from @toncodex/sdk@1.0.26
+npm warn   node_modules/@toncodex/sdk
+npm warn     @toncodex/sdk@"1.0.26" from rubic-sdk@5.57.4
+npm warn     node_modules/rubic-sdk
+npm warn
+npm warn Could not resolve dependency:
+npm warn peer @ton/core@">=0.62.0 <1.0.0" from @ton/ton@15.4.0
+npm warn node_modules/@toncodex/sdk/node_modules/@ton/ton
+npm warn   @ton/ton@"^15.1.0" from @toncodex/sdk@1.0.26
+npm warn   node_modules/@toncodex/sdk
+npm warn
+npm warn Conflicting peer dependency: @ton/core@0.63.1
+npm warn node_modules/@ton/core
+npm warn   peer @ton/core@">=0.62.0 <1.0.0" from @ton/ton@15.4.0
+npm warn   node_modules/@toncodex/sdk/node_modules/@ton/ton
+npm warn     @ton/ton@"^15.1.0" from @toncodex/sdk@1.0.26
+npm warn     node_modules/@toncodex/sdk
+npm warn ERESOLVE overriding peer dependency
+npm warn While resolving: @solana/spl-token@0.4.15
+npm warn Found: @solana/web3.js@1.89.1
+npm warn node_modules/rubic-sdk/node_modules/@solana/web3.js
+npm warn   @solana/web3.js@"1.89.1" from rubic-sdk@5.57.4
+npm warn   node_modules/rubic-sdk
+npm warn     optional rubic-sdk@"^5.57.4" from @kynesyslabs/demosdk@4.0.16
+npm warn     node_modules/@kynesyslabs/demosdk
+npm warn   1 more (@solana/buffer-layout-utils)
+npm warn
+npm warn Could not resolve dependency:
+npm warn peer @solana/web3.js@"^1.95.5" from @solana/spl-token@0.4.15
+npm warn node_modules/rubic-sdk/node_modules/@solana/spl-token
+npm warn   @solana/spl-token@"^0.4.8" from rubic-sdk@5.57.4
+npm warn   node_modules/rubic-sdk
+npm warn
+npm warn Conflicting peer dependency: @solana/web3.js@1.99.0
+npm warn node_modules/@solana/web3.js
+npm warn   peer @solana/web3.js@"^1.95.5" from @solana/spl-token@0.4.15
+npm warn   node_modules/rubic-sdk/node_modules/@solana/spl-token
+npm warn     @solana/spl-token@"^0.4.8" from rubic-sdk@5.57.4
+npm warn     node_modules/rubic-sdk
+npm error code EBADENGINE
+npm error engine Unsupported engine
+npm error engine Not compatible with your version of node/npm: @npmcli/agent@5.0.2
+npm error notsup Not compatible with your version of node/npm: @npmcli/agent@5.0.2
+npm error notsup Required: {"node":"^22.22.2 || ^24.15.0 || >=26.0.0"}
+npm error notsup Actual:   {"node":"v20.19.1","npm":"11.19.0"}
+npm error A complete log of this run can be found in: /root/.npm/_logs/2026-10-12T06_59_51_955Z-debug-0.log

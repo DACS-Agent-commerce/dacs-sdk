@@ -91,6 +91,17 @@ test('removing a delta record cannot hide its historical file changes', t => {
   assert.equal(result.status, 1, result.text);
   assert.match(result.text, /unenumerated change/);
 });
+test('removing a bookkeeping checkpoint is also refused', t => {
+  const dir = scratch(t), file = join(dir, 'packages/dacs-client/DELTA-LEDGER.json');
+  const data = JSON.parse(readFileSync(file, 'utf8'));
+  const index = data.changes.findLastIndex(record => record.files.every(file => file.before === file.after));
+  assert.ok(index >= 0, 'the ledger must contain a bookkeeping checkpoint');
+  data.changes.splice(index, 1);
+  writeFileSync(file, JSON.stringify(data));
+  const result = check(dir);
+  assert.equal(result.status, 1, result.text);
+  assert.match(result.text, /differs from generated Git table/);
+});
 test('a later commit with an unlisted moved-file edit is refused',t=>{const dir=scratch(t);appendFileSync(join(dir,moved),'\n// TEST later commit\n');execFileSync('git',['-C',dir,'add',moved]);execFileSync('git',['-C',dir,'-c','user.name=the SDK maintainer','-c','user.email=maintainer@example.invalid','commit','--quiet','-m','delta(client): D15 TEST unlisted change']);const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/unenumerated change/);});
 test('the per-file Markdown table is checked, not trusted',t=>{const dir=scratch(t);appendFileSync(join(dir,'packages/dacs-client/DELTA-MAP.md'),'TEST drift\n');const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/differs from generated Git table/);});
 
@@ -155,3 +166,107 @@ for (const subject of ['delta(client): D11 TEST accepted source repair', 'fix(cl
   result=check(dir);assert.equal(result.status,1,result.text);assert.match(result.text,/invalid delta/);
  });
 }
+
+function scratchGit(dir){return (...args)=>execFileSync('git',['-C',dir,'-c','user.name=SDK tests','-c','user.email=tests@example.invalid','-c','commit.gpgsign=false',...args],{encoding:'utf8'}).trim();}
+const control=['packages/dacs-client/DELTA-COMMITS.json','packages/dacs-client/DELTA-LEDGER.json','packages/dacs-client/DELTA-MAP.md'];
+// Commits one recorded change to the moved file. The inventory row stays
+// unhashed, as for any record commit, unless a later edit qualifies it.
+function recordedCommit(dir,subject,line,delta='D11'){
+ const git=scratchGit(dir),node=(...args)=>execFileSync(process.execPath,args,{cwd:dir});
+ appendFileSync(join(dir,moved),`\n// ${line}\n`);git('add','--',moved);
+ node('packages/dacs-client/scripts/delta-map.mjs','--record',delta,subject);
+ const inventory=join(dir,control[0]),rows=JSON.parse(readFileSync(inventory,'utf8'));
+ rows.push({sha:null,subject,files:[moved,...control].sort()});writeFileSync(inventory,JSON.stringify(rows,null,2)+'\n');
+ node('packages/dacs-client/scripts/delta-map.mjs');git('add','--',...control);git('commit','-qm',subject);
+ return git('rev-parse','HEAD');
+}
+test('two commits sharing a subject need SHA-qualified selectors',t=>{
+ const dir=scratch(t),git=scratchGit(dir),subject='fix(client): D11 TEST repeated subject';
+ const first=recordedCommit(dir,subject,'TEST first'),second=recordedCommit(dir,subject,'TEST second');
+ let r=check(dir);assert.equal(r.status,1,r.text);
+ assert.match(r.text,/duplicate delta subject fix\(client\): D11 TEST repeated subject/);
+ assert.match(r.text,/delta commit selector must resolve once: fix\(client\): D11 TEST repeated subject/);
+ assert.match(r.text,/commit inventory selector must resolve once: fix\(client\): D11 TEST repeated subject/);
+ const ledgerFile=join(dir,control[1]),inventoryFile=join(dir,control[0]);
+ const data=JSON.parse(readFileSync(ledgerFile,'utf8')),rows=JSON.parse(readFileSync(inventoryFile,'utf8'));
+ const shas=[first,second];
+ data.changes.filter(c=>c.subject===subject).forEach((c,i)=>{c.sha=shas[i];});
+ rows.filter(c=>c.subject===subject).forEach((c,i)=>{c.sha=shas[i];});
+ const fix='fix(client): D11 TEST qualify repeated selectors';
+ rows.push({sha:null,subject:fix,files:[control[0],control[1],control[2]].sort()});
+ writeFileSync(ledgerFile,JSON.stringify(data));writeFileSync(inventoryFile,JSON.stringify(rows,null,2)+'\n');
+ execFileSync(process.execPath,['packages/dacs-client/scripts/delta-map.mjs'],{cwd:dir});git('add','--',...control);git('commit','-qm',fix);
+ r=check(dir);assert.equal(r.status,0,r.text);
+ // A qualified selector still binds its subject and a reachable commit.
+ for(const sha of [second.replace(/^./,c=>c==='0'?'1':'0'),'f'.repeat(40)]){
+  const copy=JSON.parse(JSON.stringify(data));copy.changes.find(c=>c.sha===second).sha=sha;writeFileSync(ledgerFile,JSON.stringify(copy));
+  r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/delta commit selector must resolve once: \S+ fix\(client\): D11 TEST repeated subject/);assert.match(r.text,/unenumerated change in /);
+ }
+});
+test('a commit reached only through a content-free merge is still audited',t=>{
+ const dir=scratch(t),git=scratchGit(dir),start=git('rev-parse','HEAD');
+ git('checkout','-qb','earlier-history');appendFileSync(join(dir,moved),'\n// TEST earlier published edit\n');git('add','--',moved);git('commit','-qm','fix(client): D11 TEST earlier published edit');
+ const side=git('rev-parse','HEAD');git('checkout','-q','--detach',start);git('merge','-q','-s','ours','-m','merge: keep earlier history','earlier-history');
+ assert.equal(git('rev-parse','HEAD^{tree}'),git('rev-parse',`${start}^{tree}`));
+ const r=check(dir);assert.equal(r.status,1,r.text);
+ assert.match(r.text,new RegExp(`complete commit/file inventory differs for ${side}`));
+ assert.match(r.text,new RegExp(`unenumerated change in ${side}`));
+});
+test('the inventory cannot name an unreachable commit',t=>{
+ const dir=scratch(t),file=join(dir,control[0]),rows=JSON.parse(readFileSync(file,'utf8'));
+ rows.push({sha:'0'.repeat(40),subject:'fix(client): D11 TEST absent commit',files:[moved]});writeFileSync(file,JSON.stringify(rows));
+ const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/commit inventory names an unreachable commit 0{40}/);
+});
+test('a hashed inventory row must carry its commit subject, and one commit has one row',t=>{
+ const dir=scratch(t),file=join(dir,control[0]),rows=JSON.parse(readFileSync(file,'utf8'));
+ const head=execFileSync('git',['-C',dir,'log','-1','--no-merges','--format=%H%x09%s','--','packages/dacs-client'],{encoding:'utf8'}).trim().split('\t');
+ for(const [extra,message] of [
+  [{sha:head[0],subject:'fix(client): D11 TEST wrong subject',files:['fake']},new RegExp(`commit inventory subject differs from commit ${head[0]}`)],
+  [{sha:head[0],subject:head[1],files:['fake']},new RegExp(`commit inventory selects ${head[0]} more than once`)],
+ ]){
+  writeFileSync(file,JSON.stringify([...rows,extra]));
+  const r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,message);
+ }
+});
+
+// W-finish client commits carry the WF id (DC-CW4). Each scratch clone uses this checkout's checker.
+function useThisChecker(dir){copyFileSync(join(root,'packages/dacs-client/scripts/delta-map.mjs'),join(dir,'packages/dacs-client/scripts/delta-map.mjs'));}
+test('a WF delta record is accepted and an unlisted delta id is still refused',t=>{
+ const dir=scratch(t);useThisChecker(dir);
+ recordedCommit(dir,'delta(client): WF TEST accepted record','TEST WF record','WF');
+ let r=check(dir);assert.equal(r.status,0,r.text);
+ recordedCommit(dir,'delta(client): D99 TEST unlisted id','TEST unlisted id','D99');
+ r=check(dir);assert.equal(r.status,1,r.text);assert.match(r.text,/invalid delta/);
+});
+
+// Each fault edits only the PR's own records, in a scratch clone of the checked head.
+const LEDGER_FAULTS=[
+ {name:'(a) the last record holding a real source or test change is removed',message:/unenumerated change/,
+  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);}},
+ {name:'(a) the same record is removed and an empty-files record is appended last',message:/unenumerated change/,
+  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.some(file=>file.before!==file.after)),1);
+   data.changes.push({delta:'WF',subject:'delta(client): WF TEST empty record',files:[]});}},
+ {name:'(b) a no-op checkpoint record is removed',message:/differs from generated Git table/,
+  edit:data=>{data.changes.splice(data.changes.findLastIndex(record=>record.files.length>0&&record.files.every(file=>file.before===file.after)),1);}},
+ {name:'(c) a record\'s last recorded blob for a path is replaced by an earlier one',message:/current blob differs/,
+  edit:data=>{
+   const history=new Map();
+   for(const record of data.changes)for(const file of record.files){const entries=history.get(file.path)??[];entries.push({record,file});history.set(file.path,entries);}
+   const [,entries]=[...history].filter(([,all])=>all.length>1&&all.at(-2).file.after!==all.at(-1).file.after).at(-1);
+   entries.at(-1).file.after=entries.at(-2).file.after;}},
+];
+test('the ledger gate refuses each fault in a PR\'s own delta records, one table row per fault, each run in a scratch clone of the checked head, and the committed head passes with every WF record listing the files its PR changed at their committed blobs',t=>{
+ const head=check(scratch(t));assert.equal(head.status,0,head.text);
+ const {changes}=JSON.parse(readFileSync(join(root,control[1]),'utf8'));
+ const wfRecords=changes.filter(record=>record.delta==='WF');
+ assert.ok(wfRecords.length>0,'this PR records its changes under WF');
+ for(const record of wfRecords)for(const file of record.files){
+  const newest=changes.findLast(other=>other.files.some(entry=>entry.path===file.path)).files.find(entry=>entry.path===file.path).after;
+  assert.equal(execFileSync('git',['-C',root,'rev-parse',`HEAD:${file.path}`],{encoding:'utf8'}).trim(),newest,`${file.path} is recorded at its committed blob`);
+ }
+ for(const fault of LEDGER_FAULTS){
+  const dir=scratch(t),file=join(dir,control[1]),data=JSON.parse(readFileSync(file,'utf8'));
+  fault.edit(data);writeFileSync(file,JSON.stringify(data));
+  const r=check(dir);assert.equal(r.status,1,`${fault.name}: ${r.text}`);assert.match(r.text,fault.message,fault.name);
+ }
+});

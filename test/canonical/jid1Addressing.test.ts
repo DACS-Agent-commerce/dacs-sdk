@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, test, vi } from "vitest";
 import * as canonical from "../../src/canonical/index.js";
+import * as root from "../../src/index.js";
 import * as hash from "../../src/canonical/hash.js";
 import { DacsError } from "../../src/errors.js";
 
@@ -18,8 +19,7 @@ const calls = (job: unknown) => [
  () => api().jid1BundleAddress!(job, "buyer"),
 ];
 describe("current-only JID-3 address derivation", () => {
- test("exports four explicit current helpers from canonical and root", async () => {
-  const root = await import("../../src/index.js");
+ test("exports four explicit current helpers from canonical and root", () => {
   for (const name of ["jid1AttestationAddress", "jid1PaymentEvidenceAddress", "jid1RatingAddress", "jid1BundleAddress"]) {
    expect(typeof api()[name]).toBe("function");
    expect((root as unknown as Record<string, unknown>)[name]).toBe(api()[name]);
@@ -38,9 +38,9 @@ describe("current-only JID-3 address derivation", () => {
  test("validates jobId before other arguments", () => {
   expect(() => api().jid1AttestationAddress!("bad", "UPPER", "", 0)).toThrow(/jobId/);
  });
- test("delegates other segment validation and preserves historical API", () => {
+ test("delegates other segment validation and preserves explicit historical API", () => {
   expect(() => api().jid1AttestationAddress!(JOB, "UPPER", "x", 1)).toThrow(/scheme/);
-  expect(canonical.attestationAddress("job-abc", "lei", "x", 1)).toBe("dacs2:job-abc:lei:x:v1");
+  expect(canonical.legacyAttestationAddress("job-abc", "lei", "x", 1)).toBe("dacs2:job-abc:lei:x:v1");
   for (const role of ["buyer","seller","orchestrator"] as const)
    expect(api().jid1BundleAddress!(JOB, role)).toBe(canonical.bundleAddress(JOB, role));
  });
