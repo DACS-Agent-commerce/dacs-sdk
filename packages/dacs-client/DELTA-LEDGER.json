@@ -5929,6 +5929,7 @@
         }
       ]
     },
-    {"delta":"D11","subject":"fix(client): D11 remove the unused guarded SQLite lease and pack no client files","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"631654f861dddd1f1b3cbce70da004c96933d5f4","after":null},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"900af80069850c3942204a858d8989e8e11a3adc","after":null}]}
+    {"delta":"D11","subject":"fix(client): D11 remove the unused guarded SQLite lease and pack no client files","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"631654f861dddd1f1b3cbce70da004c96933d5f4","after":null},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"900af80069850c3942204a858d8989e8e11a3adc","after":null}]},
+    {"delta":"D11","subject":"fix(client): D11 record the merged guarded SQLite removal","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":null,"after":null},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":null,"after":null}]}
   ]
 }
