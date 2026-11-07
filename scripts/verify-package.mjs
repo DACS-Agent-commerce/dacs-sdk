@@ -185,6 +185,9 @@ try {
   if (!files.includes("docs/raw-json-admission.md")) {
     throw new Error("packed package is missing the raw JSON admission guide");
   }
+  if (!files.includes("docs/fixed-price-agreement.md")) {
+    throw new Error("packed package is missing the fixed-price agreement guide");
+  }
   await assertPureSubpaths(packageRoot);
 
   const consumer = join(scratch, "consumer");
