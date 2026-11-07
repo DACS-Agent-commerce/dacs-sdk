@@ -39,7 +39,7 @@
     "today": "the client classifies a signed 409 peer_request_replayed as an unknown answer (SellerUnavailableError, answerClass unknown) and does not retry it",
     "target": "classified unknown; retried with the stored bytes",
     "owner": "P13b1b",
-    "flippedBy": "P13b1b"
+    "flippedBy": null
   },
   {
     "id": "K12-H6a",

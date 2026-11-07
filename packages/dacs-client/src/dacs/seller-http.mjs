@@ -216,16 +216,22 @@ export class SellerRefusedError extends Error {
   }
 }
 
-/** Extra sends allowed after an unknown answer within one call (DC-CW6). */
-export const SELLER_UNKNOWN_RETRIES = 2;
-/** Milliseconds between the sends of one call (DC-CW6). */
-export const SELLER_RETRY_DELAY_MS = 5000;
-// Route deadlines (K5): 15 s by default; the context route is held to 240-300 s.
-const SELLER_ROUTE_TIMEOUT_MS = 15000;
-const SELLER_CONTEXT_TIMEOUT_MS = Object.freeze({ min: 240000, max: 300000 });
+// Closed route policy: durable effects, bootstrap provenance, retained replay and default time budget.
+/** Policy for the ten admitted seller routes; unknown routes have no durable identity. */
+export const SELLER_REQUEST_POLICY = Object.freeze(Object.fromEntries([
+  [DACS_SELLER_HTTP_PATHS.context, true, true, false, 240000],
+  [DACS_SELLER_HTTP_PATHS.contextChallenge, true, true, false, 15000],
+  [DACS_SELLER_HTTP_PATHS.proposals, true, false, false, 15000],
+  [DACS_SELLER_HTTP_PATHS.commitments, true, false, true, 15000],
+  [DACS_SELLER_HTTP_PATHS.commitmentSignature, true, false, true, 15000],
+  [DACS_SELLER_HTTP_PATHS.payments, true, false, true, 15000],
+  [DACS_SELLER_HTTP_PATHS.bundleRequest, true, false, true, 15000],
+  [DACS_SELLER_HTTP_PATHS.bundleCountersignature, true, false, true, 15000],
+  [DACS_SELLER_HTTP_PATHS.state, false, false, false, 15000],
+  [DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, false, false, false, 15000],
+].map(([path, durable, bootstrap, retained, timeoutMs]) => [path, Object.freeze({ durable, bootstrap, retained, timeoutMs })])));
 const SELLER_MAX_TIMEOUT_MS = 300000;
-const CONTEXT_PATH = DACS_SELLER_HTTP_PATHS.context;
-const SELLER_CLOCK = Object.freeze({ now: () => performance.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) });
+const SELLER_CLOCK = Object.freeze({ now: () => performance.now() });
 // A refusal raised by the request records (stale row, purchase no longer authorizing): not a seller answer.
 const recordRefusals = new WeakSet();
 const SELLER_OPERATOR_MESSAGE = 'the seller reports this operation is unresolved and needs the seller operator; it is not retried automatically';
@@ -248,11 +254,10 @@ function answerOrError(verdict, answer, status) {
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
  * classifyAnswer is the injectable K5 classifier; the default is the real one. requestRecords is the adapter's durable
  * record store (`start(path, body)` returns the attempt `{text, continuation, newPurchase, check(), finish(answerClass)}`
- * and `failure(error)` records a refusal); with it each call sends its stored bytes and retries unknown answers, without
- * it a call sends once.
+ * and `failure(error)` records a refusal). Each call sends once, using the stored bytes when present.
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
-export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = SELLER_ROUTE_TIMEOUT_MS, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords, clock = SELLER_CLOCK }) {
+export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords, clock = SELLER_CLOCK }) {
   const base = new URL(String(url).replace(/\/$/, ''));
   if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
@@ -263,31 +268,21 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
   if (authentication && prefix) throw new Error('authenticated seller transport uses the exact /dacs/v1 paths');
   let lastFailureCause, lastFailureDispatched, hasDispatched = false;
 
-  const routeDeadlineMs = (path) => path === CONTEXT_PATH
-    ? Math.max(SELLER_CONTEXT_TIMEOUT_MS.min, Math.min(timeoutMs, SELLER_CONTEXT_TIMEOUT_MS.max))
-    : Math.min(timeoutMs, SELLER_MAX_TIMEOUT_MS);
+  const routeDeadlineMs = (path) => {
+    const policy = SELLER_REQUEST_POLICY[path];
+    return Math.min(SELLER_MAX_TIMEOUT_MS, Math.max(policy?.timeoutMs === 240000 ? policy.timeoutMs : 0, timeoutMs ?? policy?.timeoutMs ?? 15000));
+  };
 
-  // An unknown answer is sent again with the stored bytes and a fresh nonce, at most SELLER_UNKNOWN_RETRIES times,
-  // SELLER_RETRY_DELAY_MS apart and never past the route deadline. `start` runs before every send, so a purchase that
-  // stopped authorizing the request during the delay signs nothing, and a sleep that wakes at or past the deadline
-  // gives back the last unknown answer before another attempt is recorded.
+  // Commit the exact bytes and unknown intent before the call's single send.
   async function post(path, body) {
-    const deadline = clock.now() + routeDeadlineMs(path);
-    let unknown;
-    for (let retry = 0; ; retry++) {
-      if (unknown && clock.now() >= deadline) throw unknown;
-      const attempt = requestRecords?.start(path, body);
-      try {
-        const answer = await send(path, body, attempt, deadline - clock.now());
-        attempt?.finish(answer.answerClass);
-        return answer.body;
-      } catch (error) {
-        if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
-        attempt?.finish(error.answerClass);
-        if (!attempt || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
-        unknown = error;
-      }
-      await clock.sleep(SELLER_RETRY_DELAY_MS);
+    const attempt = requestRecords?.start(path, body);
+    try {
+      const answer = await send(path, body, attempt, routeDeadlineMs(path));
+      attempt?.finish(answer.answerClass);
+      return answer.body;
+    } catch (error) {
+      if (error instanceof SellerUnavailableError || error instanceof SellerRefusedError) attempt?.finish(error.answerClass);
+      throw error;
     }
   }
 

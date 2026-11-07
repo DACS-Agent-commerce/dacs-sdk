@@ -47,7 +47,10 @@ export function table(data = ledger()) {
   }
   const inventory=JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'));
   lines.push('', '## Complete commit and file inventory', '', 'Full hashes below bind completed commits. Unhashed record commits use unique exact subjects to avoid self-referential hashes. Source/test coordinates are generated from baseline-to-current Git hunks, so they name changed ranges at the current head; metadata starts at line 1 and deletions are explicit. The delta sections explain the reason for each group.', '', '| Commit / exact selector | Touched file:line |', '|---|---|');
-  for(const c of inventory) for(const path of c.files) lines.push(`| ${c.sha??c.subject} | ${locate(path)} |`);
+  for(const c of inventory) {
+    if(c.compact) lines.push(`| ${c.sha??c.subject} | ${c.files.map(locate).join('<br>')} |`);
+    else for(const path of c.files) lines.push(`| ${c.sha??c.subject} | ${locate(path)} |`);
+  }
   lines.push('', '## Original moved files', '', '| Destination | Source path | Blob at publication checkpoint | Status | Current blob |', '|---|---|---|---|---|');
   for(const f of files) {
     const changes=data.changes.filter(c=>c.files.some(x=>x.path===f.path));

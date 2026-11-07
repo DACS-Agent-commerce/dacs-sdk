@@ -312,22 +312,16 @@ test('the README classification table names every class and every coded row of t
 const sealed = (s, status, error) => init => s.reply(init, status, { error });
 const NEW_PURCHASE_PATHS = [PATHS.contextChallenge, PATHS.context];
 
-test('signed 409 peer_request_replayed on payments is unknown and retried with the stored bytes, and the stage is unchanged (K5-C1)', async (t) => {
+test('signed 409 peer_request_replayed on payments is unknown and keeps the stored bytes, and the stage is unchanged (K5-C1)', async (t) => {
   const s = await storedWorld(t);
   await assert.rejects(s.client({ respond: sealed(s, 409, 'peer_request_replayed') }).submitPayment(bodyFor(PATHS.payments)), e => e.answerClass === 'unknown');
-  sameBodies(s.fetches); assert.equal(s.fetches.length, 3); assert.equal(s.p.get().state.protocol.stage, 'agreement-signing');
+  sameBodies(s.fetches); assert.equal(s.fetches.length, 1); assert.equal(s.p.get().state.protocol.stage, 'agreement-signing');
 });
 
-test('signed 503 seller_effect_pending within the deadline is retried with a fresh nonce (K5-C2)', async (t) => {
-  const s = await storedWorld(t); let first = true;
-  await s.client({ respond: init => { if (!first) return s.reply(init); first = false; return s.reply(init, 503, { error: 'seller_effect_pending' }); } }).propose(bodyFor(PATHS.proposals));
-  sameBodies(s.fetches); assert.equal(s.fetches.length, 2); assert.ok(nonce(s.fetches[1]).expiresAt > nonce(s.fetches[0]).expiresAt);
-});
-
-test('signed 503 context_attempt_pending is unknown and retried with the stored bytes (K5-C7)', async (t) => {
+test('signed 503 context_attempt_pending is unknown and keeps the stored bytes (K5-C7)', async (t) => {
   const s = await storedWorld(t, { accepted: false });
   await assert.rejects(s.client({ respond: sealed(s, 503, 'context_attempt_pending') }).request(PATHS.context, bodyFor(PATHS.context)), e => e.answerClass === 'unknown');
-  sameBodies(s.fetches); assert.equal(s.record(PATHS.context).attempts, 3);
+  sameBodies(s.fetches); assert.equal(s.record(PATHS.context).attempts, 1);
 });
 
 test('a verified 503 seller_not_ready answering a request the adapter established as a new-purchase request (the challenge, or a first context request with no earlier possible dispatch), with no continuation capability, is not started for that attempt; the class comes from the request route and the durable purchase and dispatch records, continuation false alone is insufficient, and every earlier dispatch and retained outcome is preserved (round 4, attack C3)', async (t) => {
@@ -338,7 +332,7 @@ test('a verified 503 seller_not_ready answering a request the adapter establishe
   }
 });
 
-test('the identical signed 503 seller_not_ready status and body answering a request whose context says it carried a client-minted capability is unknown, retried later with the stored bytes, and never proof of no prior work', async (t) => {
+test('the identical signed 503 seller_not_ready status and body answering a request whose context says it carried a client-minted capability is unknown and retains the stored bytes, and never proof of no prior work', async (t) => {
   const s = await storedWorld(t, { accepted: false });
   // P13d owns real capability minting; this exercises the request-context leg through post() and real wire verification.
   const withCapability = (record, context) => classifySellerAnswer(record, { ...context, continuation: true });
@@ -350,12 +344,12 @@ test("a capability claim or a new-purchase claim in the response body, or a call
   const s = await storedWorld(t);
   const claims = { error: 'seller_not_ready', newPurchase: true, continuation: false };
   await assert.rejects(s.client({ newPurchase: true, continuation: false, respond: init => s.reply(init, 503, claims) }).submitPayment(bodyFor(PATHS.payments)), e => e.answerClass === 'unknown');
-  assert.equal(s.fetches.length, 3); assert.equal(s.record(PATHS.payments).clearAttempts, 0);
+  assert.equal(s.fetches.length, 1); assert.equal(s.record(PATHS.payments).clearAttempts, 0);
   const fresh = await storedWorld(t, { accepted: false });
   await assert.rejects(fresh.client({ continuation: true, respond: init => fresh.reply(init, 503, { error: 'seller_not_ready', continuation: true, newPurchase: false }) }).request(PATHS.context, bodyFor(PATHS.context)), e => e.answerClass === 'not-started');
 });
 
-test("the identical signed 503 seller_not_ready status and body, through real post() and wire verification, is not started for a first context request and unknown for a continuing payment with no capability, a committed state read with no capability and a retained proposals request with no capability; no committed or paid purchase is marked not started or failed and no retained evidence is cleared; a payment whose delivery is still pending after a restart stays payment-evidenced and unknown; unknown retries use the stored bytes within DC-CW6's bounds; an unsigned or rejected answer stays unknown (round 4, attack C3)", async (t) => {
+test("the identical signed 503 seller_not_ready status and body, through real post() and wire verification, is not started for a first context request and unknown for a continuing payment with no capability, a committed state read with no capability and a retained proposals request with no capability; no committed or paid purchase is marked not started or failed and no retained evidence is cleared; a payment whose delivery is still pending after a restart stays payment-evidenced and unknown; explicit calls retain the stored bytes; an unsigned or rejected answer stays unknown (round 4, attack C3)", async (t) => {
   for (const [path, accepted, stage, expected] of [[PATHS.context, false, 'identity', 'not-started'], [PATHS.payments, true, 'payment-evidenced', 'unknown'], [PATHS.state, true, 'seller-committed', 'unknown'], [PATHS.proposals, true, 'agreement-signing', 'unknown']]) {
     const s = await storedWorld(t, { accepted, stage, status: stage === 'payment-evidenced' ? 'settled_verified' : 'agreement_pending' }); s.restart(); const before = s.p.get();
     await assert.rejects(s.client({ respond: sealed(s, 503, 'seller_not_ready') }).request(path, bodyFor(path)), e => e.answerClass === expected);
@@ -388,7 +382,7 @@ test('a signed 503 seller_not_ready with no capability on each client route (cha
 const reorderKeys = value => Array.isArray(value) ? value.map(reorderKeys) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).reverse().map(([key, member]) => [key, reorderKeys(member)])) : value;
 const changeMember = (scope, member) => ({ ...scope, [member]: typeof scope[member] === 'number' ? scope[member] + 1 : typeof scope[member] === 'object' ? { ...scope[member], changed: true } : 'TEST-changed' });
 
-test('a restart with a re-ordered or changed caller scope sends the stored bytes (extends tests 18, 19 and 29): one table whose rows are the stored route records (every client route with a stored body, the context body included, so a new route is a new row) × {the same scope with its keys re-ordered, each scope member changed one at a time}, run on a restart and on a retry after a lost response. A re-ordered scope sends bytes equal to the stored bytes (same hash) and the seller performs one effect, and it never produces a second body hash; a changed member refuses stored_request_mismatch and sends nothing', async (t) => {
+test('a restart with a re-ordered or changed caller scope sends the stored bytes (extends tests 18, 19 and 29): one table whose rows are the stored route records (every client route with a stored body, the context body included, so a new route is a new row) × {the same scope with its keys re-ordered, each scope member changed one at a time}, run on a restart and on an explicit repeat after a lost response. A re-ordered scope sends bytes equal to the stored bytes (same hash) and the seller performs one effect, and it never produces a second body hash; a changed member refuses stored_request_mismatch and sends nothing', async (t) => {
   for (const path of STORED_PATHS) for (const mode of ['restart', 'lost-response']) {
     const s = await storedWorld(t), body = bodyFor(path), original = JSON.stringify(body), effects = new Set();
     let lose = mode === 'lost-response';

@@ -21,12 +21,12 @@ import { projectDiagnostic } from '../diagnostic-projection.mjs';
 //
 // Only the source-bound native Agreement profile remains. Fixture and
 // complete simulated profiles have no admission or continuation path.
-import { canonicalize, contentHash, generateCanonicalJobId, bundleAddress, decodeDemosAnchorReceiptProof, demosSignedTransactionProofHash, finalityCommitmentAddress, sha256Hex } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize, contentHash, generateCanonicalJobId, bundleAddress, decodeDemosAnchorReceiptProof, demosSignedTransactionProofHash, finalityCommitmentAddress, sha256Hex } from '@kynesyslabs/dacs';
 import { isDevnetAgreementTransport, DEVNET_AGREEMENT_KIND } from '../wallet/devnet-native-transport.mjs';
 import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { verifyDemosSignature, claimForAddress, decodeSignature } from '../signatures.mjs';
 import { attachIdentityPresentation, buildUnsignedIdentityBundle, verifyComponent } from './listing.mjs';
-import { createSellerAgentClient, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
+import { createSellerAgentClient, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
 import { createDemosSr2WalletBridge, SR2_WALLET_KIND } from './demos-sr2-wallet-bridge.mjs';
 import { DemosSr2Error } from './demos-sr2-adapter.mjs';
 import {
@@ -51,7 +51,7 @@ import { SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mj
 import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPaymentConfig } from './native-agreement-payment-consumer.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, usesNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { sourceDemoSellerTransportConfig } from './source-demo-seller-transport.mjs';
-import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_PATHS as SELLER_PATHS, DACS_SELLER_HTTP_LIMITS } from '@kynesyslabs/dacs/wire';
+import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_LIMITS } from '@kynesyslabs/dacs/wire';
 import { SELLER_ANSWER_CLASS } from './seller-response-class.mjs';
 import { createSellerWireAuthentication } from './seller-wire-authentication.mjs';
 import { anchoredTupleMembers, createContinuationEvidence, keepCommitmentTuple, matchesCommitmentSummary } from './continuation-evidence.mjs';
@@ -284,31 +284,22 @@ export function planRunningOf(protocol, operation) {
   return flightReaders.get(protocol)?.(operation) === true;
 }
 
-// Stored seller requests (DC-CW5). The two read routes keep no record: a poll would advance the revision.
-const READ_REQUEST_PATHS = new Set([SELLER_PATHS.state, SELLER_PATHS.bundleBuyerCopy]);
-const KNOWN_REQUEST_PATHS = new Set(Object.values(SELLER_PATHS));
-// Only the first requests of a purchase can be answered "not started".
-const NEW_REQUEST_PATHS = new Set([SELLER_PATHS.context, SELLER_PATHS.contextChallenge]);
-// Retained work is resent from its stored bytes after its stage moved on (a crash between the answer and the stage save).
-const RETAINED_REQUEST_PATHS = new Set([SELLER_PATHS.commitments, SELLER_PATHS.commitmentSignature, SELLER_PATHS.payments, SELLER_PATHS.bundleRequest, SELLER_PATHS.bundleCountersignature]);
-const REPLAY_STAGES = new Set(['agreement-anchored', 'seller-committed', 'payment-observed', 'payment-evidenced', 'native-payment-evidence-held', 'delivery-ready', 'delivered']);
+// Stored seller requests (DC-CW5): the transport and records share one closed route policy.
+const REPLAY_STAGES = new Set(['agreement-anchored', 'seller-committed', 'payment-observed', 'payment-evidenced', 'native-payment-evidence-held', 'delivery-ready', 'delivery-rejected', 'delivered']);
 const UNSTARTED_CLASSES = new Set([SELLER_ANSWER_CLASS.NOT_STARTED, SELLER_ANSWER_CLASS.NOT_SENT]);
 const MAX_REQUEST_BYTES = DACS_SELLER_HTTP_LIMITS.maxRequestBodyBytes;
 const MAX_STORED_BODY_B64 = Math.ceil(MAX_REQUEST_BYTES / 3) * 4;
 const isCounter = (value) => Number.isSafeInteger(value) && value >= 0;
 
-// What a flow's decisions rest on: the status and every protocol member except the request records, the revision and the
-// chain pointers and tuple bytes that are kept without progress (`keepChainPointers`, `keepCommitmentTuple`).
-function progressOf(operation) {
-  const progress = { ...operation.state?.protocol };
-  for (const key of ['sellerRequests', 'revision', 'chainReadback', 'chainReadbackHeld']) delete progress[key];
-  if (progress.commitment) {
-    const summary = { ...progress.commitment };
-    delete summary.anchoredB64;
-    delete summary.anchoredHash;
-    progress.commitment = summary;
-  }
-  return canonicalize({ status: operation.status, progress });
+// Inherited rows seed semantic progress before request bookkeeping advances the physical revision.
+const progressGenerationOf = (row) => row.state?.protocol?.progressGeneration ?? row.state?.protocol?.revision ?? 0;
+const sameProgress = (a, b) => a.status === b.status && progressGenerationOf(a) === progressGenerationOf(b);
+
+// One codec for initial serialization and restart reads: lossy JSON never becomes a durable request.
+function requestBody(text) {
+  if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_REQUEST_BYTES) throw new Error('request byte limit');
+  const canonical = canonicalize(admitRawJson(Buffer.from(text), { maxBytes: MAX_REQUEST_BYTES }));
+  return { text, canonical };
 }
 
 // The body bytes of a stored record, or stored_request_corrupt. Nothing is re-derived from the caller's body.
@@ -321,7 +312,7 @@ function storedRequestBody(record, path) {
     || !isCounter(record.clearAttempts) || record.clearAttempts > record.attempts) throw corrupt('has malformed attempt counts');
   const text = bytes.toString('utf8');
   if (!Buffer.from(text).equals(bytes)) throw corrupt('is not UTF-8');
-  try { return { text, canonical: canonicalize(JSON.parse(text)) }; } catch { throw corrupt('is not JSON'); }
+  try { return requestBody(text); } catch { throw corrupt('is not JSON'); }
 }
 
 /**
@@ -337,27 +328,27 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
   // The stored row; changes made only by request records or kept pointers are adopted, any other change is stale.
   function reload() {
     const seen = holder.get(), stored = ops.get(seen.accountId, seen.id);
-    if (!stored || progressOf(seen) !== progressOf(stored)) throw new StaleProtocolCheck(seen);
-    holder.set(stored);
+    if (!stored || !sameProgress(seen, stored)) throw new StaleProtocolCheck(seen);
     return stored;
   }
   function assertAuthorizes(row, path) {
     assertPurchaseActionsAdmitted();
     const settled = row.status === 'settled_verified';
-    if ((ENDED_STATUSES.has(row.status) && !settled) || (!settled && !(Date.parse(row.expiresAt) > now()))
-      || (row.state.protocol.sellerSuspension && !READ_REQUEST_PATHS.has(path))) throw new OperationError('invalid_state', 'the purchase no longer authorizes this seller request');
+    if ((ENDED_STATUSES.has(row.status) && !settled) || (['agreement_pending', 'awaiting_approval'].includes(row.status) && !(Date.parse(row.expiresAt) > now()))
+      || (row.state.protocol.sellerSuspension && SELLER_REQUEST_POLICY[path]?.durable)) throw new OperationError('invalid_state', 'the purchase no longer authorizes this seller request');
   }
   function write(row, path, record) {
     const protocol = row.state.protocol;
-    holder.set(ops.transition(row.id, row.status, row.status, { state: { protocol: { ...protocol, revision: (protocol.revision ?? 0) + 1, sellerRequests: { ...protocol.sellerRequests, [path]: record } } },
-      event: 'seller_request_recorded', data: { path, attemptId: record.attemptId, lastClass: record.lastClass } }));
+    return ops.transition(row.id, row.status, row.status, { state: { protocol: { ...protocol, revision: (protocol.revision ?? 0) + 1, progressGeneration: progressGenerationOf(row), sellerRequests: { ...protocol.sellerRequests, [path]: record } } },
+      event: 'seller_request_recorded', data: { path, attemptId: record.attemptId, lastClass: record.lastClass } });
   }
   function finishAttempt(path, attemptId, lastClass) {
-    transaction(db, () => {
+    const saved = transaction(db, () => {
       const row = reload(), prior = row.state.protocol.sellerRequests?.[path];
-      if (!prior || prior.attemptId !== attemptId || prior.lastClass !== SELLER_ANSWER_CLASS.UNKNOWN || lastClass === SELLER_ANSWER_CLASS.UNKNOWN) return;
-      write(row, path, { ...prior, lastClass, clearAttempts: prior.clearAttempts + (UNSTARTED_CLASSES.has(lastClass) ? 1 : 0) });
+      if (!prior || prior.attemptId !== attemptId || prior.lastClass !== SELLER_ANSWER_CLASS.UNKNOWN || lastClass === SELLER_ANSWER_CLASS.UNKNOWN) return row;
+      return write(row, path, { ...prior, lastClass, clearAttempts: prior.clearAttempts + (UNSTARTED_CLASSES.has(lastClass) ? 1 : 0) });
     });
+    holder.set(saved);
   }
   // The stored text for a route that has a record; the caller's body must be the same JSON value.
   function storedText(row, path, prior, body) {
@@ -366,28 +357,34 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     try { sameBody = stored.canonical === canonicalize(body); } catch { /* a malformed body is a different body */ }
     if (!sameBody) throw new OperationError('stored_request_mismatch', 'the seller request differs from the stored body for this route');
     const stage = row.state.protocol.stage;
-    if (prior.stage !== stage && !(RETAINED_REQUEST_PATHS.has(path) && REPLAY_STAGES.has(stage))) throw new StaleProtocolCheck(row);
+    if (prior.stage !== stage && !(SELLER_REQUEST_POLICY[path].retained && REPLAY_STAGES.has(stage))) throw new StaleProtocolCheck(row);
     return stored.text;
   }
-  const attemptFor = (path, text, newPurchase, finish) => ({ text, continuation: false, newPurchase, check: () => assertAuthorizes(reload(), path), finish });
+  const attemptFor = (path, text, newPurchase, finish) => ({ text, continuation: false, newPurchase, check: () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }, finish });
   return {
     start(path, body) {
-      return transaction(db, () => {
+      const result = transaction(db, () => {
         const row = reload();
         assertAuthorizes(row, path);
-        const proposed = JSON.stringify(body);
-        if (!KNOWN_REQUEST_PATHS.has(path)) throw new OperationError('seller_request_unknown_route', 'unknown seller route');
-        if (typeof proposed !== 'string' || Buffer.byteLength(proposed) > MAX_REQUEST_BYTES) throw new OperationError('seller_request_too_large', 'the seller request exceeds its byte limit');
-        if (READ_REQUEST_PATHS.has(path)) return attemptFor(path, proposed, false, () => {});
+        const policy = SELLER_REQUEST_POLICY[path];
+        if (!policy) throw new OperationError('seller_request_unknown_route', 'unknown seller route');
+        let proposed;
+        try {
+          proposed = requestBody(JSON.stringify(body, (key, value) => { if (value === undefined) throw new Error(`undefined JSON member ${key}`); return value; }));
+          if (proposed.canonical !== canonicalize(body)) throw new Error('lossy JSON');
+        } catch { throw new OperationError('seller_request_invalid', 'the seller request is not lossless bounded JSON'); }
+        if (!policy.durable) return { row, attempt: attemptFor(path, proposed.text, false, () => {}) };
         const protocol = row.state.protocol, prior = protocol.sellerRequests?.[path];
-        const text = prior ? storedText(row, path, prior, body) : proposed;
+        const text = prior ? storedText(row, path, prior, body) : proposed.text;
         const { attempts = 0, clearAttempts = 0 } = prior ?? {}, attemptId = randomUUID();
         // Read from the row this attempt is written against, so of two concurrent first requests only the winner is new.
-        const newPurchase = NEW_REQUEST_PATHS.has(path) && protocol.planned === undefined && attempts === clearAttempts;
-        write(row, path, { path, stage: prior?.stage ?? protocol.stage, bodyB64: Buffer.from(text).toString('base64url'), bodyHash: sha256Hex(text),
+        const newPurchase = policy.bootstrap && protocol.planned === undefined && attempts === clearAttempts;
+        const saved = write(row, path, { path, stage: prior?.stage ?? protocol.stage, bodyB64: Buffer.from(text).toString('base64url'), bodyHash: sha256Hex(text),
           attemptId, attempts: attempts + 1, clearAttempts, lastClass: SELLER_ANSWER_CLASS.UNKNOWN });
-        return attemptFor(path, text, newPurchase, (answerClass) => finishAttempt(path, attemptId, answerClass));
+        return { row: saved, attempt: attemptFor(path, text, newPurchase, (answerClass) => finishAttempt(path, attemptId, answerClass)) };
       });
+      holder.set(result.row);
+      return result.attempt;
     },
     failure(error) { ops.record(holder.get().id, 'seller_request_refused', { code: error?.code ?? 'other' }); },
   };
@@ -538,13 +535,13 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       const seen = revisionOf(operation);
       const held = revisionOf(stored);
       // A revision that moved only by request records (another route's record, or an outcome) is not newer progress.
-      if (seen !== held && progressOf(operation) !== progressOf(stored)) {
+      if (!sameProgress(operation, stored)) {
         const notSaved = { savedRevision: held, savedStage: stored.state.protocol?.stage ?? null };
         ops.appendEvent(operation.id, 'protocol_check_not_saved', { ...data, event, stage: own.stage, revision: seen, ...notSaved });
         return { notSaved };
       }
       const base = stored.state.protocol;
-      const protocol = { ...base, ...patch, ...(attempt ? { attempts: withAttempt(base, attempt) } : {}), revision: held + 1 };
+      const protocol = { ...base, ...patch, ...(attempt ? { attempts: withAttempt(base, attempt) } : {}), revision: held + 1, progressGeneration: progressGenerationOf(stored) + 1 };
       // The delivery deadline observation is append-only and written only by
       // the deadline watch, so the stored one always stands. A Deliverable
       // verified after an overdue observation records its delivery time once.

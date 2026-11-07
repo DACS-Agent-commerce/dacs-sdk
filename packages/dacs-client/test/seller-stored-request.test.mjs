@@ -35,13 +35,6 @@ test("at the route deadline the outcome is unknown and recorded, and the next ex
   s.restart(); await s.client({ respond }).propose(bodyFor(P)); sameBodies(s.fetches);
 });
 
-test("in-call retries are at most SELLER_UNKNOWN_RETRIES, spaced SELLER_RETRY_DELAY_MS, inside the deadline", async (t) => {
-  const s = await storedWorld(t); const times = [];
-  await assert.rejects(s.client({ respond: init => { times.push(s.clock.now()); return s.reply(init, 503, { error: 'seller_effect_pending' }); } }).propose(bodyFor(P)), e => e.answerClass === 'unknown');
-  assert.equal(transport.SELLER_UNKNOWN_RETRIES, 2); assert.equal(transport.SELLER_RETRY_DELAY_MS, 5000);
-  assert.deepEqual(times, [0, 5000, 10000]); assert.deepEqual(s.delays, [5000, 5000]); sameBodies(s.fetches);
-});
-
 test("a late response for stage n after the row moved to n+1 is ignored (K5-C4)", async (t) => {
   const s = await storedWorld(t);
   await assert.rejects(s.client({ respond: init => { s.patch({ stage: 'agreement-anchored' }); return s.reply(init); } }).propose(bodyFor(P)), errorCode('protocol_check_stale'));
@@ -105,37 +98,6 @@ test("keepChainPointers, holdChainReadback, note and save keep every stored requ
   const replay = await sellerFlow(t, 'replay');
   assert.ok(replay.result.state.protocol.chainReadback[replay.commitmentAddress]);
   assert.ok(replay.result.state.protocol.sellerRequests[PATHS.commitments]);
-});
-
-test("a context-shaped body keeps generatedAt across retries (K5-C3)", async (t) => {
-  const s = await storedWorld(t, { accepted: false }); let first = true;
-  await s.client({ respond: init => { if (first) { first = false; return s.reply(init, 503, { error: 'context_attempt_pending' }); } return s.reply(init); } }).request(PATHS.context, bodyFor(PATHS.context));
-  sameBodies(s.fetches); assert.equal(JSON.parse(s.fetches[1].body).scope.generatedAt, bodyFor(PATHS.context).scope.generatedAt);
-});
-
-test("a retry sleep that wakes at or past the route deadline records and sends nothing more and rethrows the unknown answer", async (t) => {
-  for (const [route, wake] of [[P, 15000], [P, 20000], [PATHS.context, CONTEXT_LIMITS.min + 1000]]) {
-    const s = await storedWorld(t, route === PATHS.context ? { accepted: false } : {});
-    s.clock.sleep = async ms => { s.delays.push(ms); s.advance(wake); };
-    await assert.rejects(s.client({ respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).request(route, bodyFor(route)), e => e.answerClass === 'unknown', `${route} ${wake}`);
-    assert.equal(s.fetches.length, 1, route); assert.equal(s.w.state.signs.length, 1, route);
-    assert.equal(s.record(route).attempts, 1, route); assert.equal(s.record(route).lastClass, 'unknown', route);
-  }
-});
-
-test("a retry after the delay re-checks admission and the row and signs nothing for a purchase cancelled, expired or re-held during the delay", async (t) => {
-  for (const mode of ['cancelled', 'expired', 'held', 'suspended']) {
-    const s = await storedWorld(t);
-    s.clock.sleep = async ms => {
-      s.advance(ms);
-      if (mode === 'held') setPurchaseAdmission('held');
-      else if (mode === 'expired') s.advance(3600000);
-      else if (mode === 'suspended') s.patch({ sellerSuspension: { cause: 'TEST' } });
-      else s.patch({}, 'cancelled');
-    };
-    await assert.rejects(s.client({ respond: init => s.reply(init, 503, { error: 'seller_effect_pending' }) }).propose(bodyFor(P)));
-    assert.equal(s.fetches.length, 1, mode); assert.equal(s.w.state.signs.length, 1, mode); setPurchaseAdmission('testnet-tp1');
-  }
 });
 
 test("a purchase cancelled while its request is being signed sends nothing and keeps the refusal's cause", async (t) => {

@@ -6539,6 +6539,7 @@
     {
       "delta": "WF",
       "subject": "fix(client): classify a signed 408 or 429 outside the table rows as unknown",
+      "sha": "064f0f0f96e2e783f9bc6dac77a6737a4aa4ef2d",
       "files": [
         {
           "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
@@ -6552,90 +6553,9 @@
         }
       ]
     },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF P13b1b store seller request bytes under the purchase revision and retry unknown answers",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/commit-on-signature.mjs",
-          "before": "6eb54096a53a281766e7846cb46d7c5eeec7d532",
-          "after": "e8e7037514829c256308b6b24339178d90fe1881"
-        },
-        {
-          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
-          "before": "74db6f3632bfcb00c067941017012fc536da6524",
-          "after": "59fb22f510c27ffbe977db910b7c73d3c3f2726a"
-        },
-        {
-          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
-          "before": "b88097dc5621acb7affa393aade0133f1c873923",
-          "after": "e9ae634270a864049943fc107503cf7831da4acb"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/stored-request-fixture.mjs",
-          "before": null,
-          "after": "d239a6eb873f3e35c7057a0eaf7c5d1117e1931c"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/stored-request-flow-loader.mjs",
-          "before": null,
-          "after": "504131cea52f01a11311e619e01576a9939f87b6"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
-          "before": null,
-          "after": "128ace501f6aa5f4ff68cf7d8067ea62d19e9998"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
-          "before": "096b90fa41c0369bf138bbd18360b04951415116",
-          "after": "106b9d16fdbbd28db6ebadd36ea5d0ba94b702f0"
-        },
-        {
-          "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
-          "before": "6982df671d7d2040341fd534d075b1225fc000f6",
-          "after": "642219516e80498d69b7b31c11ae82721a2d73ab"
-        },
-        {
-          "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
-          "before": null,
-          "after": "8f231f6102facaa62dad45d5fac984357ba11980"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "fix(client): build the request-progress view without unused bindings",
-      "sha": "f6df1f3eedfbdc110ab87685639f19b99cff8bdd",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
-          "before": "59fb22f510c27ffbe977db910b7c73d3c3f2726a",
-          "after": "d5b1b5ffe6c32d5292195025b6bc17c59823fe6b"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
-          "before": "128ace501f6aa5f4ff68cf7d8067ea62d19e9998",
-          "after": "f7b21b70231518c359487627ed207c4bc39dbc2d"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "fix(client): stop a retry that wakes past its route deadline",
-      "sha": "228e4f3bc10ff06fb20f9c7ff5abf727179883df",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
-          "before": "e9ae634270a864049943fc107503cf7831da4acb",
-          "after": "5b50b3d347a2cec7ea4c6a4e108bc487a19ba68c"
-        },
-        {
-          "path": "packages/dacs-client/test/seller-stored-request.test.mjs",
-          "before": "8f231f6102facaa62dad45d5fac984357ba11980",
-          "after": "53fdb217b04d43f879c51cb1169ab5ae66b20520"
-        }
-      ]
-    }
+    {"delta":"WF","subject":"delta(client): WF P13b1b store seller request bytes under the purchase revision and retry unknown answers","files":[{"path":"packages/dacs-client/src/dacs/commit-on-signature.mjs","before":"6eb54096a53a281766e7846cb46d7c5eeec7d532","after":"e8e7037514829c256308b6b24339178d90fe1881"},{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"74db6f3632bfcb00c067941017012fc536da6524","after":"59fb22f510c27ffbe977db910b7c73d3c3f2726a"},{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"b88097dc5621acb7affa393aade0133f1c873923","after":"e9ae634270a864049943fc107503cf7831da4acb"},{"path":"packages/dacs-client/test/helpers/stored-request-fixture.mjs","before":null,"after":"d239a6eb873f3e35c7057a0eaf7c5d1117e1931c"},{"path":"packages/dacs-client/test/helpers/stored-request-flow-loader.mjs","before":null,"after":"504131cea52f01a11311e619e01576a9939f87b6"},{"path":"packages/dacs-client/test/helpers/stored-request-flows.mjs","before":null,"after":"128ace501f6aa5f4ff68cf7d8067ea62d19e9998"},{"path":"packages/dacs-client/test/helpers/wire-client-fixture.mjs","before":"096b90fa41c0369bf138bbd18360b04951415116","after":"106b9d16fdbbd28db6ebadd36ea5d0ba94b702f0"},{"path":"packages/dacs-client/test/seller-response-classification.test.mjs","before":"6982df671d7d2040341fd534d075b1225fc000f6","after":"642219516e80498d69b7b31c11ae82721a2d73ab"},{"path":"packages/dacs-client/test/seller-stored-request.test.mjs","before":null,"after":"8f231f6102facaa62dad45d5fac984357ba11980"}]},
+    {"delta":"WF","subject":"fix(client): build the request-progress view without unused bindings","sha":"f6df1f3eedfbdc110ab87685639f19b99cff8bdd","files":[{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"59fb22f510c27ffbe977db910b7c73d3c3f2726a","after":"d5b1b5ffe6c32d5292195025b6bc17c59823fe6b"},{"path":"packages/dacs-client/test/helpers/stored-request-flows.mjs","before":"128ace501f6aa5f4ff68cf7d8067ea62d19e9998","after":"f7b21b70231518c359487627ed207c4bc39dbc2d"}]},
+    {"delta":"WF","subject":"fix(client): stop a retry that wakes past its route deadline","sha":"228e4f3bc10ff06fb20f9c7ff5abf727179883df","files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"e9ae634270a864049943fc107503cf7831da4acb","after":"5b50b3d347a2cec7ea4c6a4e108bc487a19ba68c"},{"path":"packages/dacs-client/test/seller-stored-request.test.mjs","before":"8f231f6102facaa62dad45d5fac984357ba11980","after":"53fdb217b04d43f879c51cb1169ab5ae66b20520"}]},
+    {"delta":"WF","subject":"delta(client): WF keep durable request storage independent of retries","files":[{"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"d5b1b5ffe6c32d5292195025b6bc17c59823fe6b","after":"97000e170be323d044a68c7fc0fa6efe03efe2e1"},{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"5b50b3d347a2cec7ea4c6a4e108bc487a19ba68c","after":"b7587cf87b6cfbde30f56d5177fc0dbba631be16"},{"path":"packages/dacs-client/test/helpers/stored-request-fixture.mjs","before":"d239a6eb873f3e35c7057a0eaf7c5d1117e1931c","after":"b09dba88259bd7dbdade6509e31e40a86727a13a"},{"path":"packages/dacs-client/test/seller-response-classification.test.mjs","before":"642219516e80498d69b7b31c11ae82721a2d73ab","after":"0ea0e5c477334f9969bf3885887e4f40ac3620a3"},{"path":"packages/dacs-client/test/seller-storage-boundaries.test.mjs","before":null,"after":"d8fa7c318c181091f7c9d6793942d5288733362e"},{"path":"packages/dacs-client/test/seller-stored-request.test.mjs","before":"53fdb217b04d43f879c51cb1169ab5ae66b20520","after":"919fd780e50a524ee24c547b4ed9d0b2ae3f087c"}]}
   ]
 }

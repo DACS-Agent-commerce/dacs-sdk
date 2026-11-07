@@ -42,7 +42,7 @@ export async function storedWorld(t, { stage = 'agreement-signing', accepted = t
   });
   const patch = (protocol = {}, nextStatus = p.get().status) => {
     const saved = p.get();
-    return p.ops.transition(saved.id, saved.status, nextStatus, { state: { protocol: { ...saved.state.protocol, ...protocol, revision: (saved.state.protocol.revision ?? 0) + 1 } }, event: 'test_progress', data: {} });
+    return p.ops.transition(saved.id, saved.status, nextStatus, { state: { protocol: { ...saved.state.protocol, ...protocol, revision: (saved.state.protocol.revision ?? 0) + 1, progressGeneration: (saved.state.protocol.progressGeneration ?? saved.state.protocol.revision ?? 0) + 1 } }, event: 'test_progress', data: {} });
   };
   return { w, p, made, holder, records, client, auth, reply, fetches, delays, clock, patch,
     advance(ms) { time += ms; w.state.time += ms; },
