@@ -19,7 +19,7 @@ const operation={terms:{buyer:{wallet:'0x'+'e'.repeat(64)},seller:{claim:seller}
 const view={jobId,profile:operation.terms.protocol.profile,revision:7,stage:'delivery-ready',agreement:null,commitment:null,paymentEvidence:null,delivery:{report:{jobId}},bundle:null};
 const row=(o,v,id)=>evaluateCompletionReadiness(o,v).requirements.find(r=>r.id===id);
 test('completion diagnostics identify the installed workspace pin and remain held',()=>{
- assert.equal(COMPLETION_READINESS_STANDARD_PIN,DACS_STANDARD_PIN);assert.equal(SDK_PROVENANCE.standardPin,DACS_STANDARD_PIN);assert.match(SDK_PROVENANCE.source,/workspace/);
+ assert.equal(COMPLETION_READINESS_STANDARD_PIN,DACS_STANDARD_PIN);assert.equal(SDK_PROVENANCE.standardPin,DACS_STANDARD_PIN);assert.equal(SDK_PROVENANCE.source,'@kynesyslabs/dacs package implementation');
  assert.equal(row(operation,view,'profile.implementation').status,'present');assert.equal(evaluateCompletionReadiness(operation,view).status,'held');assert.equal(row(operation,view,'profile.completion').code,'profile.not-admitted');
 });
 test('revision-only stale and not-saved protocol views cannot advertise current delivery',()=>{

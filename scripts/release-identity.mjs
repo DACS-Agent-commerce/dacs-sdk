@@ -1,4 +1,4 @@
-// Shared by the existing three-package verifier and the five-package preparation gate.
+// Shared by the release-set verifier and the five-package preparation gate.
 export function validateReleaseIdentity(manifest, name) {
   if (manifest.name !== name || manifest.license !== "MIT" ||
       manifest.repository?.url !== "git+https://github.com/DACS-Agent-commerce/dacs-sdk.git" ||
