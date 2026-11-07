@@ -275,9 +275,10 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
 
   // Commit the exact bytes and unknown intent before the call's single send.
   async function post(path, body) {
+    const deadline = clock.now() + routeDeadlineMs(path);
     const attempt = requestRecords?.start(path, body);
     try {
-      const answer = await send(path, body, attempt, routeDeadlineMs(path));
+      const answer = await send(path, body, attempt, deadline - clock.now());
       attempt?.finish(answer.answerClass);
       return answer.body;
     } catch (error) {

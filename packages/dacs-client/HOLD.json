@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "f6f93ff5fef6c095f219c1c7ce73cb6859d5dc3f"
+        "blob": "80ddf6b357991fe45501f1c3fd0bac9eb3855f97"
       },
       "DELTA-LEDGER.json": {
-        "blob": "932127f667e91baf60be741fd949e69ec2ede396"
+        "blob": "f8df1f85e343be158a1087bc3cc1d9807841841f"
       },
       "DELTA-MAP.md": {
-        "blob": "091e725c0527419bc42b344260c15c510104632c"
+        "blob": "66aa1b47e316fd6466913b548d2cd697c692218d"
       },
       "DELTA-NOTES.md": {
         "blob": "0b3c539ebb80f2b9211fcc9016cc420b6310ec8e"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "d96f3b577fcf18beab2d59e16012832198434664"
+        "blob": "7c39cc1e29ca1af17eea977a7ef576c56dc334ff"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "23b28207e3fe559163a05f27453ffa35602f74d8"
+        "blob": "32e09e293741c895255e012d3c889665558fa837"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1175,7 +1175,7 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "b7587cf87b6cfbde30f56d5177fc0dbba631be16"
+        "blob": "66893f360d39e0437f5134ec72151e7ee517ce50"
       },
       "src/dacs/seller-response-class.mjs": {
         "blob": "8ca70e7f5d3217388527c8dcab289193b2848780"
@@ -1895,13 +1895,13 @@
         "blob": "6c920248367b799050ce5f473574a6a9ca927f1e"
       },
       "test/seller-response-classification.test.mjs": {
-        "blob": "0ea0e5c477334f9969bf3885887e4f40ac3620a3"
+        "blob": "71d7482308110c72059754e79f8929e55debe1c3"
       },
       "test/seller-storage-boundaries.test.mjs": {
         "blob": "d8fa7c318c181091f7c9d6793942d5288733362e"
       },
       "test/seller-stored-request.test.mjs": {
-        "blob": "919fd780e50a524ee24c547b4ed9d0b2ae3f087c"
+        "blob": "1e5d5ce574538a7e96f257dcc7aa405fa636ef56"
       },
       "test/sqlite-floor-iterators.test.mjs": {
         "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"

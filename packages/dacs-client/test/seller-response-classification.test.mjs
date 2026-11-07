@@ -5,7 +5,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
 import { world, validReceipt, PUBLIC_ENDPOINT, JOB } from './helpers/wire-client-fixture.mjs';
 import { committedPurchase } from './helpers/wire-committed-purchase.mjs';
-import { storedWorld, STORED_PATHS, bodyFor, errorCode, nonce, sameBodies } from './helpers/stored-request-fixture.mjs';
+import { storedWorld, STORED_PATHS, bodyFor, errorCode, sameBodies } from './helpers/stored-request-fixture.mjs';
 // The fixture installs the admission double, so the modules that read admission state load after it.
 const { createSellerAgentClient, SellerRefusedError, SellerTlsUnusableError, SellerUnavailableError } = await import('../src/dacs/seller-http.mjs');
 const { classifySellerAnswer, SELLER_ANSWER_CLASS: CLASS } = await import('../src/dacs/seller-response-class.mjs');
