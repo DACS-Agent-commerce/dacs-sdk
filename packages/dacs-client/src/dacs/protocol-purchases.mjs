@@ -360,7 +360,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     if (prior.stage !== stage && !(SELLER_REQUEST_POLICY[path].retained && REPLAY_STAGES.has(stage))) throw new StaleProtocolCheck(row);
     return stored.text;
   }
-  const attemptFor = (path, text, newPurchase, finish) => ({ text, continuation: false, newPurchase, check: () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }, finish });
+  const attemptFor = (path, text, newPurchase, finish) => ({ text, stored: SELLER_REQUEST_POLICY[path].durable, continuation: false, newPurchase, check: () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }, finish });
   return {
     start(path, body) {
       const result = transaction(db, () => {
@@ -386,7 +386,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
       holder.set(result.row);
       return result.attempt;
     },
-    failure(error) { ops.record(holder.get().id, 'seller_request_refused', { code: error?.code ?? 'other' }); },
+    failure(error) { ops.record(holder.get().id, 'seller_request_failed', { code: error instanceof OperationError ? error.code : 'seller_unavailable', ...(Object.values(SELLER_ANSWER_CLASS).includes(error?.answerClass) ? { answerClass: error.answerClass } : {}), ...(sellerFailureCause(error?.causeCode) ? { causeCode: error.causeCode } : {}) }); },
   };
 }
 

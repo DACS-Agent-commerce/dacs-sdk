@@ -193,7 +193,7 @@ const TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET']);
 const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
 function failureCause(error, phase, signal) {
-  if (signal?.aborted) return 'timeout';
+  if (signal?.aborted || error?.name === 'TimeoutError') return 'timeout';
   if (phase === 'client-sign') return 'client-sign';
   // Node fetch wraps TLS/socket errors in `cause`. Inspect only bounded
   // machine codes, never error messages, peer metadata or certificate bytes.
@@ -231,7 +231,11 @@ export const SELLER_REQUEST_POLICY = Object.freeze(Object.fromEntries([
   [DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, false, false, false, 15000],
 ].map(([path, durable, bootstrap, retained, timeoutMs]) => [path, Object.freeze({ durable, bootstrap, retained, timeoutMs })])));
 const SELLER_MAX_TIMEOUT_MS = 300000;
-const SELLER_CLOCK = Object.freeze({ now: () => performance.now() });
+/** Extra sends allowed after an authenticated unknown dispatch (DC-CW6). */
+export const SELLER_UNKNOWN_RETRIES = 2;
+/** Milliseconds between sends within one request deadline (DC-CW6). */
+export const SELLER_RETRY_DELAY_MS = 5000;
+const SELLER_CLOCK = Object.freeze({ now: () => performance.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) });
 // A refusal raised by the request records (stale row, purchase no longer authorizing): not a seller answer.
 const recordRefusals = new WeakSet();
 const SELLER_OPERATOR_MESSAGE = 'the seller reports this operation is unresolved and needs the seller operator; it is not retried automatically';
@@ -254,7 +258,7 @@ function answerOrError(verdict, answer, status) {
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
  * classifyAnswer is the injectable K5 classifier; the default is the real one. requestRecords is the adapter's durable
  * record store (`start(path, body)` returns the attempt `{text, continuation, newPurchase, check(), finish(answerClass)}`
- * and `failure(error)` records a refusal). Each call sends once, using the stored bytes when present.
+ * and `failure(error)` records a refusal). Authenticated calls with stored attempts retry unknown dispatches twice; all other calls send once.
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords, clock = SELLER_CLOCK }) {
@@ -273,35 +277,52 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     return Math.min(SELLER_MAX_TIMEOUT_MS, Math.max(policy?.timeoutMs === 240000 ? policy.timeoutMs : 0, timeoutMs ?? policy?.timeoutMs ?? 15000));
   };
 
-  // Commit the exact bytes and unknown intent before the call's single send.
+  // One absolute deadline includes storage, authority reads, signing, delays and transport.
   async function post(path, body) {
     const deadline = clock.now() + routeDeadlineMs(path);
-    const attempt = requestRecords?.start(path, body);
-    try {
-      const answer = await send(path, body, attempt, deadline - clock.now());
-      attempt?.finish(answer.answerClass);
-      return answer.body;
-    } catch (error) {
-      if (error instanceof SellerUnavailableError || error instanceof SellerRefusedError) attempt?.finish(error.answerClass);
-      throw error;
+    let unknown;
+    for (let retry = 0; ; retry++) {
+      if (clock.now() >= deadline) {
+        lastFailureCause = 'timeout';
+        throw unknown ?? new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, 'timeout', { answerClass: SELLER_ANSWER_CLASS.NOT_SENT });
+      }
+      const attempt = requestRecords?.start(path, body);
+      try {
+        const answer = await send(path, body, attempt, deadline);
+        attempt?.finish(answer.answerClass);
+        return answer.body;
+      } catch (error) {
+        if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
+        attempt?.finish(error.answerClass);
+        if (!attempt?.stored || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
+        unknown = error;
+      }
+      await clock.sleep(SELLER_RETRY_DELAY_MS);
     }
   }
 
-  async function send(path, requestBody, attempt, remainingMs) {
+  async function send(path, requestBody, attempt, deadline) {
     lastFailureCause = undefined;
     lastFailureDispatched = undefined;
-    let phase = 'other', signal;
+    let phase = 'other', signal, dispatched = false;
+    const checkDeadline = () => {
+      signal?.throwIfAborted();
+      if (clock.now() >= deadline) throw new DOMException('seller request deadline elapsed', 'TimeoutError');
+    };
     try {
       const text = attempt?.text ?? JSON.stringify(requestBody);
       const body = attempt ? JSON.parse(text) : requestBody;
       if (Buffer.byteLength(text) > MAX_BODY) throw new Error('request exceeds byte limit');
       // One deadline covers signing too: the wire's authority and proof reads and the host's signer have none of their own.
-      signal = AbortSignal.timeout(Math.max(1, Math.ceil(remainingMs)));
+      checkDeadline();
+      signal = AbortSignal.timeout(Math.ceil(deadline - clock.now()));
       phase = 'client-sign';
-      const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal }), signal) : null;
+      const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal, checkDeadline }), signal) : null;
+      checkDeadline();
       try { attempt?.check(); } catch (refusal) { recordRefusals.add(refusal); throw refusal; }
+      checkDeadline();
       phase = 'other';
-      hasDispatched = true;
+      hasDispatched = true; dispatched = true;
       const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
       phase = 'response-auth';
       const declared = response.headers.get('content-length');
@@ -345,7 +366,8 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }
       lastFailureCause = failureCause(error, phase, signal);
-      const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause);
+      const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT });
+      if (!dispatched) { preDispatchFailures.add(unavailable); lastFailureDispatched = false; }
       if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
       throw unavailable;
     }
