@@ -1322,7 +1322,7 @@
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
       },
       "src/wallet/signer-reservation.mjs": {
-        "blob": "77e197ff1b12c3d5e4405816fd0ca34390d74efa"
+        "blob": "f59384d783444e82e2b2458c565ac81b576ff2f7"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1802,7 +1802,7 @@
         "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
       },
       "test/node-signer-reservation.test.mjs": {
-        "blob": "6c75a478fc43da0771bdb786427d4de34afa6bd6"
+        "blob": "0f43918cb45c07f7acf9c1c1e5dda8e328654a01"
       },
       "test/node-wallet-authority-token.test.mjs": {
         "blob": "59ec4a406d02df29293034d44d466202fd68dde1"

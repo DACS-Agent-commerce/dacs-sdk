@@ -1129,10 +1129,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | beb390b8c98523aeaa14210e43c207be82bf4696 |
 | WF | delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 095583a9cbbac1bbbb5cc578741caa2dd42f21ee |
-| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 77e197ff1b12c3d5e4405816fd0ca34390d74efa |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | f59384d783444e82e2b2458c565ac81b576ff2f7 |
 | | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | fcf8680fd294ff31fad8add0e4a5f459291dd7a6 |
 | | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 70c7c3ba010ad83c7b4a76eac9fc55c7116d05cf |
-| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 6c75a478fc43da0771bdb786427d4de34afa6bd6 |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 0f43918cb45c07f7acf9c1c1e5dda8e328654a01 |
 
 ## Complete commit and file inventory
 

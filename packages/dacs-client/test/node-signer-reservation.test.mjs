@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { installNoEgress } from './helpers/no-egress.mjs';
-import { args, digest, dispatchKey, open, options, otherSigner, ownershipKey, signed, signer, transactionKey } from './helpers/signer-reservation-world.mjs';
+import { T0, args, digest, dispatchKey, open, options, otherSigner, ownershipKey, signed, signer, transactionKey } from './helpers/signer-reservation-world.mjs';
 
 const trap = installNoEgress();
 test.after(() => { trap.restore(); assert.deepEqual(trap.attempts, []); });
@@ -306,4 +306,35 @@ test('a reused attempt id cannot overwrite a different signer attempt even if bo
   const candidate = JSON.parse(signed().projectionText); candidate.content.from = otherSigner; candidate.hash = digest(JSON.stringify(candidate.content));
   await rejectCode(w.reservations.bindSigned(other, { ...signed(), txHash: candidate.hash, projectionText: JSON.stringify(candidate) }), 'signer_reservation_invalid');
   assert.deepEqual(await w.journal.get(dispatchKey(first.active.attemptId)), before);
+});
+
+// A projection under the 256 KiB text limit whose serialized transaction record is over the journal's record limit.
+function oversizedSigned() {
+  const make = filler => {
+    const content = { type: 'storageProgram', from: signer, nonce: 1, timestamp: T0, data: ['CREATE', { program: filler }] };
+    const hash = digest(JSON.stringify(content));
+    return { txHash: hash, inputDigest: digest('TEST-public-input'), projectionText: JSON.stringify({ content, hash, signature: { type: 'ed25519', data: JSON.parse(signed().projectionText).signature.data } }) };
+  };
+  const base = Buffer.byteLength(make('').projectionText);
+  return make('a'.repeat(262000 - base));
+}
+
+test('a projection that fits the text limit but not the journal record limit refuses before any attempt is written, and the reservation stays usable', async t => {
+  const w = world(t), reservation = await approved(w), large = oversizedSigned();
+  assert.ok(Buffer.byteLength(large.projectionText) <= 256 * 1024);
+  await rejectCode(w.reservations.bindSigned(reservation, large), 'signer_reservation_invalid');
+  assert.equal(await w.journal.get(dispatchKey(reservation.active.attemptId)), undefined, 'no bind-started attempt blocks the signer');
+  assert.equal(await w.journal.get(transactionKey(large.txHash)), undefined);
+  const reopened = create(w.reopen());
+  assert.deepEqual((await reopened.reserve(args())).reservation, reservation);
+  assert.equal((await reopened.bindSigned(await reopened.current(signer), signed())).active.txHash, signed().txHash);
+});
+
+test('an approval intent whose approval could not later be recorded refuses before it is stored', async t => {
+  const w = world(t), { reservation } = await w.reservations.reserve(args());
+  await rejectCode(w.reservations.bindApprovalIntent(reservation, 'x'.repeat(200 * 1024)), 'signer_reservation_invalid');
+  assert.deepEqual(await w.reservations.current(signer), reservation, 'the oversized intent was not stored');
+  const intent = await w.reservations.bindApprovalIntent(reservation, 'x'.repeat(100 * 1024));
+  const approval = await w.reservations.bindApproval(intent, { ledgerId: 'L'.repeat(256), requestText: 'x'.repeat(100 * 1024) });
+  assert.equal((await w.reservations.bindSigned(approval, signed())).active.txHash, signed().txHash);
 });

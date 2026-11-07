@@ -6609,7 +6609,7 @@
         {
           "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
           "before": null,
-          "after": "77e197ff1b12c3d5e4405816fd0ca34390d74efa"
+          "after": "f59384d783444e82e2b2458c565ac81b576ff2f7"
         },
         {
           "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
@@ -6624,7 +6624,7 @@
         {
           "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
           "before": null,
-          "after": "6c75a478fc43da0771bdb786427d4de34afa6bd6"
+          "after": "0f43918cb45c07f7acf9c1c1e5dda8e328654a01"
         }
       ]
     }

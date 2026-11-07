@@ -10,7 +10,8 @@
 // ledger's id to those bytes; a null manual id authorizes this instance only and is never saved. bindSigned commits
 // attempt (bind-started) -> immutable transaction -> signed stage -> ownership link, and only the last step makes the
 // bytes visible to the caller, so any earlier prefix stays unexposed (its reconciliation is a later card's).
-// A put that throws is read back before anything is decided; an unreadable answer keeps ownership.
+// A put that throws is read back before anything is decided; an unreadable answer keeps ownership. The sizes of every
+// record a sequence will write (intent, then bind) are checked against the journal's record limit before its first write.
 //
 // Lock order: the kit writer lock, then the signer lock, then the approval policy; the signer lock is never re-entered.
 import { createHash } from 'node:crypto';
@@ -20,6 +21,7 @@ const FORMAT = 'dacs-signer-reservation/v2';
 const KEY_ROOT = 'devnet/signer-reservation';
 const MAX_TEXT_BYTES = 256 * 1024;
 const MAX_ID_BYTES = 256;
+const MAX_RECORD_BYTES = 256 * 1024; // the journal's default per-record limit; a record over it is refused before the first write of its sequence
 const MAX_HISTORY = 1024;
 const OPERATIONS = ['payment-evidence', 'native', 'artifact'];
 const STAGES = ['bind-started', 'signed', 'confirm-started', 'confirm-answered', 'broadcast-started', 'broadcast-answered',
@@ -37,7 +39,8 @@ const isText = (value, limit = MAX_ID_BYTES) => typeof value === 'string' && val
 const transactionKey = txHash => `${KEY_ROOT}-tx/${txHash}`;
 const attemptKey = attemptId => `${KEY_ROOT}-dispatch/${attemptId}`;
 const retiredKey = attemptId => `${KEY_ROOT}-retired/${attemptId}`;
-const hasPossibleDispatch = attempt => attempt.history.some(entry => POSSIBLE_DISPATCH_STAGES.has(entry.stage));
+const fits = record => Buffer.byteLength(JSON.stringify(record)) <= MAX_RECORD_BYTES;
+const hasPossibleDispatch =attempt => attempt.history.some(entry => POSSIBLE_DISPATCH_STAGES.has(entry.stage));
 const sameOperation = (left, right) => ['operation', 'operationKey', 'nonce'].every(key => left[key] === right[key]);
 
 function fail(code, detail = code) { throw Object.assign(new Error(code, { cause: detail instanceof Error ? detail : new Error(detail) }), { code }); }
@@ -204,6 +207,9 @@ export function createSignerReservations({ journal, pins, clock = { now: () => D
     return withCurrentOwner(reservation, owner => {
       check(isText(requestText, MAX_TEXT_BYTES) && owner.active.txHash === null, 'invalid approval intent');
       check(owner.active.approvalIntent === null || owner.active.approvalIntent.requestText === requestText, 'intent cannot be rebuilt');
+      // The ownership record later also holds the approval (same text, any valid ledger id) and the hash: refuse an intent that could not be bound.
+      const widest = { ledgerId: '\u0001'.repeat(MAX_ID_BYTES), requestText };
+      check(fits({ ...owner, revision: owner.revision + 1, active: { ...owner.active, txHash: 'f'.repeat(64), approvalIntent: { requestText }, approval: widest } }), 'approval intent too large to record');
       return swapOwner(owner, { ...owner.active, approvalIntent: { requestText } });
     });
   }
@@ -241,9 +247,13 @@ export function createSignerReservations({ journal, pins, clock = { now: () => D
       check(attempts.every(attempt => attempt.signer === owner.signer && sameOperation(attempt, active) && attempt.inputDigest === inputDigest
         && attempt.terminal === 'never-dispatched' && !hasPossibleDispatch(attempt)), 'hash has a live or dispatched attempt');
       check(await journal.get(attemptKey(active.attemptId)) === undefined, 'incomplete signed binding requires reconciliation');
-      const attempt = await insertRecord(owner.signer, attemptKey(active.attemptId), { ...header(owner.signer), revision: 1, attemptId: active.attemptId,
+      const started = { ...header(owner.signer), revision: 1, attemptId: active.attemptId,
         operation: active.operation, operationKey: active.operationKey, nonce: active.nonce, txHash, inputDigest, approval: active.approval,
-        history: [{ stage: 'bind-started', at: now() }], terminal: null });
+        history: [{ stage: 'bind-started', at: now() }], terminal: null };
+      // Every record of the sequence must fit before the first is written: a later put the journal refuses would strand the attempt.
+      const signedAttempt = { ...started, revision: 2, history: [...started.history, { stage: 'signed', at: now() }] };
+      check([transaction, started, signedAttempt, { ...owner, revision: owner.revision + 1, active: { ...active, txHash } }].every(fits), 'signed binding record too large');
+      const attempt = await insertRecord(owner.signer, attemptKey(active.attemptId), started);
       if (previous === undefined) await insertRecord(owner.signer, transactionKey(txHash), transaction);
       await appendStage(attempt, 'signed');
       return swapOwner(owner, { ...active, txHash });
