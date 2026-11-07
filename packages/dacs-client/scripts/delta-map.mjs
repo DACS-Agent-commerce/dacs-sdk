@@ -57,6 +57,18 @@ export function table(data = ledger()) {
   }
   return publicationText(lines.join('\n')+'\n');
 }
+// The blob a recorded path must hold comes from the commit graph, not ledger
+// order. `records` are the path's resolved records ({sha, after}); within one
+// commit the last one counts. `independent(shas)` returns the commits that no
+// other listed commit descends from (git merge-base --independent). Returns
+// {blob} when those newest records agree, or {conflict: shas} when parallel
+// branches recorded different blobs and no later record chose one.
+export function expectedBlob(records, independent) {
+  const latest=new Map(records.map(r=>[r.sha,r.after]));
+  const newest=latest.size>1?independent([...latest.keys()]):[...latest.keys()];
+  const blobs=new Set(newest.map(sha=>latest.get(sha)));
+  return blobs.size===1?{blob:[...blobs][0]}:{conflict:newest};
+}
 export function checkDeltas(packageDir=pkg) {
   const failures=[]; const active=ledger(); const data={...active,changes:[...(active.supersededChanges??[]),...active.changes]}; const history=commits();
   const archived=readFileSync(join(pkg,'evidence/publication-history.json'));
@@ -78,23 +90,42 @@ export function checkDeltas(packageDir=pkg) {
   const sourceManifest=evidence.sourceManifest;
   if(JSON.stringify(sourceManifest)!==JSON.stringify(JSON.parse(readFileSync(join(pkg,'PROVENANCE.json'))))) failures.push('source manifest differs from archived source/delta evidence');
   if(data.schema!=='dacs-client-deltas/v2'||data.baseline!==BASELINE) failures.push('delta ledger baseline/schema changed');
-  const selectors=new Map();
+  const selectors=new Map(), recorded=new Map();
   for(const c of data.changes) {
     if(c.sha!=null&&!/^[0-9a-f]{40}$/.test(c.sha)) failures.push(`delta commit selector sha is not a full commit hash: ${c.subject}`);
     const same=selectors.get(c.subject)??[];
     if(same.some(sha=>sha==null||c.sha==null||sha===c.sha)) failures.push(`duplicate delta subject ${c.subject}`);
     selectors.set(c.subject,[...same,c.sha]);
-    if(!['D10','D9','D1','D11','D15','D16'].includes(c.delta)||!(c.subject.startsWith(`delta(client): ${c.delta} `)||(c.delta==='D11'&&c.subject.startsWith('fix(client): D11 ')))) failures.push(`invalid delta ${c.subject}`);
+    if(!['D10','D9','D1','D11','D15','D16','D18','D19','WF'].includes(c.delta)||!(c.subject.startsWith(`delta(client): ${c.delta} `)||(c.delta==='D11'&&c.subject.startsWith('fix(client): D11 ')))) failures.push(`invalid delta ${c.subject}`);
     const matches=history.filter(h=>selects(c,h));
     if(matches.length!==1) failures.push(`delta commit selector must resolve once: ${c.sha==null?c.subject:`${c.sha} ${c.subject}`}`);
     if(matches.length===1) {
       const sha=matches[0].sha;
       for(const f of c.files) {
+        recorded.set(f.path,[...(recorded.get(f.path)??[]),{sha,before:f.before,after:f.after}]);
         for(const [rev,want] of [[`${sha}^`,f.before],[sha,f.after]]) {
           let actual=null;try{actual=git('rev-parse','--verify',`${rev}:${f.path}`);}catch{}
           if(actual!==want) failures.push(`${f.path}: delta ${c.delta} blob differs at ${rev}`);
         }
       }
+    }
+  }
+  // A merge can already have discarded a reviewed blob before the next
+  // record. Check every record against its ancestors, not just its actual
+  // parent or the terminal blob. Resolve all records first: ledger order and
+  // unrelated sibling records must not determine continuity.
+  const independent=shas=>git('merge-base','--independent',...shas).split('\n');
+  const ancestors=new Map();
+  for(const [path,records] of recorded) {
+    let baseline=null;try{baseline=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
+    for(const {sha,before} of records) {
+      if(!ancestors.has(sha)) ancestors.set(sha,new Set(git('rev-list',`${BASELINE}..${sha}^`).split('\n')));
+      const previous=records.filter(record=>ancestors.get(sha).has(record.sha));
+      const expected=previous.length?expectedBlob(previous,independent):{blob:baseline};
+      // Divergent newest ancestors require an explicit resolution record.
+      // Its actual parent/commit bytes are checked above; once recorded,
+      // that resolution constrains every descendant in turn.
+      if(!expected.conflict&&before!==expected.blob) failures.push(`${path}: delta parent is discontinuous at ${sha}`);
     }
   }
   const inventory=[...(data.supersededCommits??[]),...JSON.parse(readFileSync(join(pkg,'DELTA-COMMITS.json'),'utf8'))];
@@ -134,13 +165,20 @@ export function checkDeltas(packageDir=pkg) {
     const a=staged.get(path),b=committed.get(path);
     if(!a||!b||a.stage!=='0'||a.mode!==b.mode||a.hash!==b.hash)failures.push(`${path}: index differs from HEAD for moved source/test`);
   }
+  // Merges are not record subjects, so HEAD, the index and the working bytes
+  // must all hold the newest recorded blob; a merge that keeps a stale side,
+  // rolls back or deletes a recorded file fails here.
   for(const path of allowed) {
-    const changes=data.changes.flatMap(c=>c.files.filter(f=>f.path===path));
-    let expected=changes.length?changes.at(-1).after:null;
-    if(!changes.length)try{expected=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
+    let expected=null;
+    if(recorded.has(path)) {
+      const result=expectedBlob(recorded.get(path),independent);
+      if(result.conflict) { failures.push(`${path}: newest records disagree (${result.conflict.join(', ')}); record the chosen blob after the merge`); continue; }
+      expected=result.blob;
+    } else try{expected=git('rev-parse','--verify',`${BASELINE}:${path}`);}catch{}
     const rel=path.slice(prefix.length); const local=join(packageDir,rel);
     const actual=existsSync(local)?blob(readFileSync(local)):null;
-    if(actual!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
+    const head=committed.get(path)?.hash??null, index=staged.get(path)?.hash??null;
+    if(actual!==expected||head!==expected||index!==expected) failures.push(`${path}: current blob differs from enumerated deltas`);
   }
   if(readFileSync(join(pkg,'DELTA-MAP.md'),'utf8')!==table(active)) failures.push('DELTA-MAP.md differs from generated Git table (run delta-map.mjs)');
   return {failures,allowed};

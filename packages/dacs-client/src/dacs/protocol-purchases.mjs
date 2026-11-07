@@ -263,6 +263,20 @@ export function diagnosticProtocolView(operation, options = {}) {
     next: 'Stored protocol state is historical. Purchase actions are held; public readback cannot establish settlement or delivery.' }) : null;
 }
 
+// DC-CW12: the synchronous plan-flight readers, keyed by the protocol object the
+// purchase service was given. Module-private, so nothing outside the package can register one.
+const flightReaders = new WeakMap();
+
+/** registerPlanFlightReader(publicProtocol, internalProtocol) lets the purchase service read `internalProtocol`'s synchronous plan-flight state through the public object. Returns undefined. */
+export function registerPlanFlightReader(publicProtocol, internalProtocol) {
+  flightReaders.set(publicProtocol, flightReaders.get(internalProtocol));
+}
+
+/** planRunningOf(protocol, operation) returns true while this process runs the purchase's plan step. It is false for any object that is neither an internal protocol object nor a registered public one. It never returns a Promise and never throws for an unknown object. */
+export function planRunningOf(protocol, operation) {
+  return flightReaders.get(protocol)?.(operation) === true;
+}
+
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
 // already-resolved operator capability (null when it has none, so the paths
 // that need one refuse with buyer_access_closed).
@@ -1162,7 +1176,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     && value.stage !== 'failed'
     && (value.stage !== 'observed' || !(Number(value.signedTransaction.content.nonce) < expectedNonce)));
 
-  return {
+  const purchases = {
     available,
     actionsAdmitted: false,
     nativePaymentReadbackAvailable: Boolean(nativePayment),
@@ -1343,6 +1357,8 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     countersignRequest,
     countersign: endIfStale(countersign),
   };
+  flightReaders.set(purchases, planRunning);
+  return purchases;
 }
 
 export function holdCompletedBundle(protocol) {

@@ -1,4 +1,5 @@
 import { DacsError } from "../errors.js";
+import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import { sha256Hex } from "./hash.js";
 
 /**
@@ -12,6 +13,18 @@ export function storAddress(seed: string): string {
 
 /** DACS-5 §10.4.3 role-specific bundle address: `stor-{sha256(jobId + "-bundle-" + role)}`. */
 export function bundleAddress(
+  jobId: string,
+  role: "buyer" | "seller" | "orchestrator",
+): string {
+  requireCanonicalJobId(jobId, "bundle address jobId");
+  if (role !== "buyer" && role !== "seller" && role !== "orchestrator") {
+    throw new DacsError("bundle address role must be buyer, seller, or orchestrator");
+  }
+  return legacyBundleAddress(jobId, role);
+}
+
+/** Historical bundle preimage for explicitly legacy, non-JID-1 artifacts. */
+export function legacyBundleAddress(
   jobId: string,
   role: "buyer" | "seller" | "orchestrator",
 ): string {
@@ -111,6 +124,17 @@ export function attestationAddress(
   identifier: string,
   recipeVersion: number,
 ): string {
+  requireCanonicalJobId(jobId, "attestation address jobId");
+  return legacyAttestationAddress(jobId, scheme, identifier, recipeVersion);
+}
+
+/** Historical DACS-2 address grammar; use only for legacy artifacts. */
+export function legacyAttestationAddress(
+  jobId: string,
+  scheme: string,
+  identifier: string,
+  recipeVersion: number,
+): string {
   requireStructuralSegment(jobId, "attestation address jobId");
   if (!/^[a-z][a-z0-9-]*$/.test(scheme)) {
     throw new DacsError("attestation address scheme must be a canonical lowercase token");
@@ -122,6 +146,17 @@ export function attestationAddress(
 
 /** DACS-4 PC-2 SettlementEvidence address with the rail id encoded per CF-4. */
 export function paymentEvidenceAddress(
+  jobId: string,
+  railId: string,
+  phaseIndex: number,
+  resolved = false,
+): string {
+  requireCanonicalJobId(jobId, "payment evidence address jobId");
+  return legacyPaymentEvidenceAddress(jobId, railId, phaseIndex, resolved);
+}
+
+/** Historical DACS-4 address grammar; use only for legacy artifacts. */
+export function legacyPaymentEvidenceAddress(
   jobId: string,
   railId: string,
   phaseIndex: number,
@@ -141,6 +176,12 @@ export function paymentEvidenceAddress(
 
 /** DACS-5 §10.6.1 RatingRecord address with the rater encoded per CF-4. */
 export function ratingAddress(jobId: string, rater: string): string {
+  requireCanonicalJobId(jobId, "rating address jobId");
+  return legacyRatingAddress(jobId, rater);
+}
+
+/** Historical DACS-5 rating address grammar; use only for legacy artifacts. */
+export function legacyRatingAddress(jobId: string, rater: string): string {
   requireStructuralSegment(jobId, "rating address jobId");
   requireVariableSegment(rater, "rating address rater");
   return `dacs5:rating:${jobId}:${encodeAddressSegment(rater)}`;
