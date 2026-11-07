@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { withFloorIterators } from './sqlite-floor-iterators.mjs';
 import { createSqlitePurchaseStore } from '../../src/seams/purchase-store-not-wired.mjs';
 
 const MAIN_PROFILES = [
@@ -40,7 +41,8 @@ export function durableIds(db, path, profile = DEFAULT_PROFILE, table = 'records
   finally { if (reader !== db) reader.close(); }
 }
 
-/** Hide isTransaction, as on the oldest supported Node versions. */
+/** Hide isTransaction and give statement iterators their own next, as on the oldest supported Node versions. */
 export class LegacyDatabase extends DatabaseSync {
   get isTransaction() { return undefined; }
+  prepare(sql) { return withFloorIterators(super.prepare(sql)); }
 }

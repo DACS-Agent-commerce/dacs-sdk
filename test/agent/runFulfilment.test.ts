@@ -14,6 +14,7 @@ import {
 } from "../../src/crypto/index.js";
 import {
   runFulfilmentCore,
+  sellerFulfilmentAuditSourceViolation,
   sellerFulfilmentId,
   type SellerDeliveredArtifact,
   type SellerDeliverableSpec,
@@ -25,6 +26,7 @@ import {
   type SellerPayloadAttestationRecord,
   type SignedSellerDeliveryEvidence,
 } from "../../src/agent/runFulfilmentCore.js";
+import { signFulfilmentVetRecords } from "../fixtures/fulfilmentVetRecords.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 import {
   isSellerFulfilmentHandoff,
@@ -39,8 +41,14 @@ import {
 import {
   isSellerFulfilmentAuditSource,
   sellerFulfilmentAuditSourceHash,
+  sellerFulfilmentVetRequirementsViolation,
   type SellerFulfilmentAuditSourceV1,
 } from "../../src/seller/fulfilmentAuditSource.js";
+
+import {
+  SELLER_FULFILMENT_VET_MODES,
+  isSellerFulfilmentVetInvocationMismatch,
+} from "../../src/seller/index.js";
 
 const NOW = 1_780_000_000_000;
 const SELLER = "did:demos:seller";
@@ -1275,6 +1283,168 @@ describe("runFulfilmentCore", () => {
     }
   });
 
+  test("the shared Vet predicate accepts authenticated coverage and rejects a substituted verifier", () => {
+    const f = fixture();
+    const invocation = f.auditSource.artifacts.vetRequirements[0];
+    if (!invocation) throw new Error("TEST fixture has no buyer Vet invocation");
+    const context = {
+      jobId: f.authorization.jobId, buyerClaim: BUYER, sellerClaim: SELLER,
+      buyerRequirement: BUYER_REQUIREMENT,
+      bindings: new Map(f.auditSource.artifacts.vetRequirements.map((entry) => [
+        canonicalize(entry.vetRecordRef),
+        { primaryClaim: entry.evaluatedParty, roles: new Set([entry.evaluatedParty === BUYER ? "buyer" : "seller"]) },
+      ])),
+    };
+    expect(isSellerFulfilmentVetInvocationMismatch(invocation, context)).toBe(false);
+    expect(isSellerFulfilmentVetInvocationMismatch({ ...invocation, verifier: BUYER }, context)).toBe(true);
+  });
+
+  test("the public Vet predicate refuses malformed invocations without throwing", () => {
+    const f = fixture();
+    const invocation = f.auditSource.artifacts.vetRequirements[0];
+    if (!invocation) throw new Error("TEST fixture has no buyer Vet invocation");
+    const context = {
+      jobId: f.authorization.jobId, buyerClaim: BUYER, sellerClaim: SELLER,
+      buyerRequirement: BUYER_REQUIREMENT,
+      bindings: new Map([[canonicalize(invocation.vetRecordRef), {
+        primaryClaim: invocation.evaluatedParty, roles: new Set(["buyer"]),
+      }]]),
+    };
+    const missingVersion = structuredClone(invocation);
+    Reflect.deleteProperty(missingVersion.freshness[0]!.ref, "recipeVersion");
+    missingVersion.freshness[0]!.ref.anchor.locator =
+      missingVersion.freshness[0]!.ref.anchor.locator.replace(/:v\d+$/, ":vundefined");
+    const badHash = structuredClone(invocation);
+    badHash.freshness[0]!.ref.contentHash = "invalid";
+    const badJob = structuredClone(invocation);
+    badJob.freshness[0]!.sourceJobId += ":suffix";
+    badJob.freshness[0]!.ref.anchor.locator = badJob.freshness[0]!.ref.anchor.locator
+      .replace(invocation.freshness[0]!.sourceJobId, badJob.freshness[0]!.sourceJobId);
+    const { freshness: _freshness, ...missingFreshness } = invocation;
+    const hostile = new Proxy({}, { getPrototypeOf() { throw new Error("hostile input"); } });
+    for (const malformed of [null, missingFreshness, missingVersion, badHash, badJob,
+      { ...invocation, extra: true }, hostile]) {
+      expect(Reflect.apply(isSellerFulfilmentVetInvocationMismatch, undefined,
+        [malformed, context])).toBe(true);
+    }
+  });
+
+  test("completes delivery with required Vet coverage from this job's deal-specific results", async () => {
+    const f = fixture();
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+    invocation.dealSpecific = invocation.freshness.splice(0);
+    expect(invocation.freshness).toHaveLength(0);
+    expect(invocation.dealSpecific).toHaveLength(1);
+    expect(invocation.dealSpecific[0]!.sourceJobId).toBe(f.authorization.jobId);
+    expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "completed",
+    });
+    expect(f.store.consumed).toBe(true);
+    expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    ["buyer", "required"],
+    ["seller", "required"],
+    ["buyer", "oneOf"],
+    ["seller", "oneOf"],
+    ["buyer", "mixed required"],
+    ["buyer", "mixed oneOf"],
+  ] as const)("requires explicit presence opt-in for %s %s before delivery on every attempt", async (party, placement) => {
+    const f = fixture();
+    f.deps.prepareDelivery = vi.fn(f.deps.prepareDelivery);
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    const invocation = f.auditSource.artifacts.vetRequirements[party === "buyer" ? 0 : 1]!;
+    const presence = { scheme: "did", verificationRequired: false };
+    if (placement === "mixed required") {
+      invocation.requirement.required.push(presence);
+    } else if (placement === "mixed oneOf") {
+      // The verified alternative is covered; the finalizer still needs
+      // presence authority for the other alternative, which core cannot supply.
+      invocation.requirement.oneOf = [[...structuredClone(invocation.requirement.required), presence]];
+    } else {
+      invocation.requirement = placement === "required"
+        ? { requirementVersion: "1", required: [presence] }
+        : { requirementVersion: "1", required: [], oneOf: [[presence]] };
+      invocation.freshness = [];
+    }
+    if (party === "buyer") f.listing.buyerRequirement = structuredClone(invocation.requirement);
+    expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+    const [buyerVet, sellerVet] = f.auditSource.artifacts.vetRequirements;
+    if (!buyerVet || !sellerVet) throw new Error("party invocations missing");
+    const admissionInput = {
+      jobId: f.auditSource.session.jobId,
+      buyer: { primaryClaim: buyerVet.evaluatedParty, vetRecordRef: buyerVet.vetRecordRef },
+      seller: { primaryClaim: sellerVet.evaluatedParty, vetRecordRef: sellerVet.vetRecordRef },
+      buyerRequirement: f.listing.buyerRequirement,
+    };
+    expect(sellerFulfilmentVetRequirementsViolation(f.auditSource.artifacts.vetRequirements, admissionInput)).toMatch(/presence-only/);
+    expect(sellerFulfilmentVetRequirementsViolation(f.auditSource.artifacts.vetRequirements, {
+      ...admissionInput, acceptsPresenceOnly: true,
+    })).toBeNull();
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+        reasons: [expect.stringContaining("presence-only")],
+      });
+      expect(f.store.consumed).toBe(false);
+    }
+    expect(f.deps.prepareDelivery).not.toHaveBeenCalled();
+    expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    f.deps.acceptsPresenceOnlyVetRequirements = true;
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({ decision: "completed" });
+    expect(f.deps.submitDelivery).toHaveBeenCalledTimes(1);
+  });
+
+  test("refuses delivery when a synthetic result covers a presence-only requirement", async () => {
+    const f = fixture();
+    f.deps.acceptsPresenceOnlyVetRequirements = true;
+    f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+    const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+    invocation.requirement = {
+      requirementVersion: "1",
+      required: [{ scheme: "did", verificationRequired: false }],
+    };
+    invocation.freshness[0]!.requirement = structuredClone(invocation.requirement.required[0]!);
+    f.listing.buyerRequirement = structuredClone(invocation.requirement);
+
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["an unregistered scheme", { scheme: "bogus", verificationRequired: false }],
+    ["a freshness selection", { scheme: "did", verificationRequired: false, maxAge: 30 }],
+    ["a recipe selection", { scheme: "did", verificationRequired: false, recipeVersion: 1 }],
+  ])("refuses delivery for a presence-only member with %s", async (_label, member) => {
+    for (const placement of ["required", "oneOf"] as const) {
+      const f = fixture();
+      f.deps.acceptsPresenceOnlyVetRequirements = true;
+      f.deps.submitDelivery = vi.fn(f.deps.submitDelivery);
+      const invocation = f.auditSource.artifacts.vetRequirements[0]!;
+      invocation.requirement = placement === "required"
+        ? { requirementVersion: "1", required: [structuredClone(member)] }
+        : { requirementVersion: "1", required: [], oneOf: [[structuredClone(member)]] };
+      invocation.freshness = [];
+      f.listing.buyerRequirement = structuredClone(invocation.requirement);
+      expect(isSellerFulfilmentAuditSource(f.auditSource)).toBe(true);
+
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+      });
+      expect(f.deps.submitDelivery).not.toHaveBeenCalled();
+    }
+  });
+
   test("requires the authenticated orchestrator as the Vet verifier authority", async () => {
     const distinctVetter = fixture();
     distinctVetter.auditSource.artifacts.vetRequirements[0]!.verifier =
@@ -1304,7 +1474,7 @@ describe("runFulfilmentCore", () => {
     const uncoveredOneOf = fixture();
     uncoveredOneOf.auditSource.artifacts.vetRequirements[0]!.requirement.oneOf = [[{
       scheme: "domain",
-      verificationRequired: false,
+      verificationRequired: true,
     }]];
     uncoveredOneOf.listing.buyerRequirement = structuredClone(
       uncoveredOneOf.auditSource.artifacts.vetRequirements[0]!.requirement,
@@ -3634,5 +3804,101 @@ describe("runFulfilmentCore", () => {
       safeToRetryDelivery: false,
       evidence: { outcome: "success" },
     });
+  });
+});
+
+describe("runFulfilmentCore TP-1 G3 orchestrator Vet mode", () => {
+  const orchestrator = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
+
+  const sellerSigned = (): Fixture => {
+    const f = fixture();
+    signFulfilmentVetRecords(f, SELLER, SELLER);
+    return f;
+  };
+
+  test("delivers seller-verified seller Vet provenance when the deps select the orchestrator mode", async () => {
+    const f = sellerSigned();
+    f.deps.vetMode = orchestrator;
+    expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+  });
+
+  test("refuses seller-verified seller Vet provenance in the counterparty mode (audit-source-mismatch)", async () => {
+    for (const vetMode of [undefined, SELLER_FULFILMENT_VET_MODES.counterparty]) {
+      const f = sellerSigned();
+      if (vetMode) f.deps.vetMode = vetMode;
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "audit-source-mismatch",
+      });
+      expect(f.store.consumed).toBe(false);
+    }
+  });
+
+  test("refuses buyer-verified seller Vet provenance in the orchestrator mode (audit-source-mismatch)", async () => {
+    const f = fixture();
+    signFulfilmentVetRecords(f, SELLER, BUYER);
+    f.deps.vetMode = orchestrator;
+    expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+      decision: "rejected",
+      code: "audit-source-mismatch",
+    });
+    expect(f.store.consumed).toBe(false);
+  });
+
+  test("refuses deps with an unsupported Vet mode before any receipt, resolver or delivery call", async () => {
+    for (const vetMode of ["TP1-G3-ORCHESTRATOR", "tp1-g3", "", 1, null, {}]) {
+      const f = sellerSigned();
+      f.deps.vetMode = vetMode as never;
+      const calls = [
+        vi.spyOn(f.store, "claim"),
+        vi.spyOn(f.store, "consumePermit"),
+        vi.spyOn(f.deps, "resolveAgreement"),
+        vi.spyOn(f.deps, "resolveListing"),
+        vi.spyOn(f.deps, "resolveAuditSource"),
+        vi.spyOn(f.deps, "prepareDelivery"),
+        vi.spyOn(f.deps, "submitDelivery"),
+      ];
+      expect(await runFulfilmentCore(f.request, f.deps)).toMatchObject({
+        decision: "rejected",
+        code: "fulfilment-dependencies-invalid",
+        reasons: ["fulfilment Vet mode is unsupported"],
+      });
+      for (const call of calls) expect(call).not.toHaveBeenCalled();
+    }
+  });
+
+  test("a vetMode member in the request, Agreement, Listing or audit source never selects the orchestrator mode", async () => {
+    for (const carrier of ["request", "agreement", "listing", "auditSource"] as const) {
+      const f = sellerSigned();
+      Object.assign(f[carrier], { vetMode: orchestrator });
+      const submit = vi.spyOn(f.deps, "submitDelivery");
+      const result = await runFulfilmentCore(f.request, f.deps);
+      expect(result.decision, carrier).not.toBe("completed");
+      expect(submit, carrier).not.toHaveBeenCalled();
+    }
+  });
+
+  test("captures the Vet mode once: a getter that changes after capture does not change the decision", async () => {
+    const f = sellerSigned();
+    const modes = [orchestrator, SELLER_FULFILMENT_VET_MODES.counterparty];
+    let reads = 0;
+    Object.defineProperty(f.deps, "vetMode", { get: () => modes[Math.min(reads++, modes.length - 1)] });
+    expect((await runFulfilmentCore(f.request, f.deps)).decision).toBe("completed");
+    expect(reads).toBe(1);
+  });
+
+  test("sellerFulfilmentAuditSourceViolation keeps the counterparty rule and takes no Vet mode", () => {
+    const check = (f: Fixture) => sellerFulfilmentAuditSourceViolation(
+      { ...structuredClone(f.auditSource), session: structuredClone(f.session) },
+      f.authorization,
+      f.agreement,
+      f.listing,
+      f.request,
+      f.request.deliveryPhaseIndex,
+      COMMITMENT_ADDRESS,
+    );
+    expect(sellerFulfilmentAuditSourceViolation).toHaveLength(7);
+    expect(check(fixture())).toBeNull();
+    expect(check(sellerSigned())).toMatch(/Vet provenance/);
   });
 });
