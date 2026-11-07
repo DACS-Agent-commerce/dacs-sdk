@@ -11,7 +11,7 @@ import type {
   FaultAttestationBundle,
   RatingRecord,
 } from "../../src/artifacts/types.js";
-import { bundleAddress } from "../../src/canonical/addressing.js";
+import { legacyBundleAddress as bundleAddress } from "../../src/canonical/addressing.js";
 import { contentHash, stripSignature } from "../../src/canonical/index.js";
 
 const PARTY = `did:demos:agent:${"11".repeat(32)}`;

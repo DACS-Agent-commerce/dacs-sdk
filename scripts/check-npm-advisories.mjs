@@ -250,7 +250,8 @@ export function validateOsvResults(payload, queries) {
   return [...deduplicated.values()];
 }
 
-async function readBoundedBody(response, maximumBytes) {
+/** Reads a response body, stopping at `maximumBytes`; throws an ELIMIT error past it. */
+export async function readBoundedBody(response, maximumBytes) {
   if (!response.body) return new Uint8Array();
   const chunks = [];
   let total = 0;
@@ -258,7 +259,7 @@ async function readBoundedBody(response, maximumBytes) {
     const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
     total += bytes.byteLength;
     if (total > maximumBytes) {
-      throw new Error(`registry audit response exceeded ${maximumBytes} bytes`);
+      throw Object.assign(new Error(`registry response exceeded ${maximumBytes} bytes`), { code: "ELIMIT" });
     }
     chunks.push(bytes);
   }

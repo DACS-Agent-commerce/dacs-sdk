@@ -12,7 +12,7 @@ import {
   ARTIFACT_SEPARATORS,
   BUNDLE_BINDING_SEPARATOR,
   EVIDENCE_BOUND_FAULT_BUNDLE_POINTER_SEPARATOR,
-  bundleAddress,
+  legacyBundleAddress as bundleAddress,
   canonicalize,
   bundlesDiverge,
   evaluateEvidenceBoundSettlementSet,
