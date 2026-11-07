@@ -1148,6 +1148,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/dacs/seller-http.mjs:7`, `packages/dacs-client/src/dacs/seller-http.mjs:17`, `packages/dacs-client/src/dacs/seller-http.mjs:118`, `packages/dacs-client/src/dacs/seller-http.mjs:162`, `packages/dacs-client/src/dacs/seller-http.mjs:164`, `packages/dacs-client/src/dacs/seller-http.mjs:169`, `packages/dacs-client/src/dacs/seller-http.mjs:183`, `packages/dacs-client/src/dacs/seller-http.mjs:190`, `packages/dacs-client/src/dacs/seller-http.mjs:196`, `packages/dacs-client/src/dacs/seller-http.mjs:197`, `packages/dacs-client/src/dacs/seller-http.mjs:210`, `packages/dacs-client/src/dacs/seller-http.mjs:215`, `packages/dacs-client/src/dacs/seller-http.mjs:219`, `packages/dacs-client/src/dacs/seller-http.mjs:276`, `packages/dacs-client/src/dacs/seller-http.mjs:283`, `packages/dacs-client/src/dacs/seller-http.mjs:313`, `packages/dacs-client/src/dacs/seller-http.mjs:319`, `packages/dacs-client/src/dacs/seller-http.mjs:322`, `packages/dacs-client/src/dacs/seller-http.mjs:326`, `packages/dacs-client/src/dacs/seller-http.mjs:331`, `packages/dacs-client/src/dacs/seller-http.mjs:335`, `packages/dacs-client/src/dacs/seller-http.mjs:340`, `packages/dacs-client/src/dacs/seller-http.mjs:342`, `packages/dacs-client/src/dacs/seller-http.mjs:345`, `packages/dacs-client/src/dacs/seller-http.mjs:349`, `packages/dacs-client/src/dacs/seller-http.mjs:352`, `packages/dacs-client/src/dacs/seller-http.mjs:357`, `packages/dacs-client/src/dacs/seller-http.mjs:359`, `packages/dacs-client/src/dacs/seller-http.mjs:368`, `packages/dacs-client/src/dacs/seller-http.mjs:370`, `packages/dacs-client/src/dacs/seller-http.mjs:373`, `packages/dacs-client/src/dacs/seller-http.mjs:375`, `packages/dacs-client/src/dacs/seller-http.mjs:384`: fdf7b199b5463301669b5fac5e899811cdf5a7b7<br>`packages/dacs-client/test/seller-retry-deadline.test.mjs:1`: 2176dccf61e404a19c1a036e6e137c2a4fb66cc5 | |
 | WF | delta(client): WF P13b1b keep the storage branch's classification test after the 408 or 429 re-record merge | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/seller-response-classification.test.mjs:1`: 71d7482308110c72059754e79f8929e55debe1c3 | |
+| WF | delta(client): WF P13b1b keep the retry branch's classification test after the 408 or 429 re-record merge | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/seller-response-classification.test.mjs:1`: cc30e5ad0590631f781343edc60dcff1c0eecd2e | |
 
 ## Complete commit and file inventory
 
@@ -3560,6 +3562,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P13b1b keep the storage branch's classification test after the 408 or 429 re-record merge | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF P13b1b keep the storage branch's classification test after the 408 or 429 re-record merge | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF P13b1b keep the storage branch's classification test after the 408 or 429 re-record merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P13b1b keep the retry branch's classification test after the 408 or 429 re-record merge | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P13b1b keep the retry branch's classification test after the 408 or 429 re-record merge | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P13b1b keep the retry branch's classification test after the 408 or 429 re-record merge | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P13b1b keep the retry branch's classification test after the 408 or 429 re-record merge | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P13b1b keep the retry branch's classification test after the 408 or 429 re-record merge | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
