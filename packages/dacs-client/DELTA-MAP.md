@@ -256,6 +256,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 - `P21a2aa` — adds the fence-free Node observer and the source read deltas. `devnet-native-transport.mjs` changes only: `sourceBlockReader` (the identity block reader lifted out of `makeBinder` with every dependency an explicit parameter, `strictEnvelope` required, `raw` replaced by `post`, and a signal check before the block-two read), the new `createSourceObserver`, `readRpc`'s `{signal, maxBytes}` (an integer from 1 to 4 MiB, else `invalid_params`), `observeBinding`'s `{signal, timeoutMs}`, the shared `sourceRead` that takes the signal through the journal lock and the fence, and the named `SOURCE_READ_MAX_BYTES` and `IDENTITY_MAX_AGE_MS`. `node-wallet-session.mjs` adds `createNodeObserver` (the `./node-wallet` inventory in the README and `public-api.test.mjs` names it).
 - `P21a2ab` — exposes the held transport facade and the seller composition. `devnet-native-transport.mjs` adds only `registerHeldTransportFacade`: it adds a facade to the capability set that holds its registered inner and throws for an unregistered inner; it is not in the package `exports` map. `node-wallet-session.mjs` adds `createHeldTransportFacade` (the active members and every `binding` phase but `readback` run the admission wrapper; the passive members are listed in the README), `createNodeSellerComposition` (the demo transport, the required `approveConfirmedWrite` routed so another sender's confirmation and a Listing CREATE pass and every other seller confirmation calls it once, and the composition's observer) and re-exports of the capability checks and the profile and policy constants. The buyer session keeps its transport, loading order and no confirmed-write policy. Packed consumers install npm's installed lock, so the demosdk version CI selects is the one tested, and both purchase runtime floors run the packed test. The inner effect gate stays with P21a2b.
 
+- `P21a2b` — adds the Node compositions' one effect gate, its host contract and the TP-1 authority token. `node-wallet-session.mjs` runs every transaction-hash signature inside `NodeDemos.sign` and every `confirmTx` or `broadcastTx` body sent through the owner's fetch through the gate, after the SDK's own preparation: the optional seller `qualify`, the pass's `refreshAuthority` and `finalStop` within its remaining deadline, then synchronously the hold, the connection, the pass's lease, its synchronous checks and the finalized content with the fee ceiling, then the inner call. `effectPass` and `runInEffectPass` are new members of both compositions, and the seller refuses `effect_pass_required` without a pass. The finalized-content check also refuses a fee above the total. A gated body resets the attempt's dispatched flag unless an effect body of that attempt was already sent, so a refused effect reports `not_dispatched` although the transport's earlier nonce read was sent. The observer's deadline helper is shared with the new `admitTp1Authority`, `tp1AuthorityLabel`, `authorityLabelOf` and `isTp1AuthorityToken`. New `src/dacs/tp1-authority-label.mjs` is a pure label parser. No other source file changes.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1104,6 +1106,15 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-fresh-child.test.mjs:1` | 396b4f470820de6aa77cce86839ce5a287b31ccd |
 | | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | fc9f5943d11b41eed2ded177c8e0982f1a5e0360 |
 | | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | 116879d4872c10a8d0c65ad5bb3cada05e5052aa |
+| WF | delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/dacs/tp1-authority-label.mjs:1` | a60b854660f4dbcb427d6ffe918c1974faaa1d0a |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 1561f9d46da0be7ddfa2f45a3ca5d5d52bac82fe |
+| | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | 793feb91d7aff472458e7463b9442f09697c74e3 |
+| | `packages/dacs-client/test/helpers/seller-facade-confirm.mjs:1` | fbe4e61ed581878e2dd912a9e2b2b486009f9742 |
+| | `packages/dacs-client/test/node-wallet-authority-token.test.mjs:1` | 59ec4a406d02df29293034d44d466202fd68dde1 |
+| | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | b6c87c9639a25759561443cf9014e3e0f402bf94 |
+| | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 7cf6b00589e4818b4fbd876ab327421a6e90cfba |
 
 ## Complete commit and file inventory
 
@@ -3456,6 +3467,23 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 keep seller identity and packed runtime checks stable | `packages/dacs-client/test/node-wallet-fresh-child.test.mjs:1` |
 | fix(client): D11 keep seller identity and packed runtime checks stable | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` |
 | fix(client): D11 keep seller identity and packed runtime checks stable | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `.github/workflows/ci.yml:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/README.md:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/package.json:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/src/dacs/tp1-authority-label.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/test/helpers/seller-facade-confirm.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/test/node-wallet-authority-token.test.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` |
+| delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token | `packages/dacs-client/test/public-api.test.mjs:1` |
 
 ## Original moved files
 

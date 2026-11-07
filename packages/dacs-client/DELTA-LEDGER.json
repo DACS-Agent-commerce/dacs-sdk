@@ -6497,6 +6497,52 @@
           "after": "116879d4872c10a8d0c65ad5bb3cada05e5052aa"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2b add the effect gate, its host contract and the TP-1 authority token",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/tp1-authority-label.mjs",
+          "before": null,
+          "after": "a60b854660f4dbcb427d6ffe918c1974faaa1d0a"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "acaa5486c9fafb7d178aa37f16d517d80919fa47",
+          "after": "1561f9d46da0be7ddfa2f45a3ca5d5d52bac82fe"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": null,
+          "after": "793feb91d7aff472458e7463b9442f09697c74e3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/seller-facade-confirm.mjs",
+          "before": null,
+          "after": "fbe4e61ed581878e2dd912a9e2b2b486009f9742"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-authority-token.test.mjs",
+          "before": null,
+          "after": "59ec4a406d02df29293034d44d466202fd68dde1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-effect-gate.test.mjs",
+          "before": null,
+          "after": "b6c87c9639a25759561443cf9014e3e0f402bf94"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "116879d4872c10a8d0c65ad5bb3cada05e5052aa",
+          "after": "d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "d54a02c9580fe133738ec19c3ec19b323be0a66c",
+          "after": "7cf6b00589e4818b4fbd876ab327421a6e90cfba"
+        }
+      ]
     }
   ]
 }
