@@ -6333,6 +6333,38 @@
       ]
     },
     {
+      "delta": "D21",
+      "subject": "delta(client): D21 require canonical job IDs in the seller session delegation check",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/seller-session-delegation.mjs",
+          "before": "ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42",
+          "after": "f49ef6762e99abfa5cfd09950124492c693b7c37"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-session-delegation-job-id.test.mjs",
+          "before": null,
+          "after": "512d6488ae8a6a8890b227cc90a934528853bd4a"
+        }
+      ]
+    },
+    {
+      "delta": "D21",
+      "subject": "delta(client): D21 check canonical job IDs without importing the SDK in the browser portal",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/seller-session-delegation.mjs",
+          "before": "f49ef6762e99abfa5cfd09950124492c693b7c37",
+          "after": "1a36a9a9d65cd6723b1f149005c0338a87ffddee"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-session-delegation-job-id.test.mjs",
+          "before": "512d6488ae8a6a8890b227cc90a934528853bd4a",
+          "after": "b0777e30c7cf6efedd45f3b645329057b18025e5"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
       "files": [
