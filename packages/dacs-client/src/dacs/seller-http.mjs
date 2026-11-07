@@ -294,7 +294,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       } catch (error) {
         if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
         attempt?.finish(error.answerClass);
-        if (!attempt?.stored || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
+        if (!authentication || !attempt?.stored || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
         unknown = error;
       }
       await clock.sleep(SELLER_RETRY_DELAY_MS);
