@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { canonicalize, identityBundleHash } from '@kynesyslabs/dacs';
+import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { createSellerDurableState, SELLER_STATE_SIGNING_DOMAIN } from '../src/dacs/seller-durable-state.mjs';
 import { createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
@@ -18,14 +18,16 @@ function database(path, action) {
 }
 const count = (f, table) => database(f.storePath, db => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
 
-async function acceptedFixture(t, { legacy = false, save = true } = {}) {
-  const f = await proposalAdmissionFixture(t), agent = await f.open(), input = await f.input(agent);
-  await assert.rejects(agent.stagedProposal(input), staged);
+async function acceptedFixture(t, { legacy = false, save = true, vetted = false } = {}) {
+  const f = await proposalAdmissionFixture(t, { assembled: vetted }), agent = await f.open();
+  const input = vetted ? await f.proposal(agent) : await f.input(agent);
+  if (vetted) assert.equal((await agent.receiveProposal(input)).disposition, 'complete');
+  else await assert.rejects(agent.stagedProposal(input), staged);
   agent.close();
   const nonce = input.buyerIdentityBundle.sessionNonce;
   const challenge = f.store.challenges.retained(nonce);
   const state = await createSellerDurableState({ dir: f.dir, signer: f.config.signer, listingPin: listingPin(f.listing) });
-  if (save) await state.withJob(JOB, () => state.saveSession({ jobId: JOB, buyerBundle: input.buyerIdentityBundle,
+  if (save && !vetted) await state.withJob(JOB, () => state.saveSession({ jobId: JOB, buyerBundle: input.buyerIdentityBundle,
     buyerBundleHash: identityBundleHash(input.buyerIdentityBundle), stage: 'proposed' }));
   state.close();
   const legacyBody = { kind: 'session-challenge', jobId: JOB, buyer: buyer.claim, sessionNonce: nonce,
@@ -119,7 +121,7 @@ test('legacy import does not resurrect a reclaimed challenge', async t => {
 test('legacy import refuses conflicting bindings without overwriting them', async t => {
   const w = await acceptedFixture(t, { legacy: true });
   database(w.storePath, db => db.prepare('INSERT INTO kit_job_bindings VALUES (?, ?, ?, ?, ?, ?)').run(
-    JOB, w.nonce, buyer.claim, w.challenge.presentationHash, identityBundleHash(w.input.buyerIdentityBundle) + 'different', w.challenge.accepted.admittedAt));
+    JOB, w.nonce, buyer.claim, w.challenge.presentationHash, sha256Hex('TEST conflicting bundle'), w.challenge.accepted.admittedAt));
   const before = w.store.challenges.jobBinding(JOB);
   await assert.rejects(w.open(), error => error.code === 'seller_job_bound');
   assert.deepEqual(w.store.challenges.jobBinding(JOB), before);
@@ -177,4 +179,48 @@ test('archived challenges still require retained Vet evidence', async t => {
   const state = await createSellerDurableState({ dir: w.dir, signer: w.config.signer, listingPin: listingPin(w.listing) });
   await state.withJob(JOB, session => { session.stage = 'agreed'; state.saveSession(session); }); state.close();
   await assert.rejects(w.open(), error => error.code === 'seller_state_unverified' && /Vet/.test(error.message));
+});
+
+test('a completed native proposal restores after its accepted challenge is reclaimed', async t => {
+  const w = await acceptedFixture(t, { vetted: true });
+  reclaim(t, w); w.f.reopenStore();
+  const reads = w.admission.calls.filter(([name]) => name === 'resolveVetRecord').length;
+  const signatures = w.signed.filter(text => text.startsWith('dacs-agreement:')).length;
+  const fresh = await w.open();
+  assert.deepEqual(fresh.durableSessions()[0].buyerBundle, w.input.buyerIdentityBundle);
+  assert.equal(w.admission.calls.filter(([name]) => name === 'resolveVetRecord').length, reads + 2);
+  assert.equal(w.signed.filter(text => text.startsWith('dacs-agreement:')).length, signatures);
+});
+
+test('legacy post-Vet sessions without an admission wrapper still verify their exact Vet records', async t => {
+  const w = await acceptedFixture(t, { legacy: true, vetted: true });
+  const body = structuredClone(w.legacyBody); delete body.attempt.accepted;
+  w.writeLegacy(body);
+  assert.deepEqual((await w.open()).durableSessions()[0].buyerBundle, w.input.buyerIdentityBundle);
+});
+
+test('archived accepted proof cannot replace unavailable Vet source evidence', async t => {
+  const w = await acceptedFixture(t, { vetted: true });
+  reclaim(t, w);
+  const cause = Object.assign(new Error('TEST Vet source unavailable'), { code: 'ETIMEDOUT' });
+  w.admission.sessionAdmission.resolveVetRecord = async () => { throw cause; };
+  await assert.rejects(w.open(), error => error.code === 'seller_state_unverified' && error.cause === cause);
+});
+
+test('a signed legacy acceptance for different presentation bytes is refused', async t => {
+  const w = await acceptedFixture(t, { legacy: true });
+  const body = structuredClone(w.legacyBody); body.attempt.accepted.buyerBundle.extra = 'TEST changed presentation';
+  w.writeLegacy(body);
+  await assert.rejects(w.open(), error => error.code === 'context_challenge_attempt_invalid');
+  assert.equal(count(w, 'kit_challenges'), 0);
+});
+
+test('legacy admission records with missing required fields refuse migration', async t => {
+  const w = await acceptedFixture(t, { legacy: true });
+  for (const field of ['admittedAt', 'buyerBundleHash', 'admission', 'buyerBundle']) {
+    const body = structuredClone(w.legacyBody); delete body.attempt.accepted[field];
+    w.writeLegacy(body);
+    await assert.rejects(w.open(), error => error.code === 'context_challenge_attempt_invalid', field);
+    assert.equal(count(w, 'kit_challenges'), 0);
+  }
 });

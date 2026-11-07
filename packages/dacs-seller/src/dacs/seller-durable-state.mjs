@@ -365,6 +365,16 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         });
       },
       sessions: () => db.prepare('SELECT job FROM seller_jobs ORDER BY job').all().map(({ job }) => load(job).session),
+      /** Yields signed legacy acceptances for migration only; corrupt signed state throws seller_state_corrupt. */
+      *legacyAcceptedChallenges() {
+        for (const row of db.prepare("SELECT id, value FROM seller_effects WHERE id LIKE 'session-challenge:%' ORDER BY id").iterate()) {
+          const challenge = verified(row.value, 'effect', row.id);
+          if (challenge?.kind !== 'session-challenge' || row.id !== `session-challenge:${challenge.sessionNonce}`) fail('seller_state_corrupt');
+          if (challenge.attempt?.admitted !== true) continue;
+          const binding = effect(`session-job:${challenge.jobId}`);
+          yield { ...challenge, buyerBundleHash: binding?.buyerBundleHash ?? load(challenge.jobId)?.session.buyerBundleHash };
+        }
+      },
       loadSession: (jobId) => load(jobId)?.session ?? null,
       saveSession(session) {
         const jobId = session.jobId;
