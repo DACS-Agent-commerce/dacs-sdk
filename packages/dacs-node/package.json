@@ -29,6 +29,18 @@
       "types": "./dist/sqlite.d.ts",
       "import": "./dist/sqlite.js"
     },
+    "./public-fetch": {
+      "types": "./dist/publicFetch.d.ts",
+      "import": "./dist/publicFetch.js"
+    },
+    "./public-json": {
+      "types": "./dist/publicJson.d.ts",
+      "import": "./dist/publicJson.js"
+    },
+    "./secrets": {
+      "types": "./dist/secrets.d.ts",
+      "import": "./dist/secrets.js"
+    },
     "./demos-loader": "./dist/demosLoader.js",
     "./vectors/dacs-http-envelope-v1.json": "./vectors/dacs-http-envelope-v1.json"
   },
