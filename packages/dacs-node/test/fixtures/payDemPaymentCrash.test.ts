@@ -143,7 +143,7 @@ describe("native DEM payment crash fixture", () => {
     }
 
     const payment = createDacsPayDemBuyerPaymentTrackV1({
-      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(),
+      walletSpendAuthority: createPermissiveTestWalletSpendAuthorityV1(`0x${PAYER}`),
       database,
       workerId: "buyer-payment-before-kill",
       rail,
