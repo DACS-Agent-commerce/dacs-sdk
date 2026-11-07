@@ -1,33 +1,18 @@
 // Isolate the retained readers and coordinator from transport and handshake.
 // Fakes provide data at those boundaries; all decisions and durable writes are real.
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
+import { register } from 'node:module';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canonicalize, contentHash, demosSignedTransactionProofHash, finalityCommitmentAddress, fixedPriceAgreementLogicalAddress, logicalToStorageProgramName, paymentEvidenceAddress, sha256Hex } from '@kynesyslabs/dacs';
-import { openDatabase } from './helpers/purchase-integrity-database.mjs';
+import { ARTIFACT_SEPARATORS, canonicalize, contentHash, demosSignedTransactionProofHash, ed25519Sign, finalityCommitmentAddress, fixedPriceAgreementLogicalAddress, logicalToStorageProgramName, paymentEvidenceAddress, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey, sha256Hex, signComponentArtifact } from '@kynesyslabs/dacs';
+import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
+const store={transaction,isUniqueViolation},buyerAccess={assertWallet(){}};
 const state=globalThis[Symbol.for('d15.review.readers')]={};
-const moduleAt=name=>new URL('../src/'+name,import.meta.url).href;
-const fake=source=>({url:'data:text/javascript,'+encodeURIComponent(source),shortCircuit:true});
-registerHooks({resolve(specifier,context,next){
- // Exercise retained-state reducers behind the unconditional production action
- // hold. The separate sweep-contracts tests pin that real hold and zero effects.
- if(specifier.endsWith('/action-admission.mjs'))return fake('export const assertPurchaseActionsAdmitted=()=>{};');
-  if(specifier.endsWith('/seams/purchase-store-not-wired.mjs'))return {url:new URL('./helpers/purchase-integrity-database.mjs',import.meta.url).href,shortCircuit:true};
-  if(specifier.endsWith('/seams/buyer-access-not-wired.mjs'))return fake('export const operatorBuyerAccessConfig=()=>({assertWallet(){}});');
-  if(specifier.endsWith('/demos-sr2-adapter.mjs') && !context.parentURL?.endsWith('readback-review-decisions.test.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/demos-sr2-adapter.mjs')+'?actual')}; export const createDemosSr2Adapter=()=>globalThis[Symbol.for('d15.review.readers')].adapter;`);
-  if(specifier.endsWith('/seller-http.mjs') && context.parentURL===moduleAt('dacs/protocol-purchases.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/seller-http.mjs')+'?actual')}; export const createSellerAgentClient=()=>globalThis[Symbol.for('d15.review.readers')].seller;`);
-  if(specifier.endsWith('/purchase-protocol.mjs') && context.parentURL===moduleAt('dacs/protocol-purchases.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/purchase-protocol.mjs')+'?actual')}; export const exchangeAgreement=async()=>globalThis[Symbol.for('d15.review.readers')].anchored;`);
-  if(specifier.endsWith('/dacs/chain.mjs') && context.parentURL===moduleAt('wallet/devnet-native-transport.mjs'))return fake(`export * from ${JSON.stringify(moduleAt('dacs/chain.mjs')+'?actual')}; export const createDemosChainReader=()=>({observeTransfer:async hash=>globalThis[Symbol.for('d15.review.readers')].observeTransfer(hash)});`);
-  if(specifier==='@kynesyslabs/dacs' && context.parentURL===moduleAt('dacs/native-payment-evidence-consumer.mjs')){
-    const real=next(specifier,context);
-    return fake(`export * from ${JSON.stringify(real.url)}; export const verifySettlementEvidence=async()=>({decision:'pass'});`);
-  }
-  return next(specifier,context);
-}});
+// Loader modules run in a separate thread; returned fakes execute in this test's realm.
+register(new URL('./helpers/readback-review-loader.mjs', import.meta.url), import.meta.url);
 const { DemosSr2Error, demosSr2Contradiction }=await import('../src/dacs/demos-sr2-adapter.mjs?actual');
 const { createBuyerChainReadback }=await import('../src/dacs/buyer-chain-readback.mjs');
 const { createSellerSr2AgreementAnchor }=await import('../src/dacs/seller-sr2-agreement-consumer.mjs');
@@ -38,7 +23,10 @@ const { readDemDeliveryReady }=await import('../src/dacs/dem-delivery-consumer.m
 const { createDevnetSettlementTransport, DEVNET_SETTLEMENT_POLICY }=await import('../src/wallet/devnet-native-transport.mjs');
 const { createDevnetNativeCommitmentCapability, DEVNET_NATIVE_COMMITMENT_MARKER }=await import('../src/devnet-demo/commitment-consumer.mjs');
 const { createProtocolPurchases, protocolStageHelp }=await import('../src/dacs/protocol-purchases.mjs');
-const CHAIN='f'.repeat(64),BUYER='0x'+'e'.repeat(64),SELLER='did:demos:agent:'+'a'.repeat(64),JOB='01HZY3K8V9Q2W4E6R7T8Y9X0AB';
+// The seller is a real key pair so payment evidence can carry a real signature.
+const keyPair=seedByte=>{const seed=new Uint8Array(32).fill(seedByte),hex=Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString('hex');return {key:privateKeyFromSeed(seed),hex,claim:'did:demos:agent:'+hex};};
+const sellerKeys=keyPair(17),otherKeys=keyPair(23);
+const CHAIN='f'.repeat(64),BUYER='0x'+'e'.repeat(64),SELLER=sellerKeys.claim,JOB='01HZY3K8V9Q2W4E6R7T8Y9X0AB';
 const journal={get:async()=>null,put:async()=>{throw Error('not used');},entries:async()=>[],withWalletLock:(_k,work)=>work()};
 const sourceCapability=createDevnetSettlementTransport({settlementPublication:{policy:DEVNET_SETTLEMENT_POLICY,artifactKind:'SettlementEvidence',phase:'pay-dem',railId:'demos-native:DEM',phaseIndex:2,authority:'TEST-review'},expected:{network:'testnet',chainIdentity:CHAIN,pinVersion:'TEST-1',endpoint:'https://rpc.invalid/',transportAuthority:'TEST-owner'},transportOwner:{getContext(){throw Error('offline');},acquireConnectionFence(){throw Error('offline');}},journal});
 const authority='TEST-RUN-review0000';
@@ -103,9 +91,20 @@ function coordinator(t, { status='settled_verified', stage='delivered', retained
    ...(retainedDelivery?{delivery:{...delivery,report},nativeEvidence:{status:'verified'},paymentEvidence:{ref:{contentHash:'d'.repeat(64)}}}:{}),...protocolPatch};
  const op=ops.createIdempotent({accountId:'TEST-buyer',kind:'purchase',idempotencyKey:'TEST',request:{},status,terms,termsHash:CHAIN,state:{protocol},expiresAt:new Date(Date.now()+3600000).toISOString()}).operation;
  const nativeEvidence=createNativePaymentEvidenceConsumer({rpcUrl:sourceCapability.pins.endpoint,sourceCapability});
- const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'}});
+ const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
  return {op,ops,service};
 }
+test('host chain-readback bookkeeping keeps its source and records a repeated hold once', t => {
+ const {op,ops,service}=coordinator(t);
+ const held=service.holdChainReadback(op,'TEST-host-retired-key');
+ assert.equal(held.state.protocol.chainReadbackHeld.source,'host-supplied');
+ assert.equal(held.state.protocol.chainReadbackHeld.reason,'TEST-host-retired-key');
+ assert.equal(service.holdChainReadback(op,'TEST-repeat').state.protocol.chainReadbackHeld.reason,'TEST-host-retired-key');
+ const events=ops.history(op.id).filter(event=>event.type==='protocol_chain_readback_held');
+ assert.equal(events.length,1);
+ assert.equal(events[0].data.source,'host-supplied');
+ assert.equal(held.status,'settled_verified');
+});
 for(const [label,error] of errors)test(`delivered purchase recheck: ${label}`,async t=>{
  state.adapter={read:async()=>{throw error();},verifyReceipt:async()=> 'valid'};
  state.seller={origin:'https://seller.invalid'};
@@ -134,7 +133,7 @@ test('malformed seller CREATE pointer cannot terminate the purchase',async t=>{
 
 for(const [label,verifyReceipt] of [['unmarked error',async()=>{throw new DemosSr2Error('invalid','unverified proof');}],['unknown verdict',async()=> 'unknown'],['marked contradiction',async()=>{throw demosSr2Contradiction('different authenticated proof');}]])test(`buyer receipt verification: ${label}`,async()=>{
  const address='dacs4:evidence:'+JOB,artifact={TEST:'evidence'};
- const signedProjection={hash:txHash,content:{from:'0x'+'a'.repeat(64),to:'stor-test',data:['storageProgram',{metadata:{logicalAddress:address,artifactKind:'SettlementEvidence'}}]},signature:{type:'ed25519',data:'00'}};
+ const signedProjection={hash:txHash,content:{from:'0x'+sellerKeys.hex,to:'stor-test',data:['storageProgram',{metadata:{logicalAddress:address,artifactKind:'SettlementEvidence'}}]},signature:{type:'ed25519',data:'00'}};
  const reader={read:async()=>({status:'present',artifact,artifactKind:'SettlementEvidence',receipt:{writer:SELLER,logicalAddress:address,contentHash:contentHash(artifact),transactionRef:{value:txHash},nativeAddress:'stor-test'}}),verifyReceipt};
  const chain=createBuyerChainReadback({sourceCapability,reader});
  const result=await chain.readDeliveryEvidence({agreement,listing,seller:SELLER,signedProjection});
@@ -142,11 +141,14 @@ for(const [label,verifyReceipt] of [['unmarked error',async()=>{throw new DemosS
 });
 
 // Fresh transfer responses have one-node authority only. Signature verification
-// is faked at the SDK boundary here; receipt, tuple and coordinator decisions run.
+// is real here: payment artifacts carry a real seller signature and the SDK
+// verifier runs; the receipt, tuple and coordinator decisions run too.
 const transferTime=Date.now(), evidenceAddress=paymentEvidenceAddress(JOB,'demos-native:DEM',2);
-const paymentArtifact={jobId:JOB,phase:'pay-dem',outcome:'success',paymentTxRefs:[{kind:'demos',txHash,blockNumber:10}],paymentAmount:{amount:'2.5',currency:'DEM'},settlementFinality:{model:'bft-final',finalityObservedAt:transferTime},observedAt:transferTime,signature:{signer:SELLER}};
-const paymentProjection={hash:'c'.repeat(64),content:{from:'0x'+'a'.repeat(64),to:'stor-evidence',data:['storageProgram',{metadata:{logicalAddress:evidenceAddress,artifactKind:'SettlementEvidence'}}]},signature:{type:'ed25519',data:'00'}};
-const transfer=()=>({status:'included',txHash,blockNumber:10,payer:'e'.repeat(64),payee:'a'.repeat(64),amountOs:'2500000000',includedAt:transferTime});
+const signPaymentArtifact=(changes={},keys=sellerKeys)=>signComponentArtifact({evidenceVersion:'1',jobId:JOB,phase:'pay-dem',outcome:'success',observedAt:transferTime,paymentTxRefs:[{kind:'demos',txHash,blockNumber:10}],paymentAmount:{amount:'2.5',currency:'DEM'},settlementFinality:{model:'bft-final',finalityObservedAt:transferTime},...changes},
+ ARTIFACT_SEPARATORS.SettlementEvidence,{algorithm:'ed25519',signer:keys.claim,sign:bytes=>Buffer.from(ed25519Sign(bytes,keys.key))});
+const paymentArtifact=await signPaymentArtifact();
+const paymentProjection={hash:'c'.repeat(64),content:{from:'0x'+sellerKeys.hex,to:'stor-evidence',data:['storageProgram',{metadata:{logicalAddress:evidenceAddress,artifactKind:'SettlementEvidence'}}]},signature:{type:'ed25519',data:'00'}};
+const transfer=()=>({status:'included',txHash,blockNumber:10,payer:'e'.repeat(64),payee:sellerKeys.hex,amountOs:'2500000000',includedAt:transferTime});
 function paymentReader(artifact=paymentArtifact){
  state.adapter={read:async address=>address===logicalAddress?{status:'present',artifact:agreement,artifactKind:'Agreement',receipt}:{status:'present',artifact,artifactKind:'SettlementEvidence',receipt:{logicalAddress:evidenceAddress,writer:SELLER,contentHash:contentHash(artifact),nativeAddress:'stor-evidence',transactionRef:{value:'c'.repeat(64)}}},recheck:async()=>({status:'present'}),verifyReceipt:async()=> 'valid'};
  return createNativePaymentEvidenceConsumer({rpcUrl:sourceCapability.pins.endpoint,sourceCapability});
@@ -175,11 +177,32 @@ test('matching fresh transfer remains present',async()=>{
  const result=await paymentReader().readEvidence(paymentRequest());
  assert.equal(result.disposition,'present');
 });
-test('authenticated payment evidence contradiction still rejects',async()=>{
+// One authenticated contradiction per clause of the scope check. Each artifact is
+// validly signed, so only the clause under test can reject it.
+const SCOPE_MISMATCH='native-payment-evidence-scope-mismatch';
+const contradictions=[
+ ['transaction',{paymentTxRefs:[{kind:'demos',txHash:'b'.repeat(64),blockNumber:10}]}],
+ ['block',{paymentTxRefs:[{kind:'demos',txHash,blockNumber:11}]}],
+ ['reference kind',{paymentTxRefs:[{kind:'evm',txHash,blockNumber:10}]}],
+ ['amount',{paymentAmount:{amount:'2.4',currency:'DEM'}}],
+ ['currency',{paymentAmount:{amount:'2.5',currency:'USD'}}],
+ ['finality model',{settlementFinality:{model:'block-depth',finalityObservedAt:transferTime}}],
+ ['signer',{},otherKeys],
+ ['job',{jobId:'01HZY3K8V9Q2W4E6R7T8Y9X0AC'}],
+ ['phase',{phase:'pay-evm-erc20'}],
+ ['outcome',{outcome:'failure'}],
+ ['writer',{},otherKeys,{writer:otherKeys.claim}]];
+for(const [label,changes,keys,request] of contradictions)test(`payment evidence contradiction: ${label}`,async()=>{
  state.observeTransfer=async()=>transfer();
- const artifact={...paymentArtifact,paymentTxRefs:[{kind:'demos',txHash:'b'.repeat(64),blockNumber:10}]};
- const result=await paymentReader(artifact).readEvidence(paymentRequest());
+ const result=await paymentReader(await signPaymentArtifact(changes,keys)).readEvidence({...paymentRequest(),...request});
  assert.equal(result.disposition,'rejected');assert.equal(result.authenticated,true);
+ assert.equal(result.reason,SCOPE_MISMATCH);
+});
+test('real SDK verifier rejects a payment artifact changed after signing',async()=>{
+ state.observeTransfer=async()=>transfer();
+ const result=await paymentReader({...paymentArtifact,observedAt:transferTime+1}).readEvidence(paymentRequest());
+ assert.equal(result.disposition,'rejected');assert.equal(result.authenticated,true);
+ assert.notEqual(result.reason,SCOPE_MISMATCH);
 });
 
 test('present native payment evidence records the source outcome',async t=>{

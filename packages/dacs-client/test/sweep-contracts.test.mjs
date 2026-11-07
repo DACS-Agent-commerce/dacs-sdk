@@ -8,22 +8,18 @@ import {createListingVerifier} from '../src/dacs/verification.mjs';
 import {deliverableAddress,deliveryEvidenceAddress,planAgreement,planAgreementFromInput,exchangeAgreement,DEM_RAIL_DEFINITION} from '../src/dacs/purchase-protocol.mjs';
 import {createBuyerChainReadback} from '../src/dacs/buyer-chain-readback.mjs';
 import {createDevnetAgreementTransport} from '../src/wallet/devnet-native-transport.mjs';
-import {registerHooks} from 'node:module';
-// Only the deliberately throwing store-access seam is replaced so the held
-// buyer API can be inspected; no authority, wallet or native check is mocked.
-const seamHook=registerHooks({resolve(specifier,context,next){
- if(specifier.endsWith('/seams/buyer-access-not-wired.mjs'))return {url:'data:text/javascript,export const operatorBuyerAccessConfig=()=>null;',shortCircuit:true};
- return next(specifier,context);
-}});
-const {createProtocolPurchases}=await import('../src/dacs/protocol-purchases.mjs');
-seamHook.deregister();
+import {createProtocolPurchases} from '../src/dacs/protocol-purchases.mjs';
 import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
+// The held buyer API uses the concrete store with an invalid database handle
+// and no operator capability; no authority, wallet or native check is mocked.
+import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
+const noWrites=createSqlitePurchaseStore();
 const jobId='01ARZ3NDEKTSV4RRFFQ69G5FAV',seller='did:demos:agent:'+'a'.repeat(64);
 const operation={terms:{buyer:{wallet:'0x'+'e'.repeat(64)},seller:{claim:seller},protocol:{jobId,profile:'dacs-chatgpt-plugin/fixed-price-pay-dem/v1'}},state:{protocol:{revision:7,stage:'delivery-ready',agreement:null,commitment:null,paymentEvidence:null,delivery:{report:{jobId}},bundle:null}}};
 const view={jobId,profile:operation.terms.protocol.profile,revision:7,stage:'delivery-ready',agreement:null,commitment:null,paymentEvidence:null,delivery:{report:{jobId}},bundle:null};
 const row=(o,v,id)=>evaluateCompletionReadiness(o,v).requirements.find(r=>r.id===id);
 test('completion diagnostics identify the installed workspace pin and remain held',()=>{
- assert.equal(COMPLETION_READINESS_STANDARD_PIN,DACS_STANDARD_PIN);assert.equal(SDK_PROVENANCE.standardPin,DACS_STANDARD_PIN);assert.match(SDK_PROVENANCE.source,/workspace/);
+ assert.equal(COMPLETION_READINESS_STANDARD_PIN,DACS_STANDARD_PIN);assert.equal(SDK_PROVENANCE.standardPin,DACS_STANDARD_PIN);assert.equal(SDK_PROVENANCE.source,'@kynesyslabs/dacs package implementation');
  assert.equal(row(operation,view,'profile.implementation').status,'present');assert.equal(evaluateCompletionReadiness(operation,view).status,'held');assert.equal(row(operation,view,'profile.completion').code,'profile.not-admitted');
 });
 test('revision-only stale and not-saved protocol views cannot advertise current delivery',()=>{
@@ -50,12 +46,13 @@ test('malformed JIDs stop all reader entries before resolution',async()=>{
 const refused=e=>e.code==='profile_not_admitted';
 for(const authority of [undefined,{}, {standardRevision:'old'}, {standardRevision:DACS_STANDARD_PIN}, [{standardRevision:DACS_STANDARD_PIN},{standardRevision:DACS_STANDARD_PIN}]])test('profile candidate refuses caller-supplied/missing/mismatched/duplicate authority before effects '+JSON.stringify(authority),async()=>{
  let effects=0;const effect=()=>{effects++;throw Error('effect');};
- const buyer=createProtocolPurchases({db:{},ops:{},coordinates:{},dacsProtocol:{profileAuthority:authority},fetchImpl:effect});
+ const buyer=createProtocolPurchases({db:{},ops:{},coordinates:{},dacsProtocol:{profileAuthority:authority},fetchImpl:effect,store:noWrites});
  assert.equal(buyer.available,false);assert.equal(buyer.actionsAdmitted,false);
  for(const method of ['prepareTerms','identityRequest','signRequest','withNativePaymentLane','readNativePaymentLane'])assert.throws(()=>buyer[method]({},effect),refused);
  await assert.rejects(buyer.planRequest({}),refused);
  await assert.rejects(buyer.submitAgreement({}),refused);
  await assert.rejects(buyer.recheck({}),refused);
+ await assert.rejects(buyer.recheckCommitment({}),refused);
  assert.throws(()=>planAgreement({}),refused);assert.throws(()=>planAgreementFromInput({}),refused);
  await assert.rejects(exchangeAgreement({seller:{propose:effect},anchorAdapter:{write:effect}}),refused);
  await assert.rejects(createSellerAgent({signer:{sign:effect},profileAuthority:authority}),refused);

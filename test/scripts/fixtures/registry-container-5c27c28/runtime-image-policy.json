@@ -1,0 +1,11 @@
+{
+  "schema": "dacs-runtime-image-policy/v1",
+  "expectedUser": "10001:10001",
+  "observedUser": "10001:10001",
+  "observedUid": "10001",
+  "runtimeImportsPassed": true,
+  "typescriptPresent": true,
+  "rubicSdkPresent": false,
+  "functionalPassed": true,
+  "productionDependencyPolicyPassed": false
+}

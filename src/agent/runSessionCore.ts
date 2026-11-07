@@ -193,8 +193,13 @@ export interface SettleResult {
   txRef?: ChainTxRef;
   /** Authoritative rail finality observation time, not local wall-clock time. */
   finalityObservedAt?: number;
-  /** Authenticated native DEM network fee paid by the payer, in integer OS. */
+  /** Authenticated native DEM network fee the chain debited from the payer, in integer OS. */
   networkFeeOs?: string;
+  /**
+   * The fee the native DEM transaction record declares, in integer OS; sent
+   * only with `networkFeeOs`. It can differ from what the chain debits (#604).
+   */
+  recordFeeOs?: string;
   /** Durable raw x402 settlement-response input used to re-derive its receipt hash. */
   x402Receipt?: {
     protocolVersion: "2";
@@ -573,6 +578,7 @@ interface DurableSettlementOutcomeBase {
   failureProofJson?: string;
   executionAuthenticated?: true;
   networkFeeOs?: string;
+  recordFeeOs?: string;
   blockNumber?: number;
   txRefKind?: string;
   /** Canonical JSON encoding preserves the discriminated current reference in the primitive WAL. */
@@ -929,6 +935,7 @@ function durableSettlementCheckpointData(
   if (outcome.errorClass !== undefined) data.errorClass = outcome.errorClass;
   if (outcome.failureProofJson !== undefined) data.failureProofJson = outcome.failureProofJson;
   if (outcome.networkFeeOs !== undefined) data.networkFeeOs = outcome.networkFeeOs;
+  if (outcome.recordFeeOs !== undefined) data.recordFeeOs = outcome.recordFeeOs;
   if (outcome.finalityModel !== undefined) {
     data.finalityModel = outcome.finalityModel;
   }
@@ -984,6 +991,7 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
     "errorClass",
     "failureProof",
     "networkFeeOs",
+    "recordFeeOs",
     "txHash",
     "chainId",
     "payer",
@@ -1013,6 +1021,9 @@ function snapshotSettleResult(value: unknown, label: string): SettleResult {
     (result.networkFeeOs !== undefined &&
       (typeof result.networkFeeOs !== "string" ||
         !/^(?:0|[1-9][0-9]*)$/.test(result.networkFeeOs))) ||
+    (result.recordFeeOs !== undefined &&
+      (result.networkFeeOs === undefined || typeof result.recordFeeOs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(result.recordFeeOs))) ||
     (result.blockNumber !== undefined &&
       (!Number.isSafeInteger(result.blockNumber) ||
         (result.blockNumber as number) < 0)) ||
@@ -2199,6 +2210,7 @@ function durableSettlementOutcome(
     ...(result.errorClass === undefined ? {} : { errorClass: result.errorClass,
       failureProofJson: canonicalize(result.failureProof) }),
     ...(result.networkFeeOs === undefined ? {} : { networkFeeOs: result.networkFeeOs }),
+    ...(result.recordFeeOs === undefined ? {} : { recordFeeOs: result.recordFeeOs }),
     ...durableFinalityFields(finality),
     ...(result.blockNumber !== undefined ? { blockNumber: result.blockNumber } : {}),
     ...(result.txRefKind !== undefined ? { txRefKind: result.txRefKind } : {}),
@@ -2240,6 +2252,7 @@ function sameSettlementOutcome(
     left.errorClass === right.errorClass &&
     left.failureProofJson === right.failureProofJson &&
     left.networkFeeOs === right.networkFeeOs &&
+    left.recordFeeOs === right.recordFeeOs &&
     left.finalityModel === right.finalityModel &&
     left.finalityBlocks === right.finalityBlocks &&
     left.finalityCommitmentLevel === right.finalityCommitmentLevel &&
@@ -2252,6 +2265,23 @@ function sameSettlementOutcome(
     left.supersedesTxHash === right.supersedesTxHash &&
     left.supersedesChainId === right.supersedesChainId
   );
+}
+
+/**
+ * A saved native fee binds the audited one. A checkpoint without `recordFeeOs`
+ * was written when `networkFeeOs` carried the record's declared fee, so it
+ * binds either the audited debit or the audited record fee (#604).
+ */
+function sameSavedNativeFee(
+  prior: Pick<DurableSettlementOutcome, "networkFeeOs" | "recordFeeOs">,
+  next: Pick<DurableSettlementOutcome, "networkFeeOs" | "recordFeeOs">,
+): boolean {
+  if (prior.networkFeeOs === undefined || next.networkFeeOs === undefined) return true;
+  if (prior.recordFeeOs !== undefined) {
+    return prior.networkFeeOs === next.networkFeeOs &&
+      (next.recordFeeOs === undefined || prior.recordFeeOs === next.recordFeeOs);
+  }
+  return prior.networkFeeOs === next.networkFeeOs || prior.networkFeeOs === next.recordFeeOs;
 }
 
 /** A saved native success is a claim to audit, including pre-execution-gate receipts. */
@@ -2269,8 +2299,7 @@ function canReauthenticateNativeSuccess(
     prior.payer === next.payer && prior.payee === next.payee &&
     (prior.blockNumber === undefined || prior.blockNumber === next.blockNumber) &&
     (prior.txRefKind === undefined || prior.txRefKind === next.txRefKind) &&
-    (prior.networkFeeOs === undefined || next.networkFeeOs === undefined ||
-      prior.networkFeeOs === next.networkFeeOs) &&
+    sameSavedNativeFee(prior, next) &&
     (next.ok || (prior.executionAuthenticated !== true && next.errorClass === "permanent"));
 }
 
@@ -2479,6 +2508,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         "failureProofJson",
         "executionAuthenticated",
         "networkFeeOs",
+        "recordFeeOs",
         "finalityModel",
         "finalityBlocks",
         "finalityCommitmentLevel",
@@ -2504,6 +2534,9 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
         (data.networkFeeOs !== undefined &&
           (typeof data.networkFeeOs !== "string" ||
             !/^(?:0|[1-9][0-9]*)$/.test(data.networkFeeOs))) ||
+        (data.recordFeeOs !== undefined &&
+          (data.networkFeeOs === undefined || typeof data.recordFeeOs !== "string" ||
+            !/^(?:0|[1-9][0-9]*)$/.test(data.recordFeeOs))) ||
         finality === null ||
         (blockNumber !== undefined &&
           (!Number.isSafeInteger(blockNumber) || (blockNumber as number) < 0)) ||
@@ -2558,6 +2591,7 @@ function readNewestSettleOutcome(load: SessionLoad): SettlementOutcomeRead {
           ...(data.errorClass === "permanent" && typeof data.failureProofJson === "string"
             ? { errorClass: "permanent" as const, failureProofJson: data.failureProofJson } : {}),
           ...(typeof data.networkFeeOs === "string" ? { networkFeeOs: data.networkFeeOs } : {}),
+          ...(typeof data.recordFeeOs === "string" ? { recordFeeOs: data.recordFeeOs } : {}),
           ...durableFinalityFields(finality),
           ...(typeof blockNumber === "number" ? { blockNumber } : {}),
           ...(typeof txRefKind === "string" ? { txRefKind } : {}),
