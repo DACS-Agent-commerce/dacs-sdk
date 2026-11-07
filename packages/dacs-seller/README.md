@@ -70,7 +70,8 @@ const host = await startSellerHost({
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
                          // agent reads the signed CREATE's projection from the same journal
-  demDeliveryContext,    // createDemDeliveryContext(...): the Vet context the Agreement derives from
+  demDeliveryContext,    // createDemDeliveryContext({ ..., vetMode: KIT_TP1_VET_MODE }): the Vet context the
+                         // Agreement derives from; the host runs in that one mode (see the Vet paragraph)
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
@@ -612,6 +613,24 @@ per-client limiter so one client cannot exhaust the shared request budget.
   it cannot yet pin and recover an authenticated job registry snapshot.
   Direct `runFulfilmentCore` and durable wrapper callers also refuse them by
   default, as does the exported invocation check.
+  **TP-1 G3 orchestrator mode (W).** `createDemDeliveryContext` and
+  `createSellerAgent` take one `vetMode` (default `counterparty`, with its own
+  rule above); the agent's must equal its context capability's
+  (`vet_mode_mismatch`). Under `tp1-g3-orchestrator` the seller verifies both
+  records, the seller's own too (its reference `signer` and the record's
+  signature are the seller's), only a `finalized` receipt counts (an `included`
+  or `accepted` one is refused; an absent or unreadable one is retried with the
+  session kept), and the seller's bundle must be exactly the Listing's, with no
+  fresh presentation. Every session retains its mode, and an agent of the other
+  mode (or of any mode, for a session saved before the mode was kept, which is
+  `counterparty`) refuses to continue it at every entry with `vet_mode_mismatch`
+  and changes nothing. The mode is composed in code; no request, Listing or
+  environment variable selects it. `startSellerHost` fixes it to
+  `KIT_TP1_VET_MODE` (`"tp1-g3-orchestrator"`, exported by
+  `@kynesyslabs/dacs-seller/src/host.mjs`), takes no `vetMode` option, and refuses
+  a `demDeliveryContext` made in another mode with `vet_mode_mismatch` before it
+  takes the state lock. Label:
+  "The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1."
   `acceptsPresenceOnlyVetRequirements: true` is only for callers that perform
   strict replay with authenticated job-bound authority and need no completed
   bundle. ST-11 completed-bundle finalization and
@@ -760,8 +779,11 @@ per-client limiter so one client cannot exhaust the shared request budget.
   payment evidence (`native_evidence_required`), so these capabilities and the supported Listing size are checked before
   commitment or payment intake. Actual delivery still depends on valid producer
   output and available operator capabilities. These
-  capabilities accept only `TEST-` authorities and a loopback fixture node
-  (below), so the host does not start against a real node.
+  capabilities accept only `TEST-` authorities and a loopback fixture node.
+  The host checks `agreementAnchor` and `artifactAnchor` only by shape, and
+  the wallet journal's `broadcast` is the operator's own callback, so those
+  can still reach a real node; keep them on the fixture too (see the start of
+  this file).
 - It signs no completed DACS-5 bundle (`bundle_finalization_unavailable`
   from both the bundle request and the countersignature, after the delivery
   check): the ST-11 finalizer, which needs finalized and independently

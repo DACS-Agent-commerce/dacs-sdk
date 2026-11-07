@@ -745,10 +745,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
 }
 
 /**
- * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, limits }`,
- * where `limits` are the context-record and unpaid-start limits the ledger enforces at issue.
- * For the seller's own admission modules, which run their reads and writes in that store's immediate transactions; it is not a
- * public export and grants no wire or lease authority. Throws a TypeError for anything else.
+ * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, limits }`
+ * (`limits`: the context-record and unpaid-start limits the ledger enforces at issue), for the seller's own admission modules, which run
+ * their reads and writes in that store's immediate transactions. It hands out the raw handle: only code that owns the store holds it.
+ * Throws a TypeError for anything else.
  */
 export function sellerStoreInternals(store) {
   const internals = typeof store === 'object' && store !== null ? storeInternals.get(store) : undefined;

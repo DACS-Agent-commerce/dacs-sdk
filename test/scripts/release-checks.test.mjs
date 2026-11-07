@@ -67,6 +67,15 @@ test("file policy rejects extra files and requires every export, type and binary
   assert.throws(() => validateFiles(core, { ...p, exports: { ...p.exports, "./bad": "../outside.js" } }, files), /target/);
 });
 
+test("every document the root manifest ships is on the core allow-list", () => {
+  const shipped = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).files;
+  const documents = shipped.filter(file => file.startsWith("docs/"));
+  assert.ok(documents.includes("docs/pay-dem-execution.md"));
+  const p = manifest(); const files = members(p);
+  for (const document of documents) assert.doesNotThrow(() => validateFiles(core, p, [...files, document]), document);
+  assert.throws(() => validateFiles(core, p, [...files, "docs/not-shipped.md"]), /outside allow-list/);
+});
+
 test("wildcard exports enumerate packed files, JSON exports carry their type, empty patterns fail", () => {
   const p = { exports: { ".": "./src/index.mjs", "./src/*": "./src/*", "./package.json": "./package.json" } };
   const files = ["src/index.mjs", "src/nested/helper.mjs", "src/schema.json", "package.json"];
@@ -734,10 +743,24 @@ test("every path the core package packs is inside the core allow-list", () => {
 });
 
 test("the core allow-list names the shipped conformance records exactly, not by pattern", () => {
-  const record = "conformance/tp1-node-observations/block0-2026-10-20.json";
-  assert.doesNotThrow(() => validateFiles(core, { exports: {} }, ["package.json", record]));
-  for (const sibling of ["conformance/tp1-node-observations/other.json", "conformance/other.json", "vectors/other.json", "docs/other.md"]) {
+  for (const shipped of ["conformance/tp1-register.json", "conformance/tp1-provenance-ids.json"]) {
+    assert.doesNotThrow(() => validateFiles(core, { exports: {} }, ["package.json", shipped]));
+  }
+  for (const sibling of ["conformance/other.json", "vectors/other.json", "docs/other.md"]) {
     assert.throws(() => validateFiles(core, { exports: {} }, [sibling]), /outside allow-list/);
+  }
+});
+
+test("the core allow-list does not admit node observation records, which the package no longer ships", () => {
+  for (const record of ["manifest.json", "manifest-2026-10-20.json", "block0-2026-10-20.json", "missing-tx.json", "other.json"]) {
+    assert.throws(() => validateFiles(core, { exports: {} }, [`conformance/tp1-node-observations/${record}`]), /outside allow-list/);
+  }
+});
+
+test("requiredExports names every public subpath of the core and node manifests", () => {
+  for (const definition of packages.filter(p => p.name === "@kynesyslabs/dacs" || p.name === "@kynesyslabs/dacs-node")) {
+    const { exports } = JSON.parse(readFileSync(new URL(`../../${definition.directory}/package.json`, import.meta.url), "utf8"));
+    assert.deepEqual([...definition.requiredExports].sort(), Object.keys(exports).sort(), definition.name);
   }
 });
 
@@ -1327,5 +1350,16 @@ test("module-sync export conditions are refused because Node 22 resolves them be
     const p = { ...manifest(def), exports };
     assert.throws(() => validateManifest(p, def), /module-sync/);
     assert.throws(() => validateFiles(def, p, ["package.json", "dist/index.js", "dist/sync.js"]), /module-sync/);
+  }
+});
+
+test("each private package's recorded preparation manifest hash is the hash of its checked-in manifest", () => {
+  const snapshot = p => createHash("sha256").update(JSON.stringify(p, (_, value) => value && typeof value === "object" && !Array.isArray(value) ?
+    Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : value)).digest("hex");
+  const recorded = packages.filter(p => p.preparationManifestSha256);
+  assert.deepEqual(recorded.map(p => p.name), ["@kynesyslabs/dacs-client", "@kynesyslabs/dacs-seller"]);
+  for (const definition of recorded) {
+    const manifestPath = new URL(`../../${definition.directory}/package.json`, import.meta.url);
+    assert.equal(snapshot(JSON.parse(readFileSync(manifestPath, "utf8"))), definition.preparationManifestSha256, `${definition.name}: update preparationManifestSha256 in scripts/release-policy.json`);
   }
 });

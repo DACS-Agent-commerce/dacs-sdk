@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalize, compositeVerificationAddress, generateCanonicalJobId } from '@kynesyslabs/dacs';
+import { canonicalize, compositeVerificationAddress, generateCanonicalJobId, identityBundleHash } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, inspectWireOperation, openWireRequestJournal,
   completeWireEffect, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
@@ -31,18 +31,19 @@ const PROFILE = Object.freeze({ id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISI
 const outcome = { status: 200, text: ' {"disposition":"present","fixture":true} ' };
 // What the sink answers for a context: the scope the row names, and each party's Vet record reference.
 const SCOPE = { agreement: 'context-scope-vector' };
-const vetRef = tag => ({ vetRecordRef: { contentHash: hash(tag) } });
+const vetRef = tag => ({ vetRecordRef: { anchor: { kind: 'storage-program', locator: `vet-${tag}` }, contentHash: hash(tag) } });
 const presented = (jobId, input = {}, scope = SCOPE) => ({ status: 200, text: JSON.stringify({ disposition: 'present', value: { scope, input: { jobId, buyer: vetRef('buyer'), seller: vetRef('seller'), ...input } } }) });
-const nonPass = { status: 409, text: JSON.stringify({ disposition: 'rejected', code: 'party_vet_non_pass', errorClass: 'permanent' }) };
+// The agent stores a Vet non-pass as a 200 context answer (transportOutcome does not count that code as a rejection).
+const nonPass = { status: 200, text: JSON.stringify({ disposition: 'rejected', reason: 'buyer Vet decision: fail', code: 'party_vet_non_pass', errorClass: 'permanent' }) };
 const deferred = () => {
   let resolve;
   const promise = new Promise((done) => { resolve = done; });
   return { promise, resolve };
 };
 const flush = () => new Promise(resolve => setImmediate(resolve));
-let createContextAdmissionTransaction, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
+let createContextAdmissionTransaction, admissionTransactionInternals, sellerStoreInternals, createSellerTransportStore, SELLER_CONTEXT_PATH, importFailure;
 try {
-  ({ createContextAdmissionTransaction } = await import('../src/dacs/seller-admission-transaction.mjs'));
+  ({ createContextAdmissionTransaction, admissionTransactionInternals } = await import('../src/dacs/seller-admission-transaction.mjs'));
   ({ createSellerTransportStore, sellerStoreInternals, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs'));
   if (typeof sellerStoreInternals !== 'function') throw new Error('sellerStoreInternals is not exported');
 } catch (error) { importFailure = error; }
@@ -98,9 +99,11 @@ function world(t, config = {}) {
     const bundle = { presentedBy: presenter, sessionNonce: nonce, presentation: { proof: 'TEST-fixture' } };
     const attempt = { nonce, jobId, buyer, challengeScopeHash, presentationHash: hash(canonicalize(bundle)), path: 'context' };
     const result = store.challenges.attempt(attempt); assert.equal(result.kind, 'validate'); calls.validation++;
-    const accepted = { buyerBundleText: ' ' + JSON.stringify(bundle) + ' ', buyerBundleHash: hash('bundle'), admission: {
-      disposition: 'admitted', jobId, buyer, buyerBundleHash: hash('bundle'), listingPin: PIN,
-      participants: [{ role: 'buyer', claim: buyer, ...SELLER_PROFILE }, { role: 'seller', claim: SELLER, ...SELLER_PROFILE }] },
+    // The ledger stores only the canonical bytes of the presentation the row was attempted with, under that bundle's identity hash.
+    const bundleHash = identityBundleHash(bundle);
+    const accepted = { buyerBundleText: canonicalize(bundle), buyerBundleHash: bundleHash, admission: {
+      disposition: 'admitted', jobId, buyer: presenter, buyerBundleHash: bundleHash, listingPin: PIN,
+      participants: [{ role: 'buyer', claim: presenter, ...SELLER_PROFILE }, { role: 'seller', claim: SELLER, ...SELLER_PROFILE }] },
       firstAdmission: { challengeExpiresAt: control.clock + 600000, generatedAt: control.clock, checkedAt: control.clock } };
     const input = { jobId, buyer, seller: SELLER, listingPin: PIN, contextScopeHash: hash(canonicalize(SCOPE)), nonce, presentationHash: attempt.presentationHash,
       owner: result.owner, accepted, sellerBundlePresentedBy: SELLER, delegationExpiresAt: control.clock + HOUR, purchaseProfile: PROFILE };
@@ -143,6 +146,16 @@ function world(t, config = {}) {
   return { directory, holds, calls, wire, control, options, prepare, reserveWire, legacyStart, row, compensating, cut, kill, reopen, wireEnds: wire.ends, evidenceOf,
     get store() { return store; }, get admission() { return admission; }, get internals() { return internals; }, get db() { return internals.db; },
     get policy() { return options.policy ?? defaultPolicy; }, changes: () => internals.db.prepare('SELECT total_changes() AS n').get().n };
+}
+// The live-begin registry is closure-private (the sweep of P09bb reads it from inside the module); the shipped module hands the same reader
+// of one transaction instance to this package's tests through `admissionTransactionInternals`, and not through the transaction's API.
+const owned = (w, jobId, rev) => admissionTransactionInternals(w.admission).ownedIntent(jobId, rev);
+// A policy whose `reserve` for a gated job waits on that job's barrier (and answers its value, default a granted hold).
+function gatedPolicy(w) {
+  const gates = new Map();
+  w.options.policy = { reserve: async request => { w.calls.reserve++; const gate = gates.get(request.jobId); if (gate) { gate.entered.resolve(); return gate.barrier.promise; } return null; },
+    release: async () => { w.calls.release++; } };
+  return jobId => { const gate = { entered: deferred(), barrier: deferred() }; gates.set(jobId, gate); return gate; };
 }
 const reject = (promise, code, status) => assert.rejects(promise, { code, ...(status ? { status } : {}) });
 async function running(w, p) { await w.admission.begin(p.input); return w.admission.reserveContext(p.input.jobId, w.reserveWire); }
@@ -510,6 +523,28 @@ test('admission-caller-admitted-at-refused', async t => {
   assert.equal(w.changes(), before); assert.equal(w.calls.reserve, 0); assert.equal(w.row(p.input.jobId), null);
 });
 
+test('admission-stored-admission-must-name-the-rows-seller-and-listing', async t => {
+  const otherPin = { ...PIN, version: 2 }, sellerEntry = admission => admission.participants.find(entry => entry.role === 'seller');
+  const variants = {
+    'another seller': admission => { sellerEntry(admission).claim = OTHER; },
+    'another Listing version': admission => { admission.listingPin = otherPin; },
+    'another Listing hash': admission => { admission.listingPin = { ...PIN, contentHash: hash('another-listing') }; },
+    'a Listing pin with an extra member': admission => { admission.listingPin = { ...PIN, extra: true }; },
+    'no Listing': admission => { delete admission.listingPin; },
+    'no seller entry': admission => { admission.participants = admission.participants.filter(entry => entry.role !== 'seller'); },
+    'two seller entries': admission => { admission.participants.push(structuredClone(sellerEntry(admission))); },
+    'no participants': admission => { delete admission.participants; },
+  };
+  for (const [name, change] of Object.entries(variants)) {
+    const w = world(t), p = w.prepare(), before = w.changes(); change(p.input.accepted.admission);
+    await reject(w.admission.begin(p.input), 'context_challenge_attempt_invalid', 409);
+    assert.equal(w.row(p.input.jobId), null, name); assert.equal(w.calls.reserve, 0, name); assert.equal(w.changes(), before, name);
+    assert.equal(w.store.challenges.retained(p.input.nonce).state, 'attempted', name);
+  }
+  const w = world(t), p = w.prepare(); p.input.accepted.admission.participants.find(entry => entry.role === 'seller').claim = `${SELLER}?jurisdiction=GB`;
+  await w.admission.begin(p.input); assert.equal(w.store.challenges.retained(p.input.nonce).state, 'accepted');
+});
+
 test('admission-continuation-retains-envelope-parties', async t => {
   const w = world(t), p = w.prepare(0x11, BUYER, { presenter: EQUIVALENT_BUYER });
   await reject(w.admission.begin({ ...p.input, sellerBundlePresentedBy: undefined }), 'context_challenge_attempt_invalid', 409);
@@ -567,19 +602,43 @@ async function crashAfterPublish(w, p, answer) {
   assert.equal(w.row(p.input.jobId).state, 'running');
   return capability;
 }
-const COMPLETED_CLASSES = [['success', jobId => presented(jobId)], ['vet-non-pass', () => nonPass], ['other', () => ({ status: 200, text: '{"disposition":"indeterminate"}' })]];
+const COMPLETED_CLASSES = [['success', jobId => presented(jobId)], ['vet-non-pass', () => nonPass], ['other', () => ({ status: 200, text: '{"disposition":"indeterminate"}' })],
+  ['other', jobId => ({ ...presented(jobId), status: 503 })]];
+const ENVELOPE = JSON.stringify({ error: 'party_vet_non_pass', message: 'buyer Vet decision: fail' });
+const presentedWith = (jobId, extra, inValue = false) => {
+  const { value, ...rest } = JSON.parse(presented(jobId).text);
+  return { status: 200, text: JSON.stringify(inValue ? { ...rest, value: { ...value, ...extra } } : { ...rest, value, ...extra }) };
+};
 const OTHER_OUTCOMES = [
   ['a present answer for another scope', jobId => presented(jobId, {}, { agreement: 'another' })],
   ['a present answer for another job', () => presented(job(0x99))],
   ['a present answer without the buyer record', jobId => presented(jobId, { buyer: {} })],
   ['a present answer without the seller record', jobId => presented(jobId, { seller: { vetRecordRef: null } })],
+  ['a present answer whose two references are empty objects', jobId => presented(jobId, { buyer: { vetRecordRef: {} }, seller: { vetRecordRef: {} } })],
+  ['a present answer whose buyer reference is empty', jobId => presented(jobId, { buyer: { vetRecordRef: {} } })],
+  ['a present answer whose references lack an anchor', jobId => presented(jobId, { buyer: { vetRecordRef: { contentHash: hash('buyer') } }, seller: { vetRecordRef: { contentHash: hash('seller') } } })],
+  ['a present answer whose seller reference has an unknown anchor kind', jobId => presented(jobId, { seller: { vetRecordRef: { anchor: { kind: 'elsewhere', locator: 'x' }, contentHash: hash('seller') } } })],
+  ['a present answer whose buyer reference has a malformed content hash', jobId => presented(jobId, { buyer: { vetRecordRef: { anchor: { kind: 'https', locator: 'x' }, contentHash: 'not-a-hash' } } })],
+  ['a present answer whose seller reference carries an extra key', jobId => presented(jobId, { seller: { vetRecordRef: { ...vetRef('seller').vetRecordRef, extra: true } } })],
+  ['a present answer whose buyer reference names a malformed signer', jobId => presented(jobId, { buyer: { vetRecordRef: { ...vetRef('buyer').vetRecordRef, signer: 'not-a-claim' } } })],
   ['an absent answer', () => ({ status: 200, text: '{"disposition":"absent"}' })],
   ['a rejection that is not a Vet non-pass', () => ({ status: 409, text: '{"disposition":"rejected","code":"other_refusal"}' })],
   ['text that is not JSON', () => ({ status: 200, text: 'not json' })],
   ['a JSON array', () => ({ status: 200, text: '[]' })],
   ['a JSON scalar', () => ({ status: 200, text: '7' })],
   ['JSON null', () => ({ status: 200, text: 'null' })],
+  // The buyer reads a stored response by its status first: a valid body at another status is not the answer the body says.
+  ...[409, 201, 503, '200', undefined].map(status => [`a valid present answer stored with status ${String(status)}`, jobId => ({ ...presented(jobId), status })]),
+  ...[409, 503].map(status => [`a Vet non-pass rejection stored with status ${status}`, () => ({ ...nonPass, status })]),
+  ...[200, 503, 429, 408].map(status => [`the Vet non-pass error envelope stored with status ${status}`, () => ({ status, text: ENVELOPE })]),
+  ['a present answer with an extra top-level key', jobId => presentedWith(jobId, { extra: true })],
+  ['a present answer whose value has an extra key', jobId => presentedWith(jobId, { extra: true }, true)],
+  ['an indeterminate answer that carries the Vet non-pass error', () => ({ status: 200, text: '{"disposition":"indeterminate","error":"party_vet_non_pass"}' })],
+  ['an absent answer that carries the Vet non-pass error', () => ({ status: 422, text: '{"disposition":"absent","error":"party_vet_non_pass"}' })],
+  ['a refusal envelope with another error', () => ({ status: 422, text: '{"error":"other_refusal"}' })],
 ];
+// The Vet non-pass error envelope of the statuses the buyer reads as a refusal, at both ends of the range.
+const ENVELOPE_NON_PASS = [409, 422, 400, 499].map(status => ['vet-non-pass', () => ({ status, text: ENVELOPE }), `the Vet non-pass error envelope stored with status ${status}`]);
 
 test('P09b-T01 at 12 counted starts, D4 compensates to aborted, releases the hold and fails the challenge with `unpaid_start_limit`', async t => {
   const w = world(t, { contextStartLimits: { maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 12 } }), p = w.prepare();
@@ -779,6 +838,25 @@ test('P09b-T23 an unavailable policy ledger keeps `releasePending` with its caus
   assert.equal(w.row(p.input.jobId).cleanup.releasePending, false); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(w.admission.cleanupPending(), false);
 });
 
+test('P09b-T23b a release that fails after another release already cleared the row leaves no cause on the settled row; one that fails first is cleared by the later release', async t => {
+  for (const order of ['the completion fails after the sweep released', 'the sweep fails before the completion released']) {
+    const gate = deferred(), entered = deferred(); let calls = 0;
+    const policy = { async reserve() { return null; }, async release() { if (++calls === 1) { entered.resolve(); if (await gate.promise === 'fail') throw new Error('completion release failed'); return; } if (order.startsWith('the sweep')) throw new Error('sweep release failed'); } };
+    const w = world(t, { policy }), p = w.prepare(), capability = await running(w, p), completing = capability.complete(presented(p.input.jobId));
+    await entered.promise; assert.equal(w.row(p.input.jobId).cleanup.releasePending, true);
+    await w.admission.sweep({ startup: false });
+    if (order.startsWith('the completion')) {
+      assert.equal(w.row(p.input.jobId).cleanup.releasePending, false, order); gate.resolve('fail');
+    } else {
+      assert.equal(w.row(p.input.jobId).cleanup.releasePending, true, order); assert.equal(w.row(p.input.jobId).cleanup.tries, 1, order); gate.resolve();
+    }
+    await completing; await sweepTwice(w);
+    const cleaned = w.row(p.input.jobId).cleanup;
+    assert.equal(cleaned.releasePending, false, order); assert.equal(cleaned.cause, null, order); assert.equal(w.admission.cleanupPending(), false, order);
+    w.reopen(); await sweepTwice(w, true); assert.equal(w.admission.cleanupPending(), false, order);
+  }
+});
+
 test('P09b-T24 a definite failed bootstrap closes the job; a fresh Start on another job is admitted; the old request\'s recovery ends null', async t => {
   const w = world(t), old = w.prepare(0x11), fresh = w.prepare(0x22); w.control.beforeReserve = () => 'budget-refused';
   await reject(w.admission.begin(old.input), 'seller_budget_refused', 409); await drained(w, old.input.jobId); w.control.beforeReserve = null;
@@ -790,7 +868,7 @@ test('P09b-T24 a definite failed bootstrap closes the job; a fresh Start on anot
   assert.equal(w.row(fresh.input.jobId).state, 'running'); assert.equal(w.row(old.input.jobId).state, 'aborted'); assert.equal(w.calls.wire, 1);
 });
 
-test('P09b-T30 with the shipped guard off, `begin` and `compensate` refuse before any write', async t => {
+test('P09b-T30 with the shipped guard off, `begin` and `compensate` refuse before any write', async () => {
   const probe = fileURLToPath(new URL('./helpers/admission-guard-off-probe.mjs', import.meta.url));
   const kept = (process.env.NODE_OPTIONS ?? '').split(' ').filter(option => option !== '' && !option.includes('kit-guard-fixture.mjs')).join(' ');
   const child = spawnSync(process.execPath, [probe], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: kept } });
@@ -867,7 +945,7 @@ test('P09b-T34 `admissionRecord` reads back the row\'s `contextScopeHash` (never
 });
 
 test('P09b-T36 compensation reads the context outcome first: a successful completed outcome settles with `contextOutcome` `success` and is never aborted; a Vet non-pass outcome settles `vet-non-pass`; D8a records the same classes on an ordinary completion; an inspection that throws or reports another binding keeps the row `compensating` with its cause and `ready:false`, also after two sweeps and a restart. Round 4: through both D8a and compensation, `success` is recorded only for a `present` answer whose scope hashes to the row\'s `contextScopeHash`, for the row\'s job, naming both Vet record references. A `present` answer for another scope or job, or missing either reference, a completed `indeterminate`, `absent` or non-Vet `rejected` answer, and outcome text that is not a JSON object each record `other`. T37 covers the D7→D8a crash for all three completed classes, asserting one settlement and one effective hold release by `holdId`; P11b2-T17 checks the slot side. The `none` class needs C3\'s `executed` proof, so P11d3 adds that case (H-19)', async t => {
-  const cases = [...COMPLETED_CLASSES, ...OTHER_OUTCOMES.map(([label, make]) => ['other', make, label])];
+  const cases = [...COMPLETED_CLASSES, ...ENVELOPE_NON_PASS, ...OTHER_OUTCOMES.map(([label, make]) => ['other', make, label])];
   for (const [expected, make, label = expected] of cases) {
     const byD8a = world(t), q = byD8a.prepare(); await (await running(byD8a, q)).complete(make(q.input.jobId));
     assert.equal(byD8a.admission.admissionRecord(q.input.jobId).contextOutcome, expected, `D8a: ${label}`); assert.equal(byD8a.calls.effective, 1, label);
@@ -904,8 +982,8 @@ test('P09b-T37 table: durable cut (D1, D2, hold line, D4, D7 before D8a, C1, C3 
   assert.equal(d4.row(u.input.jobId).holdId, kept.holdId); assert.equal(d4.admission.admissionRecord(u.input.jobId).contextOutcome, 'success'); assert.equal(d4.calls.reserve, 1); assert.equal(d4.calls.effective, 1);
   // D7 before D8a, C1 and C3 before C4a, each with every completed class: restart, then C1 before the sweep or the sweep alone; one settlement, one release.
   for (const [expected, make] of COMPLETED_CLASSES) {
-    for (const cut of ['D7 then C1 then sweep', 'C1 then restart', 'C3 evidence was read first']) {
-      const w = world(t), p = w.prepare(); await crashAfterPublish(w, p, make(p.input.jobId));
+    for (const cut of ['D7 then C1 then sweep', 'C1 then restart', 'C3 evidence was read first', 'the startup sweep alone']) {
+      const w = world(t), p = w.prepare(); await crashAfterPublish(w, p, make(p.input.jobId)); const { holdId } = w.row(p.input.jobId);
       if (cut === 'C1 then restart') w.compensating(p.input.jobId);
       if (cut === 'C3 evidence was read first') { w.compensating(p.input.jobId); w.control.inspect = () => ({ state: 'none' }); await w.admission.sweep({ startup: false }); w.control.inspect = null; }
       w.reopen(); if (cut === 'D7 then C1 then sweep') await w.admission.compensate(p.input.jobId, 'd');
@@ -913,6 +991,7 @@ test('P09b-T37 table: durable cut (D1, D2, hold line, D4, D7 before D8a, C1, C3 
       assert.equal(record.state, cut === 'C3 evidence was read first' ? 'aborted' : 'settled', label);
       if (record.state === 'settled') { assert.equal(record.contextOutcome, expected, label); assert.equal(w.calls.effective, 1, label); assert.equal(w.calls.evidence.length, 0, label); }
       assert.equal(w.holds.size, 0, label); const stable = w.row(p.input.jobId); await sweepTwice(w); assert.deepEqual(w.row(p.input.jobId), stable, label);
+      assert.equal(stable.holdId, holdId, label);
     }
   }
 });
@@ -1020,3 +1099,220 @@ test('admission-periodic-sweep-spares-live-begin', async t => {
   assert.equal(operator.row(s.input.jobId).state, 'compensating'); gate.resolve(); await lease; await operatorStart; await abort; assert.equal(operator.row(s.input.jobId).state, 'aborted');
 });
 
+test('admission-live-begin-owner-registered-in-the-commit-turn-and-kept-through-d3-and-d4', async t => {
+  const w = world(t), gateFor = gatedPolicy(w); w.reopen();
+  const p = w.prepare(), { jobId } = p.input, gate = gateFor(jobId);
+  assert.equal(owned(w, jobId, 1), false);
+  const begun = w.admission.begin(p.input);
+  // No await since the call: the intent is committed and its owner is already registered, for that revision only.
+  assert.equal(w.row(jobId).state, 'intent'); assert.equal(owned(w, jobId, 1), true);
+  assert.equal(owned(w, jobId, 2), false); assert.equal(owned(w, job(0x77), 1), false);
+  await gate.entered.promise;
+  assert.equal(w.row(jobId).cleanup.holdCall, 'pending'); assert.equal(owned(w, jobId, 1), true);
+  gate.barrier.resolve(null); await begun;
+  assert.equal(w.row(jobId).state, 'admitted');
+  await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
+  assert.equal(owned(w, jobId, 1), false);
+  w.reopen(); assert.equal(owned(w, jobId, 1), false);
+});
+
+test('admission-live-begin-owner-reader-is-off-the-api-and-refuses-a-foreign-object', async t => {
+  const w = world(t);
+  assert.equal('ownedIntent' in w.admission, false); assert.equal(Object.keys(admissionTransactionInternals(w.admission)).join(), 'ownedIntent');
+  for (const foreign of [{}, { ...w.admission }, null, undefined]) assert.throws(() => admissionTransactionInternals(foreign), TypeError);
+});
+
+test('admission-live-begin-owner-is-not-registered-for-a-refused-or-uncommitted-intent', async t => {
+  const w = world(t), p = w.prepare(), q = w.prepare(0x12); w.control.ready = false;
+  await reject(w.admission.begin(p.input), 'seller_not_ready', 503);
+  assert.equal(w.row(p.input.jobId), null); assert.equal(owned(w, p.input.jobId, 1), false);
+  w.control.ready = true; w.cut('before-commit', () => w.row(q.input.jobId)?.state === 'intent');
+  await assert.rejects(w.admission.begin(q.input), /cut-before-commit/);
+  assert.equal(owned(w, q.input.jobId, 1), false);
+});
+
+test('admission-live-begin-owner-is-kept-through-the-late-policy-settlement', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const w = world(t), gateFor = gatedPolicy(w); w.reopen();
+  const p = w.prepare(), { jobId } = p.input, gate = gateFor(jobId);
+  const begun = w.admission.begin(p.input), rejected = reject(begun, 'seller_budget_unavailable', 503);
+  await gate.entered.promise; t.mock.timers.tick(POLICY_MS); await rejected; await flush();
+  // The outward answer is the deadline; the policy call has not ended, so the failure is recorded but the owner stays.
+  assert.equal(w.row(jobId).state, 'compensating'); assert.equal(owned(w, jobId, 1), true); assert.equal(w.calls.release, 0);
+  gate.barrier.resolve(null); await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
+  assert.equal(owned(w, jobId, 1), false); assert.equal(w.calls.release, 1);
+});
+
+test('admission-live-begin-owner-is-removed-only-by-its-own-begin', async t => {
+  const w = world(t), gateFor = gatedPolicy(w); w.reopen();
+  const a = w.prepare(0x11), b = w.prepare(0x12), gate = gateFor(a.input.jobId);
+  const first = w.admission.begin(a.input), firstRejected = reject(first, 'context_admission_closed', 409);
+  await gate.entered.promise;
+  // Another job's begin ends, a repeated begin of the same job is refused, and C1 lands from outside: none of them touches the owner.
+  await w.admission.begin(b.input); await w.admission.jobEffectMutex(b.input.jobId).run(() => {}); await flush();
+  assert.equal(owned(w, b.input.jobId, 1), false); assert.equal(owned(w, a.input.jobId, 1), true);
+  await reject(w.admission.begin(a.input), 'context_job_closed', 409); assert.equal(owned(w, a.input.jobId, 1), true);
+  w.compensating(a.input.jobId); await flush(); assert.equal(owned(w, a.input.jobId, 1), true);
+  gate.barrier.resolve(null); await firstRejected; await w.admission.jobEffectMutex(a.input.jobId).run(() => {}); await flush();
+  assert.equal(owned(w, a.input.jobId, 1), false); assert.equal(w.row(a.input.jobId).state, 'aborted');   // P09bb's C2-C4 settle it under the same lease
+});
+
+// Moves the mocked clock on in steps until `promise` settles, letting every pending turn run between steps; fails if it never settles.
+async function driveUntil(t, promise, stepMs = 1000) {
+  let done = false; promise.then(() => { done = true; }, () => { done = true; });
+  for (let step = 0; step < 200 && !done; step++) { await flush(); t.mock.timers.tick(stepMs); }
+  await flush(); assert.equal(done, true, 'the call settled within the mocked deadlines');
+  return promise;
+}
+const killedAtTheHoldLine = async (w, p) => {
+  w.control.beforeReserve = () => { w.control.killed = true; w.db.close(); return null; };
+  await assert.rejects(w.admission.begin(p.input), Error); w.control.beforeReserve = null; w.reopen();
+};
+
+test('admission-sweep-moves-past-a-row-whose-evidence-lease-or-release-never-answers', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const never = new Promise(() => {});
+  for (const hang of ['evidence', 'lease', 'release']) {
+    const w = world(t);
+    if (hang === 'release') { const base = w.policy; w.options.policy = { reserve: base.reserve, release: request => (request.jobId === job(0x11) ? never : base.release(request)) }; w.reopen(); }
+    const a = w.prepare(0x11), b = w.prepare(0x22); await w.admission.begin(a.input); await w.admission.begin(b.input);
+    if (hang === 'release') await driveUntil(t, w.admission.compensate(a.input.jobId, 'd'));
+    else w.compensating(a.input.jobId);
+    if (hang === 'evidence') w.control.evidence = record => (record.jobId === a.input.jobId ? never : w.evidenceOf(record, 'no-intent'));
+    if (hang === 'lease') void w.admission.jobEffectMutex(a.input.jobId).run(() => never);
+    w.control.clock = T0 + HOUR + 30000;
+    await driveUntil(t, w.admission.sweep({ startup: false }));
+    assert.equal(w.row(b.input.jobId).state, 'aborted', hang); assert.equal(w.holds.has(w.row(b.input.jobId).holdId), false, hang);
+    assert.notEqual(w.row(a.input.jobId).cleanup.cause, null, hang); assert.equal(w.holds.has(w.row(a.input.jobId).holdId), true, hang); assert.equal(w.admission.cleanupPending(), true, hang);
+  }
+  const w = world(t), p = w.prepare(); await running(w, p); w.compensating(p.input.jobId);
+  const first = w.admission.sweep({ startup: false }), second = w.admission.sweep({ startup: false });
+  assert.strictEqual(second, first); await assert.rejects(w.admission.sweep({ startup: true }), TypeError);
+  await first; assert.equal(w.calls.evidence.length, 1, 'two overlapping sweeps make one pass'); assert.equal(w.row(p.input.jobId).state, 'aborted');
+});
+
+test('admission-completed-wire-answer-settles-the-row-where-it-arrives', async t => {
+  for (const [expected, make] of COMPLETED_CLASSES) {
+    for (const from of ['admitted', 'running']) {
+      const label = `${expected} from ${from}`, w = world(t), p = w.prepare(); p.input.delegationExpiresAt = null; await w.admission.begin(p.input);
+      if (from === 'running') await w.admission.reserveContext(p.input.jobId, w.reserveWire);
+      const answer = make(p.input.jobId), done = { state: 'completed', operationId: hash('wire-operation'), outcome: answer };
+      w.control.inspect = jobId => ({ state: 'completed', binding: w.row(jobId).contextBinding, outcome: answer });
+      assert.strictEqual(await w.admission.reserveContext(p.input.jobId, async () => done), done, label);
+      const settled = w.admission.admissionRecord(p.input.jobId);
+      assert.equal(settled.state, 'settled', label); assert.equal(settled.contextOutcome, expected, label); assert.equal(w.holds.size, 0, label);
+      assert.equal(w.calls.effective, 1, label); assert.equal(w.calls.evidence.length, 0, label); assert.equal(w.admission.cleanupPending(), false, label);
+      await sweepTwice(w); w.reopen(); await sweepTwice(w, true);
+      assert.deepEqual(w.admission.admissionRecord(p.input.jobId), settled, label); assert.equal(w.calls.effective, 1, label);
+    }
+  }
+});
+
+test('admission-an-ended-policy-call-is-settled-by-a-later-periodic-sweep-without-another-restart', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const failures = [
+    ['the startup evidence read fails', w => { w.control.evidence = () => { throw new Error('journal unreadable'); }; }, w => { w.control.evidence = null; }],
+    ['the startup release fails', w => { w.control.unavailable = new Error('policy ledger unavailable'); }, w => { w.control.unavailable = null; }],
+    ['the startup adoption commit fails', (w, p) => w.cut('before-commit', () => w.row(p.input.jobId)?.cleanup.holdCall === 'settled'), () => {}],
+  ];
+  for (const [label, arrange, recover] of failures) {
+    const w = world(t), p = w.prepare(); await killedAtTheHoldLine(w, p); assert.equal(w.row(p.input.jobId).cleanup.holdCall, 'pending', label);
+    arrange(w, p); await driveUntil(t, w.admission.sweep({ startup: true }));
+    assert.equal(w.holds.size, 1, label); assert.equal(w.admission.cleanupPending(), true, label);
+    recover(w); await driveUntil(t, w.admission.sweep({ startup: false }));
+    assert.equal(w.row(p.input.jobId).state, 'aborted', label); assert.equal(w.row(p.input.jobId).cleanup.holdCall, 'settled', label);
+    assert.equal(w.holds.size, 0, label); assert.equal(w.calls.effective, 1, label); assert.equal(w.admission.cleanupPending(), false, label);
+  }
+  // This process's own late call: recording its end fails, and the begin that owned it ends.
+  const w = world(t), p = w.prepare(), entered = deferred(), barrier = deferred();
+  w.control.beforeReserve = () => { entered.resolve(); return barrier.promise; };
+  const rejected = reject(w.admission.begin(p.input), 'seller_budget_unavailable', 503); await entered.promise; t.mock.timers.tick(POLICY_MS); await rejected;
+  w.cut('before-commit', () => w.row(p.input.jobId).cleanup.holdCall === 'settled'); barrier.resolve(null); await drained(w, p.input.jobId); await flush();
+  assert.equal(w.row(p.input.jobId).cleanup.holdCall, 'pending'); assert.equal(owned(w, p.input.jobId, 1), false); assert.equal(w.holds.size, 1);
+  await driveUntil(t, w.admission.sweep({ startup: false }));
+  assert.equal(w.row(p.input.jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(w.admission.cleanupPending(), false);
+});
+
+test('admission-a-fault-that-ends-leaves-no-cause-on-a-live-row', async t => {
+  const w = world(t), p = w.prepare(); await running(w, p);
+  const faults = [['an inspection fault', () => { w.control.inspect = () => { throw new Error('journal unreadable'); }; }, () => { w.control.inspect = null; }, 'operation_uncertain'],
+    ['a seller clock fault', () => { w.control.clock = -1; }, () => { w.control.clock = T0; }, 'peer_clock_invalid']];
+  for (const [label, arrange, recover, code] of faults) {
+    for (const pass of [() => w.admission.sweep({ startup: false }), () => w.admission.compensate(p.input.jobId, 'c')]) {
+      arrange(); await pass();
+      assert.equal(w.row(p.input.jobId).cleanup.cause.code, code, label); assert.equal(w.admission.cleanupPending(), true, label);
+      recover(); await pass();
+      assert.equal(w.row(p.input.jobId).state, 'running', label); assert.equal(w.row(p.input.jobId).cleanup.cause, null, label); assert.equal(w.admission.cleanupPending(), false, label);
+    }
+  }
+  assert.equal(w.holds.size, 1); assert.equal(w.calls.release, 0);
+});
+
+test('admission-sweep-reports-a-row-it-could-not-record-and-still-reaches-the-rows-after-it', async t => {
+  const w = world(t), a = w.prepare(0x11), b = w.prepare(0x22); await running(w, a); await w.admission.begin(b.input); w.compensating(a.input.jobId);
+  w.control.evidence = record => { if (record.jobId === a.input.jobId) throw new Error('journal unreadable'); return w.evidenceOf(record, 'no-intent'); };
+  w.control.clock = T0 + HOUR + 30000;
+  const exec = w.db.exec.bind(w.db), fault = new Error('diagnostic write failed');
+  w.db.exec = sql => { if (sql === 'COMMIT' && w.row(a.input.jobId).cleanup.cause !== null) throw fault; return exec(sql); };
+  await assert.rejects(w.admission.sweep({ startup: false }), error => error instanceof AggregateError && error.errors.length === 1 && error.errors[0] === fault);
+  assert.equal(w.row(b.input.jobId).state, 'aborted'); assert.equal(w.holds.has(w.row(b.input.jobId).holdId), false);
+  assert.equal(w.row(a.input.jobId).state, 'compensating'); assert.equal(w.admission.cleanupPending(), true);
+});
+
+test('admission-compensate-and-sweep-refuse-malformed-arguments-and-an-unknown-job-is-a-no-op', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input); w.control.clock = T0 + 1; const before = w.changes();
+  for (const trigger of [['c'], ['d'], 'constructor', 'e', null]) await assert.rejects(w.admission.compensate(p.input.jobId, trigger), TypeError, String(trigger));
+  await assert.rejects(w.admission.compensate('not a job', 'd'), TypeError);
+  await w.admission.compensate(job(0x77), 'd'); assert.equal(w.row(job(0x77)), null);
+  for (const options of [undefined, {}, { startup: 'yes' }, { startup: 1 }]) await assert.rejects(w.admission.sweep(options), TypeError);
+  assert.equal(w.changes() - before, 0); assert.equal(w.row(p.input.jobId).state, 'admitted');
+});
+
+// K11: every entry that reaches the wire, the journal or the policy refuses while the guard is off, before it takes the job lease.
+const guard = await import('../src/kit-operation-guard.mjs');
+const guardOff = (promise, entry) => assert.rejects(promise, { code: 'kit_operation_guard_off', entry });
+
+test('admission-reserve-refused-while-the-guard-is-off-on-an-admitted-row', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input);
+  const before = w.row(p.input.jobId); t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  guard.setKitOperationGuardForTest('off');
+  await guardOff(w.admission.reserveContext(p.input.jobId, w.reserveWire), 'reserveContext');
+  await guardOff(w.admission.reserveContext(p.input.jobId, null), 'reserveContext');
+  assert.equal(w.calls.wire, 0); assert.deepEqual(w.row(p.input.jobId), before);
+  await w.admission.jobEffectMutex(p.input.jobId).run(() => {});
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  assert.equal((await w.admission.reserveContext(p.input.jobId, w.reserveWire)).attempt, 0); assert.equal(w.calls.wire, 1);
+});
+
+test('admission-complete-refused-while-the-guard-is-off-on-a-running-row', async t => {
+  const w = world(t), p = w.prepare(), capability = await running(w, p); t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  const before = w.row(p.input.jobId);
+  guard.setKitOperationGuardForTest('off');
+  await guardOff(capability.complete(outcome), 'complete');
+  await guardOff(capability.complete(null), 'complete');
+  assert.equal(w.calls.complete.length, 0); assert.equal(w.calls.release, 0); assert.equal(w.holds.size, 1); assert.deepEqual(w.row(p.input.jobId), before);
+  await w.admission.jobEffectMutex(p.input.jobId).run(() => {});
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  await capability.complete(outcome);
+  assert.equal(w.row(p.input.jobId).state, 'settled'); assert.equal(w.calls.complete.length, 1); assert.equal(w.holds.size, 0);
+});
+
+test('admission-sweep-with-the-guard-off-finishes-an-existing-release-and-starts-nothing', async t => {
+  const w = world(t), p = w.prepare(); await w.admission.begin(p.input); w.control.unavailable = new Error('policy ledger unavailable');
+  await w.admission.compensate(p.input.jobId, 'd'); assert.equal(w.row(p.input.jobId).cleanup.releasePending, true); assert.equal(w.holds.size, 1);
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1')); guard.setKitOperationGuardForTest('off'); w.control.unavailable = null;
+  await guardOff(w.admission.compensate(p.input.jobId, 'd'), 'compensate'); assert.equal(w.row(p.input.jobId).cleanup.releasePending, true);
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(p.input.jobId).cleanup.releasePending, false); assert.equal(w.holds.size, 0); assert.equal(w.calls.reserve, 1); assert.equal(w.calls.wire, 0);
+});
+
+test('admission-live-begin-owner-is-held-while-the-d4-hooks-run-and-removed-after-a-hook-refusal-is-recorded', async t => {
+  const seen = [], capacity = { fitsNewPurchase: () => true, allocateWithin: () => {} };
+  const w = world(t, { capacity }), p = w.prepare(), { jobId } = p.input;
+  w.admission.addAcceptanceHook(() => { seen.push(['hook', owned(w, jobId, 1), w.row(jobId).state]); throw Object.assign(new Error('hook-full'), { code: 'peer_store_capacity', status: 503 }); });
+  await reject(w.admission.begin(p.input), 'peer_store_capacity', 503);
+  assert.deepEqual(seen, [['hook', true, 'admitted']]);
+  await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
+  // The refusal is compensated under the same lease: no effect happened, so the row aborts and its hold is released.
+  assert.equal(w.row(jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(owned(w, jobId, 1), false);
+});

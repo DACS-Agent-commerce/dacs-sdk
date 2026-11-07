@@ -19,7 +19,7 @@ function world(t, options = {}) {
   writeFileSync(states, '{}');
   let time = 1800000000000, store;
   const config = { path, now: () => time, maxRecords: 1, contextStartLimits: { maxStartsPerHour: 1, maxStartsPerBuyerPerHour: 1 },
-    contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId], ...options };
+    contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId] ?? null, ...options };
   // hostStart: what the host does with the lock held, right after it opens the store.
   const reopen = ({ hostStart = false, ...changes } = {}) => {
     store?.close(); store = withFixtureProfile(createSellerTransportStore({ ...config, ...changes }));

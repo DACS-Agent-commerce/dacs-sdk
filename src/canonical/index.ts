@@ -16,6 +16,10 @@ export {
   logicalToStorageProgramName,
   storAddress,
   bundleAddress,
+  legacyAttestationAddress,
+  legacyPaymentEvidenceAddress,
+  legacyRatingAddress,
+  legacyBundleAddress,
 } from "./addressing.js";
 export {
   sha256Hex,

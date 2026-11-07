@@ -4,7 +4,7 @@
 // The transport store builds it on its own SQLite handle for the host, the context route and the seller agent. The
 // caller owns the SQLite handle, the immediate-transaction helper, the startup lock and the terminal-state view.
 import { randomBytes, randomUUID } from 'node:crypto';
-import { isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity } from '@kynesyslabs/dacs';
+import { canonicalize, identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { SESSION_CHALLENGE_LIFETIME_MS, sessionAdmissionProblem } from './session-admission.mjs';
 import { SellerTransportError, TERMINAL_CONTEXT_STATES } from './seller-transport-auth.mjs';
@@ -60,19 +60,30 @@ function validateIssueRequest(request, challengeScopeHash, origin) {
   if (unknownMember || !isCanonicalClaimReference(request.buyer) || (origin === 'route' && !isHash(challengeScopeHash))) fail('context_scope_invalid');
 }
 
-// Whether the retained admission still binds this row's job and buyer and the record's own bundle hash.
-function admissionBindsRow(admission, buyerBundleHash, row) {
-  if (!isRecord(admission) || admission.jobId !== row.jobId || !sameCanonicalClaimIdentity(admission.buyer, row.buyer)) return false;
+// The presenting claim of the accepted bundle when it is exactly the presentation this row was attempted with, else null: canonical
+// bytes whose hash the row stored, for this nonce and canonical buyer, and the bundle hash callers derive from it.
+function presenterOfRowBundle(accepted, row) {
+  try {
+    const bundle = JSON.parse(accepted.buyerBundleText);
+    const exact = isRecord(bundle) && accepted.buyerBundleText === canonicalize(bundle) && sha256Hex(accepted.buyerBundleText) === row.presentationHash
+      && bundle.sessionNonce === row.nonce && sameCanonicalClaimIdentity(bundle.presentedBy, row.buyer) && identityBundleHash(bundle) === accepted.buyerBundleHash;
+    return exact ? bundle.presentedBy : null;
+  } catch { return null; }
+}
+
+// Whether the retained admission still binds this row's job, the presenter and the record's bundle hash.
+function admissionBindsRow(admission, buyerBundleHash, row, buyer) {
+  if (!isRecord(admission) || admission.jobId !== row.jobId) return false;
   const participants = Array.isArray(admission.participants) ? admission.participants : [];
   const seller = participants.find((entry) => entry?.role === 'seller')?.claim;
-  return sessionAdmissionProblem(admission, { jobId: row.jobId, buyer: admission.buyer, buyerBundleHash, seller, listingPin: admission.listingPin }) === null;
+  return sessionAdmissionProblem(admission, { jobId: row.jobId, buyer, buyerBundleHash, seller, listingPin: admission.listingPin }) === null;
 }
 
 function acceptedIsComplete(accepted, row) {
   if (!hasExactKeys(accepted, ACCEPTED_KEYS) || typeof accepted.buyerBundleText !== 'string' || !isHash(accepted.buyerBundleHash) || !isUint(accepted.admittedAt)
     || !hasExactKeys(accepted.firstAdmission, FIRST_ADMISSION_KEYS) || !FIRST_ADMISSION_KEYS.every((key) => isUint(accepted.firstAdmission[key]))) return false;
-  try { if (!isRecord(JSON.parse(accepted.buyerBundleText))) return false; } catch { return false; }
-  return admissionBindsRow(accepted.admission, accepted.buyerBundleHash, row);
+  const presenter = presenterOfRowBundle(accepted, row);
+  return presenter !== null && admissionBindsRow(accepted.admission, accepted.buyerBundleHash, row, presenter);
 }
 
 // The text to store for `record`: its own JSON form, checked as stored so the caller keeps no handle on it.
@@ -129,11 +140,13 @@ function replayAnswer(row, input) {
  * Creates the challenge ledger on the caller's SQLite handle and returns a frozen API.
  * `transaction(fn, rollback = false)` runs fn synchronously in BEGIN IMMEDIATE and returns its result.
  * `now()` is the seller clock in ms; `generation` identifies this process, drawn after the seller state
- * lock is held. `sessionState({ jobId })` is synchronous; anything but a string (a throw, a promise)
- * counts as an unknown state. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
+ * lock is held. `sessionState({ jobId })` answers synchronously with a state string or null. At issuance a throw,
+ * a promise or any other answer refuses (it propagates and nothing is written); at reclamation such a row
+ * counts as an unknown state and is never reclaimed. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
  * over durable rows. `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
  * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
- * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class);
+ * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class; the
+ * `sessionState` port's own error or a TypeError for a malformed answer also propagates);
  * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
  * it, the guard and the stop check also run before a reused live nonce is returned.
  * `attempt(input)` returns `{ kind: 'validate', owner }`, `{ kind: 'continuation', accepted }` or
@@ -147,9 +160,14 @@ function replayAnswer(row, input) {
  * party fails the row as `context_challenge_mismatch`, except a route row on `proposal`, which is refused
  * unchanged. Throws if the row changed under the lock. `accept` and `recordFailed` return whether the row was
  * `attempted` by that owner and changed; their `Within` forms need an open transaction and open none.
+ * `accept` stores only the canonical bytes of the presentation the row was attempted with (its stored hash, its nonce
+ * and its canonical buyer) and refuses any other record as `context_challenge_attempt_invalid`; a stored record
+ * that does not match its row answers `session_admission_unavailable` on continuation.
  * `accept` also binds the job to the accepted presentation in the same transaction and throws
  * SellerTransportError `seller_job_bound` when another nonce already bound the job. `jobBinding(jobId)`
  * returns the detached frozen `{ jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt }` or null.
+ * Opening the ledger binds every job that has an `accepted` row and no binding yet (a store written before the
+ * binding existed) to its earliest accepted row, by `attemptedAt` then nonce, before any caller or reclamation can run.
  * `closeLostValidations()` returns how many earlier-generation attempts it closed. `retained(nonce)`
  * returns a detached frozen row or null; its caller compares the buyer and the exact bundle bytes.
  * Construction throws TypeError for an unusable port, generation or limit.
@@ -173,6 +191,12 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   const one = (sql, ...args) => db.prepare(sql).get(...args);
   const all = (sql, ...args) => db.prepare(sql).all(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args).changes;
+  // A store written before the bindings existed: bind each such job to its earliest accepted row. Nothing is written on a bound store.
+  if (one("SELECT 1 FROM kit_challenges WHERE state = 'accepted' AND jobId NOT IN (SELECT jobId FROM kit_job_bindings)")) {
+    run(`INSERT INTO kit_job_bindings (jobId, nonce, buyer, presentationHash, buyerBundleHash, admittedAt)
+      SELECT jobId, nonce, buyer, presentationHash, json_extract(accepted, '$.buyerBundleHash'), json_extract(accepted, '$.admittedAt')
+      FROM kit_challenges WHERE state = 'accepted' ORDER BY attemptedAt, nonce ON CONFLICT (jobId) DO NOTHING`);
+  }
 
   function readClock(headroomMs = 0) {
     const time = now();
@@ -184,12 +208,18 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!db.inTransaction) throw new TypeError(`${entry} runs inside an open transaction`);
   }
 
-  // Only an exact terminal state answers true; the source is unknown, never trusted, when it throws or is not synchronous.
-  function isTerminal(jobId) {
-    try {
-      const state = requireSynchronous(sessionState({ jobId }), 'sessionState');
-      return typeof state === 'string' && TERMINAL_CONTEXT_STATES.has(state);
-    } catch { return false; }
+  // The job's state as the port answers it: a string or null. A throw, a promise or any other answer is not a state and propagates.
+  function readSessionState(jobId) {
+    const state = requireSynchronous(sessionState({ jobId }), 'sessionState');
+    if (state !== null && typeof state !== 'string') throw new TypeError('sessionState must answer a state string or null');
+    return state;
+  }
+
+  const isTerminalState = (state) => typeof state === 'string' && TERMINAL_CONTEXT_STATES.has(state);
+
+  // Reclamation only: a state that cannot be read is unknown, and an unknown state never reclaims a row.
+  function isKnownTerminal(jobId) {
+    try { return isTerminalState(readSessionState(jobId)); } catch { return false; }
   }
 
   function retained(nonce) {
@@ -211,7 +241,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (needed <= 0) return [];
     const plan = [];
     for (const row of all('SELECT nonce, jobId FROM kit_challenges WHERE expiresAt <= ? AND issuedAt <= ? ORDER BY issuedAt', time, time - CHALLENGE_WINDOW_MS)) {
-      if (isTerminal(row.jobId)) plan.push(row.nonce);
+      if (isKnownTerminal(row.jobId)) plan.push(row.nonce);
       if (plan.length === needed) return plan;
     }
     fail('context_challenge_capacity', 503);
@@ -235,7 +265,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
 
   // K1 steps 7-17, inside the transaction: every refusal is decided before the first write.
   function issueInTransaction({ jobId, buyer }, challengeScopeHash, origin, authorization, time) {
-    if (isTerminal(jobId)) fail('context_session_terminal');
+    if (isTerminalState(readSessionState(jobId))) fail('context_session_terminal');
     const jobRows = all('SELECT * FROM kit_challenges WHERE jobId = ?', jobId);
     if (jobRows.some((row) => row.state !== 'issued')) fail('context_job_closed');
     const live = jobRows.find((row) => row.expiresAt > time && row.challengeScopeHash === challengeScopeHash && sameCanonicalClaimIdentity(row.buyer, buyer));
