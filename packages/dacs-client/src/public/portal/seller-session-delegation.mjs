@@ -6,6 +6,11 @@
 
 import { assertSellerSessionLifetime, SELLER_SESSION_MAX_LIFETIME_MS } from '../../dacs/seller-session-limits.mjs';
 
+// JID-1 canonical job ID: 26-character uppercase Crockford-Base32 ULID. Local
+// copy of the SDK's isCanonicalJobId, which a browser cannot import.
+const CANONICAL_JOB_ID = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
+export const isCanonicalJobId = (value) => typeof value === 'string' && CANONICAL_JOB_ID.test(value);
+
 export const SELLER_SESSION_DELEGATION_PREFIX = 'dacs-chatgpt-plugin:seller-session-delegation:v1:';
 export const SELLER_SESSION_DELEGATION_BOUNDS = Object.freeze({
   // Longest delegation the portal will sign (notBefore to expiresAt).
@@ -59,7 +64,7 @@ export function checkSellerSessionDelegation(request, terms, { now = Date.now() 
   if (!CLAIM.test(payload.seller) || payload.seller !== terms?.seller?.claim) refuse('the seller differs from this purchase');
   const listing = terms?.listing ?? {};
   if (payload.listingPin.listingId !== listing.listingId || payload.listingPin.version !== listing.version || payload.listingPin.contentHash !== listing.contentHash) refuse('the Listing differs from this purchase');
-  if (typeof payload.jobId !== 'string' || payload.jobId !== terms?.protocol?.jobId) refuse('the job differs from this purchase');
+  if (!isCanonicalJobId(payload.jobId) || !isCanonicalJobId(terms?.protocol?.jobId) || payload.jobId !== terms.protocol.jobId) refuse('the job differs from this purchase');
   const session = payload.sessionPublicKey;
   if (typeof session !== 'string' || !HEX64.test(session) || `did:demos:agent:${session}` === payload.buyer || `did:demos:agent:${session}` === payload.seller) refuse('the session key is malformed or reuses a party key');
   if (!uint(payload.notBefore) || !uint(payload.expiresAt) || payload.expiresAt <= payload.notBefore) refuse('the validity window is malformed');
