@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { checkSqlitePurchaseDatabase, checkSqlitePurchaseInput } from '../src/util/sqlite-purchase-admission.mjs';
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
 import { sqliteWriteLease } from '../src/util/sqlite-write-lease.mjs';
+import { inTransaction } from './helpers/sqlite-engine-floor.mjs';
 
 const admitters = [checkSqlitePurchaseDatabase, db => checkSqlitePurchaseInput(db, () => {})];
 function rows(db, sql) {
@@ -86,7 +87,7 @@ for (const readBigInts of [false, true]) for (const returnArrays of [false, true
     const beforeWriter = inventory(writer), beforeReader = inventory(reader);
     for (const db of [reader, writer]) for (const admit of admitters) assert.equal(admit(db), undefined);
     assert.deepEqual(inventory(writer), beforeWriter); assert.deepEqual(inventory(reader), beforeReader);
-    assert.notEqual(writer.isTransaction, false);
+    assert.equal(inTransaction(writer), true);
     writer.exec('ROLLBACK');
     assert.equal(rows(reader, 'SELECT count(*) n FROM records')[0].n, 0);
   });
@@ -141,7 +142,7 @@ test('host explicit transaction refusal leaves absent TEMP, transaction and host
   db.exec('CREATE TABLE records(id); BEGIN; INSERT INTO records VALUES (7)');
   const before = inventory(db); let called = false;
   assert.throws(() => store.transaction(db, () => { called = true; }), /within a transaction/);
-  assert.equal(called, false); assert.equal(db.isTransaction, true);
+  assert.equal(called, false); assert.equal(inTransaction(db), true);
   assert.deepEqual(inventory(db), before);
   assert.equal(db.prepare('SELECT id FROM records').get().id, 7);
   db.exec('ROLLBACK');
