@@ -1070,6 +1070,12 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | fix(client): refuse a general sign request for a transaction hash in the Node wallet | Git commit selector bb40abfdb08ef522f2e8ed19cf8ba315c4911ad5 |
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 4ba56c73af306778fef8531dd80bf48404d581b6 |
 | | `packages/dacs-client/test/node-wallet-session.test.mjs:1` | 9cdd17e0eceae6b901b2c075823c6dce714496c9 |
+| D21 | delta(client): D21 require canonical job IDs in the seller session delegation check | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:9`, `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:67` | f49ef6762e99abfa5cfd09950124492c693b7c37 |
+| | `packages/dacs-client/test/seller-session-delegation-job-id.test.mjs:1` | 512d6488ae8a6a8890b227cc90a934528853bd4a |
+| D21 | delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:9`, `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:67` | 1a36a9a9d65cd6723b1f149005c0338a87ffddee |
+| | `packages/dacs-client/test/seller-session-delegation-job-id.test.mjs:1` | b0777e30c7cf6efedd45f3b645329057b18025e5 |
 
 ## Complete commit and file inventory
 
@@ -3365,6 +3371,21 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a1bbL1 record the general-sign refusal and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P21a1bbL1 record the general-sign refusal and re-pin the freeze | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): WF P21a1bbL1 record the general-sign refusal and re-pin the freeze | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| delta(client): D21 require canonical job IDs in the seller session delegation check | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D21 require canonical job IDs in the seller session delegation check | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D21 require canonical job IDs in the seller session delegation check | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D21 require canonical job IDs in the seller session delegation check | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D21 require canonical job IDs in the seller session delegation check | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D21 require canonical job IDs in the seller session delegation check | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D21 require canonical job IDs in the seller session delegation check | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:9`, `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:67` |
+| delta(client): D21 require canonical job IDs in the seller session delegation check | `packages/dacs-client/test/seller-session-delegation-job-id.test.mjs:1` |
+| delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:9`, `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:67` |
+| delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/test/seller-session-delegation-job-id.test.mjs:1` |
 
 ## Original moved files
 
@@ -3411,7 +3432,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/devnet-demo/storage-write-recovery.mjs` | `http-mcp/src/devnet-demo/storage-write-recovery.mjs` | 339752ef02b10b9f2740e833f9b6a1be239ed2b8 | unchanged | 339752ef02b10b9f2740e833f9b6a1be239ed2b8 |
 | `packages/dacs-client/src/public/portal-intent/intent.mjs` | `http-mcp/public/portal-intent/intent.mjs` | a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e | unchanged | a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e |
 | `packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs` | `http-mcp/public/portal/embedded-wallet/sdk-provider.mjs` | b7183e63a75b68cda34c2b30a4d532963794b13f | changed by D11, WF | fb364397ed046fb1211d620fb5dfa68563715c1a |
-| `packages/dacs-client/src/public/portal/seller-session-delegation.mjs` | `http-mcp/public/portal/seller-session-delegation.mjs` | ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42 | unchanged | ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42 |
+| `packages/dacs-client/src/public/portal/seller-session-delegation.mjs` | `http-mcp/public/portal/seller-session-delegation.mjs` | ffb66bb511a0409ed5e4fba5cb7408f7a6dadc42 | changed by D21 | 1a36a9a9d65cd6723b1f149005c0338a87ffddee |
 | `packages/dacs-client/src/public/portal/seller-session-limits.mjs` | `http-mcp/public/portal/seller-session-limits.mjs` | deleted before publication | unchanged | deleted |
 | `packages/dacs-client/src/purchases.mjs` | `http-mcp/src/purchases.mjs` | 79de3d54bc07c27f51c1758f81c61719c0d77595 | changed by D16, D11, WF | 93ec1d4ba6bf5285c5da423817b610e2f36b1647 |
 | `packages/dacs-client/src/switch-files.mjs` | `http-mcp/src/switch-files.mjs` | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 | unchanged | 42eb9b315d1674da3e00da5300f637e8b15fd9c8 |
