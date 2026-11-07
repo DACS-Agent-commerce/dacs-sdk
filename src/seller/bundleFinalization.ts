@@ -37,7 +37,7 @@ import {
 } from "../artifacts/index.js";
 import { isExactJsonRecord } from "../artifacts/validators.js";
 import {
-  bundleAddress,
+  legacyBundleAddress,
   canonicalize,
   contentHash,
   listingAddress,
@@ -3435,7 +3435,7 @@ async function anchorSellerBundle(
   orchestratorBundle?: FaultAttestationBundle;
   resumed: boolean;
 }> {
-  const logicalAddress = bundleAddress(session.jobId, "seller");
+  const logicalAddress = legacyBundleAddress(session.jobId, "seller");
   const expectedScope = expectedBundleScope(session);
   assertNormativeExpectedScope(expectedScope);
   let lookup = await resolveBundle(logicalAddress, provider);
@@ -3545,7 +3545,7 @@ async function publishBinding(
     bindingVersion: "1",
     jobId: session.jobId,
     role: "seller",
-    logicalAddress: bundleAddress(session.jobId, "seller"),
+    logicalAddress: legacyBundleAddress(session.jobId, "seller"),
     nativeAddress: anchored.nativeAddress,
     bundleContentHash: attestationBundleHash(sellerBundle),
     ...(anchored.anchorTx ? { anchorTx: anchored.anchorTx } : {}),
@@ -3902,7 +3902,7 @@ export async function verifyFinalizedSellerBundleReadOnly(
   const expectedScope = expectedBundleScope(session);
   assertNormativeExpectedScope(expectedScope);
   await verifyDependencies(session, capturedInput.dependencies, retainedProvider);
-  const logicalAddress = bundleAddress(session.jobId, "seller");
+  const logicalAddress = legacyBundleAddress(session.jobId, "seller");
   const expectedBundleHash = bundlePayload(expectedScope).bundleContentHash;
   if (
     result.logicalAddress !== logicalAddress ||
@@ -4039,7 +4039,7 @@ export async function finalizeCompletedSellerBundleCore(
   );
   return {
     state: "finalised",
-    logicalAddress: bundleAddress(session.jobId, "seller"),
+    logicalAddress: legacyBundleAddress(session.jobId, "seller"),
     nativeAddress: anchored.anchored.nativeAddress,
     bundleContentHash: attestationBundleHash(anchored.sellerBundle),
     sellerBundle: anchored.sellerBundle,

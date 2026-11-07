@@ -23,7 +23,7 @@ import {
   isFaultAttestationBundle,
 } from "../artifacts/index.js";
 import {
-  bundleAddress,
+  legacyBundleAddress,
   canonicalize,
   contentHash,
   sha256Hex,
@@ -1799,7 +1799,7 @@ class DurableTerminalBundleCoordinator {
   async #anchorBundle(
     bundle: Readonly<FaultAttestationBundle>,
   ): Promise<Readonly<TerminalBundleAnchorPublication>> {
-    const logicalAddress = bundleAddress(this.#jobId(), this.#role());
+    const logicalAddress = legacyBundleAddress(this.#jobId(), this.#role());
     const intent = this.#anchorIntent(bundle, logicalAddress);
     const key = this.#key(terminalBundleFinalizationCheckpointName.anchor);
     const claimed = await this.#claim(key, intent, "bundle-anchor-pending");
@@ -2358,7 +2358,7 @@ class DurableTerminalBundleCoordinator {
     const persistedPublication = await this.#authenticateAnchor(
       this.#decodeAnchor(anchorCheckpoint.data),
       bundle,
-      bundleAddress(this.#jobId(), this.#role()),
+      legacyBundleAddress(this.#jobId(), this.#role()),
       "terminal-recovery",
     );
     const anchorReplay = await this.#resolveAnchor(

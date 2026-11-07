@@ -1,0 +1,2 @@
+npm error code E429
+npm error 429 Too Many Requests - GET http://127.0.0.1:43911/left-pad

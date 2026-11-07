@@ -3,6 +3,7 @@ import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
 import { deliveryDeadlineView, DELIVERY_TIME_SOURCE, verifiedDelivery } from './delivery-deadline-watch.mjs';
 import { purchaseStore } from '../seams/purchase-store-not-wired.mjs';
+import { projectDiagnostic } from '../diagnostic-projection.mjs';
 // The plugin's buyer side of one DACS fixed-price pay-dem purchase, driven
 // from a purchase operation's durable state (operation.state.protocol).
 //
@@ -253,6 +254,27 @@ export class StaleProtocolCheck extends OperationError {
     super('protocol_check_stale', 'another check saved newer progress for this purchase first; this check was not saved');
     this.operation = operation;
   }
+}
+
+// Public projections describe saved protocol state without offering actions.
+export function diagnosticProtocolView(operation, options = {}) {
+  const view = protocolView(operation, options);
+  return view ? projectDiagnostic({ ...view, historical: true,
+    next: 'Stored protocol state is historical. Purchase actions are held; public readback cannot establish settlement or delivery.' }) : null;
+}
+
+// DC-CW12: the synchronous plan-flight readers, keyed by the protocol object the
+// purchase service was given. Module-private, so nothing outside the package can register one.
+const flightReaders = new WeakMap();
+
+/** registerPlanFlightReader(publicProtocol, internalProtocol) lets the purchase service read `internalProtocol`'s synchronous plan-flight state through the public object. Returns undefined. */
+export function registerPlanFlightReader(publicProtocol, internalProtocol) {
+  flightReaders.set(publicProtocol, flightReaders.get(internalProtocol));
+}
+
+/** planRunningOf(protocol, operation) returns true while this process runs the purchase's plan step. It is false for any object that is neither an internal protocol object nor a registered public one. It never returns a Promise and never throws for an unknown object. */
+export function planRunningOf(protocol, operation) {
+  return flightReaders.get(protocol)?.(operation) === true;
 }
 
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
@@ -1154,7 +1176,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     && value.stage !== 'failed'
     && (value.stage !== 'observed' || !(Number(value.signedTransaction.content.nonce) < expectedNonce)));
 
-  return {
+  const purchases = {
     available,
     actionsAdmitted: false,
     nativePaymentReadbackAvailable: Boolean(nativePayment),
@@ -1335,6 +1357,8 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     countersignRequest,
     countersign: endIfStale(countersign),
   };
+  flightReaders.set(purchases, planRunning);
+  return purchases;
 }
 
 export function holdCompletedBundle(protocol) {
