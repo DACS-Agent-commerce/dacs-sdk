@@ -115,6 +115,8 @@ export interface DacsLiveRoleRuntimeOptionsV1 {
   readinessMaxAgeMs?: number;
   server?: DacsLiveRoleServiceOptionsV1["server"];
   transport?: DacsLiveRoleServiceOptionsV1["transport"];
+  /** Fetch for Demos CCI identity reads; needed behind an environment proxy. */
+  identityFetch?: typeof fetch;
   /** Deterministic test/custom-host seam. Production omits this callback. */
   createDemosAdapter?: Parameters<
     typeof createDacsDemosActorRuntimeV1
@@ -296,6 +298,8 @@ export async function createDacsLiveRoleRuntimeV1(
       (rawOptions.handlePublicRequest !== undefined &&
         typeof rawOptions.handlePublicRequest !== "function") ||
       (rawOptions.authorizeJob !== undefined && typeof rawOptions.authorizeJob !== "function") ||
+      (rawOptions.identityFetch !== undefined &&
+        typeof rawOptions.identityFetch !== "function") ||
       (rawOptions.createDemosAdapter !== undefined &&
         typeof rawOptions.createDemosAdapter !== "function") ||
       (rawOptions.createPayDemRail !== undefined &&
@@ -349,6 +353,8 @@ export async function createDacsLiveRoleRuntimeV1(
       role,
       authority: rawOptions.authority,
       demosIdentity,
+      ...(rawOptions.identityFetch === undefined
+        ? {} : { identityFetch: rawOptions.identityFetch }),
       ...(rawOptions.createDemosAdapter === undefined
         ? {} : { createAdapter: rawOptions.createDemosAdapter }),
       ...(rawOptions.createPayDemRail === undefined

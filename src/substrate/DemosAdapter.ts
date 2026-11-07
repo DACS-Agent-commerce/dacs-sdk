@@ -1,5 +1,5 @@
 import { types as nodeTypes } from "node:util";
-import { Demos } from "@kynesyslabs/demosdk/websdk";
+import { Demos, uint8ArrayToHex } from "@kynesyslabs/demosdk/websdk";
 import {
   StorageProgram,
   type StorageProgramListItem,
@@ -26,6 +26,13 @@ import {
 import type { AnchorReceipt as ProtocolAnchorReceipt } from "../artifacts/types.js";
 import { AnchorWaitError } from "./AnchorWaitError.js";
 import { createDemosHistoryPageFetcher } from "./demosHistory.js";
+import {
+  DEMOS_CCI_MAX_RESPONSE_BYTES,
+  DEMOS_CCI_DEFAULT_TIMEOUT_MS,
+  DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS,
+  defaultCciTransport,
+  readDemosCciResponse,
+} from "./demosCciTransport.js";
 import {
   assertDemosWriteEvidence,
   decodeDemosAnchorReceiptProof,
@@ -1013,6 +1020,16 @@ export class DemosAdapter implements SubstrateAdapter {
     const maximumFeeOs = stableAdapterConfigValue(config, "maximumFeeOs");
     const writeJournal = stableAdapterConfigValue(config, "writeJournal");
     const chainIdentity = stableAdapterConfigValue(config, "chainIdentity");
+    const configuredIdentityMaxResponseBytes = stableAdapterConfigValue(config, "identityMaxResponseBytes");
+    const identityMaxResponseBytes = configuredIdentityMaxResponseBytes === undefined
+      ? DEMOS_CCI_MAX_RESPONSE_BYTES : configuredIdentityMaxResponseBytes;
+    const configuredIdentityTimeoutMs = stableAdapterConfigValue(config, "identityTimeoutMs");
+    const identityTimeoutMs = configuredIdentityTimeoutMs === undefined
+      ? DEMOS_CCI_DEFAULT_TIMEOUT_MS : configuredIdentityTimeoutMs;
+    const configuredIdentityTotalTimeoutMs = stableAdapterConfigValue(config, "identityTotalTimeoutMs");
+    const identityTotalTimeoutMs = configuredIdentityTotalTimeoutMs === undefined
+      ? DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS : configuredIdentityTotalTimeoutMs;
+    const identityFetch = stableAdapterConfigValue(config, "identityFetch");
     if (typeof rpc !== "string" || rpc.length === 0) {
       throw new Error("DemosAdapter requires an rpc URL");
     }
@@ -1028,8 +1045,35 @@ export class DemosAdapter implements SubstrateAdapter {
     if (chainIdentity !== undefined && typeof chainIdentity !== "string") {
       throw new DacsError("DemosAdapterConfig.chainIdentity must be a string");
     }
+    if (typeof identityMaxResponseBytes !== "number" ||
+        !Number.isSafeInteger(identityMaxResponseBytes) || identityMaxResponseBytes <= 0 ||
+        identityMaxResponseBytes > DEMOS_CCI_MAX_RESPONSE_BYTES) {
+      throw new DacsError(
+        "DemosAdapterConfig.identityMaxResponseBytes must be a positive safe integer at most 2097152",
+      );
+    }
+    if (typeof identityTimeoutMs !== "number" || !Number.isSafeInteger(identityTimeoutMs) ||
+        identityTimeoutMs <= 0 || identityTimeoutMs > 30_000) {
+      throw new DacsError(
+        "DemosAdapterConfig.identityTimeoutMs must be a positive safe integer at most 30000",
+      );
+    }
+    if (typeof identityTotalTimeoutMs !== "number" ||
+        !Number.isSafeInteger(identityTotalTimeoutMs) || identityTotalTimeoutMs <= 0 ||
+        identityTotalTimeoutMs > 90_000) {
+      throw new DacsError(
+        "DemosAdapterConfig.identityTotalTimeoutMs must be a positive safe integer at most 90000",
+      );
+    }
+    if (identityFetch !== undefined && typeof identityFetch !== "function") {
+      throw new DacsError("DemosAdapterConfig.identityFetch must be a function");
+    }
     this.config = Object.freeze({
       rpc,
+      identityMaxResponseBytes,
+      identityTimeoutMs,
+      identityTotalTimeoutMs,
+      ...(identityFetch === undefined ? {} : { identityFetch: identityFetch as typeof fetch }),
       ...(writeJournal === undefined
         ? {}
         : { writeJournal: writeJournal as DemosWriteJournal }),
@@ -4048,9 +4092,19 @@ export class DemosAdapter implements SubstrateAdapter {
    * SR-1 — resolve a claim reference through CCI (the GCR identity routine).
    * Resolves by address: a ref that is (or contains) an address returns its
    * identity graph (all eight production GCR contexts; parseCciRecord reads it).
-   * Requires demosdk ≥ 4.0.12 — 4.0.6's auth-header path 401s against the public
-   * nodes on gcr_routine (issue #20). Reverse claim-ref resolution is
-   * findSubjectsByClaim below.
+   * The read uses a bounded raw transport, not demosdk's rpcCall, but sends
+   * fresh rpcCall timestamp-bound auth headers on every attempt. A test compares
+   * them with the installed demosdk's rpcCall and requires demosdk 4.0.16, the
+   * locked version. They match the node verifier of kynesyslabs/node@3e62225
+   * with the nonceEnforcement fork active; the verifier on that repository's
+   * testnet branch (ac8f45f) checks a signature over the public key alone and
+   * answers a wallet-connected read with HTTP 401, as it does for demosdk itself.
+   * Transient failures get at most two retries with a
+   * configurable per-attempt deadline (default 5 s). The overall deadline is
+   * min(3 × identityTimeoutMs + 2,750 ms, identityTotalTimeoutMs), default 12 s,
+   * including signing, reads and waits; past it, no request is sent and no
+   * result is accepted, even if the event loop delays timers. Reverse
+   * claim-ref resolution is findSubjectsByClaim below.
    */
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
     if (!this.connected) {
@@ -4067,14 +4121,45 @@ export class DemosAdapter implements SubstrateAdapter {
         },
       };
     }
-    const raw = await new Identities().getIdentities(
-      this.#demos,
-      "getIdentities",
+    // Match demosdk rpcCall's public/authenticated headers without allowing
+    // its Axios transport to decode an unbounded body first. Hex encoding comes
+    // from demosdk itself ("0x"-prefixed); the test pins these headers to the
+    // real rpcCall output.
+    const buildHeaders = async (): Promise<Record<string, string>> => {
+      const headers = {
+        "Content-Type": "application/json",
+        identity: `${this.#demos.algorithm}:`,
+        signature: "",
+        timestamp: "",
+      };
+      if (this.#demos.walletConnected) {
+        headers.identity += uint8ArrayToHex(this.#demos.keypair.publicKey);
+        headers.timestamp = Date.now().toString();
+        const authMessage = sha256Hex(`${headers.identity}:${headers.timestamp}`);
+        const signed = await this.#demos.crypto.sign(
+          this.#demos.algorithm,
+          new TextEncoder().encode(authMessage),
+        );
+        headers.signature = uint8ArrayToHex(signed.signature);
+      }
+      return headers;
+    };
+    // demosdk's Axios transport honours HTTP(S)_PROXY and ALL_PROXY; our private
+    // direct transport is used only where Axios also connects directly, and
+    // otherwise nothing is sent. The message names no URL, which may hold
+    // credentials.
+    const transport = this.config.identityFetch ?? defaultCciTransport(this.config.rpc);
+    const raw = await readDemosCciResponse(
+      this.config.rpc,
       ref,
+      buildHeaders,
+      transport,
+      this.config.identityMaxResponseBytes ?? DEMOS_CCI_MAX_RESPONSE_BYTES,
+      this.config.identityTimeoutMs ?? DEMOS_CCI_DEFAULT_TIMEOUT_MS,
+      this.config.identityTotalTimeoutMs ?? DEMOS_CCI_DEFAULT_TOTAL_TIMEOUT_MS,
     );
-    // The demosdk has already decoded the RPC response at this boundary. Bound
-    // it before returning it to any higher-level caller; Agent parsing applies
-    // the same check again before retaining a snapshot.
+    // Keep the decoded structural guard before returning to higher-level
+    // callers; Agent parsing repeats it before retaining a snapshot.
     assertDemosCciResponseBounds(raw);
     return { ref, boundTo: ref, raw };
   }

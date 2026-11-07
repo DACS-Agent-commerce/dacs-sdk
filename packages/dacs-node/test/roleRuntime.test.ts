@@ -497,6 +497,57 @@ describe("complete role-owned live runtime", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("passes identityFetch through to the Demos adapter for CCI reads behind a proxy", async () => {
+    const directory = root();
+    const secretPath = join(directory, "demos.secret");
+    const evmSecretPath = join(directory, "evm.secret");
+    writeFileSync(secretPath, "test-only-secret\n", { mode: 0o600 });
+    writeFileSync(evmSecretPath, `${EVM_PRIVATE_KEY}\n`, { mode: 0o600 });
+    const identityFetch = vi.fn<typeof fetch>();
+    let received: unknown;
+    await expect(createDacsLiveRoleRuntimeV1({
+      config: config(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-identity-fetch-worker",
+      demosIdentityFilePath: secretPath,
+      evmPrivateKeyFilePath: evmSecretPath,
+      evmRpcUrl: "http://127.0.0.1:8545",
+      identityFetch,
+      openDatabase: async () => ({ close: vi.fn() } as never),
+      createDemosAdapter: async (input) => {
+        received = input.identityFetch;
+        throw new Error("stop after the adapter input");
+      },
+      createOperations: () => Object.freeze({}),
+      validatePayload: () => Object.freeze({ status: "valid" as const }),
+      handleMessage: () => Object.freeze({ disposition: "accepted" as const }),
+    })).rejects.toMatchObject({ reasonCode: "role-demos-runtime-open-failed" });
+    expect(received).toBe(identityFetch);
+  });
+
+  it("rejects a non-function identityFetch as invalid options before opening authority", async () => {
+    const directory = root();
+    await expect(createDacsLiveRoleRuntimeV1({
+      config: config(directory),
+      role: "buyer",
+      authority: AUTHORITY,
+      peerAuthority: PEER_AUTHORITY,
+      peerEndpoint: "http://127.0.0.1:39999/dacs-transport/v1/messages",
+      workerId: "buyer-invalid-identity-fetch-worker",
+      demosIdentityFilePath: join(directory, "missing-demos.secret"),
+      evmPrivateKeyFilePath: join(directory, "missing-evm.secret"),
+      evmRpcUrl: "http://127.0.0.1:8545",
+      identityFetch: "fetch" as never,
+      createDemosAdapter: async () => adapter(),
+      createOperations: () => Object.freeze({}),
+      validatePayload: () => Object.freeze({ status: "valid" as const }),
+      handleMessage: () => Object.freeze({ disposition: "accepted" as const }),
+    })).rejects.toThrow("live role runtime options are invalid");
+  });
+
   it("proves both durable authenticated no-action transport directions", async () => {
     const buyerDirectory = root();
     const sellerDirectory = root();
