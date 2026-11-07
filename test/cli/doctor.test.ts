@@ -3,6 +3,11 @@ import { readFileSync } from "node:fs";
 
 import { formatDoctorText, redactRpcUrl, runDoctor } from "../../src/cli/index.js";
 
+// Keeps the node build read off the network in tests that pass an RPC URL.
+const unreachableFetch: typeof fetch = async () => {
+  throw new TypeError("fetch failed");
+};
+
 describe("dacs doctor", () => {
   it("runs offline without touching the network", async () => {
     const report = await runDoctor({
@@ -55,6 +60,7 @@ describe("dacs doctor", () => {
     const rpc = "https://user:pass@node.example/rpc?token=secret#frag";
     const report = await runDoctor({
       rpc,
+      fetchImpl: unreachableFetch,
       adapterFactory: () => ({
         connect: async () => {},
         getAddress: () => "unused",
@@ -73,6 +79,7 @@ describe("dacs doctor", () => {
     const report = await runDoctor({
       rpc: rpcUrl,
       walletSecret: secret,
+      fetchImpl: unreachableFetch,
       adapterFactory: () => ({
         connect: async () => {
           throw new Error(`failed with ${secret} user pass path-secret query-secret frag-secret`);
@@ -97,6 +104,7 @@ describe("dacs doctor", () => {
     const report = await runDoctor({
       nodeVersion: "v20.10.0",
       rpc: "https://example.invalid",
+      fetchImpl: unreachableFetch,
       adapterFactory: () => ({
         connect: async () => {
           throw new Error("network down");
@@ -114,6 +122,7 @@ describe("dacs doctor", () => {
     const report = await runDoctor({
       rpc: "https://node.example",
       walletSecret: "secret-value",
+      fetchImpl: unreachableFetch,
       adapterFactory: () => {
         throw new Error("adapter import failed with secret-value");
       },
@@ -131,6 +140,7 @@ describe("dacs doctor", () => {
     const report = await runDoctor({
       rpc: "https://node.example",
       walletSecret: "secret-value",
+      fetchImpl: unreachableFetch,
       adapterFactory: () => ({
         connect: async () => {},
         getAddress: () => "demos-address",
