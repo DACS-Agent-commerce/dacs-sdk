@@ -6363,6 +6363,22 @@
           "after": "b0777e30c7cf6efedd45f3b645329057b18025e5"
         }
       ]
+    },
+    {
+      "delta": "D22",
+      "subject": "delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/signatures.mjs",
+          "before": "6396455c3d3c436bc078c433d520245e7d99ae4a",
+          "after": "ea2845c8b7caf1b411be2e29a70005a94e4218c0"
+        },
+        {
+          "path": "packages/dacs-client/test/signatures-claim-ref.test.mjs",
+          "before": null,
+          "after": "f0696e4cc8a8d54e4833adde9e465638d792a03c"
+        }
+      ]
     }
   ]
 }

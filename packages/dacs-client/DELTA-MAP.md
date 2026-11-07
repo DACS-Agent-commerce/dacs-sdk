@@ -1076,6 +1076,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | D21 | delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:9`, `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:67` | 1a36a9a9d65cd6723b1f149005c0338a87ffddee |
 | | `packages/dacs-client/test/seller-session-delegation-job-id.test.mjs:1` | b0777e30c7cf6efedd45f3b645329057b18025e5 |
+| D22 | delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/signatures.mjs:32` | ea2845c8b7caf1b411be2e29a70005a94e4218c0 |
+| | `packages/dacs-client/test/signatures-claim-ref.test.mjs:1` | f0696e4cc8a8d54e4833adde9e465638d792a03c |
 
 ## Complete commit and file inventory
 
@@ -3386,6 +3389,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:9`, `packages/dacs-client/src/public/portal/seller-session-delegation.mjs:67` |
 | delta(client): D21 check canonical job IDs without importing the SDK in the browser portal | `packages/dacs-client/test/seller-session-delegation-job-id.test.mjs:1` |
+| delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/src/signatures.mjs:32` |
+| delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references | `packages/dacs-client/test/signatures-claim-ref.test.mjs:1` |
 
 ## Original moved files
 
