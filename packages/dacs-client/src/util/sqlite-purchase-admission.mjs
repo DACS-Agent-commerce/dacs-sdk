@@ -10,7 +10,8 @@ const POLICY = {
 };
 const SYNCHRONOUS_FULL = 2;
 const SYNCHRONOUS_EXTRA = 3;
-const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
+/** Return whether fn is an async, generator or async generator function. */
+export const nonSynchronous = fn => ['[object AsyncFunction]', '[object GeneratorFunction]', '[object AsyncGeneratorFunction]'].includes(Object.prototype.toString.call(fn));
 
 function metadataStatement(db, sql) {
   const statement = db.prepare(sql);

@@ -224,7 +224,10 @@ export function snapshotCanonicalJsonConfig<T>(value: T, label: string): T {
  *
  * Keep authoring/signing inputs on {@link snapshotCanonicalJson}: accepting a
  * read-only view here is deliberately limited to values already returned from
- * an asynchronous read boundary.
+ * an asynchronous read boundary, and to the inputs handed to the commitment
+ * gate. That gate verifies the Agreement's signatures before any submit; the
+ * session and verified Listing are caller-provided, already authenticated
+ * facts, not re-verified here.
  */
 export function snapshotCanonicalJsonRead<T>(value: T, label: string): T {
   return snapshotCanonicalJsonInternal(value, label, false, true);

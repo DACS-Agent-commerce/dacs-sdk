@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { NotWiredError } from '../client-errors.mjs';
+import { OperationError } from '../client-errors.mjs';
 
 const guards = new WeakMap();
 const fenced = new WeakSet();
+// Keeps each commit-barrier statement alive for as long as its iterator is.
+const iteratorStatements = new WeakMap();
 
 /** Close and permanently retire a connection whose transaction cannot recover. */
 export function retireSqliteHandle(db) {
@@ -23,7 +25,9 @@ function metadataStatement(db, sql) {
 }
 function schemaVersions(db) {
   const schemas = metadataStatement(db, 'PRAGMA database_list').all();
-  if (schemas.some(({ name }) => !['main', 'temp'].includes(name))) throw new NotWiredError('purchase-store-not-wired');
+  if (schemas.some(({ name }) => !['main', 'temp'].includes(name))) {
+    throw new OperationError('purchase_store_unsupported_attachment', 'purchase transactions support only main and TEMP schemas');
+  }
   return JSON.stringify(schemas.map(({ name, file }) =>
     [name, file, metadataStatement(db, `PRAGMA ${identifier(name)}.schema_version`).get().schema_version]));
 }
@@ -39,7 +43,11 @@ export function sqliteWriteLease(db) {
   db.exec('BEGIN IMMEDIATE');
   try {
     let state = guards.get(db);
-    if (!state || !state.exists()) state = createLease(db);
+    if (!state || !state.exists()) {
+      // Guards naming a dropped marker would refuse every later write.
+      state?.dropTriggers();
+      state = createLease(db);
+    }
     const versions = state.refresh();
     db.exec('COMMIT');
     state.versions = versions;
@@ -60,12 +68,15 @@ function createLease(db) {
   const state = {
     versions: undefined,
     exists() { return Boolean(db.prepare("SELECT 1 FROM temp.sqlite_master WHERE type='table' AND name=?").get(name)); },
+    dropTriggers() {
+      // Reuse a closed range of names, including after an interrupted refresh.
+      for (let i = 0; i < triggerCount; i++) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(`${name}_${i}`)}`);
+    },
     refresh() {
       // BEGIN IMMEDIATE locks main before enumeration. Publish
       // this fingerprint only after the trigger installation has committed.
       if (schemaVersions(db) !== state.versions) {
-        // Reuse a closed range of names, including after an interrupted refresh.
-        for (let i = 0; i < triggerCount; i++) db.exec(`DROP TRIGGER IF EXISTS temp.${identifier(`${name}_${i}`)}`);
+        state.dropTriggers();
         let serial = 0;
         for (const { schema, name: table, type } of metadataStatement(db, 'PRAGMA table_list').all()) {
           if (type !== 'table' || table.startsWith('sqlite_') || (schema === 'temp' && table === name)) continue;
@@ -86,21 +97,25 @@ function createLease(db) {
       start() {
         // The caller now holds BEGIN IMMEDIATE's locks. A generation installed
         // in a different schema cannot authorize this transaction's body.
-        if (schemaVersions(db) !== state.versions) throw new NotWiredError('purchase-store-not-wired');
+        if (schemaVersions(db) !== state.versions) throw new OperationError('purchase_store_schema_changed', 'purchase database schema changed before the transaction started');
         db.exec(`UPDATE ${marker} SET present = 1`);
       },
       blockCommit() {
         // SQLite refuses COMMIT/END while a write statement is in progress.
         // Keep the iterator private; only package code may finish this statement.
-        const iterator = db.prepare(`UPDATE ${marker} SET present = present RETURNING present`).iterate();
-        if (iterator.next().done) throw new NotWiredError('purchase-store-not-wired');
+        const statement = db.prepare(`UPDATE ${marker} SET present = present RETURNING present`);
+        const iterator = statement.iterate();
+        // Node 22.13.0 and 23.4.0 let a collection finalize a statement that only
+        // its iterator uses, which fails or crashes the next step.
+        iteratorStatements.set(iterator, statement);
+        if (iterator.next().done) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
         return iterator;
       },
       present() { return !fenced.has(db) && db.isTransaction !== false && Boolean(db.prepare(`SELECT 1 FROM ${marker} WHERE present = 1`).get()); },
       check() {
         // isTransaction is unavailable on the minimum supported Node versions;
         // the transactional marker supplies the same check on those versions.
-        if (!state.guard.present()) throw new NotWiredError('purchase-store-not-wired');
+        if (!state.guard.present()) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
       },
       disarm() { if (!fenced.has(db)) db.exec(`UPDATE ${marker} SET armed = 0`); },
     },
