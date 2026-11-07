@@ -1,17 +1,20 @@
-import { createProtocolPurchases as createInternalProtocolPurchases } from './dacs/protocol-purchases.mjs';
-import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
+import { createProtocolPurchases as createInternalProtocolPurchases, registerPlanFlightReader } from './dacs/protocol-purchases.mjs';
+import { createPublicPurchaseService } from './purchases.mjs';
+import { admitPublicFactory } from './public-admission.mjs';
 // Public buyer API. Root import leaves SQLite unloaded; constructing the SQLite store loads it.
-/** createPurchaseService(options) returns authenticated diagnostic status/readback methods; requires db, ops, coordinates, chain, store and purposes. Actions throw OperationError(profile_not_admitted); missing/expired capabilities throw not_found. purchaseNext(operation) returns held guidance, PURCHASE_STATUS_HELP is its status map, and networkIdentityLabel(domain) returns a genesis label; these formatters do not write. */
-export { createPublicPurchaseService as createPurchaseService, diagnosticPurchaseNext as purchaseNext, DIAGNOSTIC_PURCHASE_STATUS_HELP as PURCHASE_STATUS_HELP, networkIdentityLabel } from './purchases.mjs';
-/** createProtocolPurchases({db,ops,coordinates,store,...}) returns held protocol methods; actions refuse with profile_not_admitted. protocolView(operation,options) returns redacted historical guidance; usesAgreementContext/usesNativeDemDelivery(operation) return booleans. Projection has no writes; invalid seams throw. */
-export { diagnosticProtocolView as protocolView, usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
+/** purchaseNext(operation,chainMode) returns the next-step text, protocolView(operation,options) returns the protocol projection or null, and PURCHASE_STATUS_HELP is a frozen status-to-text map. Each reads the one hold constant at every call or read: historical held text while held, the full text once admitted. They do not write; once admitted purchaseNext on a missing operation throws TypeError. */
+export { purchaseNext, protocolView, PURCHASE_STATUS_HELP } from './public-guidance.mjs';
+/** networkIdentityLabel(domain) returns a genesis label for a network domain; it does not write. */
+export { networkIdentityLabel } from './purchases.mjs';
+/** usesAgreementContext/usesNativeDemDelivery(operation) return booleans from the operation's retained protocol terms; they do not write. */
+export { usesAgreementContext, usesNativeDemDelivery } from './dacs/protocol-purchases.mjs';
 /** createDeliveryDeadlineWatch({db,ops,coordinates,store,enabled=false,now}) returns observe/sweep/start/stop/setDeliveryCheck methods. When enabled, observe may call ops.transition and persist overdue/delivery events despite purchase actions being held; invalid/async stores throw NotWiredError. */
 export { createDeliveryDeadlineWatch } from './dacs/delivery-deadline-watch.mjs';
 /** createCoordinateStore({db,now}) returns save/get/reportHash/recordObservation and nonce lookup methods over PURCHASE_STATE_SCHEMA. Mutators write SQLite coordinates; invalid state and uniqueness failures throw SQLite errors. The purchase hold does not disable this host utility. */
 export { createCoordinateStore } from './dacs/wallet-transactions.mjs';
 /** createDirectoryClient({origin,timeoutMs,maxBytes,fetchImpl}) returns bounded search/findSummary/getListingDetail reads. It performs HTTP reads and throws OutboundError for invalid or unavailable responses; directory summaries confer no purchase authority. */
 export { createDirectoryClient } from './dacs/directory.mjs';
-/** createListingVerifier(options) returns {verify(request)}; verify always rejects with OperationError(profile_not_admitted) before resolution in this candidate. NotConfiguredError(message) identifies missing verifier configuration; constructor/configuration errors can also throw. */
+/** createListingVerifier({admission,directory,chain,...}) returns {verify(request)}; verify rejects with OperationError(profile_not_admitted) before resolution while purchase actions are held or the binding check fails. Construction throws TypeError(admission_required|admission_input_untrusted) or OperationError(runtime_unsupported). NotConfiguredError(message) identifies missing verifier configuration. */
 export { createListingVerifier, NotConfiguredError } from './public-verification.mjs';
 /** DEM_DECIMAL and OS_INTEGER are RegExp constants for canonical DEM and OS text; test(value) returns a boolean without reads or writes. */
 export { DEM_DECIMAL, OS_INTEGER } from './dacs/chain.mjs';
@@ -25,6 +28,20 @@ export { usesNativePaymentEvidence } from './dacs/native-payment-evidence-consum
 export { AGREEMENT_CONTEXT_SOURCE, isOperatorContextAuthority } from './dacs/agreement-context-consumer.mjs';
 /** DEM_DELIVERY_CONTEXT_SOURCE is the delivery capability source constant; demDeliveryContextUsage(capability) returns provider capacity, null, or {status:"error"} and invokes the supplied usage callback. isDemDeliveryContextAuthority(value) returns a label predicate; neither admits purchase actions. */
 export { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextUsage, isDemDeliveryContextAuthority } from './dacs/dem-delivery-context-consumer.mjs';
+/** createDemDeliveryContext({authority,resolveBuyer,resolveSeller,release=null,usage=null}) returns a frozen opaque capability that supplies the buyer and seller for DEM delivery context. It throws TypeError unless authority is a TEST- label and the resolvers (and the optional release and usage) are functions; the TEST- label stays until the testnet authority is wired. It reads, writes and admits nothing at construction. */
+export { createDemDeliveryContext } from './dacs/dem-delivery-context-consumer.mjs';
+/** createNativeDemDeliveryCapability({authority,submit,reconcile,read,verifyReceipt}) returns a frozen opaque capability for native DEM deliverable publication and readback. It throws TypeError unless authority is a TEST- label and all four operations are functions; the TEST- label stays until the testnet authority is wired. Construction calls none of them. */
+export { createNativeDemDeliveryCapability } from './dacs/native-dem-delivery-consumer.mjs';
+/** createNativePaymentEvidenceConsumer({rpcUrl,sourceCapability,anchorEvidence,fetchImpl,now}) returns a frozen capability with observeDemosTransfer and readEvidence over one pinned RPC origin. It throws TypeError unless sourceCapability is the exact opaque settlement-evidence capability whose endpoint equals rpcUrl, rpcUrl has no credentials, path, query or fragment, and anchorEvidence is a function when given; an unparseable rpcUrl throws TypeError. Construction makes no request. */
+export { createNativePaymentEvidenceConsumer } from './dacs/native-payment-evidence-consumer.mjs';
+/** createSourceDemoSellerTransport({authority,authenticationFor,sessionDelegation=null}) returns a frozen opaque capability that selects the signed-peer seller transport. It throws TypeError unless authority is a TEST- label, authenticationFor is a function and sessionDelegation is null or exactly {request,accept} functions; the TEST- label stays until the testnet authority is wired. The capability's authenticationFor(operation) throws TypeError unless the adapter is exactly {request,verifyResponse} functions. Construction sends nothing. */
+export { createSourceDemoSellerTransport } from './dacs/source-demo-seller-transport.mjs';
+/** createDevnetNativeCommitmentCapability({authority,anchor}) returns a frozen opaque capability for the native seller commitment; DEVNET_NATIVE_COMMITMENT_MARKER is its source constant. It throws TypeError unless authority is a TEST-RUN- label and anchor carries the same authority with readRetained and verifyReceipt functions; the TEST-RUN- label stays until the testnet authority is wired. Construction reads and writes nothing. */
+export { createDevnetNativeCommitmentCapability, DEVNET_NATIVE_COMMITMENT_MARKER } from './devnet-demo/commitment-consumer.mjs';
+/** OFFLINE_AGREEMENT_MODE is the retained wallet Agreement mode constant; isOfflineWalletAgreement(operation) returns whether the operation's terms select that profile. Neither reads, writes or throws. */
+export { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement } from './dacs/protocol-purchases.mjs';
+/** deriveStorageAddress(owner,programName,nonce,salt='') returns the deterministic stor- storage address text for that tuple. It throws TypeError when owner is not text; it performs no reads or writes. */
+export { deriveStorageAddress } from './dacs/wallet-transactions.mjs';
 /** SR2_WALLET_KIND is the wallet Agreement request-kind constant; reading it has no side effects. */
 export { SR2_WALLET_KIND } from './dacs/demos-sr2-wallet-bridge.mjs';
 /** rpcAuthRefusal(error) and transferRefusal(error) return [409,responseBody] for recognized refusals or null without writes. DEVNET_AGREEMENT_KIND/PROFILE and DEVNET_NATIVE_BINDING_PATH/RPC_PATH are transport routing constants; none enables held actions. */
@@ -60,12 +77,10 @@ export { createSqlitePurchaseStore } from './seams/purchase-store-not-wired.mjs'
 /** PURCHASE_STATE_SCHEMA is the host SQLite DDL string required by the buyer factories; db.exec(PURCHASE_STATE_SCHEMA) creates persistent schema objects and may throw SQLite errors. Reading the constant has no effect. */
 export { PURCHASE_STATE_SCHEMA } from './purchase-state-schema.mjs';
 
-const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment']);
-/** createProtocolPurchases(options) returns passive protocol readers and refusal methods; actions throw profile_not_admitted before host effects. */
-export function createProtocolPurchases(options) {
-  const protocol = createInternalProtocolPurchases(options);
-  const methods = Object.fromEntries(Object.entries(protocol).filter(([, value]) => typeof value === 'function')
-    .map(([name, method]) => [name, PASSIVE_PROTOCOL_METHODS.has(name) ? method : assertPurchaseActionsAdmitted]));
-  return Object.freeze({ available: protocol.available, actionsAdmitted: false,
-    nativePaymentReadbackAvailable: protocol.nativePaymentReadbackAvailable, ...methods });
-}
+const PASSIVE_PROTOCOL_METHODS = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment'];
+const PASSIVE_SERVICE_METHODS = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning'];
+/** createPurchaseService({admission,db,ops,coordinates,chain,store,purposes,...}) returns the purchase service; `admission` is {binding,currentLocal} from the host composition. status, portalOperation, portalEvidence, verifyDeal and planRunning are passive readers (planRunning stays synchronous); every other method returns a Promise that rejects OperationError(profile_not_admitted) while purchase actions are held or the binding check fails, with the cause kept. actionsAdmitted is a construction-time snapshot. Construction throws TypeError(admission_required|admission_input_untrusted) or OperationError(runtime_unsupported); missing/expired capabilities reject not_found. */
+export const createPurchaseService = admitPublicFactory(createPublicPurchaseService, { purchase: true, passive: PASSIVE_SERVICE_METHODS });
+/** createProtocolPurchases({admission,db,ops,coordinates,store,...}) returns the protocol object; `admission` is {binding,currentLocal}. assertBuyerAccess, supportsMode, readIssued, readIssuedPayment and observeReportedPayment are passive readers; every other function member returns a Promise that rejects OperationError(profile_not_admitted) before host effects while purchase actions are held or the binding check fails. actionsAdmitted is a construction-time snapshot. Construction throws TypeError(admission_required|admission_input_untrusted) or OperationError(runtime_unsupported). */
+export const createProtocolPurchases = admitPublicFactory(createInternalProtocolPurchases,
+  { purchase: true, passive: PASSIVE_PROTOCOL_METHODS, onCreated: registerPlanFlightReader });

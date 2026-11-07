@@ -46,8 +46,10 @@ export {
   assertDemosWriteEvidence,
   decodeDemosAnchorReceiptProof,
   demosSignedTransactionProofHash,
+  demosTransactionContentMatches,
   demosWriteEvidenceBindsReceiptContent,
   demosWriteEvidenceToAnchorReceipt,
+  NonFinalDemosEvidenceError,
   type DemosAnchorReceiptProof,
   type DemosPortableAnchorReceiptInput,
 } from "./demosWriteEvidence.js";

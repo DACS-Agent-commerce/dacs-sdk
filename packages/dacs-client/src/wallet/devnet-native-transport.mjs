@@ -88,6 +88,15 @@ export const transferRefusal = (error) => Object.hasOwn(TRANSFER_REFUSALS,error?
 const clone = (v) => structuredClone(v);
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
 const envelope = (response, result = 200) => ({ result, response, require_reply: false, extra: null });
+// A node's reply without any top-level `writeProof`. Only this transport may add
+// one, after it has read the inclusion itself; a reply of any other shape is
+// returned unchanged.
+const withoutNodeWriteProof = (answer) => {
+  if (answer === null || typeof answer !== 'object' || Array.isArray(answer) || !Object.hasOwn(answer, 'writeProof')) return answer;
+  const withoutProof = { ...answer };
+  delete withoutProof.writeProof;
+  return withoutProof;
+};
 
 export const isDevnetNativeTransport = (v) => Boolean(v && capabilities.has(v));
 export const isDevnetAgreementTransport = (v) => Boolean(v && (agreementCapabilities.has(v) || settlementCapabilities.has(v) || deliveryCapabilities.has(v) || demoCapabilities.has(v)));
@@ -176,6 +185,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     return fetchBoundedJson(pinned.endpoint, { method:'POST', body, headers, fetchImpl,
       timeoutMs, signal, maxBytes:4*1024*1024, expectedOrigin:new URL(pinned.endpoint).origin });
   };
+  // The node's reply as `rpc` hands it to a wallet: never with a node-supplied `writeProof`.
+  const rawWithoutWriteProof = async (body, headers) => withoutNodeWriteProof(await raw(body, headers));
   // The pinned observer reads transaction and block facts concurrently.
   // Serialize their actual connection fences; this creates no write permit.
   const observe = async (path,body,{signal}={}) => journal.withWalletLock('devnet/source-read/'+declaration?.bindingId,()=>fenced(async()=>{
@@ -456,9 +467,33 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (r) { sharedAuth-=r.used.size; r.reserved=true; }
     else authRecords.set(identity,{ used:new Set(),floor:-Infinity,reserved:true });
   };
-  async function fenced(work, address) {
+  // Waiting for a lane lock or a connection fence runs no work. When `signal`
+  // aborts first the wait is given up with the abort reason; a grant that
+  // arrives later is handed back unused. Once granted, work is never abandoned.
+  function lockUnlessAborted(signal, key, work) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const giveUp = () => reject(signal.reason);
+      signal.addEventListener('abort', giveUp, { once: true });
+      journal.withWalletLock(key, () => { signal.removeEventListener('abort', giveUp); signal.throwIfAborted(); return work(); }).then(resolve, reject);
+    });
+  }
+  function acquireFenceUnlessAborted(signal, address) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const giveUp = () => reject(signal.reason);
+      signal.addEventListener('abort', giveUp, { once: true });
+      Promise.resolve(transportOwner.acquireConnectionFence({ address })).then(grant => {
+        signal.removeEventListener('abort', giveUp);
+        if (!signal.aborted) return resolve(grant);
+        // The caller already has the abort reason; a failed hand-back leaves nothing to report to.
+        void Promise.resolve().then(() => grant?.release?.()).catch(() => {});
+      }, error => { signal.removeEventListener('abort', giveUp); reject(error); });
+    });
+  }
+  async function fenced(work, address, signal) {
     await releaseExpiredLeases();
-    const f = await transportOwner.acquireConnectionFence({ address });
+    const f = await (signal ? acquireFenceUnlessAborted(signal, address) : transportOwner.acquireConnectionFence({ address }));
     if (!f || typeof f.release !== 'function') fail('invalid_transport_owner','actual connection fence acquisition failed');
     try {
       if (!sameContext(await context(),f.context)) fail('connection_changed','the acquired connection differs from actual egress');
@@ -580,7 +615,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   }
   async function readback(address, hash, writeProof, failedNonceFence, consumedByHash) {
     if (!ADDRESS.test(address ?? '') || !HASH.test(hash ?? '')) fail('invalid_params','a public native writer and hash are required');
-    return journal.withWalletLock(lane(address), async () => {
+    return fenced(() => journal.withWalletLock(lane(address), async () => {
       const latest=await journal.get(lane(address));
       const r=await journal.get(intent(hash)) ?? (latest?.hash === hash ? latest : null);
       if (!r || r.hash !== hash || r.signedTransaction?.content?.from !== address) fail('not_issued','this hash is not the retained native transfer by this writer');
@@ -599,7 +634,6 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           return {disposition:'failed',hash,nonce:r.nonce,noResend:true,resolved:true,consumedByHash};
         }
       }
-      return fenced(async () => {
         const binding=await binder.recover(r.networkBinding);
         if(consumedByHash!==undefined){
           const status=await node('getTransactionStatus',{hash:consumedByHash});
@@ -653,8 +687,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         if(latest?.hash === hash)await retain(lane(address),observed);
         if(agreement) await pruneClaims(address,r.nonce);
         return { disposition:'included',receipt,noResend:true };
-      });
-    });
+    }));
   }
   // Server-only recovery: never exposed through binding() or the wallet RPC.
   // The original operator authority supplies fresh RPC auth, not a new CREATE.
@@ -664,7 +697,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const sellerEvidence=settlement && op?.metadata?.artifactKind==='SettlementEvidence' && op?.data?.phase==='pay-dem';
     if(tx?.content?.type!=='storageProgram' || (!operatorArtifact&&!sellerEvidence) || typeof signRpc!=='function'
       || !ADDRESS.test(address ?? '') || !HASH.test(hash ?? '')) fail('storage_recovery_only','only an original operator storage CREATE may be recovered');
-    return journal.withWalletLock(lane(address),async()=>{
+    return fenced(()=>journal.withWalletLock(lane(address),async()=>{
       let r=await journal.get(intent(hash));
       const latest=await journal.get(lane(address));
       if(!r || JSON.stringify(r.signedTransaction)!==JSON.stringify(tx) || latest?.hash!==hash
@@ -672,7 +705,6 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         || r.stage!=='broadcast-accepted' || r.storageWriteSubmission!=='accepted'
         || r.storageWriteSubmissionProfile!==STORAGE_WRITE_SUBMISSION_PROFILE
         || (r.storageWriteResends ?? 0)!==0 || !Object.hasOwn(r,'storageWriteGas')) return {disposition:'pending',hash,noResend:true};
-      return fenced(async()=>{
         let binding;
         const originalContext=await context();
         const readNonce=async()=>{
@@ -726,8 +758,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           if(error?.code?.startsWith('journal')) throw error;
           return {disposition:'pending',hash,noResend:true};
         }
-      });
-    });
+    }));
   }
   const implementation = {
     profile(publicOrigin) { return { profile:agreement?DEVNET_AGREEMENT_PROFILE:DEVNET_NATIVE_PROFILE,network:pinned.network,
@@ -802,7 +833,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     },
     async rpc(body, headers) {
       const call=body?.params?.length === 1 ? body.params[0] : null;
-      if(body?.method === 'nodeCall' && ['getNetworkInfo','getNetworkParameters','getAddressNonce'].includes(call?.message)) return raw(body,headers);
+      if(body?.method === 'nodeCall' && ['getNetworkInfo','getNetworkParameters','getAddressNonce'].includes(call?.message)) return rawWithoutWriteProof(body,headers);
       if(body?.method !== 'execute' || !['confirmTx','broadcastTx'].includes(call?.extra)) fail('native_only','this transport exposes only native sends and their preparation reads');
       const tx=signedTransaction(body,headers), { l, release }=await claimLease(tx.content.from);
       try {
@@ -825,7 +856,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         });
         step(tx,'sign','complete',l.signStarted);
         const started=now();
-        const answer=await raw(body,headers);
+        const answer=await rawWithoutWriteProof(body,headers);
         step(tx,'validate','complete',started);
         if(answer?.result === 200 && answer.response?.data?.valid === true) {
           if(JSON.stringify(answer.response.data.transaction) !== JSON.stringify(tx)) fail('signed_bytes_changed','the new native transport requires byte-identical signed confirmation');
@@ -852,7 +883,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           await retain(intent(tx.hash),issued);
           const started=now();
           let answer;
-          try { answer=await raw(body,headers); } // one call, never retry on unknown
+          try { answer=await rawWithoutWriteProof(body,headers); } // one call, never retry on unknown; the inclusion poll below is the only source of a writeProof
           catch(error){step(tx,'broadcast','unknown',started);throw error;}
           step(tx,'broadcast','complete',started);
           const answered={ ...issued,stage:answer?.result === 200 ? 'broadcast-accepted' : 'broadcast-answered' };
@@ -929,7 +960,9 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // failure, or the abort reason (caller, close(), or OutboundError 'timeout').
   // Abort contract: fetchImpl and transportOwner honour AbortSignal and settle.
   // An abort stops new steps and aborts requests; it abandons no running work,
-  // and close() aborts and then waits for it.
+  // and close() aborts and then waits for it. A wait for the lane lock or the
+  // connection fence runs no work, so an abort or the deadline ends it at once;
+  // a lock or fence granted afterwards is released without any read.
   async function observePassiveTransfer(hash, options={}) {
     if(typeof hash!=='string' || !HASH.test(hash)) fail('invalid_params','a canonical native transaction hash is required');
     const stop=AbortSignal.any([closing.signal,...(options.signal?[options.signal]:[])]);
@@ -946,7 +979,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     }); reads.push(answer); return answer; };
     const client={ getTransactionStatus:(h)=>read('getTransactionStatus',{hash:h}), getBlockByNumber:(n)=>read('getBlockByNumber',{blockNumber:n}),
       getTxByHash:async(h)=>{ const tx=await read('getTxByHash',{hash:h}); body=clone(tx); return tx; } };
-    const result=await journal.withWalletLock('devnet/source-read/'+declaration.bindingId,()=>{ signal.throwIfAborted(); return fenced(async()=>{
+    const result=await lockUnlessAborted(signal,'devnet/source-read/'+declaration.bindingId,()=>fenced(async()=>{
       signal.throwIfAborted();
       const c=await context(), binder=makeBinder(false,signal);
       await (retained ? binder.recover(issued.networkBinding) : binder.bind());
@@ -955,7 +988,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       signal.throwIfAborted();
       if(!sameContext(await context(),c)) fail('connection_changed','the connection changed during passive observation');
       return observation;
-    }); });
+    },undefined,signal));
     // The core converts read errors to observations; keep this boundary's refusal after draining reads.
     if(nestedEnvelope) refuseEnvelope();
     if(result.status!=='included') return result;
