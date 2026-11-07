@@ -6455,6 +6455,17 @@
           "after": "d54a02c9580fe133738ec19c3ec19b323be0a66c"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/node-wallet-observer.test.mjs",
+          "before": "da2946d04f52ac899dfd805ec55b02ddcb3213da",
+          "after": "da2946d04f52ac899dfd805ec55b02ddcb3213da"
+        }
+      ]
     }
   ]
 }

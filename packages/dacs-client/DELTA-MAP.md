@@ -1096,6 +1096,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` | dd4ed9c05f74261c828a740996444d3b3a88c167 |
 | | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | 7b598204121d8e58bb55c3b4225ee5cdd05be0c5 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | d54a02c9580fe133738ec19c3ec19b323be0a66c |
+| WF | delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/node-wallet-observer.test.mjs:1` | da2946d04f52ac899dfd805ec55b02ddcb3213da |
 
 ## Complete commit and file inventory
 
@@ -3433,6 +3435,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a2ab expose the held seller composition and packed wallet | `packages/dacs-client/test/node-wallet-packed.test.mjs:1` |
 | delta(client): WF P21a2ab expose the held seller composition and packed wallet | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` |
 | delta(client): WF P21a2ab expose the held seller composition and packed wallet | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a2ab record the merged node-wallet-observer test blob of two parallel records | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
