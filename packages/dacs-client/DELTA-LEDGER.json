@@ -6331,6 +6331,18 @@
           "after": "9cdd17e0eceae6b901b2c075823c6dce714496c9"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e807dbf34a72b959905418192a4f144560cea331",
+      "subject": "fix(client): publish the first proposal after a signed unknown-job read",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b",
+          "after": "8d7ca761300e216e0785b7e91aee208e39a3a12d"
+        }
+      ]
     }
   ]
 }
