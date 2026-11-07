@@ -6596,6 +6596,37 @@
           "after": "beb390b8c98523aeaa14210e43c207be82bf4696"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "d7936b2ba890b2431ce8681de72fe572ed1119b4",
+          "after": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": null,
+          "after": "77e197ff1b12c3d5e4405816fd0ca34390d74efa"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": null,
+          "after": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": null,
+          "after": "70c7c3ba010ad83c7b4a76eac9fc55c7116d05cf"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": null,
+          "after": "6c75a478fc43da0771bdb786427d4de34afa6bd6"
+        }
+      ]
     }
   ]
 }

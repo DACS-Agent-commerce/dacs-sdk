@@ -258,6 +258,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - `P21a2b` — adds the Node compositions' one effect gate, its host contract and the TP-1 authority token. `node-wallet-session.mjs` runs every transaction-hash signature inside `NodeDemos.sign` and every `confirmTx` or `broadcastTx` body sent through the owner's fetch through the gate, after the SDK's own preparation: the optional seller `qualify`, the pass's `refreshAuthority` and `finalStop` within its remaining deadline, then synchronously the hold, the connection, the pass's lease, its synchronous checks and the finalized content with the fee ceiling, then the inner call. `effectPass` and `runInEffectPass` are new members of both compositions, and the seller refuses `effect_pass_required` without a pass. The finalized-content check also refuses a fee above the total. A gated body resets the attempt's dispatched flag unless an effect body of that attempt was already sent, so a refused effect reports `not_dispatched` although the transport's earlier nonce read was sent. The observer's deadline helper is shared with the new `admitTp1Authority`, `tp1AuthorityLabel`, `authorityLabelOf` and `isTp1AuthorityToken`. New `src/dacs/tp1-authority-label.mjs` is a pure label parser. A fence acquisition on the exported transport owner made while `runInEffectPass` runs shares the pass's own fence and releases nothing, so the transport's own steps no longer wait on the fence the pass holds. No other source file changes.
 
+- `P21a3aa` — adds the internal signer reservation's records and claim path. New `src/wallet/signer-reservation.mjs` keeps one ownership record per signer, the immutable signed-transaction record and attempt-scoped append-only dispatch history in the client durable journal. `reserve` claims under the signer's journal lock before a nonce is chosen: a different operation or key is `signer_lane_busy`, an unsent repeat returns the stored reservation without a write or a chain read, a possible dispatch refuses, and a fresh attempt takes `max(chain + 1, floor)` or refuses `invalid_nonce`. `bindApprovalIntent`, `bindApproval` (a null manual id stays in this instance) and `bindSigned` (attempt, immutable transaction, signed stage, ownership link) commit in that order with a readback after any failed put, `recordStage` appends one history entry, and `current` and `ownerOfHash` only read. `node-wallet-session.mjs` creates the instance for each seller composition and exposes no member for it; `package.json` ships the new file and `scripts/release-policy.json` pins the new manifest. Terminal transitions, reconciliation and the adapter are not in this change.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1125,6 +1127,12 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | d7936b2ba890b2431ce8681de72fe572ed1119b4 |
 | | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` | 10beba68fcc095df465df8e74e5e0e27fe8dd251 |
 | | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` | beb390b8c98523aeaa14210e43c207be82bf4696 |
+| WF | delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` | 095583a9cbbac1bbbb5cc578741caa2dd42f21ee |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | 77e197ff1b12c3d5e4405816fd0ca34390d74efa |
+| | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` | fcf8680fd294ff31fad8add0e4a5f459291dd7a6 |
+| | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` | 70c7c3ba010ad83c7b4a76eac9fc55c7116d05cf |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 6c75a478fc43da0771bdb786427d4de34afa6bd6 |
 
 ## Complete commit and file inventory
 
@@ -3520,6 +3528,20 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 let an effect pass share its fence with the transport and re-pin the release manifest | `packages/dacs-client/test/helpers/effect-gate-world.mjs:1` |
 | fix(client): D11 let an effect pass share its fence with the transport and re-pin the release manifest | `packages/dacs-client/test/node-wallet-effect-gate.test.mjs:1` |
 | fix(client): D11 let an effect pass share its fence with the transport and re-pin the release manifest | `scripts/release-policy.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `.github/workflows/ci.yml:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/package.json:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/src/wallet/node-wallet-session.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/test/helpers/signer-reservation-child.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/test/helpers/signer-reservation-world.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
+| delta(client): WF P21a3aa reserve signer nonces and bind durable transaction attempts | `scripts/release-policy.json:1` |
 
 ## Original moved files
 
