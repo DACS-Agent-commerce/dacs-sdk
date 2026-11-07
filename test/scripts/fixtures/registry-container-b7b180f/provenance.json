@@ -1,0 +1,30 @@
+{
+  "source": {
+    "commit": "b7b180f98f27933e0a9153e93161981f2ce2b58a",
+    "run": "38214792229/1",
+    "artifact": "dacs-registry-container-275d856a1bbea2de6f666c069878277b23544ff1"
+  },
+  "verification": "Local SHA-256 hashes establish checked-in fixture stability only; the remote artifact was unavailable and has not been authenticated.",
+  "transformations": {
+    "generated-package-lock.json": "Selected original lock entries inherited from the lower branch: 22 package locations plus root; none of the eight declared root dependencies. Not a complete installation.",
+    "engine-strict.log.txt": "Renamed from engine-strict.log because *.log is ignored.",
+    "engine-versions.json": "Origin unverified. Values agree with the recorded engine-strict log; a derivation from the original artifact has not been established."
+  },
+  "absent": [
+    "runtime-image-inventory.json"
+  ],
+  "simulation": "The test-local fixed inventory and empty directAdvisories assumption are synthetic and are not recorded evidence.",
+  "sha256": {
+    "acceptance-summary.json": "c56d737a7f657a3e67f0816c756f48ebaf973379f06a75a5b4571078e0b215c6",
+    "generated-package-lock.json": "6c44d98c5abdbb922ebaf337b4d3f51c10795d40936bde413b56bb4224b279f6",
+    "dependency-policy.json": "8392c37fa33a285aa72e7592dd1bfff906254f91e55bda75199377fd00f10f17",
+    "runtime-image-policy.json": "a704330bc2cd013d4f0d05ce32fd6c4317b3ee745dac2e6a1bc6cc5dda7b75c5",
+    "engine-versions.json": "765db2d95189ebbdbdce786598239ae4f7c9d5ebd0aff7d2ce050d90d37e8adc",
+    "engine-strict.log.txt": "b7a2ea233956477a6f015856fdb9101b72ce9ad46945fa7668ea90f04efe8da3",
+    "engine-strict.exit-code": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "consumer-lock-sbom.err": "f182ba24ebdec6452ef84a21a9409285975212b7e25f3de0ba102729728a0333",
+    "consumer-lock-sbom.exit-code": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "consumer-physical-sbom.err": "0543eeac5a319a241b8413f6a9c555018a714c677be9ec88fd57f19970447f54",
+    "consumer-physical-sbom.exit-code": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  }
+}

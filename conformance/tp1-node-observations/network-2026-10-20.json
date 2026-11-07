@@ -1,0 +1,16 @@
+{
+  "name": "network",
+  "time": "2026-10-20T20:29:50.557823+00:00",
+  "request": {
+    "method": "nodeCall",
+    "params": [
+      {
+        "type": "nodeCall",
+        "message": "getNetworkInfo",
+        "data": {}
+      }
+    ]
+  },
+  "http": 200,
+  "body": "{\"result\":200,\"response\":{\"forks\":{\"osDenomination\":{\"activationHeight\":0,\"activated\":true,\"currentHeight\":3014},\"gasFeeSeparation\":{\"activationHeight\":null,\"activated\":false,\"currentHeight\":3014},\"nonceEnforcement\":{\"activationHeight\":0,\"activated\":true,\"currentHeight\":3014},\"signatureDomain\":{\"activationHeight\":null,\"activated\":false,\"currentHeight\":3014},\"web2ProofBinding\":{\"activationHeight\":null,\"activated\":false,\"currentHeight\":3014},\"tlsnProofEnforcement\":{\"activationHeight\":null,\"activated\":false,\"currentHeight\":3014},\"atomicWork\":{\"activationHeight\":null,\"activated\":false,\"currentHeight\":3014}},\"forkScheduleDigest\":\"5cd8e3f046942f2b348e078f049f9aa80fe9824a43fe68b6b7bb129b427ee825\",\"chainId\":1,\"nodeVersion\":{\"name\":\"demos-node-software\",\"version\":\"0.9.8\",\"commit\":\"11e7c8207732e25035de5a04cab25c5346046493\",\"commitShort\":\"11e7c82\",\"commitMessage\":\"reset validators entrance to block zero\",\"branch\":\"stabilisation\",\"dirty\":true,\"builtAt\":\"2026-10-20T11:09:32Z\"}},\"require_reply\":false,\"extra\":null}"
+}
