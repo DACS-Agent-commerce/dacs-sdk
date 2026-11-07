@@ -3,6 +3,8 @@ import { OperationError } from '../client-errors.mjs';
 
 const guards = new WeakMap();
 const fenced = new WeakSet();
+// Keeps each commit-barrier statement alive for as long as its iterator is.
+const iteratorStatements = new WeakMap();
 
 /** Close and permanently retire a connection whose transaction cannot recover. */
 export function retireSqliteHandle(db) {
@@ -101,7 +103,11 @@ function createLease(db) {
       blockCommit() {
         // SQLite refuses COMMIT/END while a write statement is in progress.
         // Keep the iterator private; only package code may finish this statement.
-        const iterator = db.prepare(`UPDATE ${marker} SET present = present RETURNING present`).iterate();
+        const statement = db.prepare(`UPDATE ${marker} SET present = present RETURNING present`);
+        const iterator = statement.iterate();
+        // Node 22.13.0 and 23.4.0 let a collection finalize a statement that only
+        // its iterator uses, which fails or crashes the next step.
+        iteratorStatements.set(iterator, statement);
         if (iterator.next().done) throw new OperationError('purchase_store_transaction_ended', 'purchase transaction ended');
         return iterator;
       },
