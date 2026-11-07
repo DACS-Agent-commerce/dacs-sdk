@@ -195,6 +195,7 @@ interface NodeBuildReply {
 
 /**
  * Read the node build from `GET <rpc origin>/version` (redirects are not followed).
+ * The caller only uses it for RPC URLs that are a bare origin: no path, query or credentials.
  * Bytes are limited before decoding and the whole read stops at a short deadline.
  * Throws with the real cause (HTTP status, timeout, byte limit, bad JSON) when the
  * reply is not usable; the commit must end in a 40-hex sha or the reply is refused.
@@ -256,10 +257,16 @@ async function nodeBuildCheck(
   let build: NodeBuildReply;
   try {
     // `/version` is on the origin; with a routed RPC URL it may be a different backend.
-    const { pathname, search } = new URL(rpc);
+    const { pathname, search, username, password } = new URL(rpc);
     if ((pathname !== "" && pathname !== "/") || search !== "") {
       return check(NODE_BUILD, "skip", NODE_BUILD_UNKNOWN_SUMMARY, {
         detail: "The RPC URL is routed (it has a path or query), so the origin's /version may come from a different backend; no request was made.",
+      });
+    }
+    // The origin drops user information, so the build may belong to another backend.
+    if (username !== "" || password !== "") {
+      return check(NODE_BUILD, "skip", NODE_BUILD_UNKNOWN_SUMMARY, {
+        detail: "The RPC URL has credentials, which the origin's /version request would drop, so the build may come from a different backend; no request was made.",
       });
     }
     build = await readNodeBuild(rpc, fetchImpl);
