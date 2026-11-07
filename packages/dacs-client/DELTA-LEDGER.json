@@ -5931,6 +5931,7 @@
     },
     {"delta":"D11","subject":"fix(client): D11 remove the unused guarded SQLite lease and pack no client files","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":"631654f861dddd1f1b3cbce70da004c96933d5f4","after":null},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":"900af80069850c3942204a858d8989e8e11a3adc","after":null}]},
     {"delta":"D11","subject":"fix(client): D11 record the merged guarded SQLite removal","files":[{"path":"packages/dacs-client/src/util/guarded-sqlite.mjs","before":null,"after":null},{"path":"packages/dacs-client/test/guarded-sqlite.test.mjs","before":null,"after":null}]},
-    {"delta":"D11","subject":"fix(client): D11 give the slow-reader passive test a signed nonce","files":[{"path":"packages/dacs-client/test/passive-observation.test.mjs","before":"f760ea0ac2e21bd42cef0200f24c0e2dfec637b7","after":"1fe0fe0837472ca2fdca069087ec5f53db4d3822"}]}
+    {"delta":"D11","subject":"fix(client): D11 give the slow-reader passive test a signed nonce","files":[{"path":"packages/dacs-client/test/passive-observation.test.mjs","before":"f760ea0ac2e21bd42cef0200f24c0e2dfec637b7","after":"1fe0fe0837472ca2fdca069087ec5f53db4d3822"}]},
+    {"delta":"D11","subject":"fix(client): D11 record the observation test blobs chosen by carrying part 05 into the passive observation part","files":[{"path":"packages/dacs-client/test/host-observations.test.mjs","before":"5582b173bd445f8aab89428aa33191696fa5a3f6","after":"5582b173bd445f8aab89428aa33191696fa5a3f6"},{"path":"packages/dacs-client/test/passive-observation.test.mjs","before":"cf4497afe1bd896a8d18a55993bb8b38f4896c16","after":"cf4497afe1bd896a8d18a55993bb8b38f4896c16"}]}
   ]
 }

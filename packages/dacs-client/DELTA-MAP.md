@@ -993,6 +993,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/guarded-sqlite.test.mjs` (deleted) | deleted |
 | D11 | fix(client): D11 give the slow-reader passive test a signed nonce | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/passive-observation.test.mjs:1` | 1fe0fe0837472ca2fdca069087ec5f53db4d3822 |
+| D11 | fix(client): D11 record the observation test blobs chosen by carrying part 05 into the passive observation part | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/host-observations.test.mjs:1` | 5582b173bd445f8aab89428aa33191696fa5a3f6 |
+| | `packages/dacs-client/test/passive-observation.test.mjs:1` | cf4497afe1bd896a8d18a55993bb8b38f4896c16 |
 
 ## Complete commit and file inventory
 
@@ -3150,6 +3153,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 record the callback history check change | `packages/dacs-client/DELTA-MAP.md:1` |
 | fix(client): D11 record the callback history check change | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 record the callback history check change | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 record the observation test blobs chosen by carrying part 05 into the passive observation part | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the observation test blobs chosen by carrying part 05 into the passive observation part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 record the observation test blobs chosen by carrying part 05 into the passive observation part | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the observation test blobs chosen by carrying part 05 into the passive observation part | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the observation test blobs chosen by carrying part 05 into the passive observation part | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
