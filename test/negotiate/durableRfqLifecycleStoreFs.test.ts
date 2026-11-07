@@ -1,4 +1,5 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   chmod,
   link,
@@ -18,10 +19,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
+  type ChannelMessageSignatureV1,
   canonicalize,
   contentHash,
   createDurableRfqLifecycleClient,
   createFsDurableRfqLifecycleStore,
+  createInMemoryDurableRfqLifecycleStore,
   durableRfqLifecycleRecordViolation,
   durableRfqLifecycleTransitionViolation,
   type AttestationRef,
@@ -30,12 +33,33 @@ import {
   type IdentityBundle,
   type Listing,
   type RfqLifecyclePacket,
+  type RfqLifecycleProfileAdmission,
 } from "../../src/index.js";
+
+import { rfqProfileAdmission } from "./correctiveProfile.js";
+import { malformedNestedRecords } from "./malformedRecords.js";
+
+/** Lets a test make the record validator throw, to exercise the store's own guard. */
+const validatorFault = vi.hoisted(() => ({ throwing: false }));
+vi.mock("../../src/negotiate/durableRfqLifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/negotiate/durableRfqLifecycle.js")>();
+  return {
+    ...actual,
+    durableRfqLifecycleRecordViolation: (value: unknown) => {
+      if (validatorFault.throwing) throw new TypeError("validator fault");
+      return actual.durableRfqLifecycleRecordViolation(value);
+    },
+  };
+});
 
 const NOW = 1_780_000_000_000;
 const JOB_ID = "01J8ME0SXKQ4T9V2RC5HJ6WX7E";
 const BUYER = "did:demos:buyer-rfq-filesystem";
 const SELLER = "did:demos:seller-rfq-filesystem";
+
+/** Verifier-owned CORE §11.1.2(3) profile admission for each requested session. */
+const grantProfile: RfqLifecycleProfileAdmission = ({ channelId, participantIdentities }) =>
+  rfqProfileAdmission(channelId, participantIdentities);
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 const boundaryTest = process.env.DACS_SLOW_BOUNDARY === "1" ? test : test.skip;
 const temporaryRoots: string[] = [];
@@ -148,9 +172,14 @@ async function root(): Promise<string> {
 }
 
 function clientOptions(
-  store: Awaited<ReturnType<typeof createFsDurableRfqLifecycleStore<string>>>,
-  transport: DurableRfqLifecycleTransport<string>,
-  sign = vi.fn(() => "test-channel-signature"),
+  store: Awaited<ReturnType<typeof createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>>>,
+  transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1>,
+  sign = vi.fn((): ChannelMessageSignatureV1 => ({
+    signatureVersion: "1",
+    signer: BUYER,
+    algorithm: "ed25519",
+    value: Buffer.alloc(64, 3).toString("base64url"),
+  })),
 ) {
   return {
     role: "buyer" as const,
@@ -159,6 +188,7 @@ function clientOptions(
     reserveChannelId: () => "pass" as const,
     signChannelMessage: sign,
     verifyChannelMessage: () => "pass" as const,
+    profileAdmission: grantProfile,
     agreementSigner: {
       party: BUYER,
       algorithm: "ed25519" as const,
@@ -176,7 +206,7 @@ function lockPath(dir: string): string {
   return join(dir, "locks", `${hash}.lock`);
 }
 
-function envelopeBytes(record: Readonly<DurableRfqLifecycleRecord<string>>): number {
+function envelopeBytes(record: Readonly<DurableRfqLifecycleRecord<ChannelMessageSignatureV1>>): number {
   const jobKeyHash = createHash("sha256")
     .update(`buyer\u0000${JOB_ID}`)
     .digest("hex");
@@ -193,11 +223,11 @@ function envelopeBytes(record: Readonly<DurableRfqLifecycleRecord<string>>): num
 }
 
 function recordAtEnvelopeSize(
-  source: Readonly<DurableRfqLifecycleRecord<string>>,
+  source: Readonly<DurableRfqLifecycleRecord<ChannelMessageSignatureV1>>,
   bytes: number,
   nextRevision: boolean,
-): DurableRfqLifecycleRecord<string> {
-  const record = structuredClone(source) as DurableRfqLifecycleRecord<string>;
+): DurableRfqLifecycleRecord<ChannelMessageSignatureV1> {
+  const record = structuredClone(source) as DurableRfqLifecycleRecord<ChannelMessageSignatureV1>;
   if (nextRevision) {
     record.revision += 1;
     record.updatedAt += 1;
@@ -218,12 +248,12 @@ describe("keyed durable RFQ filesystem store", () => {
     async (delta) => {
       const parent = await root();
       const integrityKey = randomBytes(32);
-      const source = await createFsDurableRfqLifecycleStore<string>({
+      const source = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
         dir: join(parent, "source-rfq"),
         role: "buyer",
         integrityKey,
       });
-      const transport: DurableRfqLifecycleTransport<string> = {
+      const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
         async publish() {
           return { disposition: "acknowledged" };
         },
@@ -238,7 +268,7 @@ describe("keyed durable RFQ filesystem store", () => {
       if (loaded.status !== "ok") throw new Error("source record did not load");
 
       const dir = join(parent, `create-${delta + 1}`);
-      const store = await createFsDurableRfqLifecycleStore<string>({
+      const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
         dir,
         role: "buyer",
         integrityKey,
@@ -259,7 +289,7 @@ describe("keyed durable RFQ filesystem store", () => {
           MAX_RECORD_BYTES + delta,
         );
         await expect(
-          (await createFsDurableRfqLifecycleStore<string>({
+          (await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
             dir,
             role: "buyer",
             integrityKey,
@@ -285,12 +315,12 @@ describe("keyed durable RFQ filesystem store", () => {
       const parent = await root();
       const dir = join(parent, `cas-${delta + 1}`);
       const integrityKey = randomBytes(32);
-      const store = await createFsDurableRfqLifecycleStore<string>({
+      const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
         dir,
         role: "buyer",
         integrityKey,
       });
-      const transport: DurableRfqLifecycleTransport<string> = {
+      const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
         async publish() {
           return { disposition: "acknowledged" };
         },
@@ -327,7 +357,7 @@ describe("keyed durable RFQ filesystem store", () => {
         expect(result).toMatchObject({ status: "written" });
         expect((await readFile(path)).byteLength).toBe(MAX_RECORD_BYTES + delta);
         await expect(
-          (await createFsDurableRfqLifecycleStore<string>({
+          (await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
             dir,
             role: "buyer",
             integrityKey,
@@ -352,7 +382,7 @@ describe("keyed durable RFQ filesystem store", () => {
       const dir = join(parent, "oversized-transport-rejection");
       const integrityKey = randomBytes(32);
       const rejectionReason = "x".repeat(MAX_RECORD_BYTES / 2);
-      const transport: DurableRfqLifecycleTransport<string> = {
+      const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
         async publish() {
           return { disposition: "rejected", reason: rejectionReason };
         },
@@ -360,7 +390,7 @@ describe("keyed durable RFQ filesystem store", () => {
           return { disposition: "absent" };
         },
       };
-      const store = await createFsDurableRfqLifecycleStore<string>({
+      const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
         dir,
         role: "buyer",
         integrityKey,
@@ -392,9 +422,9 @@ describe("keyed durable RFQ filesystem store", () => {
     const parent = await root();
     const dir = join(parent, "buyer-rfq");
     const integrityKey = randomBytes(32);
-    const accepted = new Map<string, RfqLifecyclePacket<string>>();
+    const accepted = new Map<string, RfqLifecyclePacket<ChannelMessageSignatureV1>>();
     let loseFirstResponse = true;
-    const publish = vi.fn(async (packet: Readonly<RfqLifecyclePacket<string>>) => {
+    const publish = vi.fn(async (packet: Readonly<RfqLifecyclePacket<ChannelMessageSignatureV1>>) => {
       if (loseFirstResponse) {
         loseFirstResponse = false;
         return { disposition: "indeterminate" as const, reason: "response lost" };
@@ -402,7 +432,7 @@ describe("keyed durable RFQ filesystem store", () => {
       accepted.set(packet.packetId, structuredClone(packet));
       return { disposition: "acknowledged" as const };
     });
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       publish,
       async reconcile(packet) {
         return accepted.has(packet.packetId)
@@ -410,8 +440,13 @@ describe("keyed durable RFQ filesystem store", () => {
           : { disposition: "absent" as const };
       },
     };
-    const sign = vi.fn(() => "test-channel-signature");
-    const firstStore = await createFsDurableRfqLifecycleStore<string>({
+    const sign = vi.fn((): ChannelMessageSignatureV1 => ({
+      signatureVersion: "1",
+      signer: BUYER,
+      algorithm: "ed25519",
+      value: Buffer.alloc(64, 3).toString("base64url"),
+    }));
+    const firstStore = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey,
@@ -427,7 +462,7 @@ describe("keyed durable RFQ filesystem store", () => {
       }),
     ).resolves.toMatchObject({ status: "indeterminate" });
 
-    const restartedStore = await createFsDurableRfqLifecycleStore<string>({
+    const restartedStore = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey,
@@ -451,7 +486,7 @@ describe("keyed durable RFQ filesystem store", () => {
     const parent = await root();
     const dir = join(parent, "buyer-rfq");
     const integrityKey = randomBytes(32);
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       async publish() {
         return { disposition: "acknowledged" };
       },
@@ -459,7 +494,7 @@ describe("keyed durable RFQ filesystem store", () => {
         return { disposition: "absent" };
       },
     };
-    const store = await createFsDurableRfqLifecycleStore<string>({
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey,
@@ -471,7 +506,7 @@ describe("keyed durable RFQ filesystem store", () => {
     if (filename === undefined) throw new Error("record was not created");
     const recordPath = join(dir, "records", filename);
 
-    const wrongKeyStore = await createFsDurableRfqLifecycleStore<string>({
+    const wrongKeyStore = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey: randomBytes(32),
@@ -516,7 +551,7 @@ describe("keyed durable RFQ filesystem store", () => {
     const parent = await root();
     const dir = join(parent, "buyer-rfq");
     const integrityKey = randomBytes(32);
-    const store = await createFsDurableRfqLifecycleStore<string>({
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey,
@@ -532,7 +567,7 @@ describe("keyed durable RFQ filesystem store", () => {
     );
     const old = new Date(Date.now() - 1_000);
     await utimes(path, old, old);
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       async publish() {
         return { disposition: "acknowledged" };
       },
@@ -555,7 +590,7 @@ describe("keyed durable RFQ filesystem store", () => {
     const parent = await root();
     const dir = join(parent, "buyer-rfq");
     const integrityKey = randomBytes(32);
-    const store = await createFsDurableRfqLifecycleStore<string>({
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey,
@@ -568,7 +603,7 @@ describe("keyed durable RFQ filesystem store", () => {
     await writeFile(path, JSON.stringify(owner), { mode: 0o600, flag: "wx" });
     const old = new Date(Date.now() - 1_000);
     await utimes(path, old, old);
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       async publish() {
         return { disposition: "acknowledged" };
       },
@@ -592,7 +627,7 @@ describe("keyed durable RFQ filesystem store", () => {
     const parent = await root();
     const dir = join(parent, "buyer-rfq");
     const integrityKey = randomBytes(32);
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       async publish() {
         return { disposition: "acknowledged" };
       },
@@ -600,7 +635,7 @@ describe("keyed durable RFQ filesystem store", () => {
         return { disposition: "absent" };
       },
     };
-    const first = await createFsDurableRfqLifecycleStore<string>({
+    const first = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey,
@@ -611,14 +646,14 @@ describe("keyed durable RFQ filesystem store", () => {
       rfqProposalVersion: "1",
       price: { amount: "9", currency: "USDC" },
     });
-    const second = await createFsDurableRfqLifecycleStore<string>({
+    const second = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey,
     });
     const loaded = await first.load("buyer", JOB_ID);
     if (loaded.status !== "ok") throw new Error("record did not load");
-    const next: DurableRfqLifecycleRecord<string> = {
+    const next: DurableRfqLifecycleRecord<ChannelMessageSignatureV1> = {
       ...structuredClone(loaded.record),
       revision: loaded.record.revision + 1,
       updatedAt: loaded.record.updatedAt + 1,
@@ -632,7 +667,7 @@ describe("keyed durable RFQ filesystem store", () => {
 
     const latest = await first.load("buyer", JOB_ID);
     if (latest.status !== "ok") throw new Error("updated record did not load");
-    const rollback: DurableRfqLifecycleRecord<string> = {
+    const rollback: DurableRfqLifecycleRecord<ChannelMessageSignatureV1> = {
       ...structuredClone(latest.record),
       revision: latest.record.revision + 1,
       updatedAt: latest.record.updatedAt + 1,
@@ -665,12 +700,12 @@ describe("keyed durable RFQ filesystem store", () => {
   test("snapshots CAS candidates before filesystem awaits", async () => {
     const parent = await root();
     const dir = join(parent, "buyer-rfq");
-    const store = await createFsDurableRfqLifecycleStore<string>({
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey: randomBytes(32),
     });
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       async publish() {
         return { disposition: "acknowledged" };
       },
@@ -683,7 +718,7 @@ describe("keyed durable RFQ filesystem store", () => {
     );
     const loaded = await store.load("buyer", JOB_ID);
     if (loaded.status !== "ok") throw new Error("record did not load");
-    const next: DurableRfqLifecycleRecord<string> = {
+    const next: DurableRfqLifecycleRecord<ChannelMessageSignatureV1> = {
       ...structuredClone(loaded.record),
       revision: loaded.record.revision + 1,
       updatedAt: loaded.record.updatedAt + 1,
@@ -710,17 +745,17 @@ describe("keyed durable RFQ filesystem store", () => {
     const parent = await root();
     const sourceDir = join(parent, "source-rfq");
     const destinationDir = join(parent, "destination-rfq");
-    const source = await createFsDurableRfqLifecycleStore<string>({
+    const source = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir: sourceDir,
       role: "buyer",
       integrityKey: randomBytes(32),
     });
-    const destination = await createFsDurableRfqLifecycleStore<string>({
+    const destination = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir: destinationDir,
       role: "buyer",
       integrityKey: randomBytes(32),
     });
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       async publish() {
         return { disposition: "acknowledged" };
       },
@@ -734,7 +769,7 @@ describe("keyed durable RFQ filesystem store", () => {
     const loaded = await source.load("buyer", JOB_ID);
     if (loaded.status !== "ok") throw new Error("record did not load");
     const candidate = structuredClone(loaded.record) as
-      DurableRfqLifecycleRecord<string>;
+      DurableRfqLifecycleRecord<ChannelMessageSignatureV1>;
     const expected = structuredClone(candidate);
 
     const pending = destination.create(candidate);
@@ -752,12 +787,12 @@ describe("keyed durable RFQ filesystem store", () => {
   test("rejects record files with an unexpected hard-link alias", async () => {
     const parent = await root();
     const dir = join(parent, "buyer-rfq");
-    const store = await createFsDurableRfqLifecycleStore<string>({
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
       dir,
       role: "buyer",
       integrityKey: randomBytes(32),
     });
-    const transport: DurableRfqLifecycleTransport<string> = {
+    const transport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
       async publish() {
         return { disposition: "acknowledged" };
       },
@@ -779,5 +814,149 @@ describe("keyed durable RFQ filesystem store", () => {
       reason: expect.stringContaining("hard links"),
     });
     await unlink(aliasPath);
+  });
+});
+
+/** Store-version-1 records written by SDK main before the v0.6 channel wire. */
+const STORE_V1 = JSON.parse(
+  readFileSync(new URL("../fixtures/durable-rfq-store-v1.json", import.meta.url), "utf8"),
+) as { jobId: string; buyerFinalized: DurableRfqLifecycleRecord<string> };
+
+/**
+ * The exact bytes the filesystem store writes for a buyer record: the keyed
+ * envelope is unchanged since SDK main, whose store produced these same bytes
+ * for the fixture's finalized buyer record.
+ */
+function storedBuyerEnvelope(record: unknown, integrityKey: Uint8Array): string {
+  const jobKeyHash = createHash("sha256").update(`buyer\u0000${STORE_V1.jobId}`).digest("hex");
+  const material = { envelopeVersion: 1, role: "buyer", jobKeyHash, record };
+  const mac = createHmac("sha256", integrityKey)
+    .update("dacs-rfq-lifecycle-local-store:v1:", "utf8")
+    .update(canonicalize(material), "utf8")
+    .digest("hex");
+  return canonicalize({ ...material, mac });
+}
+
+function buyerRecordPath(dir: string): string {
+  const hash = createHash("sha256").update(`buyer\u0000${STORE_V1.jobId}`).digest("hex");
+  return join(dir, "records", `${hash}.json`);
+}
+
+describe("filesystem RFQ records written before the v0.6 channel wire", () => {
+  const silentTransport: DurableRfqLifecycleTransport<ChannelMessageSignatureV1> = {
+    async publish() {
+      return { disposition: "acknowledged" };
+    },
+    async reconcile() {
+      return { disposition: "acknowledged" };
+    },
+  };
+
+  test("load and keep the finalized agreement reachable; the session is read-only", async () => {
+    const dir = join(await root(), "buyer-rfq");
+    const integrityKey = Buffer.alloc(32, 0x5a);
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
+      dir,
+      role: "buyer",
+      integrityKey,
+    });
+    await writeFile(
+      buyerRecordPath(dir),
+      storedBuyerEnvelope(STORE_V1.buyerFinalized, integrityKey),
+      { mode: 0o600 },
+    );
+    const loaded = await store.load("buyer", STORE_V1.jobId);
+    expect(loaded.status).toBe("ok");
+    if (loaded.status !== "ok") return;
+    expect(loaded.record.storeVersion).toBe(1);
+    expect(loaded.record.agreement?.finalized).toEqual(STORE_V1.buyerFinalized.agreement?.finalized);
+
+    const sign = vi.fn();
+    const client = createDurableRfqLifecycleClient(clientOptions(store, silentTransport, sign));
+    const status = await client.getStatus(STORE_V1.jobId);
+    expect(status.status).toBe("ok");
+    const archival = {
+      status: "rejected",
+      reason: "RFQ lifecycle record predates the DACS-3 v0.6 channel wire; it is read-only",
+    };
+    await expect(client.resumeOutbox(STORE_V1.jobId)).resolves.toMatchObject(archival);
+    await expect(client.sendAbort(STORE_V1.jobId, "late")).resolves.toMatchObject(archival);
+    expect(sign).not.toHaveBeenCalled();
+  });
+
+  test("an authenticated record the validator cannot read is corrupt, never a rejected load", async () => {
+    const dir = join(await root(), "buyer-rfq");
+    const integrityKey = randomBytes(32);
+    const store = await createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
+      dir,
+      role: "buyer",
+      integrityKey,
+    });
+    await writeFile(
+      buyerRecordPath(dir),
+      storedBuyerEnvelope({ ...structuredClone(STORE_V1.buyerFinalized), session: null }, integrityKey),
+      { mode: 0o600 },
+    );
+    await expect(store.load("buyer", STORE_V1.jobId)).resolves.toEqual({
+      status: "corrupt",
+      reason: "record session or authority is malformed",
+    });
+  });
+});
+
+describe("filesystem RFQ store caller candidates", () => {
+  async function store() {
+    return createFsDurableRfqLifecycleStore<ChannelMessageSignatureV1>({
+      dir: join(await root(), "buyer-rfq"),
+      role: "buyer",
+      integrityKey: randomBytes(32),
+    });
+  }
+
+  test("create() and compareAndSwap() return corrupt for primitive and null nested values", async () => {
+    const fs = await store();
+    for (const [label, candidate] of malformedNestedRecords(STORE_V1.buyerFinalized)) {
+      await expect(fs.create(candidate as never), label).resolves.toMatchObject({ status: "corrupt" });
+      await expect(
+        fs.compareAndSwap("buyer", STORE_V1.jobId, STORE_V1.buyerFinalized.revision, candidate as never),
+        label,
+      ).resolves.toMatchObject({ status: "corrupt" });
+    }
+  });
+
+  test("a null or non-object candidate is corrupt on both stores, never a rejected call", async () => {
+    const stores = [
+      ["memory", createInMemoryDurableRfqLifecycleStore<ChannelMessageSignatureV1>()],
+      ["filesystem", await store()],
+    ] as const;
+    for (const [name, target] of stores) {
+      const seeded = structuredClone(STORE_V1.buyerFinalized);
+      await expect(Promise.resolve(target.create(seeded as never)), name)
+        .resolves.toMatchObject({ status: "created" });
+      for (const candidate of [null, 5, "record", true, []]) {
+        const label = `${name} ${JSON.stringify(candidate)}`;
+        await expect(Promise.resolve(target.create(candidate as never)), label)
+          .resolves.toMatchObject({ status: "corrupt" });
+        await expect(
+          Promise.resolve(target.compareAndSwap("buyer", STORE_V1.jobId, seeded.revision, candidate as never)),
+          label,
+        ).resolves.toMatchObject({ status: "corrupt" });
+      }
+    }
+  });
+
+  test("a validator exception is corrupt, never a rejected create() or compareAndSwap()", async () => {
+    const fs = await store();
+    const candidate = structuredClone(STORE_V1.buyerFinalized);
+    validatorFault.throwing = true;
+    try {
+      const corrupt = { status: "corrupt", reason: "RFQ record cannot be validated" };
+      await expect(fs.create(candidate as never)).resolves.toEqual(corrupt);
+      await expect(
+        fs.compareAndSwap("buyer", STORE_V1.jobId, candidate.revision, candidate as never),
+      ).resolves.toEqual(corrupt);
+    } finally {
+      validatorFault.throwing = false;
+    }
   });
 });

@@ -20,16 +20,22 @@ import {
 } from "../canonical/index.js";
 import {
   snapshotCanonicalJson,
+  snapshotCanonicalJsonConfig,
   snapshotCanonicalJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { identityBundleHash } from "../identity/bundle.js";
-import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
+import {
+  parseCanonicalClaimReference,
+  sameCanonicalClaimIdentity,
+} from "../identity/claimReference.js";
 import {
   admitChannelMessage,
+  channelProfileAdmissionFailure,
   type ChannelMessage,
   type ChannelMessageAdmissionFailure,
   type ChannelMessageSignatureVerifier,
+  type ChannelProfileAdmission,
 } from "./channel.js";
 import {
   deriveMeteredPriceTerm,
@@ -509,6 +515,14 @@ function rfqAuthority(input: OpenRfqSessionInput): {
     throw new DacsError("RFQ timeout overflows unix ms");
   const buyer = partyBinding("buyer", input.buyer);
   const seller = partyBinding("seller", input.seller);
+  // CH-7: `current-read` admits only registered sender schemes, so a member it
+  // can never admit must not reserve a channelId.
+  if (
+    parseCanonicalClaimReference(buyer.primaryClaim)?.schemeStatus !== "registered" ||
+    parseCanonicalClaimReference(seller.primaryClaim)?.schemeStatus !== "registered"
+  ) {
+    throw new DacsError("RFQ members must use registered claim schemes (CH-7)");
+  }
   if (
     sameCanonicalClaimIdentity(buyer.primaryClaim, seller.primaryClaim) ||
     !sameCanonicalClaimIdentity(
@@ -531,10 +545,15 @@ function rfqAuthority(input: OpenRfqSessionInput): {
   };
 }
 
-/** Open a CH-6-reserved RFQ session from the exact signed Listing authority. */
+/**
+ * Open a CH-6-reserved RFQ session from the exact signed Listing authority.
+ * `profileAdmission` is the verifier-owned CORE §11.1.2(3) authority for the
+ * session; without it nothing is reserved and no state is issued.
+ */
 export async function openRfqSession(
   callerInput: OpenRfqSessionInput,
   reserveChannelId: RfqChannelReservation,
+  profileAdmission: RfqProfileAdmission | undefined,
 ): Promise<OpenRfqSessionResult> {
   if (
     typeof reserveChannelId !== "function" ||
@@ -545,6 +564,45 @@ export async function openRfqSession(
       "durable RFQ channel reservation is unavailable or unsafe",
     );
   }
+  const planned = planRfqSession(callerInput);
+  if (planned.decision !== "pass") return planned;
+  // CORE §11.1.2(3): admit the exact profile before reserving or issuing state.
+  const refused = rfqProfileAdmissionFailure(planned.state, profileAdmission);
+  if (refused !== null) return refused;
+
+  let decision: unknown;
+  try {
+    decision = await reserveChannelId(planned.reservation);
+  } catch {
+    return failure("error", "durable RFQ channel reservation failed");
+  }
+  if (typeof decision !== "string" || !DECISIONS.has(decision)) {
+    return failure(
+      "error",
+      "durable RFQ channel reservation returned malformed state",
+    );
+  }
+  if (decision !== "pass") {
+    return failure(
+      decision as Exclude<VerificationDecision, "pass">,
+      `durable RFQ channel reservation returned ${decision}`,
+    );
+  }
+  return { decision: "pass", state: planned.state };
+}
+
+/**
+ * Validate open input and derive the session it would open, without
+ * reserving the channel or consulting profile admission. Package-internal:
+ * the durable client uses it to bind an existing record without a reservation.
+ */
+export function planRfqSession(callerInput: OpenRfqSessionInput):
+  | {
+      decision: "pass";
+      reservation: Readonly<RfqChannelReservationInput>;
+      state: Readonly<RfqSessionState>;
+    }
+  | ChannelMessageAdmissionFailure {
   let input: OpenRfqSessionInput;
   let authority: ReturnType<typeof rfqAuthority>;
   try {
@@ -573,31 +631,13 @@ export async function openRfqSession(
       string,
     ],
   });
-  let decision: unknown;
-  try {
-    decision = await reserveChannelId(reservation);
-  } catch {
-    return failure("error", "durable RFQ channel reservation failed");
-  }
-  if (typeof decision !== "string" || !DECISIONS.has(decision)) {
-    return failure(
-      "error",
-      "durable RFQ channel reservation returned malformed state",
-    );
-  }
-  if (decision !== "pass") {
-    return failure(
-      decision as Exclude<VerificationDecision, "pass">,
-      `durable RFQ channel reservation returned ${decision}`,
-    );
-  }
-
   const initiator =
     authority.initiator === "buyer"
       ? authority.buyer.primaryClaim
       : authority.seller.primaryClaim;
   return {
     decision: "pass",
+    reservation,
     state: deepFreeze({
       rfqSessionVersion: "1",
       jobId: input.jobId,
@@ -656,6 +696,66 @@ function terminalReason(body: unknown): string | undefined {
     throw new DacsError("RFQ terminal body is malformed");
   }
   return body.reason as string | undefined;
+}
+
+/**
+ * CH-7 / CF-3: parameter-only ClaimReference variants name the same member and
+ * MUST NOT select a different one. Resolve an admitted sender to the matching
+ * member's stored primary claim, so every byte comparison downstream
+ * (`expectedSender`, `standingProposal.proposer`, persisted-state validation)
+ * works on the primary claim rather than on the wire spelling.
+ */
+export function resolveRfqMember(
+  state: Readonly<Pick<RfqSessionState, "buyer" | "seller">>,
+  sender: string,
+): string | null {
+  if (sameCanonicalClaimIdentity(sender, state.buyer.primaryClaim)) {
+    return state.buyer.primaryClaim;
+  }
+  if (sameCanonicalClaimIdentity(sender, state.seller.primaryClaim)) {
+    return state.seller.primaryClaim;
+  }
+  return null;
+}
+
+/**
+ * CORE §11.1.2(3) profile admission for an RFQ session. The participants the
+ * authority must bind are the session's own buyer and seller, so the caller
+ * supplies only the deployment profile and the verifier-owned authority.
+ */
+export type RfqProfileAdmission = Omit<
+  ChannelProfileAdmission,
+  "participantIdentities"
+>;
+
+/** Bind an RFQ profile admission to the session's members; throws when malformed. */
+export function rfqChannelProfileAdmission(
+  state: Readonly<Pick<RfqSessionState, "buyer" | "seller">>,
+  admission: unknown,
+): ChannelProfileAdmission | undefined {
+  if (admission === undefined) return undefined;
+  const owned = snapshotCanonicalJsonConfig(admission, "RFQ profile admission");
+  if (!isRecord(owned) || hasOwn(owned, "participantIdentities")) {
+    throw new DacsError("RFQ profile admission is malformed");
+  }
+  return {
+    ...(owned as unknown as RfqProfileAdmission),
+    participantIdentities: [state.buyer.primaryClaim, state.seller.primaryClaim],
+  };
+}
+
+/** The channel-layer profile gate for an RFQ session, before signing or admission. */
+export function rfqProfileAdmissionFailure(
+  state: Readonly<Pick<RfqSessionState, "channelId" | "buyer" | "seller">>,
+  admission: unknown,
+): ChannelMessageAdmissionFailure | null {
+  let bound: ChannelProfileAdmission | undefined;
+  try {
+    bound = rfqChannelProfileAdmission(state, admission);
+  } catch {
+    return failure("error", "RFQ profile admission is malformed");
+  }
+  return channelProfileAdmissionFailure(bound, state.channelId);
 }
 
 function otherMember(state: Readonly<RfqSessionState>, sender: string): string {
@@ -896,12 +996,15 @@ function validateStoredState(value: RfqSessionState): boolean {
 /**
  * Apply one authenticated RFQ turn. `receivedAt` is the trusted local receipt
  * clock used for RFQ-4; the sender-controlled `sentAt` never extends timeout.
+ * `profileAdmission` is the verifier-owned CORE §11.1.2(3) authority for this
+ * session; without it the turn is refused.
  */
 export async function advanceRfqSession<TSignature = unknown>(
   callerState: RfqSessionState,
   candidateMessage: unknown,
   receivedAt: number,
   verifySignature: ChannelMessageSignatureVerifier<RfqTurnBody, TSignature>,
+  profileAdmission: RfqProfileAdmission | undefined,
 ): Promise<AdvanceRfqSessionResult> {
   let state: RfqSessionState;
   try {
@@ -919,6 +1022,19 @@ export async function advanceRfqSession<TSignature = unknown>(
       "RFQ session state or trusted receipt time is inconsistent",
     );
   }
+  // CORE §11.1.2(3): admit the exact profile before any state transition,
+  // including the timeout below.
+  let channelProfileAdmission: ChannelProfileAdmission | undefined;
+  try {
+    channelProfileAdmission = rfqChannelProfileAdmission(state, profileAdmission);
+  } catch {
+    return failure("error", "RFQ profile admission is malformed");
+  }
+  const refused = channelProfileAdmissionFailure(
+    channelProfileAdmission,
+    state.channelId,
+  );
+  if (refused !== null) return refused;
   if (state.status !== "open") {
     return failure("fail", "RFQ session is already terminal");
   }
@@ -945,12 +1061,18 @@ export async function advanceRfqSession<TSignature = unknown>(
       priorChannelIds: [],
     },
     verifySignature,
+    channelProfileAdmission === undefined
+      ? undefined
+      : { profileAdmission: channelProfileAdmission },
   );
   if (admitted.decision !== "pass") return admitted;
   const message = admitted.message as Readonly<
     ChannelMessage<RfqTurnBody, TSignature>
   >;
-  if (message.sender !== state.expectedSender) {
+  // Compare on the member's primary claim (CH-7): the channel layer admits
+  // parameter-qualified spellings of the same identity.
+  const sender = resolveRfqMember(state, message.sender);
+  if (sender === null || sender !== state.expectedSender) {
     return failure("fail", "RFQ turn is signed by the wrong member");
   }
   if (
@@ -977,7 +1099,7 @@ export async function advanceRfqSession<TSignature = unknown>(
       const standingProposal = deepFreeze({
         ...proposal,
         sequence: message.sequence,
-        proposer: message.sender,
+        proposer: sender,
       });
       if (turnCount >= state.maxTurns) {
         return {
@@ -1002,7 +1124,7 @@ export async function advanceRfqSession<TSignature = unknown>(
           turnCount,
           standingProposal,
           awaitingSince: receivedAt,
-          expectedSender: otherMember(state, message.sender),
+          expectedSender: otherMember(state, sender),
         }),
       };
     }
