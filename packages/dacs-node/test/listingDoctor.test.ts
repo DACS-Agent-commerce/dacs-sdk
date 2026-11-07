@@ -433,6 +433,35 @@ describe("existing x402 Listing doctor", () => {
     });
   });
 
+  it("admits an index served from another origin than the seller endpoint", async () => {
+    const value = await publishedFixture();
+    value.card.dacs.listings.indexUrl = "https://index-host.example/dacs/listings.json";
+    await expect(resolveDacsX402ExistingListingV1(value.options as never)).resolves
+      .toMatchObject({ status: "verified" });
+    expect(value.options.readJson).toHaveBeenCalledWith(
+      "https://index-host.example/dacs/listings.json",
+    );
+  });
+
+  it("blocks a cross-origin index whose hash differs from the card", async () => {
+    const value = await publishedFixture();
+    value.card.dacs.listings.indexUrl = "https://index-host.example/dacs/listings.json";
+    value.card.dacs.listings.indexHash = `sha256-${"0".repeat(64)}`;
+    await expect(resolveDacsX402ExistingListingV1(value.options as never)).resolves.toEqual({
+      status: "blocked",
+      reasonCode: "listing-registry-resolution-unavailable",
+    });
+  });
+
+  it("blocks an index URL that is not https", async () => {
+    const value = await publishedFixture();
+    value.card.dacs.listings.indexUrl = "http://index-host.example/dacs/listings.json";
+    await expect(resolveDacsX402ExistingListingV1(value.options as never)).resolves.toEqual({
+      status: "blocked",
+      reasonCode: "listing-registry-resolution-unavailable",
+    });
+  });
+
   it("rejects an exact reference whose authenticated index binds another native anchor", async () => {
     const value = await publishedFixture();
     value.index.listings[0]!.anchor.locator = `stor-${"5".repeat(40)}`;

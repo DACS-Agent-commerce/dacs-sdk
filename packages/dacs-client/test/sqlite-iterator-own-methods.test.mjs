@@ -5,22 +5,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
+import { useFloorIteratorsEverywhere } from './helpers/sqlite-floor-iterators.mjs';
 
 const probe = new DatabaseSync(':memory:');
-const statementPrototype = Object.getPrototypeOf(probe.prepare('SELECT 1'));
-const nativeIterate = statementPrototype.iterate;
-const iteratorPrototype = Object.getPrototypeOf(nativeIterate.call(probe.prepare('SELECT 1')));
-const { next: prototypeNext, return: prototypeReturn } = iteratorPrototype;
-
-// The engine floors already have the own-method layout; other Node versions get it here.
-if (typeof prototypeNext === 'function') {
-  const ownMethod = (iterator, method) => ({ value: (...args) => Reflect.apply(method, iterator, args), writable: true, configurable: true });
-  statementPrototype.iterate = function (...args) {
-    const iterator = Reflect.apply(nativeIterate, this, args);
-    Object.defineProperties(iterator, { next: ownMethod(iterator, prototypeNext), return: ownMethod(iterator, prototypeReturn) });
-    return iterator;
-  };
-}
+useFloorIteratorsEverywhere();
 const { withSqliteStatementGuard } = await import('../src/util/sqlite-statement-boundary.mjs');
 // Install the guard now so every statement below is prepared under it.
 withSqliteStatementGuard(probe, () => {}, () => {});

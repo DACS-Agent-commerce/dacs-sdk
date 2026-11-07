@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { PURCHASE_STATE_SCHEMA } from '../../src/purchase-state-schema.mjs';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createSqlitePurchaseStore } from '../../src/seams/purchase-store-not-wired.mjs';
 
 // v2: reported_tx_hash no longer UNIQUE (verified-only partial index). Pre-release:
 // older files are refused rather than migrated.
@@ -82,33 +83,5 @@ export function openDatabase(path) {
   return db;
 }
 
-// node:sqlite DatabaseSync is not re-entrant across BEGIN; nested calls join
-// the outer transaction.
-const depth = new WeakMap();
-
-// Runs fn inside BEGIN IMMEDIATE so concurrent writers (other processes on the
-// same file) serialize instead of interleaving read-check-write sequences.
-// The depth is set only once BEGIN succeeds: a BEGIN that fails (the lock is
-// held past the busy timeout) must not leave later calls running as nested,
-// that is without a transaction of their own.
-export function transaction(db, fn) {
-  const current = depth.get(db) ?? 0;
-  if (current > 0) return fn();
-  db.exec('BEGIN IMMEDIATE');
-  depth.set(db, 1);
-  try {
-    const result = fn();
-    if (result && typeof result.then === 'function') throw new Error('transaction bodies must be synchronous');
-    db.exec('COMMIT');
-    return result;
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  } finally {
-    depth.set(db, 0);
-  }
-}
-
-export function isUniqueViolation(error) {
-  return error?.code === 'ERR_SQLITE_ERROR' && /UNIQUE constraint failed/.test(error.message);
-}
+// Exercise the same concrete adapter shipped to package consumers.
+export const { transaction, isUniqueViolation } = createSqlitePurchaseStore();
