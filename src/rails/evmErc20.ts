@@ -2,6 +2,7 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
 import {
   createIdempotencyStore,
+  settleThroughStore,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -296,11 +297,14 @@ export function evmErc20Settle(
         recipientEvm,
         amount,
       }, effectFence);
-    return store.once(
-      settlementKey(railId, jobId, phaseIndex),
+    return settleThroughStore({
+      store,
+      recoveryOnly: req.recoveryOnly,
+      label: "evm-erc20",
+      key: settlementKey(railId, jobId, phaseIndex),
       binding,
       submit,
       reconcile,
-    );
+    });
   };
 }
