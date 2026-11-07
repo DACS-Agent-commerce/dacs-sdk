@@ -1,0 +1,17 @@
+{
+  "recording": {
+    "capturedAt": "2026-11-06",
+    "node": {
+      "version": "0.9.9 RC",
+      "commit": "<stabilisation>e6af8f4023fa4e77f482503dae97f1ca00834bf9"
+    },
+    "request": "GET https://node2.demos.sh/storage-program/stor-0000000000000000000000000000000000000000 (the route demosdk storagePrograms.read uses)",
+    "httpStatus": 404,
+    "scrubbed": []
+  },
+  "body": {
+    "success": false,
+    "error": "Storage program not found: stor-0000000000000000000000000000000000000000",
+    "errorCode": "NOT_FOUND"
+  }
+}
