@@ -27,8 +27,13 @@ jobs:
     # when ALL of these hold:
     #   - the repository variable SDK_SELF_HOSTED is 'on';
     #   - the event is pull_request and the head branch is in this repository;
-    #   - the PR author AND the account that triggered the run are both listed in the repository variable
-    #     SDK_SELF_HOSTED_AUTHORS (comma-separated logins, no spaces; unset or empty means nobody).
+    #   - the PR author, the account that triggered the run (github.triggering_actor) AND the account whose event
+    #     started it (github.actor, which a re-run keeps: re-running someone else's push still runs their code) are
+    #     all listed in the repository variable SDK_SELF_HOSTED_AUTHORS (comma-separated logins, no spaces; unset
+    #     or empty means nobody);
+    #   - the pull request does not carry the label ci-hosted (urgent work stays on hosted runners). The labels come
+    #     from the event that started the run, and a re-run replays that event, so a label added later only takes
+    #     effect on the next push (or a close and reopen).
     # Pushes and merge-queue runs (which can contain other people's merged code), fork pull requests, everyone
     # else's runs and every other job use ubuntu-latest.
     # This expression is only a routing filter: a branch can edit its own copy of this file. The boundary is on the
@@ -36,7 +41,7 @@ jobs:
     # runs and stop the runner for anything else.
     # Deleting SDK_SELF_HOSTED sends new runs back to ubuntu-latest. If no dacs-pool runner is online, a routed job
     # waits for one (GitHub has no fallback); cancel it and start a new run after deleting the variable.
-    runs-on: ${{ (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor))) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
+    runs-on: ${{ (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -470,7 +475,7 @@ jobs:
       - name: Typecheck and test against demosdk 4.0.18
         if: matrix.node-version == '22'
         run: |
-          npm install --no-save --no-audit @kynesyslabs/demosdk@4.0.18
+          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
           test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
           npm run typecheck
           npm run host:typecheck
