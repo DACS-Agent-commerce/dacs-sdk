@@ -161,6 +161,7 @@ const tp1Network = {
 };
 const capabilities = () => ({
   tp1Network,
+  readCommitmentReceipt: Object.assign(refuse('readCommitmentReceipt'), { chainIdentity: approvedRecord.chainIdentity }),
   now:()=>now,
   nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: journal.anchorEvidence, fetchImpl: refuse('nativePaymentEvidence.fetch') }),
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence,
@@ -205,6 +206,8 @@ out.deliverableJournal = {
 };
 deliveryJournal.close();
 out.refusedConfigurations = {
+  missingReadCommitmentReceipt: await refusal({ signer, listing, dataDirectory, ...capabilities(), readCommitmentReceipt: undefined }),
+  invalidReadCommitmentReceipt: await refusal({ signer, listing, dataDirectory, ...capabilities(), readCommitmentReceipt: {} }),
   missingJournal: await refusal({ signer, listing, dataDirectory, ...withoutJournal }),
   missingSessionAdmission: await refusal({ signer, listing, dataDirectory, ...withoutAdmission }),
   missingAgreementAnchor: await refusal({ signer, listing, dataDirectory, ...withoutReadback }),

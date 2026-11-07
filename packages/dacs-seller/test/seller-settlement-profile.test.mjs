@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
+import { receiptReader, wireRouteFixture } from './helpers/wire-continuation-fixture.mjs';
 import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
 import { createNativeDemDeliveryCapability } from '../src/dacs/native-dem-delivery-consumer.mjs';
@@ -43,7 +44,7 @@ const presentWithout = (party, presentedAt) => {
 async function world(t, { listingChanges = () => {}, sellerRequirement = null } = {}) {
   const sellerKey = key(), buyerKey = key(), now = 1780000000000, reached = [], steward = railSteward();
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: () => now });
-  const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid/agent',
+  const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Profile seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'settlement-profile', listingVersion: 1, title: 'Settlement profile report', description: 'Settlement profile vectors.',
     expectedSizeBytes: 1024, category: 'services.market-report', tags: ['profile'], priceDem: '2.5', notBefore: now - 60000 });
   listingChanges(draft);
@@ -59,7 +60,7 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
     if (challengeSnapshot && !empty) copyFileSync(challengeSnapshot, join(path, 'seller-state.sqlite'));
     return path;
   };
-  const capabilities = {
+  const capabilities = { readCommitmentReceipt: receiptReader(),
     signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: candidate => candidate === jobId ? buyerKey.address : null }),
     agreementAnchor: { source: 'settlement-profile/agreement-readback', readAgreement: refuse('readAgreement') },
@@ -295,13 +296,13 @@ test('the standalone host refuses to start without the whole chain to delivery',
 // finalized, the buyer's Agreement reads back once it is anchored, and the
 // transfer observation (native payment evidence) counts each fetch and fails.
 const clone = (value) => JSON.parse(JSON.stringify(value));
-function nativeChain(w) {
+function nativeChain(w, { wire = false } = {}) {
   const TX = 'a1'.repeat(32), BLOCK = 'b2'.repeat(32), seen = { publish: 0, fetch: 0 }, retained = { stored: null, agreement: null };
   const nativeArtifactAnchor = {
     writer: w.signer.claim,
     publish: async ({ logicalAddress, artifact }) => {
       seen.publish++;
-      const receipt = { receiptVersion: '1', substrate: 'TEST-offline-demos-sr2', finalityProfile: 'TEST-one-node-not-finality', logicalAddress,
+      const receipt = { receiptVersion: '1', substrate: wire ? 'demos' : 'TEST-offline-demos-sr2', finalityProfile: wire ? 'TEST-scripted-finalized' : 'TEST-one-node-not-finality', logicalAddress,
         nativeAddress: `TEST-native-${core.sha256Hex(logicalAddress).slice(0, 16)}`, contentHash: core.contentHash(artifact), transactionRef: { kind: 'demos-tx', value: TX },
         writer: w.signer.claim, nonce: '7', state: 'finalized', observationDisposition: 'established', observedAt: w.now + 1000,
         evidence: { kind: 'demos-tx', value: TX }, blockRef: { id: BLOCK, height: '9', timestamp: w.now + 1000 } };
@@ -394,10 +395,10 @@ function inProcessFetch(handle, last) {
 }
 // `gate` maps an agent method to a refusal code it throws once, before calling the agent.
 async function httpSeller(t, w, { gate = {} } = {}) {
-  const chain = nativeChain(w), durableDirectory = w.dir(), peerDirectory = w.dir(), last = {};
+  const chain = nativeChain(w, { wire: true }), durableDirectory = w.dir(), peerDirectory = w.dir(), last = {};
   const build = (railAuthority) => w.agent(chain.options(railAuthority, durableDirectory));
   let agent = await build(w.steward.railAuthority());
-  const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite') });
+  const store = seller.createSellerTransportStore({ path: join(peerDirectory, 'peer.sqlite'), now: () => w.now });
   t.after(() => { try { agent.close(); } catch { /* closed by a restart */ } store.close(); });
   const pin = seller.listingPin(w.listing);
   const gated = (name) => (body, options) => {
@@ -405,14 +406,14 @@ async function httpSeller(t, w, { gate = {} } = {}) {
     if (code) { delete gate[name]; throw new seller.SellerAgentError(code, `TEST ${code}`, code === 'native_evidence_required' ? 409 : 503); }
     return agent[name](body, options);
   };
-  const facade = { claim: w.signer.claim, listingPin: pin, reconcileTransport: (input) => agent.reconcileTransport(input), agreementState: (identity) => agent.agreementState(identity),
+  const facade = { claim: w.signer.claim, listingPin: pin, transportAgreementOf: id => agent.transportAgreementOf(id), continuationEvidenceOf: id => agent.continuationEvidenceOf(id), reconcileTransport: (input) => agent.reconcileTransport(input), agreementState: (identity) => agent.agreementState(identity),
     retainsProposalWork: (jobId) => agent.retainsProposalWork(jobId), retainsPaymentClaim: (jobId, body) => agent.retainsPaymentClaim(jobId, body),
     receiveProposal: gated('receiveProposal'), commit: gated('commit'), submitPayment: gated('submitPayment') };
-  const handle = seller.createSellerHttpHandler(facade, { authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
+  const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer, store, now: () => w.now });
+  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: w.signer, listingPin: pin, store }) });
   const proposal = await w.proposalFor(w.vetted);
   const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
-    authentication: seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer.claim,
-      resolveJob: () => ({ listingPin: pin, agreementHash: proposal.proposal.plan.agreementHash }) }) });
+    authentication: buyerWire.authentication(() => proposal.proposal.plan.agreementHash) });
   const restart = async (railAuthority) => { agent.close(); agent = await build(railAuthority); };
   return { chain, client, proposal, last, restart, get agent() { return agent; } };
 }
