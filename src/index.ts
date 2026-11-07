@@ -1464,6 +1464,7 @@ export {
   PayDemIncludedNonceVisibilityError,
   payDemSettle,
   payDemSettleCore,
+  withRecoveredAttempts,
   type PayDemRail,
   type PayDemRailResult,
   type PayDemRailConfig,
