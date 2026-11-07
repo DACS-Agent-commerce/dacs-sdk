@@ -25,7 +25,7 @@
     "src/dacs/protocol-purchases.mjs", "src/dacs/purchase-admission-state.mjs", "src/dacs/purchase-protocol.mjs",
     "src/dacs/seller-agent-error.mjs", "src/dacs/seller-http.mjs",
     "src/dacs/seller-session-lifecycle.mjs", "src/dacs/seller-session-limits.mjs",
-    "src/dacs/seller-sr2-agreement-consumer.mjs", "src/dacs/seller-transport-auth.mjs",
+    "src/dacs/seller-sr2-agreement-consumer.mjs", "src/dacs/seller-transport-auth.mjs", "src/dacs/seller-wire-authentication.mjs",
     "src/dacs/source-demo-seller-transport.mjs", "src/dacs/verification.mjs",
     "src/dacs/wallet-transactions.mjs", "src/devnet-demo/commitment-consumer.mjs",
     "src/devnet-demo/deliverable.mjs", "src/devnet-demo/issued-readback.mjs",

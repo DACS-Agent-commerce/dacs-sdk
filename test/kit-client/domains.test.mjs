@@ -30,9 +30,11 @@ test("K12-H6a control: the kit's server-side transport auth refuses the same req
     { code: 'peer_signature_invalid', status: 401 });
 });
 
-test("K12-H6b today: the client's request signer emits old-domain signing bytes", async (t) => {
-  const { stateRequest } = await sellerTransportPair(t);
-  const envelope = decodeHeader((await stateRequest()).header);
-  assert.equal(verifiesUnder(OLD_DOMAIN, envelope), true);
-  assert.equal(verifiesUnder(DACS_SELLER_HTTP_DOMAINS.request, envelope), false);
+test("K12-H6b target: the client's request signer output carries the wire domain only", async (t) => {
+  const { world, request } = await import('../../packages/dacs-client/test/helpers/wire-client-fixture.mjs');
+  const w = await world(t);
+  const signed = await request(w);
+  const bytes = w.state.signs[0].toString();
+  assert.equal(bytes, DACS_SELLER_HTTP_DOMAINS.request + canonicalize(signed.payload));
+  assert.equal(bytes.startsWith(OLD_DOMAIN), false);
 });

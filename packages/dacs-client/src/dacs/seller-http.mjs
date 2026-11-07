@@ -6,6 +6,7 @@
 // requests, independently signed seller responses and a durable intent journal.
 // Only an authenticated definite refusal becomes SellerRefusedError in that
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS } from '@kynesyslabs/dacs/wire';
 import { SellerAgentError } from './seller-agent-error.mjs';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
@@ -185,8 +186,8 @@ const TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET']);
 const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
 function failureCause(error, phase, signal) {
-  if (phase === 'client-sign') return 'client-sign';
   if (signal?.aborted) return 'timeout';
+  if (phase === 'client-sign') return 'client-sign';
   // Node fetch wraps TLS/socket errors in `cause`. Inspect only bounded
   // machine codes, never error messages, peer metadata or certificate bytes.
   for (let depth = 0, current = error; current && depth < 4; depth++, current = current.cause) {
@@ -225,15 +226,16 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     try {
       const text = JSON.stringify(body);
       if (Buffer.byteLength(text) > MAX_BODY) throw new Error('request exceeds byte limit');
-      phase = 'client-sign';
-      const signed = authentication ? await authentication.request(path, body, text) : null;
-      phase = 'other';
+      // One deadline covers signing too: the wire's authority and proof reads and the host's signer have none of their own.
       signal = AbortSignal.timeout(timeoutMs);
+      phase = 'client-sign';
+      const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal }), signal) : null;
+      phase = 'other';
       hasDispatched = true;
-      const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [SELLER_TRANSPORT_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
+      const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
       phase = 'response-auth';
       const declared = response.headers.get('content-length');
-      if (declared !== null && Number(declared) > SELLER_TRANSPORT_MAX_RESPONSE) { cancelResponseBody(response); throw new Error('response exceeds byte limit'); }
+      if (declared !== null && Number(declared) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { cancelResponseBody(response); throw new Error('response exceeds byte limit'); }
       const chunks = [];
       let size = 0;
       if (response.body) {
@@ -243,15 +245,16 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
           const { done, value } = await settleOnAbort(reader.read(), signal);
           if (done) break;
           size += value.byteLength;
-          if (size > SELLER_TRANSPORT_MAX_RESPONSE) { reader.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
+          if (size > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { reader.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
           chunks.push(value);
         }
       }
-      const answer = admitRawJson(Buffer.concat(chunks), { maxBytes: SELLER_TRANSPORT_MAX_RESPONSE });
-      const answerText = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+      const answerBytes = Buffer.concat(chunks);
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
-      if (authentication) authentication.verifyResponse(signed.payload, { header: response.headers.get(SELLER_TRANSPORT_HEADER), status: response.status, text: answerText });
+      const answer = authentication
+        ? (await settleOnAbort(authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, body: answerBytes }), signal)).body
+        : admitRawJson(answerBytes, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes });
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');

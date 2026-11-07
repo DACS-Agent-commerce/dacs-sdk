@@ -48,7 +48,8 @@ for(const authority of [undefined,{}, {standardRevision:'old'}, {standardRevisio
  let effects=0;const effect=()=>{effects++;throw Error('effect');};
  const buyer=createProtocolPurchases({db:{},ops:{},coordinates:{},dacsProtocol:{profileAuthority:authority},fetchImpl:effect,store:noWrites});
  assert.equal(buyer.available,false);assert.equal(buyer.actionsAdmitted,false);
- for(const method of ['prepareTerms','identityRequest','signRequest','withNativePaymentLane','readNativePaymentLane'])assert.throws(()=>buyer[method]({},effect),refused);
+ for(const method of ['prepareTerms','signRequest','withNativePaymentLane','readNativePaymentLane'])assert.throws(()=>buyer[method]({},effect),refused);
+ await assert.rejects(buyer.identityRequest({}),refused);
  await assert.rejects(buyer.planRequest({}),refused);
  await assert.rejects(buyer.submitAgreement({}),refused);
  await assert.rejects(buyer.recheck({}),refused);
