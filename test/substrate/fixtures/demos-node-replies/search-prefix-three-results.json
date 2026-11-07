@@ -1,0 +1,46 @@
+{
+  "recording": {
+    "capturedAt": "2026-11-06",
+    "node": {
+      "version": "0.9.9 RC",
+      "commit": "<stabilisation>e6af8f4023fa4e77f482503dae97f1ca00834bf9"
+    },
+    "request": "POST https://node2.demos.sh/ nodeCall searchStoragePrograms, query \"dacs\", exactMatch false, limit 3, offset 0",
+    "httpStatus": 200,
+    "scrubbed": []
+  },
+  "body": {
+    "result": 200,
+    "response": [
+      {
+        "storageAddress": "stor-a54405280b9d878f097ed82eb975e1e956b88418",
+        "programName": "dacs3%3Aagreement%3A01M5Y3MEF9CHTJS67KDBTMB140",
+        "encoding": "json",
+        "sizeBytes": 2362,
+        "storageLocation": "onchain",
+        "createdAt": "2026-10-27T07:22:36.555Z",
+        "updatedAt": "2026-10-27T07:22:36.555Z"
+      },
+      {
+        "storageAddress": "stor-cffaa62d9cef33e5b2257dd1417dc150e624cd78",
+        "programName": "dacs3%3Acommit%3A01M5Y3MEF9CHTJS67KDBTMB140",
+        "encoding": "json",
+        "sizeBytes": 748,
+        "storageLocation": "onchain",
+        "createdAt": "2026-10-27T07:22:36.555Z",
+        "updatedAt": "2026-10-27T07:22:36.555Z"
+      },
+      {
+        "storageAddress": "stor-08b359046e36a74749d96816c115a18af08e51d8",
+        "programName": "dacs2%3Acomposite%3A01M5Y3MEF9CHTJS67KDBTMB140%3Adid%3Ademos%3Aagent%3Abf93f243e99b72cdd26bf0e58e5d770589c3dda988a0ce0814a8458fa6aa344c",
+        "encoding": "json",
+        "sizeBytes": 653,
+        "storageLocation": "onchain",
+        "createdAt": "2026-10-27T07:20:50.698Z",
+        "updatedAt": "2026-10-27T07:20:50.698Z"
+      }
+    ],
+    "extra": "",
+    "require_reply": false
+  }
+}
