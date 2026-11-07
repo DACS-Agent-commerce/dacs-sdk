@@ -1002,13 +1002,14 @@ completion currently report `blocked` until the resolver/completion work lands
 With `--rpc`, the `node.build` check reads the node's `GET /version` (4 KiB
 limit, 5 second deadline, redirects not followed) and compares its commit with
 the build the SDK's recorded node replies were captured against (the pin ships
-inside the package). It only runs when the RPC URL has no path
-or query (for example `https://node2.demos.sh`), because `/version` is read from
-the origin and a routed URL such as `https://host/tenant/rpc` may reach a
-different backend. A match is `pass`; a different build is `warn`; a routed RPC
-URL, a redirect, a node that cannot be reached, has no `/version` endpoint or
-sends an unusable reply is `skip` with `node build unknown (no build RPC)`; a
-routed URL makes no request. This check never changes the exit code.
+inside the package). It only runs when the RPC URL has no path,
+query or credentials (for example `https://node2.demos.sh`), because `/version`
+is read from the origin, which drops credentials, and a routed URL such as
+`https://host/tenant/rpc` may reach a different backend. A match is `pass`; a
+different build is `warn`; a routed or credential-bearing RPC URL, a redirect, a
+node that cannot be reached, has no `/version` endpoint or sends an unusable
+reply is `skip` with `node build unknown (no build RPC)`; a routed or
+credential-bearing URL makes no request. This check never changes the exit code.
 
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.
