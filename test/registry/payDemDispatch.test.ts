@@ -24,7 +24,7 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
 
 import {
   isSettlementBridge,
-  registerSettlementBridge,
+  declareSettlementBridge,
   settlementBridgeTraits,
   type SettlementBinding,
   type SettlementIdempotencyStore,
@@ -362,9 +362,9 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     };
     const unused = async (): Promise<never> => { throw new Error("unused"); };
 
-    const unjournaled = await dispatch(registerSettlementBridge(async () => unused(), { journaled: false }));
+    const unjournaled = await dispatch(declareSettlementBridge(async () => unused(), { journaled: false }));
     expect(settlementBridgeTraits(unjournaled)).toEqual({ journaled: false });
-    expect(settlementBridgeTraits(await dispatch(registerSettlementBridge(async () => unused())))).toEqual({});
+    expect(settlementBridgeTraits(await dispatch(declareSettlementBridge(async () => unused())))).toEqual({});
     expect(isSettlementBridge(await dispatch(async () => unused()))).toBe(false);
   });
 

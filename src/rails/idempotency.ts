@@ -865,11 +865,11 @@ export interface SettlementBridgeTraits {
 const settlementBridges = new WeakMap<object, SettlementBridgeTraits>();
 
 /**
- * @internal Record that `bridge` was built by an SDK settle bridge and what it
- * declares. Registering again without traits keeps what was declared. Returns
+ * @internal Declare that `bridge` was built by an SDK settle bridge, with what it
+ * declares. Declaring again without traits keeps what was declared. Returns
  * `bridge`.
  */
-export function registerSettlementBridge<T extends object>(
+export function declareSettlementBridge<T extends object>(
   bridge: T,
   traits?: SettlementBridgeTraits,
 ): T {
@@ -894,7 +894,7 @@ export function settlementBridgeTraits(value: unknown): SettlementBridgeTraits |
  */
 export function inheritSettlementBridge<T extends object>(from: unknown, to: T): T {
   return isSettlementBridge(from)
-    ? registerSettlementBridge(to, settlementBridgeTraits(from))
+    ? declareSettlementBridge(to, settlementBridgeTraits(from))
     : to;
 }
 

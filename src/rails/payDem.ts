@@ -18,8 +18,8 @@ import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddre
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
   createIdempotencyStore,
+  declareSettlementBridge,
   inheritSettlementBridge,
-  registerSettlementBridge,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -2675,7 +2675,7 @@ export function payDemSettle(
     }
   };
   const journaled = railJournals.get(rail);
-  return registerSettlementBridge(bridge, journaled === undefined ? {} : { journaled });
+  return declareSettlementBridge(bridge, journaled === undefined ? {} : { journaled });
 }
 
 /**
