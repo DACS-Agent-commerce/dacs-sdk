@@ -1,5 +1,7 @@
 // Consumed, opt-in SOURCE/loopback capability. SDK intake's bft-final field
 // describes one node's included view, NOT independent consensus.
+// Changed here: checkNativePaymentEvidence checks the shape of the seller-signed
+// artifact before it reads any field.
 import { contentHash, paymentEvidenceAddress, verifySettlementEvidence } from '@kynesyslabs/dacs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, isDemosSr2Contradiction } from './demos-sr2-adapter.mjs';
 import { agreementTerms, ed25519Deps } from './purchase-protocol.mjs';
@@ -14,6 +16,8 @@ export function nativePaymentEvidenceConfig(value) {
 }
 export const usesNativePaymentEvidence = (op) => op?.terms?.protocol?.nativePaymentEvidence === NATIVE_PAYMENT_EVIDENCE;
 
+const isPlainObject = (value) => value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
+
 // No missing/malformed/unknown answer is interpreted as true absence. This
 // classifier does not establish validity; present records still need all the
 // independent native/signature/tuple checks below.
@@ -26,18 +30,37 @@ export function nativeEvidenceReadOutcome(record) {
     ...(record?.code ? { code: record.code } : {}) };
 }
 
+// The one payment transaction reference of a seller-signed artifact, or null
+// when paymentTxRefs is not an array of exactly one plain object.
+function singlePaymentTxRef(artifact) {
+  const refs = artifact.paymentTxRefs;
+  return Array.isArray(refs) && refs.length === 1 && isPlainObject(refs[0]) ? refs[0] : null;
+}
+
+// The content hash of an artifact, or null when it is not canonical JSON.
+function contentHashOrNull(artifact) {
+  try { return contentHash(artifact); } catch { return null; }
+}
+
 // Independently derive the verifier context from the retained signed Agreement
 // and the buyer's observed tuple; the seller's HTTP answer is not a verdict.
+// A malformed artifact (not a plain object, not hashable, or not carrying exactly
+// one plain-object payment reference) fails on scope; it never throws.
 export async function checkNativePaymentEvidence({ artifact, agreement, writer, txHash, blockNumber }) {
   const terms = agreementTerms(agreement);
   const address = paymentEvidenceAddress(agreement.jobId, terms.rail, terms.paymentPhaseIndex);
-  const ref = { anchor: { kind: 'storage-program', locator: address }, contentHash: contentHash(artifact) };
+  const scopeMismatch = { decision: 'fail', reasons: ['native-payment-evidence-scope-mismatch'] };
+  if (!isPlainObject(artifact)) return scopeMismatch;
+  const paymentTxRef = singlePaymentTxRef(artifact);
   if (writer !== terms.seller || artifact.jobId !== agreement.jobId || artifact.phase !== 'pay-dem'
-      || artifact.outcome !== 'success' || artifact.paymentTxRefs?.length !== 1
-      || artifact.paymentTxRefs[0].kind !== 'demos' || artifact.paymentTxRefs[0].txHash !== txHash
-      || artifact.paymentTxRefs[0].blockNumber !== blockNumber || artifact.paymentAmount?.amount !== terms.price.amount
+      || artifact.outcome !== 'success' || paymentTxRef === null
+      || paymentTxRef.kind !== 'demos' || paymentTxRef.txHash !== txHash
+      || paymentTxRef.blockNumber !== blockNumber || artifact.paymentAmount?.amount !== terms.price.amount
       || artifact.paymentAmount?.currency !== 'DEM' || artifact.settlementFinality?.model !== 'bft-final'
-      || artifact.signature?.signer !== writer) return { decision: 'fail', reasons: ['native-payment-evidence-scope-mismatch'] };
+      || artifact.signature?.signer !== writer) return scopeMismatch;
+  const artifactHash = contentHashOrNull(artifact);
+  if (artifactHash === null) return scopeMismatch;
+  const ref = { anchor: { kind: 'storage-program', locator: address }, contentHash: artifactHash };
   return verifySettlementEvidence(artifact, { orchestrator: writer,
     agreement: { amount: terms.price.amount, currency: terms.price.currency },
     rail: { railId: terms.rail, railType: 'demos-native', asset: 'DEM', assetSpec: { kind: 'native-dem' }, network: 'demos', networkSpec: { kind: 'demos' }, handler: 'pay-dem' },

@@ -31,6 +31,20 @@ export interface DemosAnchorReceiptProof {
   };
 }
 
+const DEMOS_FINAL_STATE = "finalized";
+const DEMOS_FINAL_FINALITY_PROFILE = "demos-bft-confirmed-native-read";
+
+/**
+ * Demos write evidence is labelled as not final (for example simulated
+ * fixture inclusion), so it cannot back a finalized receipt or verification.
+ */
+export class NonFinalDemosEvidenceError extends DacsError {
+  constructor() {
+    super("Demos write evidence is labelled as not final");
+    this.name = "NonFinalDemosEvidenceError";
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -208,13 +222,30 @@ export function demosSignedTransactionProofHash(value: unknown): string {
   return sha256Hex(canonicalize(projection));
 }
 
+/** Refuse evidence whose optional labels say it is not final. */
+function assertEvidenceLabelsAreFinal(evidence: unknown): void {
+  if (!isRecord(evidence)) return;
+  const { state, finalityProfile } = evidence;
+  if (
+    (state !== undefined && state !== DEMOS_FINAL_STATE) ||
+    (finalityProfile !== undefined &&
+      finalityProfile !== DEMOS_FINAL_FINALITY_PROFILE)
+  ) {
+    throw new NonFinalDemosEvidenceError();
+  }
+}
+
 /**
  * Validate the self-contained bindings in adapter-produced Demos evidence.
  * Network finality is re-authenticated separately by DemosAdapter.
+ * @throws NonFinalDemosEvidenceError when the evidence is labelled as not
+ * final (for example simulated fixture inclusion).
+ * @throws DacsError when the evidence is malformed or its bindings differ.
  */
 export function assertDemosWriteEvidence(
   evidence: Readonly<DemosWriteEvidence>,
 ): void {
+  assertEvidenceLabelsAreFinal(evidence);
   if (
     !isRecord(evidence) ||
     evidence.evidenceVersion !== "1" ||
@@ -331,6 +362,9 @@ export function demosWriteEvidenceBindsReceiptContent(
 /**
  * Project adapter-authenticated Demos evidence into a self-contained portable
  * CORE §5.1 receipt. The evidence payload uses canonical, unpadded Base64URL.
+ * @throws NonFinalDemosEvidenceError when the evidence is labelled as not
+ * final, because the receipt it returns is always `finalized`.
+ * @throws DacsError when the evidence is malformed or does not match the input.
  */
 export function demosWriteEvidenceToAnchorReceipt(
   input: DemosPortableAnchorReceiptInput,
@@ -373,7 +407,7 @@ export function demosWriteEvidenceToAnchorReceipt(
   return {
     receiptVersion: "1",
     substrate: "demos",
-    finalityProfile: "demos-bft-confirmed-native-read",
+    finalityProfile: DEMOS_FINAL_FINALITY_PROFILE,
     logicalAddress: input.logicalAddress,
     nativeAddress: input.evidence.nativeAddress,
     contentHash: input.contentHash,
@@ -383,7 +417,7 @@ export function demosWriteEvidenceToAnchorReceipt(
     },
     writer: input.writer,
     nonce: String(input.evidence.nonce),
-    state: "finalized",
+    state: DEMOS_FINAL_STATE,
     observationDisposition: "established",
     observedAt,
     blockRef: {

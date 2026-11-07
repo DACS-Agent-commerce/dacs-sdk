@@ -53,7 +53,7 @@ import {
   advanceCompletedBuyerBundleDurable,
   advanceX402BuyerSettlement,
   attestationBundleHash,
-  bundleAddress,
+  legacyBundleAddress as bundleAddress,
   bundleConsistency,
   canonicalize,
   commitFixedPriceAgreement,
