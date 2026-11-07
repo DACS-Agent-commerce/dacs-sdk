@@ -116,8 +116,24 @@ refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerTransportServerAuth`, `createSellerContextRoute` and the buyer
-side `createSellerAgentClient`, `createSellerContextClient` and
-`createSellerTransportClientAuth`. A host mounts the Vet and Agreement context
+side `createSellerAgentClient`, `createSellerContextClient`,
+`createSellerTransportClientAuth` and `createSellerWireClientAuth`. The host
+answers every route but the challenge and the context step through the wire,
+under the wire domain with a TP-1 profile in each request, and refuses a
+request signed by `createSellerTransportClientAuth` there
+(`tp1_profile_missing`). The buyer's `authentication` for
+`createSellerAgentClient` is `createSellerWireClientAuth({ signer, binding,
+connection, endpointProof, publicEndpoint, seller, resolveJob })`: it signs
+and verifies every route but the challenge and the context step through the
+wire, from the `binding` of `bindTp1Profile` and the `endpointProof` of
+`verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`, over the seller's
+signed discovery document), and `resolveJob(jobId)` gives the approved job's
+`{ listingPin, agreementHash }`. Pass a `createSellerTransportClientAuth` as its
+`fallback` to sign the challenge and the context step, which still use the old
+server auth; without a `fallback` they are refused before anything is signed. Signing (the
+`resolveJob` and `evidenceFor` lookups, the buyer's authority read and a
+`fallback`) must finish within `signingTimeoutMs` (default 10,000 ms), or the
+request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
 route by passing `createSellerContextRoute({ ... })` as the `context` option of
 `createSellerHttpHandler(agent, { authentication, context })`. The handler's
 `agent` comes only from `createSellerAgent`
@@ -133,8 +149,8 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createSellerContextClient`,
-`createSellerTransportStore`, `createSellerTransportServerAuth` and
-`createSellerTransportClientAuth`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerTransportServerAuth`,
+`createSellerTransportClientAuth` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and

@@ -30,6 +30,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-proposal-time.mjs': { effect: {  }, pure: ['proposalTimeProblem'] },
   'src/dacs/seller-reservation-accounting.mjs': { effect: { createReservationAccounting: ['reserveAccounted'] }, pure: [] },
   'src/dacs/seller-transport-auth.mjs': { effect: { createSellerTransportServerAuth: ['createSellerTransportServerAuth'], createSellerTransportClientAuth: ['createSellerTransportClientAuth'] }, pure: ['SellerTransportError', 'createSellerTransportStore', 'normalizeSellerSessionDelegationSignature', 'sellerContextChallengeScope', 'sellerContextScopeHash', 'sellerSessionDelegationSigningBytes', 'sellerTransportEffect', 'sellerTransportSigningBytes', 'transportStoreOf', 'validateBody', 'verifySellerSessionDelegation'] },
+  'src/dacs/seller-wire-client-auth.mjs': { effect: { createSellerWireClientAuth: ['createSellerWireClientAuth'] }, pure: [] },
   'src/dacs/seller-wire-requests.mjs': { effect: {  }, pure: ['createWireContext', 'wireAuthenticator'] },
   'src/dacs/session-admission.mjs': { effect: {  }, pure: ['hasPresenceOnlyClaim', 'identityPresentationValid', 'isOrchestratorVetMode', 'listingRevocationProblem', 'readAdmissionCapability', 'sellerBundleProblem', 'sellerRecordVerifier', 'sellerSessionPresentationProblem', 'sessionAdmissionConfig', 'sessionAdmissionProblem', 'vetAnchorReceiptProblem', 'vetRecordProblem'] },
   'src/dacs/session-challenge-limits.mjs': { effect: {  }, pure: ['admitSessionChallenge'] },
