@@ -6,7 +6,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 const root=join(dirname(fileURLToPath(import.meta.url)),'../../..');
-function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
+// Every `git commit` runs `git maintenance run --auto`, which may detach and keep writing into the clone's .git
+// after the commit returns; that races the cleanup below (ENOTEMPTY). A scratch clone must never start it.
+function scratch(t){const dir=mkdtempSync(join(tmpdir(),'delta-provenance-'));execFileSync('git',['clone','--quiet','--shared',root,dir]);for(const [key,value] of [['maintenance.auto','false'],['gc.auto','0'],['gc.autoDetach','false']])execFileSync('git',['-C',dir,'config','--local',key,value]);t.after(()=>rmSync(dir,{recursive:true,force:true}));return dir;}
 function check(dir){const result=spawnSync(process.execPath,[join(dir,'packages/dacs-client/scripts/check-provenance.mjs'),'--local-only'],{encoding:'utf8'});return {status:result.status,text:result.stdout+result.stderr};}
 const moved='packages/dacs-client/src/dacs/buyer-chain-readback.mjs';
 test('committed delta history and generated per-file table agree',t=>{const r=check(scratch(t));assert.equal(r.status,0,r.text);});
@@ -68,6 +70,14 @@ function commitInScratch(dir, subject) {
   git('add', '-A');
   git('commit', '-qm', subject);
 }
+test('a commit in a scratch clone starts no background git maintenance that could outlive the test', t => {
+  const dir = scratch(t);
+  writeFileSync(join(dir, 'maintenance-probe.txt'), 'probe\n');
+  execFileSync('git', ['-C', dir, 'add', '-A']);
+  const commit = spawnSync('git', ['-C', dir, '-c', 'user.name=SDK tests', '-c', 'user.email=tests@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'test: probe'], { encoding: 'utf8', env: { ...process.env, GIT_TRACE: '1' } });
+  assert.equal(commit.status, 0, commit.stderr);
+  assert.doesNotMatch(commit.stderr, /git maintenance run|git gc --auto/,'git commit must not spawn auto maintenance in a scratch clone');
+});
 test('callback history refuses a write-lease file restored after its removal record', t => {
   const dir = scratch(t);
   const { changes } = JSON.parse(readFileSync(join(dir, 'packages/dacs-client/DELTA-LEDGER.json'), 'utf8'));
