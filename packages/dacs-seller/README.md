@@ -18,7 +18,8 @@ origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
 broadcast can still reach a real Demos node: keep them on the fixture too. It
 is not qualified for mainnet. The standalone host retains all jobs and refuses
 new jobs before admission after `maxJobs` (default 10,000); terminal DACS-5
-bundle completion and transport-row reclamation are not wired.
+bundle completion is not wired, and transport-row reclamation needs the
+`contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
@@ -33,6 +34,15 @@ when it creates a new store and when it creates or updates an authenticated
 record (reopening a store or taking a lock signs nothing). The kit publishes
 none of these signatures; what your own signer does with them is up to it.
 
+The optional `contextSessionState({ jobId })` host capability is synchronous and
+returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
+the host reclaim that job's retained challenge and context rows; an unknown name,
+an agent stage name, a throw or a Promise answer keeps them. A Promise answer
+counts as unknown: its result is ignored and its rejection is observed. A source
+that is asynchronous must keep a synchronous view of its own outside SQLite
+transactions. A host without the capability reclaims nothing. Context route
+compositions set the store's `contextStartLimits` to the route's own `limits`.
+
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
@@ -40,6 +50,7 @@ const host = await startSellerHost({
   signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
   listing,              // the signed Listing this seller serves; the signer must control it
   dataDirectory,        // absolute real path of a private (0700) directory owned by this user
+  contextSessionState,  // optional, synchronous ({ jobId }) -> DACS-5 state name or null
   buyerAccess: createOperatorBuyerAccess({
     openBuyerAccess: true,
     buyerForJob,        // synchronous jobId -> retained buyer's 0x-hex wallet, or null for an unknown job

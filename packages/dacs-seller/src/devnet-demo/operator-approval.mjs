@@ -740,11 +740,12 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     // A held attempt's answer is recorded only while this ledger still has that attempt open and unsigned for
     // these bytes; an attempt that has ended (or another ledger's) gets no line and no approval. Every answer,
     // including one with no attempt or waiver, is appended under the ledger's writer lock.
-    if(waiverId)return serializedPolicy(evidencePath,async()=>waiverOpen(await readPolicyLedger(evidencePath),waiverId,approvalHash)&&record());
-    // A plain answer is recorded and frozen only for the bytes the operator approved: a request changed while this
-    // waited for the lock is refused, with no line and no freeze.
-    if(!attemptId)return serializedPolicy(evidencePath,async()=>(!accepted||JSON.stringify(request)===requestBytes)&&record());
-    return serializedPolicy(evidencePath,async()=>heldOpen(await readPolicyLedger(evidencePath),attemptId,approvalHash)&&record());
+    // In every branch an answer is recorded and frozen only for the bytes the operator approved: a request changed
+    // while this waited for the lock is refused, with no line and no freeze.
+    const unchanged=()=>!accepted||JSON.stringify(request)===requestBytes;
+    if(waiverId)return serializedPolicy(evidencePath,async()=>waiverOpen(await readPolicyLedger(evidencePath),waiverId,approvalHash)&&unchanged()&&record());
+    if(!attemptId)return serializedPolicy(evidencePath,async()=>unchanged()&&record());
+    return serializedPolicy(evidencePath,async()=>heldOpen(await readPolicyLedger(evidencePath),attemptId,approvalHash)&&unchanged()&&record());
   };
   const approve=(request,validity,options={})=>{
     if(!policyMode){

@@ -1,3 +1,4 @@
+import { admitFixtureFor, issueChallenge } from './helpers/challenge-api.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
@@ -31,7 +32,7 @@ async function restartFixture(t,vetMode){
  body.scope.buyer=buyer.claim;body.scope.wallet=buyer.address;body.scope.seller=signer.claim;body.scope.payee=signer.address;body.scope.listingPin=pin;
  body.buyerIdentityBundle={bundleVersion:'1',presentedBy:buyer.claim,presentedAt:T,sessionNonce:'e'.repeat(64),claims:[{ref:buyer.claim}],presentation:{kind:'per-claim',signatures:[{ref:buyer.claim,signature:'pending'}]}};
  const {createSellerTransportStore,sellerContextChallengeScope}=await import('../src/dacs/seller-transport-auth.mjs');const transport=createSellerTransportStore({path:join(directory,'transport.sqlite'),now:()=>T});
- body.buyerIdentityBundle.sessionNonce=transport.issueContextChallenge({jobId:body.scope.jobId,buyer:buyer.claim},sellerContextChallengeScope(body.scope),{admit:()=>T}).sessionNonce;transport.close();
+ body.buyerIdentityBundle.sessionNonce=issueChallenge(transport,{jobId:body.scope.jobId,buyer:buyer.claim},sellerContextChallengeScope(body.scope)).sessionNonce;transport.close();
  body.scope.buyerBundleHash=identityBundleHash(body.buyerIdentityBundle);body.buyerIdentityBundle.presentation.signatures[0].signature=buyer.signBytes(Buffer.from('dacs-bundle-presentation:v1:'+body.scope.buyerBundleHash)).toString('base64url');
  const text=JSON.stringify(body),client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:signer.claim,resolveJob:()=>({listingPin:pin,agreementHash:sellerContextScopeHash(body.scope)}),now:()=>T}),header=(await client.request(SELLER_CONTEXT_PATH,body,text)).header;
  const key=(wallet,tag)=>({claim:wallet.claim,privateKey:privateKeyFromSeed(new Uint8Array(32).fill(tag)).export({format:'pem',type:'pkcs8'})});
@@ -90,10 +91,10 @@ for(const separateHandle of [false,true])test(`two route instances share journal
  const input=await w.wire(),pending=exchange(w.handler,input);await begun;
  const store=separateHandle?createSellerTransportStore({path:w.path,now:()=>T}):w.store;
  if(separateHandle)t.after(()=>store.close());
- const route=createSellerContextRoute({listing:w.listing,resolveBuyer:()=>assert.fail('second provider'),assertBuyerAccess:()=>{},admitWrites:()=>assert.fail('second hold'),releaseWrites:async()=>{},writable:()=>true,recover:async()=>null,now:()=>T});
+ const route=createSellerContextRoute({admitPresentation:admitFixtureFor(w.listing),listing:w.listing,resolveBuyer:()=>assert.fail('second provider'),assertBuyerAccess:()=>{},admitWrites:()=>assert.fail('second hold'),releaseWrites:async()=>{},writable:()=>true,recover:async()=>null,now:()=>T});
  const auth=createSellerTransportServerAuth({sellerSigner:w.seller,listingPin:w.pin,store,now:()=>T});
  const handler=createSellerHttpHandler({claim:w.seller.claim,listingPin:w.pin},{authentication:auth,context:route});
- const retry=await exchange(handler,input);assert.equal(retry.status,503);assert.equal(JSON.parse(retry.text).error,'operation_uncertain');
+ const retry=await exchange(handler,input);assert.equal(retry.status,503);assert.equal(JSON.parse(retry.text).error,'context_attempt_pending');
  finish();assert.equal((await pending).status,200);assert.equal(w.effects().writes,1);
 });
 
@@ -104,7 +105,7 @@ test('final cached replay retries a failed release, while uncertain replay prese
  const path=join(w.path+'-policy.jsonl');t.after(()=>rm(path,{force:true}));
  const policy=createSellerContextAdmission({evidencePath:path,sellerApproval:{mode:'policy',maxWritesPerHour:2,maxTotalOsPerHour:'8',maxWriteTotalOs:'4'},now:()=>T});
  let fail=true,releases=0;
- const route=createSellerContextRoute({listing:w.listing,resolveBuyer:async()=>({disposition:'rejected'}),assertBuyerAccess:()=>{},writable:()=>true,admitWrites:policy.reserve,
+ const route=createSellerContextRoute({admitPresentation:admitFixtureFor(w.listing),listing:w.listing,resolveBuyer:async()=>({disposition:'rejected'}),assertBuyerAccess:()=>{},writable:()=>true,admitWrites:policy.reserve,
   releaseWrites:async args=>{releases++;if(fail)throw new Error('TEST release unavailable');await policy.release(args);},recover:async()=>null,now:()=>T,log:()=>{}});
  const reserved=await route.reserve(request,body,w.store);
  assert.equal((await route.reserve(request,body,w.store)).disposition,'uncertain');assert.equal(releases,0);
@@ -132,7 +133,7 @@ test('proved resume transfers unused budget after the journal assigns a new owne
  const w=await world(t),body=JSON.parse((await w.wire()).text),request=w.auth.readRequest((await w.wire()).header);
  const path=w.path+'-resume.jsonl';t.after(()=>rm(path,{force:true}));
  const policy=createSellerContextAdmission({evidencePath:path,sellerApproval:{mode:'policy',maxWritesPerHour:2,maxTotalOsPerHour:'8',maxWriteTotalOs:'4'},now:()=>T});
- const route=createSellerContextRoute({listing:w.listing,resolveBuyer:async()=>null,assertBuyerAccess:()=>{},writable:()=>true,admitWrites:policy.reserve,releaseWrites:policy.release,recover:async()=>null,now:()=>T});
+ const route=createSellerContextRoute({admitPresentation:admitFixtureFor(w.listing),listing:w.listing,resolveBuyer:async()=>null,assertBuyerAccess:()=>{},writable:()=>true,admitWrites:policy.reserve,releaseWrites:policy.release,recover:async()=>null,now:()=>T});
  const first=await route.reserve(request,body,w.store);w.store.finish(first,503,'{}');
  const uncertain=w.store.reserve(request,body),resumed=await route.resume(uncertain,request,w.store,{writes:1});
  assert.equal(resumed.disposition,'perform');assert.match(resumed.contextHold.hold,new RegExp('^'+first.effectKey+':'));

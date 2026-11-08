@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash,randomUUID } from 'node:crypto';
 import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor } from './helpers/d5-policy-fixtures.mjs';
-const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,heldPolicyBudget }=await import('../src/devnet-demo/operator-approval.mjs');
+const { composeSellerApproval,createExactOperatorApproval,createSellerContextAdmission,parsePolicyLedger,heldPolicyBudget,serializedPolicy }=await import('../src/devnet-demo/operator-approval.mjs');
 
 // The real approval ledger over a private temporary directory, a scripted purchase source and scripted manual
 // approvers. Nothing here touches a wallet, a journal or the network.
@@ -863,6 +863,18 @@ test('two concurrent prepares of the same waived bytes share one prompt: exactly
  await approval.retained.settle(bindingOf(first),'released');
  assert.equal(await manualApprover(fixture)(waivable()),true);
  await seventhWriteIsRefused(fixture,'after the shared prompt');
+});
+
+test('a waiver answer whose request changes while it waits for the ledger lock is refused, writes no line and does not freeze',async t=>{
+ const fixture=await ledgerFixture(t);let approved;const answered=new Promise(done=>{approved=done;});
+ const manual=manualApprover(fixture,{authorize:()=>{approved();return true;}}),request=waivable(),{waiverId}=await fixture.restart().authorizeRetained(request);
+ assert.match(waiverId,UUID);const before=await text(fixture.evidencePath);
+ let release;const gate=new Promise(done=>{release=done;});
+ const writer=serializedPolicy(fixture.evidencePath,()=>gate),pending=manual(request,undefined,{waiverId});
+ await answered;await new Promise(done=>setImmediate(done));
+ request.content.exactCreate='{"changed":true}';release();await writer;
+ assert.equal(await pending,false);
+ assert.equal(await text(fixture.evidencePath),before);assert.equal(Object.isFrozen(request),false);
 });
 
 test('a manual approval written while a waiver prompt is pending is a write of its own, also when the prompt then stops',async t=>{

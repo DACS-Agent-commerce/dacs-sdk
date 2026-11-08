@@ -42,6 +42,7 @@ import {
   type IdentityBundle,
   type Listing,
   type PaymentRailRef,
+  validateFixedPriceAgreementBinding,
 } from "../../src/index.js";
 
 const NOW = 1_785_232_799_000;
@@ -61,6 +62,14 @@ const rail: PaymentRailRef = {
   railVersion: 1,
   parameters: { network: "eip155:8453" },
 };
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.values(value).forEach(deepFreeze);
+    Object.freeze(value);
+  }
+  return value;
+}
 
 function identity(primaryClaim: string): IdentityBundle {
   return {
@@ -1249,6 +1258,24 @@ describe("DACS-3 §8.6 finalized fixed-price commitment", () => {
     expect(finalityRecord(result).signature.signer).toBe(ORCHESTRATOR);
     expect(result.resumed).toBe(false);
   });
+
+  test.each(["agreement", "verifiedListing"] as const)(
+    "binds a fixed-price agreement whose %s input is deeply frozen",
+    async (frozenInput) => {
+      const fixture = await agreementFixture();
+      const input = {
+        agreement: fixture.agreement,
+        verifiedListing: fixture.verifiedListing,
+        committedAt: COMMITTED_AT,
+      };
+      const expected = validateFixedPriceAgreementBinding(input);
+      const frozen = {
+        ...input,
+        [frozenInput]: deepFreeze(structuredClone(input[frozenInput])),
+      };
+      expect(validateFixedPriceAgreementBinding(frozen)).toEqual(expected);
+    },
+  );
 
   test("rejects accessor-backed input without invoking it or external work", async () => {
     const fixture = await agreementFixture();

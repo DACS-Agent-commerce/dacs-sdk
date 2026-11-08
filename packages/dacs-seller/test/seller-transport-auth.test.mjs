@@ -28,8 +28,7 @@ function world({ delegated = false, context = false, time = 1000, grant = delega
   const store = { journaledOnlyReserve: true, bind() {}, finish() {}, close() {},
     reserve: (...args) => { calls.push(['reserve', ...args]); return { disposition: 'cached' }; },
     classify: (...args) => { calls.push(['classify', ...args]); return 'retry'; },
-    issueContextChallenge: (...args) => { calls.push(['challenge', ...args]); },
-    attemptContextPresentation: (...args) => { calls.push(['presentation', ...args]); },
+    challenges: { issue: (...args) => { calls.push(['challenge', ...args]); }, attempt: (...args) => { calls.push(['presentation', ...args]); } },
     reconcile: (...args) => { calls.push(['reconcile', ...args]); }, resume: (...args) => { calls.push(['resume', ...args]); } };
   const scope = { source: 'TEST', wallet: 'TEST', jobId, buyer: buyer.claim, buyerBundleHash: 'c'.repeat(64), seller: seller.claim,
     listingPin: pin, rail: 'TEST', payee: seller.claim, price: '1', generatedAt: 900 };
@@ -67,7 +66,7 @@ test('request and response signatures bind the exact body, status and request', 
 test('live delegated sessions authenticate and bind the wallet signature to scope and time', async () => {
   const w = world({ delegated: true }), asked = await w.request(); w.validate(asked);
   assert.equal(w.server.readbackOnly(asked.request), false);
-  w.server.store.attemptContextPresentation(asked.request, {});
+  w.server.store.challenges.attempt({request:asked.request});
   assert.equal(w.calls[0][0], 'presentation');
   const grant = delegation();
   assert.equal(verifySellerSessionDelegation(grant, { buyer: buyer.claim, seller: seller.claim, listingPin: pin, jobId, time: 900 }).buyer, buyer.claim);
@@ -84,7 +83,7 @@ test('expired delegation forwards journal readback but never presentation or ret
   assert.equal(w.server.readbackOnly(asked.request), true);
   w.server.store.reserve(asked.request, asked.body); w.server.store.classify(asked.request, asked.body);
   assert.deepEqual(w.calls.map((call) => [call[0], call[3]]), [['reserve', { journaledOnly: true }], ['classify', { journaledOnly: true }]]);
-  for (const effect of [() => w.server.store.issueContextChallenge(asked.request, {}), () => w.server.store.attemptContextPresentation(asked.request, {}),
+  for (const effect of [() => w.server.store.challenges.issue(asked.request, {}), () => w.server.store.challenges.attempt({request:asked.request}),
     () => w.server.store.resume({}, asked.request), () => w.server.store.reconcile({}, asked.request, 200, '{}', { retry: true }),
     () => w.server.store.reconcile({}, asked.request, 200, '{}', { noEffect: true })]) assert.throws(effect, { code: 'peer_delegation_expired' });
   assert.equal(w.calls.length, 2);
@@ -226,8 +225,8 @@ for (const delegated of [false, true]) test(`effect entry rechecks expired reque
   assert.equal(w.server.readbackOnly(asked.request), true);
   w.server.store.reserve(asked.request, asked.body); w.server.store.classify(asked.request, asked.body);
   assert.deepEqual(w.calls.map(call => [call[0], call[3]]), [['reserve', { journaledOnly: true }], ['classify', { journaledOnly: true }]]);
-  for (const effect of [() => w.server.store.issueContextChallenge(asked.request, {}),
-    () => w.server.store.attemptContextPresentation(asked.request, {}), () => w.server.store.resume({}, asked.request),
+  for (const effect of [() => w.server.store.challenges.issue(asked.request, {}),
+    () => w.server.store.challenges.attempt({request:asked.request}), () => w.server.store.resume({}, asked.request),
     () => w.server.store.reconcile({}, asked.request, 200, '{}', { retry: true }),
     () => w.server.store.reconcile({}, asked.request, 200, '{}', { noEffect: true })]) {
     assert.throws(effect, error => error.status === 408 && ['peer_expired', 'peer_delegation_expired'].includes(error.code));
@@ -238,8 +237,8 @@ for (const delegated of [false, true]) test(`effect entry rechecks expired reque
 test('effect entry rechecks delegation expiry after successful validation', async () => {
   const w = world({ delegated: true, context: true }), asked = await w.request();
   w.validate(asked); w.setTime(1500);
-  for (const method of ['issueContextChallenge', 'attemptContextPresentation']) {
-    assert.throws(() => w.server.store[method](asked.request, {}), { code: 'peer_delegation_expired', status: 408 });
+  for (const action of [() => w.server.store.challenges.issue(asked.request, {}), () => w.server.store.challenges.attempt({request:asked.request})]) {
+    assert.throws(action, { code: 'peer_delegation_expired', status: 408 });
   }
   assert.equal(w.calls.length, 0);
 });

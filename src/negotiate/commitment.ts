@@ -1085,7 +1085,7 @@ function validateAgreementBindingForPattern(
     "alternativePayment",
     `${pattern} agreement binding input`,
   );
-  const input = snapshotCanonicalJson(
+  const input = snapshotCanonicalJsonRead(
     {
       agreement: ownDataProperty(
         callerInput,

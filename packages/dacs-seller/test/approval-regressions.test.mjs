@@ -89,6 +89,19 @@ test('a plain manual approval whose request changes while it waits for the ledge
  assert.equal(existsSync(f.evidencePath),false);assert.equal(Object.isFrozen(r),false);
 });
 
+test('a held attempt\'s manual approval whose request changes while it waits for the ledger lock is refused, writes no line and does not freeze',async t=>{
+ const f=await fixture(t),r=requestFor({artifactKind:'CompositeVerificationRecord'});let approved;const answered=new Promise(done=>{approved=done;});
+ assert.equal((await f.p.decide(r)).outcome,'held');
+ const [attemptId]=[...(await f.read()).attempts.keys()],before=await readFile(f.evidencePath,'utf8');
+ const approve=createExactOperatorApproval({...f.settings,authorize:()=>{approved();return true;}});
+ let release;const gate=new Promise(done=>{release=done;});
+ const writer=serializedPolicy(f.evidencePath,()=>gate),pending=approve(r,undefined,{attemptId});
+ await answered;await new Promise(done=>setImmediate(done));
+ r.content.exactCreate='{"changed":true}';release();await writer;
+ assert.equal(await pending,false);
+ assert.equal(await readFile(f.evidencePath,'utf8'),before);assert.equal(Object.isFrozen(r),false);
+});
+
 for(const [state,found] of [
  ['closed',{...unpaid(),prePaymentOpen:false}],
  ['paid',{...purchase(),prePaymentOpen:null}],
