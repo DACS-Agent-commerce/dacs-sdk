@@ -6395,6 +6395,27 @@
           "after": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
         }
       ]
+    },
+    {
+      "delta": "D25",
+      "subject": "delta(client): D25 accept the reviewed testnet block layout",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "75913557cd68e57668189f8fcc33ca674bebd7e0"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "4ba56c73af306778fef8531dd80bf48404d581b6",
+          "after": "2780fc9823cc2f5641992981217c13c94b3bdbcb"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-real-block-layout.test.mjs",
+          "before": null,
+          "after": "329b22f692f1e31f0ce48e0020d57f4b5e88ec4f"
+        }
+      ]
     }
   ]
 }
