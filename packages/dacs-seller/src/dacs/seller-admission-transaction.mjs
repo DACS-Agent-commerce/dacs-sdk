@@ -104,7 +104,7 @@ function contextOutcomeClass(row, outcome) {
  * Throws TypeError for an unusable option; operations reject with a SellerTransportError (guard errors keep their own class) that keeps its cause.
  */
 export function createContextAdmissionTransaction({ store, policy, capacity = null, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
-  const { db, transaction, challenges, admissionCounts, limits } = sellerStoreInternals(store);
+  const { db, transaction, challenges, admissionCounts, limits, retireSlotsWithin } = sellerStoreInternals(store);
   if (![policy?.reserve, policy?.release, effectEvidence, inspectContextOutcome, completeWire, now, ready].every((port) => typeof port === 'function')
     || !Number.isSafeInteger(deadlines?.policyMs) || deadlines.policyMs <= 0
     || (capacity !== null && !['fitsNewPurchase', 'allocateWithin'].every((name) => typeof capacity?.[name] === 'function'))) {
@@ -551,6 +551,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     for (const { jobId } of unfinished) {
       try { await sweepRow(jobId, startup); } catch (fault) { faults.push(fault); }
     }
+    const time = now(); if (Number.isSafeInteger(time) && time >= 0) transaction(() => retireSlotsWithin(time));
     if (faults.length > 0) throw new AggregateError(faults, 'the sweep could not record the state of every row it visited');
   }
   // Not behind the kit operation guard: the sweep starts no effect, and with the guard off it only finishes the cleanup of rows that exist.
