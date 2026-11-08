@@ -182,8 +182,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       try { body = admitRawJson(rawBody); } catch { return await send(res, 400, { error: 'bad_json' }, null); }
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       if (authentication) {
-        const opened = await auth.open({ header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; },
-          ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
+        let opened;
+        try {
+          opened = await auth.open({ header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; },
+            ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
+        } catch (error) { if (contextStep && request) context.attemptRefused?.(request, error?.code); throw error; }
         body = opened.body;
         // A signed read reserves and completes nowhere: it answers from the agent's current state.
         if (opened.read) {
@@ -283,7 +286,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       // refusal to store an unsignable answer does; any other error leaves the effect uncertain.
       const refusal = (error instanceof SellerTransportError || error instanceof WireError) && (beforeEffect || error.code === 'outgoing_body_rejected');
       // A refusal the agent settled inside its fence is answered as settled.
-      const outcome = fenced ?? (refusal ? { status: error.status, value: { error: error.code, message: error.message } }
+      const outcome = fenced ?? (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(error.code === 'context_challenge_failed' && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
         : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId, body), resumed: reservation?.resumed === true }));
       const { status, value: answer } = outcome;
       if (authentication && reservation?.disposition === 'perform' && !settled) {

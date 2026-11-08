@@ -569,7 +569,10 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const loseJobLock = (jobId) => { const db = new DatabaseSync(join(dataDirectory, 'seller', 'seller-state.sqlite')); try { db.prepare('DELETE FROM seller_locks WHERE job=?').run(jobId); } finally { db.close(); } };
   const rails = { authority: steward.railAuthority() };
   const hosts = [];
-  t.after(async () => {try{for (const host of hosts) await host.close();}finally{journal.close();deliveryJournalWallet?.close();rmSync(dataDirectory,{recursive:true,force:true});rmSync(walletDirectory,{recursive:true,force:true});} });
+  // An agent composed over a stopped host's state takes the host's own challenge ledger, its transport store.
+  const ledgerStores = [];
+  const hostLedger = () => { const store = seller.createSellerTransportStore({ path: join(dataDirectory, 'transport', 'transport.sqlite'), now: clock }); ledgerStores.push(store); return store.challenges; };
+  t.after(async () => {try{for (const host of hosts) await host.close();}finally{for (const store of ledgerStores) store.close();journal.close();deliveryJournalWallet?.close();rmSync(dataDirectory,{recursive:true,force:true});rmSync(walletDirectory,{recursive:true,force:true});} });
   const capabilities = () => ({ signer: sellerSigner, listing,
     buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: jobId => buyerBundles.has(jobId) ? buyerKey.address : null, ...buyerAccessOptions }), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
@@ -613,7 +616,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // read with the host stopped, from the host's own durable state.
   const retainedSession = async (jobId) => {
     await host.close(); hosts.splice(hosts.indexOf(host), 1);
-    const agent = await seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor });
+    const agent = await seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger() });
     try { return agent.durableSessionOf(jobId); } finally { agent.close(); }
   };
   // A host process that died in the middle of a buyer's payment claim: its
@@ -638,7 +641,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentFor = async ({ stopHost = true, readIssued = null, deliveryEvidenceEnabled: publishEvidence = deliveryEvidenceEnabled, beforePublish = null } = {}) => {
     if (stopHost) { await host.close(); hosts.splice(hosts.indexOf(host), 1); }
     const anchor = beforePublish ? { ...artifactAnchor, publish: async input => { await beforePublish(); return artifactAnchor.publish(input); } } : artifactAnchor;
-    return seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence });
+    return seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger() });
   };
   // Model an authenticated checkpoint written by an older agent before its
   // adapter recovery fix, using the store's own fenced save and signature.

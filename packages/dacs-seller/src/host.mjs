@@ -19,7 +19,9 @@
 // is still authorized, instead of holding the paid order for good.
 // Each new session is opened only for a presentation that carries a
 // challenge this host issued for its job and buyer (`issueSessionChallenge`,
-// which the operator hands to the buyer; the first attempt consumes it), on a
+// which the operator hands to the buyer; the first attempt consumes it) into
+// the transport store's one challenge ledger, an interim entry until the host
+// mounts the context routes (SA-3), on a
 // Listing the agent's own revocation check (core checkListingRevocation over
 // the operator's readings) finds not revoked, and under the operator's
 // seller-owned sessionAdmission (session-admission.mjs): both parties' exact
@@ -36,6 +38,7 @@
 // every answer through that context (seller-wire-requests.mjs), with the transport
 // store as their journal; the payment and bundle routes still use the old server auth.
 import { existsSync, mkdirSync, opendirSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
@@ -51,6 +54,7 @@ import { createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore } from './dacs/seller-transport-auth.mjs';
 import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
+import { stopRequested } from './devnet-demo/stop-request.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
 import { isPrivateDirectory } from './private-directory.mjs';
@@ -61,7 +65,7 @@ import { isPrivateDirectory } from './private-directory.mjs';
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network']);
-const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
+const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now', 'contextSessionState']);
 const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 // The startup binding read is bounded; a later answer grants nothing.
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
@@ -236,7 +240,15 @@ export async function startSellerHost(options) {
   if (missing.length) throw new TypeError(`the seller host requires ${missing.join(', ')}`);
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, tp1Network, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS,
-    host = '127.0.0.1', port = 0, now = () => Date.now() } = options;
+    host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
+  if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
+  const sessionState = input => {
+    try {
+      const value = contextSessionState(input);
+      if (value && typeof value.then === 'function') Promise.resolve(value).then(undefined, () => {});
+      return typeof value === 'string' ? value : null;
+    } catch { return null; }
+  };
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
@@ -267,22 +279,28 @@ export async function startSellerHost(options) {
   };
   const shutdown = new AbortController();
   try {
+    const generation = randomBytes(16).toString('hex');
     await assertKitDataFormat(dataDirectory, DURABLE_SYNC);
     const transport = join(dataDirectory, 'transport');
     const journalDirectory = join(dataDirectory, JOURNAL_DIRECTORY);
     if (!existsSync(join(dataDirectory, TRANSPORT_STORE_FILE))) assertJournalHoldsNoAccounting(journalDirectory);
+    // The store comes first: its one challenge ledger is the agent's only challenge store, and the agent checks the
+    // sessions it restores against that ledger.
+    mkdirSync(transport, { recursive: true, mode: 0o700 });
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, generation, stopped: stopRequested, contextSessionState: sessionState });
+    opened.push(() => store.close());
+    // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
+    // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
+    store.challenges.closeLostValidations();
+    store.recoverLostContextReservations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
-      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE });
+      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE });
     opened.push(() => agent.close());
     // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
     for (const { job, reason } of agent.releaseStaleLocks()) {
       process.stderr.write(`seller-state: released the lock on job ${job} left by a holder that is gone (${reason})\n`);
     }
-    mkdirSync(transport, { recursive: true, mode: 0o700 });
-    // Likewise a context step still pending in the journal has no run left: it opens as uncertain.
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, markPendingContextEffectsUncertain: true });
-    opened.push(() => store.close());
     // An existing path is left to the journal's own checks, which refuse a symlink, a
     // file or a directory others can write, with their detail.
     try { mkdirSync(journalDirectory, { mode: 0o700 }); } catch (error) { if (error.code !== 'EEXIST') throw error; }
@@ -298,9 +316,9 @@ export async function startSellerHost(options) {
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before
     // the parents are synced could come back, after power loss, to state the host
-    // believes was never created and start again empty: seller/ was created by
-    // the durable state, transport/ and wire-journal/ here, and no parent entry
-    // has been synced yet.
+    // believes was never created and start again empty: transport/ and
+    // wire-journal/ were created here, seller/ by the durable state, and no
+    // parent entry has been synced yet.
     await DURABLE_SYNC.directory(transport);
     await DURABLE_SYNC.directory(dataDirectory);
     const authentication = createSellerTransportServerAuth({ sellerSigner: signer, listingPin: agent.listingPin, store, now });
@@ -382,7 +400,8 @@ export async function startSellerHost(options) {
       seller: agent.claim,
       timeouts: { ...TIMEOUTS },
       // CORE SN-1..SN-4: { jobId, buyer, sessionNonce, issuedAt, expiresAt },
-      // kept durably before it is returned; the buyer's bundle presents it.
+      // kept in the one challenge ledger before it is returned; the buyer's bundle presents it.
+      // The agent's refusals are forwarded, `session_admission_unavailable` when it has no session admission.
       // Once shutdown has begun the host refuses to issue, even while the
       // agent itself is still open for the requests that are draining.
       issueSessionChallenge: (input) => {
