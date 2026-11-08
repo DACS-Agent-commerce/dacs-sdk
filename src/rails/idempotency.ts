@@ -9,6 +9,7 @@ import {
 } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
  * Settlement idempotency (issue #43).
@@ -233,16 +234,6 @@ function leaseExpiry(now: number, duration: number): number {
     throw new DacsError("settlement lease timestamp or duration is invalid");
   }
   return now + duration;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const item of Object.values(value as Record<string, unknown>)) {
-      deepFreeze(item);
-    }
-    Object.freeze(value);
-  }
-  return value;
 }
 
 function frozenClone<T>(value: T, label: string): Readonly<T> {

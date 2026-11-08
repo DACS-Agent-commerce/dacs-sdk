@@ -7,6 +7,7 @@ import {
 } from "../canonical/index.js";
 import { DacsError } from "../errors.js";
 import type { AttestationRef } from "../artifacts/types.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const BASE64URL_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
@@ -509,15 +510,6 @@ function validReceiptTransactionRef(value: Ap2ReceiptTransactionRef): boolean {
   return value !== null && typeof value === "object" &&
     typeof value.kind === "string" && value.kind.length > 0 &&
     typeof value.value === "string" && value.value.length > 0;
-}
-
-function deepFreeze<T>(value: T, seen = new Set<object>()): Readonly<T> {
-  if (value === null || typeof value !== "object") return value;
-  const object = value as object;
-  if (seen.has(object)) return value;
-  seen.add(object);
-  for (const child of Object.values(object)) deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function snapshotArtifact<T>(value: Readonly<T>, label: string): Readonly<T> {

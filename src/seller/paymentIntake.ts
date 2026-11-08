@@ -45,6 +45,7 @@ import {
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
 } from "./fulfilmentAuditSource.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export type SellerPaymentIntakeDisposition =
   | "verified"
@@ -905,15 +906,6 @@ type SecurityBoundaryResult<T> =
   | { status: "ok"; value: T }
   | { status: "threw" | "invalid-input" | "invalid-output" | "mutated-input" };
 
-function deepFreezeJson<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreezeJson(child, seen);
-  }
-  return Object.freeze(value);
-}
-
 /** Snapshot a security-bearing callback result before its first property read. */
 async function callSecurityBoundary<T>(
   call: () => T | Promise<T>,
@@ -942,7 +934,7 @@ async function callSecurityBoundaryWithInput<I, O>(
   let isolated: I;
   let canonical: string;
   try {
-    isolated = deepFreezeJson(structuredClone(input));
+    isolated = deepFreeze(structuredClone(input));
     canonical = canonicalize(isolated);
   } catch {
     return { status: "invalid-input" };

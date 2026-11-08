@@ -4,6 +4,7 @@ import type { VerificationDecision } from "../artifacts/types.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJson } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** DACS-3 §8.3.3 v0.x closed channel-message type set. */
 export type ChannelMessageType =
@@ -145,22 +146,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isSafeTime(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    seen.has(value as object) ||
-    Object.isFrozen(value)
-  ) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as DataRecord)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function failure(

@@ -43,6 +43,7 @@ import {
   deriveX402ReceiptCommitment,
   verifyX402ReceiptClaim,
 } from "./x402Receipt.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -306,15 +307,6 @@ function isCommittedSessionScope(value: unknown): value is X402SellerCommittedSe
     isNonEmpty(value.commitmentRef) && typeof value.commitmentContentHash === "string" &&
     HASH_RE.test(value.commitmentContentHash) && isSafeUint(value.commitmentFinalizedAt) &&
     validExpectedTerms(value.expected);
-}
-
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    if (ArrayBuffer.isView(value)) return value;
-    Object.freeze(value);
-    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
-  }
-  return value;
 }
 
 function ownedFrozen<T>(value: T): Readonly<T> | null {

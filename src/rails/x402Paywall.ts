@@ -10,6 +10,7 @@ import {
   x402Eip3009Nonce,
   type SellerPaymentClaim,
 } from "../seller/paymentIntake.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** Framework-neutral subset required by `@x402/core`'s HTTP adapter. */
 export interface X402PaywallHttpAdapter {
@@ -869,20 +870,6 @@ function verifySuccessfulSettlement(
 
 function exactData(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(left, right);
-}
-
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    // structuredClone already gave us an owned byte view. V8 refuses to freeze
-    // non-empty typed arrays; no external reference can mutate this copy while
-    // the core validates and returns it.
-    if (ArrayBuffer.isView(value)) return value;
-    Object.freeze(value);
-    for (const child of Object.values(value as Record<string, unknown>)) {
-      deepFreeze(child);
-    }
-  }
-  return value;
 }
 
 function ownedFrozen<T>(value: T): Readonly<T> | null {

@@ -23,6 +23,7 @@ import {
   type RfqTurnBody,
 } from "./rfq.js";
 import type { VerifiedListingInput } from "./fixedPrice.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export interface VerifiedRfqTranscript<TSignature = unknown> {
   transcriptVersion: "1";
@@ -96,22 +97,6 @@ const DECISIONS: ReadonlySet<string> = new Set<VerificationDecision>([
   "indeterminate",
   "error",
 ]);
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    seen.has(value as object) ||
-    Object.isFrozen(value)
-  ) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as DataRecord)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
 
 function exact(left: unknown, right: unknown): boolean {
   return canonicalize(left) === canonicalize(right);

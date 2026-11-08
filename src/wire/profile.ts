@@ -11,7 +11,8 @@ import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_REFUSED_CHAIN_IDENTITIES } from "./approval.js";
 import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_V1 } from "./routes.js";
-import { deepFreeze, fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
+import { fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export const TP1_PROFILE_ID = "dacs-testnet-tp1";
 /** The profile revision. Each later revision (TP-1.1, ...) is a new value with its own base. */
