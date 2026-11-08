@@ -60,11 +60,10 @@ test('missing buyer verifier refuses before any CVR signature or native effect',
 test('a repeated resolveBuyer without a buyer verifier answers from the stored counterparty record',async()=>{
  const w=fixture(),input=w.input(),first=await w.provider().resolveBuyer(input);assert.equal(first.disposition,'present');
  const {createDevnetDemoAgreementContextProvider}=await import('../src/devnet-demo/agreement-context.mjs');
- const {counterparty,...withoutVerifier}=w.config;
- const p=createDevnetDemoAgreementContextProvider(withoutVerifier),seen=w.seen.length;
+ const p=createDevnetDemoAgreementContextProvider({...w.config,counterparty:null}),signs=w.controls.signs;
  const repeated=await p.resolveBuyer(input,{writable:()=>true});
  assert.equal(repeated.disposition,'present');assert.deepEqual(repeated.value.input.seller.identityBundle,first.value.input.seller.identityBundle);
- assert.equal(w.seen.length,seen);
+ assert.equal(w.controls.signs,signs);
 });
 
 test('an existing context is suspended when fresh receipt readback loses authority',async()=>{
