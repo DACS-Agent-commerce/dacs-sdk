@@ -365,7 +365,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         });
       },
       sessions: () => db.prepare('SELECT job FROM seller_jobs ORDER BY job').all().map(({ job }) => load(job).session),
-      /** Yields signed legacy acceptances for migration only; corrupt signed state throws seller_state_corrupt. */
+      /** Yields signed legacy acceptances for migration only; corrupt signed state throws seller_state_corrupt, and a signed job binding that cannot migrate throws seller_job_bound. */
       *legacyAcceptedChallenges() {
         for (const row of db.prepare("SELECT id, value FROM seller_effects WHERE id LIKE 'session-challenge:%' ORDER BY id").iterate()) {
           const challenge = verified(row.value, 'effect', row.id);
@@ -373,8 +373,12 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           if (challenge.attempt?.admitted !== true) continue;
           const binding = effect(`session-job:${challenge.jobId}`);
           const buyerBundleHash = binding?.buyerBundleHash ?? load(challenge.jobId)?.session.buyerBundleHash;
-          // An old wrapperless admission with no session or binding names no bundle: nothing to restore, and it never authorizes.
-          if (challenge.attempt.accepted === undefined && buyerBundleHash === undefined) continue;
+          if (challenge.attempt.accepted === undefined && buyerBundleHash === undefined) {
+            // The signed binding holds the job for its first buyer, but without a bundle hash it cannot move into the ledger: refuse rather than free the job.
+            if (binding !== null) fail('seller_job_bound', new Error(`the signed binding of job ${challenge.jobId} names no bundle hash and no session was saved`));
+            // No session and no binding names nothing to restore or hold, and it never authorizes.
+            continue;
+          }
           yield { ...challenge, buyerBundleHash };
         }
       },

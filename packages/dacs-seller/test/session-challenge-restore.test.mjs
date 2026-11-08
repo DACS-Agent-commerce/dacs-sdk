@@ -34,12 +34,15 @@ async function acceptedFixture(t, { legacy = false, save = true, vetted = false 
     issuedAt: challenge.issuedAt, expiresAt: challenge.expiresAt, attempt: { presentationHash: challenge.presentationHash,
       admitted: true, accepted: { buyerBundle: input.buyerIdentityBundle, buyerBundleHash: challenge.accepted.buyerBundleHash,
         admission: challenge.accepted.admission, admittedAt: challenge.accepted.admittedAt } } };
-  const writeLegacy = body => database(join(f.dir, 'seller-state.sqlite'), db => {
-    const id = `session-challenge:${nonce}`;
+  const writeEffect = (id, body) => database(join(f.dir, 'seller-state.sqlite'), db => {
     const payload = { version: '1', kind: 'effect', id, seller: f.config.signer.claim, listingPin: listingPin(f.listing), body };
     const signature = f.config.signer.sign(Buffer.from(SELLER_STATE_SIGNING_DOMAIN + canonicalize(payload))).toString('base64url');
     db.prepare('INSERT OR REPLACE INTO seller_effects VALUES (?, ?)').run(id, JSON.stringify({ payload, signature }));
   });
+  const writeLegacy = body => writeEffect(`session-challenge:${nonce}`, body);
+  // The binding the old writer stored beside a wrapperless admission: it carried no bundle hash.
+  const writeLegacyBinding = () => writeEffect(`session-job:${JOB}`, { kind: 'session-job', jobId: JOB, buyer: buyer.claim,
+    presentationHash: challenge.presentationHash, sessionNonce: nonce, admittedAt: null });
   if (legacy) {
     writeLegacy(legacyBody);
     database(f.storePath, db => {
@@ -47,7 +50,7 @@ async function acceptedFixture(t, { legacy = false, save = true, vetted = false 
       if (db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'kit_accepted_challenges'").get()) db.exec('DELETE FROM kit_accepted_challenges');
     });
   }
-  return { ...f, get store() { return f.store; }, f, nonce, input, challenge, legacyBody, writeLegacy };
+  return { ...f, get store() { return f.store; }, f, nonce, input, challenge, legacyBody, writeLegacy, writeLegacyBinding };
 }
 
 test('legacy accepted challenges restore existing sessions after upgrade', async t => {
@@ -239,6 +242,28 @@ test('a legacy admission with no wrapper, session or bundle hash neither stops s
     fresh.close(); w.f.reopenStore();
   }
   assert.equal(w.admission.calls.filter(([name]) => name === 'admit').length, 1);
+});
+
+test('a legacy admission with no wrapper or session but a signed job binding keeps refusing startup instead of freeing the job', async t => {
+  for (const retired of [false, true]) {
+    const w = await acceptedFixture(t, { legacy: true, save: false });
+    const body = structuredClone(w.legacyBody); delete body.attempt.accepted; if (retired) body.attempt.retired = true;
+    w.writeLegacy(body); w.writeLegacyBinding();
+    for (let start = 0; start < 2; start++) {
+      await assert.rejects(w.open(), error => error.code === 'seller_job_bound', `retired=${retired} start=${start}`);
+      assert.deepEqual(counts(w), { active: 0, proofs: 0, bindings: 0 });
+      w.f.reopenStore();
+    }
+  }
+});
+
+test('a legacy admission with no wrapper and a signed job binding still imports when its saved session names the bundle', async t => {
+  const w = await acceptedFixture(t, { legacy: true, vetted: true });
+  const body = structuredClone(w.legacyBody); delete body.attempt.accepted;
+  w.writeLegacy(body); w.writeLegacyBinding();
+  assert.deepEqual((await w.open()).durableSessions()[0].buyerBundle, w.input.buyerIdentityBundle);
+  assert.deepEqual(counts(w), { active: 1, proofs: 1, bindings: 1 });
+  assert.equal(w.store.challenges.jobBinding(JOB).buyerBundleHash, identityBundleHash(w.input.buyerIdentityBundle));
 });
 
 test('a retired legacy admission keeps its proof and job binding without taking active challenge capacity', async t => {
