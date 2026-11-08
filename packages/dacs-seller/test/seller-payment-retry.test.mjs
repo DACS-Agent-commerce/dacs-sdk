@@ -16,8 +16,7 @@ import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
 import * as transport from '../src/index.mjs';
 const seller={...transport,...listingApi,agreementInput,listingPin};
-import { transportOutcome } from '../src/dacs/seller-agent.mjs';
-import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 
 let walletSequence=60;
 function key() { const w=testWallet(walletSequence++);return {...w,sign:w.signBytes,signWallet:message=>'0x'+w.signBytes(Buffer.from(message)).toString('hex')}; }
@@ -33,8 +32,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
   const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-')));
-  let time = NOW; const clock = () => time;
-  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:clock });
+  const store = seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [];
   let proposalCalls = 0;
@@ -43,15 +41,8 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
     retainsPaymentClaim:()=>false,
     submitPayment: async (body) => { calls.push(body.txHash); return structuredClone(answers[Math.min(calls.length - 1, answers.length - 1)]); } };
-  facade.reconcileTransport = async ({ request, body, transport }) => {
-    const claimed = transport.claim();
-    assert.equal(claimed.live, true);
-    const answer = request.path.endsWith('/proposals') ? await facade.receiveProposal(body) : await facade.submitPayment(body);
-    const outcome = transportOutcome(request.path, { answer }, { retained: request.path.endsWith('/proposals'), recovering: true });
-    if (outcome.settle) transport.settle(outcome);
-  };
-  const { wire, buyerWire, createBuyer } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock });
-  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,now:clock }) });
+  const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: () => NOW });
+  const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,now:()=>NOW }) });
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
     Object.assign(req, { url: new URL(url).pathname, method: init.method, headers: { ...init.headers }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
@@ -60,20 +51,13 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
     await handle(req, res);
     return new Response(res.text, { status: res.status, headers: res.headers });
   };
-  const clientFor = buyer => seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl, authentication: buyer.authentication(() => plan.agreementHash) });
-  const client = clientFor(buyerWire);
+  const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl,
+    authentication: buyerWire.authentication(() => plan.agreementHash) });
   await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
   const claim = { jobId, txHash: 'a1'.repeat(32), payerPayingKey: buyerKey.claim, nativePaymentEvidence: 'sdk-pay-dem-intake-native-evidence/loopback-v1' };
-  const pay = async (body = claim) => {
-    const view = inspectWireOperation(wire.journal, { seller: sellerKey.claim, jobId, path: '/dacs/v1/payments' });
-    if (view.state === 'pending' && calls.at(-1) === body.txHash) time = view.leaseUntil;
-    try { return await clientFor(await createBuyer()).submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
+  const pay = async (body = claim) => { try { return await client.submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
   return { calls, claim, pay, proposalCalls: () => proposalCalls,
-    propose: async () => {
-      const view = inspectWireOperation(wire.journal, { seller: sellerKey.claim, jobId, path: '/dacs/v1/agreements/proposals' });
-      if (view.state === 'pending') time = view.leaseUntil;
-      return clientFor(await createBuyer()).propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
-    } };
+    propose: () => client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) };
 }
 
 test('an indeterminate answer before the evidence checkpoint keeps nothing: the same claim reaches intake again and the delivery is then final', async (t) => {
@@ -82,7 +66,7 @@ test('an indeterminate answer before the evidence checkpoint keeps nothing: the 
   assert.deepEqual(await w.pay(), DELIVERED, 'the transfer, now included, reaches payment intake');
   assert.deepEqual(await w.pay(), DELIVERED, 'the delivered answer is freshly authenticated');
   assert.equal(w.calls.length, 3);
-  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), DELIVERED, 'the same normalized transaction is freshly authenticated');
+  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), { error: 'peer_operation_conflict', status: 409 }, 'a delivered job takes no other claim');
 });
 
 test('a corrected claim after an indeterminate answer is not a conflict: nothing was bound to the first body', async (t) => {
@@ -92,11 +76,11 @@ test('a corrected claim after an indeterminate answer is not a conflict: nothing
   assert.deepEqual(w.calls, ['b2'.repeat(32), w.claim.txHash]);
 });
 
-test('a held answer is recovered after its lease on a fresh nonce; a pending attempt runs no other body', async (t) => {
+test('a held answer after the evidence checkpoint runs the agent again on a fresh nonce; another body still conflicts', async (t) => {
   const held = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
   const w = await world(t, [held, held, DELIVERED]);
   assert.deepEqual(await w.pay(), held);
-  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), { error: 'seller_unavailable', status: undefined }, 'a pending wire attempt runs no other body');
+  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), { error: 'peer_operation_conflict', status: 409 }, 'the held effect stays bound to its body');
   assert.deepEqual(await w.pay(), held, 'the readback is still absent');
   assert.deepEqual(await w.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
   assert.deepEqual(await w.pay(), DELIVERED);

@@ -99,11 +99,6 @@ or `unreadable`); nothing is migrated. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
 
-Signed effect routes commit reservation accounting before the wire journal
-publishes their attempt. Retries reconcile retained work after its 300 s lease;
-completed outcomes use the existing source checks before answering. Signed
-reads create no reservation rows or journal files.
-
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`
 build the signed Listing; a wallet signs the returned messages. A buyer
