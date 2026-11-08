@@ -225,7 +225,11 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
       expect(route({ blacksmith: "on", author: "outsider", actor: "outsider", triggering: "outsider" })).toBe(BLACKSMITH);
     });
 
-    it("leaves routing unchanged unless the switch is exactly on", () => {
+    it("treats the switch as on in any letter case, as GitHub's == does", () => {
+      for (const blacksmith of ["ON", "On", "oN"]) expect(route({ blacksmith })).toBe(BLACKSMITH);
+    });
+
+    it("leaves routing unchanged unless the switch is on", () => {
       for (const blacksmith of ["off", "", "yes", "ON "]) {
         expect(route({ blacksmith })).toEqual(POOL);
         expect(route({ blacksmith, node: "20.19.0" })).toBe("ubuntu-latest");
