@@ -58,7 +58,8 @@ export class SellerTransportError extends Error {
   constructor(code, status = 401, options) { super(code, options); this.code = code; this.status = status; }
 }
 
-function pinValid(pin) {
+/** True for a Listing pin of exactly `{ listingId, version, contentHash }` with a non-empty id, a positive version and a SHA-256 hex hash. */
+export function pinValid(pin) {
   return keys(pin, ['listingId', 'version', 'contentHash']) &&
     typeof pin.listingId === 'string' && pin.listingId.length > 0 && pin.listingId.length <= 256 &&
     uint(pin.version) && pin.version > 0 && typeof pin.contentHash === 'string' && isHash(pin.contentHash);
@@ -223,6 +224,7 @@ const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (
 // Read-only membership test for the challenge ledger; nothing may add to it.
 export const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
 const CHALLENGE_RATE_WINDOW_MS = 3600000;
+const storeInternals = new WeakMap();
 const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
 const NO_DELEGATION = Object.freeze({ assertStillLive: () => {} });
 // The route's default unpaid-start limits (seller-context-route.mjs SELLER_CONTEXT_LIMITS).
@@ -265,6 +267,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS peer_nonce_retention (nonce TEXT PRIMARY KEY, buyer TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS kit_context_reservations (effect TEXT PRIMARY KEY, nonce TEXT NOT NULL UNIQUE, accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)));
     CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY REFERENCES peer_jobs(job) ON DELETE CASCADE, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS kit_context_admissions (jobId TEXT PRIMARY KEY, buyer TEXT NOT NULL, admittedAt INTEGER, state TEXT NOT NULL, rev INTEGER NOT NULL, record TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS kit_context_admissions_starts ON kit_context_admissions(admittedAt, buyer);
     CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
     CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
     CREATE INDEX IF NOT EXISTS peer_nonces_effect ON peer_nonces(effect);`);
@@ -348,11 +352,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   function deleteEffect(effect) {
     for (const table of ['peer_effects', 'kit_context_reservations', 'peer_slots', 'peer_transactions', 'peer_effect_jobs', ...(admissions() ? ['peer_context_admissions'] : [])]) run(`DELETE FROM ${table} WHERE effect = ?`, effect);
   }
-  const starts = (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0;
-  // The ledger's unpaid-start counts over this journal's admission records (SA-5).
+  const startsIn = (table, column, since, buyer) => get(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n;
+  const starts = (since, buyer) => (admissions() ? startsIn('peer_context_admissions', 'admitted_at', since, buyer) : 0) + startsIn('kit_context_admissions', 'admittedAt', since, buyer);
+  // The ledger's unpaid-start counts over the union of this journal's admission records and the K1 admission rows (SA-5):
+  // a start counts once admitted, compensated ones included; an intent that never admitted has no `admittedAt`.
   function admissionCounts() {
     const time = now(), since = time - CHALLENGE_RATE_WINDOW_MS;
-    return { contextRecords: (admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - reclaimableContexts(time).length,
+    return { contextRecords: (admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) + get('SELECT COUNT(*) AS n FROM kit_context_admissions').n - reclaimableContexts(time).length,
       starts: starts(since), buyerStarts: buyer => starts(since, buyer) };
   }
   const { maxStartsPerHour, maxStartsPerBuyerPerHour } = contextStartLimits;
@@ -370,7 +376,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     issue: (request, challengeScopeHash, authorization = NO_DELEGATION) => ledger.issue({ jobId: request?.jobId, buyer: request?.buyer }, challengeScopeHash, authorization),
     issueForOperator: request => ledger.issueForOperator({ jobId: request?.jobId, buyer: request?.buyer }),
     accept: (owner, nonce, record) => transaction(() => acceptWithin(owner, nonce, record)) });
-  return {
+  const store = {
     challenges,
     // Only the holder of the seller state lock calls this at startup, after `challenges.closeLostValidations()`
     // and before serving or policy-hold reconciliation: every context step still `pending` belongs to a dead owner.
@@ -701,6 +707,20 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     close: () => db.close(),
     journaledOnlyReserve: true,
   };
+  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }) }));
+  return store;
+}
+
+/**
+ * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, limits }`
+ * (`limits`: the context-record and unpaid-start limits the ledger enforces at issue), for the seller's own admission modules, which run
+ * their reads and writes in that store's immediate transactions. It hands out the raw handle: only code that owns the store holds it.
+ * Throws a TypeError for anything else.
+ */
+export function sellerStoreInternals(store) {
+  const internals = typeof store === 'object' && store !== null ? storeInternals.get(store) : undefined;
+  if (internals === undefined) throw new TypeError('sellerStoreInternals needs a store from createSellerTransportStore');
+  return internals;
 }
 
 /** Create request validation and response signing over a supplied store; throw on invalid configuration. */
