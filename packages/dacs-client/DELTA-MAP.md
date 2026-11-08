@@ -260,7 +260,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - `P21a3aa` — adds the internal signer reservation's records and claim path. New `src/wallet/signer-reservation.mjs` keeps one ownership record per signer, the immutable signed-transaction record and attempt-scoped append-only dispatch history in the client durable journal. `reserve` claims under the signer's journal lock before a nonce is chosen: a different operation or key is `signer_lane_busy`, an unsent repeat returns the stored reservation without a write or a chain read, a possible dispatch refuses, and a fresh attempt takes `max(chain + 1, floor)` or refuses `invalid_nonce`. `bindApprovalIntent`, `bindApproval` (a null manual id stays in this instance) and `bindSigned` (attempt, immutable transaction, signed stage, ownership link) commit in that order with a readback after any failed put, `recordStage` appends one history entry, and `current` and `ownerOfHash` only read. `node-wallet-session.mjs` creates the instance for each seller composition and exposes no member for it; `package.json` ships the new file and `scripts/release-policy.json` pins the new manifest. Terminal transitions, reconciliation and the adapter are not in this change. Every record the module will write is measured against the journal's own `maxValueBytes`, which `openDurableWalletJournal` now returns (256 KiB only for a journal that reports none), and the ownership record is measured at the widest revision because each later write widens it. Each follow-up commit has its own record or inventory row, and a record that names a full commit hash accepts any `fix(<area>): ` subject.
 
-- `P21a3ab` — completes the signer reservation's lifecycle. `consume` settles only on an authenticated execution of the exact stored bytes, `retireNeverDispatched` and `retireUnsigned` release the nonce without advancing the floor, `adopt` and `boundUnsent` return an unsent bound attempt, and `resolveApprovalIntent` looks an unbound intent up by its exact stored text and refuses any unavailable, ambiguous or malformed answer. Every step is one journal write, so `reserve` (for its signer) and `recover` (every signer, at composition start) finish any crash prefix, including a pre-link bind prefix whose retirement stopped part-way, without touching a newer owner. `releaseAbandonedJournalLocks` removes lock rows of dead holders only when the host proves it holds the state directory, never a row of this process, never by time, and changes no record. `createNodeSellerComposition` now requires `stateOwnership` and runs `recover` before it returns. `createSignerReservations` now takes `openApproval` and `settleApproval`, which refuse by default. Payment-evidence use of these operations remains with the adapter cards.
+- `P21a3ab` — completes the signer reservation's lifecycle. `consume` settles only on an authenticated execution of the exact stored bytes, `retireNeverDispatched` and `retireUnsigned` release the nonce without advancing the floor, `adopt` and `boundUnsent` return an unsent bound attempt, and `resolveApprovalIntent` looks an unbound intent up by its exact stored text and refuses any unavailable, ambiguous or malformed answer. Every step is one journal write, so `reserve` (for its signer) and `recover` (every signer, at composition start) finish any crash prefix, including a pre-link bind prefix whose retirement stopped part-way, without touching a newer owner. `releaseAbandonedJournalLocks` removes lock rows of dead holders only when the host proves it holds the state directory, never a row of this process, never by time, and changes no record. `createNodeSellerComposition` now requires `stateOwnership` and runs `recover` before it returns. `createSignerReservations` now takes `openApproval` and `settleApproval`, which refuse by default. Payment-evidence use of these operations remains with the adapter cards. Its durable unsigned-retirement audit fences further continuations immediately; reserve completes an audited release and cleanup in the same process, and an explicit retirement retry remains permitted.
 
 ## Commit register
 
@@ -1158,6 +1158,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | 96968641ddf503280b35d21fc0b0708a51783cb2 |
 | | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` | 15e7ac95a7940b8712e966a83885505142afd796 |
 | | `packages/dacs-client/test/public-api.test.mjs:1` | 3ff282a68f7e0551135e6a663a718f8eb655dade |
+| D11 | fix(client): D11 fence audited unsigned reservation revisions | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` | b8d65ab0a50ab2d37f22da6f5d74a41ffb65207a |
+| | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` | bb26d97d15d59c621b149847feebd7c7095dbe7e |
 
 ## Complete commit and file inventory
 
@@ -3617,6 +3620,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
 | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/node-wallet-seller-parts.test.mjs:1` |
 | delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery | `packages/dacs-client/test/public-api.test.mjs:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/DELTA-NOTES.md:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/src/wallet/signer-reservation.mjs:1` |
+| fix(client): D11 fence audited unsigned reservation revisions | `packages/dacs-client/test/node-signer-reservation.test.mjs:1` |
 
 ## Original moved files
 

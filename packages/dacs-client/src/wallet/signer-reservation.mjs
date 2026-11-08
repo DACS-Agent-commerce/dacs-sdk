@@ -214,12 +214,13 @@ export function createSignerReservations({ journal, pins, clock = { now: () => D
     return putRecord(attemptKey(attempt.attemptId), { ...attempt, revision: attempt.revision + 1, history: [...attempt.history, entry], ...(TERMINALS.includes(stage) ? { terminal: stage } : {}) });
   }
   // Runs `work` on the reservation's current ownership under its signer lock; a handle that is not current is stale.
-  async function withCurrentOwner(reservation, work) {
+  async function withCurrentOwner(reservation, work, { allowRetired = false } = {}) {
     check(isAddress(reservation?.signer), 'reservation required');
     return journal.withWalletLock(keyOf(reservation.signer), async () => {
       const owner = await readOwner(reservation.signer);
       if (!isDeepStrictEqual(owner, reservation)) fail('signer_reservation_stale');
       check(owner.active !== null, 'active reservation required');
+      if (!allowRetired && await journal.get(retiredKey(owner.active.attemptId)) !== undefined) fail('signer_reservation_stale');
       return work(owner);
     });
   }
@@ -387,8 +388,8 @@ export function createSignerReservations({ journal, pins, clock = { now: () => D
     const owner = await readOwner(signer);
     if (!owner?.active) return;
     const { active } = owner, attempt = await journal.get(attemptKey(active.attemptId));
-    const prefix = attempt !== undefined && !isCleaned(active, attempt);
-    if (active.txHash === null && (prefix || (attempt === undefined && atStartup))) await retireUnsignedLocked(owner, prefix ? PRELINK_CAUSE : RESTART_CAUSE);
+    const prefix = attempt !== undefined && !isCleaned(active, attempt), retired = await journal.get(retiredKey(active.attemptId)) !== undefined;
+    if (active.txHash === null && (retired || prefix || (attempt === undefined && atStartup))) await retireUnsignedLocked(owner, prefix ? PRELINK_CAUSE : RESTART_CAUSE);
     else await resolveIntent(owner);
   }
   // The attempt `owner` links when it is nonterminal and no attempt of its hash may have been dispatched, else null.
@@ -438,7 +439,7 @@ export function createSignerReservations({ journal, pins, clock = { now: () => D
       if (revision !== owner.revision) fail('signer_reservation_stale');
       check(owner.active.txHash === null, 'linked bytes cannot be retired as unsigned');
       return retireUnsignedLocked(owner, cause);
-    });
+    }, { allowRetired: true });
   }
   /** Looks up the reservation's stored intent by its exact text and attaches the one open authorization. Returns the reservation. Throws `approval_lookup_refused`. */
   const resolveApprovalIntent = reservation => withCurrentOwner(reservation, resolveIntent);

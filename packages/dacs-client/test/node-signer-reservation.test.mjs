@@ -717,3 +717,123 @@ test('recovery never removes a lock row of this handle or of another live handle
   assert.deepEqual(await w.journal.entries(), before); assert.deepEqual(await w.reservations.current(signer), reservation);
   assert.equal(settle.calls.length, 0);
 });
+
+// A retirement audit must fence every continuation even while release/cleanup is incomplete.
+async function interruptedUnsigned(t, failure) {
+  const settle = recordingSettlements({ failFirst: failure === 'settlement' });
+  const { w, sentinel, arm } = cutWorld(t, failure === 'cleanup' ? 2 : 0, settle);
+  const reservation = await approved(w); arm();
+  await assert.rejects(w.reservations.retireUnsigned(reservation, { revision: reservation.revision, cause: new Error('TEST-declined') }),
+    error => failure === 'cleanup' ? causedBy(sentinel)(error) : error.code === 'signer_settlement_failed' && error.cause.message === 'TEST-settlement-barrier');
+  assert.deepEqual(await w.reservations.current(signer), reservation);
+  assert.equal((await w.journal.get(retiredKey(reservation.active.attemptId))).revision, reservation.revision);
+  return { w, settle, reservation };
+}
+
+const unsignedContinuations = {
+  bindSigned: (w, reservation) => w.reservations.bindSigned(reservation, signed()),
+  bindApprovalIntent: (w, reservation) => w.reservations.bindApprovalIntent(reservation, 'TEST-exact-request'),
+  bindApproval: (w, reservation) => w.reservations.bindApproval(reservation, { ledgerId: 'TEST-ledger', requestText: 'TEST-exact-request' }),
+  resolveApprovalIntent: (w, reservation) => w.reservations.resolveApprovalIntent(reservation),
+};
+for (const failure of ['settlement', 'cleanup']) {
+  for (const [name, continueUnsigned] of Object.entries(unsignedContinuations)) {
+    test(`an audited unsigned retirement after ${failure} failure fences ${name} in the same instance`, async t => {
+      const { w, settle, reservation } = await interruptedUnsigned(t, failure);
+      const before = await w.journal.entries(), calls = settle.calls.length;
+      await rejectCode(continueUnsigned(w, reservation), 'signer_reservation_stale');
+      assert.deepEqual(await w.journal.entries(), before);
+      assert.equal(settle.calls.length, calls);
+      assert.equal(await w.journal.get(transactionKey(hashOf)), undefined);
+    });
+  }
+  for (const operationKey of ['TEST-evidence-a', 'TEST-evidence-b']) {
+    test(`reserve for ${operationKey} completes an audited unsigned retirement after ${failure} failure without restarting`, async t => {
+      const { w, settle, reservation } = await interruptedUnsigned(t, failure);
+      const audit = await w.journal.get(retiredKey(reservation.active.attemptId));
+      let reads = 0;
+      const fresh = await w.reservations.reserve({ ...args(operationKey, 'TEST-fresh-attempt'), readChainNonce: async () => { reads++; return 0; } });
+      assert.equal(reads, 1);
+      assert.equal(fresh.reservation.active.attemptId, 'TEST-fresh-attempt');
+      assert.equal(fresh.reservation.active.operationKey, operationKey);
+      assert.deepEqual([fresh.nonce, fresh.reservation.floor], [reservation.active.nonce, reservation.floor]);
+      assert.deepEqual([...settle.effects], [['TEST-ledger', 'released']]);
+      assert.deepEqual(await w.journal.get(retiredKey(reservation.active.attemptId)), audit);
+      await rejectCode(w.reservations.bindSigned(reservation, signed()), 'signer_reservation_stale');
+      await rejectCode(w.reservations.retireUnsigned(reservation, { revision: reservation.revision }), 'signer_reservation_stale');
+      const repeated = await w.reservations.reserve({ ...args(operationKey), readChainNonce: async () => assert.fail('a live retry must not read the nonce') });
+      assert.deepEqual(repeated, fresh);
+      assert.deepEqual(await w.reservations.current(signer), fresh.reservation);
+    });
+  }
+  test(`explicit unsigned retirement retries ${failure} failure and preserves the original audit`, async t => {
+    const { w, settle, reservation } = await interruptedUnsigned(t, failure);
+    const audit = await w.journal.get(retiredKey(reservation.active.attemptId));
+    const retired = await w.reservations.retireUnsigned(reservation, { revision: reservation.revision, cause: new Error('TEST-retry') });
+    assert.deepEqual([retired.active, retired.floor], [null, reservation.floor]);
+    assert.deepEqual(await w.journal.get(retiredKey(reservation.active.attemptId)), audit);
+    assert.deepEqual([...settle.effects], [['TEST-ledger', 'released']]);
+    await w.reservations.recover({ stateOwnership: proof(w.path) });
+    assert.deepEqual(await w.reservations.current(signer), retired);
+  });
+}
+
+for (const authorization of ['manual', 'none']) {
+  test(`an audited ${authorization} unsigned retirement fences continuations and reserve completes cleanup`, async t => {
+    const settle = recordingSettlements(), sentinel = new Error('TEST-cleanup-cut');
+    let armed = false;
+    const w = settling(t, settle, journal => ({ ...journal, put: async (key, value) => {
+      if (armed && key === ownershipKey && value.active === null) { armed = false; throw sentinel; }
+      return journal.put(key, value);
+    } }), { openApproval: async () => null });
+    const reservation = authorization === 'manual' ? await approved(w, args(), null) : (await w.reservations.reserve(args())).reservation;
+    armed = true;
+    await assert.rejects(w.reservations.retireUnsigned(reservation, { revision: reservation.revision }), causedBy(sentinel));
+    await rejectCode(w.reservations.bindApprovalIntent(reservation, 'TEST-exact-request'), 'signer_reservation_stale');
+    await rejectCode(w.reservations.bindSigned(reservation, signed()), 'signer_reservation_stale');
+    const fresh = await w.reservations.reserve(args('TEST-evidence-b', 'TEST-fresh-attempt'));
+    assert.deepEqual([fresh.reservation.active.attemptId, fresh.reservation.floor, fresh.nonce], ['TEST-fresh-attempt', reservation.floor, reservation.active.nonce]);
+    assert.deepEqual(settle.calls, []);
+  });
+}
+
+test('repeated release failure retains the unsigned audit and ownership and reserve cannot read a nonce', async t => {
+  const sentinel = new Error('TEST-ledger-unavailable'), settle = recordingSettlements();
+  let unavailable = true;
+  const w = world(t, undefined, {}, { settleApproval: (...values) => { if (unavailable) throw sentinel; return settle.settleApproval(...values); } });
+  const reservation = await approved(w);
+  await assert.rejects(w.reservations.retireUnsigned(reservation, { revision: reservation.revision }), causedBy(sentinel));
+  const before = await w.journal.entries();
+  for (const operationKey of ['TEST-evidence-a', 'TEST-evidence-b']) {
+    await assert.rejects(w.reservations.reserve({ ...args(operationKey, 'TEST-fresh-attempt'), readChainNonce: async () => assert.fail('release must complete before choosing a nonce') }), causedBy(sentinel));
+    assert.deepEqual(await w.journal.entries(), before);
+    await rejectCode(w.reservations.bindSigned(reservation, signed()), 'signer_reservation_stale');
+  }
+  unavailable = false;
+  const fresh = await w.reservations.reserve(args('TEST-evidence-b', 'TEST-fresh-attempt'));
+  assert.equal(fresh.nonce, reservation.active.nonce);
+  assert.deepEqual([...settle.effects], [['TEST-ledger', 'released']]);
+});
+
+test('an audited unsigned retirement retains its exact intent through failed lookup before reserve completes release', async t => {
+  const sentinel = new Error('TEST-cleanup-cut'), lookupFailure = new Error('TEST-lookup-unavailable'), settle = recordingSettlements();
+  let armed = false, answer = null;
+  const w = settling(t, settle, journal => ({ ...journal, put: async (key, value) => {
+    if (armed && key === ownershipKey && value.active === null) { armed = false; throw sentinel; }
+    return journal.put(key, value);
+  } }), { openApproval: async text => { assert.equal(text, 'TEST-exact-request'); if (answer instanceof Error) throw answer; return answer; } });
+  const reservation = await w.reservations.bindApprovalIntent((await w.reservations.reserve(args())).reservation, 'TEST-exact-request');
+  armed = true;
+  await assert.rejects(w.reservations.retireUnsigned(reservation, { revision: reservation.revision }), causedBy(sentinel));
+  const before = await w.journal.entries();
+  for (const failedAnswer of [lookupFailure, { ledgerId: 'TEST-recovered', requestText: 'TEST-wrong-request' }]) {
+    answer = failedAnswer;
+    await rejectCode(w.reservations.reserve(args('TEST-evidence-b', 'TEST-fresh-attempt')), 'approval_lookup_refused');
+    assert.deepEqual(await w.journal.entries(), before);
+    await rejectCode(w.reservations.resolveApprovalIntent(reservation), 'signer_reservation_stale');
+  }
+  answer = { ledgerId: 'TEST-recovered', requestText: 'TEST-exact-request' };
+  const fresh = await w.reservations.reserve(args('TEST-evidence-b', 'TEST-fresh-attempt'));
+  assert.deepEqual([fresh.nonce, fresh.reservation.floor], [reservation.active.nonce, reservation.floor]);
+  assert.deepEqual([...settle.effects], [['TEST-recovered', 'released']]);
+});

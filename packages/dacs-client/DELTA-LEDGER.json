@@ -6749,6 +6749,22 @@
           "after": "3ff282a68f7e0551135e6a663a718f8eb655dade"
         }
       ]
+    },
+    {
+      "delta": "D11",
+      "subject": "fix(client): D11 fence audited unsigned reservation revisions",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "04faef5ff305e1763bfe712d51c396fedd2a7fb3",
+          "after": "b8d65ab0a50ab2d37f22da6f5d74a41ffb65207a"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "96968641ddf503280b35d21fc0b0708a51783cb2",
+          "after": "bb26d97d15d59c621b149847feebd7c7095dbe7e"
+        }
+      ]
     }
   ]
 }
