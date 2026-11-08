@@ -206,6 +206,15 @@ test('fixture settlement refuses a non-string transaction hash before any effect
  }finally{w.close();}
 });
 
+test('the unauthenticated HTTP handler answers a non-string transaction hash with 422 payment_tx_hash_invalid and no payment work',async()=>{
+ const {createSellerHttpHandler}=await import('../src/dacs/seller-http.mjs'),{exchange}=await import('./helpers/d5-http-fixture.mjs');
+ const w=await agentFixture();try{await w.agent.commit({jobId});const before=w.anchors.writes.length,handler=createSellerHttpHandler(w.agent);
+ const result=await exchange(handler,{url:'/dacs/v1/payments',text:JSON.stringify({...payment(w),txHash:[HASH]})});
+ assert.equal(result.status,422);assert.equal(JSON.parse(result.text).error,'payment_tx_hash_invalid');
+ assert.equal(w.anchors.writes.length,before);assert.equal(w.agent.durableSessionOf(jobId).paymentWork,undefined);
+ }finally{w.close();}
+});
+
 test('prefixed and plain transaction hashes replay one retained fixture settlement',async()=>{
  const w=await agentFixture();try{await w.agent.commit({jobId});const answer=await w.agent.submitPayment({...payment(w),txHash:'0x'+HASH}),before=w.anchors.writes.length;
  await w.reopen();assert.deepEqual(await w.agent.submitPayment(payment(w)),answer);assert.equal(w.anchors.writes.length,before);
