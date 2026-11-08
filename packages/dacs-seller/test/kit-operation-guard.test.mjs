@@ -20,10 +20,14 @@ const GUARD_EXPORTS = ['KIT_OPERATION_GUARD', 'KitOperationGuardError', 'assertK
 // Exported only by the fixture loader's copy of the guard.
 const LOADER_SETTER = 'setKitOperationGuardForTest';
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
+// Guarded entries that exist only on a capability the guarded `reserveContext` issues, so the off-state probe cannot reach them;
+// context-admission-transaction.test.mjs flips the guard off after the capability exists and pins each.
+const REACHED_BY_ISSUED_CAPABILITY = ['complete'];
 // The entries each module guards, named as the error's `entry` (51-2, 51-3).
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
   'src/dacs/seller-agent.mjs': ['createSellerAgent'],
+  'src/dacs/seller-admission-transaction.mjs': ['begin', 'runningCheck', 'reserveContext', 'complete'],
   'src/dacs/seller-challenge-ledger.mjs': ['issue', 'issueForOperator'],
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
   'src/dacs/seller-transport-auth.mjs': ['createSellerTransportServerAuth', 'createSellerTransportClientAuth'],
@@ -81,7 +85,7 @@ test('while the guard is off, startSellerHost refuses kit_operation_guard_off be
 
 test('while the guard is off, every directly reachable effect entry under ./src/* refuses before it reads, signs or sends', () => {
   const answer = runProbe('effectEntries');
-  assert.deepEqual(Object.keys(answer.refused).sort(), [...new Set(Object.values(GUARD_SITES).flat())].sort(), 'every guarded entry was reached');
+  assert.deepEqual(Object.keys(answer.refused).sort(), [...new Set(Object.values(GUARD_SITES).flat())].filter((entry) => !REACHED_BY_ISSUED_CAPABILITY.includes(entry)).sort(), 'every guarded entry was reached');
   for (const [entry, refusal] of Object.entries(answer.refused)) assert.deepEqual({ name: refusal?.name, code: refusal?.code, entry: refusal?.entry }, { name: 'KitOperationGuardError', code: GUARD_CODE, entry }, entry);
   assert.deepEqual(answer.effects, { signs: 0, sends: 0 });
   assert.equal(answer.readable.anchorIntentKept, false, 'the refused durable-state anchor kept no intent');
