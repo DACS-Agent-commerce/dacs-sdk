@@ -3258,6 +3258,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | fix(client): D11 accept the recorded deletion of the guarded SQLite files in callback history | `packages/dacs-client/HOLD.json:1` |
 | fix(client): D11 accept the recorded deletion of the guarded SQLite files in callback history | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | fix(client): D11 accept the recorded deletion of the guarded SQLite files in callback history | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| 05bbd340d7e7014209e1eecd7bcbe10cdcce3229 | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
+| fix(client): D11 record the provenance test cleanup change | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): D11 record the provenance test cleanup change | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): D11 record the provenance test cleanup change | `packages/dacs-client/HOLD.json:1` |
+| fix(client): D11 record the provenance test cleanup change | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
