@@ -104,7 +104,7 @@ function contextOutcomeClass(row, outcome) {
  * Throws TypeError for an unusable option; operations reject with a SellerTransportError (guard errors keep their own class) that keeps its cause.
  */
 export function createContextAdmissionTransaction({ store, policy, capacity = null, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
-  const { db, transaction, challenges, admissionCounts, limits, retireSlotsWithin } = sellerStoreInternals(store);
+  const { db, transaction, challenges, admissionCounts, limits, reserveAdmissionWithin, retireSlotsWithin } = sellerStoreInternals(store);
   if (![policy?.reserve, policy?.release, effectEvidence, inspectContextOutcome, completeWire, now, ready].every((port) => typeof port === 'function')
     || !Number.isSafeInteger(deadlines?.policyMs) || deadlines.policyMs <= 0
     || (capacity !== null && !['fitsNewPurchase', 'allocateWithin'].every((name) => typeof capacity?.[name] === 'function'))) {
@@ -132,6 +132,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     const changed = db.prepare('UPDATE kit_context_admissions SET state = ?, rev = ?, admittedAt = ?, record = ? WHERE jobId = ? AND record = ?')
       .run(next.state, next.rev, next.admittedAt, JSON.stringify(next), row.jobId, JSON.stringify(row)).changes;
     if (changed !== 1) fail('context_admission_closed');
+    if (patch.state === 'aborted') db.prepare('UPDATE kit_job_owners SET closed = 1 WHERE job = ?').run(row.jobId);
     return next;
   }
   function clock() {
@@ -171,11 +172,11 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     return held;
   }
 
-  // D2's dry check and D4's authoritative one: readiness, the context-record and unpaid-start limits, then purchase capacity.
+  // D2 checks readiness and starts after the store's capacity guard; D4 re-checks context capacity too, after policy awaits.
   function checkLimits(buyer, ownRow) {
     if (ready() !== true) fail('seller_not_ready', 503);
     const counts = admissionCounts();
-    if (counts.contextRecords - Number(ownRow) >= limits.maxContextRecords) fail('peer_context_capacity', 503);
+    if (ownRow && counts.contextRecords - 1 >= limits.maxContextRecords) fail('peer_context_capacity', 503);
     if (counts.starts >= limits.maxStartsPerHour) fail('unpaid_start_limit', 429);
     if (counts.buyerStarts(buyer) >= limits.maxStartsPerBuyerPerHour) fail('buyer_unpaid_start_limit', 429);
     if (capacity !== null && capacity.fitsNewPurchase() !== true) fail('seller_not_ready', 503);
@@ -254,18 +255,24 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
   }
 
   // D2: the intent commits in one transaction, or its refusal fails the owning challenge alone and nothing else is written.
-  // A job that already has a row is refused without touching the challenge: its owner may still be validating.
+  // Same-nonce re-entry leaves the live worker's challenge untouched.
   function commitIntent(input, row) {
     const refusal = transaction(() => {
-      if (read(row.jobId) !== null) fail('context_job_closed');
+      const repeated = read(row.jobId)?.nonce === input.nonce;
+      let verified = false;
+      db.exec('SAVEPOINT admission_intent');
       try {
-        requireOwner(input); checkLimits(input.buyer, false);
+        if (!repeated) { requireOwner(input); verified = true; }
+        reserveAdmissionWithin(input, row.createdAt); checkLimits(input.buyer, false);
+        db.prepare('INSERT INTO kit_context_admissions VALUES (?, ?, ?, ?, ?, ?)').run(row.jobId, row.buyer, null, row.state, row.rev, JSON.stringify(row));
+        db.exec('RELEASE admission_intent');
       } catch (error) {
+        db.exec('ROLLBACK TO admission_intent'); db.exec('RELEASE admission_intent');
         const { code, status } = refusalOf(error);
-        challenges.recordFailedWithin(input.owner, input.nonce, code, status);
+        if (typeof error?.code !== 'string' || !Number.isInteger(error.status) || error.status < 400 || error.status > 599) throw error;
+        if (verified) challenges.recordFailedWithin(input.owner, input.nonce, code, status);
         return error;
       }
-      db.prepare('INSERT INTO kit_context_admissions VALUES (?, ?, ?, ?, ?, ?)').run(row.jobId, row.buyer, null, row.state, row.rev, JSON.stringify(row));
       return null;
     });
     if (refusal !== null) throw refusal;
@@ -328,8 +335,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     }
   }
   async function begin(request) {
-    assertKitOperationAdmitted('begin');
     hooksSealed = true;
+    assertKitOperationAdmitted('begin');
     const { input, row } = startRow(request, clock());
     commitIntent(input, row);
     // Registered in the turn the intent commits, with no await between; only this begin's own compare-and-delete removes it.

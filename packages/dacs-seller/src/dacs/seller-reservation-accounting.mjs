@@ -42,6 +42,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // Returns whether the job has its purchase (job row) already.
   function checkJobWithin(payload, keepProfile) {
     if (ledger.jobConflictWithin(payload)) fail('peer_job_conflict', 409);
+    if (ledger.jobClosedWithin(payload)) fail('context_job_closed', 409);
     const tuple = canonicalize(keepProfile);
     if (canonicalize(payload.profile) !== tuple) fail('tp1_purchase_profile_mismatch', 500);
     const purchase = ledger.purchaseWithin(payload.jobId);
@@ -73,8 +74,8 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     const contextStart = route === SELLER_CONTEXT_PATH;
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
-    checkLimitsWithin(payload, contextStart, at);
     const purchased = checkJobWithin(payload, keepProfile);
+    checkLimitsWithin(payload, contextStart, at);
     checkRouteWithin(payload, operationId);
     const capacity = capacityWithin(input, at, key);
     // The hold comes first: the row references it, so no charged row exists without its counted job.

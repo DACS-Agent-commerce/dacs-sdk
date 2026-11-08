@@ -598,7 +598,7 @@ test('accounting preserves a timeout cause when recording its refusal also fails
 // One ledger for both paths: each limit counts every record either path writes.
 test('the reservation ledger lists the sources and writers the matrix below covers', () => {
   assert.deepEqual(Object.fromEntries(Object.entries(RESERVATION_LEDGER).map(([kind, sources]) => [kind, sources.length])),
-    { buyerUnits: 2, jobs: 4, contextRecords: 3, owners: 5 });
+    { buyerUnits: 2, jobs: 4, contextRecords: 3, owners: 6 });
   const source = ['seller-transport-auth.mjs', 'seller-reservation-accounting.mjs', 'seller-admission-transaction.mjs']
     .map(name => readFileSync(new URL(`../src/dacs/${name}`, import.meta.url), 'utf8')).join('\n');
   const writers = table => source.match(new RegExp(`INSERT (?:OR \\w+ )?INTO ${table}\\b`, 'g'))?.length ?? 0;

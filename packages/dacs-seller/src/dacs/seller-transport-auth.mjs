@@ -254,6 +254,7 @@ export const RESERVATION_LEDGER = Object.freeze({
   jobs: Object.freeze(['SELECT job FROM peer_jobs', 'SELECT job FROM peer_context_admissions', 'SELECT jobId AS job FROM kit_job_holds', 'SELECT jobId AS job FROM kit_context_admissions']),
   contextRecords: Object.freeze(['SELECT job FROM peer_context_admissions', 'SELECT jobId AS job FROM kit_job_holds WHERE context = 1', 'SELECT jobId AS job FROM kit_context_admissions']),
   owners: Object.freeze([
+    'SELECT job, buyer, seller, pin FROM kit_job_owners',
     "SELECT job, json_extract(context, '$.buyer') AS buyer, json_extract(context, '$.seller') AS seller, json_extract(context, '$.listingPin') AS pin FROM peer_jobs",
     'SELECT job, buyer, seller, listing_pin AS pin FROM peer_context_admissions',
     'SELECT jobId AS job, buyer, seller, listing_pin AS pin FROM kit_job_holds',
@@ -305,6 +306,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS kit_context_reservations (effect TEXT PRIMARY KEY, nonce TEXT NOT NULL UNIQUE, accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)));
     CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS kit_slot_retirements (job TEXT PRIMARY KEY, job_retired INTEGER NOT NULL DEFAULT 0, context_retired INTEGER NOT NULL DEFAULT 0, owner TEXT);
+    CREATE TABLE IF NOT EXISTS kit_job_owners (job TEXT PRIMARY KEY, buyer TEXT NOT NULL, seller TEXT NOT NULL, pin TEXT NOT NULL, agreement_hash TEXT, closed INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS kit_context_admissions (jobId TEXT PRIMARY KEY, buyer TEXT NOT NULL, admittedAt INTEGER, state TEXT NOT NULL, rev INTEGER NOT NULL, record TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS kit_context_admissions_starts ON kit_context_admissions(admittedAt, buyer);
     CREATE TABLE IF NOT EXISTS kit_job_holds (jobId TEXT PRIMARY KEY, buyer TEXT NOT NULL, seller TEXT NOT NULL,
@@ -342,13 +344,19 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     if (kept === null) run('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)', jobId, text, time);
   };
   const keepJobWithin = (p, profile, time) => {
+    claimJobWithin(p);
     keepPurchaseProfileWithin(p.jobId, profile, time);
     run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, canonicalize(requestIdentity(p)));
   };
   // The job an accounted reservation charges, with its owner and whether it holds a context record. It is never an
   // Agreement (no job row or tuple) and never leaves while a reservation references it.
-  const holdJobWithin = (p, context) => run(`INSERT INTO kit_job_holds VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(jobId) DO UPDATE SET context = MAX(context, excluded.context)`, p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), context ? 1 : 0);
+  const holdJobWithin = (p, context) => { claimJobWithin(p); run(`INSERT INTO kit_job_holds VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(jobId) DO UPDATE SET context = MAX(context, excluded.context)`, p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), context ? 1 : 0); };
+  function claimJobWithin(p) {
+    run(`INSERT INTO kit_job_owners(job, buyer, seller, pin, agreement_hash) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(job) DO UPDATE SET agreement_hash = COALESCE(kit_job_owners.agreement_hash, excluded.agreement_hash)`,
+    p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), p.path === CONTEXT ? null : p.agreementHash);
+  }
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
   transaction(() => {
@@ -382,11 +390,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // A job belongs to the buyer, seller and Listing pin of every record that holds it. A job row also fixes the
     // Agreement, which a context step does not carry (its agreementHash slot is the context scope hash).
     jobConflictWithin: (p) => {
+      const owner = get('SELECT agreement_hash FROM kit_job_owners WHERE job = ?', p.jobId);
+      if (owner?.agreement_hash != null && p.path !== CONTEXT && owner.agreement_hash !== p.agreementHash) return true;
       const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
       if (job && p.path !== CONTEXT && job.context !== canonicalize(requestIdentity(p))) return true;
       return db.prepare(`SELECT buyer, seller, pin FROM (${ledgerSources('owners').join(' UNION ALL ')}) WHERE job = ?`)
         .all(p.jobId).some(row => row.buyer !== p.buyer || row.seller !== p.seller || canonicalize(JSON.parse(row.pin)) !== canonicalize(p.listingPin));
     },
+    jobClosedWithin: p => get('SELECT closed FROM kit_job_owners WHERE job = ?', p.jobId)?.closed === 1 && !wireHoldsWithin(p),
     // Only a job row establishes a purchase; its kept tuple, or null for an old-path job kept without one.
     purchaseWithin: (jobId) => get('SELECT k.profile FROM peer_jobs j LEFT JOIN kit_purchase_profiles k ON k.job = j.job WHERE j.job = ?', jobId),
     // The refusals of the old reserve path that read journal state, shared so both paths apply each one.
@@ -473,6 +484,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           get("SELECT 1 FROM peer_effects e LEFT JOIN peer_effect_jobs m ON m.effect = e.effect WHERE m.effect IS NULL OR (m.job = ? AND (e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = e.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))))", job, time, time - nonceWindowMs) ||
           (admissions() && get('SELECT 1 FROM peer_context_admissions WHERE job = ? AND admitted_at > ?', job, time - CHALLENGE_RATE_WINDOW_MS)) || !terminalForReclamation(job)) continue;
       run('INSERT INTO kit_slot_retirements(job, job_retired, context_retired) VALUES (?, 1, 1) ON CONFLICT(job) DO UPDATE SET job_retired = 1, context_retired = 1', job);
+      run('UPDATE kit_job_owners SET closed = 1 WHERE job = ?', job);
       if (!get('SELECT 1 FROM peer_jobs WHERE job = ?', job)) run('DELETE FROM kit_purchase_profiles WHERE job = ?', job);
     }
     for (const job of reclaimableJobs(Number.MAX_SAFE_INTEGER, jobId, time)) {
@@ -488,6 +500,18 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     retireSlotsWithin(now(), job);
     run('DELETE FROM kit_purchase_profiles WHERE job = ?', job);
     run('DELETE FROM peer_jobs WHERE job = ?', job);
+  }
+  function reserveAdmissionWithin(input, time) {
+    if (!db.inTransaction) throw new TypeError('admission reservation needs the store transaction');
+    const p = { ...input, path: CONTEXT };
+    if (reservationLedger.jobConflictWithin(p)) fail('peer_job_conflict', 409);
+    if (get('SELECT closed FROM kit_job_owners WHERE job = ?', p.jobId)?.closed === 1 ||
+        get('SELECT 1 FROM kit_context_admissions WHERE jobId = ?', p.jobId) ||
+        (admissions() && get('SELECT 1 FROM peer_context_admissions WHERE job = ?', p.jobId))) fail('context_job_closed', 409);
+    retireSlotsWithin(time);
+    if (!reservationLedger.jobHeldWithin(p.jobId) && reservationLedger.jobCountWithin() >= maxJobs) fail('peer_job_capacity', 503);
+    if (!reservationLedger.contextHeldWithin(p.jobId) && reservationLedger.contextCountWithin() >= maxContextRecords) fail('peer_context_capacity', 503);
+    claimJobWithin(p);
   }
   function reclaimContexts(rows) {
     for (const row of rows) {
@@ -591,6 +615,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const requestHash = sha256Hex(canonicalize(p));
         const nonce = `${p.buyer}:${p.nonce}`;
         const previous = get('SELECT * FROM peer_nonces WHERE nonce = ?', nonce);
+        if (reservationLedger.jobConflictWithin(p)) fail('peer_job_conflict', 409);
         if (previous && previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
         const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
         // The tuple is not part of the request hash, so this comes before a repeated nonce's answer.
@@ -609,7 +634,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const contextStep = p.path === CONTEXT;
         // One rule for both reserve paths: the parties and pin of every record that holds the job, and the job row's
         // Agreement (a context step is checked against the parties and pin only).
-        if (reservationLedger.jobConflictWithin(p)) fail('peer_job_conflict', 409);
         const effectKey = effectIdentity(p);
         if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
         // The SDK buyer coordinator reconciles before publishing a proposal.
@@ -631,6 +655,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           : existing?.state === 'retry' && journaledOnly ? { disposition: 'cached', status: existing.status, text: existing.response } : null;
         const retry = existing?.state === 'retry' && !contextStep;
         if (existing && !retry && !retained) retained = existing.state === 'complete' ? { disposition: 'cached', status: existing.status, text: existing.response } : { disposition: 'uncertain', effectKey, owner: existing.owner };
+        if (!retained && reservationLedger.jobClosedWithin(p)) fail('context_job_closed', 409);
         const time = now();
         if (!uint(time)) fail('peer_clock_invalid', 503);
         if (!dryRun) retireSlotsWithin(time);
@@ -688,6 +713,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         }
         reclaimNonces();
         if (creates) db.exec(CONTEXT_ADMISSIONS);
+        if (!retained) claimJobWithin(p);
         if (newJob) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
         if (newJob && profileText !== null) keepPurchaseProfileWithin(p.jobId, keepProfile, time);
         run('INSERT INTO peer_nonces VALUES (?, ?, ?, NULL, NULL)', nonce, requestHash, effectKey);
@@ -866,12 +892,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     close: () => db.close(),
     journaledOnlyReserve: true,
   };
-  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, retireSlotsWithin, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }) }));
+  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }) }));
   return store;
 }
 
 /**
- * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, limits, keepPurchaseProfileWithin, retireSlotsWithin }`
+ * The one SQLite owner behind a registered store: `{ db, transaction, challenges, admissionCounts, limits, keepPurchaseProfileWithin, reserveAdmissionWithin, retireSlotsWithin }`
  * (`limits`: the context-record and unpaid-start limits the ledger enforces at issue), for the seller's own admission modules, which run
  * their reads and writes in that store's immediate transactions. It hands out the raw handle: only code that owns the store holds it.
  * Throws a TypeError for anything else.
