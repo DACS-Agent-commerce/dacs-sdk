@@ -34,7 +34,7 @@ async function freshPaymentReading(observePayment, projection, agreement, now) {
     if (!Number.isSafeInteger(checkedAt) || checkedAt < observedAt) return null;
     if (contentHash(query.agreement) !== projection.agreementHash || reading?.jobId !== projection.jobId || reading.agreementHash !== projection.agreementHash ||
         !Number.isSafeInteger(reading.observedAt) || reading.observedAt < observedAt || reading.observedAt > checkedAt) return null;
-    if (reading.disposition === 'verified') return isPaymentTxRef(reading.paymentTxRef) ? { observed: true, txRef: structuredClone(reading.paymentTxRef) } : null;
+    if (reading.disposition === 'verified') { const txRef = structuredClone(reading.paymentTxRef); return isPaymentTxRef(txRef) ? { observed: true, txRef } : null; }
     return reading.disposition === 'absent' ? { observed: false, txRef: null } : null;
   } catch { return null; }
   finally { clearTimeout(timer); controller.abort(); }
