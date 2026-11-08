@@ -1,9 +1,12 @@
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import ts from 'typescript';
+import { RIG_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs/canonical';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const rewritingLoaders = [
@@ -43,6 +46,14 @@ before(() => {
       cpSync(resolve(root, 'packages', pkg, 'package.json'), resolve(destination, 'package.json'));
     }
     cpSync(new URL('helpers/rig-profile-child.mjs', import.meta.url), resolve(dir, 'probe.mjs'));
+    cpSync(new URL('helpers/rig-forgery.mjs', import.meta.url), resolve(dir, 'rig-forgery.mjs'));
+    // Transpile only the shared test fixture; production modules stay built bytes.
+    const fixture = readFileSync(resolve(root, 'test/wire/commitmentFixture.ts'), 'utf8')
+      .replaceAll('../../src/wire/profile.js', '@kynesyslabs/dacs/wire')
+      .replaceAll('../../src/index.js', '@kynesyslabs/dacs');
+    writeFileSync(resolve(dir, 'commitment-fixture.mjs'), ts.transpileModule(fixture, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+    }).outputText);
     writeFileSync(resolve(dir, 'public.mjs'), `
       import * as wire from '@kynesyslabs/dacs/wire';
       export { wire };
@@ -60,7 +71,10 @@ after(() => { if (temporary) rmSync(temporary, { recursive: true, force: true })
 const cases = [
   ['defaults', 'C1: imports, misleading environment and ordinary factories stay closed'],
   ['runner-environment', 'C21: clean children strip both rewriters and preserve harmless preloads'],
-  ['invalid', 'C2: exact owned input, invalid inputs and incomplete deployment never latch'],
+  ['invalid', 'C2: exact owned input and invalid inputs never latch'],
+  ['incomplete', 'C2: a test-built record without its image pin never latches'],
+  ['digest', 'the frozen record recomputes to its compiled JCS digest'],
+  ['forgery', 'every built rig export refuses to vouch for a payment commitment'],
   ['tp1-first', 'C3: successful TP-1 binding permanently excludes selection'],
   ['pending', 'C3: pending reservations exclude selection; failed reads release only their reservation'],
   ['pending-success', 'C3: selection loses to a pending TP-1 bind that succeeds'],
@@ -75,7 +89,7 @@ const cases = [
   ['deadline', 'C6: timeout and late observations never produce a binding'],
   ['reset', 'C8: immutable run hash and continuation mismatch prevent signing after reset'],
 ];
-for (const [name, description] of cases) test(`${name} — ${description}`, { timeout: 30000 }, t => {
+for (const [name, description] of cases) test(`${name} — ${description}`, { timeout: 30000 }, () => {
   let options = process.env.NODE_OPTIONS;
   const env = { ...process.env, DACS_RIG_PROFILE: 'on', KIT_OPERATION_GUARD: 'testnet-tp1', PURCHASE_ADMISSION: 'testnet-tp1' };
   if (name === 'runner-environment') {
@@ -86,10 +100,24 @@ for (const [name, description] of cases) test(`${name} — ${description}`, { ti
       `--import="${pathToFileURL(preload).href}"`, '--no-warnings'].filter(Boolean).join(' ');
   }
   env.NODE_OPTIONS = cleanNodeOptions(options);
-  const result = execFileSync(process.execPath, [first, name, second], {
+  let probe = first;
+  if (name === 'incomplete') {
+    const dir = resolve(temporary, 'incomplete');
+    cpSync(resolve(temporary, 'a'), dir, { recursive: true });
+    const incompleteRecord = structuredClone(RIG_IDENTITY_RECORD);
+    incompleteRecord.deployment.artifactSha256 = null;
+    const rig = resolve(dir, 'node_modules/@kynesyslabs/dacs/dist/wire/rig.js');
+    const compiled = readFileSync(rig, 'utf8');
+    const replaced = compiled.replace(/export const RIG_IDENTITY_RECORD = deepFreeze\([\s\S]*?\n\}\);/,
+      `export const RIG_IDENTITY_RECORD = deepFreeze(${JSON.stringify(incompleteRecord)});`)
+      .replace(/const RIG_RECORD_SHA256 = "[0-9a-f]{64}";/,
+        `const RIG_RECORD_SHA256 = "${sha256Hex(canonicalize(incompleteRecord))}";`);
+    assert.notEqual(replaced, compiled);
+    writeFileSync(rig, replaced);
+    probe = resolve(dir, 'probe.mjs');
+  }
+  const result = execFileSync(process.execPath, [probe, name, second], {
     cwd: root, env, timeout: 25000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const answer = JSON.parse(result);
-  if (answer.blocked) t.skip(answer.blocked);
-  else assert.deepEqual(answer, { passed: name });
+  assert.deepEqual(JSON.parse(result), { passed: name });
 });

@@ -52,7 +52,7 @@ export {
 } from "./profile.js";
 export {
   RIG_IDENTITY_RECORD, rigProfileRecord,
-  selectRigProfile, rigProfileSelected, registerRigSource, isRigSource,
+  selectRigProfile, rigProfileSelected, admitRigSource, isRigSource,
   type RigSelection, type RigWireProfile, type RigSourceKind,
 } from "./rig.js";
 export {

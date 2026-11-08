@@ -4,8 +4,8 @@ import { sha256Hex } from "../canonical/hash.js";
 import type { LocalNetworkBinding, Tp1AuthorityReader, Tp1WireProfileShape } from "./profile.js";
 import { deepFreeze, fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, uncurry, WireError } from "./validate.js";
 
-// Operator image digest is deliberately unset; runtime configuration cannot fill it.
-const RIG_IMAGE_SHA256: string | null = null;
+// Local image id of demos-devnet-node:e6af8f4; never pushed to a registry.
+const RIG_IMAGE_SHA256: string | null = "fbaac9956ce1e83ebe181b74a1647295601ae4ec738ea2eb127f040c54c40a5c";
 export const RIG_IDENTITY_RECORD = deepFreeze({
   format: "dacs-rig-identity-record/v1",
   recordId: "dacs-demos-rig-identity/2026-11-08",
@@ -15,16 +15,15 @@ export const RIG_IDENTITY_RECORD = deepFreeze({
   genesisFileSha256: "5444bfbe73018e31c40a964da577c9a75ebb85e42d03b3db64094c3b0e47a721",
   pinVersion: "dacs-demos-rig-identity/2026-11-08",
   sourceKind: "confirmed-block-one-predecessor",
-  documentation: "Private four-validator rig, frozen genesis 2026-11-08. Numeric block 0 returns the reviewed literal error; resolve identity from confirmed block 1 content.previousHash. Check continuation with the selected run's block-two hash.",
+  documentation: "Private four-validator rig, frozen genesis 2026-11-08. Numeric block 0 returns the reviewed literal error; resolve identity from confirmed block 1 content.previousHash. Check continuation with the selected run's block-two hash. node source = e6af8f4 (content-verified); devnet image adds a sidecar build step; not a clean-tree build. admitRigSource admits sources only.",
   deployment: {
     commit: "e6af8f4023fa4e77f482503dae97f1ca00834bf9", dirty: false,
     artifactSha256: RIG_IMAGE_SHA256 as string | null,
     qualifiedOperations: ["fee", "nonce", "broadcast", "confirmation"],
   },
 } as const);
-// The incomplete seed is never hashed as approval. Replace both nulls only
-// after the operator supplies the image digest and the complete JCS is reviewed.
-const RIG_RECORD_SHA256: string | null = null;
+// SHA-256 of the complete frozen record in canonical JCS form.
+const RIG_RECORD_SHA256: string | null = "e11aa14b8d0783357d9bd2eff2403cb721cec140fc41dee1504223d1c6a82eeb";
 export interface RigSelection {
   readonly recordSha256: string;
   readonly runBlockTwoHash: string;
@@ -101,7 +100,7 @@ function checkedPins(value: unknown, kind: RigSourceKind): Record<string, unknow
   return pins;
 }
 /** Trusted operator integration; labels alone never create source membership. */
-export function registerRigSource(options: { selection: RigSelection; source: object; kind: RigSourceKind; buyer: string; seller: string }): void {
+export function admitRigSource(options: { selection: RigSelection; source: object; kind: RigSourceKind; buyer: string; seller: string }): void {
   const { selection, source, kind, buyer, seller } = ownedFields(options, ["selection", "source", "kind", "buyer", "seller"]);
   requireSelection(selection);
   if ((kind !== "agreement" && kind !== "demo") || !isRecord(source) || getSource(sources, source) || !isClaim(buyer) || !isClaim(seller) || buyer === seller) fail("rig_source_invalid", 500);

@@ -21,8 +21,9 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
 
 The private rig API in `@kynesyslabs/dacs/wire` ships inert: importing any SDK
 package never selects it. Only an explicit `selectRigProfile` call can select
-its one-way process mode, using a reviewed complete record digest. The shipped
-record has no verified image digest, so selection currently refuses.
+its one-way process mode, using a reviewed complete record digest. The frozen record
+pins the local image ID and its build provenance. `admitRigSource` admits a
+source for that selection; it vouches for no payment commitment.
 
 ## Layering
 
