@@ -1,0 +1,1643 @@
+{
+  "description": "Durable RFQ lifecycle records written by SDK main 46c3e6a (store version 1, before the DACS-3 v0.6 channel wire), frozen as test input.",
+  "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+  "buyerMidNegotiation": {
+    "authority": {
+      "buyer": {
+        "identityBundle": {
+          "bundleVersion": "1",
+          "claims": [
+            {
+              "ref": "did:demos:buyer-durable-rfq"
+            }
+          ],
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:buyer-durable-rfq",
+                "signature": "identity-proof"
+              }
+            ]
+          },
+          "presentedAt": 1779999999000,
+          "presentedBy": "did:demos:buyer-durable-rfq"
+        },
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:buyer-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "seller": {
+        "identityBundle": {
+          "bundleVersion": "1",
+          "claims": [
+            {
+              "ref": "did:demos:seller-durable-rfq"
+            }
+          ],
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:seller-durable-rfq",
+                "signature": "identity-proof"
+              }
+            ]
+          },
+          "presentedAt": 1779999999000,
+          "presentedBy": "did:demos:seller-durable-rfq"
+        },
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:seller-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "verifiedListing": {
+        "disposition": "verified",
+        "listing": {
+          "buyerRequirement": {
+            "required": [],
+            "requirementVersion": "1"
+          },
+          "dacsVersion": "1",
+          "listingId": "durable-rfq-listing",
+          "listingVersion": 3,
+          "offering": {
+            "category": "data.finance",
+            "deliverable": {
+              "kind": "attested-payload",
+              "payloadFormat": "application/json",
+              "verificationMethod": {
+                "kind": "self-signed"
+              }
+            },
+            "description": "A restart-safe private RFQ",
+            "tags": [
+              "rfq"
+            ],
+            "title": "Durable private quote"
+          },
+          "pipeline": [
+            {
+              "kind": "negotiate-rfq",
+              "parameters": {
+                "maxTurns": 5,
+                "timeoutSec": 10
+              }
+            },
+            {
+              "kind": "commit-agreement"
+            },
+            {
+              "kind": "deliver-attested-payload"
+            }
+          ],
+          "pricing": {
+            "bandCenter": {
+              "amount": "10",
+              "currency": "USDC"
+            },
+            "kind": "negotiable",
+            "maxPct": 20,
+            "minPct": 20
+          },
+          "requiredCapabilities": [
+            "SR-2",
+            "SR-4"
+          ],
+          "seller": {
+            "displayName": "Durable RFQ seller",
+            "identity": {
+              "bundleVersion": "1",
+              "claims": [
+                {
+                  "ref": "did:demos:seller-durable-rfq"
+                }
+              ],
+              "presentation": {
+                "kind": "per-claim",
+                "signatures": [
+                  {
+                    "ref": "did:demos:seller-durable-rfq",
+                    "signature": "identity-proof"
+                  }
+                ]
+              },
+              "presentedAt": 1779999999000,
+              "presentedBy": "did:demos:seller-durable-rfq"
+            },
+            "publicEndpoint": "https://seller.example/dacs"
+          },
+          "signature": {
+            "algorithm": "ed25519",
+            "signer": "did:demos:seller-durable-rfq",
+            "value": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw"
+          },
+          "terms": {
+            "deadlineSecAfterCommit": 600
+          },
+          "validity": {
+            "notAfter": 1780001000000,
+            "notBefore": 1779999990000
+          }
+        },
+        "pin": {
+          "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+          "listingId": "durable-rfq-listing",
+          "version": 3
+        }
+      }
+    },
+    "bindingHash": "31c9d2e1e692d0a4bf39472d7b824b72326e06b4004cf42840577a579a5cda1d",
+    "channelId": "durable-private-channel-01",
+    "createdAt": 1780000000000,
+    "inboxPacketIds": [],
+    "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+    "outbox": [
+      {
+        "attempts": 1,
+        "packet": {
+          "channelId": "durable-private-channel-01",
+          "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+          "kind": "turn",
+          "message": {
+            "body": {
+              "proposal": {
+                "price": {
+                  "amount": "9",
+                  "currency": "USDC"
+                },
+                "rfqProposalVersion": "1"
+              },
+              "rfqBodyVersion": "1"
+            },
+            "channelId": "durable-private-channel-01",
+            "sender": "did:demos:buyer-durable-rfq",
+            "sentAt": 1780000000000,
+            "sequence": 1,
+            "signature": "DSBjSBGrlQdF9OFPqIawgMela-3lpEpjg8tkt0A_VzrjXA5Y8yKihBlSvSgaQ2llOdud75MsUJJbyG1LjeFfDw",
+            "type": "offer"
+          },
+          "packetId": "666058927657933797c1c6ad9b2836661806ae801a6f2f39a9fd58b953f1bcec",
+          "packetVersion": "1",
+          "recipient": "did:demos:seller-durable-rfq",
+          "sender": "did:demos:buyer-durable-rfq"
+        },
+        "state": "acknowledged",
+        "updatedAt": 1780000000000
+      }
+    ],
+    "revision": 2,
+    "role": "buyer",
+    "session": {
+      "awaitingSince": 1780000000000,
+      "buyer": {
+        "bundleHash": "e39efba95bc5355fc8c049968ac856f964d21c34469a3e2d7edb88dc41a78d7f",
+        "primaryClaim": "did:demos:buyer-durable-rfq",
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:buyer-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "channelId": "durable-private-channel-01",
+      "expectedSender": "did:demos:seller-durable-rfq",
+      "initiator": "buyer",
+      "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+      "lastMessageHash": "bbfea17387920a1749828ff60a4872d0a28bc38d87966660c4ac6569f2867338",
+      "lastSequence": 1,
+      "listingPin": {
+        "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+        "listingId": "durable-rfq-listing",
+        "version": 3
+      },
+      "maxTurns": 5,
+      "pricing": {
+        "bandCenter": {
+          "amount": "10",
+          "currency": "USDC"
+        },
+        "kind": "negotiable",
+        "maxPct": 20,
+        "minPct": 20
+      },
+      "rfqSessionVersion": "1",
+      "seller": {
+        "bundleHash": "b7295442e38bd2135f02946ca56f5a066059eff9569a006bbb286044df65e4cd",
+        "primaryClaim": "did:demos:seller-durable-rfq",
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:seller-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "standingProposal": {
+        "price": {
+          "amount": "9",
+          "currency": "USDC"
+        },
+        "proposer": "did:demos:buyer-durable-rfq",
+        "rfqProposalVersion": "1",
+        "sequence": 1
+      },
+      "startedAt": 1780000000000,
+      "status": "open",
+      "timeoutMs": 10000,
+      "turnCount": 1
+    },
+    "storeVersion": 1,
+    "transcript": [
+      {
+        "body": {
+          "proposal": {
+            "price": {
+              "amount": "9",
+              "currency": "USDC"
+            },
+            "rfqProposalVersion": "1"
+          },
+          "rfqBodyVersion": "1"
+        },
+        "channelId": "durable-private-channel-01",
+        "sender": "did:demos:buyer-durable-rfq",
+        "sentAt": 1780000000000,
+        "sequence": 1,
+        "signature": "DSBjSBGrlQdF9OFPqIawgMela-3lpEpjg8tkt0A_VzrjXA5Y8yKihBlSvSgaQ2llOdud75MsUJJbyG1LjeFfDw",
+        "type": "offer"
+      }
+    ],
+    "updatedAt": 1780000000000
+  },
+  "buyerFinalized": {
+    "agreement": {
+      "contributions": [
+        {
+          "contributionHash": "79ffbbaabe89bed605ec5bdd3a1d7aa0e6724f696371df531e36fbb3fa8ab341",
+          "contributionVersion": "1",
+          "party": "did:demos:buyer-durable-rfq",
+          "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+          "role": "buyer",
+          "signature": {
+            "algorithm": "ed25519",
+            "party": "did:demos:buyer-durable-rfq",
+            "value": "nLfdgaYNXFahxRuocUMh5YcVqocBmuQ4AjrioAnmJ7A0ZpXsKjL7fcKwhGtIvSup-nLPuV0yj6-a1kFPm0KqCA"
+          }
+        },
+        {
+          "contributionHash": "2085a7dde069afa3d69935815432050cdcdc7856a4e2bba73997dec12e19452d",
+          "contributionVersion": "1",
+          "party": "did:demos:seller-durable-rfq",
+          "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+          "role": "seller",
+          "signature": {
+            "algorithm": "ed25519",
+            "party": "did:demos:seller-durable-rfq",
+            "value": "UJUiti03eEJ31HDS0G78jVeiIvvbF61w2LGYuEiI6nn2TeKW1lmu0xBanTF8lcN707nhZUrNJfrFc8NoMqe6BQ"
+          }
+        }
+      ],
+      "finalized": {
+        "agreementVersion": "1",
+        "derivedFromChannel": {
+          "lastMessageHash": "0dc97bf2885ccfb13c7fd50b1c7e786f5692166479b671fbd24308d24da78452",
+          "subnet": "durable-private-channel-01"
+        },
+        "derivedFromPattern": "rfq",
+        "generatedAt": 1780000000000,
+        "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+        "listingRef": {
+          "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+          "listingId": "durable-rfq-listing",
+          "version": 3
+        },
+        "parties": [
+          {
+            "bundleHash": "e39efba95bc5355fc8c049968ac856f964d21c34469a3e2d7edb88dc41a78d7f",
+            "primaryClaim": "did:demos:buyer-durable-rfq",
+            "role": "buyer",
+            "vetRecordRef": {
+              "anchor": {
+                "kind": "storage-program",
+                "locator": "stor:buyer-durable-rfq-vet"
+              },
+              "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          {
+            "bundleHash": "b7295442e38bd2135f02946ca56f5a066059eff9569a006bbb286044df65e4cd",
+            "primaryClaim": "did:demos:seller-durable-rfq",
+            "role": "seller",
+            "vetRecordRef": {
+              "anchor": {
+                "kind": "storage-program",
+                "locator": "stor:seller-durable-rfq-vet"
+              },
+              "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        ],
+        "signatures": [
+          {
+            "algorithm": "ed25519",
+            "party": "did:demos:buyer-durable-rfq",
+            "value": "nLfdgaYNXFahxRuocUMh5YcVqocBmuQ4AjrioAnmJ7A0ZpXsKjL7fcKwhGtIvSup-nLPuV0yj6-a1kFPm0KqCA"
+          },
+          {
+            "algorithm": "ed25519",
+            "party": "did:demos:seller-durable-rfq",
+            "value": "UJUiti03eEJ31HDS0G78jVeiIvvbF61w2LGYuEiI6nn2TeKW1lmu0xBanTF8lcN707nhZUrNJfrFc8NoMqe6BQ"
+          }
+        ],
+        "terms": {
+          "deadline": 1780000600000,
+          "deliverable": {
+            "deliverableType": "attested-payload",
+            "hash": "ba3cc4b40cb6f8d164ae7a983a699505f3014da7fffbe6c392d6090e778719b0"
+          },
+          "price": {
+            "amount": "9.5",
+            "currency": "USDC"
+          }
+        }
+      },
+      "plan": {
+        "agreementHash": "15183fbf62291e6eedf878da3e4578a85a6c993244d0f62329f29361166d2f7f",
+        "draft": {
+          "agreementVersion": "1",
+          "derivedFromChannel": {
+            "lastMessageHash": "0dc97bf2885ccfb13c7fd50b1c7e786f5692166479b671fbd24308d24da78452",
+            "subnet": "durable-private-channel-01"
+          },
+          "derivedFromPattern": "rfq",
+          "generatedAt": 1780000000000,
+          "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+          "listingRef": {
+            "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+            "listingId": "durable-rfq-listing",
+            "version": 3
+          },
+          "parties": [
+            {
+              "bundleHash": "e39efba95bc5355fc8c049968ac856f964d21c34469a3e2d7edb88dc41a78d7f",
+              "primaryClaim": "did:demos:buyer-durable-rfq",
+              "role": "buyer",
+              "vetRecordRef": {
+                "anchor": {
+                  "kind": "storage-program",
+                  "locator": "stor:buyer-durable-rfq-vet"
+                },
+                "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            },
+            {
+              "bundleHash": "b7295442e38bd2135f02946ca56f5a066059eff9569a006bbb286044df65e4cd",
+              "primaryClaim": "did:demos:seller-durable-rfq",
+              "role": "seller",
+              "vetRecordRef": {
+                "anchor": {
+                  "kind": "storage-program",
+                  "locator": "stor:seller-durable-rfq-vet"
+                },
+                "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ],
+          "terms": {
+            "deadline": 1780000600000,
+            "deliverable": {
+              "deliverableType": "attested-payload",
+              "hash": "ba3cc4b40cb6f8d164ae7a983a699505f3014da7fffbe6c392d6090e778719b0"
+            },
+            "price": {
+              "amount": "9.5",
+              "currency": "USDC"
+            }
+          }
+        },
+        "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+        "planVersion": "1",
+        "requiredSigners": [
+          {
+            "party": "did:demos:buyer-durable-rfq",
+            "role": "buyer"
+          },
+          {
+            "party": "did:demos:seller-durable-rfq",
+            "role": "seller"
+          }
+        ],
+        "separator": "dacs-agreement:v1:",
+        "signedBytes": [
+          100,
+          97,
+          99,
+          115,
+          45,
+          97,
+          103,
+          114,
+          101,
+          101,
+          109,
+          101,
+          110,
+          116,
+          58,
+          118,
+          49,
+          58,
+          49,
+          53,
+          49,
+          56,
+          51,
+          102,
+          98,
+          102,
+          54,
+          50,
+          50,
+          57,
+          49,
+          101,
+          54,
+          101,
+          101,
+          100,
+          102,
+          56,
+          55,
+          56,
+          100,
+          97,
+          51,
+          101,
+          52,
+          53,
+          55,
+          56,
+          97,
+          56,
+          53,
+          97,
+          54,
+          99,
+          57,
+          57,
+          51,
+          50,
+          52,
+          52,
+          100,
+          48,
+          102,
+          54,
+          50,
+          51,
+          50,
+          57,
+          102,
+          50,
+          57,
+          51,
+          54,
+          49,
+          49,
+          54,
+          54,
+          100,
+          50,
+          102,
+          55,
+          102
+        ]
+      }
+    },
+    "authority": {
+      "buyer": {
+        "identityBundle": {
+          "bundleVersion": "1",
+          "claims": [
+            {
+              "ref": "did:demos:buyer-durable-rfq"
+            }
+          ],
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:buyer-durable-rfq",
+                "signature": "identity-proof"
+              }
+            ]
+          },
+          "presentedAt": 1779999999000,
+          "presentedBy": "did:demos:buyer-durable-rfq"
+        },
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:buyer-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "seller": {
+        "identityBundle": {
+          "bundleVersion": "1",
+          "claims": [
+            {
+              "ref": "did:demos:seller-durable-rfq"
+            }
+          ],
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:seller-durable-rfq",
+                "signature": "identity-proof"
+              }
+            ]
+          },
+          "presentedAt": 1779999999000,
+          "presentedBy": "did:demos:seller-durable-rfq"
+        },
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:seller-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "verifiedListing": {
+        "disposition": "verified",
+        "listing": {
+          "buyerRequirement": {
+            "required": [],
+            "requirementVersion": "1"
+          },
+          "dacsVersion": "1",
+          "listingId": "durable-rfq-listing",
+          "listingVersion": 3,
+          "offering": {
+            "category": "data.finance",
+            "deliverable": {
+              "kind": "attested-payload",
+              "payloadFormat": "application/json",
+              "verificationMethod": {
+                "kind": "self-signed"
+              }
+            },
+            "description": "A restart-safe private RFQ",
+            "tags": [
+              "rfq"
+            ],
+            "title": "Durable private quote"
+          },
+          "pipeline": [
+            {
+              "kind": "negotiate-rfq",
+              "parameters": {
+                "maxTurns": 5,
+                "timeoutSec": 10
+              }
+            },
+            {
+              "kind": "commit-agreement"
+            },
+            {
+              "kind": "deliver-attested-payload"
+            }
+          ],
+          "pricing": {
+            "bandCenter": {
+              "amount": "10",
+              "currency": "USDC"
+            },
+            "kind": "negotiable",
+            "maxPct": 20,
+            "minPct": 20
+          },
+          "requiredCapabilities": [
+            "SR-2",
+            "SR-4"
+          ],
+          "seller": {
+            "displayName": "Durable RFQ seller",
+            "identity": {
+              "bundleVersion": "1",
+              "claims": [
+                {
+                  "ref": "did:demos:seller-durable-rfq"
+                }
+              ],
+              "presentation": {
+                "kind": "per-claim",
+                "signatures": [
+                  {
+                    "ref": "did:demos:seller-durable-rfq",
+                    "signature": "identity-proof"
+                  }
+                ]
+              },
+              "presentedAt": 1779999999000,
+              "presentedBy": "did:demos:seller-durable-rfq"
+            },
+            "publicEndpoint": "https://seller.example/dacs"
+          },
+          "signature": {
+            "algorithm": "ed25519",
+            "signer": "did:demos:seller-durable-rfq",
+            "value": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw"
+          },
+          "terms": {
+            "deadlineSecAfterCommit": 600
+          },
+          "validity": {
+            "notAfter": 1780001000000,
+            "notBefore": 1779999990000
+          }
+        },
+        "pin": {
+          "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+          "listingId": "durable-rfq-listing",
+          "version": 3
+        }
+      }
+    },
+    "bindingHash": "31c9d2e1e692d0a4bf39472d7b824b72326e06b4004cf42840577a579a5cda1d",
+    "channelId": "durable-private-channel-01",
+    "createdAt": 1780000000000,
+    "inboxPacketIds": [
+      "0369930c18e5c59f8978911f8a14f558473f449585c05184ea9220fbc493b381",
+      "1d27d96ea9aedcaf7180106554d0ea6b90c266f709e12b5197fef74d67b54cb5"
+    ],
+    "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+    "outbox": [
+      {
+        "attempts": 1,
+        "packet": {
+          "channelId": "durable-private-channel-01",
+          "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+          "kind": "turn",
+          "message": {
+            "body": {
+              "proposal": {
+                "price": {
+                  "amount": "9",
+                  "currency": "USDC"
+                },
+                "rfqProposalVersion": "1"
+              },
+              "rfqBodyVersion": "1"
+            },
+            "channelId": "durable-private-channel-01",
+            "sender": "did:demos:buyer-durable-rfq",
+            "sentAt": 1780000000000,
+            "sequence": 1,
+            "signature": "DSBjSBGrlQdF9OFPqIawgMela-3lpEpjg8tkt0A_VzrjXA5Y8yKihBlSvSgaQ2llOdud75MsUJJbyG1LjeFfDw",
+            "type": "offer"
+          },
+          "packetId": "666058927657933797c1c6ad9b2836661806ae801a6f2f39a9fd58b953f1bcec",
+          "packetVersion": "1",
+          "recipient": "did:demos:seller-durable-rfq",
+          "sender": "did:demos:buyer-durable-rfq"
+        },
+        "state": "acknowledged",
+        "updatedAt": 1780000000000
+      },
+      {
+        "attempts": 1,
+        "packet": {
+          "channelId": "durable-private-channel-01",
+          "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+          "kind": "turn",
+          "message": {
+            "body": {
+              "acceptedSequence": 2,
+              "rfqBodyVersion": "1"
+            },
+            "channelId": "durable-private-channel-01",
+            "refs": {
+              "repliesTo": 2
+            },
+            "sender": "did:demos:buyer-durable-rfq",
+            "sentAt": 1780000000000,
+            "sequence": 3,
+            "signature": "NpuUsl-yEanAxtyk2WeFzZp_ZH2wBrBGU0oFsi7NXETTzlzc7v7-se7_Kd1x9u1dP5JikHh3ALNcnTDdUohmBg",
+            "type": "accept"
+          },
+          "packetId": "9b2fd58de8afad8fe7d2240f2100af33ba0bfb7e31c1bee39a711534053c7808",
+          "packetVersion": "1",
+          "recipient": "did:demos:seller-durable-rfq",
+          "sender": "did:demos:buyer-durable-rfq"
+        },
+        "state": "acknowledged",
+        "updatedAt": 1780000000000
+      },
+      {
+        "attempts": 1,
+        "packet": {
+          "buyerContribution": {
+            "contributionHash": "79ffbbaabe89bed605ec5bdd3a1d7aa0e6724f696371df531e36fbb3fa8ab341",
+            "contributionVersion": "1",
+            "party": "did:demos:buyer-durable-rfq",
+            "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+            "role": "buyer",
+            "signature": {
+              "algorithm": "ed25519",
+              "party": "did:demos:buyer-durable-rfq",
+              "value": "nLfdgaYNXFahxRuocUMh5YcVqocBmuQ4AjrioAnmJ7A0ZpXsKjL7fcKwhGtIvSup-nLPuV0yj6-a1kFPm0KqCA"
+            }
+          },
+          "channelId": "durable-private-channel-01",
+          "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+          "kind": "agreement-proposal",
+          "packetId": "1151bf98e00913805208d3f011c94020fa698c77b9829950ea3e72e8247a1e6a",
+          "packetVersion": "1",
+          "plan": {
+            "agreementHash": "15183fbf62291e6eedf878da3e4578a85a6c993244d0f62329f29361166d2f7f",
+            "draft": {
+              "agreementVersion": "1",
+              "derivedFromChannel": {
+                "lastMessageHash": "0dc97bf2885ccfb13c7fd50b1c7e786f5692166479b671fbd24308d24da78452",
+                "subnet": "durable-private-channel-01"
+              },
+              "derivedFromPattern": "rfq",
+              "generatedAt": 1780000000000,
+              "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+              "listingRef": {
+                "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+                "listingId": "durable-rfq-listing",
+                "version": 3
+              },
+              "parties": [
+                {
+                  "bundleHash": "e39efba95bc5355fc8c049968ac856f964d21c34469a3e2d7edb88dc41a78d7f",
+                  "primaryClaim": "did:demos:buyer-durable-rfq",
+                  "role": "buyer",
+                  "vetRecordRef": {
+                    "anchor": {
+                      "kind": "storage-program",
+                      "locator": "stor:buyer-durable-rfq-vet"
+                    },
+                    "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  }
+                },
+                {
+                  "bundleHash": "b7295442e38bd2135f02946ca56f5a066059eff9569a006bbb286044df65e4cd",
+                  "primaryClaim": "did:demos:seller-durable-rfq",
+                  "role": "seller",
+                  "vetRecordRef": {
+                    "anchor": {
+                      "kind": "storage-program",
+                      "locator": "stor:seller-durable-rfq-vet"
+                    },
+                    "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  }
+                }
+              ],
+              "terms": {
+                "deadline": 1780000600000,
+                "deliverable": {
+                  "deliverableType": "attested-payload",
+                  "hash": "ba3cc4b40cb6f8d164ae7a983a699505f3014da7fffbe6c392d6090e778719b0"
+                },
+                "price": {
+                  "amount": "9.5",
+                  "currency": "USDC"
+                }
+              }
+            },
+            "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+            "planVersion": "1",
+            "requiredSigners": [
+              {
+                "party": "did:demos:buyer-durable-rfq",
+                "role": "buyer"
+              },
+              {
+                "party": "did:demos:seller-durable-rfq",
+                "role": "seller"
+              }
+            ],
+            "separator": "dacs-agreement:v1:",
+            "signedBytes": [
+              100,
+              97,
+              99,
+              115,
+              45,
+              97,
+              103,
+              114,
+              101,
+              101,
+              109,
+              101,
+              110,
+              116,
+              58,
+              118,
+              49,
+              58,
+              49,
+              53,
+              49,
+              56,
+              51,
+              102,
+              98,
+              102,
+              54,
+              50,
+              50,
+              57,
+              49,
+              101,
+              54,
+              101,
+              101,
+              100,
+              102,
+              56,
+              55,
+              56,
+              100,
+              97,
+              51,
+              101,
+              52,
+              53,
+              55,
+              56,
+              97,
+              56,
+              53,
+              97,
+              54,
+              99,
+              57,
+              57,
+              51,
+              50,
+              52,
+              52,
+              100,
+              48,
+              102,
+              54,
+              50,
+              51,
+              50,
+              57,
+              102,
+              50,
+              57,
+              51,
+              54,
+              49,
+              49,
+              54,
+              54,
+              100,
+              50,
+              102,
+              55,
+              102
+            ]
+          },
+          "recipient": "did:demos:seller-durable-rfq",
+          "sender": "did:demos:buyer-durable-rfq"
+        },
+        "state": "acknowledged",
+        "updatedAt": 1780000000000
+      }
+    ],
+    "revision": 8,
+    "role": "buyer",
+    "session": {
+      "awaitingSince": 1780000000000,
+      "buyer": {
+        "bundleHash": "e39efba95bc5355fc8c049968ac856f964d21c34469a3e2d7edb88dc41a78d7f",
+        "primaryClaim": "did:demos:buyer-durable-rfq",
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:buyer-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "channelId": "durable-private-channel-01",
+      "expectedSender": "did:demos:buyer-durable-rfq",
+      "initiator": "buyer",
+      "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+      "lastMessageHash": "0dc97bf2885ccfb13c7fd50b1c7e786f5692166479b671fbd24308d24da78452",
+      "lastSequence": 3,
+      "listingPin": {
+        "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+        "listingId": "durable-rfq-listing",
+        "version": 3
+      },
+      "maxTurns": 5,
+      "pricing": {
+        "bandCenter": {
+          "amount": "10",
+          "currency": "USDC"
+        },
+        "kind": "negotiable",
+        "maxPct": 20,
+        "minPct": 20
+      },
+      "rfqSessionVersion": "1",
+      "seller": {
+        "bundleHash": "b7295442e38bd2135f02946ca56f5a066059eff9569a006bbb286044df65e4cd",
+        "primaryClaim": "did:demos:seller-durable-rfq",
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:seller-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "standingProposal": {
+        "price": {
+          "amount": "9.5",
+          "currency": "USDC"
+        },
+        "proposer": "did:demos:seller-durable-rfq",
+        "rfqProposalVersion": "1",
+        "sequence": 2
+      },
+      "startedAt": 1780000000000,
+      "status": "accepted",
+      "terminalReason": "standing RFQ proposal accepted",
+      "timeoutMs": 10000,
+      "turnCount": 3
+    },
+    "storeVersion": 1,
+    "transcript": [
+      {
+        "body": {
+          "proposal": {
+            "price": {
+              "amount": "9",
+              "currency": "USDC"
+            },
+            "rfqProposalVersion": "1"
+          },
+          "rfqBodyVersion": "1"
+        },
+        "channelId": "durable-private-channel-01",
+        "sender": "did:demos:buyer-durable-rfq",
+        "sentAt": 1780000000000,
+        "sequence": 1,
+        "signature": "DSBjSBGrlQdF9OFPqIawgMela-3lpEpjg8tkt0A_VzrjXA5Y8yKihBlSvSgaQ2llOdud75MsUJJbyG1LjeFfDw",
+        "type": "offer"
+      },
+      {
+        "body": {
+          "proposal": {
+            "price": {
+              "amount": "9.5",
+              "currency": "USDC"
+            },
+            "rfqProposalVersion": "1"
+          },
+          "rfqBodyVersion": "1"
+        },
+        "channelId": "durable-private-channel-01",
+        "refs": {
+          "repliesTo": 1
+        },
+        "sender": "did:demos:seller-durable-rfq",
+        "sentAt": 1780000000000,
+        "sequence": 2,
+        "signature": "yQ7_5gQhMNQOJgRdig8Xclri48fvC8nYcmzH0yRlw9fC-g78ODitrwx1BaFW8JxpI-r7ZMVrXJ1uFpcAl6HxCw",
+        "type": "counter"
+      },
+      {
+        "body": {
+          "acceptedSequence": 2,
+          "rfqBodyVersion": "1"
+        },
+        "channelId": "durable-private-channel-01",
+        "refs": {
+          "repliesTo": 2
+        },
+        "sender": "did:demos:buyer-durable-rfq",
+        "sentAt": 1780000000000,
+        "sequence": 3,
+        "signature": "NpuUsl-yEanAxtyk2WeFzZp_ZH2wBrBGU0oFsi7NXETTzlzc7v7-se7_Kd1x9u1dP5JikHh3ALNcnTDdUohmBg",
+        "type": "accept"
+      }
+    ],
+    "updatedAt": 1780000000000
+  },
+  "sellerFinalized": {
+    "agreement": {
+      "contributions": [
+        {
+          "contributionHash": "79ffbbaabe89bed605ec5bdd3a1d7aa0e6724f696371df531e36fbb3fa8ab341",
+          "contributionVersion": "1",
+          "party": "did:demos:buyer-durable-rfq",
+          "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+          "role": "buyer",
+          "signature": {
+            "algorithm": "ed25519",
+            "party": "did:demos:buyer-durable-rfq",
+            "value": "nLfdgaYNXFahxRuocUMh5YcVqocBmuQ4AjrioAnmJ7A0ZpXsKjL7fcKwhGtIvSup-nLPuV0yj6-a1kFPm0KqCA"
+          }
+        },
+        {
+          "contributionHash": "2085a7dde069afa3d69935815432050cdcdc7856a4e2bba73997dec12e19452d",
+          "contributionVersion": "1",
+          "party": "did:demos:seller-durable-rfq",
+          "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+          "role": "seller",
+          "signature": {
+            "algorithm": "ed25519",
+            "party": "did:demos:seller-durable-rfq",
+            "value": "UJUiti03eEJ31HDS0G78jVeiIvvbF61w2LGYuEiI6nn2TeKW1lmu0xBanTF8lcN707nhZUrNJfrFc8NoMqe6BQ"
+          }
+        }
+      ],
+      "finalized": {
+        "agreementVersion": "1",
+        "derivedFromChannel": {
+          "lastMessageHash": "0dc97bf2885ccfb13c7fd50b1c7e786f5692166479b671fbd24308d24da78452",
+          "subnet": "durable-private-channel-01"
+        },
+        "derivedFromPattern": "rfq",
+        "generatedAt": 1780000000000,
+        "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+        "listingRef": {
+          "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+          "listingId": "durable-rfq-listing",
+          "version": 3
+        },
+        "parties": [
+          {
+            "bundleHash": "e39efba95bc5355fc8c049968ac856f964d21c34469a3e2d7edb88dc41a78d7f",
+            "primaryClaim": "did:demos:buyer-durable-rfq",
+            "role": "buyer",
+            "vetRecordRef": {
+              "anchor": {
+                "kind": "storage-program",
+                "locator": "stor:buyer-durable-rfq-vet"
+              },
+              "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          },
+          {
+            "bundleHash": "b7295442e38bd2135f02946ca56f5a066059eff9569a006bbb286044df65e4cd",
+            "primaryClaim": "did:demos:seller-durable-rfq",
+            "role": "seller",
+            "vetRecordRef": {
+              "anchor": {
+                "kind": "storage-program",
+                "locator": "stor:seller-durable-rfq-vet"
+              },
+              "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+          }
+        ],
+        "signatures": [
+          {
+            "algorithm": "ed25519",
+            "party": "did:demos:buyer-durable-rfq",
+            "value": "nLfdgaYNXFahxRuocUMh5YcVqocBmuQ4AjrioAnmJ7A0ZpXsKjL7fcKwhGtIvSup-nLPuV0yj6-a1kFPm0KqCA"
+          },
+          {
+            "algorithm": "ed25519",
+            "party": "did:demos:seller-durable-rfq",
+            "value": "UJUiti03eEJ31HDS0G78jVeiIvvbF61w2LGYuEiI6nn2TeKW1lmu0xBanTF8lcN707nhZUrNJfrFc8NoMqe6BQ"
+          }
+        ],
+        "terms": {
+          "deadline": 1780000600000,
+          "deliverable": {
+            "deliverableType": "attested-payload",
+            "hash": "ba3cc4b40cb6f8d164ae7a983a699505f3014da7fffbe6c392d6090e778719b0"
+          },
+          "price": {
+            "amount": "9.5",
+            "currency": "USDC"
+          }
+        }
+      },
+      "plan": {
+        "agreementHash": "15183fbf62291e6eedf878da3e4578a85a6c993244d0f62329f29361166d2f7f",
+        "draft": {
+          "agreementVersion": "1",
+          "derivedFromChannel": {
+            "lastMessageHash": "0dc97bf2885ccfb13c7fd50b1c7e786f5692166479b671fbd24308d24da78452",
+            "subnet": "durable-private-channel-01"
+          },
+          "derivedFromPattern": "rfq",
+          "generatedAt": 1780000000000,
+          "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+          "listingRef": {
+            "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+            "listingId": "durable-rfq-listing",
+            "version": 3
+          },
+          "parties": [
+            {
+              "bundleHash": "e39efba95bc5355fc8c049968ac856f964d21c34469a3e2d7edb88dc41a78d7f",
+              "primaryClaim": "did:demos:buyer-durable-rfq",
+              "role": "buyer",
+              "vetRecordRef": {
+                "anchor": {
+                  "kind": "storage-program",
+                  "locator": "stor:buyer-durable-rfq-vet"
+                },
+                "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            },
+            {
+              "bundleHash": "b7295442e38bd2135f02946ca56f5a066059eff9569a006bbb286044df65e4cd",
+              "primaryClaim": "did:demos:seller-durable-rfq",
+              "role": "seller",
+              "vetRecordRef": {
+                "anchor": {
+                  "kind": "storage-program",
+                  "locator": "stor:seller-durable-rfq-vet"
+                },
+                "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ],
+          "terms": {
+            "deadline": 1780000600000,
+            "deliverable": {
+              "deliverableType": "attested-payload",
+              "hash": "ba3cc4b40cb6f8d164ae7a983a699505f3014da7fffbe6c392d6090e778719b0"
+            },
+            "price": {
+              "amount": "9.5",
+              "currency": "USDC"
+            }
+          }
+        },
+        "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+        "planVersion": "1",
+        "requiredSigners": [
+          {
+            "party": "did:demos:buyer-durable-rfq",
+            "role": "buyer"
+          },
+          {
+            "party": "did:demos:seller-durable-rfq",
+            "role": "seller"
+          }
+        ],
+        "separator": "dacs-agreement:v1:",
+        "signedBytes": [
+          100,
+          97,
+          99,
+          115,
+          45,
+          97,
+          103,
+          114,
+          101,
+          101,
+          109,
+          101,
+          110,
+          116,
+          58,
+          118,
+          49,
+          58,
+          49,
+          53,
+          49,
+          56,
+          51,
+          102,
+          98,
+          102,
+          54,
+          50,
+          50,
+          57,
+          49,
+          101,
+          54,
+          101,
+          101,
+          100,
+          102,
+          56,
+          55,
+          56,
+          100,
+          97,
+          51,
+          101,
+          52,
+          53,
+          55,
+          56,
+          97,
+          56,
+          53,
+          97,
+          54,
+          99,
+          57,
+          57,
+          51,
+          50,
+          52,
+          52,
+          100,
+          48,
+          102,
+          54,
+          50,
+          51,
+          50,
+          57,
+          102,
+          50,
+          57,
+          51,
+          54,
+          49,
+          49,
+          54,
+          54,
+          100,
+          50,
+          102,
+          55,
+          102
+        ]
+      }
+    },
+    "authority": {
+      "buyer": {
+        "identityBundle": {
+          "bundleVersion": "1",
+          "claims": [
+            {
+              "ref": "did:demos:buyer-durable-rfq"
+            }
+          ],
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:buyer-durable-rfq",
+                "signature": "identity-proof"
+              }
+            ]
+          },
+          "presentedAt": 1779999999000,
+          "presentedBy": "did:demos:buyer-durable-rfq"
+        },
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:buyer-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "seller": {
+        "identityBundle": {
+          "bundleVersion": "1",
+          "claims": [
+            {
+              "ref": "did:demos:seller-durable-rfq"
+            }
+          ],
+          "presentation": {
+            "kind": "per-claim",
+            "signatures": [
+              {
+                "ref": "did:demos:seller-durable-rfq",
+                "signature": "identity-proof"
+              }
+            ]
+          },
+          "presentedAt": 1779999999000,
+          "presentedBy": "did:demos:seller-durable-rfq"
+        },
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:seller-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "verifiedListing": {
+        "disposition": "verified",
+        "listing": {
+          "buyerRequirement": {
+            "required": [],
+            "requirementVersion": "1"
+          },
+          "dacsVersion": "1",
+          "listingId": "durable-rfq-listing",
+          "listingVersion": 3,
+          "offering": {
+            "category": "data.finance",
+            "deliverable": {
+              "kind": "attested-payload",
+              "payloadFormat": "application/json",
+              "verificationMethod": {
+                "kind": "self-signed"
+              }
+            },
+            "description": "A restart-safe private RFQ",
+            "tags": [
+              "rfq"
+            ],
+            "title": "Durable private quote"
+          },
+          "pipeline": [
+            {
+              "kind": "negotiate-rfq",
+              "parameters": {
+                "maxTurns": 5,
+                "timeoutSec": 10
+              }
+            },
+            {
+              "kind": "commit-agreement"
+            },
+            {
+              "kind": "deliver-attested-payload"
+            }
+          ],
+          "pricing": {
+            "bandCenter": {
+              "amount": "10",
+              "currency": "USDC"
+            },
+            "kind": "negotiable",
+            "maxPct": 20,
+            "minPct": 20
+          },
+          "requiredCapabilities": [
+            "SR-2",
+            "SR-4"
+          ],
+          "seller": {
+            "displayName": "Durable RFQ seller",
+            "identity": {
+              "bundleVersion": "1",
+              "claims": [
+                {
+                  "ref": "did:demos:seller-durable-rfq"
+                }
+              ],
+              "presentation": {
+                "kind": "per-claim",
+                "signatures": [
+                  {
+                    "ref": "did:demos:seller-durable-rfq",
+                    "signature": "identity-proof"
+                  }
+                ]
+              },
+              "presentedAt": 1779999999000,
+              "presentedBy": "did:demos:seller-durable-rfq"
+            },
+            "publicEndpoint": "https://seller.example/dacs"
+          },
+          "signature": {
+            "algorithm": "ed25519",
+            "signer": "did:demos:seller-durable-rfq",
+            "value": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw"
+          },
+          "terms": {
+            "deadlineSecAfterCommit": 600
+          },
+          "validity": {
+            "notAfter": 1780001000000,
+            "notBefore": 1779999990000
+          }
+        },
+        "pin": {
+          "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+          "listingId": "durable-rfq-listing",
+          "version": 3
+        }
+      }
+    },
+    "bindingHash": "6877ee8255d682816101add3ffea6d6aa360ad2d2d9c6b7ef0e6ef7b6599fb1c",
+    "channelId": "durable-private-channel-01",
+    "createdAt": 1780000000000,
+    "inboxPacketIds": [
+      "666058927657933797c1c6ad9b2836661806ae801a6f2f39a9fd58b953f1bcec",
+      "9b2fd58de8afad8fe7d2240f2100af33ba0bfb7e31c1bee39a711534053c7808",
+      "1151bf98e00913805208d3f011c94020fa698c77b9829950ea3e72e8247a1e6a"
+    ],
+    "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+    "outbox": [
+      {
+        "attempts": 1,
+        "packet": {
+          "channelId": "durable-private-channel-01",
+          "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+          "kind": "turn",
+          "message": {
+            "body": {
+              "proposal": {
+                "price": {
+                  "amount": "9.5",
+                  "currency": "USDC"
+                },
+                "rfqProposalVersion": "1"
+              },
+              "rfqBodyVersion": "1"
+            },
+            "channelId": "durable-private-channel-01",
+            "refs": {
+              "repliesTo": 1
+            },
+            "sender": "did:demos:seller-durable-rfq",
+            "sentAt": 1780000000000,
+            "sequence": 2,
+            "signature": "yQ7_5gQhMNQOJgRdig8Xclri48fvC8nYcmzH0yRlw9fC-g78ODitrwx1BaFW8JxpI-r7ZMVrXJ1uFpcAl6HxCw",
+            "type": "counter"
+          },
+          "packetId": "0369930c18e5c59f8978911f8a14f558473f449585c05184ea9220fbc493b381",
+          "packetVersion": "1",
+          "recipient": "did:demos:buyer-durable-rfq",
+          "sender": "did:demos:seller-durable-rfq"
+        },
+        "state": "acknowledged",
+        "updatedAt": 1780000000000
+      },
+      {
+        "attempts": 1,
+        "packet": {
+          "channelId": "durable-private-channel-01",
+          "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+          "kind": "agreement-contribution",
+          "packetId": "1d27d96ea9aedcaf7180106554d0ea6b90c266f709e12b5197fef74d67b54cb5",
+          "packetVersion": "1",
+          "recipient": "did:demos:buyer-durable-rfq",
+          "sellerContribution": {
+            "contributionHash": "2085a7dde069afa3d69935815432050cdcdc7856a4e2bba73997dec12e19452d",
+            "contributionVersion": "1",
+            "party": "did:demos:seller-durable-rfq",
+            "planHash": "d0a86186580be9719350795d767130facef175a2267a55d1a76db59ce57d8ca9",
+            "role": "seller",
+            "signature": {
+              "algorithm": "ed25519",
+              "party": "did:demos:seller-durable-rfq",
+              "value": "UJUiti03eEJ31HDS0G78jVeiIvvbF61w2LGYuEiI6nn2TeKW1lmu0xBanTF8lcN707nhZUrNJfrFc8NoMqe6BQ"
+            }
+          },
+          "sender": "did:demos:seller-durable-rfq"
+        },
+        "state": "acknowledged",
+        "updatedAt": 1780000000000
+      }
+    ],
+    "revision": 6,
+    "role": "seller",
+    "session": {
+      "awaitingSince": 1780000000000,
+      "buyer": {
+        "bundleHash": "e39efba95bc5355fc8c049968ac856f964d21c34469a3e2d7edb88dc41a78d7f",
+        "primaryClaim": "did:demos:buyer-durable-rfq",
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:buyer-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "channelId": "durable-private-channel-01",
+      "expectedSender": "did:demos:buyer-durable-rfq",
+      "initiator": "buyer",
+      "jobId": "01J8ME0SXKQ4T9V2RC5HJ6WX7E",
+      "lastMessageHash": "0dc97bf2885ccfb13c7fd50b1c7e786f5692166479b671fbd24308d24da78452",
+      "lastSequence": 3,
+      "listingPin": {
+        "contentHash": "f2bae2a6b48e713e61931c37183043f0efbe24989959d85ca69c3aa3ca480251",
+        "listingId": "durable-rfq-listing",
+        "version": 3
+      },
+      "maxTurns": 5,
+      "pricing": {
+        "bandCenter": {
+          "amount": "10",
+          "currency": "USDC"
+        },
+        "kind": "negotiable",
+        "maxPct": 20,
+        "minPct": 20
+      },
+      "rfqSessionVersion": "1",
+      "seller": {
+        "bundleHash": "b7295442e38bd2135f02946ca56f5a066059eff9569a006bbb286044df65e4cd",
+        "primaryClaim": "did:demos:seller-durable-rfq",
+        "vetRecordRef": {
+          "anchor": {
+            "kind": "storage-program",
+            "locator": "stor:seller-durable-rfq-vet"
+          },
+          "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "standingProposal": {
+        "price": {
+          "amount": "9.5",
+          "currency": "USDC"
+        },
+        "proposer": "did:demos:seller-durable-rfq",
+        "rfqProposalVersion": "1",
+        "sequence": 2
+      },
+      "startedAt": 1780000000000,
+      "status": "accepted",
+      "terminalReason": "standing RFQ proposal accepted",
+      "timeoutMs": 10000,
+      "turnCount": 3
+    },
+    "storeVersion": 1,
+    "transcript": [
+      {
+        "body": {
+          "proposal": {
+            "price": {
+              "amount": "9",
+              "currency": "USDC"
+            },
+            "rfqProposalVersion": "1"
+          },
+          "rfqBodyVersion": "1"
+        },
+        "channelId": "durable-private-channel-01",
+        "sender": "did:demos:buyer-durable-rfq",
+        "sentAt": 1780000000000,
+        "sequence": 1,
+        "signature": "DSBjSBGrlQdF9OFPqIawgMela-3lpEpjg8tkt0A_VzrjXA5Y8yKihBlSvSgaQ2llOdud75MsUJJbyG1LjeFfDw",
+        "type": "offer"
+      },
+      {
+        "body": {
+          "proposal": {
+            "price": {
+              "amount": "9.5",
+              "currency": "USDC"
+            },
+            "rfqProposalVersion": "1"
+          },
+          "rfqBodyVersion": "1"
+        },
+        "channelId": "durable-private-channel-01",
+        "refs": {
+          "repliesTo": 1
+        },
+        "sender": "did:demos:seller-durable-rfq",
+        "sentAt": 1780000000000,
+        "sequence": 2,
+        "signature": "yQ7_5gQhMNQOJgRdig8Xclri48fvC8nYcmzH0yRlw9fC-g78ODitrwx1BaFW8JxpI-r7ZMVrXJ1uFpcAl6HxCw",
+        "type": "counter"
+      },
+      {
+        "body": {
+          "acceptedSequence": 2,
+          "rfqBodyVersion": "1"
+        },
+        "channelId": "durable-private-channel-01",
+        "refs": {
+          "repliesTo": 2
+        },
+        "sender": "did:demos:buyer-durable-rfq",
+        "sentAt": 1780000000000,
+        "sequence": 3,
+        "signature": "NpuUsl-yEanAxtyk2WeFzZp_ZH2wBrBGU0oFsi7NXETTzlzc7v7-se7_Kd1x9u1dP5JikHh3ALNcnTDdUohmBg",
+        "type": "accept"
+      }
+    ],
+    "updatedAt": 1780000000000
+  }
+}
