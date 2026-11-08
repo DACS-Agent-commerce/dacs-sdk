@@ -171,6 +171,25 @@ service and fee accounting unchanged.
 
 ## Node behaviour this depends on
 
+Wallet write recovery relies on strict sender nonce ordering. Forging a block,
+rebuilding it under the commit lock, and syncing it all require the next
+transaction to use the confirmed sender nonce plus one. A transaction at or
+below the confirmed nonce is recorded as failed, with no effect and no fee.
+Sync rejects a block that marks such a transaction confirmed, and nonce
+integrity checks enforce the same rule when applying the block. Transactions
+sharing a nonce can appear in the same block: the lowest hash wins and the
+other transaction fails. A used nonce is refused on later broadcast and confirm.
+
+For an unresolved write at nonce N, recovery reads the raw confirmed nonce and
+the account-info nonce through separate requests to the configured node. Both
+must be valid and agree at a value at least N. Recovery then reads the write's
+hash again: a confirmed transaction follows normal success authentication;
+a pending transaction or explicit not-found response is terminal and recorded
+as `canonical-failed`, meaning the write was not applied. The transaction can
+still appear later as failed. Unavailable or malformed reads and nonce
+disagreement keep the write unresolved. Elapsed time and absence alone never
+release the wallet, and recovery never broadcasts the original transaction again.
+
 The mapping was verified against kynesyslabs/node
 `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578`, the commit node2
 (`0.9.9 RC`) reports at `GET /version`, and against

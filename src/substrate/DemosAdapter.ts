@@ -1795,7 +1795,10 @@ export class DemosAdapter implements SubstrateAdapter {
     txRef: string,
     ctx: AnchorContext,
     broadcastPromise?: Promise<unknown>,
+    signedNonce = this.activeWriteRecord?.txRef === txRef
+      ? this.activeWriteRecord.nonce : undefined,
   ): Promise<"included" | "failed"> {
+    let nonceConsumed = false;
     let broadcast: BroadcastObservation | undefined;
     if (broadcastPromise) {
       void broadcastPromise.then(
@@ -1854,9 +1857,12 @@ export class DemosAdapter implements SubstrateAdapter {
           ? record.state
           : undefined;
       if (state) ctx.receipt.lastObservedState = state;
-      const transactionRecord = isRecord(transaction) && isRecord(transaction.response)
-        ? transaction.response
-        : transaction;
+      const transactionRecord = isRecord(transaction) &&
+          transaction.result !== undefined && transaction.result !== 200
+        ? undefined
+        : isRecord(transaction) && isRecord(transaction.response)
+          ? transaction.response
+          : transaction;
       const executionStatus = isRecord(transactionRecord) &&
           typeof transactionRecord.status === "string"
         ? transactionRecord.status
@@ -1876,6 +1882,59 @@ export class DemosAdapter implements SubstrateAdapter {
         }
         this.emit(ctx);
         return "failed";
+      }
+
+      if (
+        broadcast?.state === "accepted" &&
+        ctx.receipt.state === "broadcast-unknown"
+      ) {
+        const now = Date.now();
+        ctx.receipt.state = "accepted";
+        ctx.receipt.completion = "accepted";
+        ctx.receipt.timings.acceptedAt = now;
+        this.emit(ctx);
+      }
+
+      if (executionStatus !== "confirmed" && signedNonce !== undefined) {
+        // A consumed nonce rules out future application, but our hash must be
+        // read again afterwards so a concurrent confirmation wins over absence.
+        if (nonceConsumed && isRecord(transaction) && (
+          (transaction.result === 404 && transaction.response === null) ||
+          ((transaction.result === undefined || transaction.result === 200) &&
+            executionStatus === "pending")
+        )) {
+          ctx.receipt.state = "failed";
+          ctx.receipt.lastObservedState = "nonce-consumed";
+          this.emit(ctx);
+          return "failed";
+        }
+        if (nonceConsumed) {
+          nonceConsumed = false;
+          await this.delay(ctx);
+          continue;
+        }
+        try {
+          const address = this.#demos.getAddress();
+          const [nonce, account] = await this.waitFor(
+            ctx,
+            Promise.all([
+              this.#demos.nodeCall("getAddressNonce", { address }),
+              this.#demos.nodeCall("getAddressInfo", { address }),
+            ]),
+            "inclusion",
+          );
+          const confirmed = demosNonNegativeInteger(nonce);
+          const corroborated = isRecord(account)
+            ? demosNonNegativeInteger(account.nonce) : undefined;
+          if (confirmed !== undefined && !Object.is(confirmed, -0) &&
+              !Object.is(corroborated, -0) &&
+              confirmed === corroborated && confirmed >= signedNonce) {
+            nonceConsumed = true;
+            continue;
+          }
+        } catch (error) {
+          if (error instanceof AnchorWaitError) throw error;
+        }
       }
 
       if (state === "included" || executionStatus === "confirmed") {
@@ -1922,16 +1981,6 @@ export class DemosAdapter implements SubstrateAdapter {
           `anchor ${ctx.receipt.address ?? txRef} was rejected by the node`,
           broadcast.cause,
         );
-      }
-      if (
-        broadcast?.state === "accepted" &&
-        ctx.receipt.state === "broadcast-unknown"
-      ) {
-        const now = Date.now();
-        ctx.receipt.state = "accepted";
-        ctx.receipt.completion = "accepted";
-        ctx.receipt.timings.acceptedAt = now;
-        this.emit(ctx);
       }
       this.emit(ctx);
       await this.delay(ctx);
@@ -2435,7 +2484,7 @@ export class DemosAdapter implements SubstrateAdapter {
         );
         ctx.receipt.address = retained.nativeAddress;
         ctx.receipt.txRef = retained.txRef;
-        const terminal = await this.waitForTerminal(retained.txRef, ctx);
+        const terminal = await this.waitForTerminal(retained.txRef, ctx, undefined, retained.nonce);
         const current = { ...retained, generation: lease.generation };
         if (terminal === "failed") {
           await lease.put({ ...current, stage: "canonical-failed", updatedAt: Date.now() });
@@ -2466,7 +2515,7 @@ export class DemosAdapter implements SubstrateAdapter {
       ctx.receipt.txRef = retained.txRef;
       let current = { ...retained, generation: lease.generation };
       if (retained.stage === "broadcast-intent") {
-        const terminal = await this.waitForTerminal(retained.txRef, ctx);
+        const terminal = await this.waitForTerminal(retained.txRef, ctx, undefined, retained.nonce);
         if (terminal === "failed") {
           await lease.put({
             ...current,
@@ -2569,7 +2618,7 @@ export class DemosAdapter implements SubstrateAdapter {
     // re-establish canonical terminal state before releasing the wallet lane.
     const terminal = canonicalConfirmed
       ? "included"
-      : await this.waitForTerminal(txRef, ctx);
+      : await this.waitForTerminal(txRef, ctx, undefined, signedNonce);
     if (terminal === "included") {
       void key;
       if (this.activeWriteRecord?.nonce !== signedNonce) {

@@ -2057,7 +2057,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
-  it.fails("closes an accepted anchor that remains absent and permits a later write", async () => {
+  it("closes an absent anchor after its nonce is consumed and permits a later write", async () => {
     vi.useFakeTimers();
     try {
       const { adapter, raw, wallet } = await makeAdapter();
@@ -2077,6 +2077,13 @@ describe("DemosAdapter.anchorAndWait", () => {
         { completion: "accepted", timeoutMs: 1_000, pollMs: 500 },
       );
       expect(accepted.state).toBe("accepted");
+      raw.getAddressNonce.mockResolvedValue(1);
+      raw.nodeCall.mockImplementation(async (method: string) => {
+        if (method === "getAddressNonce") return "1";
+        if (method === "getAddressInfo") return { nonce: "1" };
+        return { state: "unknown" };
+      });
+      await vi.advanceTimersByTimeAsync(500);
       vi.setSystemTime(Date.now() + 120_001);
       await vi.advanceTimersByTimeAsync(500);
 
@@ -2103,6 +2110,9 @@ describe("DemosAdapter.anchorAndWait", () => {
       );
       expect(later.state).toBe("included");
       expect(later.txRef).not.toBe(accepted.txRef);
+      expect(raw.storagePrograms.sign).toHaveBeenLastCalledWith(
+        expect.anything(), { nonce: 2 },
+      );
       expect(raw.tx.broadcast).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -2147,6 +2157,7 @@ describe("DemosAdapter.anchorAndWait", () => {
       raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 42 });
       raw.getTxByHash.mockImplementation(included);
       raw.storagePrograms.read.mockImplementation(nativeRead);
+      raw.getAddressNonce.mockResolvedValue(1);
       const later = await adapter.anchorAndWait(
         "after-late-anchor",
         { value: 2 },
@@ -2162,6 +2173,171 @@ describe("DemosAdapter.anchorAndWait", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it.each(["missing", "pending", "failed in block"])(
+    "recovers a retained %s anchor after another transaction consumes its nonce",
+    async (outcome) => {
+      const { adapter, raw, wallet, rpc } = await makeAdapter();
+      const lease = await writeJournal.acquire({ chainIdentity: "test-chain", wallet });
+      const { record } = pendingAnchorWrite(
+        lease.generation, wallet, "consumed-anchor", 1,
+        "retained-consumed-anchor", "retained-address", { value: 1 },
+      );
+      await lease.put(record);
+      await lease.release();
+      raw.getAddressNonce.mockResolvedValue(2);
+      const included = raw.getTxByHash.getMockImplementation();
+      raw.nodeCall.mockImplementation(async (method: string, params: { hash?: string }) => {
+        if (method === "getAddressNonce") return "2";
+        if (method === "getAddressInfo") return { nonce: "2" };
+        return params.hash === record.txRef
+          ? { state: outcome === "missing" ? "unknown" : "included", blockNumber: 41 }
+          : { state: "included", blockNumber: 42 };
+      });
+      raw.getTxByHash.mockImplementation(async (hash: string) => hash === record.txRef
+        ? outcome === "missing"
+          ? { result: 404, response: null }
+          : { hash, status: outcome === "pending" ? "pending" : "failed", blockNumber: 41 }
+        : included!(hash));
+      // A new adapter must use the durable record rather than process state.
+      const restarted = new DemosAdapter({ rpc, chainIdentity: "test-chain", writeJournal });
+      Object.assign(restarted.raw, raw);
+      await restarted.connect();
+      vi.spyOn(restarted, "resolveAnchorByName").mockResolvedValue({ status: "absent" });
+      const next = await restarted.anchorAndWait(
+        "after-retained-anchor", { value: 2 },
+        { completion: "included", timeoutMs: 100, pollMs: 1 },
+      );
+      expect(next.state).toBe("included");
+      const recovered = await writeJournal.acquire({ chainIdentity: "test-chain", wallet });
+      try {
+        const failed = recovered.snapshot.records.find((item) => item.txRef === record.txRef);
+        expect(failed).toMatchObject({ stage: "canonical-failed" });
+        expect(failed?.blockNumber).toBeUndefined();
+        expect(failed?.nativeRead).toBeUndefined();
+      } finally {
+        await recovered.release();
+      }
+      expect(raw.storagePrograms.sign).toHaveBeenLastCalledWith(expect.anything(), { nonce: 3 });
+      expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+      expect(raw.storagePrograms.read).not.toHaveBeenCalledWith(record.nativeAddress);
+    },
+  );
+
+  it("recovers success when confirmation races the confirmed nonce reads", async () => {
+    const { adapter, raw, wallet, recordSignedPayload } = await makeAdapter();
+    const lease = await writeJournal.acquire({ chainIdentity: "test-chain", wallet });
+    const { record, payload } = pendingAnchorWrite(
+      lease.generation, wallet, "racing-anchor", 1,
+      "racing-anchor", "racing-address", { value: 1 },
+    );
+    await lease.put(record);
+    await lease.release();
+    recordSignedPayload(record.txRef!, payload, 1);
+    let nonceReads = 0;
+    const included = raw.getTxByHash.getMockImplementation();
+    raw.getAddressNonce.mockResolvedValue(1);
+    raw.nodeCall.mockImplementation(async (method: string) => {
+      if (method === "getAddressNonce") { nonceReads += 1; return 1; }
+      if (method === "getAddressInfo") { nonceReads += 1; return { nonce: 1 }; }
+      return { state: "unknown" };
+    });
+    raw.getTxByHash.mockImplementation(async (hash: string) => nonceReads >= 2
+      ? included!(hash) : { result: 404, response: null });
+    const recovered = await writeJournal.acquire({ chainIdentity: "test-chain", wallet });
+    try {
+      await adapter.reconcileWalletJournal(recovered, 100, { pollMs: 1 });
+      expect(recovered.snapshot.records).toMatchObject([{
+        txRef: record.txRef, stage: "native-visible", blockNumber: 42,
+      }]);
+    } finally {
+      await recovered.release();
+    }
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["nonce below the signed nonce", 0, 0],
+    ["nonce request failure", new Error("nonce unavailable"), 1],
+    ["missing nonce", undefined, 1],
+    ["malformed nonce", "1trailing", 1],
+    ["fractional nonce", 1.5, 1.5],
+    ["unsafe nonce", Number.MAX_SAFE_INTEGER + 1, Number.MAX_SAFE_INTEGER + 1],
+    ["negative nonce", -1, -1],
+    ["negative zero nonce", -0, -0],
+    ["disagreeing nonce reads", 1, 2],
+    ["failed account request", 1, new Error("account unavailable")],
+  ])("keeps a write blocked with %s", async (_label, nonce, accountNonce) => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const lease = await writeJournal.acquire({ chainIdentity: "test-chain", wallet });
+    const { record } = pendingAnchorWrite(
+      lease.generation, wallet, "pending-anchor", 1,
+      "still-pending-anchor", "pending-address", { value: 1 },
+    );
+    await lease.put(record);
+    await lease.release();
+    raw.nodeCall.mockImplementation(async (method: string) => {
+      if (method === "getAddressNonce") {
+        if (nonce instanceof Error) throw nonce;
+        return nonce;
+      }
+      if (method === "getAddressInfo") {
+        if (accountNonce instanceof Error) throw accountNonce;
+        return { nonce: accountNonce };
+      }
+      return { state: "unknown" };
+    });
+    raw.getTxByHash.mockResolvedValue({ result: 404, response: null });
+    await expect(adapter.anchorAndWait(
+      "after-pending-anchor", { value: 2 },
+      { completion: "included", timeoutMs: 30, pollMs: 1 },
+    )).rejects.toMatchObject({ code: "timeout" });
+    const retained = await writeJournal.acquire({ chainIdentity: "test-chain", wallet });
+    try {
+      expect(retained.snapshot.records).toMatchObject([{
+        txRef: record.txRef, stage: "broadcast-intent",
+      }]);
+    } finally {
+      await retained.release();
+    }
+    expect(raw.storagePrograms.sign).not.toHaveBeenCalled();
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["request failure", rpcFailure()],
+    ["missing response", undefined],
+    ["null response", null],
+    ["malformed response", {}],
+    ["failed response", { result: 500, response: { status: "confirmed", blockNumber: 42 } }],
+  ])("keeps an unresolved hash blocked after nonce advancement with %s", async (_label, response) => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const lease = await writeJournal.acquire({ chainIdentity: "test-chain", wallet });
+    const { record } = pendingAnchorWrite(
+      lease.generation, wallet, "unreadable-anchor", 1,
+      "unreadable-anchor", "unreadable-address", { value: 1 },
+    );
+    await lease.put(record);
+    await lease.release();
+    raw.nodeCall.mockImplementation(async (method: string) => {
+      if (method === "getAddressNonce") return 1;
+      if (method === "getAddressInfo") return { nonce: 1 };
+      return { state: "unknown" };
+    });
+    raw.getTxByHash.mockImplementation(async () => {
+      if (response instanceof Error) throw response;
+      return response;
+    }).mockResolvedValueOnce({ result: 404, response: null });
+    const retained = await writeJournal.acquire({ chainIdentity: "test-chain", wallet });
+    try {
+      await expect(adapter.reconcileWalletJournal(retained, 30, { pollMs: 1 }))
+        .rejects.toMatchObject({ code: "timeout" });
+      expect(retained.snapshot.records).toMatchObject([{ stage: "broadcast-intent" }]);
+    } finally {
+      await retained.release();
+    }
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
   });
 
   it("returns included when the hash lands while the broadcast response hangs", async () => {
