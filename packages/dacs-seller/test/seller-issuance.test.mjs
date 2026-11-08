@@ -7,6 +7,7 @@ import { openSellerIssuanceJournals } from '../src/devnet-demo/seller-issuance.m
 import { parsePolicyLedger,SELLER_LEDGER_HEADER_FORMAT } from '../src/devnet-demo/operator-approval.mjs';
 import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
 import { T0 } from './helpers/d5-policy-fixtures.mjs';
+import { JOB } from './helpers/protocol-fixture.mjs';
 
 // An in-memory durable wallet journal opener with the opener contract
 // ({path,mode,expectedJournalId} -> {journalId,close}).
@@ -81,4 +82,41 @@ test('a torn header cut from a bound ledger is written whole before its rows and
  await start(directory,openJournal);
  assert.equal((await readFile(ledgerPath(directory),'utf8')),`${header}\n${legacyRow}\n`);
  assert.equal((await start(directory,openJournal)).length,3);
+});
+
+// A power loss mid-append leaves the ledger's last context line unterminated and not complete JSON.
+const contextHold=JSON.stringify({format:'dacs-node2-seller-context-admission/v1',event:'hold',holdId:'TEST hold',jobId:JOB,effect:'a'.repeat(64),writes:1,totalOs:'4',recordedAt:300});
+const tornContextHold=contextHold.slice(0,contextHold.length-12);
+const boundLedgerWithTail=async(directory,openJournal,tail)=>{
+ await start(directory,openJournal);
+ const kept=`${await readFile(ledgerPath(directory),'utf8')}${contextHold}\n`;
+ await writeFile(ledgerPath(directory),`${kept}${tail}`);
+ return kept;
+};
+
+test('a start cuts a torn context line from the bound ledger and keeps the rows before it',async t=>{
+ const directory=await stateDirectory(t),openJournal=journalOpener();
+ const kept=await boundLedgerWithTail(directory,openJournal,tornContextHold);
+ assert.equal((await start(directory,openJournal)).length,3);
+ assert.equal(await readFile(ledgerPath(directory),'utf8'),kept);
+ assert.equal(parsePolicyLedger(kept).rows.length,1);
+});
+
+test('a start refuses a bound ledger with a torn context line while another writer holds the ledger lock',async t=>{
+ const directory=await stateDirectory(t),openJournal=journalOpener();
+ const kept=await boundLedgerWithTail(directory,openJournal,tornContextHold);
+ await mkdir(`${ledgerPath(directory)}.policy-lock`,{recursive:true,mode:0o700});
+ const writer=await acquireSellerStateLock(`${ledgerPath(directory)}.policy-lock`,{now:()=>T0});
+ await assert.rejects(start(directory,openJournal),{code:'seller_state_locked'});
+ assert.equal(await readFile(ledgerPath(directory),'utf8'),`${kept}${tornContextHold}`);
+ writer.release();assert.equal((await start(directory,openJournal)).length,3);
+ assert.equal(await readFile(ledgerPath(directory),'utf8'),kept);
+});
+
+test('a start still refuses a bound ledger whose last line is torn but not a context line',async t=>{
+ const directory=await stateDirectory(t),openJournal=journalOpener();
+ const tail='{"format":"not-a-seller-line","event":';
+ const kept=await boundLedgerWithTail(directory,openJournal,tail);
+ await assert.rejects(start(directory,openJournal),/ledger/i);
+ assert.equal(await readFile(ledgerPath(directory),'utf8'),`${kept}${tail}`);
 });
