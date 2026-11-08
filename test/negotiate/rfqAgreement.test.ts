@@ -614,6 +614,37 @@ describe("RFQ Agreement finalization (DACS-3 §8.4.2/§8.5)", () => {
     },
   );
 
+  test.each(["agreement", "verifiedListing"] as const)(
+    "binds an RFQ agreement whose %s input is deeply frozen",
+    async (frozenInput) => {
+      const value = listing();
+      const agreement = await signRfqAgreement(
+        deriveRfqAgreement(agreementInput(value, await acceptedSession(value))),
+        {
+          party: BUYER,
+          algorithm: "ed25519",
+          sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(BUYER_SEED)),
+        },
+        {
+          party: SELLER,
+          algorithm: "ed25519",
+          sign: (bytes) => ed25519Sign(bytes, privateKeyFromSeed(SELLER_SEED)),
+        },
+      );
+      const input = {
+        agreement,
+        verifiedListing: verified(value),
+        committedAt: COMMITTED_AT,
+      };
+      const expected = validateRfqAgreementBinding(input);
+      const frozen = {
+        ...input,
+        [frozenInput]: deepFreeze(structuredClone(input[frozenInput])),
+      };
+      expect(validateRfqAgreementBinding(frozen)).toEqual(expected);
+    },
+  );
+
   test("has zero SR-2 writes when the RFQ transcript or accepted price is rebound", async () => {
     const value = listing();
     const rfqSession = await acceptedSession(value);
