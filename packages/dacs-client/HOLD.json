@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "e55b5fab98ef27c7bccfb5aaa0d2ca530cb616da"
+        "blob": "5e06969272172cd4a116fe1b786e1894d59578b2"
       },
       "DELTA-LEDGER.json": {
-        "blob": "c63bd32dc85305e8b3a2b9a42e1b2259d502160e"
+        "blob": "8bc0e641ee83fd2da5ea442d2e9511dd1ef48365"
       },
       "DELTA-MAP.md": {
-        "blob": "c625208c6328062aab4512775cbbde7e71e40277"
+        "blob": "fd4cd74623ea5a8ffed399b236b089e60a3646f2"
       },
       "DELTA-NOTES.md": {
-        "blob": "0d2f986bab879560827e6c94cd68205c7cdf2dba"
+        "blob": "a2950554a9f225fa99dbc6ea2828e877717a0794"
       },
       "HOLD.json": {
         "control": "record"
@@ -1030,11 +1030,11 @@
         "blob": "595f482da255f373328c30ee634af20c4911f7f4"
       },
       "package.json": {
-        "blob": "c633012e8fb98dc5e398ce904fd136b53a4d1504"
+        "blob": "f719bef405af617472cb69924dd5f9bac7639c31"
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "5207d4ffb82503f6ff16ec3bb9828611db6d920d"
+        "blob": "9e71b0c1ae324f10ba08309c415a1301d2e41cd8"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1175,7 +1175,7 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "a7bde64bb0b01a411fe520bb19a8d973fb05775c"
+        "blob": "aac29716e0dcbcfa9c861440893eb3ef4b6d9779"
       },
       "src/dacs/seller-response-class.mjs": {
         "blob": "8ca70e7f5d3217388527c8dcab289193b2848780"
@@ -1346,7 +1346,7 @@
         "blob": "d2502b88a4b1bf5763ba381a771ede78882325da"
       },
       "test/d11-import-boundary.test.mjs": {
-        "blob": "e737b5abec7b991fd5401d943998cd3ce60bc1bc"
+        "blob": "abd69a0abe22de61c02df544371d1baa542b0c15"
       },
       "test/d11-purchase-actions.test.mjs": {
         "blob": "4c560fe287e70b36a42569e63614a44f00ab14fe"
@@ -1772,7 +1772,7 @@
         "blob": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4"
       },
       "test/ingress-admission.test.mjs": {
-        "blob": "bc5df5a139d39697b81a2363c3e2554c0220551e"
+        "blob": "2bb9dd310f49253c35f2985fff4a653e0b22775e"
       },
       "test/intent-canonical-depth.test.mjs": {
         "blob": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
@@ -1823,7 +1823,7 @@
         "blob": "9cdd17e0eceae6b901b2c075823c6dce714496c9"
       },
       "test/package-contents.test.mjs": {
-        "blob": "9b3fac5c0509ab6f0e5401c7d76700814a73842d"
+        "blob": "225f7dbfb61729f33863364013e7dca7d31335a2"
       },
       "test/packed-consumer.test.mjs": {
         "blob": "8a0d5f40a09ba49a79011580142ef137bc9db113"

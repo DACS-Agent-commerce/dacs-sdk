@@ -13,13 +13,16 @@ function fresh(source) {
 test('buyer modules avoid seller state, portal, wallet seams and eager SQLite', () => {
  fresh(`import assert from 'node:assert/strict';import {registerHooks} from 'node:module';
  import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
- let sqliteAllowed=false,sqliteLoads=0;
+ let sqliteAllowed=false,sqliteLoads=0,buyerLoading=true;
  registerHooks({resolve(specifier,context,next){const result=next(specifier,context);
  if(/seller-agent\\.mjs|seller-state|\\/public\\/portal\\/|wallet-actions-not-wired/.test(result.url))throw Error('forbidden buyer dependency '+result.url);
+ if(buyerLoading&&/seller-(?:agent-error|transport-auth|session-limits)\\.mjs/.test(result.url))throw Error('forbidden seller dependency '+result.url);
  if(result.url==='node:sqlite'){assert.equal(sqliteAllowed,true,'eager SQLite');sqliteLoads++;}return result;}});
- await import(${JSON.stringify(new URL('../src/dacs/seller-http.mjs',import.meta.url).href)});
+ const http=await import(${JSON.stringify(new URL('../src/dacs/seller-http.mjs',import.meta.url).href)});
+ assert.equal('createSellerHttpHandler' in http,false);assert.equal('loopbackSocket' in http,false);
  await import(${JSON.stringify(new URL('../src/wallet/devnet-native-transport.mjs',import.meta.url).href)});
  await assert.rejects(import(${JSON.stringify(new URL('../src/seams/wallet-actions-not-wired.mjs',import.meta.url).href)}), /forbidden buyer dependency/);
+ buyerLoading=false; // The retained legacy store is tested on its own, outside the buyer import graph.
  const {createSellerTransportStore}=await import(${JSON.stringify(new URL('../src/dacs/seller-transport-auth.mjs',import.meta.url).href)});
  assert.equal(sqliteLoads,0);sqliteAllowed=true;
  const dir=mkdtempSync(join(tmpdir(),'dacs-import-store-'));
@@ -42,17 +45,6 @@ test('production native claim uses the pure payload digest without wallet action
  const from='0x'+'a'.repeat(64),to='0x'+'b'.repeat(64);
  assert.equal(await source.nativeTransferClaimed(from,{content:{type:'native',from,to,amount:'1000000000',nonce:7,timestamp:1,data:['native',{nativeOperation:'send',args:[to,'1000000000']}]}}),null);
  assert.equal(writes,0);assert.equal(reads,0);
-});
-test('seller agent and HTTP transport share refusal identity', () => {
- fresh(`import assert from 'node:assert/strict';import {Readable} from 'node:stream';
- const agent=await import(${JSON.stringify(new URL('../src/dacs/seller-agent.mjs',import.meta.url).href)});
- const shared=await import(${JSON.stringify(new URL('../src/dacs/seller-agent-error.mjs',import.meta.url).href)});
- const {createSellerHttpHandler}=await import(${JSON.stringify(new URL('../src/dacs/seller-http.mjs',import.meta.url).href)});
- assert.equal(agent.SellerAgentError,shared.SellerAgentError);
- const handler=createSellerHttpHandler({commit(){throw new agent.SellerAgentError('unknown_job','TEST refused',404);}});
- const req=Readable.from([Buffer.from('{}')]);Object.assign(req,{method:'POST',url:'/dacs/v1/commitments',headers:{'content-type':'application/json'},socket:{remoteAddress:'127.0.0.1',localAddress:'127.0.0.1'}});
- let status,body;await handler(req,{writeHead(s){status=s;},end(b){body=JSON.parse(b);}});
- assert.equal(status,404);assert.equal(body.error,'unknown_job');`);
 });
 test('extracted digest matches the SDK serializer byte contract', async () => {
  const {serializeTransactionContent}=await import(new URL('denomination/serializerGate.js',import.meta.resolve('@kynesyslabs/demosdk')));
