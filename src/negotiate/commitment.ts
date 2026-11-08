@@ -19,7 +19,6 @@ import {
 import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import {
   COMPONENT_SIGNATURE_ALGORITHMS,
-  isComponentSignature,
   signComponentArtifact,
   type BuildComponentSignatureOptions,
 } from "../artifacts/signatures.js";
@@ -29,7 +28,6 @@ import type {
   AnchorReceipt,
   AttestationRef,
   ChainTxRef,
-  CommitmentRecord,
   ComponentSignature,
   FinalityCommitmentRecord,
   Listing,
@@ -39,7 +37,6 @@ import {
   isAgreementArtifact,
   isAttestationRef,
   isChainTxRef,
-  isCommitmentRecord,
   isFinalityCommitmentRecord,
   isListing,
   isReadableAnchorReceipt,
@@ -458,15 +455,6 @@ function providerDataMethod<
   throw new SubstrateError(
     `commitment provider is missing ${String(key)}`,
   );
-}
-
-function captureReader(
-  reader: FinalityCommitmentReader,
-): CapturedCommitmentReader {
-  return Object.freeze({
-    resolve: providerDataMethod(reader, "resolve"),
-    verifyAnchorReceipt: providerDataMethod(reader, "verifyAnchorReceipt"),
-  });
 }
 
 function captureProvider(
