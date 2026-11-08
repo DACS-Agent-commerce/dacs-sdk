@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { contentHash } from "../../src/canonical/index.js";
-import { bundleAddress, storAddress } from "../../src/canonical/addressing.js";
+import { legacyBundleAddress as bundleAddress, storAddress } from "../../src/canonical/addressing.js";
 
 const CONF = join(
   dirname(fileURLToPath(import.meta.url)),
