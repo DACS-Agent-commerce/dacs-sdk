@@ -433,10 +433,11 @@ export interface RunSessionOptions {
   >;
   /**
    * Resume an interrupted session by passing the prior run's jobId. Anchored
-   * artifacts are reused. Crash-safe no-repayment across processes additionally
-   * requires both `sessionStore` and a durable/idempotent `resumeSettlement`
-   * implementation; a job id alone cannot prove what happened after a lost rail
-   * response. Omit for a new session.
+   * artifacts are reused. Without `sessionStore`, if the earlier run anchored
+   * the Agreement but not the payment evidence, the resume never calls
+   * `settle`: it calls `resumeSettlement`, and is refused without one. That
+   * seam must reconcile through a durable rail store, since a job id alone
+   * cannot show whether the interrupted run paid. Omit for a new session.
    */
   jobId?: string;
   /** Optional durable buyer-session lifecycle store used for restart recovery. */

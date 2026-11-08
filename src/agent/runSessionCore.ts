@@ -110,9 +110,10 @@ import {
  * keyed by jobId, so the anchored artifacts ARE the session state. On resume
  * (same jobId) each phase checks-before-acting — a present agreement/evidence/
  * bundle is reused, never re-signed or re-anchored, and crucially settlement is
- * skipped if evidence already exists (no double-pay). A crash between paying and
- * anchoring evidence is the rail's idempotency window — `settle` is handed the
- * jobId so the rail can dedupe there.
+ * skipped if evidence already exists (no double-pay). Without a session store,
+ * a job whose Agreement an earlier run anchored but whose evidence is absent
+ * never calls `settle`: it goes through `resumeSettlement`, which must
+ * reconcile through the original rail idempotency binding.
  */
 
 export interface SessionTerms {
@@ -4131,7 +4132,11 @@ async function runSessionCoreWithFence(
   }
 
   // Negotiate (fixed-price): accept the listed terms.
-  const { ref: agreementRef, value: agreementValue } = await anchorOnce(
+  const {
+    ref: agreementRef,
+    value: agreementValue,
+    existing: agreementExisting,
+  } = await anchorOnce(
     legacyMvpSessionAnchorName.agreement(jobId),
     matchAgreement,
     () => {
@@ -4590,6 +4595,11 @@ async function runSessionCoreWithFence(
           // the rail proves no payment landed. It is safe where ordinary `settle`
           // would be an unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
+        } else if (!store && agreementExisting) {
+          // An earlier run anchored this Agreement and may have paid before it
+          // stopped. With no session store nothing shows whether it did, so
+          // this run may only reconcile, never pay afresh.
+          settlement = await recoverRailOutcome("earlier run without a session store");
         } else {
           await fence.assertCurrent();
           const pay = snapshotSettleResult(
