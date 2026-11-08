@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "2eeef4f2c51509e1609f8abaf7998928c650aa96"
+        "blob": "8482021f4b9d941235128fd547520c5f34e5c0ff"
       },
       "DELTA-LEDGER.json": {
-        "blob": "cd029ee03fbb183fb5b3df69653e372ddede9155"
+        "blob": "ea59a372f63de741a67c3eb284ce4bfacb607cb5"
       },
       "DELTA-MAP.md": {
-        "blob": "605f874cc0ff40659b10ff22c2f334c41fa8db5d"
+        "blob": "fd20e5c3597770fb47d5a3affd25b7f680819305"
       },
       "DELTA-NOTES.md": {
         "blob": "62c6e0fb4149484f0f453f6768f2b089c1023a04"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "a3e21f522ce1b2a1a236d1949f1aeb8dc562e6a4"
+        "blob": "dd21969a47d306b9241440c70091cd2bfdbbe80f"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "021dc0934ddca6c5e6f36693c86e058eb2a972d2"
+        "blob": "e4d3b7f5127cfd5587fe42a6c7fec917dce0273f"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1151,7 +1151,7 @@
         "blob": "b10ec778520587c7d49045ae569b9742b05c097a"
       },
       "src/dacs/network-binding.mjs": {
-        "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
+        "blob": "78b217c6d2e5d6a590a75ffa599cd64652dfd3a2"
       },
       "src/dacs/protocol-purchases.mjs": {
         "blob": "652e68fa1ad0a799754f35d604bac2ffc1376f0e"
@@ -1172,7 +1172,7 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "3b37b663b20165b7a8a14a8a25ee62bf662cc5e6"
+        "blob": "ba1d0e0443221024b579735a95dcde647cd9d4a5"
       },
       "src/dacs/seller-session-lifecycle.mjs": {
         "blob": "86fd5777a41c76183f2b3383898400469bdc60b3"
@@ -1280,7 +1280,7 @@
         "blob": "6cb275e260df92ea17a4dd7c2417206a7ed7cc2a"
       },
       "src/util/immutable-readbacks.mjs": {
-        "blob": "8497f6a237a1c72ad3330cdebf529275700be15b"
+        "blob": "7c5ee6fcbcf3cefa0045385a375a74004452c527"
       },
       "src/util/purchase-readback-cache.mjs": {
         "blob": "835ca8f3785c926a975872f7d40a0df9dde55ab6"
@@ -1301,10 +1301,10 @@
         "blob": "323ba838b4f2abe9189f84d6688cdaf0914b1972"
       },
       "src/wallet/devnet-native-transport.mjs": {
-        "blob": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
+        "blob": "49ea60ec7688cde67f53c43ba2d467cab42f6097"
       },
       "src/wallet/durable-journal.mjs": {
-        "blob": "a284092528a7f3564c8def91dd5fee530ae04b93"
+        "blob": "3f10c8317d82bf3c1bcb24ba331cc61107695c92"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1754,10 +1754,10 @@
         "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"
       },
       "test/native-broadcast-once.test.mjs": {
-        "blob": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54"
+        "blob": "d1818df5ca9b61d9955d02d2fd4fda3a8ca62ab6"
       },
       "test/native-lock-order.test.mjs": {
-        "blob": "37e944e9f1b36e944b7af495fe532ba43b208aaa"
+        "blob": "6823ed3ecdc354d9f81d84299518f7eff91781c5"
       },
       "test/native-payment-evidence-shape.test.mjs": {
         "blob": "bb761efa71a4b511c65d6796798861a6ad40c7d3"

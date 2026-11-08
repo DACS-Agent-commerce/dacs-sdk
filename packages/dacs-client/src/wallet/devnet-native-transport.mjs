@@ -121,7 +121,7 @@ export function createDevnetSettlementTransport(options) { return constructTrans
 export function createDevnetDeliveryTransport(options) { return constructTransport(options,true,true,true); }
 export function createDevnetDemoTransport(options) { return constructTransport(options,true,true,true,true); }
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
-  fetchImpl = globalThis.fetch, now = () => Date.now(), timeoutMs = 10000,
+  fetchImpl = globalThis.fetch, now = () => Date.now(), monotonicNow = () => performance.now(), timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
   if (!transportOwner || typeof transportOwner.getContext !== 'function' || typeof transportOwner.acquireConnectionFence !== 'function') throw new TypeError('actual transport-owner context and connection fencing are required');
@@ -134,7 +134,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   const stepListeners = new Set(), resendListeners = new Set(), writeProofs = new Map();
   const step = (tx, name, phase, started) => {
     const op=tx?.content?.data?.[1], fields={timestampMs:now(),step:name,phase,hash:tx.hash,writer:tx.content.from,nonce:tx.content.nonce,jobId:op?.data?.jobId ?? op?.metadata?.artifactBinding?.jobId ?? null,artifactKind:op?.metadata?.artifactKind ?? 'native-transfer'};
-    if(started!==undefined) fields.durationMs=Math.max(0,fields.timestampMs-started);
+    if(started!==undefined) fields.durationMs=Math.max(0,monotonicNow()-started);
     for(const listener of stepListeners) { try { listener(fields); } catch { /* telemetry cannot authorize or interrupt a write */ } }
   };
   let closed = false;
@@ -634,7 +634,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         }
         const status=await node('getTransactionStatus',{ hash });
         if (status?.state !== 'included' || !Number.isSafeInteger(status.blockNumber)) return { disposition:'pending',hash,nonce:r.nonce,noResend:true };
-        const proofStarted=now(),cached=writeProofs.get(hash);
+        const proofStarted=monotonicNow(),cached=writeProofs.get(hash);
         writeProofs.delete(hash);
         const reused=cached && writeProof && canonicalize(writeProof)===canonicalize({disposition:'included',receipt:cached.receipt,noResend:true}) && sameContext(cached.context,await context()) && cached.signed===JSON.stringify(r.signedTransaction) && cached.receipt.blockNumber===status.blockNumber;
         const tx=reused?null:await node('getTxByHash',{hash});
@@ -772,7 +772,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             const latest=await journal.get(lane(address));
             if (latest && !['observed','failed'].includes(latest.stage)) fail('outcome_unknown','an issued native transfer appeared while acquiring the connection fence');
             if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
-            const lease={ id:randomBytes(16).toString('hex'),address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:now(),busy:0,transfer:null };
+            const lease={ id:randomBytes(16).toString('hex'),address,fence,binding,expiresAt:now()+leaseMs,confirmed:null,readyHash:null,signStarted:monotonicNow(),busy:0,transfer:null };
             // Claimed durably before it is returned: a cancellation in any
             // process sees it (transferClaimed).
             if (transfer) await claimTransfer(lease,transfer);
@@ -831,7 +831,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           await claimTransfer(l,transfer,true);
         });
         step(tx,'sign','complete',l.signStarted);
-        const started=now();
+        const started=monotonicNow();
         const answer=await rawWithoutWriteProof(body,headers);
         step(tx,'validate','complete',started);
         if(answer?.result === 200 && answer.response?.data?.valid === true) {
@@ -857,7 +857,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           if(tx.content.type==='storageProgram') issued.storageWriteGas=clone(call.data?.response?.data?.gas_operation ?? null);
           await retain(lane(tx.content.from),issued);
           await retain(intent(tx.hash),issued);
-          const started=now();
+          const started=monotonicNow();
           let answer;
           try { answer=await rawWithoutWriteProof(body,headers); } // one call, never retry on unknown; the inclusion poll below is the only source of a writeProof
           catch(error){step(tx,'broadcast','unknown',started);throw error;}
@@ -871,8 +871,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           return answer;
         });
         if (accepted?.result === 200) {
-          const started=now(),deadline=started+inclusionWaitMs;
-          for (let polls = Math.ceil(inclusionWaitMs / inclusionPollMs); !closed && polls > 0 && now()<deadline; polls--) {
+          const started=monotonicNow(),deadline=started+inclusionWaitMs;
+          for (let polls = Math.ceil(inclusionWaitMs / inclusionPollMs); !closed && polls > 0 && monotonicNow()<deadline; polls--) {
             let status;
             try {
               if (!sameContext(await context(),l.fence.context)) break;
@@ -886,7 +886,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
                 // keep the proof only if that connection is current after them.
                 const observedContext=await context();
                 if(!sameContext(observedContext,l.fence.context)) fail('connection_changed','the fenced connection changed before the inclusion proof');
-                const proofStarted=now(),issued=await journal.get(intent(tx.hash));
+                const proofStarted=monotonicNow(),issued=await journal.get(intent(tx.hash));
                 const binding=await binder.recover(issued.networkBinding);
                 const receipt=await inclusionReceipt(tx.content.from,tx.hash,issued,binding,status);
                 if(!sameContext(await context(),observedContext)) fail('connection_changed','the connection changed while the inclusion proof was read');
@@ -897,7 +897,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
               } catch { /* accepted hash remains readback-only if proof is unavailable */ }
               break;
             }
-            const remaining=deadline-now();
+            const remaining=deadline-monotonicNow();
             if(remaining>0)await sleep(Math.min(inclusionPollMs,remaining));
           }
         }

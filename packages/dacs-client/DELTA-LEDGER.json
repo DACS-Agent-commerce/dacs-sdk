@@ -6395,6 +6395,47 @@
           "after": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
         }
       ]
+    },
+    {
+      "delta": "D24",
+      "subject": "delta(client): D24 use a monotonic clock for in-process waits",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+          "before": "c2420945f3a5c5dbb1c3101923fd27af3e27398f",
+          "after": "78b217c6d2e5d6a590a75ffa599cd64652dfd3a2"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "3b37b663b20165b7a8a14a8a25ee62bf662cc5e6",
+          "after": "ba1d0e0443221024b579735a95dcde647cd9d4a5"
+        },
+        {
+          "path": "packages/dacs-client/src/util/immutable-readbacks.mjs",
+          "before": "8497f6a237a1c72ad3330cdebf529275700be15b",
+          "after": "7c5ee6fcbcf3cefa0045385a375a74004452c527"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e",
+          "after": "49ea60ec7688cde67f53c43ba2d467cab42f6097"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a284092528a7f3564c8def91dd5fee530ae04b93",
+          "after": "3f10c8317d82bf3c1bcb24ba331cc61107695c92"
+        },
+        {
+          "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+          "before": "74d7596b58d5bb9488444a69f6ff6e1ac4c92a54",
+          "after": "d1818df5ca9b61d9955d02d2fd4fda3a8ca62ab6"
+        },
+        {
+          "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+          "before": "37e944e9f1b36e944b7af495fe532ba43b208aaa",
+          "after": "6823ed3ecdc354d9f81d84299518f7eff91781c5"
+        }
+      ]
     }
   ]
 }
