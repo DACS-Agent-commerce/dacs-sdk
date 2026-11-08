@@ -332,7 +332,7 @@ function runVitest(host, files, titles, outputFile) {
     "-t", titles.map(escapeRegExp).join("|"),
     ...files,
   ];
-  const started = Date.now();
+  const started = performance.now();
   return new Promise((resolvePromise) => {
     const child = spawn(process.execPath, args, {
       cwd: host,
@@ -352,12 +352,12 @@ function runVitest(host, files, titles, outputFile) {
     }, RUN_TIMEOUT_MS);
     child.once("error", (error) => {
       clearTimeout(timer);
-      resolvePromise({ exitCode: null, timedOut, durationMs: Date.now() - started,
+      resolvePromise({ exitCode: null, timedOut, durationMs: performance.now() - started,
         stderr: String(error) });
     });
     child.once("close", (code) => {
       clearTimeout(timer);
-      resolvePromise({ exitCode: code, timedOut, durationMs: Date.now() - started,
+      resolvePromise({ exitCode: code, timedOut, durationMs: performance.now() - started,
         stderr: stderr.slice(0, 4_000) });
     });
   });

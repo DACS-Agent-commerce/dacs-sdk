@@ -79,7 +79,7 @@ const steps = [];
 
 /** Run one fixed command without a shell and keep its complete log as evidence. */
 async function step(name, command, commandArgs, options) {
-  const started = Date.now();
+  const started = performance.now();
   const result = spawnSync(command, commandArgs, {
     cwd: options.cwd,
     env: { ...process.env, NO_COLOR: "1", npm_config_update_notifier: "false" },
@@ -102,7 +102,7 @@ async function step(name, command, commandArgs, options) {
     exitCode: result.status,
     signal: result.signal,
     timedOut: result.error?.code === "ETIMEDOUT",
-    durationMs: Date.now() - started,
+    durationMs: performance.now() - started,
     log: logName,
   };
   steps.push(record);
@@ -214,7 +214,7 @@ async function releaseSetComparison(packs) {
 }
 
 await prepareOutputDirectory();
-const started = Date.now();
+const started = performance.now();
 const version = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8")).version;
 const scratch = await mkdtemp(join(tmpdir(), "dacs-pr303-consumer-"));
 const report = {
@@ -342,7 +342,7 @@ try {
   await rm(scratch, { recursive: true, force: true });
 }
 report.steps = steps;
-report.durationMs = Date.now() - started;
+report.durationMs = performance.now() - started;
 report.passed = report.failures.length === 0 &&
   RAILS.every((rail) => report.rails[rail]?.status === "passed");
 await writeFile(join(outputDirectory, "generated-consumer.json"),

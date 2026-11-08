@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { EventEmitter } from 'node:events';
+import { join } from 'node:path';
 import ts from 'typescript';
 
 // Execute the actual private/generated loop without adding a production export.
@@ -9,6 +11,7 @@ function loadFunction(path, name, bindings = {}, prelude = '') {
   let declaration;
   function visit(node) {
     if (ts.isFunctionDeclaration(node) && node.name?.text === name) declaration = node.getText(source).replace(/^export /u, '');
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name && node.initializer && ts.isArrowFunction(node.initializer)) declaration = `const ${node.getText(source)};`;
     ts.forEachChild(node, visit);
   }
   visit(source);
@@ -120,3 +123,54 @@ for (const jump of [-60_000, 60_000]) test(`verification tool total budget ignor
   elapsed = 1; assert.equal(check(), false);
   elapsed = 1_001; assert.equal(check(), true);
 });
+
+for (const jump of [-60_000, 60_000]) {
+  test(`native step elapsed time ignores a ${jump} ms wall jump`, () => {
+    let elapsed = 0, wall = 1_000_000;
+    const events = [], step = loadFunction('packages/dacs-client/src/wallet/devnet-native-transport.mjs', 'step', {
+      now: () => wall, monotonicNow: () => elapsed, stepListeners: new Set([event => events.push(event)]),
+    });
+    elapsed = 10; wall += 10 + jump;
+    step({ hash: 'test', content: {} }, 'inclusion', 'complete', 0);
+    assert.equal(events[0].durationMs, 10);
+    assert.equal(events[0].timestampMs, wall);
+  });
+
+  test(`verification subprocess elapsed time ignores a ${jump} ms wall jump`, async () => {
+    let elapsed = 0, wall = 1_000_000;
+    const run = loadFunction('scripts/verify-pr303-test-effectiveness.mjs', 'runVitest', {
+      Date: { now: () => wall }, performance: { now: () => elapsed },
+      repoRoot: '/test', join, escapeRegExp: value => value, childEnvironment: () => ({}), RUN_TIMEOUT_MS: 100,
+      setTimeout: () => 0, clearTimeout() {},
+      spawn: () => {
+        const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+        queueMicrotask(() => { elapsed = 10; wall += 10 + jump; child.emit('close', 0); });
+        return child;
+      },
+    });
+    const result = await run('/test', [], [], 'test.json');
+    assert.equal(result.exitCode, 0); assert.equal(result.durationMs, 10);
+  });
+
+  test(`generated consumer command elapsed time ignores a ${jump} ms wall jump`, async () => {
+    let elapsed = 0, wall = 1_000_000;
+    const steps = [], step = loadFunction('scripts/verify-pr303-generated-consumer.mjs', 'step', {
+      Date: { now: () => wall }, performance: { now: () => elapsed },
+      steps, outputDirectory: '/test', join, writeFile: async () => {},
+      spawnSync: () => { elapsed = 10; wall += 10 + jump; return { status: 0, signal: null, stdout: '', stderr: '' }; },
+    });
+    await step('test', 'test', [], { cwd: '/test', timeoutMs: 100 });
+    assert.equal(steps[0].durationMs, 10);
+  });
+
+  test(`generated consumer total elapsed time ignores a ${jump} ms wall jump`, () => {
+    let elapsed = 0, wall = 1_000_000;
+    const source = readFileSync(new URL('../../scripts/verify-pr303-generated-consumer.mjs', import.meta.url), 'utf8');
+    const start = source.match(/^const started = (.+);$/mu)[0];
+    const finish = source.match(/^report.durationMs = (.+);$/mu)[0];
+    const duration = new Function('Date', 'performance', `${start} const report = {}; return () => { ${finish} return report.durationMs; };`)(
+      { now: () => wall }, { now: () => elapsed });
+    elapsed = 10; wall += 10 + jump;
+    assert.equal(duration(), 10);
+  });
+}
