@@ -62,11 +62,16 @@ function writeTemporary(path, text) {
   try { writeFileSync(fd, text); fsyncSync(fd); written = true; } finally { closeSync(fd); if (!written) removeQuietly(temporary); }
   return temporary;
 }
+// Removes the lock at path only while it still holds text. Returns whether it
+// removed it.
+function unlinkOwnLock(path, text) {
+  if (readLock(path) !== text) return false;
+  unlinkSync(path);
+  return true;
+}
 // Removes the lock at path only while it still holds text, then syncs.
 function removeOwnLock(directory, path, text) {
-  if (readLock(path) !== text) return;
-  unlinkSync(path);
-  syncDirectory(directory);
+  if (unlinkOwnLock(path, text)) syncDirectory(directory);
 }
 // Publishes text at path, linked (never replacing) or renamed over the lock
 // judged exited. Returns false when a lock was already there to link over. If
@@ -114,8 +119,9 @@ function takeOver(directory, path, text) {
  * Rejects with code seller_state_locked and `reason` 'held' while another live
  * process (or this one) holds it, or 'doubt' when its holder can't be proven
  * gone. Returns `{ path, release() }`; release() is synchronous and idempotent,
- * removes the lock only while it is still this one, and throws if the
- * directory can't be synced. This process's lease is kept until it exits.
+ * removes the lock only while it is still this one, and throws if the lock
+ * can't be removed or the directory can't be synced; after a throw, calling it
+ * again retries. This process's lease is kept until it exits.
  */
 export async function acquireSellerStateLock(directory, { now = Date.now } = {}) {
   takeLease(directory);
@@ -134,10 +140,13 @@ export async function acquireSellerStateLock(directory, { now = Date.now } = {})
   throw refuse('doubt');
 }
 function lockHandle(directory, path, text) {
-  let released = false;
+  let removed = false, released = false;
+  // Each step is marked done only after it returns, so a call that threw can be
+  // repeated: a failed removal is tried again, a failed sync is synced again.
   return Object.freeze({ path, release: () => {
     if (released) return;
+    if (!removed) removed = unlinkOwnLock(path, text);
+    if (removed) syncDirectory(directory);
     released = true;
-    removeOwnLock(directory, path, text);
   } });
 }
