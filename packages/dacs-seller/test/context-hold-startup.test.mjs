@@ -1,3 +1,4 @@
+import { attemptChallenge } from './helpers/challenge-api.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -32,7 +33,7 @@ const nextHold = f => ({ ...f.hold, jobId: JOBS[1], effect: 'b'.repeat(64), hold
 function journal(path) {
   const db = new Database(path, { readonly: true });
   try {
-    return ['peer_effects', 'peer_context_admissions', 'peer_nonces', 'peer_context_challenges'].map(table => {
+    return ['peer_effects', 'peer_context_admissions', 'peer_nonces', 'kit_challenges'].map(table => {
       const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table);
       return exists ? db.prepare(`SELECT * FROM ${table}`).all() : [];
     });
@@ -51,7 +52,7 @@ for (const startup of [false, true]) test(`ready admission preserves reserve-bef
 
 test('startup restores capacity after a hold commits before its transport reservation', async t => {
   const f = await fixture(t);
-  f.store.attemptContextPresentation(f.request, f.body);
+  attemptChallenge(f.store,f.request, f.body);
   assert.equal(await f.policy.reserve(f.hold), null);
   assert.equal(f.store.contextAdmission(f.hold.jobId), null);
   assert.equal(await f.policy.reserve(nextHold(f)), 'hourly-write-limit');
