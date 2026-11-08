@@ -9,7 +9,7 @@ import {
 } from "./bundleSemantics.js";
 
 // Re-exported for API compatibility — the canonical §10.4.3 predicate now lives
-// in bundleDivergence.js and is shared with the §10.5.1 reputation deriver (#224).
+// in bundleDivergence.js and is shared with the §10.5.1 reputation deriver.
 export { bundlesDiverge };
 
 /**
@@ -30,13 +30,13 @@ export { bundlesDiverge };
  *                  dispute; a reputation deriver excludes this jobId entirely.
  *
  * "Canonically diverge" is defined ONCE in {@link bundleDivergence} and shared
- * verbatim with the §10.5.1 reputation deriver (#224 raised the drift between the
- * two): the copies differ in `outcome`, a `phaseSummary` entry (by `index`) is
- * present in one copy but not the other (presence-mismatch IS divergence per
- * DACS-Standard#224), or a shared entry's `kind`/`outcome`/`errorClass` differ. A
- * difference confined to advisory fields (`finalisedAt` skew, one-sided
- * `ratingRefs`, `anchoredByRole`, amendment ordering) is NOT a divergence, so a
- * party cannot force a spurious "disputed" classification by perturbing one.
+ * verbatim with the §10.5.1 reputation deriver, so the two cannot drift: the
+ * copies differ in `outcome`, a `phaseSummary` entry (by `index`) is present in
+ * one copy but not the other (presence-mismatch IS divergence per §10.4.3), or
+ * a shared entry's `kind`/`outcome`/`errorClass` differ. A difference confined
+ * to advisory fields (`finalisedAt` skew, one-sided `ratingRefs`,
+ * `anchoredByRole`, amendment ordering) is NOT a divergence, so a party cannot
+ * force a spurious "disputed" classification by perturbing one.
  *
  * `isValid` CONTRACT (load-bearing — §10.4.3(b) validity split lives here): a
  * copy passes iff it satisfies §10.4.1 signature validation **with** the §10.11
@@ -61,7 +61,7 @@ export { bundlesDiverge };
  * `absent`→`oneSided` or `oneSided`→`divergent`), so the caller MUST make the
  * choice explicit — supply `deps.isValid`, or set `deps.trustBundles: true` to
  * opt out when copies are already validated upstream. Neither → throws. (Same
- * shape as the #21 reputation deriver / #26 identityTier.)
+ * shape as the reputation deriver and `identityTier`.)
  *
  * Transport-trust caveat (non-normative): the `oneSided` verdict trusts the
  * absence signal. An attacker who can censor the counterparty's anchor at the
