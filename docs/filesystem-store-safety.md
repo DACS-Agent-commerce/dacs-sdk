@@ -14,8 +14,9 @@ On POSIX hosts the boundary:
   device/inode identity before and after each open or publication;
 - rejects a retained regular file when its link count is not exactly one, so a
   record cannot remain mutable through another hard-link name; a read that
-  finds exactly two links (a hard-link publication that has not yet removed its
-  temporary name) looks again for up to 315 ms before rejecting it;
+  finds an otherwise safe file with exactly two links (a hard-link publication
+  that has not yet removed its temporary name) retries with a 315 ms total delay
+  budget before rejecting it;
 - writes through a cryptographically random `O_EXCL` temporary, fsyncs the
   file, atomically renames or hard-links it, then fsyncs the containing
   directory; and

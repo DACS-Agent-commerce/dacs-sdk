@@ -140,7 +140,7 @@ describe("private durable filesystem boundary", () => {
 // exclusiveWritePrivateFile commits with link(temporary, path) and then removes
 // the temporary name, so a complete file briefly has exactly two links.
 describe("reads during an exclusive publication", () => {
-  test("readPrivateFile never refuses a file that a concurrent exclusive publication is completing", async () => {
+  test("readPrivateFile admits concurrent publications that finish within its 315 ms retry budget", async () => {
     const root = await temporaryRoot();
     const store = await preparePrivateStoreDirectory(join(root, "store"));
     let current = { path: join(store, "publication-0.json"), text: "" };
@@ -191,7 +191,7 @@ describe("reads during an exclusive publication", () => {
     await expect(reading).resolves.toBe("published");
   });
 
-  test("refuses a file that keeps two links after a bounded wait of a few hundred milliseconds", async () => {
+  test("refuses a file that keeps two links after its 315 ms retry budget", async () => {
     const root = await temporaryRoot();
     const store = await preparePrivateStoreDirectory(join(root, "store"));
     const path = join(store, "binding.json");
@@ -210,8 +210,25 @@ describe("reads during an exclusive publication", () => {
       `regular file has 2 hard links; exactly one is required: ${path}`,
     );
     const waitedMs = Date.now() - started;
-    expect(waitedMs).toBeGreaterThanOrEqual(200);
-    expect(waitedMs).toBeLessThanOrEqual(500);
+    expect(waitedMs).toBe(315);
+  });
+
+  test("refuses a two-link file with an unsafe mode without waiting", async () => {
+    const root = await temporaryRoot();
+    const store = await preparePrivateStoreDirectory(join(root, "store"));
+    const path = join(store, "binding.json");
+    await exclusiveWritePrivateFile(path, "published");
+    await link(path, join(store, "retained-alias.json"));
+    await chmod(path, 0o620);
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    const started = Date.now();
+
+    const { reading, state } = await startRead(path);
+
+    expect(state.settled).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(Date.now() - started).toBe(0);
+    await expect(reading).rejects.toThrow(/group\/world writable/);
   });
 
   test("refuses a file with three links without waiting", async () => {

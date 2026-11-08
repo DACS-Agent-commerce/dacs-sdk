@@ -23,7 +23,7 @@ const STICKY_BIT = 0o1000;
 
 // exclusiveWritePrivateFile commits with link(temporary, path) and then removes
 // its temporary name, so a complete published file briefly has exactly two
-// links. Readers wait that out with these delays (315 ms in total) before the
+// links. Readers retry with these delays (315 ms in total) before the
 // single-link check refuses the file.
 const PUBLICATION_LINK_COUNT = 2;
 const PUBLICATION_RETRY_DELAYS_MS = [5, 10, 20, 40, 80, 160] as const;
@@ -217,8 +217,11 @@ function assertSingleLink(metadata: Stats, label: string, path: string): void {
  * its link and the removal of its temporary name. Returns the latest metadata;
  * the caller's checks still refuse a file that keeps two links.
  */
-async function lstatAfterPublicationWindow(path: string): Promise<Stats> {
+async function lstatAfterPublicationWindow(path: string, label: string): Promise<Stats> {
   let metadata = await lstat(path);
+  if (metadata.isFile() && metadata.nlink === PUBLICATION_LINK_COUNT) {
+    assertOwnerAndMode(metadata, label, path, assertPosixPolicyAvailable(label), true);
+  }
   for (const delayMs of PUBLICATION_RETRY_DELAYS_MS) {
     if (!metadata.isFile() || metadata.nlink !== PUBLICATION_LINK_COUNT) break;
     await sleep(delayMs);
@@ -409,7 +412,7 @@ export async function readPrivateFile(
   // Keep this check in the primitive, not only directory preparation: these
   // functions are public and the mount beneath an admitted path can change.
   await assertLocalFilesystem(parent, label);
-  const before = await lstatAfterPublicationWindow(path);
+  const before = await lstatAfterPublicationWindow(path, label);
   if (before.isSymbolicLink()) {
     throw filesystemError(label, `path is unsafe because it is a symbolic link: ${path}`);
   }
@@ -598,7 +601,7 @@ export async function atomicWritePrivateFile(
  * Durably publish a private file only when the final path is absent. A hard
  * link is the no-overwrite commit point; EEXIST is preserved for callers.
  * Until the temporary name is removed the file has two links, which
- * readPrivateFile waits out.
+ * readPrivateFile retries with a 315 ms total delay budget before refusing it.
  */
 export async function exclusiveWritePrivateFile(
   requestedPath: string,
