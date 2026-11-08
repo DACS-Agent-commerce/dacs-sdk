@@ -192,10 +192,10 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     if (digest !== binding.localDigest || digest !== pass.digest || generation !== pass.generation) throw refuse('tp1_local_binding_changed', 'the connection changed during the pass');
   }
 
-  // The synchronous tail of EB5r and EB8f: nothing awaits between it and the signer or the transmission.
-  function recheckNow(pass, op, { includeApproval }) {
+  // The synchronous tail of EB5r and EB8f (approval hold, connection, K1 revision, current authorization): nothing awaits between it and the signer or the transmission.
+  function recheckNow(pass, op) {
     assertAdmitted();
-    if (includeApproval) checkApproval(op, pass.approvalRevision);
+    checkApproval(op, pass.approvalRevision);
     checkLocal(pass);
     if (op.k1Rev != null && op.k1Rev.current() !== op.k1Rev.expected) throw refuse('context_admission_closed', 'the K1 revision moved');
     assertCurrentAuthorization(pass.context);
@@ -257,7 +257,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     const retained = retainedSigned(records, op);
     await preChecks(op, deadline, pass.approvalRevision);
     await checkNotStopped(deadline);
-    recheckNow(pass, op, { includeApproval: true });
+    recheckNow(pass, op);
     const produced = retained === null ? innerSign() : null;
     const bytes = retained?.bytes ?? await produced;
     if (!(bytes instanceof Uint8Array) || bytes.length === 0 || bytes.length > MAX_SIGNED_BYTES) throw refuse('eb_signed_bytes_invalid', `the signer must return 1 to ${MAX_SIGNED_BYTES} bytes`);
@@ -270,6 +270,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       assertAdmitted();
       await checkNotStopped(deadline);
       await checkBinding(deadline);
+      checkApproval(op, pass.approvalRevision);
       checkLocal(pass);
     } catch (refusal) {
       await history.append(op.lane, { state: 'signed-held', ...base(op, artifactHash), cause: describeCause(refusal) })
@@ -298,7 +299,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     const of = intent.record.seq;
     try {
       await checkNotStopped(pass.deadline);
-      recheckNow(pass, op, { includeApproval: false });
+      recheckNow(pass, op);
     } catch (refusal) {
       await history.append(op.lane, { state: `${stage}-withheld`, ...base(op, artifactHash), of, cause: describeCause(refusal) })
         .catch((cause) => { throw refuse('eb_persist_failed', `the ${stage}-withheld record for ${refusal.code} could not be written`, cause); });
@@ -328,7 +329,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
         async sign(bytes) {
           await checkNotStopped(pass.deadline);
           ownedPass(op);
-          recheckNow(pass, op, { includeApproval: true });
+          recheckNow(pass, op);
           return inner.sign(bytes);
         },
       });

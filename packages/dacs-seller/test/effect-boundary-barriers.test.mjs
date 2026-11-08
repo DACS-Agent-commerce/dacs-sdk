@@ -177,6 +177,51 @@ test('inside EB7\'s read and EB8\'s intent persistence, the same changes hold or
   assert.deepEqual(gapped.trace.slice(at - 2, at + 1), ['stop', 'authorization', 'send'], 'the final stop await comes right before the last authorization check');
 });
 
+test('an approval hold lost after the signature is stored holds the bytes at EB7 and withholds the dispatch at EB8f, at every stage, and transmits nothing', async (t) => {
+  const approvalOp = (w, hold) => w.op({ approvalRef: { revision: () => hold.value } });
+  const w7 = await ebWorld(t);
+  const run7 = w7.build();
+  const hold7 = { value: 'revision-1' };
+  const park7 = gate();
+  w7.control.readHook = async (n, scope, base) => { if (n === 3) await park7.arrive(); return base(scope); };
+  const held = assert.rejects(run7.boundary.pass(approvalOp(w7, hold7), w7.sign(), w7.send()), { code: 'write-fee-cap' }, 'EB7');
+  await park7.reached;
+  hold7.value = null;
+  park7.release();
+  await held;
+  assert.deepEqual(await states(run7.history), ['signed', 'signed-held'], 'EB7 holds the bytes');
+  assert.equal((await run7.history.read('lane-1')).at(-1).cause.code, 'write-fee-cap');
+  assert.deepEqual([w7.counts.signer, w7.counts.transport], [1, 0]);
+
+  for (const stage of ['dispatch', 'confirm']) {
+    const w = await ebWorld(t);
+    const run = w.build();
+    const hold = { value: 'revision-1' };
+    const park = gate();
+    w.control.appendHook = async (record) => { if (record.state === `${stage}-started`) await park.arrive(); };
+    const outcome = assert.rejects(run.boundary.pass(approvalOp(w, hold), w.sign(), w.send(), { stage }), { code: 'write-fee-cap' }, stage);
+    await park.reached;
+    hold.value = null;
+    park.release();
+    await outcome;
+    const last = (await run.history.read('lane-1')).at(-1);
+    assert.deepEqual([last.state, last.cause.code], [`${stage}-withheld`, 'write-fee-cap'], stage);
+    assert.equal(w.counts.transport, 0, stage);
+  }
+
+  const changed = await ebWorld(t);
+  const changedRun = changed.build();
+  const revision = { value: 'revision-1' };
+  const swap = gate();
+  changed.control.appendHook = async (record) => { if (record.state === 'dispatch-started') await swap.arrive(); };
+  const swapped = assert.rejects(changedRun.boundary.pass(approvalOp(changed, revision), changed.sign(), changed.send()), { code: 'write-fee-cap' });
+  await swap.reached;
+  revision.value = 'revision-2';
+  swap.release();
+  await swapped;
+  assert.equal(changed.counts.transport, 0, 'a replaced hold also withholds');
+});
+
 test('a withheld artifact is not transmitted after restart and KILL removal; a new explicit pass transmits the retained bytes once', async (t) => {
   const withhold = async () => {
     const w = await ebWorld(t);
