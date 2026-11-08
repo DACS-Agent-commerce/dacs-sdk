@@ -42,7 +42,7 @@ src/
   agent/             createAgent, the Agent lifecycle (vet, negotiate, settle, fulfil, verify) and reputation
   artifacts/         spine artifact types, validators, separator registry
   canonical/         JCS + sha256 content hashing, stor- addressing, raw JSON admission
-  commerce/          fixed-price coordinators (x402, pay-dem, offline)
+  commerce/          fixed-price protocols (x402, pay-dem, offline), x402 coordinator
   crypto/            signing seam + domain separators
   discovery/         Listing binding resolution and indexes
   filesystem/        private-permission file store helper
@@ -52,7 +52,8 @@ src/
                      pay-d402, AP2 (with Stripe), Solana SPL, alternative payment,
                      wallet spend authority, idempotency stores
   registry/          recipe / rail steward registries
-  seller/            durable seller agreement responses
+  seller/            seller side: agreement responses, payment intake, receipts,
+                     bundle finalization
   wire/              dacs-seller-http/v1 wire definitions and the TP-1 profile
   cli/               read-only doctor/preflight helpers
   bin/               executable entrypoints

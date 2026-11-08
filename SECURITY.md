@@ -38,7 +38,8 @@ own tree under the policy below.
   closed as unavailable. It never falls back to the retired quick audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability, not blocked on
   severity alone; each assessment is added to
-  `scripts/registry-container-audit-baseline.json`, which lists none today.
+  `scripts/registry-container-audit-baseline.json`, whose list of assessed IDs
+  is empty today.
 - **Registry/container consumer acceptance** audits the generated consumer's
   current production dependencies (`npm audit --omit=dev`) by advisory ID against
   `scripts/registry-container-audit-baseline.json`. On non-enforcing pull requests,
@@ -55,9 +56,10 @@ own tree under the policy below.
   baseline (exit 4) passes that prerequisite, so baseline-only findings do not
   stop a prerelease. A direct high or critical advisory always does, even when
   the baseline lists it.
-- **Refresh cadence:** re-run `npm audit --omit=dev` and refresh the baseline on
-  every dependency bump **and** at least once per release cycle, since new
-  findings can land against an unchanged tree.
+- **Refresh cadence:** on every dependency bump **and** at least once per
+  release cycle, since new findings can land against an unchanged tree, run
+  registry/container consumer acceptance and, after review, add any new IDs it
+  reports to `scripts/registry-container-audit-baseline.json` and `.md`.
 
 ## In-process signing keys
 
