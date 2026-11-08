@@ -2057,6 +2057,113 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
   });
 
+  it.fails("closes an accepted anchor that remains absent and permits a later write", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, raw, wallet } = await makeAdapter();
+      const included = raw.getTxByHash.getMockImplementation();
+      const nativeRead = raw.storagePrograms.read.getMockImplementation();
+      raw.getAddressNonce.mockResolvedValue(0);
+      raw.nodeCall.mockResolvedValue({ state: "unknown" });
+      raw.getTxByHash.mockResolvedValue({ result: 404, response: null });
+      raw.storagePrograms.read.mockResolvedValue({
+        success: false,
+        errorCode: "NOT_FOUND",
+      });
+
+      const accepted = await adapter.anchorAndWait(
+        "absent-anchor",
+        { value: 1 },
+        { completion: "accepted", timeoutMs: 1_000, pollMs: 500 },
+      );
+      expect(accepted.state).toBe("accepted");
+      vi.setSystemTime(Date.now() + 120_001);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const lease = await writeJournal.acquire({
+        chainIdentity: "test-chain",
+        wallet: wallet.toLowerCase(),
+      });
+      try {
+        expect(lease.snapshot.records).toMatchObject([{
+          txRef: accepted.txRef,
+          stage: "canonical-failed",
+        }]);
+      } finally {
+        await lease.release();
+      }
+
+      raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 42 });
+      raw.getTxByHash.mockImplementation(included);
+      raw.storagePrograms.read.mockImplementation(nativeRead);
+      const later = await adapter.anchorAndWait(
+        "after-absent-anchor",
+        { value: 2 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 500 },
+      );
+      expect(later.state).toBe("included");
+      expect(later.txRef).not.toBe(accepted.txRef);
+      expect(raw.tx.broadcast).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers an accepted anchor that lands after a full absent recovery window", async () => {
+    vi.useFakeTimers();
+    try {
+      const { adapter, raw, wallet } = await makeAdapter();
+      const included = raw.getTxByHash.getMockImplementation();
+      const nativeRead = raw.storagePrograms.read.getMockImplementation();
+      raw.getAddressNonce.mockResolvedValue(0);
+      raw.nodeCall.mockResolvedValue({ state: "unknown" });
+      raw.getTxByHash.mockResolvedValue({ result: 404, response: null });
+      raw.storagePrograms.read.mockResolvedValue({
+        success: false,
+        errorCode: "NOT_FOUND",
+      });
+
+      const accepted = await adapter.anchorAndWait(
+        "late-anchor",
+        { value: 1 },
+        { completion: "accepted", timeoutMs: 1_000, pollMs: 500 },
+      );
+      vi.setSystemTime(Date.now() + 120_001);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const lease = await writeJournal.acquire({
+        chainIdentity: "test-chain",
+        wallet: wallet.toLowerCase(),
+      });
+      try {
+        expect(lease.snapshot.records).toMatchObject([{
+          txRef: accepted.txRef,
+          stage: "broadcast-intent",
+        }]);
+      } finally {
+        await lease.release();
+      }
+
+      raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 42 });
+      raw.getTxByHash.mockImplementation(included);
+      raw.storagePrograms.read.mockImplementation(nativeRead);
+      const later = await adapter.anchorAndWait(
+        "after-late-anchor",
+        { value: 2 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 500 },
+      );
+      expect(later.state).toBe("included");
+      expect(later.txRef).not.toBe(accepted.txRef);
+      expect(raw.storagePrograms.sign).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { nonce: 2 },
+      );
+      expect(raw.tx.broadcast).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns included when the hash lands while the broadcast response hangs", async () => {
     const { adapter, raw } = await makeAdapter();
     const broadcast = deferred<unknown>();
