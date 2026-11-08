@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "8f427894e159c6087334555d825f36ee502220f2"
+        "blob": "824ed201e113b888083b23efa97fd18d24e48669"
       },
       "DELTA-LEDGER.json": {
-        "blob": "663dfcaff0ff4ceb388c578cebb24b23aa2f1616"
+        "blob": "30244d20384f701a28c26dd64c5bd173f47bd511"
       },
       "DELTA-MAP.md": {
-        "blob": "e13b09df1106dd6e37ee3d212918ecac53d3005c"
+        "blob": "203e87e2788f202e58c0c0c13511228fe325fd8a"
       },
       "DELTA-NOTES.md": {
-        "blob": "902c7ec0873cc268c90089e227f4031542ffa33a"
+        "blob": "77e175b6d04aef8a77fe0956713625b21ccca851"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "aa018ff452aa0bfa80fad28b1c7314f70a6a293b"
+        "blob": "02e245eea4bd388c30cb9612d98adf8f7a4f293e"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1061,7 +1061,7 @@
         "blob": "78cc4a32d4d4ec0ec5ff89543fb65c1a5f0a39a0"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "c89345958d01a30104d38d1eb8f27b0e25e48e62"
+        "blob": "e08174e59787f9166a018f98798ab0ff5f4fe132"
       },
       "scripts/generate-payload-helpers.mjs": {
         "blob": "668c42fd6e34a0b055b32063698350677335622a"
@@ -1286,7 +1286,7 @@
         "blob": "5659a095247774027f29b46cc9cb2c847994007b"
       },
       "src/util/sqlite-statement-boundary.mjs": {
-        "blob": "a5497646bd1d81fe09d9cd5da3bc34ed988c76be"
+        "blob": "45e6c4ad22996885d6232dc2b71eb17aa0341552"
       },
       "src/util/sqlite-write-lease.mjs": {
         "blob": "cc652d18792a64c8ab106e4a16eef68eebe6ed11"
@@ -1835,7 +1835,7 @@
         "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"
       },
       "test/sqlite-iterator-before-install.test.mjs": {
-        "blob": "e31c2d36048e7a823bf7990be46edba5bc569456"
+        "blob": "157d3e8fe4452105b9d93e8309349e5bb81f227d"
       },
       "test/sqlite-iterator-own-methods.test.mjs": {
         "blob": "cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8"

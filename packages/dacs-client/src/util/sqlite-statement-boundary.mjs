@@ -12,7 +12,7 @@ const REFUSED_PROGRAM = 'SQL callbacks, virtual tables or unrecognized function 
 const REFUSED_BINDINGS = 'named bindings with accessors or proxies are unsupported by the statement guard';
 const REFUSED_ITERATOR = 'an iterator whose own next is not a function is unsupported by the statement guard';
 const owners = new WeakMap(), iterators = new WeakMap(), registrations = new WeakMap();
-let installed = false, checking = false, reportedEnds = 0, nativeExec, nativePrepare, nativeAll, builtinNames, bundledExtensionNames;
+let installed = false, checking = false, nativeExec, nativePrepare, nativeAll, builtinNames, bundledExtensionNames;
 const POLICY_ROW = { query_only: 'number' };
 const FUNCTION_ROW = { name: 'string', builtin: 'number', type: 'string', enc: 'string', narg: 'number', flags: 'number' };
 const PROGRAM_ROW = { addr: 'number', opcode: 'string', p1: 'number', p2: 'number', p3: 'number', p4: 'nullable string', p5: 'number', comment: 'nullable string' };
@@ -61,9 +61,14 @@ function guardedPrepare(db, ...args) {
 function check() {
   if (checking) return;
   checking = true;
-  try { for (const { db, predicate } of callbacks) synchronousResult(db, predicate()); }
-  catch (error) { reportedEnds++; throw error; }
-  finally { checking = false; }
+  let current;
+  try {
+    for (current of callbacks) synchronousResult(current.db, current.predicate());
+  } catch (error) {
+    // Only the guard whose predicate failed has had its end reported.
+    current.reported = true;
+    throw error;
+  } finally { checking = false; }
 }
 // Reading a binding object can run caller code (accessors, proxy traps), and
 // the native method reads it after the writable fence is open, past the last
@@ -224,8 +229,10 @@ function install(db) {
  * keeps its native next, which cannot be reached, so its steps run unchecked but
  * read-only: the fence is closed, so any write fails. The predicate runs once
  * more when fn returns, so a guard whose liveness ended during such a step throws
- * the predicate's error instead of returning, unless a check inside the guard
- * already reported that end to fn. Native methods stay unrestricted
+ * the predicate's error instead of returning, unless that guard's own predicate
+ * already failed inside fn (a failure of another guard does not count). A
+ * predicate fails only once liveness has ended, and liveness stays ended. A result
+ * other than undefined retires the handle before that final check. Native methods stay unrestricted
  * outside guards. Captured native writers fail between grants; deliberately
  * clearing the native flag requires a native authorizer, which Node 22 lacks.
  */
@@ -238,16 +245,17 @@ export function withSqliteStatementGuard(db, predicate, fn) {
   const parent = callbacks.find(frame => frame.db === db);
   if (!parent && queryOnly(db) !== 0) throw new TypeError('the statement guard requires a writable read-only policy');
   nativeExec.call(db, 'PRAGMA query_only=ON');
-  callbacks.push({ db, predicate });
-  const endsBefore = reportedEnds;
+  const frame = { db, predicate, reported: false };
+  callbacks.push(frame);
   try {
     check();
-    const result = fn();
+    // Retire the connection for a deferred result before the final check below
+    // can throw, or the finally would reopen the fence for that result's writers.
+    synchronousResult(db, fn());
     // A step the boundary cannot wrap (an iterator created before installation
-    // on the engine floors) ran without a check. Unless a check already reported
-    // the end to the body, confirm liveness once more.
-    if (reportedEnds === endsBefore) check();
-    return synchronousResult(db, result);
+    // on the engine floors) ran without a check. Unless this guard's own
+    // predicate already reported its end to the body, confirm liveness once more.
+    if (!frame.reported) check();
   }
   finally {
     callbacks.pop();
