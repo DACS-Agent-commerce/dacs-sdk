@@ -971,7 +971,8 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     if(typeof writable!=='function')throw new TypeError('a durable purchase-state check is required');
     if(writable()!==true)fail('not-pending','the purchase is no longer pending');
     assertAccess(buyerIdentityBundle.presentedBy);
-    if(!orchestrator&&!counterpartyReady())return{disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
+    // A row that already holds the counterparty record needs no verifier, as in jobVet.
+    if(!orchestrator&&!counterpartyReady()&&!(await state.read(scope.jobId))?.counterpartyRecord)return{disposition:'rejected',code:'counterparty_vet_required',reason:'a buyer verifier and its challenge ledger are required'};
     for(const [key,row] of await store.entries())if(key.startsWith('seller-challenge/')&&!(await state.read(row.jobId)))await store.update(key,current=>current?.jobId===row.jobId?null:undefined);
     const admitted=await admit(scope,buyerIdentityBundle);
     if(admitted.refused)return{...ADMISSION_REFUSALS[admitted.refused]};
