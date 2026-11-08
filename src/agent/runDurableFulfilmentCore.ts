@@ -303,7 +303,9 @@ export type ProjectDurableSellerAuditPendingInput = Omit<
  * This focused projection covers a terminal delivery only when it is the final
  * pinned pipeline step; suffix phases require their own authenticated WAL.
  * Durable seller bundle finalization builds this projection from its WAL and
- * refuses to finalize unless the finalizer's inputs match it exactly.
+ * refuses to finalize unless the finalizer's terminal result, session and
+ * session artifacts equal the projected ones (vet entries are compared without
+ * their `sourceJobId`).
  */
 export interface VerifiedDurableSellerAuditPendingProjection {
   terminal: VerifiedDurableSellerTerminalResult;
