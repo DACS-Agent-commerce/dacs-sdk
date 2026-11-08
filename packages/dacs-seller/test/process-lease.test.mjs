@@ -132,6 +132,24 @@ test('records of another boot, another host, no identity or another shape are do
   }
 });
 
+test('a clock value that is not a non-negative safe integer is refused before anything is written', async t => {
+  const values = { NaN, 'a fraction': 1.5, 'a negative integer': -1, 'a string': '5', 'Infinity': Infinity, 'an unsafe integer': 2 ** 53, 'undefined': undefined, 'null': null };
+  for (const [name, value] of Object.entries(values)) {
+    const dir = await directory(t);
+    await assert.rejects(acquireSellerStateLock(dir, { now: () => value }), { name: 'TypeError', message: /non-negative safe integer/ }, name);
+    assert.deepEqual(await readdir(dir), [], name);
+  }
+});
+
+test('a lock taken with a whole-number clock value records it and is read back as held', async t => {
+  for (const at of [0, 1_700_000_000_000, Number.MAX_SAFE_INTEGER]) {
+    const dir = await directory(t), lock = await acquireSellerStateLock(dir, { now: () => at });
+    assert.equal(JSON.parse(await readFile(lockPath(dir), 'utf8')).acquiredAt, at);
+    await assert.rejects(acquireSellerStateLock(dir), refused('held'));
+    lock.release();
+  }
+});
+
 test('a record whose lease file is missing is doubt, whatever its PID shows', async t => {
   const dir = await directory(t), { record } = await deadHolder(t, dir);
   await writeFile(lockPath(dir), JSON.stringify({ ...record, process: randomUUID() }));
