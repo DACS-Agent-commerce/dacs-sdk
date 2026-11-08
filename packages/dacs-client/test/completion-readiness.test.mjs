@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
-import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   ARTIFACT_SEPARATORS, bundleAddress, canonicalize, compositeVerificationAddress, contentHash,
   finalityCommitmentAddress, fixedPriceAgreementLogicalAddress, paymentEvidenceAddress, sha256Hex,
@@ -294,13 +297,19 @@ test('a different SDK Standard pin refuses profile admission', async () => {
   const source = readFileSync(sourceUrl, 'utf8');
   const changed = source.replace(`COMPLETION_READINESS_STANDARD_PIN = '${COMPLETION_READINESS_STANDARD_PIN}'`, "COMPLETION_READINESS_STANDARD_PIN = 'unsupported-sdk-pin'");
   assert.notEqual(changed, source);
-  const temporary = new URL(`../src/dacs/.completion-readiness-pin-${process.pid}.mjs`, import.meta.url);
+  // The copy lives outside the package, so its two imports are pointed at the real modules.
+  const relocated = changed
+    .replace("from '@kynesyslabs/dacs'", `from '${import.meta.resolve('@kynesyslabs/dacs')}'`)
+    .replace("from '../signatures.mjs'", `from '${new URL('../src/signatures.mjs', import.meta.url).href}'`);
+  assert.notEqual(relocated, changed);
+  const folder = mkdtempSync(join(tmpdir(), 'completion-readiness-pin-'));
   try {
-    writeFileSync(temporary, changed);
-    const { evaluateCompletionReadiness: evaluateWrongPin } = await import(temporary.href);
+    const temporary = join(folder, 'completion-readiness.mjs');
+    writeFileSync(temporary, relocated);
+    const { evaluateCompletionReadiness: evaluateWrongPin } = await import(pathToFileURL(temporary).href);
     const f = fixture(), result = evaluateWrongPin(f.operation, protocolView(f.operation));
     assert.equal(row(result, 'profile.implementation').status, 'mismatch'); assert.equal(result.status, 'held');
-  } finally { unlinkSync(temporary); }
+  } finally { rmSync(folder, { recursive: true, force: true }); }
 });
 test('failed fresh delivery suppresses matching historical bytes', () => {
   const f = fixture(); f.p.stage = 'payment-evidenced';
@@ -320,7 +329,8 @@ const SMALL_ORDER_KEYS = ['01' + '00'.repeat(31), '01' + '00'.repeat(30) + '80',
   'ed' + 'ff'.repeat(30) + '7f', 'ee' + 'ff'.repeat(30) + '7f', 'ed' + 'ff'.repeat(31), 'ee' + 'ff'.repeat(31)];
 const FORGED = Buffer.from('01' + '00'.repeat(63), 'hex').toString('base64url');
 function resignAgreement(f, signers) {
-  const { signatures, ...unsigned } = f.p.agreement.artifact;
+  const unsigned = { ...f.p.agreement.artifact };
+  delete unsigned.signatures;
   const hash = contentHash(unsigned), message = Buffer.from(`${ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument}${hash}`);
   f.p.agreement.artifact = { ...unsigned, signatures: unsigned.parties.map((party, i) => ({ party: party.primaryClaim, algorithm: 'ed25519', value: signers[i](message) })) };
   f.p.agreement.hash = hash;
@@ -329,6 +339,7 @@ test('identity-key Agreement forgery accepted by the shared helper is rejected',
   const f = fixture(), key = SMALL_ORDER_KEYS[0];
   f.operation.terms.buyer.wallet = `0x${key}`; f.p.agreement.artifact.parties[0].primaryClaim = `did:demos:agent:${key}`;
   resignAgreement(f, [() => FORGED, (m) => f.seller.signBytes(m).toString('base64url')]);
+  // Pins the current shared helper, which accepts this signature; it will change when the helper is hardened. Not an inspector regression.
   assert.equal(verifyDemosSignature({ address: `0x${key}`, message: `${ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument}${f.p.agreement.hash}`, signature: FORGED }), true);
   expect(f, 'agreement.signed', 'mismatch', 'agreement.signature');
 });
@@ -339,6 +350,7 @@ for (const key of SMALL_ORDER_KEYS) test(`small-order key ${key.slice(0, 8)}…$
     found = verifyDemosSignature({ address: `0x${key}`, message, signature: FORGED });
     if (found) Object.assign(f.p.bundle, { bundleHash, message, buyerSignature: FORGED });
   }
+  // Pins the current shared helper, which accepts a constant forgery for these keys; it will change when the helper is hardened. Not an inspector regression.
   assert.ok(found, 'the shared helper accepts a constant forgery for this key');
   f.operation.terms.buyer.wallet = `0x${key}`;
   expect(f, 'bundle.buyer.signature', 'mismatch', 'bundle.signature-invalid');
