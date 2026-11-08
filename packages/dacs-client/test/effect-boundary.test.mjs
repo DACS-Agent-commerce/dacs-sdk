@@ -1,16 +1,13 @@
-// P16a1a: the actor fence (EB5) over an injected acquire, and the dispatch
-// history's append-only rule beside the native transport's lane records. The
-// boundary's passes are a later PR and extend this file. No network, no keys.
+// The actor fence over an injected acquire, and the dispatch history's
+// append-only rule beside the native transport's lane records. No network, no keys.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
-import { createEffectFence } from '../src/wallet/effect-fence.mjs';
+import { createEffectFence, FENCE_ACQUIRE_TIMEOUT_MS } from '../src/wallet/effect-fence.mjs';
 import { createEffectHistory } from '../src/wallet/effect-history.mjs';
-
-const FENCE_TIMEOUT_MS = 10_000;
 
 // A mutex standing in for the transport owner's connection fence, with timers
 // the test fires by hand.
@@ -33,11 +30,11 @@ function fakeFence({ digest = 'digest-1' } = {}) {
 }
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const codeOf = (promise) => promise.then(() => null, (error) => error.code);
+const outcomeOf = (promise) => promise.then((value) => ({ resolved: true, value }), (error) => ({ resolved: false, error }));
 
-test('fence ownership: a late acquisition is released, nested work reuses the capability, and a foreign capability or a non-owner release is refused', async () => {
+test('an acquisition that resolves after its timeout is released at once and grants nothing', async () => {
   const world = fakeFence();
   const fence = createEffectFence(world.options);
-
   let release;
   const holding = fence.withFence('op-holder', () => new Promise((resolve) => { release = resolve; }));
   await settle();
@@ -48,43 +45,64 @@ test('fence ownership: a late acquisition is released, nested work reuses the ca
   const next = fence.withFence('op-next', async () => { nextWork += 1; return 'ran'; });
   await settle();
   const [lateTimer] = [...world.timers.keys()];
-  assert.equal(world.timers.get(lateTimer).ms, FENCE_TIMEOUT_MS);
+  assert.equal(world.timers.get(lateTimer).ms, FENCE_ACQUIRE_TIMEOUT_MS);
+  assert.equal(FENCE_ACQUIRE_TIMEOUT_MS, 10_000);
   world.fire(lateTimer);
   assert.equal(await late, 'tp1_fence_timeout');
   release();
   await holding;
   assert.equal(await next, 'ran', 'the next waiter acquires the fence');
-  assert.equal(lateWork, 0, 'a late acquisition grants nothing');
+  assert.equal(lateWork, 0);
   assert.equal(nextWork, 1);
-  assert.deepEqual(world.released, [1, 2, 3], 'the late acquisition was released at once, before the next waiter ran');
+  assert.deepEqual(world.released, [1, 2, 3], 'the late acquisition was released before the next waiter ran');
   assert.equal(world.held, false);
+});
 
-  const owner = fakeFence({ digest: 'digest-owner' });
-  const owned = createEffectFence(owner.options);
-  let seen;
-  await owned.withFence('op-a', async (capability) => {
-    seen = capability;
-    assert.equal(capability.connectionGeneration, 0);
-    assert.equal(capability.localDigest, 'digest-owner');
-    const nested = await owned.withFence('op-a', async (again) => again, { capability });
-    assert.equal(nested, capability, 'nested work reuses the capability');
-    assert.equal(owner.acquisitions, 1, 'nested work never acquires again');
-    assert.deepEqual(owner.released, [], 'a nested step never releases');
-    let foreignWork = 0;
-    assert.equal(await codeOf(owned.withFence('op-b', async () => { foreignWork += 1; }, { capability })), 'tp1_fence_not_owned');
-    assert.equal(foreignWork, 0);
-    assert.equal(await codeOf(owned.release(capability, 'op-b')), 'tp1_fence_not_owned');
-    assert.equal(owner.held, true, 'a non-owner release has no effect');
-    assert.deepEqual(owner.released, []);
+test('nested work reuses the capability without acquiring or releasing, and the outer operation releases exactly once on success and on rejection', async () => {
+  const world = fakeFence({ digest: 'digest-owner' });
+  const fence = createEffectFence(world.options);
+  await fence.withFence('op-a', async (capability) => {
+    assert.deepEqual(capability, { connectionGeneration: 0, localDigest: 'digest-owner' });
+    assert.ok(Object.isFrozen(capability));
+    assert.equal(await fence.withFence('op-a', async (again) => again, { capability }), capability);
+    assert.equal(world.acquisitions, 1, 'nested work never acquires again');
+    assert.deepEqual(world.released, [], 'nested work never releases');
   });
-  assert.deepEqual(owner.released, [1], 'only the owner released it, once');
-  assert.equal(await codeOf(owned.withFence('op-a', async () => {}, { capability: seen })), 'tp1_fence_not_owned', 'a released capability grants nothing');
-  assert.equal(await codeOf(owned.release(seen, 'op-a')), 'tp1_fence_not_owned');
+  assert.deepEqual(world.released, [1]);
 
-  const failure = new Error('work failed');
-  assert.equal(await owned.withFence('op-c', async () => { throw failure; }).catch((error) => error), failure, 'the work\'s own error is kept');
-  assert.equal(owner.held, false, 'the fence is released on an exception');
-  assert.equal(owner.released.length, 2);
+  const failure = new Error('nested step failed');
+  const rejected = await fence.withFence('op-b', (capability) => fence.withFence('op-b', async () => { throw failure; }, { capability })).catch((error) => error);
+  assert.equal(rejected, failure, 'the work\'s own error is kept');
+  assert.equal(world.acquisitions, 2);
+  assert.deepEqual(world.released, [1, 2], 'the outer operation released once on the rejection');
+  assert.equal(world.held, false);
+});
+
+test('a capability another operation acquired, one already released, or a falsy value given as the capability is refused tp1_fence_not_owned without running the work or acquiring', async () => {
+  const world = fakeFence();
+  const fence = createEffectFence(world.options);
+  let work = 0, seen;
+  await fence.withFence('op-a', async (capability) => {
+    seen = capability;
+    assert.equal(await codeOf(fence.withFence('op-b', async () => { work += 1; }, { capability })), 'tp1_fence_not_owned');
+    assert.equal(await codeOf(fence.withFence('op-a', async () => { work += 1; }, { capability: { ...capability } })), 'tp1_fence_not_owned', 'a copy is not the capability');
+    assert.equal(world.held, true, 'a refused capability has no effect on the holder');
+  });
+  assert.equal(await codeOf(fence.withFence('op-a', async () => { work += 1; }, { capability: seen })), 'tp1_fence_not_owned');
+  for (const falsy of [null, 0, '', false, NaN]) {
+    assert.equal(await codeOf(fence.withFence('op-a', async () => { work += 1; }, { capability: falsy })), 'tp1_fence_not_owned', String(falsy));
+  }
+  assert.equal(work, 0);
+  assert.equal(world.acquisitions, 1, 'only an omitted capability acquires');
+  assert.equal(fence.release, undefined, 'only the acquiring operation\'s end releases the fence');
+});
+
+test('a release that fails after successful work rejects with the release error and leaves no capability to reuse', async () => {
+  const releaseFailure = new Error('release failed');
+  const fence = createEffectFence({ ...fakeFence().options, acquire: async () => ({ release: () => { throw releaseFailure; } }) });
+  let kept;
+  assert.equal(await fence.withFence('op-a', async (capability) => { kept = capability; }).catch((error) => error), releaseFailure);
+  assert.equal(await codeOf(fence.withFence('op-a', async () => {}, { capability: kept })), 'tp1_fence_not_owned');
 });
 
 test('an acquisition without a release function or a local digest is refused tp1_fence_invalid and released, and an acquisition error keeps its identity', async () => {
@@ -111,8 +129,7 @@ test('a local digest read that throws after the acquisition releases the fence a
   assert.equal(world.held, false);
 });
 
-test('a work rejection with a falsy value is still a failure: the fence is released and the caller sees the rejection, not a success', async () => {
-  const outcomeOf = (promise) => promise.then((value) => ({ resolved: true, value }), (error) => ({ resolved: false, error }));
+test('a work rejection with a falsy value is still a failure: the fence is released and the caller sees the rejection, also when the release fails and inside replaceConnection', async () => {
   for (const falsy of [undefined, null, 0, '', false, NaN]) {
     const world = fakeFence();
     const fence = createEffectFence(world.options);
@@ -122,29 +139,19 @@ test('a work rejection with a falsy value is still a failure: the fence is relea
     assert.deepEqual(world.released, [1], 'the fence is released');
     assert.equal(world.held, false);
 
-    // The work's failure still wins over a release failure.
-    let failRelease = true;
-    const failing = createEffectFence({ ...world.options, acquire: async () => ({ release: () => { if (failRelease) throw new Error('release failed'); } }) });
+    const failing = createEffectFence({ ...world.options, acquire: async () => ({ release: () => { throw new Error('release failed'); } }) });
     const both = await outcomeOf(failing.withFence('op-b', () => Promise.reject(falsy)));
     assert.equal(both.resolved, false);
     assert.ok(Object.is(both.error, falsy), 'the work\'s falsy rejection wins over the release error');
-    failRelease = false;
+
+    const replacing = fakeFence();
+    const replaced = createEffectFence(replacing.options);
+    const replacement = await outcomeOf(replaced.replaceConnection(() => Promise.reject(falsy)));
+    assert.equal(replacement.resolved, false);
+    assert.ok(Object.is(replacement.error, falsy));
+    assert.equal(replaced.connectionGeneration, 1);
+    assert.equal(replacing.held, false);
   }
-
-  // A release failure after successful work is still thrown.
-  const releaseFailure = new Error('release failed');
-  const world = fakeFence();
-  const releasing = createEffectFence({ ...world.options, acquire: async () => ({ release: () => { throw releaseFailure; } }) });
-  assert.equal(await releasing.withFence('op-c', async () => undefined).catch((error) => error), releaseFailure);
-
-  // replaceConnection goes through the same path and still counts the replacement.
-  const replacing = fakeFence();
-  const fence = createEffectFence(replacing.options);
-  const outcome = await outcomeOf(fence.replaceConnection(() => Promise.reject(undefined)));
-  assert.equal(outcome.resolved, false, 'a replacement that rejects with undefined does not resolve');
-  assert.equal(outcome.error, undefined);
-  assert.equal(fence.connectionGeneration, 1);
-  assert.equal(replacing.held, false);
 });
 
 test('replaceConnection acquires the fence like an effect and increments connectionGeneration, also when the replacement throws', async () => {
@@ -183,15 +190,15 @@ test('the dispatch history is append-only and never rewrites the native transpor
   const nativeRecords = [[lane, { stage: 'broadcast-started', hash: artifactHash }], [`devnet/native-transfer/${artifactHash}`, { stage: 'broadcast-started', hash: artifactHash }]];
   for (const [key, value] of nativeRecords) await journal.put(key, value);
   const puts = [];
-  const counted = { ...journal, put: (key, value) => { puts.push(key); return journal.put(key, value); } };
+  const counted = (target) => ({ ...target, put: (key, value) => { puts.push(key); return target.put(key, value); } });
   const entry = (passId, state) => ({ lane, artifactHash, passId, state });
 
-  await createEffectHistory({ journal: counted }).append(entry('pass-1', 'dispatch-started'));
+  await createEffectHistory({ journal: counted(journal) }).append(entry('pass-1', 'dispatch-started'));
   journal.close();
   const restarted = openDurableWalletJournal({ path, mode: 'open' });
   opened.push(restarted);
-  const history = createEffectHistory({ journal: { ...restarted, put: (key, value) => { puts.push(key); return restarted.put(key, value); } } });
-  await history.append(entry('pass-1', 'dispatch-started'));
+  const history = createEffectHistory({ journal: counted(restarted) });
+  assert.deepEqual(await history.append(entry('pass-1', 'dispatch-started')), { status: 'existing' });
   await history.append(entry('pass-1', 'dispatch-withheld'));
   await history.append(entry('pass-2', 'dispatch-started'));
 
@@ -200,5 +207,5 @@ test('the dispatch history is append-only and never rewrites the native transpor
   assert.equal(keys.filter((key) => key.startsWith('eb/')).length, 3, 'a repeated append added nothing');
   for (const [key, value] of nativeRecords) assert.deepEqual(await restarted.get(key), value, 'a native lane record is never rewritten');
   assert.deepEqual(puts, [], 'the history never used put');
-  assert.deepEqual((await history.read({ lane, artifactHash })).map((r) => [r.seq, r.state]), [[1, 'dispatch-started'], [2, 'dispatch-withheld'], [3, 'dispatch-started']]);
+  assert.deepEqual((await history.read({ lane, artifactHash })).map((r) => [r.passId, r.state]), [['pass-1', 'dispatch-started'], ['pass-1', 'dispatch-withheld'], ['pass-2', 'dispatch-started']]);
 });

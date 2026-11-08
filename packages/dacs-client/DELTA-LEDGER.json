@@ -6461,12 +6461,32 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF P16a1a record the merged package-contents blob after carrying base/main up",
+      "subject": "delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends",
       "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-fence.mjs",
+          "before": "4919d146fb62f67705ae52f4fb553e165a9dfebe",
+          "after": "f084d06e7fcac773a024fb36149b1f68b2826403"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "52d0f92199a96da74567b9b78107fdd5c275cfad",
+          "after": "5ccc8c6f74eb51be885d17dac68c28649b34240b"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "b6402003588457f0340179859466e374237f7fd6",
+          "after": "2afc55221675d0f677f5553f81c02acbe47e7c87"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-history.test.mjs",
+          "before": "fad10bcd3acfcb4076653f885de9c4fdcdd14d41",
+          "after": "0eed8f24b66d3497b4f9c0ef23c6847ad56fb770"
+        },
         {
           "path": "packages/dacs-client/test/package-contents.test.mjs",
           "before": "b28b9292f54c3a9d28e5dbc56f144fc33a395303",
-          "after": "b28b9292f54c3a9d28e5dbc56f144fc33a395303"
+          "after": "f0a35af9f949550e02b20ae2f72dc75067e588d8"
         }
       ]
     }
