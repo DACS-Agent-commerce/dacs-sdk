@@ -1,0 +1,18 @@
+{
+  "name": "block2",
+  "time": "2026-11-08T11:35:27.415730+00:00",
+  "request": {
+    "method": "nodeCall",
+    "params": [
+      {
+        "type": "nodeCall",
+        "message": "getBlockByNumber",
+        "data": {
+          "blockNumber": 2
+        }
+      }
+    ]
+  },
+  "http": 200,
+  "body": "{\"result\":200,\"response\":{\"id\":3,\"number\":2,\"hash\":\"ee41ad17448a9723b1040b41a4d375ab9071f5a9bcdd363bc22dba150faf1bd5\",\"content\":{\"ordered_transactions\":[],\"encrypted_transactions_hashes\":{},\"per_address_transactions\":{},\"web2data\":{},\"previousHash\":\"4a9b8c965fad45d7495b2a9dfd61d19f3d87ea67846696cabe7a2ea0930141e9\",\"timestamp\":1792496207,\"peerlist\":[\"0x155ab736091ad8528ead6158b16246d1e06d92435b3fd956e2f85383916ed61b\",\"0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156\",\"0x4a8af07a6928fc4b10771153bdd1f629a47a64f778ce3dfd38d192d744410e63\",\"0x62f54cefb244538498b18687dbbb7faeb607b9ea51e8d9bcb952fd038b89ece9\",\"0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82\",\"0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab\",\"0xf5abbb44e3ef6e0ca3318f196dd79e096e96cddb84671bf53a73b341cd07d208\"],\"l2ps_partecipating_nodes\":{},\"l2ps_banned_nodes\":{},\"native_tables_hashes\":{\"native_subnets_txs\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\",\"native_tlsnotary\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\"}},\"status\":\"confirmed\",\"proposer\":\"cc6e1ae0f9a428e199fc0acaa383ad9b287e9105ffd3b87026ec2fa02f5aacd4\",\"next_proposer\":\"109872a2689ef35f81feea6eecfb94a7117b1235c8da342489245343616a4759\",\"validation_data\":{\"signatures\":{\"0xc8bc5866fecf583bc1232f04fa54fd2c5a6f7c15b91c517ac60f468cdc0b8c82\":\"0x3198c7065cafc02eb8944d956ee392da55a6c74295958eeccab179d7b47e535c6405e11403dc339f70eedb80932b1f7bfd558cd1c9ccea0dfc3124ce0366330f\",\"0x155ab736091ad8528ead6158b16246d1e06d92435b3fd956e2f85383916ed61b\":\"0x339737c11ba66cfb56665b9fc632afd0c22fbd4742b78b0cffdfcdbb0fede92b4ec978b01ab5228e872739e86726c93a29b42edb1c56bb2273f62b5ec1f58604\",\"0x62f54cefb244538498b18687dbbb7faeb607b9ea51e8d9bcb952fd038b89ece9\":\"0x2b271151f148178e1a2c7a06547658c64cce4b5130ca6d1a0731a33209242f68d907809ce40a115e4bdc0665c791378c664af1a9d0272bb366b71e23fa92e001\",\"0x24c664d9ef529f798e979357c6a7a01088226eefe05cfdb77fb42841f771e156\":\"0x29d187ef47351183669595b8239f519241bf9182c214319226f3fb3e373e46933aab27d2468579c605cac238f2a89e0f2638248c3edb05e511db255aa71aeb06\",\"0x4a8af07a6928fc4b10771153bdd1f629a47a64f778ce3dfd38d192d744410e63\":\"0xd12d37db7fe477044cc82b14a3147b256d7519ceeb8046416ec4785f86337e5711c8d17f305bbfc054b27c5e172f47a59eaeeb9b376b742ce4fdc1bb26af480f\",\"0xf5abbb44e3ef6e0ca3318f196dd79e096e96cddb84671bf53a73b341cd07d208\":\"0x171b60299c92a66c7b5387fafa263b5b22e8526084fc4deae8bbab903fc04a9229860cc23cf86cabe15d7ec5024939f38f3b5bb60ebc8be4b9cbba86335c650f\",\"0xdad5ae081825bcf93353bb76157ae8368c33fee6fc0f692b85155bb37e4ae0ab\":\"0x8e4ea608200b4f8005606c577c9f2c329e4591822a5b1edd1c522f33ae84cf1bbcde523875774d05b807b9248590fd282ff5557d1d42a0475f8f16c289e88d0f\"}},\"attrs\":{\"gcrAppliedTxs\":[],\"gcrAppliedTxCount\":0,\"gcrAppliedTxsHash\":\"4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945\"}},\"require_reply\":false,\"extra\":\"\"}"
+}
