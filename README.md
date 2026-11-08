@@ -692,11 +692,15 @@ an interrupted session safely, pass the prior `jobId` and the same authenticated
 Listing to `runSession`; anchored artifacts are reused and the Listing remains
 pinned. A job id alone cannot prove whether a lost rail response moved value,
 so no-repayment across a whole-process crash requires a rail-idempotent
-`resumeSettlement` backed by durable rail state. With a durable `sessionStore`, a
-resumed run calls it when the session record holds an unresolved payment intent or
-an ambiguous outcome. Without a `sessionStore`, a resumed run calls it whenever an
-earlier run anchored the Agreement, because nothing records whether that run paid.
-Either way, a resume that needs it is refused when `resumeSettlement` is absent.
+`resumeSettlement` backed by durable rail state. A resumed run that finds the
+settlement evidence already anchored reuses it; only a successful native DEM
+(`pay-dem`) settlement still calls `resumeSettlement` to confirm the transaction
+on chain. When no evidence is anchored, a run with a durable `sessionStore` calls
+it if the session record holds an unresolved payment intent, an ambiguous
+outcome or a native DEM success, and a run without a `sessionStore` calls it
+whenever an earlier run anchored the Agreement, because nothing records whether
+that run paid. A resume that needs `resumeSettlement` is refused when it is
+absent.
 The legacy native-ref input remains available for callers with a separate trusted
 pin.
 
