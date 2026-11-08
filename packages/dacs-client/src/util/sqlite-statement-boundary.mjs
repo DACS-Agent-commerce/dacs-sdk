@@ -61,8 +61,14 @@ function guardedPrepare(db, ...args) {
 function check() {
   if (checking) return;
   checking = true;
-  try { for (const { db, predicate } of callbacks) synchronousResult(db, predicate()); }
-  finally { checking = false; }
+  let current;
+  try {
+    for (current of callbacks) synchronousResult(current.db, current.predicate());
+  } catch (error) {
+    // Only the guard whose predicate failed has had its end reported.
+    current.reported = true;
+    throw error;
+  } finally { checking = false; }
 }
 // Reading a binding object can run caller code (accessors, proxy traps), and
 // the native method reads it after the writable fence is open, past the last
@@ -219,9 +225,16 @@ function install(db) {
  * Predicate SQL bypasses recursive checks. Accessor/proxy bindings, SQL callbacks,
  * virtual tables, EXPLAIN and statements prepared before installation are refused.
  * On Node 22.13.0/23.4.0 only iterators created after installation have own next
- * wrapped; an own next that is not a function is refused. Native methods stay unrestricted outside guards. Captured native
- * writers fail between grants; deliberately clearing the native flag requires
- * a native authorizer, which Node 22 lacks.
+ * wrapped; an own next that is not a function is refused. An earlier iterator
+ * keeps its native next, which cannot be reached, so its steps run unchecked but
+ * read-only: the fence is closed, so any write fails. The predicate runs once
+ * more when fn returns, so a guard whose liveness ended during such a step throws
+ * the predicate's error instead of returning, unless that guard's own predicate
+ * already failed inside fn (a failure of another guard does not count). A
+ * predicate fails only once liveness has ended, and liveness stays ended. A result
+ * other than undefined retires the handle before that final check. Native methods stay unrestricted
+ * outside guards. Captured native writers fail between grants; deliberately
+ * clearing the native flag requires a native authorizer, which Node 22 lacks.
  */
 export function withSqliteStatementGuard(db, predicate, fn) {
   if ([predicate, fn].some(callback => typeof callback !== 'function' || types.isAsyncFunction(callback) || types.isGeneratorFunction(callback))) {
@@ -232,8 +245,18 @@ export function withSqliteStatementGuard(db, predicate, fn) {
   const parent = callbacks.find(frame => frame.db === db);
   if (!parent && queryOnly(db) !== 0) throw new TypeError('the statement guard requires a writable read-only policy');
   nativeExec.call(db, 'PRAGMA query_only=ON');
-  callbacks.push({ db, predicate });
-  try { check(); return synchronousResult(db, fn()); }
+  const frame = { db, predicate, reported: false };
+  callbacks.push(frame);
+  try {
+    check();
+    // Retire the connection for a deferred result before the final check below
+    // can throw, or the finally would reopen the fence for that result's writers.
+    synchronousResult(db, fn());
+    // A step the boundary cannot wrap (an iterator created before installation
+    // on the engine floors) ran without a check. Unless this guard's own
+    // predicate already reported its end to the body, confirm liveness once more.
+    if (!frame.reported) check();
+  }
   finally {
     callbacks.pop();
     if (!isSqliteHandleRetired(db)) {

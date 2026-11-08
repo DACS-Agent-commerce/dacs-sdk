@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "ab8bb5cb296c1427311d4da960292ae494b58ab8"
+        "blob": "53974480bdbbcd5022e28269976811754bfe2106"
       },
       "DELTA-LEDGER.json": {
-        "blob": "aa8a70ff46e5dfcdca86c1c2ab6a84adea924892"
+        "blob": "30244d20384f701a28c26dd64c5bd173f47bd511"
       },
       "DELTA-MAP.md": {
-        "blob": "b6d659481c292d50e9c7fe46d5a90fb1b1251b5b"
+        "blob": "5b85eb8de1b4fbbf5c6343544d24026dbc860b07"
       },
       "DELTA-NOTES.md": {
-        "blob": "d5100d106bbcb92b72b946524e13be49be5a2cf3"
+        "blob": "77e175b6d04aef8a77fe0956713625b21ccca851"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "aca5b2a38561d356223a72ab2cdfdb38eacf9714"
+        "blob": "cc5884fbfe2a8f669ce34d8e55ae7ef37e906645"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1286,7 +1286,7 @@
         "blob": "5659a095247774027f29b46cc9cb2c847994007b"
       },
       "src/util/sqlite-statement-boundary.mjs": {
-        "blob": "336df0f1e4d8723d137c5b659c342792f51d81a7"
+        "blob": "45e6c4ad22996885d6232dc2b71eb17aa0341552"
       },
       "src/util/sqlite-write-lease.mjs": {
         "blob": "cc652d18792a64c8ab106e4a16eef68eebe6ed11"
@@ -1420,6 +1420,9 @@
       "test/fixtures/wallet.mjs": {
         "blob": "4ee7eacda377c731fd70105eaa3bf862421e01c3"
       },
+      "test/held-iterators.test.mjs": {
+        "blob": "dfa1d876799370023af2eea2bf7fdd1aa090d917"
+      },
       "test/helpers/agreement-context-integration.mjs": {
         "blob": "3bbc74d4d3f72101e8b3d3b2ff27449ba4105add"
       },
@@ -1527,6 +1530,9 @@
       },
       "test/helpers/harness.mjs": {
         "blob": "91c8b39a12d3065895533ecc1f158180ccb71ba2"
+      },
+      "test/helpers/held-iterators.mjs": {
+        "blob": "e2a2214527bc2030196591b073115c41aa561848"
       },
       "test/helpers/journal-child-process.mjs": {
         "blob": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
@@ -1798,6 +1804,9 @@
       "test/purchase-tx-boundary.test.mjs": {
         "blob": "53fbeca69a87846aa9d32845aab011cbf451dd84"
       },
+      "test/purchase-tx-iterator-before-store.test.mjs": {
+        "blob": "d895ff4527713bc0121f6be3660e6bc6387819bd"
+      },
       "test/purchase-tx-nesting.test.mjs": {
         "blob": "124ddbf578822f8bfe3298e01e83626f40de071d"
       },
@@ -1824,6 +1833,9 @@
       },
       "test/sqlite-floor-iterators.test.mjs": {
         "blob": "83cf9f2d3e6c1595cfe895440ef470b4bb336255"
+      },
+      "test/sqlite-iterator-before-install.test.mjs": {
+        "blob": "157d3e8fe4452105b9d93e8309349e5bb81f227d"
       },
       "test/sqlite-iterator-own-methods.test.mjs": {
         "blob": "cd1f5eaed7aea7ddcba230a0c319349fff1f5ee8"
