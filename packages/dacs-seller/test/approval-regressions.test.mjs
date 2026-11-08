@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { mkdir,mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeSellerApproval,createExactOperatorApproval,parsePolicyLedger,heldPolicyBudget,SELLER_LEDGER_HEADER_FORMAT,SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
+import { composeSellerApproval,createExactOperatorApproval,parsePolicyLedger,heldPolicyBudget,serializedPolicy,SELLER_LEDGER_HEADER_FORMAT,SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
 import { sellerRecordsPurchaseResolver } from '../src/devnet-demo/seller-purchase-source.mjs';
 import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
 import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor,realPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
@@ -76,6 +76,17 @@ test('a plain manual approval is recorded once the ledger lock is free, and rele
  assert.equal(existsSync(join(`${f.evidencePath}.policy-lock`,LOCK_FILE)),false);
  const lines=(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
  assert.equal(lines.at(-1).decision,'approved');assert.equal(lines.at(-1).requestBytes,JSON.stringify(r));
+});
+
+test('a plain manual approval whose request changes while it waits for the ledger lock is refused, writes no line and does not freeze',async t=>{
+ const f=await fixture(t),r=requestFor();let approved;const answered=new Promise(done=>{approved=done;});
+ const approve=createExactOperatorApproval({...f.settings,authorize:()=>{approved();return true;}});
+ let release;const gate=new Promise(done=>{release=done;});
+ const writer=serializedPolicy(f.evidencePath,()=>gate),pending=approve(r);
+ await answered;await new Promise(done=>setImmediate(done));
+ r.content.exactCreate='{"changed":true}';release();await writer;
+ assert.equal(await pending,false);
+ assert.equal(existsSync(f.evidencePath),false);assert.equal(Object.isFrozen(r),false);
 });
 
 for(const [state,found] of [
