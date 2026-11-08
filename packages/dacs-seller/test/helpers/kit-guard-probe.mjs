@@ -105,6 +105,12 @@ async function effectEntries() {
 
   const { startSellerHost } = await import('../../src/host.mjs');
   const { createSellerAgent } = await import('../../src/dacs/seller-agent.mjs');
+  const { createSellerChallengeLedger } = await import('../../src/dacs/seller-challenge-ledger.mjs');
+  const { default: Database } = await import('better-sqlite3');
+  const ledgerDb = new Database(':memory:');
+  const never = (name) => () => { throw new Error(`the guard must refuse before ${name}`); };
+  const ledger = createSellerChallengeLedger({ db: ledgerDb, transaction: never('the transaction'), now: never('the clock'), generation: 'guard-probe',
+    sessionState: never('a terminal observation'), admissionCounts: never('the counts'), ready: never('readiness'), stopped: never('the stop check') });
   const { createSellerAgentClient, createSellerHttpHandler } = await import('../../src/dacs/seller-http.mjs');
   const { createSellerTransportClientAuth, createSellerTransportServerAuth } = await import('../../src/dacs/seller-transport-auth.mjs');
   const { createSellerDurableState } = await import('../../src/dacs/seller-durable-state.mjs');
@@ -120,6 +126,9 @@ async function effectEntries() {
 
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
+  await attempt('issue', () => ledger.issue());
+  await attempt('issueForOperator', () => ledger.issueForOperator());
+  ledgerDb.close();
   await attempt('createSellerHttpHandler', () => createSellerHttpHandler({}));
   await attempt('createSellerAgentClient', () => createSellerAgentClient({}));
   await attempt('createSellerTransportServerAuth', () => createSellerTransportServerAuth({}));
