@@ -21,6 +21,15 @@ const FILE_MODE = 0o600;
 const WRITE_ACCESS_MASK = 0o022;
 const STICKY_BIT = 0o1000;
 
+// exclusiveWritePrivateFile commits with link(temporary, path) and then removes
+// its temporary name, so a complete published file briefly has exactly two
+// links. Readers wait that out with these delays (315 ms in total) before the
+// single-link check refuses the file.
+const PUBLICATION_LINK_COUNT = 2;
+const PUBLICATION_RETRY_DELAYS_MS = [5, 10, 20, 40, 80, 160] as const;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 // Network/distributed filesystems do not provide the host-local rename, link,
 // lock and durability contract on which these stores rely.
 const NETWORK_FILESYSTEM_MAGIC = new Set([
@@ -202,6 +211,22 @@ function assertSingleLink(metadata: Stats, label: string, path: string): void {
   }
 }
 
+/**
+ * lstat `path`, looking again after each retry delay while it is a regular file
+ * with exactly two links: the state exclusiveWritePrivateFile leaves between
+ * its link and the removal of its temporary name. Returns the latest metadata;
+ * the caller's checks still refuse a file that keeps two links.
+ */
+async function lstatAfterPublicationWindow(path: string): Promise<Stats> {
+  let metadata = await lstat(path);
+  for (const delayMs of PUBLICATION_RETRY_DELAYS_MS) {
+    if (!metadata.isFile() || metadata.nlink !== PUBLICATION_LINK_COUNT) break;
+    await sleep(delayMs);
+    metadata = await lstat(path);
+  }
+  return metadata;
+}
+
 function assertPosixPolicyAvailable(label: string): number {
   if (process.platform === "win32" || typeof process.getuid !== "function") {
     throw filesystemError(
@@ -368,7 +393,11 @@ export async function preparePrivateStoreDirectory(
   return path;
 }
 
-/** Read a private regular file without following a symlink at the endpoint. */
+/**
+ * Read a private regular file without following a symlink at the endpoint.
+ * A file with exactly two links (an exclusive publication still removing its
+ * temporary name) is looked at again for up to 315 ms before it is refused.
+ */
 export async function readPrivateFile(
   requestedPath: string,
   encoding: BufferEncoding = "utf8",
@@ -380,7 +409,7 @@ export async function readPrivateFile(
   // Keep this check in the primitive, not only directory preparation: these
   // functions are public and the mount beneath an admitted path can change.
   await assertLocalFilesystem(parent, label);
-  const before = await lstat(path);
+  const before = await lstatAfterPublicationWindow(path);
   if (before.isSymbolicLink()) {
     throw filesystemError(label, `path is unsafe because it is a symbolic link: ${path}`);
   }
@@ -568,6 +597,8 @@ export async function atomicWritePrivateFile(
 /**
  * Durably publish a private file only when the final path is absent. A hard
  * link is the no-overwrite commit point; EEXIST is preserved for callers.
+ * Until the temporary name is removed the file has two links, which
+ * readPrivateFile waits out.
  */
 export async function exclusiveWritePrivateFile(
   requestedPath: string,
