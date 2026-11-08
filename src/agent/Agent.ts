@@ -2646,7 +2646,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           },
           // Verify the listing against the key in its own agentId before
           // vetting or settlement, so the money path only runs on a verified
-          // listing (and the gate below does not throw).
+          // listing (and runSessionCore's listing-verification requirement
+          // is met).
           verifyListing: async (raw, sellerClaim) => {
             if (expectedContentHash !== null) {
               try {

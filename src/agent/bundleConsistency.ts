@@ -61,7 +61,7 @@ export { bundlesDiverge };
  * `absent`→`oneSided` or `oneSided`→`divergent`), so the caller MUST make the
  * choice explicit — supply `deps.isValid`, or set `deps.trustBundles: true` to
  * opt out when copies are already validated upstream. Neither → throws. (Same
- * shape as the reputation deriver and `identityTier`.)
+ * shape as the reputation deriver and `deriveIdentityTier`.)
  *
  * Transport-trust caveat (non-normative): the `oneSided` verdict trusts the
  * absence signal. An attacker who can censor the counterparty's anchor at the
