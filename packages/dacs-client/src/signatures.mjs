@@ -29,8 +29,9 @@ export function claimForAddress(address) {
 }
 
 export function addressForClaim(claim) {
-  const match = /^did:demos:agent:([0-9a-f]{64})$/i.exec(String(claim));
-  if (!match || match[1] !== match[1].toLowerCase()) throw new WalletFormatError('claim must be did:demos:agent:<64 lowercase hex>');
+  // Only the leading "did" scheme is read case-insensitively; the method, "agent" and the key stay case-sensitive.
+  const match = /^[dD][iI][dD]:demos:agent:([0-9a-f]{64})$/.exec(String(claim));
+  if (!match) throw new WalletFormatError('claim must be did:demos:agent:<64 lowercase hex>');
   return `0x${match[1]}`;
 }
 
