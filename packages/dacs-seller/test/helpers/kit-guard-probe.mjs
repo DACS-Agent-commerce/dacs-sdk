@@ -139,6 +139,7 @@ async function effectEntries() {
   await attempt('begin', () => admission.begin());
   await attempt('runningCheck', () => admission.runningCheck());
   await attempt('reserveContext', () => admission.reserveContext());
+  await attempt('compensate', () => admission.compensate());
   admissionStore.close();
   await attempt('createSellerHttpHandler', () => createSellerHttpHandler({}));
   await attempt('createSellerAgentClient', () => createSellerAgentClient({}));
