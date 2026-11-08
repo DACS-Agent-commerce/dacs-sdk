@@ -7,8 +7,9 @@ import { TP1_APPROVED_IDENTITY_RECORD as record } from '@kynesyslabs/dacs/wire';
 import { createDevnetAgreementTransport, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
   DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from '../src/wallet/devnet-native-transport.mjs';
 
-const observations = new URL('../../../conformance/tp1-node-observations/', import.meta.url);
-const files = ['block0-2026-10-20.json', 'block1-2026-10-20.json', 'block2-2026-11-08.json'];
+const observations = new URL('../../../conformance/', import.meta.url);
+const files = ['tp1-node-observations/block0-2026-10-20.json', 'tp1-node-observations/block1-2026-10-20.json',
+  'tp1-node-observations-2026-11-08/block2-2026-11-08.json'];
 const bodies = files.map(file => JSON.parse(JSON.parse(readFileSync(new URL(file, observations))).body));
 const otherHash = 'f'.repeat(64);
 function recorded(w, mutate = () => {}) {
@@ -41,8 +42,8 @@ test('the TP-1 reviewed block-two pin equals the recorded body and links through
   assert.equal(TP1_REVIEWED_BLOCK_TWO_HASH, bodies[2].response.hash);
   assert.equal(bodies[2].response.content.previousHash, bodies[1].response.hash);
   assert.equal(bodies[1].response.content.previousHash, record.chainIdentity);
-  const manifest = JSON.parse(readFileSync(new URL('manifest-2026-10-20.json', observations)));
-  assert.equal(manifest.sha256[files[2]], createHash('sha256').update(readFileSync(new URL(files[2], observations))).digest('hex'));
+  const manifest = JSON.parse(readFileSync(new URL('tp1-node-observations-2026-11-08/manifest.json', observations)));
+  assert.equal(manifest.sha256['block2-2026-11-08.json'], createHash('sha256').update(readFileSync(new URL(files[2], observations))).digest('hex'));
 });
 
 test('buyer session accepts the recorded four-field block-zero error and block-one layout', async t => {
