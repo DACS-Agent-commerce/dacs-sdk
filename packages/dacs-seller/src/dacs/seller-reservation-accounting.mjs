@@ -75,25 +75,28 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     const contextStart = route === SELLER_CONTEXT_PATH;
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
-    if (ledger.retiredReplayWithin(payload, operationId)) { checkJobWithin(payload, keepProfile); return false; }
-    if (get('SELECT 1 FROM kit_job_holds h JOIN kit_slot_retirements r ON r.job = h.jobId WHERE h.jobId = ? AND r.job_retired = 1', payload.jobId)) {
+    const replay = ledger.retiredReplayWithin(payload, operationId);
+    if (!replay && get('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1', payload.jobId)) {
       checkJobWithin(payload, keepProfile); fail('context_session_terminal', 409);
     }
-    checkLimitsWithin(payload, contextStart, at);
+    if (replay) {
+      if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
+      if (get('SELECT key FROM kit_reservations WHERE key = ?', key)) fail('peer_request_replayed', 409);
+    } else checkLimitsWithin(payload, contextStart, at);
     const purchased = checkJobWithin(payload, keepProfile);
-    checkRouteWithin(payload, operationId);
-    const capacity = capacityWithin(input, at, key);
-    // The hold comes first: the row references it, so no charged row exists without its counted job.
+    if (!replay) checkRouteWithin(payload, operationId);
+    const capacity = replay ? GENERAL_CAPACITY : capacityWithin(input, at, key);
+    // The hold comes first because every reservation row references its job.
     store.holdJobWithin(payload, contextStart);
     // The first claim for a transaction is retained for accounting only: a competing job still reaches settlement intake.
-    if (paymentTx !== null) run('INSERT OR IGNORE INTO kit_payment_transactions VALUES (?, ?, ?)', paymentTx, payload.jobId, operationId);
+    if (paymentTx !== null && !replay) run('INSERT OR IGNORE INTO kit_payment_transactions VALUES (?, ?, ?)', paymentTx, payload.jobId, operationId);
     run(`INSERT INTO kit_reservations (key, buyer, jobId, operationId, route, allocationId, class, requestHash, at, state, rev)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserving', 1)`, key, payload.buyer, payload.jobId, operationId, route,
     capacity.allocationId, capacity.class, requestHash, at);
     // The context step carries its scope hash in the agreementHash slot, so the job's first purchase request,
     // not the context start, writes its job row and tuple.
-    if (!purchased && !contextStart) store.keepJobWithin(payload, keepProfile, at);
-    return true;
+    if (!replay && !purchased && !contextStart) store.keepJobWithin(payload, keepProfile, at);
+    return replay;
   }
 
   // Compare-and-swap on the inserted revision: a slower or repeated path cannot overwrite a newer result.
@@ -132,6 +135,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
      * reservation's own refusal (a string code and an HTTP status), after recording it as refused{code}; any other
      * failure leaves the charged row `reserving`, never refunded.
      * The store decides whether the job and its context record are new; the context route is the context start.
+     * A completed replay on a retired job spends a nonce unit without spending purchase capacity or recreating the purchase.
      * Throws before any row on an absent keepProfile, an unsafe clock, a full buyer window, job or context
      * capacity, a job held by other parties, a tuple mismatch, a replayed nonce key, or a refusal from checkCapacityWithin.
      * checkCapacityWithin is step 5: synchronous, run inside the transaction, returning {class, allocationId};
@@ -142,15 +146,15 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       const input = admittedInput(options);
       const { checked, payload } = input;
       const key = sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
-      const charged = transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
+      const replay = transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
       let effect;
       try { effect = await checked.reserve(); }
       catch (error) {
-        if (charged && isDefiniteRefusal(error)) saveRefusal(key, error);
+        if (isDefiniteRefusal(error)) saveRefusal(key, error);
         throw error;
       }
-      if (!RESULTS.has(effect?.state)) fail('wire_input_invalid', 500);
-      if (charged) saveResult(key, effect.state);
+      if (!RESULTS.has(effect?.state) || (replay && effect.state !== 'completed')) fail('wire_input_invalid', 500);
+      saveResult(key, effect.state);
       return effect;
     },
   };

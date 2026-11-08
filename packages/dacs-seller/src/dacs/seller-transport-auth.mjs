@@ -480,9 +480,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       WHERE NOT EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = candidates.job AND r.job_retired = 1 AND r.context_retired = 1)${jobId === undefined ? '' : ' AND job = ?'}`).all(time - CHALLENGE_RATE_WINDOW_MS, ...(jobId === undefined ? [] : [jobId]))) {
       if (get("SELECT 1 FROM kit_context_admissions WHERE jobId = ? AND (state NOT IN ('settled', 'aborted') OR admittedAt > ?)", job, time - CHALLENGE_RATE_WINDOW_MS) ||
           get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND (state NOT IN ('new', 'recover', 'completed', 'refused') OR at > ? OR (route = ? AND at > ?))", job, time - nonceWindowMs, CONTEXT, time - CHALLENGE_RATE_WINDOW_MS) ||
-          db.prepare("SELECT route FROM kit_reservations WHERE jobId = ? GROUP BY route HAVING MAX(state = 'completed') = 0").all(job).some(({ route }) => {
+          db.prepare("SELECT route, MIN(state = 'refused') AS refused FROM kit_reservations WHERE jobId = ? GROUP BY route HAVING MAX(state = 'completed') = 0").all(job).some(({ route, refused }) => {
             if (READ_ROUTES.has(route)) return false;
-            try { return !['none', 'ended', 'completed'].includes(wireOperationView({ jobId: job, seller: get('SELECT seller FROM kit_job_holds WHERE jobId = ?', job).seller, path: route })?.state); } catch { return true; }
+            try {
+              const state = wireOperationView({ jobId: job, seller: get('SELECT seller FROM kit_job_holds WHERE jobId = ?', job).seller, path: route })?.state;
+              return !(['ended', 'completed'].includes(state) || (state === 'none' && refused));
+            } catch { return true; }
           }) ||
           get("SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = ? AND e.state IS NULL", job) ||
           get("SELECT 1 FROM peer_effects e LEFT JOIN peer_effect_jobs m ON m.effect = e.effect WHERE m.effect IS NULL OR (m.job = ? AND (e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = e.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))))", job, time, time - nonceWindowMs) ||
@@ -650,6 +653,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (!uint(time)) fail('peer_clock_invalid', 503);
         if (!dryRun) retireSlotsWithin(time);
         const retired = [];
+        if (!existing && get('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1', p.jobId)) fail('context_session_terminal', 409);
         if (!retained && !existing && p.path === PROPOSAL && reservationLedger.sessionTerminalWithin(p.jobId)) fail('context_session_terminal', 409);
         if (contextStep && !retained) {
           if (reservationLedger.sessionTerminalWithin(p.jobId)) fail('context_session_terminal', 409);

@@ -130,7 +130,8 @@ test('hold-release keeps the owner on both reserve paths and replays the stored 
   const rows = f.rows(), holds = f.holds(), jobs = f.jobRows();
   const result = await f.reserve(await f.admit());
   assert.equal(result.state, 'completed'); assert.deepEqual(result.outcome, outcome);
-  assert.deepEqual(f.rows(), rows); assert.deepEqual(f.holds(), holds); assert.deepEqual(f.jobRows(), jobs);
+  assert.deepEqual(f.rows().slice(0, -1), rows); assert.equal(f.rows().at(-1).state, 'completed');
+  assert.deepEqual(f.holds(), holds); assert.deepEqual(f.jobRows(), jobs);
 });
 
 test('hold-release retired jobs reject fresh work after restart with unknown session state', async t => {
@@ -160,7 +161,8 @@ test('hold-release a stored completed operation proves completion without a curr
   const rows = f.rows();
   assert.equal((await f.reserve(await f.admit())).state, 'completed');
   await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: sha256Hex('another agreement') }))), { code: 'peer_operation_mismatch', status: 409 });
-  assert.deepEqual(f.rows(), rows);
+  assert.deepEqual(f.rows().slice(0, -2), rows);
+  assert.deepEqual(f.rows().slice(-2).map(row => row.state), ['completed', 'refused']);
 });
 
 for (const state of ['pending', 'unknown', 'reader-throws', 'no-effect', 'absent', 'refused']) test(`hold-release checks every operation: ${state}`, async t => {
@@ -176,10 +178,82 @@ for (const state of ['pending', 'unknown', 'reader-throws', 'no-effect', 'absent
   }
   session.state = 'finalised'; f.setTime(T0 + HOUR + 1);
   const before = proof(f);
-  if (['pending', 'unknown', 'reader-throws'].includes(state)) {
+  if (['pending', 'unknown', 'reader-throws', 'absent'].includes(state)) {
     retire(f); await assert.rejects(next(f), capacity); assert.deepEqual(proof(f), before);
   } else {
     assert.equal((await next(f)).state, 'new'); assert.equal(retired(f)[0].job_retired, 1);
   }
+});
+
+test('hold-release refused work stays closed on the old path after an unknown-session restart', async t => {
+  const [f, session] = await fixture(t);
+  await assert.rejects(f.reserve(f.args(f.payload(), { checked: { reserve: async () => {
+    throw new SellerTransportError('proposal_refused', 409);
+  } } })), { code: 'proposal_refused' });
+  session.state = 'finalised'; f.setTime(T0 + HOUR + 1); retire(f);
+  assert.equal(retired(f)[0]?.job_retired, 1);
+  session.state = null; f.reopen(); const before = proof(f);
+  assert.throws(() => f.store().reserve(f.payload(), {}, { keepProfile: FIXTURE_PROFILE }), { code: 'context_session_terminal', status: 409 });
+  assert.deepEqual(proof(f), before);
+});
+
+test('hold-release a retired context job cannot create an uncounted accounted hold', async t => {
+  const [f, session] = await fixture(t);
+  const p = f.payload({ path: CONTEXT });
+  const record = { jobId: JOB, buyer: p.buyer, seller: p.seller, listingPin: p.listingPin, state: 'settled', admittedAt: T0, rev: 1 };
+  f.db.prepare('INSERT INTO kit_context_admissions VALUES (?, ?, ?, ?, ?, ?)').run(JOB, p.buyer, T0, 'settled', 1, JSON.stringify(record));
+  session.state = 'finalised'; f.setTime(T0 + 2 * HOUR); retire(f);
+  assert.equal(retired(f)[0]?.job_retired, 1); assert.equal(f.holds().length, 0);
+  session.state = null; f.reopen(); const before = proof(f);
+  await assert.rejects(f.reserve(await f.admit()), { code: 'context_session_terminal', status: 409 });
+  assert.deepEqual(proof(f), before);
+  assert.equal((await next(f)).state, 'new');
+  await assert.rejects(f.reserve(await f.admit(f.payload({ jobId: '01ARZ3NDEKTSV4RRFFQ69G5FAW' }))), capacity);
+});
+
+test('hold-release a published context operation with no wire record keeps context capacity', async t => {
+  const [f, session] = await fixture(t, { maxJobs: 2 });
+  await f.reserve(f.args(f.payload({ path: CONTEXT })));
+  await assert.rejects(f.reserve(f.args(f.payload({ path: CONTEXT }), { checked: { reserve: async () => {
+    throw new SellerTransportError('context_refused', 409);
+  } } })), { code: 'context_refused' });
+  session.state = 'finalised'; f.setTime(T0 + 2 * HOUR);
+  const before = proof(f); retire(f);
+  assert.equal(internals(f).admissionCounts().contextRecords, 1);
+  await assert.rejects(f.reserve(await f.admitContext(f.payload({ jobId: JOB2, path: CONTEXT }))), { code: 'peer_context_capacity', status: 503 });
+  assert.deepEqual(proof(f), before);
+});
+
+test('hold-release completed replays still consume the buyer nonce window', async t => {
+  const [f, session] = await fixture(t, { maxNoncesPerBuyerPerWindow: 3 });
+  await completed(f);
+  session.state = 'finalised'; f.setTime(T0 + HOUR + 1); retire(f);
+  let accepted = 0, refused = 0;
+  for (let i = 0; i < 20; i++) {
+    const input = await f.admit();
+    input.checkCapacityWithin = () => { assert.fail('a replay must not spend capacity'); };
+    if (i < 3) {
+      assert.equal((await f.reserve(input)).state, 'completed'); accepted++;
+      if (i === 0) {
+        const rows = f.rows();
+        await assert.rejects(f.reserve(input), { code: 'peer_request_replayed', status: 409 });
+        assert.deepEqual(f.rows(), rows);
+      }
+    }
+    else { await assert.rejects(f.reserve(input), { code: 'peer_buyer_nonce_limit', status: 429 }); refused++; }
+  }
+  assert.equal(accepted, 3); assert.equal(refused, 17);
+  assert.equal(f.rows().length, 4); assert.equal(f.holds().length, 1); assert.equal(f.jobRows().length, 0);
+  f.reopen(); await assert.rejects(f.reserve(await f.admit()), { code: 'peer_buyer_nonce_limit', status: 429 });
+});
+
+for (const state of ['new', 'recover']) test(`hold-release a retired replay refuses an unexpected wire ${state} result`, async t => {
+  const [f, session] = await fixture(t, { wireOperationView: () => null });
+  await completed(f); assert.equal((await f.reserve(await f.admit())).state, 'completed');
+  session.state = 'finalised'; f.setTime(T0 + HOUR + 1); retire(f);
+  const input = f.args(f.payload(), { checked: { reserve: async () => ({ state }) } });
+  input.checkCapacityWithin = () => { assert.fail('a replay must not spend capacity'); };
+  await assert.rejects(f.reserve(input), { code: 'wire_input_invalid', status: 500 });
+  assert.equal(f.rows().at(-1).state, 'reserving');
 });
 }

@@ -322,16 +322,22 @@ test('a charged accounting job is not reclaimed by the old reserve path at job c
   assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.rows().length, 1);
 });
 
-test("the old path's terminal-job reclaim skips a charged hold, and its context reclaim skips a held context record", async t => {
+test("the old path retires a safe charged hold and keeps a context record whose wire operation is missing", async t => {
   // The job also has a completed old-path effect, so only the terminal branch could select it.
   let terminal = false;
   const contextSessionState = ({ jobId }) => terminal && jobId === JOB ? 'finalised' : null;
   const f = await accountingFixture(t, { maxJobs: 1, contextSessionState });
   f.store().finish(oldReserve(f, f.payload()), 200, '{}');
   await f.reserve(f.args(readOf(f)));
-  f.setTime(T0 + 7200000); f.reopen(); terminal = true;
+  terminal = true; f.setTime(T0 + 30000);
+  assert.throws(() => oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })), refused('peer_job_capacity', 503));
+  terminal = false; f.setTime(T0 + 7200000); f.reopen();
   assert.throws(() => oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })), refused('peer_job_capacity', 503));
   assert.equal(f.jobRows().length, 1); assert.equal(f.tuples(), 1); assert.equal(f.holds().length, 1);
+  terminal = true;
+  assert.equal(oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })).disposition, 'perform');
+  assert.deepEqual(f.jobRows().map(row => row.job), [JOB2]);
+  assert.equal(f.tuples(), 1); assert.equal(f.holds().length, 1);
   terminal = false;
   const c = await accountingFixture(t, { maxContextRecords: 1, contextSessionState });
   oldContextStep(c);
