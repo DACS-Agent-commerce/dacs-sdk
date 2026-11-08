@@ -224,7 +224,7 @@ it("preserves a full report emitted by the shipped doctor producer", async () =>
   const fixture = doctorFixture();
   const report = await runDacsLiveDoctorV1({
     phase: "pre-start", scope: "start", sdkVersion: fixture.sdkVersion,
-    standardRevision: fixture.standardRevision, profile: fixture.profile, now: () => 0,
+    standardRevision: fixture.standardRevision, profile: fixture.profile, now: () => 0, monotonicNow: () => 0,
     enabledRailProfiles: ["x402", "pay-dem"],
     probes: Object.fromEntries(fixture.checks.map((check: { id: string; status: string; reasonCode?: string }) =>
       [check.id, () => check.status === "pass" ? { status: "pass" } : { status: check.status, reasonCode: check.reasonCode }])),
