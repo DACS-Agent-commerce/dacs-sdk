@@ -616,6 +616,7 @@ type DoctorActors = Readonly<Record<"buyer" | "seller", Readonly<DoctorActor>>>;
 
 export interface GeneratedDoctorOperationV1 {
   rail: "x402" | "pay-dem";
+  servicesRunning?: boolean;
   listingRef?: string;
   maximumServiceAmount?: string;
   maximumNetworkFeeEth?: string;
@@ -876,6 +877,7 @@ function sqlite() {
 
 async function dockerRuntime(
   context: Readonly<{ phase: DacsLiveDoctorPhaseV1; signal: AbortSignal }>,
+  servicesRunning = false,
 ): Promise<Readonly<DacsLiveDoctorProbeResultV1>> {
   let endpoints: readonly Readonly<{ hostname: string; port: number }>[];
   try {
@@ -903,7 +905,7 @@ async function dockerRuntime(
   if (endpoints[0]!.port === endpoints[1]!.port) {
     return fail("service-port-shared");
   }
-  if (context.phase === "pre-start") {
+  if (context.phase === "pre-start" && !servicesRunning) {
     for (const endpoint of endpoints) {
       const available = await new Promise<boolean>((resolve) => {
         const server = createServer();
@@ -1286,7 +1288,7 @@ function baseProbes(
           : fail("transport-identity-resolution-mismatch");
       } catch { return fail("transport-identity-resolution-failed"); }
     },
-    "local.deployment-runtime": dockerRuntime,
+    "local.deployment-runtime": (context) => dockerRuntime(context, operation?.servicesRunning),
     "demos.rpc-chain": actors === undefined ? actorUnavailable : async () => {
       try {
         await Promise.all([actors.buyer.runtime.networkInfo(), actors.seller.runtime.networkInfo()]);
@@ -1616,7 +1618,7 @@ export async function runGeneratedDoctor(
       "local.package-integrity": inspectDacsNodePackageIntegrityV1,
       "local.version-bindings": versionBindings,
       "local.configuration": () => fail("configuration-invalid"),
-      "local.deployment-runtime": dockerRuntime,
+      "local.deployment-runtime": (context) => dockerRuntime(context, operation?.servicesRunning),
     });
     const report = await runDacsLiveDoctorV1({
       phase,
@@ -3416,6 +3418,8 @@ async function guardedSetup(args: readonly string[]): Promise<number> {
   if (postStart.exitCode !== 0) return postStart.exitCode;
   const preSetup = await runGeneratedDoctor("pre-start", "setup", {
     rail: parsed.selectedRail,
+    // Post-start Doctor checked the services occupying these ports.
+    servicesRunning: true,
   });
   printDoctor(preSetup);
   if (preSetup.exitCode !== 0) return preSetup.exitCode;
