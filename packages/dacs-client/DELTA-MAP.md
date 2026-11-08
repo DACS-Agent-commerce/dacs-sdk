@@ -1102,6 +1102,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 867b80b2a25f2f8c8ceafce8f72d22561446d173 |
 | | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` | aaadbcc1b6cd6e80d76b7d8e8be137415295b9b6 |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | abe08190196e3a17ccbb29ce6785df334c20d080 |
+| WF | delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 83e1364efe976f2b3125cd8466c459d1600f6795 |
 
 ## Complete commit and file inventory
 
@@ -3467,6 +3469,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/helpers/effect-boundary-fixture.mjs:1` |
 | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `packages/dacs-client/test/package-contents.test.mjs:1` |
 | delta(client): WF P16a1b effect boundary passes over the dispatch history and the actor fence | `scripts/release-policy.json:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
