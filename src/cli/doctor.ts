@@ -413,7 +413,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     }),
   );
   checks.push(
-    check("wallet.nonce", "blocked", "Wallet nonce check is not wired yet", {
+    check("wallet.nonce", "blocked", "Wallet nonce is not checked by doctor", {
       remediation: "Not checked here; anchoring reads the writer's next nonce from the node at write time.",
     }),
   );
@@ -421,14 +421,14 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
     check(
       "storage.binding-resolution",
       "blocked",
-      "Binding-aware StorageProgram resolution is not implemented yet",
+      "Binding-aware StorageProgram resolution is not checked by doctor",
       {
         remediation: "Not checked here; resolve artifacts through a published binding index, not by program name.",
       },
     ),
   );
   checks.push(
-    check("anchor.completion", "blocked", "Read-visible anchor completion is not implemented yet", {
+    check("anchor.completion", "blocked", "Read-visible anchor completion is not checked by doctor", {
       remediation: "Not checked here; use anchorAndWait to wait for an explicit completion level.",
     }),
   );
