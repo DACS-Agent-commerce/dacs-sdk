@@ -20,6 +20,7 @@ import { SESSION_CHALLENGE_LIFETIME_MS, vetAnchorReceiptProblem } from '../src/d
 import { railAuthorityConfig } from '../src/dacs/rail-authority.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
+import { createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
 import { testNetwork } from './helpers/wire-authority-fixture.mjs';
 
 let nextWallet=90;
@@ -50,16 +51,35 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
   listingChanges(draft);
   const listing = seller.attachListingSignature(draft, sellerKey.signWallet(seller.listingSigningMessage(draft)));
   const refuse = (name) => async () => { reached.push(name); throw new Error(`${name} is not reached`); };
-  let challengeSnapshot = null;
-  // Each independent scenario forks the verifier's authenticated, pre-attempt
-  // ledger. This snapshot is made by a real issuer before the buyer signs;
-  // no fixture writes a caller-selected nonce into seller state.
-  const dir = ({ empty = false } = {}) => {
+  let challengeSnapshot = null, generations = 0;
+  const ledgers = new Map(); // durable directory -> its own challenge ledger (the transport store file beside it)
+  const MEMORY = Symbol('memory agent');
+  const privateDirectory = () => {
     const path = realpathSync(mkdtempSync(join(tmpdir(), 'seller-settlement-profile-')));
     t.after(() => rmSync(path, { recursive: true, force: true }));
-    if (challengeSnapshot && !empty) copyFileSync(challengeSnapshot, join(path, 'seller-state.sqlite'));
     return path;
   };
+  // Each independent scenario forks the verifier's pre-attempt challenge ledger. This snapshot
+  // is made by a real issuer before the buyer signs; no fixture writes a caller-selected nonce.
+  const dir = ({ empty = false } = {}) => {
+    const path = privateDirectory(), ledgerDirectory = privateDirectory();
+    if (challengeSnapshot && !empty) copyFileSync(challengeSnapshot, join(ledgerDirectory, 'transport.sqlite'));
+    ledgers.set(path, { ledgerDirectory });
+    return path;
+  };
+  // The ledger follows the clock of the agent that was last opened on the directory.
+  const ledgerFor = (durableDirectory, clock) => {
+    const key = durableDirectory ?? MEMORY;
+    if (!ledgers.has(key)) ledgers.set(key, { ledgerDirectory: privateDirectory() });
+    const entry = ledgers.get(key);
+    entry.clock = clock;
+    if (!entry.store) {
+      entry.store = createSellerTransportStore({ path: join(entry.ledgerDirectory, 'transport.sqlite'), now: () => entry.clock(), generation: `TEST-generation-${++generations}` });
+      t.after(() => entry.store.close());
+    }
+    return entry;
+  };
+  const withLedger = (options) => options.sessionAdmission ? { ...options, challengeLedger: ledgerFor(options.durableDirectory, options.now ?? (() => now)).store.challenges } : options;
   const capabilities = { readCommitmentReceipt: receiptReader(),
     signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: candidate => candidate === jobId ? buyerKey.address : null }),
@@ -72,12 +92,13 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
     sessionAdmission: admission.sessionAdmission,
   };
   const jobId = core.generateCanonicalJobId(), issuerDirectory = dir();
-  const issuer = await seller.createSellerAgent({ ...capabilities, durableDirectory: issuerDirectory,
+  const issuerEntry = ledgerFor(issuerDirectory, () => Math.max(now, listing.validity.notBefore));
+  const issuer = await seller.createSellerAgent({ ...capabilities, durableDirectory: issuerDirectory, challengeLedger: issuerEntry.store.challenges,
     now: () => Math.max(now, listing.validity.notBefore) });
   let challenge;
   try { challenge = await issuer.issueSessionChallenge({ jobId, buyer: buyerKey.claim }); }
   finally { issuer.close(); }
-  challengeSnapshot = join(issuerDirectory, 'seller-state.sqlite');
+  challengeSnapshot = join(issuerEntry.ledgerDirectory, 'transport.sqlite');
   const buyerBundle = presentWith(buyerKey, now, challenge.sessionNonce);
   // The operator's Vet context: references to counterparty-verified records
   // (DACS-2 §7.7.2) the seller's session admission keeps, at the canonical
@@ -121,7 +142,7 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
     return { proposal, transportIdentity, buyerIdentityBundle: buyerBundle };
   };
   const payment = { jobId, txHash: 'a'.repeat(64), payerPayingKey: buyerKey.claim };
-  const agent = (options) => seller.createSellerAgent(options);
+  const agent = (options) => seller.createSellerAgent(withLedger(options));
   return { capabilities, chain, dir, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward, buyerKey, sellerKey, buyerBundle, admission, now, agent };
 }
 const refused = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status }; } };
@@ -736,27 +757,25 @@ test('a missing or different admission or profile is refused before any session 
     'a refusal': () => ({ disposition: 'refused', reason: 'TEST not admitted' }),
     'nothing': () => undefined,
   };
-  const agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
-  t.after(() => agent.close());
   const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
-  // CORE SN-4: a challenge is consumed on its first attempt, so each refused
-  // attempt presents its own issued challenge.
-  let presented = 0;
-  const fresh = async () => { const bundle = presentWith(w.buyerKey, w.now - 1 - presented++, (await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim })).sessionNonce); return { ...request, buyerIdentityBundle: bundle }; };
+  // CORE SN-4: a challenge is consumed on its first attempt, and a consumed job takes no second challenge,
+  // so each refused attempt runs on its own fork of the issued challenge.
+  const fork = async () => { const agent = await w.agent(complete(w, { durableDirectory: w.dir() })); t.after(() => agent.close()); return agent; };
   for (const [label, change] of Object.entries(refusals)) {
+    const agent = await fork();
     w.admission.answerWith(change);
-    const attempt = await fresh();
-    assert.deepEqual(await refused(() => agent.receiveProposal(attempt)), {code:label==='nothing'?'session_admission_unavailable':'session_not_admitted',status:label==='nothing'?503:409},label);
+    assert.deepEqual(await refused(() => agent.receiveProposal(request)), {code:label==='nothing'?'session_admission_unavailable':'session_not_admitted',status:label==='nothing'?503:409},label);
     assert.equal(agent.stageOf(w.jobId), null, `${label}: no session is kept`);
     w.admission.answerWith(null);
     const asked = admits();
-    assert.deepEqual(await refused(() => agent.receiveProposal(attempt)), { code: 'session_not_admitted', status: 409 }, `${label}: the consumed challenge is refused again`);
+    assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 }, `${label}: the consumed challenge is refused again`);
     assert.equal(admits(), asked, `${label}: the admission is not asked again`);
   }
+  const down = await fork();
   w.admission.answerWith(() => { throw new Error('TEST admission store is down'); });
-  assert.deepEqual(await refused(async () => agent.receiveProposal(await fresh())), { code: 'session_admission_unavailable', status: 503 });
+  assert.deepEqual(await refused(() => down.receiveProposal(request)), { code: 'session_admission_unavailable', status: 503 });
   w.admission.answerWith(null);
-  assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'the admitted session is signed');
+  assert.equal((await (await fork()).receiveProposal(request)).disposition, 'complete', 'the admitted session is signed');
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
@@ -766,48 +785,54 @@ test('a missing or different admission or profile is refused before any session 
 test('a presentation nonce the seller did not issue, issued for another job or buyer, expired, or consumed by an earlier attempt is refused before the admission is asked, also after a restart', async (t) => {
   const w = await world(t), durableDirectory = w.dir();
   let clock = w.now;
-  const open = () => seller.createSellerAgent(complete(w, { durableDirectory, now: () => clock }));
-  let agent = await open();
+  const open = (directory, now) => w.agent(complete(w, { durableDirectory: directory, now }));
+  let agent = await open(durableDirectory, () => clock);
   t.after(() => agent.close());
   const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
   const NOT_ADMITTED = { code: 'session_not_admitted', status: 409 };
   let presented = 0;
-  const bundle = async (jobId = w.jobId, buyer = w.buyerKey.claim) => presentWith(w.buyerKey, w.now - 1 - presented++, (await agent.issueSessionChallenge({ jobId, buyer })).sessionNonce);
-  const attempt = (presentation) => refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: presentation }));
-  assert.deepEqual(await attempt(identityFor(w.buyerKey, w.now - 1 - presented++)), NOT_ADMITTED, 'a nonce the seller never issued');
-  const otherJob = await bundle(core.generateCanonicalJobId());
-  assert.deepEqual(await attempt(otherJob), NOT_ADMITTED, 'a challenge issued for another job');
+  const bundle = async (jobId, buyer) => presentWith(w.buyerKey, w.now - 1 - presented++, (await agent.issueSessionChallenge({ jobId, buyer })).sessionNonce);
+  const attempt = (on, presentation) => refused(() => on.receiveProposal({ ...request, buyerIdentityBundle: presentation }));
+  // The first attempt on a job closes it to new challenges, so the other challenges are issued before any attempt.
+  const otherJob = await bundle(core.generateCanonicalJobId(), w.buyerKey.claim);
   const otherBuyer = await bundle(w.jobId, key().claim);
-  assert.deepEqual(await attempt(otherBuyer), NOT_ADMITTED, 'a challenge issued to another buyer');
-  const late = await bundle();
-  clock += SESSION_CHALLENGE_LIFETIME_MS;
-  assert.deepEqual(await attempt(late), NOT_ADMITTED, 'an expired challenge');
-  clock = w.now;
+  assert.deepEqual(await attempt(agent, identityFor(w.buyerKey, w.now - 1 - presented++)), NOT_ADMITTED, 'a nonce the seller never issued');
+  assert.deepEqual(await attempt(agent, otherJob), NOT_ADMITTED, 'a challenge issued for another job');
+  assert.deepEqual(await attempt(agent, otherBuyer), NOT_ADMITTED, 'a challenge issued to another buyer');
+  // An expired challenge, on its own fork of the issued one, also after a restart.
+  const lateAt = w.now + SESSION_CHALLENGE_LIFETIME_MS, lateDirectory = w.dir();
+  let late = await open(lateDirectory, () => lateAt);
+  assert.deepEqual(await attempt(late, request.buyerIdentityBundle), NOT_ADMITTED, 'an expired challenge');
+  late.close(); late = await open(lateDirectory, () => lateAt);
+  t.after(() => late.close());
+  assert.deepEqual(await attempt(late, request.buyerIdentityBundle), NOT_ADMITTED, 'the expired challenge after a restart');
   assert.equal(admits(), 0, 'the admission is never asked for these');
   // Consumed on the first attempt, a refused one too: the same presentation
   // and a re-signed one carrying the same nonce are refused after it.
-  const first = await bundle();
+  const first = request.buyerIdentityBundle;
   w.admission.answerWith(() => ({ disposition: 'refused', reason: 'TEST not admitted' }));
-  assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the first attempt is refused by the admission');
+  assert.deepEqual(await attempt(agent, first), NOT_ADMITTED, 'the first attempt is refused by the admission');
   w.admission.answerWith(null);
   const asked = admits();
-  assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the same presentation after its refused attempt');
+  assert.deepEqual(await attempt(agent, first), NOT_ADMITTED, 'the same presentation after its refused attempt');
   const resigned = presentWith(w.buyerKey, first.presentedAt + 1, first.sessionNonce);
   assert.notEqual(core.identityBundleHash(resigned), core.identityBundleHash(first));
-  assert.deepEqual(await attempt(resigned), NOT_ADMITTED, 'a re-signed presentation carrying the consumed nonce');
+  assert.deepEqual(await attempt(agent, resigned), NOT_ADMITTED, 'a re-signed presentation carrying the consumed nonce');
   agent.close();
-  agent = await open();
-  assert.deepEqual(await attempt(first), NOT_ADMITTED, 'the consumed challenge after a restart');
-  assert.deepEqual(await attempt(late), NOT_ADMITTED, 'the expired challenge after a restart');
+  agent = await open(durableDirectory, () => clock);
+  assert.deepEqual(await attempt(agent, first), NOT_ADMITTED, 'the consumed challenge after a restart');
   assert.equal(admits(), asked, 'the admission is not asked for a consumed challenge');
   assert.equal(agent.stageOf(w.jobId), null, 'no session is kept');
-  // The issued challenge of this presentation admits it, and its accepted
+  // The issued challenge of this presentation admits it on its own fork, and its accepted
   // presentation continues after a restart.
-  const signed = await agent.receiveProposal(request);
+  const admittedDirectory = w.dir();
+  let admitted = await open(admittedDirectory, () => clock);
+  const signed = await admitted.receiveProposal(request);
   assert.equal(signed.disposition, 'complete');
-  agent.close();
-  agent = await open();
-  assert.deepEqual((await agent.receiveProposal(request)).contribution, signed.contribution, 'the accepted presentation continues after a restart');
+  admitted.close();
+  admitted = await open(admittedDirectory, () => clock);
+  t.after(() => admitted.close());
+  assert.deepEqual((await admitted.receiveProposal(request)).contribution, signed.contribution, 'the accepted presentation continues after a restart');
   assert.deepEqual(w.reached.filter((name) => name !== 'resolveSeller'), []);
 });
 
@@ -839,11 +864,12 @@ test('a presentation that carries no session nonce is refused before the admissi
 });
 
 test('the seller issues a fresh 256-bit challenge bound to one job and buyer; a nonce is issued once', async (t) => {
-  const w = await world(t), agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
+  const w = await world(t), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => agent.close());
   const issued = await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }), again = await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim });
   assert.match(issued.sessionNonce, /^[0-9a-f]{64}$/);
-  assert.notEqual(issued.sessionNonce, again.sessionNonce, 'every challenge is fresh');
+  assert.equal(again.sessionNonce, issued.sessionNonce, 'an open challenge for the same job and buyer is returned, not issued again');
+  assert.notEqual((await agent.issueSessionChallenge({ jobId: core.generateCanonicalJobId(), buyer: w.buyerKey.claim })).sessionNonce, issued.sessionNonce, 'every other job gets a fresh challenge');
   assert.deepEqual({ ...issued, sessionNonce: null }, { jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: null, issuedAt: w.now, expiresAt: w.now + SESSION_CHALLENGE_LIFETIME_MS });
   const failed = async (input) => { try { await agent.issueSessionChallenge(input); return null; } catch (error) { return error.code; } };
   assert.equal(await failed({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: issued.sessionNonce }), 'challenge_invalid', 'callers cannot reissue a nonce');
@@ -869,11 +895,9 @@ test('a session in flight continues after its Listing is revoked; a new session 
 // with the core SDK's own check over the operator's readers, never from an
 // answer that asserts it: this fixture's admit would admit every session.
 test('the seller decides revocation itself: a verified marker refuses a new session that admit would admit, and an incomplete reading refuses as indeterminate, before admit is asked or anything is kept or signed', async (t) => {
-  const w = await world(t), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
-  t.after(() => agent.close());
+  const w = await world(t);
   const request = await w.proposalFor(w.vetted), admits = () => w.admission.calls.filter(([call]) => call === 'admit').length;
-  let presented = 0;
-  const fresh = async () => { const bundle = presentWith(w.buyerKey, w.now - 1 - presented++, (await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim })).sessionNonce); return { ...request, buyerIdentityBundle: bundle }; };
+  const fork = async () => { const agent = await w.agent(complete(w, { durableDirectory: w.dir() })); t.after(() => agent.close()); return agent; };
   const refusal = async (work) => { try { await work(); return null; } catch (error) { return { code: error.code, status: error.status, message: error.message }; } };
   const revoked = await revocationOf(w), forged = await revocationOf(w, { signerKey: w.buyerKey, locator: 'TEST-forged-marker' });
   const active = { kind: 'catalog', status: 'active', readStatus: 'ok', catalogObservedAt: w.now };
@@ -894,17 +918,16 @@ test('the seller decides revocation itself: a verified marker refuses a new sess
     'a reader that throws': [() => { throw new Error('TEST revocation reader down'); }, unknown('TEST revocation reader down')],
   };
   for (const [label, [surfaces, [code, status, message]]] of Object.entries(readings)) {
-    w.admission.readRevocationWith(null);
-    const attempted = await fresh();
+    const agent = await fork();
     w.admission.readRevocationWith(surfaces);
-    const asked = admits(), answer = await refusal(() => agent.receiveProposal(attempted));
+    const asked = admits(), answer = await refusal(() => agent.receiveProposal(request));
     assert.deepEqual([answer?.code, answer?.status], [code, status], `${label}: ${answer?.message}`);
     assert.match(answer.message, message, `${label}: the refusal keeps its cause`);
     assert.equal(admits(), asked, `${label}: admit is not asked`);
     assert.equal(agent.stageOf(w.jobId), null, `${label}: no session is kept`);
   }
   w.admission.readRevocationWith(null);
-  assert.equal((await agent.receiveProposal(request)).disposition, 'complete', 'with a complete reading that finds no revocation, the session is signed');
+  assert.equal((await (await fork()).receiveProposal(request)).disposition, 'complete', 'with a complete reading that finds no revocation, the session is signed');
   // The check reads the seller clock after the surfaces: a reading the reader
   // stamps with the same advancing clock is current, not one from the future.
   let tick = w.now;
@@ -938,7 +961,7 @@ test('createSellerAgent takes the evidence anchor and its reconciliation only fr
     ['the anchor and the reconciliation of two journals', journal.anchorEvidence, other.reconcilePaymentEvidence], ['a wrapper around the journal\'s anchor', (input) => journal.anchorEvidence(input), journal.reconcilePaymentEvidence],
     ['the reconciliation as the anchor', journal.reconcilePaymentEvidence, journal.reconcilePaymentEvidence],
     ['a scripted pair without session admission', refusedAnswer, unsignedAnswer, { sessionAdmission: null }]]) {
-    await assert.rejects(seller.createSellerAgent(complete(w, { durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence({ anchorEvidence }), reconcilePaymentEvidence, ...extra })),
+    await assert.rejects(w.agent(complete(w, { durableDirectory: w.dir(), nativePaymentEvidence: w.chain.nativePaymentEvidence({ anchorEvidence }), reconcilePaymentEvidence, ...extra })),
       { name: 'TypeError', message: /only from one createPaymentEvidenceWalletJournal/ }, label);
   }
   // One journal's own pair is taken.
@@ -948,30 +971,31 @@ test('createSellerAgent takes the evidence anchor and its reconciliation only fr
 });
 
 test('over HTTP an admission refusal is definite and keeps no session: the same request runs again and is refused for its consumed challenge, and a presentation under its own challenge is signed', async (t) => {
-  const w = await world(t), h = await httpSeller(t, w);
-  const fresh = async (presentedAt) => { const bundle = presentWith(w.buyerKey, presentedAt, (await h.agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim })).sessionNonce); return { ...h.proposal, buyerIdentityBundle: bundle }; };
-  const revoked = await fresh(w.now - 1), revocation = await revocationOf(w);
+  const w = await world(t), revocation = await revocationOf(w);
+  // Each refusal consumes the issued challenge, so each runs on its own seller over a fork of it.
+  const revoked = await httpSeller(t, w);
   w.admission.readRevocationWith(() => [revocation.surface]);
-  await answered(() => h.client.propose(revoked));
-  assert.deepEqual([h.last.status, h.last.answer.error], [409, 'session_not_admitted']);
+  await answered(() => revoked.client.propose(revoked.proposal));
+  assert.deepEqual([revoked.last.status, revoked.last.answer.error], [409, 'session_not_admitted']);
   w.admission.readRevocationWith(null);
-  const unavailable = await fresh(w.now - 3);
+  await answered(() => revoked.client.propose(revoked.proposal));
+  assert.deepEqual([revoked.last.status, revoked.last.answer.error, revoked.last.answer.message], [409, 'session_not_admitted', 'the presentation challenge is refused: context_challenge_failed (session_not_admitted)']);
+  const unavailable = await httpSeller(t, w);
   w.admission.readRevocationWith(() => [{ kind: 'catalog', status: 'active', readStatus: 'unavailable', readFailureReason: 'TEST catalog down' }]);
-  await answered(() => h.client.propose(unavailable));
-  assert.deepEqual([h.last.status, h.last.answer.error], [503, 'session_admission_unavailable'], 'an indeterminate revocation check is definite and keeps no session');
+  await answered(() => unavailable.client.propose(unavailable.proposal));
+  assert.deepEqual([unavailable.last.status, unavailable.last.answer.error], [503, 'session_admission_unavailable'], 'an indeterminate revocation check is definite and keeps no session');
   w.admission.readRevocationWith(null);
-  await answered(() => h.client.propose(revoked));
-  assert.deepEqual([h.last.status, h.last.answer.error, h.last.answer.message], [409, 'session_not_admitted', 'the presentation challenge was consumed by an earlier presentation attempt']);
+  const down = await httpSeller(t, w);
   w.admission.answerWith(() => { throw new Error('TEST admission store is down'); });
-  await answered(async () => h.client.propose(await fresh(w.now - 2)));
-  assert.deepEqual([h.last.status, h.last.answer.error], [503, 'session_admission_unavailable']);
+  await answered(() => down.client.propose(down.proposal));
+  assert.deepEqual([down.last.status, down.last.answer.error], [503, 'session_admission_unavailable']);
   w.admission.answerWith(null);
-  assert.equal((await h.client.propose(h.proposal)).disposition, 'complete');
+  const admitted = await httpSeller(t, w);
+  assert.equal((await admitted.client.propose(admitted.proposal)).disposition, 'complete');
 });
 
 test('a buyer presentation signature is accepted only in canonical unpadded Base64URL (CORE SIG-6)', async (t) => {
-  const w = await world(t), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
-  t.after(() => agent.close());
+  const w = await world(t);
   const value = w.buyerBundle.presentation.signatures[0].signature, alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
   // Each decodes leniently to the same 64 signature bytes.
   const trailingBits = value.slice(0, -1) + alphabet[alphabet.indexOf(value.at(-1)) | 1];
@@ -979,7 +1003,9 @@ test('a buyer presentation signature is accepted only in canonical unpadded Base
   for (const variant of variants) {
     assert.deepEqual(Buffer.from(variant, 'base64url'), Buffer.from(value, 'base64url'));
     const bundle = { ...w.buyerBundle, presentation: { ...w.buyerBundle.presentation, signatures: [{ ...w.buyerBundle.presentation.signatures[0], signature: variant }] } };
-    const request = await w.proposalFor(w.vetted);
+    // A malformed attempt consumes the issued challenge, so each variant is a first attempt on its own fork of it.
+    const request = await w.proposalFor(w.vetted), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
+    t.after(() => agent.close());
     assert.equal((await refused(() => agent.receiveProposal({ ...request, buyerIdentityBundle: bundle })))?.code, 'buyer_bundle_unauthenticated', variant);
   }
   assert.equal(w.admission.calls.some(([method])=>method==='admit'),false,'refused before any admission');
@@ -1127,7 +1153,7 @@ test('a not-yet-valid Listing refuses a fresh session after restart and admits i
 
 test('malformed attempts consume recognized challenges before shape validation, including across restart', async (t) => {
   const w = await world(t), durableDirectory = w.dir();
-  const open = () => seller.createSellerAgent(complete(w, { durableDirectory }));
+  const open = () => w.agent(complete(w, { durableDirectory }));
   let agent = await open();
   t.after(() => agent.close());
   const request = await w.proposalFor(w.vetted);
@@ -1137,18 +1163,14 @@ test('malformed attempts consume recognized challenges before shape validation, 
   agent.close(); agent = await open();
   assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'session_not_admitted', status: 409 });
   assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 0);
-  // A fresh challenge still permits a valid presentation.
-  const nonce = (await agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim })).sessionNonce;
-  const bundle = presentWith(w.buyerKey, w.now, nonce);
-  // The changed bundle needs matching Vet context; this test uses the existing
-  // valid request instead to check that the fresh attempt reaches admission.
-  await agent.receiveProposal({ ...request, buyerIdentityBundle: bundle });
-  assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 1);
+  // The consumed challenge closes the job to a new one: the buyer starts again with a fresh job.
+  await assert.rejects(agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim }), { code: 'context_job_closed' });
+  assert.equal(w.admission.calls.filter(([call]) => call === 'admit').length, 0);
 });
 
 test('accepted presentations retain complete proof bytes across restart; an exact retry continues', async (t) => {
   const w = await world(t), durableDirectory = w.dir();
-  const open = () => seller.createSellerAgent(complete(w, { durableDirectory }));
+  const open = () => w.agent(complete(w, { durableDirectory }));
   let agent = await open();
   t.after(() => agent.close());
   const request = await w.proposalFor(w.vetted);
@@ -1227,12 +1249,12 @@ test('an admitted unsigned proposal resumes after challenge expiry, including ac
  assert.notEqual((await agent.receiveProposal(request)).disposition, 'complete');
  assert.equal(agent.stageOf(w.jobId), null);
  clock += SESSION_CHALLENGE_LIFETIME_MS;
- agent.close(); agent = await seller.createSellerAgent(options);
+ agent.close(); agent = await w.agent(options);
  w.admission.verifyReceiptWith(null);
  const done = await agent.receiveProposal(request);
  assert.equal(done.disposition, 'complete');
  assert.deepEqual((await agent.receiveProposal(request)).contribution, done.contribution);
- const other = await world(t), late = await seller.createSellerAgent(complete(other, { durableDirectory: other.dir(), now: () => clock }));
+ const other = await world(t), late = await other.agent(complete(other, { durableDirectory: other.dir(), now: () => clock }));
  t.after(() => late.close());
  const expired = presentWith(other.buyerKey, other.now, (await late.issueSessionChallenge({ jobId: other.jobId, buyer: other.buyerKey.claim })).sessionNonce);
  clock += SESSION_CHALLENGE_LIFETIME_MS;
@@ -1304,7 +1326,7 @@ test('an unsigned retry after the admitted Agreement deadline is refused before 
 // CORE §B.8 SN-1/SN-2: a matching saved nonce is insufficient when the
 // presenter selected it before the verifier generated its challenge.
 test('the agent refuses a presenter-chosen pre-signed nonce at issuance and admission', async (t) => {
-  const w = await world(t), agent = await seller.createSellerAgent(complete(w, { durableDirectory: w.dir() }));
+  const w = await world(t), agent = await w.agent(complete(w, { durableDirectory: w.dir() }));
   t.after(() => agent.close());
   const chosen = presentWith(w.buyerKey, w.now, '01'.repeat(16));
   await assert.rejects(agent.issueSessionChallenge({ jobId: w.jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });

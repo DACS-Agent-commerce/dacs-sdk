@@ -9,6 +9,7 @@ import { RESERVATION_LEDGER, SellerTransportError, createSellerTransportStore } 
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { createReservationAccounting } from '../src/dacs/seller-reservation-accounting.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
+import { SESSION_CHALLENGE_LIFETIME_MS } from '../src/dacs/session-admission.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { accountingFixture, T0, JOB, JOB2, BUYER, SELLER, OTHER, PIN, PAYMENTS, PAYMENT_TX, CONTEXT, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
@@ -606,17 +607,15 @@ test('the reservation ledger lists the sources and writers the matrix below cove
   const source = ['seller-transport-auth.mjs', 'seller-reservation-accounting.mjs']
     .map(name => readFileSync(new URL(`../src/dacs/${name}`, import.meta.url), 'utf8')).join('\n');
   const writers = table => source.match(new RegExp(`INSERT (?:OR \\w+ )?INTO ${table}\\b`, 'g'))?.length ?? 0;
-  // peer_nonce_retention: the legacy-row upgrade, the old refusal record and the old reservation; peer_jobs: the
+  // peer_nonce_retention: the legacy-row upgrade and the old reservation; peer_jobs: the
   // old proposal and accounting's first purchase; the rest: the old context admission and accounting's hold and row.
   assert.deepEqual(Object.fromEntries(['peer_nonce_retention', 'peer_jobs', 'peer_context_admissions', 'kit_job_holds', 'kit_reservations']
-    .map(table => [table, writers(table)])), { peer_nonce_retention: 3, peer_jobs: 2, peer_context_admissions: 1, kit_job_holds: 1, kit_reservations: 1 });
+    .map(table => [table, writers(table)])), { peer_nonce_retention: 2, peer_jobs: 2, peer_context_admissions: 1, kit_job_holds: 1, kit_reservations: 1 });
 });
 
 const WRITERS = [
   { name: 'an old proposal', job: true, context: false, write: f => { oldReserve(f, f.payload()); } },
   { name: 'an old context admission', job: true, context: true, write: f => oldContextStep(f) },
-  { name: 'an old refusal record', job: false, context: false,
-    write: f => assert.throws(() => f.store().reserve(contextPayload(f), { scope: { jobId: JOB } }, { admit: f.now, verdict: 'TEST-refused' }), refused('TEST-refused', 409)) },
   { name: 'an accounted proposal', job: true, context: false, write: f => f.reserve(f.args()) },
   { name: 'an accounted context start', job: true, context: true, write: f => f.reserve(f.args(contextPayload(f))) },
   { name: 'an accounted context start that crashes before its reservation', job: true, context: true,
@@ -720,24 +719,19 @@ test("the old path refuses another buyer's request for a job an accounted contex
   assert.doesNotThrow(() => oldReserve(f, f.payload()));
 });
 
-// A context start presented with an issued challenge, as the context route runs it.
-const issueChallenge = (f, jobId = JOB) => f.store().issueContextChallenge({ jobId, buyer: BUYER.claim }, { jobId, buyer: BUYER.claim }, { admit: f.now });
-const presented = (f, { sessionNonce }, jobId = JOB) => {
-  const p = contextPayload(f, { jobId }), body = { scope: { jobId, buyer: BUYER.claim }, buyerIdentityBundle: { sessionNonce } };
-  return { p, body, reserve: () => f.store().reserve(p, body, { admit: f.now, contextDecision: true }) };
+// A context start with a challenge issued by the store's challenge ledger, as the context route runs it.
+const issueChallenge = (f, jobId = JOB) => f.store().challenges.issue({ jobId, buyer: BUYER.claim }, sha256Hex('TEST-challenge-scope'));
+const presented = (f, jobId = JOB) => {
+  const p = contextPayload(f, { jobId }), body = { scope: { jobId, buyer: BUYER.claim } };
+  return { p, body, reserve: () => f.store().reserve(p, body, { admit: f.now }) };
 };
-const attempted = (f, { sessionNonce }) => f.db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce = ?').get(sessionNonce).attempted;
 
-test('a context start refused at full job capacity consumes its challenge, so the presentation cannot be tried again', async t => {
+test('a context start refused at full job capacity writes nothing', async t => {
   const f = await accountingFixture(t, { maxJobs: 1 });
   oldReserve(f, f.payload({ jobId: JOB2 }));
-  const challenge = issueChallenge(f), start = presented(f, challenge);
-  assert.throws(start.reserve, refused('peer_job_capacity', 503));
-  assert.equal(attempted(f, challenge), 1);
-  assert.throws(() => f.store().attemptContextPresentation(start.p, start.body), refused('context_challenge_consumed', 409));
+  assert.throws(presented(f).reserve, refused('peer_job_capacity', 503));
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
   assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'peer_context_admissions'").get().n, 0);
-  // Without a presentation decision the step is refused the same way, with nothing written.
   assert.throws(() => oldReserve(f, contextPayload(f)), refused('peer_job_capacity', 503));
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
 });
@@ -753,10 +747,10 @@ test('a job that already holds the only context record is issued a fresh challen
     await holder.hold(f);
     if (restart) f.reopen();
     const challenge = issueChallenge(f);
-    assert.equal(challenge.expiresAt, T0 + 60000, holder.name);
+    assert.equal(challenge.expiresAt, T0 + SESSION_CHALLENGE_LIFETIME_MS, holder.name);
     assert.throws(() => issueChallenge(f, JOB2), refused('peer_context_capacity', 503), holder.name);
-    if (holder.conflict) assert.throws(presented(f, challenge).reserve, refused('peer_operation_conflict', 409), holder.name);
-    else assert.equal(presented(f, challenge).reserve().disposition, holder.retry, holder.name);
+    if (holder.conflict) assert.throws(presented(f).reserve, refused('peer_operation_conflict', 409), holder.name);
+    else assert.equal(presented(f).reserve().disposition, holder.retry, holder.name);
   }
 });
 

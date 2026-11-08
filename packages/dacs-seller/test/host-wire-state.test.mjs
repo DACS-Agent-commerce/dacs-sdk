@@ -48,6 +48,8 @@ const PROPOSALS = '/dacs/v1/agreements/proposals';
 const STATE = '/dacs/v1/agreements/state';
 // The host's handler serves at most this many requests at once.
 const HANDLER_CONCURRENCY = 8;
+// The challenge ledger issues one buyer at most this many challenges an hour (CHALLENGE_LIMIT_DEFAULTS.maxPerBuyerPerHour).
+const PROPOSALS_PER_BUYER = 5;
 const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
 const SELLER = { claim: seller.claim, sign: seller.signBytes };
 const MISMATCH = { code: 'tp1_purchase_profile_mismatch', status: 500 };
@@ -72,6 +74,7 @@ async function hostFixture(t) {
   const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE });
   const dataDirectory = realpathSync(await mkdtemp(join(tmpdir(), 'TEST-host-wire-state-')));
   const { nativeArtifactAnchor, ...config } = f.config;
+  delete config.challengeLedger; // the host builds its own ledger
   delete config.durableDirectory;
   delete config.commitOnSignature;
   // The host fixes its Vet mode and takes no such option.
@@ -426,7 +429,9 @@ test('the reader each signed request calls is bounded: a stalled read is pending
     const host = await f.start({ tp1Network: testNetwork({ readAuthority }) });
     const [binding] = f.bindings;
     const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+    // Signed proposals up to the buyer's challenge limit; the other stalled requests are signed state reads, which need no challenge.
     const proposals = await Promise.all(Array.from({ length: HANDLER_CONCURRENCY }, async (_, index) => {
+      if (index >= PROPOSALS_PER_BUYER) return unknownStateRequest(buyerWire, `stalled-${index}`);
       const body = await f.proposal(host, jobId(`stalled-${index}`));
       return buyerWire.signRequest(PROPOSALS, body, { jobId: body.transportIdentity.jobId, agreementHash: body.transportIdentity.agreementHash });
     }));
