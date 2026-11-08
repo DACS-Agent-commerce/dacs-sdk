@@ -11,6 +11,7 @@ import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_REFUSED_CHAIN_IDENTITIES } from "./approval.js";
 import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_V1 } from "./routes.js";
+import { RIG_IDENTITY_RECORD, RIG_RECORD_SHA256, reserveTp1Binding, rigAuthorityReader, rigProfileSelected, type RigSelection, type RigWireProfile } from "./rig.js";
 import { deepFreeze, fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
 
 export const TP1_PROFILE_ID = "dacs-testnet-tp1";
@@ -158,6 +159,11 @@ export interface Tp1Binding {
   /** Digest of the independently authenticated connection and its provenance. */
   readonly authorityDigest: string;
 }
+export interface RigBinding extends Omit<Tp1Binding, "profile"> {
+  readonly profile: Readonly<RigWireProfile>;
+}
+export type BoundProfile = Tp1Binding | RigBinding;
+export type BoundWireProfile = Tp1WireProfile | RigWireProfile;
 
 /** Local verifier/orchestrator context, never obtained from a wire payload. */
 export interface Tp1AuthorityScope {
@@ -173,7 +179,7 @@ export interface Tp1AuthorityDecision {
   /** Identifies the authenticated transport attestation, including connection generation. */
   provenance: string;
   sessionId: string | null;
-  participants: Array<{ claim: string; profile: Tp1WireProfile; modules: typeof TESTNET_PROFILE_TP1.tuple }>;
+  participants: Array<{ claim: string; profile: BoundWireProfile; modules: typeof TESTNET_PROFILE_TP1.tuple }>;
 }
 
 /**
@@ -192,6 +198,7 @@ const isIdentifier = (v: unknown): v is string => typeof v === "string" && IDENT
 // a copied object, field or tag is not in this set. The methods are taken at
 // module load, so patching Array or WeakSet prototypes later changes nothing.
 const bindings = new WeakSet<object>();
+const rigBindings = new WeakSet<object>();
 const listHas = uncurry(Array.prototype.includes) as (list: readonly string[], value: string) => boolean;
 const isBinding = uncurry(WeakSet.prototype.has) as (set: WeakSet<object>, value: object) => boolean;
 const addBinding = uncurry(WeakSet.prototype.add) as (set: WeakSet<object>, value: object) => WeakSet<object>;
@@ -250,6 +257,16 @@ function localBinding(supplied: unknown): LocalNetworkBinding {
  * authorizes anything. Await this call to receive the binding or its refusal.
  */
 export async function bindTp1Profile(options: BindTp1Options): Promise<Tp1Binding> {
+  const finish = reserveTp1Binding();
+  let succeeded = false;
+  try {
+    const binding = await bindTp1ProfileReserved(options);
+    succeeded = true;
+    return binding;
+  } finally { finish(succeeded); }
+}
+
+async function bindTp1ProfileReserved(options: BindTp1Options): Promise<Tp1Binding> {
   const { record: supplied, refusedChainIdentities: suppliedRefused = [], local: suppliedLocal, readAuthority } = ownedFields(options, ["record", "refusedChainIdentities", "local", "readAuthority"]);
   const refusedChainIdentities = ownedConfig(suppliedRefused, "wire_input_invalid");
   if (!Array.isArray(refusedChainIdentities) || !refusedChainIdentities.every((entry) => typeof entry === "string" && HASH.test(entry))) return fail("wire_input_invalid", 500);
@@ -290,9 +307,23 @@ export async function bindTp1Profile(options: BindTp1Options): Promise<Tp1Bindin
   return binding;
 }
 
-/** Only an object bindTp1Profile returned. */
-const isTp1Binding = (binding: unknown): binding is Tp1Binding =>
-  typeof binding === "object" && binding !== null && isBinding(bindings, binding);
+export async function bindRigProfile(options: { selection: RigSelection; local: unknown; source: object }): Promise<RigBinding> {
+  const { selection, local: suppliedLocal, source } = ownedFields(options, ["selection", "local", "source"]);
+  const local = localBinding(suppliedLocal);
+  const profile: RigWireProfile = { ...RIG_IDENTITY_RECORD.profile, chainIdentity: RIG_IDENTITY_RECORD.chainIdentity, pinVersion: RIG_IDENTITY_RECORD.pinVersion };
+  const reader = rigAuthorityReader(selection, source, local, profile, TESTNET_PROFILE_TP1.tuple);
+  const decision = await readAuthorityDecision(reader, local, profile.chainIdentity, null, []);
+  const binding: RigBinding = deepFreeze({ profile, recordDigest: RIG_RECORD_SHA256!, local,
+    localDigest: sha256Hex(canonicalize(local)), authorityDigest: connectionDigest(decision) });
+  addBinding(rigBindings, binding);
+  authoritySet(authorities, binding, reader);
+  return binding;
+}
+
+/** Only an object made here; received bytes never choose the branch. */
+const isBoundProfile = (binding: unknown): binding is BoundProfile =>
+  typeof binding === "object" && binding !== null && (isBinding(bindings, binding) ||
+    (rigProfileSelected() && isBinding(rigBindings, binding)));
 
 /**
  * Called first by every wire signer and every wire verifier. The binding must
@@ -300,15 +331,15 @@ const isTp1Binding = (binding: unknown): binding is Tp1Binding =>
  * it was bound with (each actor's own local fence; peers may use other RPCs).
  */
 export async function assertTp1Binding(binding: unknown, currentLocal: unknown): Promise<void> {
-  if (!isTp1Binding(binding)) fail("tp1_binding_required", 500);
+  if (!isBoundProfile(binding)) fail("tp1_binding_required", 500);
   const local = localBinding(currentLocal);
   if (sha256Hex(canonicalize(local)) !== binding.localDigest) fail("tp1_local_binding_changed", 500);
   await assertTp1Authority(binding, local, [], null);
 }
 
 /** Await fresh connection and participant/session authority; rejects on refusal or the reader's original error. */
-export async function assertTp1Authority(binding: Tp1Binding, local: unknown, suppliedParticipants: readonly string[], sessionId: string | null): Promise<void> {
-  if (!isTp1Binding(binding)) fail("tp1_binding_required", 500);
+export async function assertTp1Authority(binding: BoundProfile, local: unknown, suppliedParticipants: readonly string[], sessionId: string | null): Promise<void> {
+  if (!isBoundProfile(binding)) fail("tp1_binding_required", 500);
   const current = localBinding(local);
   if (sha256Hex(canonicalize(current)) !== binding.localDigest) fail("tp1_local_binding_changed", 500);
   const participants = ownedConfig(suppliedParticipants, "tp1_participant_profile_mismatch") as string[];
@@ -352,8 +383,8 @@ export const isTp1WireProfile = (v: unknown): v is Tp1WireProfileShape => profil
  * This comparison alone does not authenticate a participant implementation;
  * action boundaries also require assertTp1Authority for the parties and session.
  */
-export async function assertPeerProfile(received: unknown, own: Tp1Binding, status = 409): Promise<void> {
-  if (!isTp1Binding(own)) fail("tp1_binding_required", 500);
+export async function assertPeerProfile(received: unknown, own: BoundProfile, status = 409): Promise<void> {
+  if (!isBoundProfile(own)) fail("tp1_binding_required", 500);
   await assertTp1Binding(own, own.local);
   if (received === undefined) fail("tp1_profile_missing", status);
   const profile = ownedArtifact(received, "tp1_profile_mismatch", status);
@@ -371,8 +402,8 @@ export async function assertPeerProfile(received: unknown, own: Tp1Binding, stat
  * kept tuple is copied once and the copy compared.
  * Participant implementation authority is checked separately for the exact job.
  */
-export async function assertPurchaseProfile(kept: unknown, own: Tp1Binding, status = 409): Promise<void> {
-  if (!isTp1Binding(own)) fail("tp1_binding_required", 500);
+export async function assertPurchaseProfile(kept: unknown, own: BoundProfile, status = 409): Promise<void> {
+  if (!isBoundProfile(own)) fail("tp1_binding_required", 500);
   await assertTp1Binding(own, own.local);
   const copy = ownedOrNothing(kept);
   if (!profileShape(copy) || canonicalize(copy) !== canonicalize(own.profile)) fail("tp1_purchase_profile_mismatch", status);

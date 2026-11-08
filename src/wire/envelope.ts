@@ -16,7 +16,7 @@ import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { commitmentReceiptTime, type CommitmentReceiptReader } from "./commitment.js";
 import { inspectWireOperation, journalStore, reserveEffect, type WireEffect, type WireRequestJournal } from "./journal.js";
 import { assertEndpointProof, isCommittedRoute, isContinuingRoute, isStageRoute, type EndpointProof, type RetainedPurchaseContinuation } from "./discovery.js";
-import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
+import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type BoundProfile as Tp1Binding, type BoundWireProfile as Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPreAgreementRoute, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation, type SellerSessionDelegationPayload } from "./delegation.js";
 import {

@@ -21,7 +21,7 @@ import {
   type EnvelopeSigningContext, type SigningContext, type WireRequestPayload, type WireResponsePayload,
 } from "./envelope.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation } from "./delegation.js";
-import { assertPurchaseProfile, assertTp1Binding, type Tp1WireProfile } from "./profile.js";
+import { assertPurchaseProfile, assertTp1Binding, type BoundWireProfile as Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
   fail, isClaim, isUint, ownedArtifact, ownedBytes, ownedConfig, ownedFields, sameCanonical, WireError, type JsonRecord, type ListingPin, type WireSigner,

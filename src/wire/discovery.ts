@@ -12,7 +12,7 @@ import { snapshotWireJsonRead } from "../canonical/snapshot.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { canonicalize } from "../canonical/jcs.js";
 import { commitmentReceiptTime, MAX_WIRE_ARTIFACT_BYTES, TP1_COMMIT_PHASE, type CommitmentReceiptReader } from "./commitment.js";
-import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, TP1_CAPABILITIES, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
+import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, TP1_CAPABILITIES, type BoundProfile as Tp1Binding, type BoundWireProfile as Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_HTTP_V1, isReadRoute } from "./routes.js";
 import {
   admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isRecord, isUint,

@@ -32,6 +32,7 @@ export {
   TP1_WIRE_PROFILE_KEYS,
   TESTNET_PROFILE_TP1,
   bindTp1Profile,
+  bindRigProfile,
   assertTp1Binding,
   assertTp1Authority,
   assertPeerProfile,
@@ -41,11 +42,19 @@ export {
   type LocalNetworkBinding,
   type TestnetIdentityRecord,
   type Tp1Binding,
+  type RigBinding,
+  type BoundProfile,
+  type BoundWireProfile,
   type Tp1WireProfile,
   type Tp1AuthorityScope,
   type Tp1AuthorityDecision,
   type Tp1AuthorityReader,
 } from "./profile.js";
+export {
+  RIG_IDENTITY_RECORD, RIG_RECORD_SHA256, rigDeploymentPin,
+  selectRigProfile, rigProfileSelected, installRigSource, isRigSource,
+  type RigSelection, type RigWireProfile,
+} from "./rig.js";
 export {
   isWirePayload,
   wireEnvelopeSigningBytes,

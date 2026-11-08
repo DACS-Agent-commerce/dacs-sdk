@@ -27,7 +27,7 @@ import { canonicalDemosAgentPublicKey } from "../identity/demos.js";
 import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import { validateFixedPriceAgreementBinding, type AnchoredFinalityCommitment } from "../negotiate/commitment.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
-import { assertTp1Binding, type Tp1Binding } from "./profile.js";
+import { assertTp1Binding, type BoundProfile as Tp1Binding } from "./profile.js";
 import { DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
   admitWireJson, cloneJson, deepFreeze, fail, hasKeys, isAdmittedValue, isClaim, isHash, isListingPin, isRecord, isUint, ownedArtifact, ownedBytes,

@@ -13,7 +13,7 @@ import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import type { SellerSessionDelegationPayload } from "./delegation.js";
 import { wireRequestHash, type WireRequestPayload } from "./envelope.js";
-import { assertPeerProfile, assertTp1Authority, assertTp1Binding, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
+import { assertPeerProfile, assertTp1Authority, assertTp1Binding, isTp1WireProfile, type BoundProfile as Tp1Binding, type BoundWireProfile as Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from "./routes.js";
 import {
   admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, isUint, NONCE, ownedArtifact, ownedConfig,

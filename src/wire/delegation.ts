@@ -12,7 +12,7 @@
 import { types } from "node:util";
 import { canonicalize } from "../canonical/jcs.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
-import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type Tp1Binding, type Tp1WireProfile } from "./profile.js";
+import { assertPeerProfile, assertTp1Binding, assertTp1Authority, isTp1WireProfile, type BoundProfile as Tp1Binding, type BoundWireProfile as Tp1WireProfile } from "./profile.js";
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS } from "./routes.js";
 import {
   admitWireJson, isAdmittedValue, ownedBytes, claimKey, cloneJson, fail, hasKeys, HASH, isClaim, isListingPin, isUint, lacksProfile, ownedArtifact, ownedConfig, ownedFields, withCanonicalClaims,
