@@ -1,5 +1,5 @@
 /**
- * Fault classification for SDK operations (T9). Blame and retry behaviour
+ * Fault classification for SDK operations. Blame and retry behaviour
  * differ by category, so callers must be able to tell them apart:
  *
  * - `transient`    — retry may succeed (timeout, nonce race, rate limit).
@@ -71,8 +71,8 @@ export function faultCategory(err: unknown): FaultCategory {
 }
 
 /**
- * Thrown by seam methods that are defined but not yet implemented in the MVP
- * scaffold. The task ref points at the IMPLEMENTATION.md task that lands it.
+ * Thrown by an operation this build declares but does not implement. Callers
+ * classify it as `permanent`: retrying does not help.
  */
 export class NotImplementedError extends DacsError {
   constructor(feature: string, taskRef?: string) {

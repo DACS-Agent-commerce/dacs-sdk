@@ -9,11 +9,10 @@ export {
  * Standards) agents across the Identify → Vet → Negotiate → Settle → Verify
  * lifecycle.
  *
- * T1 scaffold: this exports the substrate seam (SubstrateAdapter + DemosAdapter)
- * and package metadata. The agent-facing public API (`createAgent`,
- * `publishListing`, `readListing`, `enumerateListings`, `discover`,
- * `runSession`, `verifyBundle`, `getReputation`) is designed in T4 — see
- * IMPLEMENTATION.md.
+ * This root entry point exports the agent API (`createAgent` and the `Agent`
+ * methods), the settlement rails, verification and the shared types. The
+ * `DemosAdapter` class itself is on the `./substrate` subpath; the root
+ * exports only its types.
  */
 
 export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
