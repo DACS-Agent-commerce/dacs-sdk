@@ -51,9 +51,9 @@ export {
   type Tp1AuthorityReader,
 } from "./profile.js";
 export {
-  RIG_IDENTITY_RECORD, RIG_RECORD_SHA256, rigDeploymentPin,
-  selectRigProfile, rigProfileSelected, installRigSource, isRigSource,
-  type RigSelection, type RigWireProfile,
+  RIG_IDENTITY_RECORD, rigProfileRecord,
+  selectRigProfile, rigProfileSelected, registerRigSource, isRigSource,
+  type RigSelection, type RigWireProfile, type RigSourceKind,
 } from "./rig.js";
 export {
   isWirePayload,

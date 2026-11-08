@@ -81,6 +81,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Rig tests launch clean children and assert the shipped guard/hold constants.
+      - name: Test inert rig profile
+        if: matrix.node-version == '22'
+        run: node --test test/rig/*.test.mjs
+
       - name: Build Node host kit
         run: npm run host:build
 

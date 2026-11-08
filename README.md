@@ -19,6 +19,11 @@ TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents —
   terms, and the [TP-1 declaration](./docs/testnet-profile-tp1.md) for the ways it is known to fall short of the
   Standard so far (composition checks qualify and complete that list).
 
+The private rig API in `@kynesyslabs/dacs/wire` ships inert: importing any SDK
+package never selects it. Only an explicit `selectRigProfile` call can select
+its one-way process mode, using a reviewed complete record digest. The shipped
+record has no verified image digest, so selection currently refuses.
+
 ## Layering
 
 ```

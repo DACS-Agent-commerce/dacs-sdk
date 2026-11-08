@@ -11,7 +11,7 @@ import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_REFUSED_CHAIN_IDENTITIES } from "./approval.js";
 import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_V1 } from "./routes.js";
-import { RIG_IDENTITY_RECORD, RIG_RECORD_SHA256, reserveTp1Binding, rigAuthorityReader, rigProfileSelected, type RigSelection, type RigWireProfile } from "./rig.js";
+import { rigProfileRecord, reserveTp1Mode, rigAuthorityReader, rigProfileSelected, type RigSelection, type RigWireProfile } from "./rig.js";
 import { deepFreeze, fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
 
 export const TP1_PROFILE_ID = "dacs-testnet-tp1";
@@ -257,7 +257,7 @@ function localBinding(supplied: unknown): LocalNetworkBinding {
  * authorizes anything. Await this call to receive the binding or its refusal.
  */
 export async function bindTp1Profile(options: BindTp1Options): Promise<Tp1Binding> {
-  const finish = reserveTp1Binding();
+  const finish = reserveTp1Mode();
   let succeeded = false;
   try {
     const binding = await bindTp1ProfileReserved(options);
@@ -309,11 +309,12 @@ async function bindTp1ProfileReserved(options: BindTp1Options): Promise<Tp1Bindi
 
 export async function bindRigProfile(options: { selection: RigSelection; local: unknown; source: object }): Promise<RigBinding> {
   const { selection, local: suppliedLocal, source } = ownedFields(options, ["selection", "local", "source"]);
+  const record = rigProfileRecord(selection);
   const local = localBinding(suppliedLocal);
-  const profile: RigWireProfile = { ...RIG_IDENTITY_RECORD.profile, chainIdentity: RIG_IDENTITY_RECORD.chainIdentity, pinVersion: RIG_IDENTITY_RECORD.pinVersion };
+  const profile: RigWireProfile = { ...record.profile, chainIdentity: record.chainIdentity, pinVersion: record.pinVersion };
   const reader = rigAuthorityReader(selection, source, local, profile, TESTNET_PROFILE_TP1.tuple);
   const decision = await readAuthorityDecision(reader, local, profile.chainIdentity, null, []);
-  const binding: RigBinding = deepFreeze({ profile, recordDigest: RIG_RECORD_SHA256!, local,
+  const binding: RigBinding = deepFreeze({ profile, recordDigest: (selection as RigSelection).recordSha256, local,
     localDigest: sha256Hex(canonicalize(local)), authorityDigest: connectionDigest(decision) });
   addBinding(rigBindings, binding);
   authoritySet(authorities, binding, reader);

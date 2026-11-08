@@ -1,12 +1,13 @@
 // A real Node process, compiled package bytes, no source-rewriting loader.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-const [name, first, second] = process.argv.slice(2);
+const [name, second] = process.argv.slice(2);
 assert.deepEqual(process.execArgv, []);
-assert.equal(process.env.NODE_OPTIONS, undefined);
-const wire = await import(first);
-const { KIT_OPERATION_GUARD, assertKitOperationAdmitted } = await import('../../../packages/dacs-seller/src/kit-operation-guard.mjs');
-const { PURCHASE_ADMISSION } = await import('../../../packages/dacs-client/src/dacs/purchase-admission-state.mjs');
+assert(!/kit-guard-fixture\.mjs|kit-client\/test-loader\.mjs/.test(process.env.NODE_OPTIONS ?? ''));
+if (process.env.RIG_PRELOAD_MARKER) assert.equal(globalThis.rigHarmlessPreload, process.env.RIG_PRELOAD_MARKER);
+const wire = await import('@kynesyslabs/dacs/wire');
+const { KIT_OPERATION_GUARD, assertKitOperationAdmitted } = await import('./node_modules/@kynesyslabs/dacs-seller/src/kit-operation-guard.mjs');
+const { PURCHASE_ADMISSION } = await import('./node_modules/@kynesyslabs/dacs-client/src/dacs/purchase-admission-state.mjs');
 // Always establish the shipped constants BEFORE exercising any boundary.
 assert.equal(KIT_OPERATION_GUARD, 'off');
 assert.equal(PURCHASE_ADMISSION, 'held');
@@ -17,30 +18,32 @@ assert.deepEqual(record, {
   chainIdentity: '26f74217d02edb713bb2affb694a5ad38c40e0edaf71c793c75321f42c1f6e71',
   genesisFileSha256: '5444bfbe73018e31c40a964da577c9a75ebb85e42d03b3db64094c3b0e47a721',
   pinVersion: 'dacs-demos-rig-identity/2026-11-08', sourceKind: 'confirmed-block-one-predecessor',
-  documentation: "The private four-node rig refuses numeric block 0. Its chain identity is confirmed block 1's content.previousHash, independently checked against dacs-demos-rig-identity/2026-11-08. The genesis file digest is operator provenance; each run separately pins block 2.",
+  documentation: "Private four-validator rig, frozen genesis 2026-11-08. Numeric block 0 returns the reviewed literal error; resolve identity from confirmed block 1 content.previousHash. Check continuation with the selected run's block-two hash.",
   deployment: { commit: 'e6af8f4023fa4e77f482503dae97f1ca00834bf9', dirty: false,
     artifactSha256: record.deployment.artifactSha256, qualifiedOperations: ['fee', 'nonce', 'broadcast', 'confirmation'] },
 });
 assert(record.documentation.length > 0 && record.documentation.length <= 512);
-assert.equal(wire.rigDeploymentPin(), record.deployment);
+assert.equal('rigDeploymentPin' in wire, false);
+assert.equal('RIG_RECORD_SHA256' in wire, false);
+for (const selection of [undefined, null, {}, record, new Proxy({}, {})]) {
+  assert.throws(() => wire.rigProfileRecord(selection), error => error.code === 'rig_selection_required');
+}
 for (const value of [record, record.profile, record.deployment, record.deployment.qualifiedOperations]) assert(Object.isFrozen(value));
 const sha = text => createHash('sha256').update(text).digest('hex');
 const jcs = value => value && typeof value === 'object' ? Array.isArray(value)
   ? `[${value.map(jcs).join(',')}]` : `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${jcs(value[k])}`).join(',')}}` : JSON.stringify(value);
-if (wire.RIG_RECORD_SHA256 === null) assert.equal(record.deployment.artifactSha256, null);
-else {
-  assert.match(record.deployment.artifactSha256, /^[0-9a-f]{64}$/);
-  assert.equal(wire.RIG_RECORD_SHA256, sha(jcs(record)));
-}
+const incomplete = record.deployment.artifactSha256 === null;
+const recordSha256 = sha(jcs(record));
+if (!incomplete) assert.match(record.deployment.artifactSha256, /^[0-9a-f]{64}$/);
 assert.equal(wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity, 'd59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc');
-assert(!wire.TP1_APPROVED_IDENTITY_RECORD_DIGESTS.includes(wire.RIG_RECORD_SHA256));
+assert(!wire.TP1_APPROVED_IDENTITY_RECORD_DIGESTS.includes(recordSha256));
 assert.equal(wire.rigProfileSelected(), false);
 assert.equal('unselectRigProfile' in wire, false);
 const effects = { transaction: 0, wire: 0, discovery: 0, delegation: 0, broadcasts: 0 };
 const local = { endpoint: 'https://rig.invalid/', transportAuthority: 'TEST-rig', connectionId: 'rig-connection' };
 const buyer = `did:demos:agent:${'a'.repeat(64)}`, seller = `did:demos:agent:${'b'.repeat(64)}`;
 const runHash = 'c'.repeat(64);
-const input = () => ({ recordSha256: wire.RIG_RECORD_SHA256 ?? '0'.repeat(64), acknowledgement: 'PRIVATE FOUR-NODE RIG ONLY', runBlockTwoHash: runHash });
+const input = () => ({ recordSha256, acknowledgement: 'PRIVATE FOUR-NODE RIG ONLY', runBlockTwoHash: runHash });
 const select = () => wire.selectRigProfile(input());
 const tp1Profile = { id: wire.TP1_PROFILE_ID, revision: wire.TP1_PROFILE_REVISION, base: wire.TP1_BASE_REVISION,
   chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity, pinVersion: wire.TP1_APPROVED_IDENTITY_RECORD.pinVersion };
@@ -73,7 +76,7 @@ function sourceFixture(selection) {
     ...pins, connectionId: local.connectionId, source: { kind: record.sourceKind, blockNumber: 1, blockHash: 'd'.repeat(64), fallbackDocumentation: record.documentation },
     observedAt: Date.now(), expiresAt: Date.now() + 10000 });
   return { source, setObservation(fn) { observation = fn; }, observe: () => observation(),
-    register() { wire.installRigSource({ selection, source, buyer, seller }); },
+    register() { wire.registerRigSource({ selection, source, kind: 'demo', buyer, seller }); },
     bind() { return wire.bindRigProfile({ selection, source, local }); } };
 }
 async function refuseSign(binding, expected) {
@@ -82,12 +85,12 @@ async function refuseSign(binding, expected) {
   await assert.rejects(wire.signDiscoveryDocument({}, signer('discovery'), binding, local), code(expected));
   await assert.rejects(wire.signSellerSessionDelegation({}, signer('delegation'), binding, local), code(expected));
 }
-const needsSelection = new Set(['selected', 'duplicate', 'identities', 'authority', 'deadline', 'reset']);
-if (needsSelection.has(name) && wire.RIG_RECORD_SHA256 === null) {
+const needsSelection = new Set(['selected', 'duplicate', 'identities', 'authority', 'deadline', 'reset', 'kinds', 'unregistered']);
+if (needsSelection.has(name) && incomplete) {
   failSelection(input(), 'rig_record_incomplete');
   process.stdout.write(JSON.stringify({ blocked: 'operator image digest missing; shipped seed cannot select' }));
 } else {
-  if (name === 'defaults') {
+  if (name === 'defaults' || name === 'runner-environment') {
     const sellerApi = await import('@kynesyslabs/dacs-seller');
     const clientApi = await import('@kynesyslabs/dacs-client');
     assert.throws(() => sellerApi.createSellerAgentClient({}), code('kit_operation_guard_off'));
@@ -108,7 +111,7 @@ if (needsSelection.has(name) && wire.RIG_RECORD_SHA256 === null) {
       { ...input(), recordSha256: sha('unapproved record') },
       ...[undefined, null, 2, '', 'a'.repeat(63), 'A'.repeat(64), '0'.repeat(65)].map(runBlockTwoHash => ({ ...input(), runBlockTwoHash }))]) failSelection(value);
     assert.equal(touched, 0);
-    if (wire.RIG_RECORD_SHA256 === null) {
+    if (incomplete) {
       failSelection(input(), 'rig_record_incomplete');
       failSelection({ ...input(), recordSha256: sha(jcs(record)) }, 'rig_record_incomplete');
     }
@@ -139,11 +142,15 @@ if (needsSelection.has(name) && wire.RIG_RECORD_SHA256 === null) {
       failSelection(input(), 'tp1_binding_active');
       rejectSecond(unavailable);
       await assert.rejects(secondPending, error => error === unavailable);
-      if (wire.RIG_RECORD_SHA256 === null) failSelection(input(), 'rig_record_incomplete');
+      if (incomplete) failSelection(input(), 'rig_record_incomplete');
       else { select(); await assert.rejects(bindTp1(), code('rig_selected')); }
     }
   } else if (name === 'closed-registry') {
-    const copy = await import(second);
+    const awaitedCopy = await import(second);
+    const { wire: copy } = awaitedCopy;
+    assert.notEqual(copy.selectRigProfile, wire.selectRigProfile);
+    assert.equal((await import(second)).KIT_OPERATION_GUARD, 'off');
+    assert.equal((await import(second)).PURCHASE_ADMISSION, 'held');
     const fixture = sourceFixture({ runBlockTwoHash: runHash });
     assert.throws(() => fixture.register(), code('rig_selection_required'));
     assert.equal(wire.isRigSource(fixture.source), false);
@@ -153,10 +160,15 @@ if (needsSelection.has(name) && wire.RIG_RECORD_SHA256 === null) {
     await assert.rejects(copy.assertTp1Binding(binding, local), code('tp1_binding_required'));
     await assert.rejects(wire.assertTp1Binding({ ...binding }, local), code('tp1_binding_required'));
     assert.equal(copy.rigProfileSelected(), false);
+    assert.throws(() => awaitedCopy.sellerApi.createSellerAgentClient({}), code('kit_operation_guard_off'));
+    assert.throws(() => awaitedCopy.clientApi.createProtocolPurchases({}));
     await refuseSign({ ...binding }, 'tp1_binding_required');
   } else {
     const callerInput = input(), selection = wire.selectRigProfile(callerInput);
     assert(Object.isFrozen(selection));
+    assert.equal(wire.rigProfileRecord(selection), record);
+    assert.throws(() => wire.rigProfileRecord({ ...selection }), code('rig_selection_required'));
+    assert.throws(() => wire.rigProfileRecord(new Proxy(selection, {})), code('rig_selection_required'));
     callerInput.runBlockTwoHash = 'e'.repeat(64);
     assert.equal(selection.runBlockTwoHash, runHash);
     assert.equal(wire.rigProfileSelected(), true);
@@ -168,11 +180,42 @@ if (needsSelection.has(name) && wire.RIG_RECORD_SHA256 === null) {
     const binding = await fixture.bind();
     assert(Object.isFrozen(binding) && Object.isFrozen(binding.profile));
     await wire.assertTp1Binding(binding, local);
-    if (name === 'duplicate') {
-      const copy = await import(second);
+    if (name === 'unregistered') {
+      let observed = 0;
+      const lookalike = { ...fixture.source, observeBinding() { observed++; return fixture.observe(); } };
+      await assert.rejects(wire.bindRigProfile({ selection, source: lookalike, local }), code('rig_source_required'));
+      assert.equal(observed, 0);
+    } else if (name === 'kinds') {
+      assert.equal(wire.isRigSource(fixture.source, 'demo'), true);
+      assert.equal(wire.isRigSource(fixture.source, 'agreement'), false);
+      assert.equal(wire.isRigSource(fixture.source, 'wrong'), false);
+      for (const kind of [undefined, null, 'wrong', 'agreement']) {
+        const wrong = sourceFixture(selection).source;
+        assert.throws(() => wire.registerRigSource({ selection, source: wrong, kind, buyer, seller }), code('rig_source_invalid'));
+        assert.equal(wire.isRigSource(wrong), false);
+      }
+      const agreement = sourceFixture(selection).source;
+      for (const field of ['demoArtifactPublication', 'settlementPublication', 'deliveryPublication']) {
+        delete agreement[field]; delete agreement.transportBinding[field];
+      }
+      wire.registerRigSource({ selection, source: agreement, kind: 'agreement', buyer, seller });
+      assert.equal(wire.isRigSource(agreement, 'agreement'), true);
+      assert.equal(wire.isRigSource(agreement, 'demo'), false);
+      await wire.bindRigProfile({ selection, source: agreement, local });
+      assert.throws(() => wire.registerRigSource({ selection, source: agreement, kind: 'demo', buyer, seller }), code('rig_source_invalid'));
+      assert.equal(wire.isRigSource(agreement, 'agreement'), true);
+    } else if (name === 'duplicate') {
+      const awaitedCopy = await import(second);
+      const { wire: copy } = awaitedCopy;
+      assert.notEqual(copy.selectRigProfile, wire.selectRigProfile);
+      assert.equal((await import(second)).KIT_OPERATION_GUARD, 'off');
+      assert.equal((await import(second)).PURCHASE_ADMISSION, 'held');
       assert.equal(copy.rigProfileSelected(), false);
+      assert.throws(() => awaitedCopy.sellerApi.createSellerAgentClient({}), code('kit_operation_guard_off'));
+      assert.throws(() => awaitedCopy.clientApi.createProtocolPurchases({}));
+      assert.throws(() => copy.rigProfileRecord(selection), code('rig_selection_required'));
       assert.equal(copy.isRigSource(fixture.source), false);
-      assert.throws(() => copy.installRigSource({ selection, source: fixture.source, buyer, seller }), code('rig_selection_required'));
+      assert.throws(() => copy.registerRigSource({ selection, source: fixture.source, kind: 'demo', buyer, seller }), code('rig_selection_required'));
       await assert.rejects(copy.bindRigProfile({ selection, local, source: fixture.source }), code('rig_selection_required'));
       await assert.rejects(copy.assertTp1Binding(binding, local), code('tp1_binding_required'));
       const tp1 = await copy.bindTp1Profile({ record: copy.TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: readTp1 });
