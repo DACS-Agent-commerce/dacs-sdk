@@ -8,6 +8,8 @@ import {
   createInMemoryBindingStore,
 } from "../../src/index.js";
 
+import { buildVersioningListing } from "./listing-versioning-fixture.js";
+
 /**
  * Live-node acceptance gate for #46.
  *
@@ -47,48 +49,7 @@ describe("LIVE listing version immutability + sequencing (#46)", () => {
         bindings: { index: bindings, publisher: bindings },
       });
       const serviceId = `sdk-46-${Date.now()}`;
-      const base = {
-        dacsVersion: "1" as const,
-        listingId: serviceId,
-        seller: {
-          identity: {
-            bundleVersion: "1" as const,
-            presentedBy: DID!,
-            presentedAt: Date.now(),
-            claims: [{ ref: DID! }],
-            presentation: {
-              kind: "per-claim" as const,
-              signatures: [{ ref: DID!, signature: "live-wallet-presentation" }],
-            },
-          },
-          displayName: "SDK #46 live gate",
-        },
-        offering: {
-          title: "SDK #46 live gate",
-          description: "v1",
-          category: "sdk.conformance",
-          tags: ["versioning"],
-          deliverable: {
-            kind: "attested-payload" as const,
-            payloadFormat: "application/json",
-            verificationMethod: { kind: "self-signed" as const },
-          },
-        },
-        buyerRequirement: { requirementVersion: "1" as const, required: [] },
-        pipeline: [
-          { kind: "negotiate-fixed-price" as const },
-          { kind: "commit-agreement" as const },
-          { kind: "pay-x402" as const, parameters: { rail: "x402:default" } },
-          { kind: "deliver-attested-payload" as const },
-        ],
-        pricing: {
-          kind: "fixed" as const,
-          price: { amount: "1", currency: "USDC" },
-        },
-        acceptedRails: [{ railId: "x402:default" }],
-        terms: { deadlineSecAfterCommit: 3_600 },
-        validity: { notBefore: Date.now() - 1_000 },
-      };
+      const base = buildVersioningListing(serviceId, DID!, Date.now());
 
       const v1 = await agent.publishListing({ ...base, listingVersion: 1 });
       const retry = await agent.publishListing({ ...base, listingVersion: 1 });

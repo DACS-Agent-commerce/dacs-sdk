@@ -45,6 +45,8 @@ export interface PayDemFundedPreparedTransfer {
   amountOs: string;
   denomination: "os" | "dem";
   maxTotalDebitOs: string;
+  confirmedTotalDebitOs: string;
+  confirmedRecordFeeOs: string;
   network: "demos";
 }
 
@@ -151,12 +153,20 @@ function capturePreparedTransfer(
     "amountOs",
     "denomination",
     "maxTotalDebitOs",
+    "confirmedTotalDebitOs",
+    "confirmedRecordFeeOs",
     "network",
   ]) || !Number.isSafeInteger(snapshot.nonce) || (snapshot.nonce as number) < 0 ||
       Object.is(snapshot.nonce, -0) || typeof snapshot.amountOs !== "string" ||
       !INTEGER_RE.test(snapshot.amountOs) ||
       typeof snapshot.maxTotalDebitOs !== "string" ||
       !INTEGER_RE.test(snapshot.maxTotalDebitOs) ||
+      typeof snapshot.confirmedTotalDebitOs !== "string" ||
+      !/^[1-9][0-9]*$/.test(snapshot.confirmedTotalDebitOs) ||
+      BigInt(snapshot.confirmedTotalDebitOs) < BigInt(snapshot.amountOs) ||
+      BigInt(snapshot.confirmedTotalDebitOs) > BigInt(snapshot.maxTotalDebitOs) ||
+      typeof snapshot.confirmedRecordFeeOs !== "string" ||
+      !/^(?:0|[1-9][0-9]*)$/.test(snapshot.confirmedRecordFeeOs) ||
       (snapshot.denomination !== "os" && snapshot.denomination !== "dem") ||
       snapshot.network !== "demos") {
     throw new Error("pay-dem-live:prepared-transfer-invalid");
@@ -169,6 +179,8 @@ function capturePreparedTransfer(
     amountOs: snapshot.amountOs,
     denomination: snapshot.denomination as "os" | "dem",
     maxTotalDebitOs: snapshot.maxTotalDebitOs,
+    confirmedTotalDebitOs: snapshot.confirmedTotalDebitOs,
+    confirmedRecordFeeOs: snapshot.confirmedRecordFeeOs,
     network: "demos" as const,
   };
   if (

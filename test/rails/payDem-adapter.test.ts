@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DacsError } from "../../src/errors.js";
@@ -5,6 +8,10 @@ import {
   PayDemIncludedNonceVisibilityError,
   createPayDemRail,
 } from "../../src/rails/payDem.js";
+import {
+  executePayDemFundedRun,
+  readPayDemFundedPreparedTransfer,
+} from "../integration/pay-dem-funded-run.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
 const RECIPIENT = `0x${"cd".repeat(32)}`;
@@ -467,6 +474,52 @@ describe("createPayDemRail nonce coordination", () => {
     ).rejects.toThrow(/no valid transaction nonce/);
     expect(sdk.confirm).not.toHaveBeenCalled();
     expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("persists the real rail's prepared record through the live funded journal before broadcast", async () => {
+    const directory = await mkdtemp(join(process.cwd(), ".paydem-live-guard-"));
+    try {
+      const { result } = await executePayDemFundedRun({
+        directory,
+        runId: "offline-rail-guard",
+        payer: WALLET,
+        payee: RECIPIENT,
+        amountOs: "1000000000",
+        maxTotalDebitOs: "2000000000",
+        network: "demos",
+      }, async (armed, journalPreparedTransfer) => {
+        sdk.broadcast.mockImplementation(async () => {
+          await expect(readPayDemFundedPreparedTransfer(armed)).resolves.toEqual({
+            txHash: TX_HASH,
+            nonce: 7,
+            payer: WALLET.slice(2),
+            payee: RECIPIENT.slice(2),
+            amountOs: "1000000000",
+            denomination: "os",
+            maxTotalDebitOs: "2000000000",
+            confirmedTotalDebitOs: "2000000000",
+            confirmedRecordFeeOs: "1000000000",
+            network: "demos",
+          });
+          return { response: { hash: TX_HASH } };
+        });
+        const rail = await createPayDemRail({
+          rpc: "https://node.test",
+          secret: "test-secret",
+          network: "demos",
+          maxTotalDebitOs: 2_000_000_000n,
+          journalPreparedTransfer,
+        });
+        return rail.settle({ recipient: RECIPIENT, amount: "1000000000" });
+      });
+      expect(result).toMatchObject({ ok: true, txHash: TX_HASH });
+      expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+      await expect(sdk.broadcast.mock.results[0]?.value).resolves.toEqual({
+        response: { hash: TX_HASH },
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("journals validated immutable transfer facts immediately before broadcast", async () => {
