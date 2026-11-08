@@ -932,3 +932,18 @@ test('P10-T18 through the real guarded store\'s classify, its dry-run reserve an
   assert.equal(reopened.classify(afterRestart.request, afterRestart.body), 'known', 'the context retry classifies known after restart');
   await dryRuns(reopened, 'restarted store');
 });
+
+test('started host signed proposal creates accounting and wire operation records', async (t) => {
+  const f = await hostFixture(t), host = await f.start();
+  const body = await f.proposal(host), { jobId: id, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const answer = await postSigned(host, await buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash }));
+  const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
+  try {
+    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations').all(), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
+  } finally { db.close(); }
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, 1);
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length, 1);
+  assert.ok(answer.header, 'the started host signs the result');
+});
