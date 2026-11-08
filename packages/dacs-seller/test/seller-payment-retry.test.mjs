@@ -42,7 +42,12 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => proposalCalls === 0 ? null : retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
     retainsPaymentClaim:()=>false,
-    submitPayment: async (body) => { calls.push(body.txHash); return structuredClone(answers[Math.min(calls.length - 1, answers.length - 1)]); } };
+    submitPayment: async (body) => {
+      calls.push(body.txHash);
+      const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
+      if (answer === THROW) throw new Error('TEST the claim outcome is unknown');
+      return structuredClone(answer);
+    } };
   facade.reconcileTransport = async ({ request, body, transport }) => {
     const claimed = transport.claim();
     assert.equal(claimed.live, true);
@@ -68,7 +73,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
     const view = inspectWireOperation(wire.journal, { seller: sellerKey.claim, jobId, path: '/dacs/v1/payments' });
     if (view.state === 'pending' && calls.at(-1) === body.txHash) time = view.leaseUntil;
     try { return await clientFor(await createBuyer()).submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
-  return { calls, claim, pay, proposalCalls: () => proposalCalls,
+  return { calls, claim, pay, wire, proposalCalls: () => proposalCalls,
     propose: async () => {
       const view = inspectWireOperation(wire.journal, { seller: sellerKey.claim, jobId, path: '/dacs/v1/agreements/proposals' });
       if (view.state === 'pending') time = view.leaseUntil;
@@ -92,15 +97,36 @@ test('a corrected claim after an indeterminate answer is not a conflict: nothing
   assert.deepEqual(w.calls, ['b2'.repeat(32), w.claim.txHash]);
 });
 
-test('a held answer is recovered after its lease on a fresh nonce; a pending attempt runs no other body', async (t) => {
+test('a held answer is recovered by the next request on a fresh nonce, without waiting for a lease', async (t) => {
   const held = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
   const w = await world(t, [held, held, DELIVERED]);
   assert.deepEqual(await w.pay(), held);
-  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), { error: 'seller_unavailable', status: undefined }, 'a pending wire attempt runs no other body');
-  assert.deepEqual(await w.pay(), held, 'the readback is still absent');
+  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), held, 'the same transaction in its other form reads back again');
   assert.deepEqual(await w.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
   assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 4, 'the conflicting body is refused; the completed claim authenticates again');
+  assert.equal(w.calls.length, 4, 'every request reached the agent, and the delivered claim is freshly authenticated');
+});
+
+// The journal allows 16 superseded attempts, meant for crashes; a normal "not final yet" answer must never spend one.
+const HELD_POLLS = 20;
+const journalOf = (w) => inspectWireOperation(w.wire.journal, { seller: fixtureSeller.claim, jobId: JOB, path: '/dacs/v1/payments' });
+
+test('a payment held twenty times is answered by the agent each time and then delivered, without spending crash attempts', async (t) => {
+  const held = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
+  const w = await world(t, [...Array(HELD_POLLS).fill(held), DELIVERED]);
+  for (let poll = 0; poll < HELD_POLLS; poll++) assert.deepEqual(await w.pay(), held, `poll ${poll}`);
+  const view = journalOf(w);
+  assert.deepEqual([view.state, view.attempt, view.superseded], ['ended', HELD_POLLS - 1, 0], 'every held poll ended its attempt cleanly');
+  assert.deepEqual(await w.pay(), DELIVERED);
+  assert.equal(w.calls.length, HELD_POLLS + 1, 'the agent saw every poll');
+});
+
+test('an uncertain payment answer keeps its attempt open until the lease, then the next request recovers', async (t) => {
+  const w = await world(t, [THROW, DELIVERED]);
+  assert.deepEqual(await w.pay(), { error: 'seller_unavailable', status: undefined });
+  assert.equal(journalOf(w).state, 'pending', 'an unsettled attempt is not ended by the host');
+  assert.deepEqual(await w.pay(), DELIVERED, 'the lease ran out; the next request recovers');
+  assert.equal(journalOf(w).state, 'completed');
 });
 
 // Only payment claims and durable proposals resume through reconciliation.

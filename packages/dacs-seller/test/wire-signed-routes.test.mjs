@@ -1448,7 +1448,7 @@ test('host wire restart after publication retains the reserving row and attempt'
   assert.equal(w.journalFiles().filter(name => /^o-.*-0$/.test(name)).length, 1); assert.equal(w.agent.calls.proposals, 0);
   w.reopen(); assert.equal((await job.post()).body.error, 'seller_effect_pending'); w.state.time += JOURNAL_LEASE_MS;
   assert.equal((await job.post()).status, 200);
-  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving', 'refused', 'recover']);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving', 'recover'], 'the expired pending refusal is retired');
   assert.equal(w.agent.calls.proposals, 0); assert.equal(w.agent.calls.reconciled, 1);
 });
 
@@ -1483,13 +1483,15 @@ test('host wire lost response reuses the completed outcome after restart', async
   assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'completed']); assert.equal(w.agent.calls.proposals, 1);
 });
 
-test('host wire retained progress stays pending until lease recovery', async (t) => {
+test('host wire retained progress ends its attempt with no outcome and the next request reconciles', async (t) => {
   const w = await world(t), job = await proposeJob(w, 'accounting-progress');
   w.agent.retains = true; w.agent.answer = () => ({ disposition: 'waiting' });
-  assert.equal((await job.post()).body.disposition, 'waiting'); assert.equal((await job.post()).body.error, 'seller_effect_pending');
-  assert.equal(w.agent.calls.proposals, 1); assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'refused']);
-  assert.equal(w.journalFiles().some(name => name.endsWith('.done') || name.endsWith('.end')), false);
-  w.reopen(); w.state.time += JOURNAL_LEASE_MS; assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.reconciled, 1);
+  assert.equal((await job.post()).body.disposition, 'waiting');
+  assert.equal(w.agent.calls.proposals, 1); assert.deepEqual(accountingRows(w).map(row => row.state), ['new']);
+  assert.equal(w.journalFiles().some(name => name.endsWith('.done')), false);
+  assert.equal(w.journalFiles().filter(name => name.endsWith('.end')).length, 1, 'a clean end, not a lease to wait out');
+  w.reopen(); assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.reconciled, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'recover']);
 });
 
 test('host wire proven no-effect answer ends null without losing the charge', async (t) => {
@@ -1502,8 +1504,9 @@ test('host wire proven no-effect answer ends null without losing the charge', as
 
 test('host wire binding mismatches and pending polls are accounted', async (t) => {
   const w = await world(t), job = await proposeJob(w, 'accounting-polls');
-  w.agent.retains = true; w.agent.answer = () => ({ disposition: 'waiting' }); assert.equal((await job.post()).status, 200);
+  w.handle.finishFails = true; assert.equal((await job.post()).status, 503);
   assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  w.reopen(); // clears the cut: the link hook is shared by every world
   const other = await world(t), mismatch = await proposeJob(other, 'accounting-mismatch');
   const { reserveEffect, journalStore } = await import('../../../dist/wire/journal.js');
   reserveEffect(journalStore(other.handle.wire.journal), { seller: seller.claim, jobId: mismatch.jobId, path: PATHS.proposals,

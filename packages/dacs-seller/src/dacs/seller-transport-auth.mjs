@@ -235,7 +235,7 @@ const RECLAIMABLE_NONCES = `SELECT n.nonce FROM peer_nonces n LEFT JOIN peer_non
  * The one list of the records behind each reservation limit. The old reserve path and reservation accounting
  * count only these, so a record either path writes counts against both. Each source selects `job`, or a unit's
  * `buyer` and `at`; an owner source also selects the buyer, seller and Listing pin that hold the job.
- * Total records use the overlapping old nonce/retention counts plus every retained accounting row.
+ * Total records use the overlapping old nonce/retention counts plus the accounting rows that have not expired (see RETIRABLE_RESERVATION).
  */
 export const RESERVATION_LEDGER = Object.freeze({
   buyerUnits: Object.freeze(['SELECT buyer, created_at AS at FROM peer_nonce_retention', 'SELECT buyer, at FROM kit_reservations']),
@@ -312,6 +312,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // Agreement (no job row or tuple) and never leaves while a reservation references it.
   const holdJobWithin = (p, context) => run(`INSERT INTO kit_job_holds VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(jobId) DO UPDATE SET context = MAX(context, excluded.context)`, p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), context ? 1 : 0);
+  // An accounting row stops counting, and is deleted, once its request has expired (a request admitted at `at` is expired by
+  // `at` plus one transport lifetime, and the wire journal refuses its nonce key again). It is kept while it is `reserving`
+  // (a crash left it) and while it is the first non-refused row of its job and route, the witness of that route's one effect
+  // (`accountedSlotWithin`, `terminalStartWithin`). The one parameter is the cutoff time.
+  const reservationRetentionMs = Math.max(MAX_TRANSPORT_LIFETIME_MS, nonceWindowMs);
+  const RETIRABLE_RESERVATION = `at <= ? AND state <> 'reserving' AND (state = 'refused' OR EXISTS (SELECT 1 FROM kit_reservations w
+    WHERE w.jobId = kit_reservations.jobId AND w.route = kit_reservations.route AND w.state <> 'refused' AND w.key < kit_reservations.key))`;
+  const retireReservationsWithin = (time) => run(`DELETE FROM kit_reservations WHERE ${RETIRABLE_RESERVATION}`, time - reservationRetentionMs);
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
   transaction(() => {
@@ -338,7 +346,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       get(`SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES})`, time).n,
       get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
         OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES}))`, time, time - nonceWindowMs, time).n,
-    ) + get('SELECT COUNT(*) AS n FROM kit_reservations').n,
+    ) + get(`SELECT COUNT(*) AS n FROM kit_reservations WHERE NOT (${RETIRABLE_RESERVATION})`, time - reservationRetentionMs).n,
     buyerUnitsWithin: (buyer, time) => get(`SELECT COUNT(*) AS n FROM (${ledgerSources('buyerUnits').join(' UNION ALL ')})
       WHERE buyer = ? AND at > ?`, buyer, time - nonceWindowMs).n,
     jobHeldWithin: (jobId) => Boolean(get(`${ledgerJobs('jobs')} WHERE job = ?`, jobId)),
@@ -454,7 +462,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         return null;
   }
   const reservationAccounting = createReservationAccounting({
-    store: { get, run, transaction, ledger, holdJobWithin, keepJobWithin },
+    store: { get, run, transaction, ledger, holdJobWithin, keepJobWithin, retireReservationsWithin },
     now, limits: { maxRecords, maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow },
   });
   return {
@@ -641,6 +649,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           run('DELETE FROM peer_jobs WHERE job = ?', jobId);
         }
         reclaimNonces();
+        retireReservationsWithin(time);
         if (creates) db.exec(CONTEXT_ADMISSIONS);
         if (newJob) run('INSERT INTO peer_jobs VALUES (?, ?)', p.jobId, context);
         if (newJob && profileText !== null) run('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)', p.jobId, profileText, time);

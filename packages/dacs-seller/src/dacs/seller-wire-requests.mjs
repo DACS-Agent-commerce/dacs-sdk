@@ -209,9 +209,11 @@ export function wireAuthenticator(wire, agent, authentication) {
     const { effect } = owned(reservation);
     if (!Number.isSafeInteger(status) || status < 200 || status > 599) return refuse('peer_response_invalid');
     if (noEffect && retry) return refuse('peer_store_conflict');
-    // A retained nonterminal answer and an uncertain error keep the lease open for reconciliation.
-    if (retry || (!noEffect && status >= 500)) return;
-    completeWireEffect(wire.journal, effect, noEffect ? null : { status, text });
+    // An uncertain error keeps the lease open: only the lease ends an attempt whose process may have died, and it spends one
+    // of the journal's crash attempts. A retained nonterminal answer is a normal answer, not a crash: it ends the attempt
+    // with no outcome, which spends none, so the next request recovers at once and the agent reconciles it by read-back.
+    if (!retry && !noEffect && status >= 500) return;
+    completeWireEffect(wire.journal, effect, retry || noEffect ? null : { status, text });
   };
   const store = Object.freeze({
     reserve: async (request) => {
