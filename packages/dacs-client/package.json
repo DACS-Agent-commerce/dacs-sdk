@@ -4,7 +4,8 @@
   "description": "Buyer purchase services, protocol readers and host integration seams for DACS clients.",
   "exports": {
     ".": "./src/index.mjs",
-    "./wallet/durable-journal": "./src/wallet/durable-journal.mjs"
+    "./wallet/durable-journal": "./src/wallet/durable-journal.mjs",
+    "./node-wallet": "./src/wallet/node-wallet-session.mjs"
   },
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
@@ -38,9 +39,11 @@
     "src/util/sqlite-statement-boundary.mjs", "src/util/sqlite-write-lease.mjs",
     "src/util/http.mjs", "src/util/ids.mjs",
     "src/util/immutable-readbacks.mjs", "src/util/purchase-readback-cache.mjs",
-    "src/util/text.mjs", "src/wallet/devnet-native-transport.mjs",
+    "src/util/text.mjs", "src/wallet/demos-quiet-hooks.mjs", "src/wallet/devnet-native-transport.mjs",
     "src/wallet/durable-journal.mjs", "src/wallet/effect-fence.mjs", "src/wallet/effect-history.mjs",
-    "src/wallet/holder-incarnation.mjs", "src/wallet/payload-helpers.mjs",
+    "src/wallet/holder-incarnation.mjs", "src/wallet/node-demos-loading.mjs",
+    "src/wallet/node-wallet-session.mjs", "src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "src/wallet/payload-helpers.mjs",
     "README.md", "LICENSE",
     "src/public-admission.mjs", "src/public-guidance.mjs", "src/public-verification.mjs"
   ],
@@ -56,6 +59,11 @@
   "homepage": "https://github.com/DACS-Agent-commerce/dacs-sdk/tree/main/packages/dacs-client#readme",
   "bugs": {
     "url": "https://github.com/DACS-Agent-commerce/dacs-sdk/issues"
+  },
+  "dependencies": {
+    "@kynesyslabs/dacs-node": "0.1.0-alpha.0",
+    "@kynesyslabs/demosdk": "^4.0.16",
+    "@scure/bip39": "2.2.0"
   },
   "peerDependencies": {
     "@kynesyslabs/dacs": "0.1.0-alpha.0"
