@@ -242,6 +242,10 @@ The chain reader gains `findTransferAtNonce(address, nonce, { limit, signal })`:
 
 `cancel` for a handed-off payment that is not native stays open until the payment's nonce slot is used, then reads that slot's transaction back and takes it as proof only when its canonical body reads confirmed (a failed or pending body leaves the purchase open); it ends the purchase as cancelled only with `DACS_NONCE_SLOT_PROOF=account` (default `off`, which keeps it open). The change is in `src/purchases.mjs` and `src/config.mjs`; `test/config-nonce-slot-proof.test.mjs` pins the setting, and `test/client/nonce-slot-cancel.test.ts` in the SDK tests the cancel.
 
+## D11 — Nonce-slot body must match its slot
+
+The read-back in `cancel` (`slotBodyAgrees` in `src/purchases.mjs`) also requires the canonical body's hash to equal the slot's hash, its payer (the account address, else the signer) to equal both the wallet and the observed payer, and its nonce to equal the slot's nonce. Any disagreement leaves the purchase `payment_uncertain` with the release answer. `test/client/nonce-slot-cancel.test.ts` covers a body with another hash, another payer and another nonce.
+
 ## WF — W-finish (W-FINISH §5)
 
 Client commits that move the buyer client onto the new wire and its public API use the id `WF`, with subjects `delta(client): WF <PR id> <summary>`. The earlier D-ids keep their original scope.
