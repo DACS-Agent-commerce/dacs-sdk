@@ -5,8 +5,9 @@ import {spawnSync} from 'node:child_process';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {identityBundleHash} from '@kynesyslabs/dacs';
-import {world,T,JOBS} from './helpers/d5-http-fixture.mjs';
+import {canonicalize,identityBundleHash} from '@kynesyslabs/dacs';
+import DatabaseSync from 'better-sqlite3';
+import {world,T,JOBS,exchange,presentContext} from './helpers/d5-http-fixture.mjs';
 const {createSellerTransportClientAuth,SELLER_CONTEXT_PATH,sellerContextScopeHash}=await import('../src/dacs/seller-transport-auth.mjs');
 const {proposalTimeProblem}=await import('../src/dacs/seller-proposal-time.mjs');
 
@@ -58,6 +59,60 @@ for (const config of [{maxNoncesPerBuyerPerWindow:1},{maxRecords:1}]) test(`know
  const result=await exchange(w.handler,await w.wire());
  assert.equal(JSON.parse(result.text).error,config.maxRecords?'peer_store_capacity':'peer_buyer_nonce_limit');
  assert.equal(w.effects().writes,1);
+});
+
+async function retainedWithoutChallenge(t) {
+ const w=await world(t,{maxNoncesPerBuyerPerWindow:1,recover:presentContext}),body=JSON.parse((await w.wire()).text),text=canonicalize(body);
+ const authentication=createSellerTransportClientAuth({buyerSigner:w.buyer,seller:w.seller.claim,resolveJob:()=>({listingPin:w.pin,agreementHash:sellerContextScopeHash(body.scope)}),now:w.now});
+ const first={text,...await authentication.request(SELLER_CONTEXT_PATH,body,text)};
+ assert.equal((await exchange(w.handler,first)).status,200);
+ const retry={text,...await authentication.request(SELLER_CONTEXT_PATH,body,text)},request=w.auth.readRequest(retry.header);
+ assert.equal(retry.text,first.text,'the retry sends exactly the retained body bytes');
+ const db=new DatabaseSync(w.path);
+ try { db.prepare('DELETE FROM kit_challenges WHERE nonce = ?').run(body.buyerIdentityBundle.sessionNonce); }
+ finally { db.close(); }
+ assert.equal(w.store.challenges.retained(body.buyerIdentityBundle.sessionNonce),null);
+ assert.throws(()=>w.store.classify(request,body),{code:'peer_buyer_nonce_limit'});
+ return {w,retry,body,request,authentication};
+}
+
+test('retained bytes without a challenge keep the nonce refusal and never report unwritten',async t=>{
+ const {w,retry,body,authentication}=await retainedWithoutChallenge(t),before=w.effects();
+ const {createSellerContextClient}=await import('../src/dacs/seller-context-route.mjs');
+ const {createSellerAgentClient}=await import('../src/dacs/seller-http.mjs');
+ let response;
+ const http=createSellerAgentClient({url:'http://127.0.0.1:1',authentication,fetchImpl:async(url,options)=>{
+  assert.equal(options.body,retry.text);
+  response=await exchange(w.handler,{text:options.body,headers:options.headers,url:new URL(url).pathname});
+  return new Response(response.text,{status:response.status,headers:response.headers});
+ }});
+ const client=createSellerContextClient({clientFor:()=>http});
+ const operation={state:{protocol:{sellerContextRequest:{scope:body.scope,buyerBundle:body.buyerIdentityBundle}}}};
+ const answer=await client.resolveBuyer(body,{operation});
+ assert.notEqual(JSON.parse(response.text).error,'context_challenge_mismatch');
+ assert.equal(response.status,429);assert.equal(JSON.parse(response.text).error,'peer_buyer_nonce_limit');
+ assert.equal(answer.disposition,'indeterminate');assert.equal(Object.hasOwn(answer,'written'),false);
+ assert.deepEqual(w.effects(),before,'no second hold, provider call or journal mutation');
+});
+
+test('retained bytes without a challenge keep the nonce refusal on rejected bodies',async t=>{
+ const {w,body,request}=await retainedWithoutChallenge(t),before=w.effects();
+ assert.throws(()=>w.route.onRejectedBody(request,body,w.store),{code:'peer_buyer_nonce_limit'});
+ assert.deepEqual(w.effects(),before);
+});
+
+for(const missingChallenge of [false,true])test(`unknown bytes at the nonce limit remain refused, missing challenge=${missingChallenge}`,async t=>{
+ const w=await world(t,{maxNoncesPerBuyerPerWindow:1});
+ assert.equal((await exchange(w.handler,await w.wire())).status,200);
+ const input=await w.wire({jobId:JOBS[1]}),body=JSON.parse(input.text);
+ if(missingChallenge){
+  const db=new DatabaseSync(w.path);
+  try { db.prepare('DELETE FROM kit_challenges WHERE nonce = ?').run(body.buyerIdentityBundle.sessionNonce); }
+  finally { db.close(); }
+ }
+ const before=w.effects(),response=await exchange(w.handler,input);
+ assert.equal(response.status,429);assert.equal(JSON.parse(response.text).error,'peer_buyer_nonce_limit');
+ assert.equal(w.store.contextAdmission(JOBS[1]),null);assert.deepEqual(w.effects(),before);
 });
 
 test('cached present start authenticates retained records before replay',async t=>{
