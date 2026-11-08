@@ -6395,6 +6395,17 @@
           "after": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
         }
       ]
+    },
+    {
+      "delta": "D23",
+      "subject": "delta(client): D23 add executable tests for the completion readiness inspector",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-readiness.test.mjs",
+          "before": null,
+          "after": "20dddc4fc681b0e2aac6c9e0a59da9f7b5734b3a"
+        }
+      ]
     }
   ]
 }
