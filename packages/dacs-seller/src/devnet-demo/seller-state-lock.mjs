@@ -32,6 +32,10 @@ const exactRecord = (value) => plainObject(value, FIELDS) && value.format === FO
   && Number.isSafeInteger(value.acquiredAt) && value.acquiredAt >= 0 && exactNamespace(value.namespace);
 const lockRecord = (at) => ({ format: FORMAT, host: hostname(), process: PROCESS_LEASE_ID, pid: process.pid,
   namespace: PROCESS_NAMESPACE && { ns: PROCESS_NAMESPACE.ns, boot: PROCESS_NAMESPACE.boot, start: PROCESS_NAMESPACE.start }, acquiredAt: at });
+function acquiredAtOrThrow(at) {
+  if (!Number.isSafeInteger(at) || at < 0) throw new TypeError(`seller state lock clock must return a non-negative safe integer, got ${String(at)}`);
+  return at;
+}
 
 // 'held' while the lock's holder runs (this process included), 'exited' when
 // its lease on this directory proves it gone on this host and boot, and
@@ -121,12 +125,14 @@ function takeOver(directory, path, text) {
  * gone. Returns `{ path, release() }`; release() is synchronous and idempotent,
  * removes the lock only while it is still this one, and throws if the lock
  * can't be removed or the directory can't be synced; after a throw, calling it
- * again retries. This process's lease is kept until it exits.
+ * again retries. This process's lease is kept until it exits. Throws a
+ * TypeError, before anything in `directory` is touched, when `now()` does not
+ * return a non-negative safe integer (the lock's own check would not read it back).
  */
 export async function acquireSellerStateLock(directory, { now = Date.now } = {}) {
+  const text = `${JSON.stringify(lockRecord(acquiredAtOrThrow(now())))}\n`;
   takeLease(directory);
   const canonical = realpathSync(directory), path = join(canonical, SELLER_STATE_LOCK_FILE);
-  const text = `${JSON.stringify(lockRecord(now()))}\n`;
   // A lock that vanishes between the failed link and its read was just
   // released: one fresh attempt follows.
   for (let attempt = 0; attempt < 2; attempt++) {

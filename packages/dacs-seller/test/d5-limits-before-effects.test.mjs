@@ -1,3 +1,4 @@
+import { admitFixtureFor, attemptChallenge } from './helpers/challenge-api.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {generateKeyPairSync,randomBytes,sign} from 'node:crypto';
@@ -41,12 +42,12 @@ test('B2 global unpaid-start limit covers different buyers before all effects, i
  const w=await world(t,{limits:{maxStartsPerHour:1,maxStartsPerBuyerPerHour:5}});assert.equal((await exchange(w.handler,await w.wire())).status,200);const before=w.effects();
  const refused=await exchange(w.handler,await w.wire({actor:w.other,jobId:JOBS[1]}));assert.equal(JSON.parse(refused.text).error,'unpaid_start_limit');assert.deepEqual(effectState(w.effects()),effectState(before));
  const reopened=createSellerTransportStore({path:w.path});t.after(()=>reopened.close());const input=await w.wire({actor:w.other,jobId:JOBS[1],fresh:true});const request=w.auth.readRequest(input.header),body=JSON.parse(input.text);
- await assert.rejects(w.route.reserve(request,body,reopened),{code:'unpaid_start_limit'});
- assert.throws(()=>reopened.attemptContextPresentation(request,body),{code:'context_challenge_consumed'});assert.deepEqual(effectState(w.effects()),effectState(before));
+ await assert.rejects(w.route.reserve(request,body,reopened),{code:'context_challenge_failed',cause:'unpaid_start_limit'});
+ assert.throws(()=>attemptChallenge(reopened,request,body),{code:'context_challenge_failed'});assert.deepEqual(effectState(w.effects()),effectState(before));
 });
 test('B3 accepted start at the exact one-hour boundary is outside the rolling count; one millisecond before is still inside',async t=>{
  const w=await world(t);await exchange(w.handler,await w.wire());w.advance(3599999);const before=w.effects();assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,409);assert.deepEqual(effectState(w.effects()),effectState(before));
- w.advance(1);assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,200);assert.equal(w.effects().writes,2);assert.deepEqual(SELLER_CONTEXT_LIMITS,{maxStartsPerBuyerPerHour:5,maxStartsPerHour:12});
+ w.advance(1);assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[2]}))).status,200);assert.equal(w.effects().writes,2);assert.deepEqual(SELLER_CONTEXT_LIMITS,{maxStartsPerBuyerPerHour:5,maxStartsPerHour:12});
 });
 test('B4 retries use the durable answer and cannot reserve or execute another write',async t=>{
  const w=await world(t,{recover:presentContext});const input=await w.wire(),first=await exchange(w.handler,input),before=w.effects();
@@ -62,9 +63,9 @@ test('B6 journal capacity refuses before a policy hold or provider write',async 
 });
 test('B7 invalid identity, multiple claims, fractional and stale time refuse before all effects',async t=>{
  const w=await world(t);let offset=0;for(const alter of [b=>{b.buyerIdentityBundle.bundleVersion='2'},b=>{b.buyerIdentityBundle.claims.push({ref:w.other.claim});b.buyerIdentityBundle.presentation.signatures.push({ref:w.other.claim,signature:Buffer.alloc(64).toString('base64url')})},b=>{b.scope.sellerRequirement={requirementVersion:'1',required:[{scheme:'key',verificationRequired:false}]}},b=>{b.scope.generatedAt+=0.5},b=>{b.scope.generatedAt-=600001}]){
-  w.advance(++offset);const input=await w.wire({alter}),before=w.effects(),out=await exchange(w.handler,input);assert.equal(out.status,409,out.text);assert.deepEqual(effectState(w.effects()),effectState(before));
+  w.advance(++offset);const input=await w.wire({jobId:'0'+sha256Hex('TEST invalid bundle '+offset).slice(0,25).toUpperCase(),alter}),before=w.effects(),out=await exchange(w.handler,input);assert.equal(out.status,409,out.text);assert.deepEqual(effectState(w.effects()),effectState(before));
  }
- w.advance(1);assert.equal((await exchange(w.handler,await w.wire({alter:b=>{b.scope.generatedAt-=600000}}))).status,200,'the inclusive freshness boundary remains valid with its own issued challenge');
+ w.advance(1);assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[3],alter:b=>{b.scope.generatedAt-=600000}}))).status,200,'the inclusive freshness boundary remains valid with its own issued challenge');
 });
 test('B8 malformed, absent and oversized authentication leaves the journal and provider untouched',async t=>{
  const w=await world(t);for(const header of [undefined,'bad','a'.repeat(4097)]){const before=w.effects(),out=await exchange(w.handler,{text:'{}',header});assert.equal(out.status,401);assert.deepEqual(effectState(w.effects()),effectState(before));}
@@ -94,7 +95,9 @@ test('B13 start-limit rejection commits only the required anti-replay consumptio
  t.after(()=>{DatabaseSync.prototype.prepare=originalPrepare;DatabaseSync.prototype.exec=originalExec});
  const w=await world(t);await exchange(w.handler,await w.wire());const input=await w.wire({jobId:JOBS[1]}),before=w.effects();watch=true;
  const response=await exchange(w.handler,input);watch=false;
- assert.equal(response.status,409);assert.equal(mutations.filter(sql=>sql.startsWith('DELETE FROM peer_nonce')).length,2,'both nonce tables are reclaimed before insertion');assert.deepEqual(mutations.filter(sql=>!sql.startsWith('DELETE FROM peer_nonce')),['UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', 'INSERT INTO peer_nonces VALUES (?, ?, ?, ?, ?)', 'INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)'],'challenge consumption and the definite refusal nonce commit together');assert.deepEqual(effectState(w.effects()),effectState(before));
+ assert.equal(response.status,409);assert.equal(mutations.length,2);
+ assert.ok(mutations.every(sql=>sql.startsWith('UPDATE kit_challenges SET state =')),'only the owned attempt and failure commit');
+ assert.deepEqual(effectState(w.effects()),effectState(before));
 });
 test('B14 an uncertain context effect is read back without a second hold or provider write',async t=>{
  const w=await world(t,{perform:async()=>{throw new Error('unknown fixture outcome')}});const first=await exchange(w.handler,await w.wire());assert.equal(first.status,503);const before=w.effects();
@@ -124,7 +127,7 @@ function nonceCount(w){return w.effects().counts.peer_nonces;}
 test('B38 correctly signed malformed job IDs are refused at challenge, context, proposal and payment boundaries without effects',async t=>{
  const w=await world(t),input=await w.wire(),original=JSON.parse(input.text);
  const template=JSON.parse(Buffer.from(input.header,'base64url').toString()).payload;
- const snapshot=()=>{const db=new DatabaseSync(w.path,{readonly:true});try{return db.prepare('SELECT * FROM peer_context_challenges ORDER BY nonce').all()}finally{db.close()}};
+ const snapshot=()=>{const db=new DatabaseSync(w.path,{readonly:true});try{return db.prepare('SELECT * FROM kit_challenges ORDER BY nonce').all()}finally{db.close()}};
  for(const jobId of [JOBS[0].toLowerCase(),JOBS[0].replace('0','O'),JOBS[0].slice(1),'8'+JOBS[0].slice(1),'job-0',null,7]){
   for(const url of [SELLER_CONTEXT_CHALLENGE_PATH,SELLER_CONTEXT_PATH,'/dacs/v1/agreements/proposals','/dacs/v1/payments']){
    const body=url.startsWith(SELLER_CONTEXT_PATH)?{scope:{...original.scope,jobId},...(url===SELLER_CONTEXT_PATH?{buyerIdentityBundle:original.buyerIdentityBundle}:{})}
@@ -187,7 +190,7 @@ test('B41 a canonical cross-job body still consumes its recognized presentation 
  const signature=w.buyer.sign(Buffer.from('dacs-chatgpt-plugin:loopback-seller-peer:v1:'+canonicalize(payload))).toString('base64url');
  const header=Buffer.from(canonicalize({payload,signature})).toString('base64url');
  assert.equal(JSON.parse((await exchange(w.handler,{text,header})).text).error,'context_challenge_mismatch');
- assert.equal(JSON.parse((await exchange(w.handler,input)).text).error,'context_challenge_consumed');assert.equal(w.effects().writes,0);
+ assert.equal(JSON.parse((await exchange(w.handler,input)).text).error,'context_challenge_failed');assert.equal(w.effects().writes,0);
 });
 
 test('B42 malformed body jobs in a canonical signed envelope refuse without consuming a challenge or starting work',async t=>{
@@ -198,7 +201,7 @@ test('B42 malformed body jobs in a canonical signed envelope refuse without cons
   const signature=w.buyer.sign(Buffer.from('dacs-chatgpt-plugin:loopback-seller-peer:v1:'+canonicalize(payload))).toString('base64url');
   const header=Buffer.from(canonicalize({payload,signature})).toString('base64url'),before=w.effects();
   const out=await exchange(w.handler,{text,header});assert.equal(JSON.parse(out.text).error,'peer_job_invalid');assert.deepEqual(effectState(w.effects()),effectState(before));
-  const db=new DatabaseSync(w.path,{readonly:true});try{assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce=?').get(body.buyerIdentityBundle.sessionNonce).attempted,0);}finally{db.close();}
+  const db=new DatabaseSync(w.path,{readonly:true});try{assert.equal(db.prepare('SELECT state <> \'issued\' AS attempted FROM kit_challenges WHERE nonce=?').get(body.buyerIdentityBundle.sessionNonce).attempted,0);}finally{db.close();}
  }
  assert.equal((await exchange(w.handler,input)).status,200);
 });
@@ -231,7 +234,7 @@ test('B18 completed expired nonces free capacity after restart while old effect 
  // Request expiry does not end the retained nonce's full rate window.
  await assert.rejects(w.route.reserve(w.auth.readRequest(early.header),JSON.parse(early.text),reopened),{code:'peer_store_capacity'});
  w.advance(nonceWindowMs-requestLifetimeMs);
- const input=await w.wire({actor:w.other,jobId:JOBS[1]}),request=w.auth.readRequest(input.header),body=JSON.parse(input.text);
+ const input=await w.wire({actor:w.other,jobId:JOBS[2]}),request=w.auth.readRequest(input.header),body=JSON.parse(input.text);
  const reservation=await w.route.reserve(request,body,reopened);assert.equal(reservation.disposition,'perform');reopened.finish(reservation,200,'{}');
  assert.equal(nonceCount(w),1);assert.equal(w.effects().counts.peer_effects,2);
  w.advance(nonceWindowMs+1);
@@ -244,7 +247,7 @@ test('B19 new nonce rows are bounded per buyer before journaling, and expire out
  const input=await w.wire({jobId:JOBS[1]}),before=w.effects(),refused=await exchange(w.handler,input);
  assert.equal(JSON.parse(refused.text).error,'peer_buyer_nonce_limit');assert.deepEqual(effectState(w.effects()),effectState(before));
  assert.equal((await exchange(w.handler,await w.wire({actor:w.other,jobId:JOBS[2]}))).status,200);
- w.advance(60000);assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[1]}))).status,200);
+ w.advance(60000);assert.equal((await exchange(w.handler,await w.wire({jobId:JOBS[3]}))).status,200);
 });
 test('B20 a successful unsigned-cut resume uses one remaining-write hold and the same admission',async t=>{
  let calls=0;const w=await world(t,{perform:async body=>{if(++calls===1)throw new Error('unsigned shutdown cut');return presentContext(body)},recover:async body=>calls>1?presentContext(body):null,resumable:async()=>({writes:1})});
@@ -268,7 +271,7 @@ test('B22 missing, buyer-chosen, mismatched, expired and cross-job presentations
   if(mode==='missing')delete body.buyerIdentityBundle.sessionNonce;
   if(mode==='chosen')body.buyerIdentityBundle.sessionNonce='f'.repeat(64);
   if(mode==='scope')body.scope.generatedAt++;
-  if(mode==='expired')w.advance(60000);
+  if(mode==='expired')w.advance(600000);
   if(mode==='job')body.scope.jobId=JOBS[1];
   const before=w.effects(),out=await exchange(w.handler,await signed(w,present(w,body)));
   assert.equal(out.status,409,mode+out.text);assert.match(JSON.parse(out.text).error,/context_challenge_/);assert.deepEqual(effectState(w.effects()),effectState(before));
@@ -278,7 +281,7 @@ test('B23 challenge is consumed on a failed proof attempt, retained across resta
  const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),bad=structuredClone(body);bad.buyerIdentityBundle.presentation.signatures[0].signature=Buffer.alloc(64).toString('base64url');
  assert.equal(JSON.parse((await exchange(w.handler,await signed(w,bad))).text).error,'buyer_bundle_unauthenticated');
  const reopened=createSellerTransportStore({path:w.path,now:w.now});t.after(()=>reopened.close());
- assert.throws(()=>reopened.attemptContextPresentation(w.auth.readRequest(input.header),body),{code:'context_challenge_consumed'});
+ assert.throws(()=>attemptChallenge(reopened,w.auth.readRequest(input.header),body),{code:'context_challenge_consumed'});
  assert.equal(JSON.parse((await exchange(w.handler,input)).text).error,'context_challenge_consumed');assert.equal(w.effects().writes,0);
 });
 test('B24 authenticated challenge issuance is bounded before journal effects and returns seller-generated entropy',async t=>{
@@ -298,12 +301,12 @@ test('B26 legacy completed nonces keep the maximum request lifetime before recla
  const db=new DatabaseSync(w.path);db.exec('DELETE FROM peer_nonce_retention');db.close();
  const reopened=createSellerTransportStore({path:w.path,maxRecords:1,maxJobs:10000,maxContextRecords:10000,now:w.now});t.after(()=>reopened.close());
  let input=await w.wire({actor:w.other,jobId:JOBS[1]});await assert.rejects(w.route.reserve(w.auth.readRequest(input.header),JSON.parse(input.text),reopened),{code:'peer_store_capacity'});
- w.advance(60000);input=await w.wire({actor:w.other,jobId:JOBS[1]});assert.equal((await w.route.reserve(w.auth.readRequest(input.header),JSON.parse(input.text),reopened)).disposition,'perform');assert.equal(nonceCount(w),1);
+ w.advance(60000);input=await w.wire({actor:w.other,jobId:JOBS[2]});assert.equal((await w.route.reserve(w.auth.readRequest(input.header),JSON.parse(input.text),reopened)).disposition,'perform');assert.equal(nonceCount(w),1);
 });
 test('B27 a mismatched attempt consumes its issued challenge and cannot probe it again',async t=>{
  const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),bad=structuredClone(body);bad.scope.generatedAt++;
  assert.equal(JSON.parse((await exchange(w.handler,await signed(w,bad))).text).error,'context_challenge_mismatch');
- assert.equal(JSON.parse((await exchange(w.handler,input)).text).error,'context_challenge_consumed');assert.equal(w.effects().writes,0);
+ assert.equal(JSON.parse((await exchange(w.handler,input)).text).error,'context_challenge_failed');assert.equal(w.effects().writes,0);
 });
 test('B28 over-limit challenge issuance performs no SQL mutation and holds no policy capacity',async t=>{
  const w=await world(t);await exchange(w.handler,await w.wire());const first=JSON.parse((await w.wire()).text),body={scope:{...sellerContextChallengeScope(first.scope),jobId:JOBS[1]}};
@@ -318,7 +321,7 @@ test('B29 a journal reservation conflict creates no policy hold',async t=>{
  const {createSellerContextAdmission,parsePolicyLedger}=await import('../src/devnet-demo/operator-approval.mjs');
  const evidencePath=join(tmpdir(),'d5-race-'+randomBytes(16).toString('hex')+'.jsonl');t.after(()=>rm(evidencePath,{force:true}));
  const policy=createSellerContextAdmission({evidencePath,sellerApproval:{mode:'policy'},now:w.now});
- const route=createSellerContextRoute({listing:w.listing,resolveBuyer:()=>assert.fail('provider ran'),assertBuyerAccess:()=>{},admitWrites:policy.reserve,releaseWrites:policy.release,writable:()=>true,recover:async()=>null,now:w.now});
+ const route=createSellerContextRoute({admitPresentation:admitFixtureFor(w.listing),listing:w.listing,resolveBuyer:()=>assert.fail('provider ran'),assertBuyerAccess:()=>{},admitWrites:policy.reserve,releaseWrites:policy.release,writable:()=>true,recover:async()=>null,now:w.now});
  w.store.reserve=(...args)=>{if(!args[2]?.dryRun)throw new Error('fixture capacity changed after dry check');return original.apply(w.store,args)};
  await assert.rejects(route.reserve(request,body,w.store),/capacity changed/);
  await assert.rejects(readFile(evidencePath,'utf8'),{code:'ENOENT'});assert.equal(w.effects().writes,0);assert.equal(w.effects().counts.peer_effects,0);
@@ -341,7 +344,7 @@ test('B31 the context client preserves a definite non-pass decision and attribut
 
 test('B32 another buyer consumes the issued challenge before mismatch refusal',async t=>{
  const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),nonce=body.buyerIdentityBundle.sessionNonce;
- assert.throws(()=>w.store.attemptContextPresentation({jobId:JOBS[1],buyer:w.other.claim},{scope:body.scope,buyerIdentityBundle:{sessionNonce:nonce}}),{code:'context_challenge_mismatch'});
+ assert.throws(()=>attemptChallenge(w.store,{jobId:JOBS[1],buyer:w.other.claim},{scope:body.scope,buyerIdentityBundle:{sessionNonce:nonce}}),{code:'context_challenge_mismatch'});
  const replay=await exchange(w.handler,input);assert.equal(replay.status,409);assert.equal(JSON.parse(replay.text).error,'context_challenge_consumed');
 });
 test('B33 every malformed challenge value is a definite refusal before policy or journal effects',async t=>{
@@ -381,8 +384,8 @@ test('B36 total context capacity consumes an attempted presentation but refuses 
  assert.equal(result.status,503);assert.equal(JSON.parse(result.text).error,'peer_context_capacity');
  assert.deepEqual(effectState(w.effects()),effectState(before));
  const body=JSON.parse(next.text),db=new DatabaseSync(w.path,{readonly:true});
- try{assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce = ?').get(body.buyerIdentityBundle.sessionNonce).attempted,1);}finally{db.close();}
- const scope=sellerContextChallengeScope({...body.scope,generatedAt:w.now()});
+ try{assert.equal(db.prepare('SELECT state <> \'issued\' AS attempted FROM kit_challenges WHERE nonce = ?').get(body.buyerIdentityBundle.sessionNonce).attempted,1);}finally{db.close();}
+ const scope=sellerContextChallengeScope({...body.scope,jobId:JOBS[2],generatedAt:w.now()});
  const challengeBody={scope},challengeText=JSON.stringify(challengeBody);
  const challengeClient=createSellerTransportClientAuth({buyerSigner:w.other,seller:w.seller.claim,resolveJob:()=>({listingPin:w.pin,agreementHash:sellerContextScopeHash(scope)}),now:w.now});
  const challenge=await challengeClient.request(SELLER_CONTEXT_CHALLENGE_PATH,challengeBody,challengeText);
@@ -395,8 +398,8 @@ test('B37 an authenticated malformed context consumes its recognized nonce befor
  const w=await world(t),input=await w.wire(),body=JSON.parse(input.text),nonce=body.buyerIdentityBundle.sessionNonce;
  body.unexpected=true;
  const response=await exchange(w.handler,await signed(w,body));assert.equal(response.status,409);
- const db=new DatabaseSync(w.path,{readonly:true});try{assert.equal(db.prepare('SELECT attempted FROM peer_context_challenges WHERE nonce=?').get(nonce).attempted,1);}finally{db.close();}
- const replay=await exchange(w.handler,input);assert.equal(replay.status,409);assert.equal(JSON.parse(replay.text).error,'context_challenge_consumed');
+ const db=new DatabaseSync(w.path,{readonly:true});try{assert.equal(db.prepare('SELECT state <> \'issued\' AS attempted FROM kit_challenges WHERE nonce=?').get(nonce).attempted,1);}finally{db.close();}
+ const replay=await exchange(w.handler,input);assert.equal(replay.status,409);assert.equal(JSON.parse(replay.text).error,'context_challenge_failed');
 });
 
 
