@@ -32,6 +32,8 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // by any record takes no second slot.
   function checkLimitsWithin(payload, contextStart, at) {
     if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
+    if ((!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) ||
+        (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords)) store.retireSlotsWithin(at);
     if (!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) fail('peer_job_capacity', 503);
     if (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords) {
       fail('peer_context_capacity', 503);
@@ -73,6 +75,10 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     const contextStart = route === SELLER_CONTEXT_PATH;
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
+    if (ledger.retiredReplayWithin(payload, operationId)) { checkJobWithin(payload, keepProfile); return false; }
+    if (get('SELECT 1 FROM kit_job_holds h JOIN kit_slot_retirements r ON r.job = h.jobId WHERE h.jobId = ? AND r.job_retired = 1', payload.jobId)) {
+      checkJobWithin(payload, keepProfile); fail('context_session_terminal', 409);
+    }
     checkLimitsWithin(payload, contextStart, at);
     const purchased = checkJobWithin(payload, keepProfile);
     checkRouteWithin(payload, operationId);
@@ -87,6 +93,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     // The context step carries its scope hash in the agreementHash slot, so the job's first purchase request,
     // not the context start, writes its job row and tuple.
     if (!purchased && !contextStart) store.keepJobWithin(payload, keepProfile, at);
+    return true;
   }
 
   // Compare-and-swap on the inserted revision: a slower or repeated path cannot overwrite a newer result.
@@ -135,15 +142,15 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       const input = admittedInput(options);
       const { checked, payload } = input;
       const key = sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
-      transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
+      const charged = transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
       let effect;
       try { effect = await checked.reserve(); }
       catch (error) {
-        if (isDefiniteRefusal(error)) saveRefusal(key, error);
+        if (charged && isDefiniteRefusal(error)) saveRefusal(key, error);
         throw error;
       }
       if (!RESULTS.has(effect?.state)) fail('wire_input_invalid', 500);
-      saveResult(key, effect.state);
+      if (charged) saveResult(key, effect.state);
       return effect;
     },
   };

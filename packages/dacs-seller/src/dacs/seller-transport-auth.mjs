@@ -361,7 +361,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   if (admissions()) db.exec(CONTEXT_EFFECT_INDEX);
   // RESERVATION_LEDGER's sources in this store: the context admission table exists only once a first admission commits.
   const activeK1 = (job, slot) => `SELECT 1 FROM kit_context_admissions k WHERE k.jobId = ${job} AND k.state <> 'aborted' AND NOT EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = k.jobId AND r.${slot}_retired = 1)`;
+  const activeHold = job => `SELECT 1 FROM kit_job_holds h WHERE h.jobId = ${job} AND NOT EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = h.jobId AND r.job_retired = 1)`;
   const ledgerSources = (kind) => RESERVATION_LEDGER[kind].filter(sql => admissions() || !sql.includes('peer_context_admissions')).map(sql =>
+    kind !== 'owners' && sql.includes('kit_job_holds') ? `${sql}${sql.includes('WHERE') ? ' AND' : ' WHERE'} EXISTS (${activeHold('kit_job_holds.jobId')})` :
     kind !== 'owners' && sql.includes('kit_context_admissions') ? `${sql} WHERE EXISTS (${activeK1('kit_context_admissions.jobId', kind === 'jobs' ? 'job' : 'context')})` : sql);
   const ledgerJobs = (kind) => `SELECT job FROM (${ledgerSources(kind).join(' UNION ')})`;
   // Whether the wire's own record holds the request's operation under this request's binding: any attempt, whatever its
@@ -399,6 +401,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // With no reader, no record or another binding, the request is refused.
     terminalStartWithin: (p, operationId) => (p.path === PROPOSAL || p.path === CONTEXT) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId })) &&
       !(get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state IN ('new', 'recover', 'completed', 'reserving')", p.jobId, operationId) && wireHoldsWithin(p)),
+    retiredReplayWithin: (p, operationId) => {
+      if (READ_ROUTES.has(p.path) || !get('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1', p.jobId)) return false;
+      // A completed row is durable proof; checked.reserve still verifies the request's binding before replay.
+      if (get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state = 'completed'", p.jobId, operationId)) return true;
+      const view = wireOperationView({ seller: p.seller, jobId: p.jobId, path: p.path });
+      return view?.state === 'completed' && view.binding === wireOperationBinding(p);
+    },
     // A mutating route has one effect per job. An accounted reservation holds it unless the wire definitely refused it
     // (a definite refusal is no effect); a `reserving` row left by a crash holds it too.
     accountedSlotWithin: (jobId, route) => !READ_ROUTES.has(route) &&
@@ -423,16 +432,16 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       ${jobId === undefined ? '' : 'j.job = ? AND '}
       NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.job = j.job)
       AND NOT EXISTS (SELECT 1 FROM peer_transactions t WHERE t.job = j.job)
-      AND NOT EXISTS (SELECT 1 FROM kit_job_holds h WHERE h.jobId = j.job)
+      AND NOT EXISTS (${activeHold('j.job')})
       AND NOT EXISTS (${activeK1('j.job', 'job')})
       AND NOT EXISTS (SELECT 1 FROM peer_slots s WHERE s.slot >= j.job || ':' AND s.slot < j.job || ';')
       ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job)' : ''}
       LIMIT ?`).all(...(jobId === undefined ? [] : [jobId]), needed).map(row => row.job);
     if (time === undefined || jobs.length === needed) return jobs;
     // Complete terminal jobs, admission-only ones included, retire only after every nonce and context retention window.
-    // Accounted holds remain; active K1 holders fence reclamation.
+    // Active accounted holds and K1 holders fence reclamation.
     for (const { job } of db.prepare(`SELECT job FROM (SELECT job FROM peer_jobs${admissions() ? ' UNION SELECT job FROM peer_context_admissions' : ''}) j
-      WHERE NOT EXISTS (SELECT 1 FROM kit_job_holds h WHERE h.jobId = j.job)
+      WHERE NOT EXISTS (${activeHold('j.job')})
       AND NOT EXISTS (${activeK1('j.job', 'job')}) AND NOT EXISTS (
       SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = j.job
       AND (e.state IS NULL OR e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n
@@ -455,7 +464,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     const rows = [];
     for (const row of db.prepare(`SELECT a.job, a.effect FROM peer_context_admissions a
       JOIN peer_effects e ON e.effect = a.effect WHERE a.admitted_at <= ? AND e.state = 'complete'
-      AND NOT EXISTS (SELECT 1 FROM kit_job_holds h WHERE h.jobId = a.job)
+      AND NOT EXISTS (${activeHold('a.job')})
       AND NOT EXISTS (${activeK1('a.job', 'context')})
       AND NOT EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
         WHERE n.effect = a.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))`).iterate(time - CHALLENGE_RATE_WINDOW_MS, time, time - nonceWindowMs)) {
@@ -467,8 +476,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   function retireSlotsWithin(time, jobId) {
     if (!db.inTransaction) throw new TypeError('slot retirement needs the store transaction');
     if (!uint(time)) fail('peer_clock_invalid', 503); if (jobId !== undefined) requireJobId(jobId);
-    for (const { job } of db.prepare(`SELECT jobId AS job FROM kit_context_admissions WHERE state = 'settled' AND admittedAt <= ?${jobId === undefined ? '' : ' AND jobId = ?'}`).all(time - CHALLENGE_RATE_WINDOW_MS, ...(jobId === undefined ? [] : [jobId]))) {
-      if (get('SELECT 1 FROM kit_job_holds WHERE jobId = ?', job) ||
+    for (const { job } of db.prepare(`SELECT job FROM (SELECT jobId AS job FROM kit_context_admissions WHERE state = 'settled' AND admittedAt <= ? UNION SELECT jobId AS job FROM kit_job_holds) candidates
+      WHERE NOT EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = candidates.job AND r.job_retired = 1 AND r.context_retired = 1)${jobId === undefined ? '' : ' AND job = ?'}`).all(time - CHALLENGE_RATE_WINDOW_MS, ...(jobId === undefined ? [] : [jobId]))) {
+      if (get("SELECT 1 FROM kit_context_admissions WHERE jobId = ? AND (state NOT IN ('settled', 'aborted') OR admittedAt > ?)", job, time - CHALLENGE_RATE_WINDOW_MS) ||
+          get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND (state NOT IN ('new', 'recover', 'completed', 'refused') OR at > ? OR (route = ? AND at > ?))", job, time - nonceWindowMs, CONTEXT, time - CHALLENGE_RATE_WINDOW_MS) ||
+          db.prepare("SELECT route FROM kit_reservations WHERE jobId = ? GROUP BY route HAVING MAX(state = 'completed') = 0").all(job).some(({ route }) => {
+            if (READ_ROUTES.has(route)) return false;
+            try { return !['none', 'ended', 'completed'].includes(wireOperationView({ jobId: job, seller: get('SELECT seller FROM kit_job_holds WHERE jobId = ?', job).seller, path: route })?.state); } catch { return true; }
+          }) ||
           get("SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = ? AND e.state IS NULL", job) ||
           get("SELECT 1 FROM peer_effects e LEFT JOIN peer_effect_jobs m ON m.effect = e.effect WHERE m.effect IS NULL OR (m.job = ? AND (e.state <> 'complete' OR EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce WHERE n.effect = e.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))))", job, time, time - nonceWindowMs) ||
           (admissions() && get('SELECT 1 FROM peer_context_admissions WHERE job = ? AND admitted_at > ?', job, time - CHALLENGE_RATE_WINDOW_MS)) || !terminalForReclamation(job)) continue;
@@ -526,7 +541,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // Profiles retain purchase identity without holding an execution slot.
   const retainedJobs = () => ledgerJobs('jobs');
   const reservationAccounting = createReservationAccounting({
-    store: { get, run, transaction, ledger: reservationLedger, holdJobWithin, keepJobWithin },
+    store: { get, run, transaction, ledger: reservationLedger, holdJobWithin, keepJobWithin, retireSlotsWithin },
     now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow },
     contextRecords: contextRecords ?? (() => admissionCounts().contextRecords),
   });
