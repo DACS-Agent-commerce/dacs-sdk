@@ -6703,6 +6703,52 @@
           "after": "c0e9061d13141e783f3fdb484b97f66f9b45253c"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee",
+          "after": "89db1bf53f2e62853119805060587931c6b7078f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "1d687234da2ff434291fcea67c4488d8e6614f4d",
+          "after": "04faef5ff305e1763bfe712d51c396fedd2a7fb3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6",
+          "after": "88f40ad0f47ef2f5e11435175c265e01e7140d19"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a",
+          "after": "ff9732c9168110cae498ead2048d51b36ddbbf9a"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "42a1d94960ea6b671d6ed387007bd899a2b4e33b",
+          "after": "b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0e9061d13141e783f3fdb484b97f66f9b45253c",
+          "after": "96968641ddf503280b35d21fc0b0708a51783cb2"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49",
+          "after": "15e7ac95a7940b8712e966a83885505142afd796"
+        },
+        {
+          "path": "packages/dacs-client/test/public-api.test.mjs",
+          "before": "7cf6b00589e4818b4fbd876ab327421a6e90cfba",
+          "after": "3ff282a68f7e0551135e6a663a718f8eb655dade"
+        }
+      ]
     }
   ]
 }

@@ -308,7 +308,7 @@ test("node-wallet subpath exports exactly its reviewed names; the root import lo
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
  const api=await import('../src/wallet/node-wallet-session.mjs');
  assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource',
-   'createHeldTransportFacade','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport',
+   'createHeldTransportFacade','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks',
    'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
    'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());
 });

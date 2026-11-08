@@ -62,6 +62,9 @@ const sellerReservations = new WeakMap();
 
 const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
 
+/** Removes dead holders' lock rows from a client durable journal, given the host's state-ownership proof; see `signer-reservation.mjs`. */
+export { releaseAbandonedJournalLocks } from './signer-reservation.mjs';
+
 /** Capability identity checks (return a boolean, never throw) and the transport's profile and publication constants, re-exported so a kit imports one source. */
 export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTransport,
   DEVNET_AGREEMENT_PROFILE, DEVNET_AGREEMENT_KIND, DEVNET_AGREEMENT_SOURCE, DEVNET_SETTLEMENT_KIND, DEVNET_SETTLEMENT_POLICY,
@@ -492,7 +495,10 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
  * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}` and the required
  * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed). A confirmation by another sender, or of a Listing CREATE,
  * is answered `true` without calling it; every other seller confirmation calls it once, and `false` or a throw (kept as `cause`) refuses `approval_required`.
- * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value or the transport's own refusal of the publications.
+ * Also requires `stateOwnership` `{directory, held()}`, the host's proof that it holds the state lock for the directory containing `journal`. Before it
+ * returns, the composition removes the lock rows of dead holders from `journal` and reconciles every incomplete signer reservation.
+ * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value, the transport's own refusal of the publications,
+ * and `state_ownership_required` (cause kept when the proof itself failed) without a valid proof.
  */
 export function createNodeSellerComposition(options = {}) {
   return buildNodeComposition(options, true);
@@ -502,12 +508,13 @@ async function buildNodeComposition(options, seller) {
   const key = options?.key;
   let keyCopy, transport, session, sellerAddress;
   try {
-    const { owner, journal, approve, approveConfirmedWrite, publications, qualify, clock = { now: () => Date.now() } } = checkConstruction(options).options;
+    const { owner, journal, approve, approveConfirmedWrite, publications, qualify, stateOwnership, clock = { now: () => Date.now() } } = checkConstruction(options).options;
     const admission = { ...options.admission };
     if (seller && approveConfirmedWrite !== null && typeof approveConfirmedWrite !== 'function') throw new TypeError('approveConfirmedWrite must be a function or an explicit null');
     if (!(key instanceof Uint8Array)) fail('invalid_mnemonic');
     keyCopy = Uint8Array.from(key);
     if (qualify !== undefined && (!seller || typeof qualify !== 'function')) fail('invalid_params');
+    if (seller && typeof stateOwnership?.held !== 'function') fail('state_ownership_required');
     const { Demos, validateMnemonic } = await loadNodeDemos();
     const expected = readExpectedPins(admission.binding, owner);
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
@@ -540,10 +547,12 @@ async function buildNodeComposition(options, seller) {
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
+    const reservations = seller ? createSignerReservations({ journal, pins: expected, clock }) : null;
+    await reservations?.recover({ stateOwnership });
     const composition = Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass,
       ...(seller ? { transport: createHeldTransportFacade({ admission, transport }), observer: createNodeObserver({ owner, clock }) } : {}),
       async close() { session.lock(); await transport.close(); } });
-    if (seller) sellerReservations.set(composition, createSignerReservations({ journal, pins: expected, clock }));
+    if (seller) sellerReservations.set(composition, reservations);
     return composition;
   } catch (error) {
     try { session?.lock(); await transport?.close(); } catch { /* the construction error is the one to report */ }

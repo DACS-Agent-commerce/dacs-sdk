@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "23d3605d04801af15f912e94eb38395d095fada5"
+        "blob": "dfcb98ae59157098254067a1547d1bcbfc3f3e90"
       },
       "DELTA-LEDGER.json": {
-        "blob": "210bb546a9ebc43fb491d9431fc8cb2520ffc2f5"
+        "blob": "0c22bb4a2938e3a2a771a9c3be7762597117b35a"
       },
       "DELTA-MAP.md": {
-        "blob": "a9cf12b2c134e42cd943931ff647fed14e9e40fb"
+        "blob": "7190d840847f5cacdebdbfd8ee875a1519ca0936"
       },
       "DELTA-NOTES.md": {
-        "blob": "81515adfb979a4874d12f1daa8d404617cfca3f8"
+        "blob": "e8aaa2de6e537e1d0333cc1d16f36a0186a103a9"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "e6126744507344a3cc0b5f26c2453bf38b246066"
+        "blob": "6e49734e0397125752209c8b9852e30febb94af6"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "11677dc8939aa7ea7d14bc322bc38ac110856148"
+        "blob": "9ac4ef1f07a5cc3601e2d2a2c08008ffbc456116"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1316,13 +1316,13 @@
         "blob": "6d8aa004f8deb5b1e4065b9f32e4a5a2005afef1"
       },
       "src/wallet/node-wallet-session.mjs": {
-        "blob": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee"
+        "blob": "89db1bf53f2e62853119805060587931c6b7078f"
       },
       "src/wallet/payload-helpers.mjs": {
         "blob": "da675e96a7be6ded896e44d2449b3660f1ab90eb"
       },
       "src/wallet/signer-reservation.mjs": {
-        "blob": "1d687234da2ff434291fcea67c4488d8e6614f4d"
+        "blob": "04faef5ff305e1763bfe712d51c396fedd2a7fb3"
       },
       "test/bound-terms-mismatch.test.mjs": {
         "blob": "065eeb0112947f2736a21250173b49ecac6e0393"
@@ -1724,10 +1724,10 @@
         "blob": "89ba803c1185baf801572b7bc86efbb0d3cb439f"
       },
       "test/helpers/signer-reservation-child.mjs": {
-        "blob": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6"
+        "blob": "88f40ad0f47ef2f5e11435175c265e01e7140d19"
       },
       "test/helpers/signer-reservation-world.mjs": {
-        "blob": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a"
+        "blob": "ff9732c9168110cae498ead2048d51b36ddbbf9a"
       },
       "test/helpers/source-demo-delivery-context.mjs": {
         "blob": "af55ec94a37734d03db8c1d6d9c1330dc49d3065"
@@ -1760,7 +1760,7 @@
         "blob": "f0228e036f7f82a8087caf1c5883419ee18c8491"
       },
       "test/helpers/tp1-node-fixture.mjs": {
-        "blob": "42a1d94960ea6b671d6ed387007bd899a2b4e33b"
+        "blob": "b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4"
       },
       "test/helpers/wallet-extension-probe-dom.mjs": {
         "blob": "82ed93b9e4d001302b7fc8ea6e57b5ee5c04467c"
@@ -1805,7 +1805,7 @@
         "blob": "539d876bf79510f9d3bf9e09d99737131a43fdc1"
       },
       "test/node-signer-reservation.test.mjs": {
-        "blob": "c0e9061d13141e783f3fdb484b97f66f9b45253c"
+        "blob": "96968641ddf503280b35d21fc0b0708a51783cb2"
       },
       "test/node-wallet-authority-token.test.mjs": {
         "blob": "59ec4a406d02df29293034d44d466202fd68dde1"
@@ -1838,7 +1838,7 @@
         "blob": "026f7fffb6ac5e064067f5352eb021788490322c"
       },
       "test/node-wallet-seller-parts.test.mjs": {
-        "blob": "d3bf2b1e65c8736ccd0c09fe42c1e5c11b0bce49"
+        "blob": "15e7ac95a7940b8712e966a83885505142afd796"
       },
       "test/node-wallet-session.test.mjs": {
         "blob": "9cdd17e0eceae6b901b2c075823c6dce714496c9"
@@ -1868,7 +1868,7 @@
         "blob": "f83e3553639f67784ef7eb8c68a902ba2aa543a6"
       },
       "test/public-api.test.mjs": {
-        "blob": "7cf6b00589e4818b4fbd876ab327421a6e90cfba"
+        "blob": "3ff282a68f7e0551135e6a663a718f8eb655dade"
       },
       "test/public-composition.test.mjs": {
         "blob": "a1a3b50c91d405fc00d7a92fc7ff75de650d1a32"

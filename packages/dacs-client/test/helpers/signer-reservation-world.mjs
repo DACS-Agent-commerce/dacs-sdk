@@ -14,7 +14,23 @@ export const ownershipKey = `devnet/signer-reservation/${JSON.stringify([pins.ne
 export const dispatchKey = id => `devnet/signer-reservation-dispatch/${id}`;
 export const transactionKey = hash => `devnet/signer-reservation-tx/${hash}`;
 export const args = (operationKey = 'TEST-evidence-a', attemptId = 'TEST-attempt-a') => ({ signer, operation: 'payment-evidence', operationKey, attemptId, readChainNonce: async () => 0 });
-export const options = journal => ({ journal, pins, clock: { now: () => T0 } });
+export const options = (journal, overrides = {}) => ({ journal, pins, clock: { now: () => T0 }, ...overrides });
+/** Recording settlement double: idempotent by ledger id, refuses a conflicting outcome, and can fail its first call at a barrier. */
+export function recordingSettlements({ failFirst = false } = {}) {
+  const calls = [], effects = new Map();
+  let failed = false;
+  async function settleApproval(ledgerId, outcome, reason) {
+    calls.push({ ledgerId, outcome, reason });
+    if (failFirst && !failed) { failed = true; throw new Error('TEST-settlement-barrier'); }
+    if (effects.has(ledgerId) && effects.get(ledgerId) !== outcome) throw new Error('TEST-conflicting-outcome');
+    effects.set(ledgerId, outcome);
+  }
+  return { settleApproval, calls, effects };
+}
+/** Ownership-proof double: the test controls held(). */
+export const ownership = (directory, held = true) => ({ directory, held: () => held });
+/** An authenticated execution observation of the bound bytes, as the owning lane's reader reports it. */
+export const executed = (transaction = signed()) => ({ status: 'executed', authenticated: true, txHash: transaction.txHash, projectionText: transaction.projectionText });
 export const open = (path, mode = 'open', limits = {}) => openDurableWalletJournal({ path, mode, lockTimeoutMs: 0, ...limits });
 /** A signed projection whose hash, signer, nonce and signature shape satisfy the reservation's own validation. */
 export function signed(nonce = 1) {
