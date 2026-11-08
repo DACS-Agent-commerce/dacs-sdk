@@ -1093,6 +1093,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | WF | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/wallet/effect-fence.mjs:1` | 4919d146fb62f67705ae52f4fb553e165a9dfebe |
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | b6402003588457f0340179859466e374237f7fd6 |
+| WF | delta(client): WF P16a1a record the merged package-contents blob after carrying base/main up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | b28b9292f54c3a9d28e5dbc56f144fc33a395303 |
 
 ## Complete commit and file inventory
 
@@ -3440,6 +3442,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/src/wallet/effect-fence.mjs:1` |
 | delta(client): WF P16a1a keep a falsy work rejection a failure in the actor fence | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| delta(client): WF P16a1a record the merged package-contents blob after carrying base/main up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P16a1a record the merged package-contents blob after carrying base/main up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P16a1a record the merged package-contents blob after carrying base/main up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P16a1a record the merged package-contents blob after carrying base/main up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P16a1a record the merged package-contents blob after carrying base/main up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
