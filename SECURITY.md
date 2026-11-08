@@ -18,7 +18,8 @@ The live Demos, x402 and EVM integrations are optional peers:
 `@x402/evm`, `@x402/fetch` and `viem`), each marked optional in
 `peerDependenciesMeta`, so npm does not install them. They are development
 dependencies here for build and test coverage. Code reached from the package
-root loads them lazily and throws a clear install message when one is missing.
+root loads them lazily on first use, so a missing peer fails when that code
+runs, not when the package is imported.
 The `./substrate` subpath imports `@kynesyslabs/demosdk` directly, so importing
 that subpath needs the peer installed. An application
 that enables a live adapter installs those peers itself and should audit its
@@ -36,8 +37,8 @@ own tree under the policy below.
   match regardless of severity; both services must fail before the gate fails
   closed as unavailable. It never falls back to the retired quick audit endpoint.
 - **Transitive** criticals/highs are assessed for reachability, not blocked on
-  severity alone; each assessment is recorded in
-  `scripts/registry-container-audit-baseline.json`.
+  severity alone; each assessment is added to
+  `scripts/registry-container-audit-baseline.json`, which lists none today.
 - **Registry/container consumer acceptance** audits the generated consumer's
   current production dependencies (`npm audit --omit=dev`) by advisory ID against
   `scripts/registry-container-audit-baseline.json`. On non-enforcing pull requests,

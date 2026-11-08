@@ -77,7 +77,7 @@ export function faultCategory(err: unknown): FaultCategory {
 export class NotImplementedError extends DacsError {
   constructor(feature: string, taskRef?: string) {
     super(
-      `Not implemented in MVP scaffold: ${feature}` +
+      `Not implemented: ${feature}` +
         (taskRef ? ` (planned: ${taskRef})` : ""),
     );
     this.name = "NotImplementedError";
