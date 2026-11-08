@@ -121,7 +121,7 @@ export function createDevnetSettlementTransport(options) { return constructTrans
 export function createDevnetDeliveryTransport(options) { return constructTransport(options,true,true,true); }
 export function createDevnetDemoTransport(options) { return constructTransport(options,true,true,true,true); }
 function constructTransport({ expected, transportOwner, journal, fallback = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
-  fetchImpl = globalThis.fetch, now = () => Date.now(), timeoutMs = 10000,
+  fetchImpl = globalThis.fetch, now = () => Date.now(), monotonicNow = () => performance.now(), timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, approveConfirmedWrite = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
   if (!transportOwner || typeof transportOwner.getContext !== 'function' || typeof transportOwner.acquireConnectionFence !== 'function') throw new TypeError('actual transport-owner context and connection fencing are required');
@@ -871,8 +871,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           return answer;
         });
         if (accepted?.result === 200) {
-          const started=now(),deadline=started+inclusionWaitMs;
-          for (let polls = Math.ceil(inclusionWaitMs / inclusionPollMs); !closed && polls > 0 && now()<deadline; polls--) {
+          const started=now(),deadline=monotonicNow()+inclusionWaitMs;
+          for (let polls = Math.ceil(inclusionWaitMs / inclusionPollMs); !closed && polls > 0 && monotonicNow()<deadline; polls--) {
             let status;
             try {
               if (!sameContext(await context(),l.fence.context)) break;
@@ -897,7 +897,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
               } catch { /* accepted hash remains readback-only if proof is unavailable */ }
               break;
             }
-            const remaining=deadline-now();
+            const remaining=deadline-monotonicNow();
             if(remaining>0)await sleep(Math.min(inclusionPollMs,remaining));
           }
         }

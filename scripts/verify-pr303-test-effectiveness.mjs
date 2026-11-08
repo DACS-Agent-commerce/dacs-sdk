@@ -507,7 +507,7 @@ async function repositoryTargets() {
   ])));
 }
 
-const started = Date.now();
+const started = performance.now();
 const vitestCli = join(repoRoot, "node_modules", "vitest", "vitest.mjs");
 if (!existsSync(vitestCli)) throw new Error(`installed Vitest CLI is missing: ${vitestCli}`);
 const vitestManifest = JSON.parse(
@@ -530,7 +530,7 @@ try {
   }
   const baselinePassed = baselines.every((item) => item.status === "passed");
   for (const definition of MUTANTS) {
-    if (!baselinePassed || Date.now() - started > TOTAL_BUDGET_MS) {
+    if (!baselinePassed || performance.now() - started > TOTAL_BUDGET_MS) {
       mutants.push({ id: definition.id, contract: definition.contract, status: "not-run",
         restored: true });
       continue;
@@ -551,7 +551,7 @@ const report = {
   repositoryTargets: { sha256: before, unchanged },
   baselines,
   mutants,
-  durationMs: Date.now() - started,
+  durationMs: performance.now() - started,
   passed: unchanged &&
     baselines.every((item) => item.status === "passed") &&
     mutants.every((item) => item.status === "killed" && item.restored === true),

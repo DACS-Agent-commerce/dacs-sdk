@@ -100,7 +100,7 @@ async function loadMountEntries(): Promise<readonly MountEntry[]> {
 }
 
 async function filesystemType(path: string, label: string): Promise<string> {
-  const now = Date.now();
+  const now = performance.now();
   if (mountEntriesCache === undefined || mountEntriesCache.expiresAt <= now) {
     mountEntriesCache = {
       expiresAt: now + 1_000,

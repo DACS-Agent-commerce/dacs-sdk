@@ -11,7 +11,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 const MAX_IMMUTABLE_READBACK_ENTRIES = 10_000;
 export const IMMUTABLE_READBACK_TTL_MS = 60000;
 
-export function createImmutableReadbacks({ limit = 256, ttlMs = IMMUTABLE_READBACK_TTL_MS, now = () => Date.now() } = {}) {
+export function createImmutableReadbacks({ limit = 256, ttlMs = IMMUTABLE_READBACK_TTL_MS, now = () => Date.now(), monotonicNow = () => performance.now() } = {}) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_IMMUTABLE_READBACK_ENTRIES) throw new TypeError('immutable readback limit must be an integer from 1 to 10000');
   if (!Number.isSafeInteger(ttlMs) || ttlMs < 1) throw new TypeError('immutable readback reuse needs a positive TTL');
   const entries = new Map();
@@ -20,14 +20,14 @@ export function createImmutableReadbacks({ limit = 256, ttlMs = IMMUTABLE_READBA
     get(input) {
       const id = key(input), entry = entries.get(id);
       if (!entry) return null;
-      if (now() - entry.at >= ttlMs) { entries.delete(id); return null; }
+      if (monotonicNow() - entry.monotonicAt >= ttlMs) { entries.delete(id); return null; }
       return structuredClone(entry.value);
     },
     put(input, value) {
       const id = key(input);
       entries.delete(id);
       if (entries.size >= limit) entries.delete(entries.keys().next().value);
-      entries.set(id, { value: structuredClone(value), at: now() });
+      entries.set(id, { value: structuredClone(value), at: now(), monotonicAt: monotonicNow() });
     },
     delete(input) { entries.delete(key(input)); },
   };

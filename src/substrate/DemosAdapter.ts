@@ -270,6 +270,7 @@ type MutableReceipt = Omit<AnchorAttemptReceipt, "attempts" | "timings"> & {
 };
 
 interface AnchorContext {
+  monotonicStartedAt: number;
   deadline: number;
   pollMs: number;
   signal?: AbortSignal;
@@ -534,16 +535,17 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   private snapshot(
-    receipt: MutableReceipt,
+    ctx: AnchorContext,
     finishedAt = Date.now(),
   ): AnchorAttemptReceipt {
+    const receipt = ctx.receipt;
     return {
       ...receipt,
       attempts: { ...receipt.attempts },
       timings: {
         ...receipt.timings,
         finishedAt,
-        elapsedMs: Math.max(0, finishedAt - receipt.timings.startedAt),
+        elapsedMs: Math.max(0, performance.now() - ctx.monotonicStartedAt),
       },
     };
   }
@@ -552,7 +554,7 @@ export class DemosAdapter implements SubstrateAdapter {
     ctx: AnchorContext,
     finishedAt = Date.now(),
   ): AnchorReceipt {
-    const receipt = this.snapshot(ctx.receipt, finishedAt);
+    const receipt = this.snapshot(ctx, finishedAt);
     if (!receipt.address) {
       throw this.fail(
         ctx,
@@ -575,7 +577,7 @@ export class DemosAdapter implements SubstrateAdapter {
   private emit(ctx: AnchorContext): void {
     if (!ctx.onProgress) return;
     try {
-      ctx.onProgress(this.snapshot(ctx.receipt));
+      ctx.onProgress(this.snapshot(ctx));
     } catch {
       // Observability must never alter transaction execution.
     }
@@ -587,13 +589,13 @@ export class DemosAdapter implements SubstrateAdapter {
     message: string,
     cause?: unknown,
   ): AnchorWaitError {
-    return new AnchorWaitError(code, message, this.snapshot(ctx.receipt), {
+    return new AnchorWaitError(code, message, this.snapshot(ctx), {
       cause,
     });
   }
 
   private remaining(ctx: AnchorContext): number {
-    return Math.max(0, ctx.deadline - Date.now());
+    return Math.max(0, ctx.deadline - performance.now());
   }
 
   /**
@@ -669,8 +671,10 @@ export class DemosAdapter implements SubstrateAdapter {
     opts?: AnchorWaitOptions,
   ): AnchorContext {
     const startedAt = Date.now();
+    const monotonicStartedAt = performance.now();
     return {
-      deadline: startedAt + timeoutMs,
+      monotonicStartedAt,
+      deadline: monotonicStartedAt + timeoutMs,
       pollMs,
       signal: opts?.signal,
       onProgress: opts?.onProgress,
@@ -688,7 +692,8 @@ export class DemosAdapter implements SubstrateAdapter {
     pollMs: number,
   ): AnchorContext {
     return {
-      deadline: Date.now() + AMBIGUOUS_WRITE_RECOVERY_MS,
+      monotonicStartedAt: performance.now() - (receipt.timings.elapsedMs ?? 0),
+      deadline: performance.now() + AMBIGUOUS_WRITE_RECOVERY_MS,
       pollMs,
       receipt: {
         name: receipt.name,
@@ -2339,7 +2344,7 @@ export class DemosAdapter implements SubstrateAdapter {
     if (highestCanonicalNonce === undefined) return;
     const ctx = this.newContext(
       `wallet-nonce:${lease.key.wallet}`,
-      Math.max(1, deadline - Date.now()),
+      Math.max(1, deadline - performance.now()),
       pollMs,
       signal === undefined ? undefined : { signal },
     );
@@ -2414,7 +2419,7 @@ export class DemosAdapter implements SubstrateAdapter {
     if (lease.key.chainIdentity !== await this.resolveChainIdentity()) {
       throw new DacsError("Demos wallet journal belongs to another chain");
     }
-    const deadline = Date.now() + timeoutMs;
+    const deadline = performance.now() + timeoutMs;
     const pollMs = options.pollMs ?? DEFAULT_ANCHOR_POLL_MS;
     const contextOptions = options.signal === undefined
       ? undefined
@@ -2429,7 +2434,7 @@ export class DemosAdapter implements SubstrateAdapter {
         }
         const ctx = this.newContext(
           retained.logicalName,
-          Math.max(1, deadline - Date.now()),
+          Math.max(1, deadline - performance.now()),
           pollMs,
           contextOptions,
         );
@@ -2458,7 +2463,7 @@ export class DemosAdapter implements SubstrateAdapter {
       }
       const ctx = this.newContext(
         retained.logicalName,
-        Math.max(1, deadline - Date.now()),
+        Math.max(1, deadline - performance.now()),
         pollMs,
         contextOptions,
       );
@@ -2617,7 +2622,7 @@ export class DemosAdapter implements SubstrateAdapter {
     try {
       await this.reconcileWalletJournal(
         lease,
-        Math.max(1, current.deadline - Date.now()),
+        Math.max(1, current.deadline - performance.now()),
         {
           pollMs: current.pollMs,
           signal: current.signal,
@@ -2648,7 +2653,7 @@ export class DemosAdapter implements SubstrateAdapter {
   ): Promise<void> {
     const controller = new AbortController();
     const recovery = this.recoveryContext(
-      this.snapshot(ctx.receipt),
+      this.snapshot(ctx),
       ctx.pollMs,
     );
     recovery.signal = controller.signal;
@@ -2913,7 +2918,7 @@ export class DemosAdapter implements SubstrateAdapter {
                   key,
                   preBroadcastTxRef,
                   signedNonce,
-                  this.snapshot(ctx.receipt),
+                  this.snapshot(ctx),
                   ctx.pollMs,
                 ),
         };
@@ -2928,7 +2933,7 @@ export class DemosAdapter implements SubstrateAdapter {
             key,
             preBroadcastTxRef,
             signedNonce,
-            this.snapshot(ctx.receipt),
+            this.snapshot(ctx),
             ctx.pollMs,
             true,
           ),
@@ -3010,7 +3015,7 @@ export class DemosAdapter implements SubstrateAdapter {
           key,
           preBroadcastTxRef,
           signedNonce,
-          this.snapshot(ctx.receipt),
+          this.snapshot(ctx),
           ctx.pollMs,
         ),
       };
@@ -3036,7 +3041,7 @@ export class DemosAdapter implements SubstrateAdapter {
                 key,
                 txRef,
                 signedNonce,
-                this.snapshot(ctx.receipt),
+                this.snapshot(ctx),
                 ctx.pollMs,
               )
             : Promise.resolve(),
@@ -3058,7 +3063,7 @@ export class DemosAdapter implements SubstrateAdapter {
           key,
           txRef,
           signedNonce,
-          this.snapshot(ctx.receipt),
+          this.snapshot(ctx),
           ctx.pollMs,
         ),
       };
@@ -3095,7 +3100,7 @@ export class DemosAdapter implements SubstrateAdapter {
           key,
           txRef,
           signedNonce,
-          this.snapshot(ctx.receipt),
+          this.snapshot(ctx),
           ctx.pollMs,
         ),
       };
@@ -3110,7 +3115,7 @@ export class DemosAdapter implements SubstrateAdapter {
           key,
           txRef,
           signedNonce,
-          this.snapshot(ctx.receipt),
+          this.snapshot(ctx),
           ctx.pollMs,
           true,
         ),
@@ -3332,7 +3337,7 @@ export class DemosAdapter implements SubstrateAdapter {
         if (error instanceof DacsError) throw error;
         lastState = error instanceof Error ? error.message : String(error);
       }
-      if (Date.now() >= ctx.deadline) {
+      if (performance.now() >= ctx.deadline) {
         throw this.fail(
           ctx,
           cause.code,
@@ -3724,7 +3729,7 @@ export class DemosAdapter implements SubstrateAdapter {
         key,
         txRef,
         signedNonce,
-        this.snapshot(ctx.receipt),
+        this.snapshot(ctx),
         pollMs,
         false,
         ctx.deadline,

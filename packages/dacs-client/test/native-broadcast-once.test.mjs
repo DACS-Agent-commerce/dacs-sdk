@@ -57,7 +57,7 @@ function testNode() {
 }
 
 // inclusionWaitMs 0 never polls; a positive wait polls once per ms with no real sleep.
-async function world(t,{inclusionWaitMs=0}={}) {
+async function world(t,{inclusionWaitMs=0,authPause=()=>new Promise(resolve=>setTimeout(resolve,2)),...clockOptions}={}) {
  const dir=mkdtempSync(join(tmpdir(),'native-broadcast-once-')),path=join(dir,'journal.sqlite');
  const node=testNode(),calls=[],approvals=[];
  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
@@ -67,7 +67,7 @@ async function world(t,{inclusionWaitMs=0}={}) {
  let stamp=Date.now()+60000;
  const sdkAuth=()=>{const identity=`ed25519:${address}`,timestamp=String(stamp++);return {identity,timestamp,signature:signText(sha(`${identity}:${timestamp}`))};};
  let journal=openDurableWalletJournal({path,mode:'create'}),transport;
- const start=()=>{transport=createDevnetNativeTransport({expected:PINS,journal,fetchImpl:node.fetch,inclusionWaitMs,inclusionPollMs:1,sleep:async()=>{},
+ const start=()=>{transport=createDevnetNativeTransport({expected:PINS,journal,fetchImpl:node.fetch,inclusionWaitMs,inclusionPollMs:1,sleep:async()=>{},...clockOptions,
   transportOwner:{getContext:()=>({...CONTEXT}),acquireConnectionFence:()=>({context:{...CONTEXT},release(){}})}});};
  start();
  // The same-origin binding relay the wallet posts to. The wallet stamps its
@@ -77,7 +77,7 @@ async function world(t,{inclusionWaitMs=0}={}) {
  globalThis.location=new URL(ORIGIN+'/');
  globalThis.fetch=async(url,init)=>{
   assert.equal(new URL(url).pathname,DEVNET_NATIVE_BINDING_PATH);
-  await new Promise(resolve=>setTimeout(resolve,2));
+  await authPause();
   try{return Response.json(await transport.walletBinding(JSON.parse(init.body),init.headers));}
   catch(error){return Response.json({error:error.code??'internal_error'},{status:409});}
  };
@@ -283,4 +283,15 @@ test('a node writeProof on a passed-through node read is dropped',async t=>{
  const read=await w.transport().rpc({method:'nodeCall',params:[{message:'getNetworkParameters',data:{}}]},{});
  assert.equal(read.result,200);assert.deepEqual(read.response,{networkFee:1,rpcFee:1,additionalFee:0});
  assert.equal(Object.hasOwn(read,'writeProof'),false);
+});
+
+for (const jump of [-1000, 1000]) test(`native inclusion wait ignores a ${jump} ms wall jump`, async t => {
+ let elapsed=0,wall=Date.now(),polls=0,stamp=0;
+ t.mock.method(Date,'now',()=>wall+stamp++);
+ const w=await world(t,{authPause:async()=>{},inclusionWaitMs:6,now:()=>wall,monotonicNow:()=>elapsed,
+  sleep:async ms=>{polls++;elapsed+=ms+1;wall+=jump;}});
+ w.node.status={state:'pending'};
+ await w.send();
+ assert.equal(elapsed,6);assert.equal(polls,3);
+ assert.equal(w.count('broadcast'),1);
 });
