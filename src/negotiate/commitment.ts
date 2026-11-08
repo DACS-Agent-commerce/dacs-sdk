@@ -64,8 +64,6 @@ import {
 
 export const FINALITY_COMMITMENT_SEPARATOR =
   "dacs-finality-commitment:v1:" as const satisfies DomainSeparator;
-export const LEGACY_COMMITMENT_SEPARATOR =
-  "dacs-commitment:v1:" as const satisfies DomainSeparator;
 
 export type CommitmentVerificationDisposition =
   | "valid"
@@ -74,7 +72,7 @@ export type CommitmentVerificationDisposition =
   | "error";
 
 export interface CommitmentSignatureVerificationInput {
-  purpose: "agreement" | "legacy-commitment" | "finality-commitment";
+  purpose: "agreement" | "finality-commitment";
   signedBytes: Uint8Array;
   algorithm: string;
   signer: string;
@@ -94,18 +92,9 @@ interface AnchoredCommitmentBase {
   anchorReceipt: AnchorReceipt;
 }
 
-export interface AnchoredFinalityCommitment extends AnchoredCommitmentBase {
-  legacySignature?: never;
-}
+export type AnchoredFinalityCommitment = AnchoredCommitmentBase;
 
-export interface AnchoredLegacyCommitment extends AnchoredCommitmentBase {
-  /** Historical external/carried DACS-3 v0.1-v0.3 commitment signature. */
-  legacySignature: ComponentSignature;
-}
-
-export type AnchoredAgreementCommitment =
-  | AnchoredFinalityCommitment
-  | AnchoredLegacyCommitment;
+export type AnchoredAgreementCommitment = AnchoredFinalityCommitment;
 
 export type FinalityCommitmentLookup =
   | { disposition: "present"; anchored: AnchoredAgreementCommitment }
@@ -173,9 +162,6 @@ export interface CommitRfqAgreementInput extends CommitAgreementInput {
   rfqSession: RfqSessionState;
 }
 
-export interface ReadLegacyFixedPriceAgreementCommitmentInput
-  extends CommitmentBindingInput {}
-
 interface FinalizedAgreementCommitmentBase {
   logicalAddress: string;
   nativeAddress: string;
@@ -193,17 +179,7 @@ export interface FinalizedFinalityAgreementCommitment
   record: FinalityCommitmentRecord;
 }
 
-export interface FinalizedLegacyAgreementCommitment
-  extends FinalizedAgreementCommitmentBase {
-  recordKind: "legacy";
-  record: CommitmentRecord;
-  legacySignature: ComponentSignature;
-  resumed: true;
-}
-
-export type FinalizedAgreementCommitment =
-  | FinalizedFinalityAgreementCommitment
-  | FinalizedLegacyAgreementCommitment;
+export type FinalizedAgreementCommitment = FinalizedFinalityAgreementCommitment;
 
 interface CapturedCommitmentInput {
   agreement: AgreementArtifact;
@@ -519,16 +495,6 @@ export function finalityCommitmentAddress(jobId: string): string {
   return `dacs3:commit:${requireCanonicalJobId(jobId, "commitment jobId")}`;
 }
 
-/** Frozen pre-ULID address grammar, used only by the explicit legacy reader. */
-function legacyCommitmentAddress(jobId: string): string {
-  if (typeof jobId !== "string" || jobId.length === 0 || jobId.includes(":")) {
-    throw new DacsError(
-      "legacy commitment jobId must be a non-empty delimiter-free value",
-    );
-  }
-  return `dacs3:commit:${jobId}`;
-}
-
 function expectedDeliverable(listing: Listing): Record<string, unknown> {
   const deliverable = listing.offering.deliverable;
   return {
@@ -669,7 +635,6 @@ function selectAgreementArtifact(
     "agreement" | "verifiedListing"
   >,
   pattern: SupportedCommitmentPattern,
-  options: { allowLegacyJobId?: boolean } = {},
 ): SelectedAgreementArtifact {
   const agreement = input.agreement;
   const verified = input.verifiedListing;
@@ -688,16 +653,11 @@ function selectAgreementArtifact(
       throw new DacsError(`unrecognized-pricing-kind: ${kind}`);
     }
   }
-  if (!options.allowLegacyJobId) {
-    // Validate the address-bearing discriminator before the broader artifact
-    // shape so a malformed/lowercase spelling cannot be hidden behind the
-    // generic agreement error and no resolver/verifier callback can run first.
-    requireCanonicalJobId(agreement.jobId, "agreement jobId");
-  }
-  const agreementIsReadable = options.allowLegacyJobId
-    ? isLegacyReadableAgreementArtifact(agreement)
-    : isAgreementArtifact(agreement);
-  if (!isListing(verified.listing) || !agreementIsReadable) {
+  // Validate the address-bearing discriminator before the broader artifact
+  // shape so a malformed/lowercase spelling cannot be hidden behind the
+  // generic agreement error and no resolver/verifier callback can run first.
+  requireCanonicalJobId(agreement.jobId, "agreement jobId");
+  if (!isListing(verified.listing) || !isAgreementArtifact(agreement)) {
     throw new DacsError(
       "commitment input has a non-normative Listing or agreement shape",
     );
@@ -744,9 +704,8 @@ function selectFixedPriceArtifact(
     CapturedCommitmentBindingInput,
     "agreement" | "verifiedListing"
   >,
-  options: { allowLegacyJobId?: boolean } = {},
 ): SelectedAgreementArtifact {
-  return selectAgreementArtifact(input, "fixed-price", options);
+  return selectAgreementArtifact(input, "fixed-price");
 }
 
 function selectRfqArtifact(
@@ -756,29 +715,6 @@ function selectRfqArtifact(
   >,
 ): SelectedAgreementArtifact {
   return selectAgreementArtifact(input, "rfq");
-}
-
-/**
- * Historical pre-ULID agreements differ from the current exact wire contract
- * only in the job identifier grammar. Validate every other byte/field through
- * the normative parser by substituting a canonical probe id; the original id
- * remains signed, session-bound, and used for the read-only legacy address.
- */
-function isLegacyReadableAgreementArtifact(
-  value: unknown,
-): value is AgreementArtifact {
-  if (
-    !isRecord(value) ||
-    typeof value.jobId !== "string" ||
-    value.jobId.length === 0 ||
-    value.jobId.includes(":")
-  ) {
-    return false;
-  }
-  return isAgreementArtifact({
-    ...value,
-    jobId: "00000000000000000000000000",
-  });
 }
 
 function validatePricingBinding(
@@ -1367,23 +1303,6 @@ async function verifyCommitmentSignature(
   });
 }
 
-async function verifyLegacyCommitmentSignature(
-  record: CommitmentRecord,
-  signature: ComponentSignature,
-  verifier: CommitmentSignatureVerifier,
-): Promise<void> {
-  await requireSignature(verifier, {
-    purpose: "legacy-commitment",
-    signedBytes: signedBytes(
-      LEGACY_COMMITMENT_SEPARATOR,
-      contentHash(record as unknown as Record<string, unknown>),
-    ),
-    algorithm: signature.algorithm,
-    signer: signature.signer,
-    value: signature.value,
-  });
-}
-
 function snapshotAnchored(
   value: unknown,
   label: string,
@@ -1400,34 +1319,18 @@ function snapshotAnchored(
   if (!isRecord(captured)) {
     throw new SubstrateError(`${label} returned a malformed anchor result`);
   }
-  const finalityEnvelope = hasExactKeys(captured, [
-    "record",
-    "nativeAddress",
-    "anchorTxRef",
-    "anchorReceipt",
-  ]);
-  const legacyEnvelope = hasExactKeys(captured, [
-    "record",
-    "nativeAddress",
-    "anchorTxRef",
-    "anchorReceipt",
-    "legacySignature",
-  ]);
   if (
-    (!finalityEnvelope && !legacyEnvelope) ||
+    !hasExactKeys(captured, [
+      "record",
+      "nativeAddress",
+      "anchorTxRef",
+      "anchorReceipt",
+    ]) ||
     !isRecord(captured.record) ||
     typeof captured.nativeAddress !== "string" ||
     captured.nativeAddress.length === 0 ||
     !isRecord(captured.anchorTxRef) ||
-    !isRecord(captured.anchorReceipt) ||
-    (legacyEnvelope &&
-      (!isComponentSignature(captured.legacySignature) ||
-        !isRecord(captured.legacySignature) ||
-        !hasExactKeys(captured.legacySignature, [
-          "algorithm",
-          "signer",
-          "value",
-        ])))
+    !isRecord(captured.anchorReceipt)
   ) {
     throw new SubstrateError(`${label} returned a malformed anchor result`);
   }
@@ -1609,46 +1512,12 @@ async function verifyAnchoredCommitment(
   },
 ): Promise<FinalizedAgreementCommitment> {
   const record = anchored.record;
-  const hasLegacyDiscriminator =
-    isRecord(record) &&
-    Object.prototype.hasOwnProperty.call(record, "dacsVersion");
-  const hasFinalityDiscriminator =
-    isRecord(record) &&
-    Object.prototype.hasOwnProperty.call(record, "finalityCommitmentVersion");
-  if (hasLegacyDiscriminator === hasFinalityDiscriminator) {
+  if (!isReadableFinalityCommitmentRecord(record)) {
     throw new DacsError(
-      "existing commitment has ambiguous or missing record discriminator (CA-9)",
+      "existing commitment is malformed or not a finality commitment (CA-9)",
     );
   }
-
-  let recordKind: "legacy" | "finality";
-  let commitmentRecord: AgreementCommitmentRecord;
-  let legacySignature: ComponentSignature | undefined;
-  if (hasLegacyDiscriminator) {
-    if (
-      !isCommitmentRecord(record) ||
-      !("legacySignature" in anchored) ||
-      !isComponentSignature(anchored.legacySignature)
-    ) {
-      throw new DacsError(
-        "existing legacy commitment or its carried signature is malformed (CA-9)",
-      );
-    }
-    recordKind = "legacy";
-    commitmentRecord = record;
-    legacySignature = anchored.legacySignature;
-  } else {
-    if (
-      !isReadableFinalityCommitmentRecord(record) ||
-      "legacySignature" in anchored
-    ) {
-      throw new DacsError(
-        "existing finality commitment is malformed or discriminator-ambiguous (CA-9)",
-      );
-    }
-    recordKind = "finality";
-    commitmentRecord = record;
-  }
+  const commitmentRecord: FinalityCommitmentRecord = record;
 
   if (!recordMatchesBinding(commitmentRecord, input, binding)) {
     throw new DacsError(
@@ -1657,35 +1526,20 @@ async function verifyAnchoredCommitment(
   }
   if (
     options.submittedCanonical !== undefined &&
-    (recordKind !== "finality" ||
-      canonicalize(commitmentRecord) !== options.submittedCanonical)
+    canonicalize(commitmentRecord) !== options.submittedCanonical
   ) {
     throw new DacsError(
       "fresh commitment anchor does not contain the exact submitted record (CA-3)",
     );
   }
 
-  if (recordKind === "finality") {
-    const finalityRecord = commitmentRecord as FinalityCommitmentRecord;
-    if (finalityRecord.signature.signer !== input.session.orchestrator) {
-      throw new DacsError(
-        "finality commitment signer is not the authenticated session orchestrator (CA-6)",
-      );
-    }
-    if (!options.freshSignatureAlreadyVerified) {
-      await verifyCommitmentSignature(finalityRecord, verifySignature);
-    }
-  } else {
-    if (legacySignature!.signer !== input.session.orchestrator) {
-      throw new DacsError(
-        "legacy commitment signer is not the authenticated session orchestrator (CA-6)",
-      );
-    }
-    await verifyLegacyCommitmentSignature(
-      commitmentRecord as CommitmentRecord,
-      legacySignature!,
-      verifySignature,
+  if (commitmentRecord.signature.signer !== input.session.orchestrator) {
+    throw new DacsError(
+      "finality commitment signer is not the authenticated session orchestrator (CA-6)",
     );
+  }
+  if (!options.freshSignatureAlreadyVerified) {
+    await verifyCommitmentSignature(commitmentRecord, verifySignature);
   }
 
   const committedAt = await finalizedReceiptTime(
@@ -1693,14 +1547,6 @@ async function verifyAnchoredCommitment(
     anchored,
     verifyAnchorReceipt,
   );
-  if (
-    recordKind === "legacy" &&
-    (commitmentRecord as CommitmentRecord).committedAt !== committedAt
-  ) {
-    throw new DacsError(
-      "legacy commitment committedAt does not match authenticated anchor time (CA-8)",
-    );
-  }
   validateAuthoritativeTime(committedAt, selected, binding);
 
   const common = {
@@ -1712,20 +1558,8 @@ async function verifyAnchoredCommitment(
     committedAt,
     resumed: options.resumed,
   };
-  if (recordKind === "legacy") {
-    return snapshotCanonicalJson(
-      {
-        ...common,
-        recordKind,
-        record: commitmentRecord,
-        legacySignature,
-        resumed: true,
-      },
-      "finalized legacy agreement commitment result",
-    ) as FinalizedLegacyAgreementCommitment;
-  }
   return snapshotCanonicalJson(
-    { ...common, recordKind, record: commitmentRecord },
+    { ...common, recordKind: "finality", record: commitmentRecord },
     "finalized agreement commitment result",
   ) as FinalizedFinalityAgreementCommitment;
 }
@@ -1875,48 +1709,4 @@ export async function commitRfqAgreement(
     callerVerifySignature,
     "rfq",
   );
-}
-
-/**
- * Explicit read-only recovery for pre-ULID DACS-3 v0.1-v0.3 commitments.
- * This path can never submit or upgrade the immutable historical record.
- */
-export async function readLegacyFixedPriceAgreementCommitment(
-  callerInput: ReadLegacyFixedPriceAgreementCommitmentInput,
-  callerReader: FinalityCommitmentReader,
-  callerVerifySignature: CommitmentSignatureVerifier,
-): Promise<FinalizedLegacyAgreementCommitment> {
-  const reader = captureReader(callerReader);
-  const verifySignature = captureVerifier(callerVerifySignature);
-  const input = captureCommitmentBindingInput(
-    callerInput,
-    "legacy commitment input",
-  );
-  const selected = selectFixedPriceArtifact(input, {
-    allowLegacyJobId: true,
-  });
-  const logicalAddress = legacyCommitmentAddress(selected.agreement.jobId);
-  const authenticated = validateAuthenticatedSessionBinding(input, selected);
-  await verifyAgreementSignatures(selected.agreement, verifySignature);
-  const binding = agreementBinding(selected, authenticated, "fixed-price");
-  const lookup = await resolveCommitment(logicalAddress, reader);
-  if (lookup.disposition === "absent") {
-    throw new DacsError("legacy commitment is authoritatively absent");
-  }
-  const result = await verifyAnchoredCommitment(
-    logicalAddress,
-    lookup.anchored,
-    input,
-    selected,
-    binding,
-    reader.verifyAnchorReceipt,
-    verifySignature,
-    { resumed: true },
-  );
-  if (result.recordKind !== "legacy") {
-    throw new DacsError(
-      "explicit legacy commitment reader refuses a finality record",
-    );
-  }
-  return result;
 }
