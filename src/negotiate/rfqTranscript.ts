@@ -212,7 +212,8 @@ function transcriptBindsSession<TSignature>(
 /**
  * Verify and own the complete private transcript behind an accepted RFQ.
  * This is deliberately a `VerifiedRfqTranscript`, not the underspecified
- * normative `ChannelTranscript` signature/encryption wire from #351.
+ * normative `ChannelTranscript` signature/encryption wire, which the DACS
+ * Standard does not yet fully define.
  */
 export async function prepareRfqTranscript<TSignature = unknown>(
   callerInput: PrepareRfqTranscriptInput<TSignature>,
@@ -352,7 +353,7 @@ export async function prepareRfqTranscript<TSignature = unknown>(
 
 /**
  * Enforce the Listing's disclosure policy before any injected encrypted
- * publisher is invoked. Consent evidence stays opaque until #351 defines its
+ * publisher is invoked. Consent evidence stays opaque until the DACS Standard defines its
  * wire format, but every member's evidence must authenticate as `pass`.
  */
 export async function planRfqTranscriptDisclosure<TSignature = unknown>(

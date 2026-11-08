@@ -414,7 +414,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   );
   checks.push(
     check("wallet.nonce", "blocked", "Wallet nonce check is not wired yet", {
-      remediation: "Track dacs-sdk #58 and #57 for nonce-safe anchoring.",
+      remediation: "Not checked here; anchoring reads the writer's next nonce from the node at write time.",
     }),
   );
   checks.push(
@@ -423,13 +423,13 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
       "blocked",
       "Binding-aware StorageProgram resolution is not implemented yet",
       {
-        remediation: "Track dacs-sdk #58 and DACS-Standard #242/#248.",
+        remediation: "Not checked here; resolve artifacts through a published binding index, not by program name.",
       },
     ),
   );
   checks.push(
     check("anchor.completion", "blocked", "Read-visible anchor completion is not implemented yet", {
-      remediation: "Track dacs-sdk #57.",
+      remediation: "Not checked here; use anchorAndWait to wait for an explicit completion level.",
     }),
   );
 
@@ -458,7 +458,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 
   checks.push(
     check("cost.estimate", "blocked", "Cost estimate needs fee and funding APIs", {
-      remediation: "Track dacs-sdk #60 follow-up after #57/#58 land.",
+      remediation: "Add fee and funding APIs before estimating costs.",
     }),
   );
 

@@ -687,7 +687,7 @@ function hasExactKeys(
 }
 
 /**
- * The exact phase-aware identity used by #120 before a prepared candidate may
+ * The exact phase-aware identity used by `runFulfilmentCore` before a prepared candidate may
  * cross the one-shot payment-permit boundary. Byte-bearing DPA candidates are
  * projected to explicit length+digest records because raw Uint8Array values
  * are not JCS values; the other delivery profiles bind their complete JSON

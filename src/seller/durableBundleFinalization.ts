@@ -69,7 +69,7 @@ export type SellerBundleFencedComponentSigner = (
   fence: Readonly<SellerBundleEffectFence>,
 ) => ReturnType<BuildComponentSignatureOptions["sign"]>;
 
-/** #132 input with generation fencing added to the two live seller-side signers. */
+/** `finalizeCompletedSellerBundleCore` input with generation fencing added to the two live seller-side signers. */
 export type FinalizeCompletedSellerBundleDurableInput = Omit<
   FinalizeCompletedSellerBundleInput,
   "seller" | "bindingSigner"
@@ -84,7 +84,7 @@ export type FinalizeCompletedSellerBundleDurableInput = Omit<
   };
 };
 
-/** #132 provider with a mandatory generation fence on every irreversible write. */
+/** `finalizeCompletedSellerBundleCore` provider with a mandatory generation fence on every irreversible write. */
 export type DurableSellerBundleFinalizationProvider = Omit<
   SellerBundleFinalizationProvider,
   "submitSellerBundle" | "publishBundleBinding"
@@ -135,7 +135,7 @@ export interface SellerBundleFinalizationDurability {
   leaseTtlMs: number;
   /** Wall clock used only for lease acquisition/renewal and operational observations. */
   leaseNowMs?: () => number;
-  /** Re-authenticate the complete #121 terminal fulfilment spine before bundle work. */
+  /** Re-authenticate the complete durable terminal fulfilment spine before bundle work. */
   terminalVerification: DurableSellerTerminalVerification;
   reconcileSignature: (input: {
     purpose: SellerBundleSignaturePurpose;
@@ -1919,8 +1919,8 @@ function readOnlyProvider(
 }
 
 /**
- * Restart-safe wrapper for `finalizeCompletedSellerBundleCore` (#55). It requires
- * the exact completed #121 durable handoff and adds generation-fenced bundle WAL
+ * Restart-safe wrapper for `finalizeCompletedSellerBundleCore`. It requires
+ * the exact completed `runDurableFulfilmentCore` handoff and adds generation-fenced bundle WAL
  * entries without changing any normative DACS wire shape.
  */
 export async function finalizeCompletedSellerBundleDurable(
