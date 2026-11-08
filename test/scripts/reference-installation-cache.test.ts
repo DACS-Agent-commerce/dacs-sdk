@@ -34,6 +34,39 @@ describe("explicit installer metadata", { timeout: 60_000 }, () => {
     expect(unavailable.inventory).toBeNull();
   });
 
+  it("ignores unrelated SHA-1 metadata when building the reference", async () => {
+    const { project, input } = await peerCacheFixture(temporary());
+    const toolchain = npmToolchain();
+    const command = `const c = require('node:module').createRequire(process.argv[1])('cacache');
+      c.put(process.argv[2] + '/_cacache', 'make-fetch-happen:request-cache:https://registry.invalid/unused',
+        JSON.stringify({ name: 'unused' }), { algorithms: ['sha1'],
+          metadata: { resHeaders: { 'content-type': 'application/json' } } }).catch(e => { throw e });`;
+    runNpmNode(toolchain, ["-e", command, toolchain.cli, input.metadataCache]);
+    const reference = referenceInstallation(input);
+    expect(reference.errors).toEqual([]);
+    expect(installationDifferences(project, reference)).toEqual([]);
+  });
+
+  it("refuses required metadata stored only with SHA-1 integrity", async () => {
+    const { input } = await peerCacheFixture(temporary());
+    const root = { dependencies: { d: "^1.0.0" } };
+    const required = { ...input, manifest: Buffer.from(JSON.stringify(root)),
+      lock: { lockfileVersion: 3, packages: { "": root } } };
+    expect(referenceInstallation(required).errors.join()).toContain("EUSAGE");
+    const toolchain = npmToolchain();
+    const command = `const c = require('node:module').createRequire(process.argv[1])('cacache');
+      (async () => {
+        const cache = process.argv[2] + '/_cacache';
+        const entry = Object.values(await c.ls(cache)).find(e => e.key.endsWith('/d'));
+        const body = (await c.get(cache, entry.key)).data;
+        await c.put(cache, entry.key, body, { algorithms: ['sha1'], metadata: entry.metadata });
+      })().catch(e => { throw e });`;
+    runNpmNode(toolchain, ["-e", command, toolchain.cli, input.metadataCache]);
+    const reference = referenceInstallation(required);
+    expect(reference.errors.join()).toContain("ENOENT");
+    expect(reference.inventory).toBeNull();
+  });
+
   it("refuses git resolution introduced by cached registry metadata before invoking git", async () => {
     const { project, input } = await peerCacheFixture(temporary());
     const gitCommand = join(project, "git-trap");
