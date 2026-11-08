@@ -36,10 +36,12 @@ own tree under the policy below.
   with the same exact npm package/version pairs and conservatively blocks every
   match regardless of severity; both services must fail before the gate fails
   closed as unavailable. It never falls back to the retired quick audit endpoint.
-- **Transitive** criticals/highs are assessed for reachability, not blocked on
-  severity alone; each assessment is added to
-  `scripts/registry-container-audit-baseline.json`, whose list of assessed IDs
-  is empty today.
+- **Transitive** criticals/highs are not blocked on severity alone.
+  `scripts/registry-container-audit-baseline.json` lists the IDs already seen in
+  the generated consumer's tree. None of them has a written reachability
+  assessment yet: they are accepted only as baseline findings, as described
+  below. An ID counts as assessed only once its reachability assessment is added
+  to that file's list of assessed IDs, which is empty today.
 - **Registry/container consumer acceptance** audits the generated consumer's
   current production dependencies (`npm audit --omit=dev`) by advisory ID against
   `scripts/registry-container-audit-baseline.json`. On non-enforcing pull requests,
