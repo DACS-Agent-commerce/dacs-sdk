@@ -202,11 +202,15 @@ interface NodeBuildReply {
  */
 async function readNodeBuild(rpc: string, fetchImpl: typeof fetch): Promise<NodeBuildReply> {
   const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(new Error("node build read timed out")),
-    NODE_BUILD_TIMEOUT_MS,
-  );
-  try {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error("node build read timed out");
+      reject(error);
+      controller.abort(error);
+    }, NODE_BUILD_TIMEOUT_MS);
+  });
+  const read = async (): Promise<NodeBuildReply> => {
     const response = await fetchImpl(`${new URL(rpc).origin}/version`, {
       method: "GET",
       redirect: "manual",
@@ -243,6 +247,9 @@ async function readNodeBuild(rpc: string, fetchImpl: typeof fetch): Promise<Node
       version: typeof fields.version === "string" ? stripControlChars(fields.version) : undefined,
       commitSha,
     };
+  };
+  try {
+    return await Promise.race([read(), deadline]);
   } finally {
     clearTimeout(timer);
   }
