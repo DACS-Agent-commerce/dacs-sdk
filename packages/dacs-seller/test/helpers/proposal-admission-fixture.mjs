@@ -11,13 +11,18 @@ import {seller,buyer,JOB,NOW} from './protocol-fixture.mjs';
 import {fixtureListing,fixtureIdentityBundle} from '../fixtures/listings.mjs';
 import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
+import {createSellerTransportStore} from '../../src/dacs/seller-transport-auth.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment-evidence-consumer.mjs';
+// `ledger` is a function returning the challenge ledger the agent uses; by default one transport store lives as long as the fixture.
 // `vetMode` selects the records and capability the fixture builds: the TP-1 G3
 // orchestrator mode has the seller verify its own record (default: counterparty).
 export const ORCHESTRATOR_MODE='tp1-g3-orchestrator';
-export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,publicEndpoint=null,vetMode}={}){
+export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,publicEndpoint=null,ledger=null,vetMode}={}){
  const dir=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=NOW;const signed=[];const contexts=new Map();
+ let store=null,generations=0;const storeDirectory=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-ledger-'));t.after(()=>rm(storeDirectory,{recursive:true,force:true}));
+ const openStore=()=>store=createSellerTransportStore({path:join(storeDirectory,'transport.sqlite'),now:()=>time,generation:'TEST-generation-'+ ++generations});
+ if(ledger===null){openStore();t.after(()=>store.close());}
  const unreachable=()=>{throw new Error('TEST external effect');};
  const {signature,...listingDraft}=fixtureListing(seller,{now:NOW});
  if(publicEndpoint!==null)listingDraft.seller.publicEndpoint=publicEndpoint;
@@ -28,7 +33,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
  const orchestrated=vetMode===ORCHESTRATOR_MODE,sellerParty={claim:seller.claim,sign:seller.signBytes};
  const resolveSeller=async({jobId})=>contexts.has(jobId)?{disposition:'present',value:structuredClone(contexts.get(jobId))}:{disposition:'indeterminate',reason:'TEST context unavailable'};
  const capability=mode=>createDemDeliveryContext({authority:'TEST-admission',vetMode:mode,resolveBuyer:unreachable,resolveSeller});
- const config={maxJobs,...vetMode===undefined?{}:{vetMode},signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
+ const config={get challengeLedger(){return ledger===null?store.challenges:ledger();},maxJobs,...vetMode===undefined?{}:{vetMode},signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
   agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,
   nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:capability(vetMode)};
  const sourceUrl=new URL('../../src/dacs/seller-agent.mjs',import.meta.url),api=await privateModule(sourceUrl,[],source=>{
@@ -39,7 +44,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
    if(!signing)throw new Error('TEST signing stage missing');
    source=source.slice(0,signing.getStart(file))+"\nthrow new SellerAgentError('proposal_not_assembled','TEST isolated admission boundary',503);\n"+source.slice(method.body.end-1);
   }
-  if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposal,retainedVetEvidenceProblem};');
+  if(!source.includes('  return api;'))throw new Error('TEST internal factory missing');return source.replace('  return api;','  return {...api,stagedProposal:receiveProposalClosingAttempt,retainedVetEvidenceProblem};');
  });
  const open=async(overrides={})=>{const agent=await api.createSellerAgent({...config,...overrides});t.after(()=>agent.close());return agent;};
  // The same durable directory reopened under `mode` (its own capability and agent option).
@@ -56,7 +61,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
   contexts.set(jobId,{input:structuredClone(actual),vetRequirements:structuredClone(vetRequirements)});
   return proposalForInput(synthetic?base:actual);
  };
- return{config,listing,dir,admission,signed,open,reopenAs,capability,input,proposal,contexts,advance:ms=>{time+=ms;}};
+ return{config,listing,dir,admission,signed,open,reopenAs,capability,input,proposal,contexts,advance:ms=>{time+=ms;},get store(){return store;},storePath:join(storeDirectory,'transport.sqlite'),reopenStore(){store.close();openStore();}};
 }
 
 export async function proposalForInput(input){

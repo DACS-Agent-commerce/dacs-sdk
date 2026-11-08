@@ -18,7 +18,8 @@ origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
 broadcast can still reach a real Demos node: keep them on the fixture too. It
 is not qualified for mainnet. The standalone host retains all jobs and refuses
 new jobs before admission after `maxJobs` (default 10,000); terminal DACS-5
-bundle completion and transport-row reclamation are not wired.
+bundle completion is not wired, and transport-row reclamation needs the
+`contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
@@ -33,6 +34,15 @@ when it creates a new store and when it creates or updates an authenticated
 record (reopening a store or taking a lock signs nothing). The kit publishes
 none of these signatures; what your own signer does with them is up to it.
 
+The optional `contextSessionState({ jobId })` host capability is synchronous and
+returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
+the host reclaim that job's retained challenge and context rows; an unknown name,
+an agent stage name, a throw or a Promise answer keeps them. A Promise answer
+counts as unknown: its result is ignored and its rejection is observed. A source
+that is asynchronous must keep a synchronous view of its own outside SQLite
+transactions. A host without the capability reclaims nothing. Context route
+compositions set the store's `contextStartLimits` to the route's own `limits`.
+
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
@@ -40,6 +50,7 @@ const host = await startSellerHost({
   signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
   listing,              // the signed Listing this seller serves; the signer must control it
   dataDirectory,        // absolute real path of a private (0700) directory owned by this user
+  contextSessionState,  // optional, synchronous ({ jobId }) -> DACS-5 state name or null
   buyerAccess: createOperatorBuyerAccess({
     openBuyerAccess: true,
     buyerForJob,        // synchronous jobId -> retained buyer's 0x-hex wallet, or null for an unknown job
@@ -517,10 +528,17 @@ per-client limiter so one client cannot exhaust the shared request budget.
   on a Listing its own revocation check finds not revoked, and only under
   `sessionAdmission`, before anything of it is kept, read, signed or sent.
   - **Issuing.** `host.issueSessionChallenge({ jobId, buyer })` keeps a fresh
-    256-bit nonce for that job and buyer, valid for ten minutes, before it
-    returns `{ jobId, buyer, sessionNonce, issuedAt, expiresAt }`. The operator
-    hands it to the buyer, whose bundle carries it as `sessionNonce` (CORE
-    SN-1..SN-3; delivering the challenge to the buyer is up to the operator).
+    256-bit nonce for that job and buyer, valid for ten minutes, in the one
+    challenge ledger the host's transport store keeps (the same ledger the
+    context route issues into; this operator entry stays until the host mounts
+    that route) before it returns `{ jobId, buyer, sessionNonce, issuedAt,
+    expiresAt }`. The operator hands it to the buyer, whose bundle carries it
+    as `sessionNonce` (CORE SN-1..SN-3; delivering the challenge to the buyer
+    is up to the operator). An open challenge for the same job and buyer is
+    returned again; the ledger's hourly limits apply (five per buyer, twelve
+    overall), and a job whose challenge was consumed takes no new one
+    (`context_job_closed`). Without a `sessionAdmission` the issuer refuses
+    `session_admission_unavailable` before anything is kept.
   - **Generation.** Only the seller generates the nonce, using its own CSPRNG.
     Supplying `sessionNonce` to the issuer is refused. The buyer copies the
     returned value into its bundle and signs afterward (CORE SN-1..SN-3).
@@ -528,12 +546,16 @@ per-client limiter so one client cannot exhaust the shared request budget.
     nonce its bundle carries, durably and before the attempt is validated:
     before its signature, its buyer and job binding, the revocation check and
     `admit` (CORE SN-4, IBH-4). A refused attempt consumes it too, a `503`
-    included, so after a refused attempt the buyer asks the operator for a
-    new challenge. After an admitted one, the buyer sends the admitted
-    presentation again (a new challenge would be another bundle, refused as
-    `session_not_admitted`). Configuration, Listing validity and rail selection
-    gates come first, as does a presentation with no session nonce
-    (`session_not_admitted`, DACS-1 §6.3.2); those refusals consume nothing.
+    included, and closes the job to new challenges, so after a refused attempt
+    the buyer starts again with a new job. After an admitted one, the buyer
+    sends the admitted presentation again (a new challenge would be another
+    bundle, refused as `session_not_admitted`). The ledger's own code stays in
+    the refusal's message (`context_challenge_consumed`, `_failed`, `_expired`,
+    `_mismatch`); a presentation under validation answers
+    `session_admission_unavailable` (`503`). Configuration, Listing validity
+    and rail selection gates come first, as does a presentation with no
+    session nonce (`session_not_admitted`, DACS-1 §6.3.2); those refusals
+    consume nothing.
     Buyer-access and malformed-bundle refusals consume a recognized challenge.
   - **Later presentations.** Any later presentation that carries the nonce is
     refused (`session_not_admitted`): another one, a re-signed one, or one
@@ -788,9 +810,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   see the root exports above) itself: the challenge
   a session needs is the one `host.issueSessionChallenge` issued, which the
   operator delivers to the buyer. The host keeps every issued challenge
-  with its seller state. Expired unattempted challenges may be reclaimed;
-  accepted presentations retain their exact admission checkpoint for replay.
-  Retired unsigned admissions release active capacity within bounded history.
+  in the transport store's one challenge ledger, beside the seller state.
+  Expired unattempted challenges may be reclaimed; accepted presentations
+  retain their exact admission checkpoint and their job binding for replay.
   The operator issues challenges only for buyers about to present.
 - The devnet source transport and wallet custody are not part of this
   package (the payment-evidence journal composes the operator's own wallet
