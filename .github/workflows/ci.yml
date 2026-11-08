@@ -41,7 +41,20 @@ jobs:
     # runs and stop the runner for anything else.
     # Deleting SDK_SELF_HOSTED sends new runs back to ubuntu-latest. If no dacs-pool runner is online, a routed job
     # waits for one (GitHub has no fallback); cancel it and start a new run after deleting the variable.
-    runs-on: ${{ (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
+    # Blacksmith (both legs): a pull request runs build-test on Blacksmith's blacksmith-2vcpu-ubuntu-2404 runners,
+    # ahead of the rules above, only when ALL of these hold:
+    #   - the repository variable SDK_BLACKSMITH is 'on';
+    #   - the event is pull_request and the head branch is in this repository (never forks, pushes or merge-queue
+    #     runs);
+    #   - the pull request carries the label ci-blacksmith.
+    # To put a PR on Blacksmith, add the label ci-blacksmith, then push to the branch (or close and reopen the PR):
+    # like ci-hosted, the labels come from the event that started the run and a re-run replays that event, so adding
+    # or removing the label changes nothing until the next push or reopen. Without the label, or with the variable
+    # anything but 'on' (or unset), the rules above apply unchanged. To switch Blacksmith off, set SDK_BLACKSMITH to
+    # anything but 'on' (or delete it); new runs then use the rules above. A job already waiting for a Blacksmith
+    # runner (for example once the account's included minutes are used up) does not move: cancel it and start a new
+    # run after switching off. Job and required-check names are the same on every runner.
+    runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(github.event.pull_request.labels.*.name, 'ci-blacksmith')) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:

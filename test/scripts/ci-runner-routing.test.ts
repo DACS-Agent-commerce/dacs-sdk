@@ -14,6 +14,7 @@ type Job = { "runs-on"?: string };
 const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as { jobs: Record<string, Job> };
 const RUNS_ON = workflow.jobs["build-test"]?.["runs-on"] ?? "";
 const POOL = ["self-hosted", "linux", "x64", "dacs-pool"];
+const BLACKSMITH = "blacksmith-2vcpu-ubuntu-2404";
 
 type Value = unknown;
 type Token = { kind: "op" | "str" | "num" | "id"; text: string };
@@ -131,21 +132,26 @@ function evaluate(source: string, context: Record<string, Value>): Value {
 }
 
 function route(over: {
-  enabled?: string; authors?: string; node?: string; event?: string; headRepo?: string;
-  author?: string; actor?: string; triggering?: string; labels?: string[];
+  enabled?: string; authors?: string; blacksmith?: string; node?: string; event?: string; headRepo?: string;
+  author?: string; actor?: string; triggering?: string; labels?: string[]; prPayload?: boolean;
 }) {
   const match = /^\$\{\{([\s\S]*)\}\}$/.exec(RUNS_ON.trim());
   if (!match) throw new Error("runs-on is not a single expression");
   const event = over.event ?? "pull_request";
   return evaluate(match[1] ?? "", {
-    vars: { SDK_SELF_HOSTED: over.enabled ?? "on", SDK_SELF_HOSTED_AUTHORS: over.authors ?? "owner,second" },
+    vars: {
+      SDK_SELF_HOSTED: over.enabled ?? "on",
+      SDK_SELF_HOSTED_AUTHORS: over.authors ?? "owner,second",
+      // On by default, so every case without the ci-blacksmith label also shows that the switch alone moves nothing.
+      SDK_BLACKSMITH: over.blacksmith ?? "on",
+    },
     matrix: { "node-version": over.node ?? "22" },
     github: {
       event_name: event,
       repository: "org/repo",
       actor: over.actor ?? "owner",
       triggering_actor: over.triggering ?? "owner",
-      event: event === "pull_request"
+      event: event === "pull_request" || over.prPayload
         ? { pull_request: {
           head: { repo: { full_name: over.headRepo ?? "org/repo" } },
           user: { login: over.author ?? "owner" },
@@ -205,5 +211,45 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
     expect(route({ labels: ["ci-hosted"] })).toBe("ubuntu-latest");
     expect(route({ labels: ["bug", "ci-hosted"] })).toBe("ubuntu-latest");
     expect(route({ labels: ["bug"] })).toEqual(POOL);
+  });
+
+  describe("Blacksmith", () => {
+    const label = ["ci-blacksmith"];
+
+    it("sends both legs of a labelled same-repository pull request to Blacksmith when the switch is on", () => {
+      expect(route({ labels: label })).toBe(BLACKSMITH);
+      expect(route({ labels: label, node: "20.19.0" })).toBe(BLACKSMITH);
+      expect(route({ labels: ["bug", "ci-blacksmith"], enabled: "off" })).toBe(BLACKSMITH);
+    });
+
+    it("takes precedence over the project runners and over ci-hosted", () => {
+      expect(route({ labels: ["ci-blacksmith", "ci-hosted"] })).toBe(BLACKSMITH);
+      expect(route({ labels: label, author: "outsider", actor: "outsider", triggering: "outsider" })).toBe(BLACKSMITH);
+    });
+
+    it("leaves routing unchanged without the label", () => {
+      expect(route({})).toEqual(POOL);
+      expect(route({ node: "20.19.0" })).toBe("ubuntu-latest");
+      expect(route({ labels: ["ci-hosted"] })).toBe("ubuntu-latest");
+      expect(route({ labels: ["blacksmith", "ci-blacksmith-x"] })).toEqual(POOL);
+    });
+
+    it("leaves routing unchanged unless the switch is exactly on", () => {
+      for (const blacksmith of ["off", "", "yes", "ON "]) {
+        expect(route({ blacksmith, labels: label })).toEqual(POOL);
+        expect(route({ blacksmith, labels: label, node: "20.19.0" })).toBe("ubuntu-latest");
+        expect(route({ blacksmith, labels: label, enabled: "off" })).toBe("ubuntu-latest");
+      }
+    });
+
+    it("never takes pushes, merge-queue runs or fork pull requests", () => {
+      for (const node of ["22", "20.19.0"]) {
+        expect(route({ event: "push", labels: label, node })).toBe("ubuntu-latest");
+        expect(route({ event: "merge_group", labels: label, node })).toBe("ubuntu-latest");
+        expect(route({ headRepo: "someone/fork", labels: label, node })).toBe("ubuntu-latest");
+        // An event that carries a pull request payload but is not pull_request (not a trigger of this workflow today).
+        expect(route({ event: "pull_request_target", prPayload: true, labels: label, node })).toBe("ubuntu-latest");
+      }
+    });
   });
 });
