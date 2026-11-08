@@ -408,13 +408,13 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   }
 
   checks.push(
-    check("wallet.balance", "blocked", "Wallet balance check is not wired yet", {
-      remediation: "Add a stable demosdk balance API before making funding claims.",
+    check("wallet.balance", "blocked", "Wallet balance is not checked by doctor", {
+      remediation: "Not checked here; doctor has no stable balance API to read from.",
     }),
   );
   checks.push(
     check("wallet.nonce", "blocked", "Wallet nonce is not checked by doctor", {
-      remediation: "Not checked here; anchoring reads the writer's next nonce from the node at write time.",
+      remediation: "Not checked here; anchoring computes the writer's next nonce at write time.",
     }),
   );
   checks.push(
