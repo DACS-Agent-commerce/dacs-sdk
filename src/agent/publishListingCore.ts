@@ -29,6 +29,7 @@ import {
   type ListingRailAuthorityInput,
   type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
@@ -387,25 +388,6 @@ function assertContiguousHistory(
   return versions;
 }
 
-/**
- * Make the exact signed publication graph immutable before it crosses the
- * asynchronous substrate seam. Listings are JSON artifacts, so every nested
- * object/array participates in the signature scope and must be frozen.
- */
-function deepFreezePublication<T extends object>(value: T): Readonly<T> {
-  const seen = new WeakSet<object>();
-  const freeze = (candidate: object): void => {
-    if (seen.has(candidate)) return;
-    seen.add(candidate);
-    for (const nested of Object.values(candidate)) {
-      if (nested !== null && typeof nested === "object") freeze(nested);
-    }
-    Object.freeze(candidate);
-  };
-  freeze(value);
-  return value;
-}
-
 export async function publishListingCore(
   inputListing: ListingDraft,
   deps: PublishListingDeps,
@@ -588,7 +570,7 @@ export async function publishListingCore(
     listingContentHash = contentHash(
       owned as unknown as Record<string, unknown>,
     );
-    publication = deepFreezePublication(owned);
+    publication = deepFreeze(owned);
   } catch (cause) {
     throw new DacsError("signed Listing could not form an immutable publication", {
       cause,

@@ -57,6 +57,7 @@ import {
   type TerminalBundleSigningMode,
 } from "./terminalBundleFinalization.js";
 import { attestationBundleHash } from "./twoSidedBundle.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const MAX_CAS_ATTEMPTS = 16;
 const MAX_RELEASE_ATTEMPTS = 8;
@@ -356,17 +357,6 @@ function snapshotDataValue(
 
 function snapshotData<T>(value: T, subject: string): T {
   return snapshotDataValue(value, subject, new Set<object>()) as T;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    value instanceof Uint8Array ||
-    Object.isFrozen(value)
-  ) return value;
-  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
-  return Object.freeze(value);
 }
 
 function immutable<T>(value: T): Readonly<T> {

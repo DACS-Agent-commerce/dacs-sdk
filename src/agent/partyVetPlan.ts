@@ -42,6 +42,7 @@ import {
   type CompositeClaimRequirement,
   type PresenceClaimDecision,
 } from "./compositeVerification.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** Reserved supplementary type emitted only by the native CCI Vet wrapper. */
 export const PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE =
@@ -324,18 +325,6 @@ function snapshotData(
   }
   seen.delete(value);
   return result;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function snapshot<T>(value: T, label: string): T {
