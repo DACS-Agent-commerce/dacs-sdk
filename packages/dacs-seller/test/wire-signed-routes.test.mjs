@@ -496,7 +496,8 @@ test('P11a1-T18: a wire refusal keeps its code and status; a request naming anot
 });
 
 test('P11a1-T19: signed reads never account or complete, including at old store capacity and after restart', async (t) => {
-  const w = await world(t, { maxRecords: 2 });
+  // The shared record count includes accounted rows: the accounted proposal takes one slot, two old-store reserves the others.
+  const w = await world(t, { maxRecords: 3 });
   const job = await proposeJob(w, 't19');
   assert.equal((await job.post()).status, 200);
   assert.equal(accountingRows(w).length, 1);
