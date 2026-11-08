@@ -6,6 +6,7 @@ import {
   isCanonicalDomainHostname,
 } from "./domainHost.js";
 import { deepFreeze } from "../internal/deepFreeze.js";
+import { containsArrayBufferView } from "../internal/arrayBufferView.js";
 
 const HEX_32 = /^[0-9a-f]{64}$/;
 const HEX_64 = /^[0-9a-f]{128}$/;
@@ -240,6 +241,8 @@ function cloneArtifact(value: unknown): DomainClaimArtifactLike | null {
     ) {
       return null;
     }
+    // Bytes would stay writable after the freeze; the artifact is JSON data.
+    if (containsArrayBufferView(cloned)) return null;
     return deepFreeze(cloned);
   } catch {
     return null;
