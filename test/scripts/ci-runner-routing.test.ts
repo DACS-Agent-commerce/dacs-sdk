@@ -142,8 +142,8 @@ function route(over: {
     vars: {
       SDK_SELF_HOSTED: over.enabled ?? "on",
       SDK_SELF_HOSTED_AUTHORS: over.authors ?? "owner,second",
-      // On by default, so every case without the ci-blacksmith label also shows that the switch alone moves nothing.
-      SDK_BLACKSMITH: over.blacksmith ?? "on",
+      // Off by default, so the cases above test the project-runner rules alone.
+      SDK_BLACKSMITH: over.blacksmith ?? "off",
     },
     matrix: { "node-version": over.node ?? "22" },
     github: {
@@ -214,41 +214,32 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
   });
 
   describe("Blacksmith", () => {
-    const label = ["ci-blacksmith"];
-
-    it("sends both legs of a labelled same-repository pull request to Blacksmith when the switch is on", () => {
-      expect(route({ labels: label })).toBe(BLACKSMITH);
-      expect(route({ labels: label, node: "20.19.0" })).toBe(BLACKSMITH);
-      expect(route({ labels: ["bug", "ci-blacksmith"], enabled: "off" })).toBe(BLACKSMITH);
+    it("sends both legs of every same-repository pull request to Blacksmith when the switch is on", () => {
+      expect(route({ blacksmith: "on" })).toBe(BLACKSMITH);
+      expect(route({ blacksmith: "on", node: "20.19.0" })).toBe(BLACKSMITH);
+      expect(route({ blacksmith: "on", enabled: "off" })).toBe(BLACKSMITH);
     });
 
-    it("takes precedence over the project runners and over ci-hosted", () => {
-      expect(route({ labels: ["ci-blacksmith", "ci-hosted"] })).toBe(BLACKSMITH);
-      expect(route({ labels: label, author: "outsider", actor: "outsider", triggering: "outsider" })).toBe(BLACKSMITH);
-    });
-
-    it("leaves routing unchanged without the label", () => {
-      expect(route({})).toEqual(POOL);
-      expect(route({ node: "20.19.0" })).toBe("ubuntu-latest");
-      expect(route({ labels: ["ci-hosted"] })).toBe("ubuntu-latest");
-      expect(route({ labels: ["blacksmith", "ci-blacksmith-x"] })).toEqual(POOL);
+    it("takes precedence over ci-hosted and the project-runner author rules", () => {
+      expect(route({ blacksmith: "on", labels: ["ci-hosted"] })).toBe(BLACKSMITH);
+      expect(route({ blacksmith: "on", author: "outsider", actor: "outsider", triggering: "outsider" })).toBe(BLACKSMITH);
     });
 
     it("leaves routing unchanged unless the switch is exactly on", () => {
       for (const blacksmith of ["off", "", "yes", "ON "]) {
-        expect(route({ blacksmith, labels: label })).toEqual(POOL);
-        expect(route({ blacksmith, labels: label, node: "20.19.0" })).toBe("ubuntu-latest");
-        expect(route({ blacksmith, labels: label, enabled: "off" })).toBe("ubuntu-latest");
+        expect(route({ blacksmith })).toEqual(POOL);
+        expect(route({ blacksmith, node: "20.19.0" })).toBe("ubuntu-latest");
+        expect(route({ blacksmith, enabled: "off" })).toBe("ubuntu-latest");
       }
     });
 
     it("never takes pushes, merge-queue runs or fork pull requests", () => {
       for (const node of ["22", "20.19.0"]) {
-        expect(route({ event: "push", labels: label, node })).toBe("ubuntu-latest");
-        expect(route({ event: "merge_group", labels: label, node })).toBe("ubuntu-latest");
-        expect(route({ headRepo: "someone/fork", labels: label, node })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", event: "push", node })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", event: "merge_group", node })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", headRepo: "someone/fork", node })).toBe("ubuntu-latest");
         // An event that carries a pull request payload but is not pull_request (not a trigger of this workflow today).
-        expect(route({ event: "pull_request_target", prPayload: true, labels: label, node })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", event: "pull_request_target", prPayload: true, node })).toBe("ubuntu-latest");
       }
     });
   });
