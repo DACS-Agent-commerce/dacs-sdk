@@ -458,7 +458,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 
   checks.push(
     check("cost.estimate", "blocked", "Cost estimate needs fee and funding APIs", {
-      remediation: "Add fee and funding APIs before estimating costs.",
+      remediation: "Not checked here; doctor has no fee or funding source to estimate from.",
     }),
   );
 
