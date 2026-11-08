@@ -219,7 +219,8 @@ const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (
   listing_pin TEXT NOT NULL, scope_hash TEXT NOT NULL, effect TEXT NOT NULL, admitted_at INTEGER NOT NULL); ${CONTEXT_EFFECT_INDEX}`;
 
 // Trusted seller state retains terminal ownership; unknown state retains challenges.
-const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
+// Read-only membership test for the challenge ledger; nothing may add to it.
+export const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
 const CHALLENGE_RATE_WINDOW_MS = 3600000;
 const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
 // markPendingContextEffectsUncertain: the caller holds the seller state lock, so no other
