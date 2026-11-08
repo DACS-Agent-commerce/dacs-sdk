@@ -254,6 +254,32 @@ test('a stale handle never removes a later holder', async t => {
   assert.equal(await readFile(lockPath(dir), 'utf8'), 'TEST another holder');
 });
 
+test('a release whose removal failed keeps the lock and succeeds when called again', async t => {
+  const dir = await directory(t), lock = await acquireSellerStateLock(dir);
+  faultOnce(t, 'unlinkSync', file => file === lock.path);
+  assert.throws(() => lock.release(), { code: 'EIO' });
+  assert.equal(await exists(lock.path), true);
+  lock.release();
+  assert.equal(await exists(lock.path), false);
+  (await acquireSellerStateLock(dir)).release();
+});
+
+test('a release whose directory sync failed syncs the directory again when called again', async t => {
+  const dir = await directory(t), lock = await acquireSellerStateLock(dir);
+  faultOnce(t, 'fsyncSync', isDirectory);
+  assert.throws(() => lock.release(), { code: 'EIO' });
+  assert.equal(await exists(lock.path), false);
+  const real = fs.fsyncSync;
+  let directorySyncs = 0;
+  fs.fsyncSync = function (fd) { if (isDirectory(fd)) directorySyncs++; return real.call(this, fd); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.fsyncSync = real; syncBuiltinESMExports(); });
+  lock.release();
+  assert.equal(directorySyncs, 1);
+  lock.release();
+  assert.equal(directorySyncs, 1);
+});
+
 test('a lock released between the failed link and its read gets one fresh attempt', async t => {
   const dir = fs.realpathSync(await directory(t)), path = lockPath(dir);
   takeLease(dir);
