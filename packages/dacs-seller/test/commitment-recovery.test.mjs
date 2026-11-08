@@ -32,7 +32,7 @@ for(const entry of ['commit','readCommitment','reconcileTransport'])test(`broken
  if(entry==='reconcileTransport'){
   const body={jobId:JOB},answer=await agent.reconcileTransport({request:commitmentRequest(agent,core.contentHash(agreement)),body,rawBody:Buffer.from(JSON.stringify(body))});
   assert.equal(answer.disposition,'indeterminate');
- }else await assert.rejects(agent[entry]({jobId:JOB}),e=>e.code==='commitment_failed'&&/signature/.test(e.message));
+ }else await assert.rejects(agent[entry]({jobId:JOB}),e=>e.code==='commitment_failed'&&e.message==='commitment_failed'&&/signature/.test(e.cause?.message));
  await assert.rejects(agent.commitOnSignature(next),e=>e.code==='seller_signature_buyer_unresolved');assert.equal(f.local.writes.length,1);
  agent.close();const fresh=await f.open();await assert.rejects(fresh.commitOnSignature(next),e=>e.code==='seller_signature_buyer_unresolved');assert.equal(f.local.writes.length,1);
 });
@@ -90,7 +90,7 @@ for(const finalizedReadback of[false,true])test(`real publisher retries unsigned
  let failure;try{await agent.commit({jobId:JOB});}catch(error){failure=error;}assert.equal(failure?.code,'commitment_failed');assert.equal(publisher.journal.rows.size,0);assert.equal(publisher.captured.length,0);agent.close();
  publisher.source.readRpc=async()=>({result:200,response:0,require_reply:false,extra:null});publisher.source.binding=async()=>({disposition:'included'});publisher.source.observeBinding=async()=>publisher.source.transportBinding;
  publisher.controls.request=async request=>{const signed=structuredClone(request.transaction);signed.hash=core.sha256Hex(JSON.stringify(signed.content));signed.signature={type:'ed25519',data:'0x'+seller.signBytes(Buffer.from(signed.hash)).toString('hex')};const backend=readbackFixture({signedTransaction:signed,observedAt:NOW});let reader=backend.adapter;if(finalizedReadback){const finalized=finalizedCommitmentReader(backend.adapter,{claim:seller.claim,sign:seller.signBytes});finalized.record({logicalAddress:backend.logicalAddress,artifact:backend.artifact,signedProjection:signed,blockRef:{id:backend.state.block.hash,height:String(backend.state.block.number),timestamp:NOW}});reader=finalized;}Object.assign(publisher.controls.reader,reader);await publisher.sourceJournal.put('TEST accepted',{stage:'observed',hash:signed.hash,signedTransaction:signed});return{success:true,data:{hash:signed.hash,writeProof:{disposition:'included'}}};};
- const fresh=await f.open(),included=error=>error.code==='commitment_failed'&&/exact finalized SR-2 binding/.test(error.message);
+ const fresh=await f.open(),included=error=>error.code==='commitment_failed'&&error.message==='commitment_failed'&&/exact finalized SR-2 binding/.test(error.cause?.message);
  if(finalizedReadback){assert.equal((await fresh.commit({jobId:JOB})).status,'committed');assert.equal(publisher.captured.length,1);return;}
  await assert.rejects(fresh.commit({jobId:JOB}),included);assert.equal(publisher.captured.length,1);
  const retained=await publisher.open().readRetained({logicalAddress:core.finalityCommitmentAddress(JOB),artifactKind:'FinalityCommitmentRecord',fresh:true});
@@ -125,7 +125,7 @@ test('a retry that signed no commitment CREATE cannot publish after the Listing 
  await assert.rejects(agent.commit({jobId:JOB}),e=>e.code==='commitment_failed');assert.equal(f.local.writes.length,0);agent.close();
  f.native.publish=publish;f.advance(f.listing.validity.notAfter-NOW+1);
  const fresh=await f.open();
- await assert.rejects(fresh.commit({jobId:JOB}),e=>e.code==='commitment_failed'&&/provisional time checks/.test(e.message));
+ await assert.rejects(fresh.commit({jobId:JOB}),e=>e.code==='commitment_failed'&&e.message==='commitment_failed'&&/provisional time checks/.test(e.cause?.message));
  assert.equal(f.local.writes.length,0,'a commitment CREATE is never requested after the Listing expired');
 });
 // A commitment CREATE the node refused: held while its nonce is free, and signed once more through the seller's check when

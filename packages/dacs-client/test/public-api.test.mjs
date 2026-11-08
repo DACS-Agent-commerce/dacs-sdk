@@ -120,12 +120,30 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   assert.equal(client.type, 'module');
   assert.equal(client.version, core.version);
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
-  assert.equal(client.dependencies, undefined);
-  assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs' });
+  assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs', './node-wallet': './src/wallet/node-wallet-session.mjs' });
   assert.equal(client.publishConfig, undefined, 'release-set admission is pending');
   assert.deepEqual(client.repository, { type: 'git', url: core.repository.url, directory: 'packages/dacs-client' });
   assert.equal(client.bugs.url, core.bugs.url);
   assert.match(client.homepage, /packages\/dacs-client#readme$/);
+});
+
+test('the client manifest declares exactly demosdk ^4.0.16 and dacs-node and @scure/bip39 exact; the root import loads neither demosdk nor the loading hooks', () => {
+  const client = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs-client'))));
+  const core = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs'))));
+  assert.deepEqual(Object.keys(client.dependencies).sort(), ['@kynesyslabs/dacs-node', '@kynesyslabs/demosdk', '@scure/bip39']);
+  assert.equal(client.dependencies['@kynesyslabs/demosdk'], '^4.0.16');
+  assert.equal(client.dependencies['@kynesyslabs/dacs-node'], core.version);
+  assert.match(client.dependencies['@scure/bip39'], /^\d+\.\d+\.\d+$/);
+  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet'], 'no export is added for the loading modules');
+  const script = `import * as module from 'node:module';
+    const refuse = (specifier, context, next) => {
+      if (/demosdk|demos-loader|demos-quiet-hooks|node-demos-loading/.test(specifier)) throw new Error('unexpected import of ' + specifier);
+      return next(specifier, context);
+    };
+    module.register('data:text/javascript,' + encodeURIComponent('export const resolve = ' + refuse.toString()), import.meta.url);
+    await import('@kynesyslabs/dacs-client');`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', cwd: process.cwd() });
+  assert.equal(child.status, 0, child.stdout + child.stderr);
 });
 
 test('root import never loads SQLite', () => {
@@ -283,4 +301,11 @@ test('the README documents the admission option and each construction and call r
   for (const code of ['admission_required', 'admission_input_untrusted', 'runtime_unsupported', 'profile_not_admitted', 'tp1_authority_timeout']) {
     assert.ok(section.includes(code), code);
   }
+});
+
+test("node-wallet subpath exports exactly its reviewed names; the root import loads neither SQLite nor demosdk", async () => {
+ const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
+ assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
+ const api=await import('../src/wallet/node-wallet-session.mjs');
+ assert.deepEqual(Object.keys(api).sort(),['createNodeTransportOwner','createNodeWalletSession','createRpcStampSource']);
 });

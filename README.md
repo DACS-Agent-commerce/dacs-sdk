@@ -905,7 +905,8 @@ co-signed; single-signature suppression is available only for an honest abort.
 `lookupBundleCopies(jobId, reader)` supplies the transport-neutral DACS-5
 §10.4.3(a) read step for consumers. It fetches the buyer and seller logical
 bundle addresses concurrently, preserves `absent` versus `indeterminate`, and
-ignores content returned for another job. Lookup is discovery, not trust: pass
+ignores content returned for another job. It rejects a `jobId` that is not a
+canonical JID-1 job ID before making any read. Lookup is discovery, not trust: pass
 each present copy through `verifyBundleCopy`, then supply an `isValid` adapter
 that returns its `.valid` boolean to `bundleConsistency` before using the
 resulting two-sided verdict.
@@ -973,6 +974,14 @@ address grammar. New code should use the typed address helper exported by the
 relevant producer, such as `compositeVerificationAddress`,
 `fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
 
+The public `attestationAddress`, `paymentEvidenceAddress`, `ratingAddress`, and
+`bundleAddress` builders validate a canonical JID-1 uppercase ULID before
+assembling an address or hashing a job-specific preimage. The `jid1*` helpers
+retain the same boundary. To read historical non-JID-1 artifacts, select
+`legacyAttestationAddress`, `legacyPaymentEvidenceAddress`, `legacyRatingAddress`,
+or `legacyBundleAddress` explicitly; these preserve the historical address bytes
+and segment checks. New current-profile jobs use the public builders.
+
 ## Doctor
 
 The package ships a read-only preflight command:
@@ -989,6 +998,18 @@ redaction, and rail availability without funding, transferring, anchoring, or
 broadcasting. StorageProgram binding resolution and read-visible anchor
 completion currently report `blocked` until the resolver/completion work lands
 (tracked by dacs-sdk #58 and #57).
+
+With `--rpc`, the `node.build` check reads the node's `GET /version` (4 KiB
+limit, 5 second deadline, redirects not followed) and compares its commit with
+the build the SDK's recorded node replies were captured against (the pin ships
+inside the package). It only runs when the RPC URL has no path,
+query or credentials (for example `https://node2.demos.sh`), because `/version`
+is read from the origin, which drops credentials, and a routed URL such as
+`https://host/tenant/rpc` may reach a different backend. A match is `pass`; a
+different build is `warn`; a routed or credential-bearing RPC URL, a redirect, a
+node that cannot be reached, has no `/version` endpoint or sends an unusable
+reply is `skip` with `node build unknown (no build RPC)`; a routed or
+credential-bearing URL makes no request. This check never changes the exit code.
 
 The supported runtime range is `^20.19.0 || >=22.12.0`, matching the package
 engine contract and the Vitest/Rolldown toolchain requirement.

@@ -31,12 +31,14 @@
 // directory's format marker (kit-format.json) and opens the wire request journal
 // at <dataDirectory>/wire-journal under a 300 s lease, so an unusable journal
 // refuses startup. No route signs or reserves through the binding or the journal yet.
-import { existsSync, lstatSync, mkdirSync, opendirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, opendirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
+import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, WireError, bindTp1Profile, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
+import { demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
 import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
@@ -46,7 +48,12 @@ import { createSellerTransportServerAuth, createSellerTransportStore } from './d
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
+import { isPrivateDirectory } from './private-directory.mjs';
 
+/** The one Vet mode the kit host runs its agent in: the TP-1 G3 orchestrator mode,
+ * in which the seller verifies and signs both Vet records. No option, environment
+ * variable, Listing member or request field selects another. */
+export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network']);
 const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'host', 'port', 'now']);
@@ -154,14 +161,6 @@ function boundedArtifactReads(anchor, { signal, timeoutMs }) {
   };
 }
 
-function privateDirectory(path) {
-  let stat;
-  try { stat = lstatSync(path); } catch { stat = null; }
-  if (!stat?.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.() || realpathSync(path) !== path) {
-    throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
-  }
-}
-
 function checkTp1Network(tp1Network) {
   if (tp1Network === null || typeof tp1Network !== 'object' || Array.isArray(tp1Network)) throw new TypeError('tp1Network must be an object');
   const unknown = Object.keys(tp1Network).filter((key) => !TP1_NETWORK_KEYS.includes(key));
@@ -211,6 +210,8 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // unknown, malformed or not private, and with the startup error otherwise
 // (carrying `cleanupError` when cleanup fails; an AggregateError with the
 // startup error as `cause` when that error cannot carry the property).
+// The host runs in KIT_TP1_VET_MODE only: a `demDeliveryContext` made in another
+// mode is refused with a TypeError (code `vet_mode_mismatch`) before the lock.
 // The startup errors include the binding's own (`tp1_*`, with the reader's
 // error kept as the cause; `tp1_authority_timeout` after 10,000 ms), which come
 // before the state lock and any file; `kit_store_format_unsupported` for a data
@@ -230,7 +231,7 @@ export async function startSellerHost(options) {
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
   if (!Number.isSafeInteger(port) || port < 0 || port > 65535) throw new TypeError('port must be an integer from 0 to 65535');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
-  privateDirectory(dataDirectory);
+  if (!isPrivateDirectory(dataDirectory)) throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
   if ((observeDemosTransfer !== undefined && typeof observeDemosTransfer !== 'function') || typeof now !== 'function') throw new TypeError('now and any supplied observeDemosTransfer must be functions');
   // DACS-4 PC-7(b): the answers that let the agent sign the same evidence
   // again (`unsigned`) come only from the package's wallet journal,
@@ -240,6 +241,9 @@ export async function startSellerHost(options) {
   }
   // CORE §5.1: the Deliverable resume, when there is one, comes only from the journal whose guarded submit the capability is.
   deliverableJournalFor(nativeDemDelivery, resumeDeliverableCreate);
+  if (demDeliveryContextVetMode(demDeliveryContext) !== KIT_TP1_VET_MODE) {
+    throw Object.assign(new TypeError(`the seller host runs in the ${KIT_TP1_VET_MODE} Vet mode: demDeliveryContext must be created with vetMode: KIT_TP1_VET_MODE`), { code: 'vet_mode_mismatch' });
+  }
   checkTp1Network(tp1Network);
   // Refuses an unbindable connection before the lock and any file; the signed routes keep the binding when they are mounted.
   await bindApprovedProfile(tp1Network);
@@ -260,7 +264,7 @@ export async function startSellerHost(options) {
     if (!existsSync(join(dataDirectory, TRANSPORT_STORE_FILE))) assertJournalHoldsNoAccounting(journalDirectory);
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
-      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
+      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE });
     opened.push(() => agent.close());
     // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
     for (const { job, reason } of agent.releaseStaleLocks()) {

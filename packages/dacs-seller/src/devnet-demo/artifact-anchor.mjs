@@ -34,6 +34,8 @@ import {
   isCanonicalJobId,
   logicalToStorageProgramName,
   sha256Hex,
+  sellerFulfilmentVetModeOf,
+  SELLER_FULFILMENT_VET_MODES,
 } from '@kynesyslabs/dacs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, demosSr2TxRef } from '../dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress, MAX_STORAGE_ARTIFACT_BYTES } from '../dacs/wallet-transactions.mjs';
@@ -99,14 +101,18 @@ const SIGNED_CREATE_MAX_BYTES=4*MAX_STORAGE_ARTIFACT_BYTES;
 const SIGNED_PROJECTION_MAX_BYTES=SIGNED_CREATE_MAX_BYTES+1024; // Authentication envelope above the signed-content budget.
 
 // The caller authenticates expectedSigner: the Vet verifier or commitment
-// orchestrator, which may differ from the native storage owner.
-function artifactValid(kind,value,writer,expectedSigner=writer) {
+// orchestrator, which may differ from the native storage owner. In the
+// counterparty Vet mode the seller's own record is signed by the buyer; in the
+// orchestrator mode the writer signs both records, so only the writer is
+// accepted as signer. The anchor's own mode is passed, never a caller's.
+function artifactValid(kind,value,writer,expectedSigner=writer,vetMode=SELLER_FULFILMENT_VET_MODES.counterparty) {
   if(kind!=='Listing' && !isCanonicalJobId(value?.jobId)) return false;
   const signed=(separator,signer)=>sameCanonicalClaimIdentity(value?.signature?.signer,signer)
     && verifyComponent({signedBytes:signedBytes(separator,contentHash(value)),signature:value.signature});
   if(kind==='Listing') return isListing(value) && sameCanonicalClaimIdentity(value.seller?.identity?.presentedBy,writer) && signed(ARTIFACT_SEPARATORS.Listing,writer);
   if(kind==='CompositeVerificationRecord') return isCompositeVerificationRecord(value)
-    && (sameCanonicalClaimIdentity(value.evaluatedParty,writer) ? !sameCanonicalClaimIdentity(expectedSigner,writer) : sameCanonicalClaimIdentity(expectedSigner,writer))
+    && (vetMode===SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator||!sameCanonicalClaimIdentity(value.evaluatedParty,writer)
+      ? sameCanonicalClaimIdentity(expectedSigner,writer) : !sameCanonicalClaimIdentity(expectedSigner,writer))
     && signed(ARTIFACT_SEPARATORS.CompositeVerificationRecord,expectedSigner);
   if(kind==='FinalityCommitmentRecord') return isFinalityCommitmentRecord(value) && signed(FINALITY_COMMITMENT_SEPARATOR,expectedSigner);
   if(kind==='SettlementEvidence')return isNativeDeliveryEvidence(value,writer,`dacs4:evidence:${value.jobId}`);
@@ -163,7 +169,13 @@ export function createDevnetDemoArtifactAnchor(options) {
   if(!isDevnetDemoTransport(options.sourceCapability)) throw new TypeError('the explicit devnet demo source capability is required');
   return assembleArtifactAnchor(options);
 }
-function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now()},ports={}) {
+// options.vetMode: the Vet mode this anchor is composed in, `counterparty` when
+// absent. It decides who may sign the seller's own composite record; nothing
+// read or requested later can change it. Any other value throws a TypeError
+// before the wallet factory or the journal is touched.
+function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption},ports={}) {
+  const vetMode=sellerFulfilmentVetModeOf(vetModeOption);
+  if(vetMode===null) throw new TypeError('unsupported Vet mode');
   // Only the seller's own Listing has no purchase. Every other write, new or
   // retained, belongs to a job whose current buyer must be admitted first.
   const access=operatorBuyerAccessConfig(buyerAccess);
@@ -410,7 +422,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     assertKitOperationAdmitted('publish');
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
     if(authorizeSigning!==undefined&&(typeof authorizeSigning!=='function'||wallet.guardsSigning!==true)) fail('not-authorized','the wallet cannot check this write right before it signs; no intent was stored and nothing was sent');
-    if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,writer,verifier)) fail('invalid','demo artifact kind, producer, or signed shape differs');
+    if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,writer,verifier,vetMode)) fail('invalid','demo artifact kind, producer, or signed shape differs');
     if(artifactKind==='SettlementEvidence'&&logicalAddress!==`dacs4:evidence:${artifact.jobId}`)fail('invalid','delivery evidence address differs from its job');
     const value=clone(artifact), jobId=value.jobId ?? `listing:${value.listingId}`, receiptContentHash=contentHash(value);
     if((artifactKind==='Deliverable')!==Boolean(deliveryBinding) || (deliveryBinding && !deliveryBindingValid(deliveryBinding,value,logicalAddress,receiptContentHash))) fail('invalid','demo Deliverable is not bound to the exact Agreement, Listing, fulfilment, amount and payload');
@@ -539,7 +551,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   async function read({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,fresh=false},{resend=false,authorizeResend}={}) {
     const refusal=resendOptionsRefusal({resend,authorizeResend});
     if(refusal) return refusal;
-    if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier)) return {status:'rejected',reason:'demo read scope differs'};
+    if(writer!==claim || !artifactValid(artifactKind,artifact,writer,verifier,vetMode)) return {status:'rejected',reason:'demo read scope differs'};
     authorizeJob(artifactKind,artifact?.jobId);
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
@@ -576,6 +588,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       if(!retained) return proofOfNoIntent?noIntentAbsence(logicalAddress):{status:'absent',reason:'no seller-owned demo CREATE intent'};
       if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress) return {status:'rejected',reason:'retained demo CREATE scope differs'};
       authorizeRetained(retained);
+      // After the access check and before any proof, readback or recovery send, a retained Vet record is held to
+      // this anchor's own mode: an intent kept under the other mode is refused, never read, resent or proven unsigned.
+      if(artifactKind==='CompositeVerificationRecord'&&!artifactValid(artifactKind,retained.input.artifact,writer,retained.input.verifier??writer,vetMode)) return {status:'rejected',reason:'retained demo CREATE is not valid in this anchor\'s Vet mode'};
       // As read: only an exact 'closing' row reads as the proven absence (the
       // context route resumes a step a shutdown cut only from that proof).
       if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
@@ -630,7 +645,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     // The request itself is checked first, with no read: this anchor's writer,
     // an artifact of a kind it publishes in that writer's signed shape, and a
     // receipt naming a transaction hash.
-    if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,claim,verifier) || !HASH.test(receipt?.transactionRef?.value ?? '')) return 'invalid';
+    if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,claim,verifier,vetMode) || !HASH.test(receipt?.transactionRef?.value ?? '')) return 'invalid';
     const projection=signedProjection ?? await publicProjection(receipt.transactionRef.value);
     const requestJob=artifact?.jobId ?? `listing:${artifact?.listingId}`;
     if(!projection) { authorizeJob(artifactKind,requestJob); return 'indeterminate'; }
@@ -648,5 +663,5 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(cacheable&&verdict==='invalid') immutable.delete(cacheKey);
     return verdict;
   }
-  return Object.freeze({source:'dacs-devnet-demo-native-artifacts/v1',authority:sourceCapability.demoArtifactPublication.authority,writer:claim,publish,read,readRetained,retainedSignedCreate,hasIntent,verifyReceipt});
+  return Object.freeze({source:'dacs-devnet-demo-native-artifacts/v1',authority:sourceCapability.demoArtifactPublication.authority,writer:claim,vetMode,publish,read,readRetained,retainedSignedCreate,hasIntent,verifyReceipt});
 }
