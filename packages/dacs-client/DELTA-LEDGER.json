@@ -6406,6 +6406,17 @@
           "after": "20dddc4fc681b0e2aac6c9e0a59da9f7b5734b3a"
         }
       ]
+    },
+    {
+      "delta": "D23",
+      "subject": "delta(client): D23 completion readiness tests: keep the pin-mismatch copy in a temp folder, drop an unused binding, note helper-pinning assertions",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-readiness.test.mjs",
+          "before": "20dddc4fc681b0e2aac6c9e0a59da9f7b5734b3a",
+          "after": "911e9637bf0fd857efd07b6952edc414cc21a2f4"
+        }
+      ]
     }
   ]
 }
