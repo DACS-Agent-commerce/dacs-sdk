@@ -629,7 +629,7 @@ export async function createFsWalletSpendStateStoreV1(
       createdAt: Date.now(),
     };
     while (!await acquireMutationGate(scope, owner)) {
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         throw new DacsError("wallet spend lock mutation gate timed out");
       }
       await delay(options.lockPollMs);
@@ -793,7 +793,7 @@ export async function createFsWalletSpendStateStoreV1(
     path: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    const deadline = Date.now() + options.lockTimeoutMs;
+    const deadline = performance.now() + options.lockTimeoutMs;
     return withLockMutationGate(scope, deadline, async () => {
       const owner: LockOwnerV1 = {
         pid: process.pid,
@@ -814,7 +814,7 @@ export async function createFsWalletSpendStateStoreV1(
             await reclaimStaleLockUnderMutationGate(scope, path);
           }
         }
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           throw new DacsError("wallet spend state lock timed out");
         }
         await delay(options.lockPollMs);

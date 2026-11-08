@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout } from "../support/monotonicWait.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -781,3 +782,17 @@ describe("keyed durable RFQ filesystem store", () => {
     await unlink(aliasPath);
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  test(`RFQ lock wait keeps its budget after a ${jump} ms wall jump`, async () => {
+    const dir = join(await root(), "buyer-rfq");
+    const store = await createFsDurableRfqLifecycleStore<string>({ dir, role: "buyer", integrityKey: randomBytes(32), lockTimeoutMs: 10, lockPollMs: 2 });
+    await writeFile(lockPath(dir), JSON.stringify({ pid: process.pid, token: "held" }), { mode: 0o600 });
+    const transport: DurableRfqLifecycleTransport<string> = {
+      async publish() { return { disposition: "acknowledged" }; },
+      async reconcile() { return { disposition: "absent" }; },
+    };
+    const client = createDurableRfqLifecycleClient(clientOptions(store, transport));
+    await expectMonotonicTimeout(() => client.open(openInput()), 10, 2, jump, /RFQ filesystem create failed/);
+  });
+}

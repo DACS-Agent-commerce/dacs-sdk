@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout } from "../support/monotonicWait.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   access,
@@ -826,3 +827,16 @@ describe("filesystem seller receipt store", () => {
     expect((await readdir(dir)).sort()).toEqual([INITIALIZATION_FILE, STATE_FILE]);
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const held of ["lock", "reclaim"]) {
+    test(`receipt ${held} wait keeps its budget after a ${jump} ms wall jump`, async () => {
+      const dir = await tempStoreDir();
+      const store = await createFsSellerReceiptStore({ dir, lockTimeoutMs: 10, lockPollMs: 2 });
+      const path = join(dir, held === "lock" ? LOCK_DIR : "seller-receipts.reclaim");
+      await mkdir(path, { mode: 0o700 });
+      await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid, token: "held" }), { mode: 0o600 });
+      await expectMonotonicTimeout(() => store.claim(receiptClaim()), 10, 2, jump, /timed out/);
+    });
+  }
+}

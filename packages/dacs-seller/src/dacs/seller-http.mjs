@@ -109,7 +109,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       return Buffer.byteLength(pointedText) > SELLER_TRANSPORT_MAX_RESPONSE ? text : pointedText;
     } catch { return text; }
   };
-  let windowStart = Date.now();
+  let windowStart = performance.now();
   let requests = 0;
   let active = 0;
   const send = async (res, status, body, request, { close = false, text = JSON.stringify(body) } = {}) => {
@@ -130,7 +130,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     let counted = false;
     try {
       if (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress)) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
-      if (Date.now() - windowStart >= rateWindowMs) { windowStart = Date.now(); requests = 0; }
+      if (performance.now() - windowStart >= rateWindowMs) { windowStart = performance.now(); requests = 0; }
       if (++requests > maxRequestsPerWindow || active >= maxConcurrent) return await send(res, 429, { error: 'seller_rate_limited' }, null, { close: true });
       active++; counted = true;
       // Match the raw request target exactly: query strings, alternate paths

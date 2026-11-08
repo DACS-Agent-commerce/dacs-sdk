@@ -26,6 +26,7 @@ const HUNG_POLL_MS = 5;
 // Virtual time: only the publisher's own sleeps and a hung command's deadline move it.
 let elapsedMilliseconds = 0;
 Date.now = () => clockStartMs + elapsedMilliseconds;
+Object.defineProperty(performance, "now", { configurable: true, value: () => elapsedMilliseconds });
 process.on("exit", () => logTo("clock.log", Date.now()));
 
 const realSetTimeout = globalThis.setTimeout;

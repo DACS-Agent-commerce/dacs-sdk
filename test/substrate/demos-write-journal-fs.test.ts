@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout } from "../support/monotonicWait.js";
 import { createHash } from "node:crypto";
 import {
   mkdir,
@@ -9,7 +10,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -461,3 +462,18 @@ describe("filesystem Demos write journal", () => {
     }
   }, 20_000);
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const held of ["lock", "mutation"]) {
+    it(`write journal ${held} wait keeps its budget after a ${jump} ms wall jump`, async () => {
+      const dir = await temporaryDirectory();
+      const journal = await createFsDemosWriteJournal({ dir, lockTimeoutMs: 50 });
+      const key = { chainIdentity: "clock-chain", wallet: "0xabc" };
+      const digest = createHash("sha256").update(key.chainIdentity).update("\0").update(key.wallet).digest("hex");
+      const path = join(dir, "locks", `${digest}.${held}`);
+      await mkdir(path, { mode: 0o700 });
+      await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid, hostname: hostname(), token: "held", createdAt: 1 }), { mode: 0o600 });
+      await expectMonotonicTimeout(() => journal.acquire(key), 50, 10, jump, /timed out|contended/);
+    });
+  }
+}

@@ -198,10 +198,7 @@ function seedMetadata(source, cache, toolchain) {
         !/\\.tgz(?:[?#]|$)/.test(e.key)).map(e => e.integrity))]
     ))).catch(e => { throw e });`;
   const integrities = JSON.parse(runNpmNode(toolchain, ["-e", command, toolchain.cli, source]).toString());
-  for (const integrity of integrities) {
-    if (!/(?:^|\s)sha512-/.test(integrity)) continue;
-    seedArchive(cache, cachedArchive(source, integrity));
-  }
+  for (const integrity of integrities) seedArchive(cache, cachedArchive(source, integrity));
 }
 
 function sourceEntries(lock, readArchive, contract, cache, entries, roots) {

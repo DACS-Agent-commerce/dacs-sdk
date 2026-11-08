@@ -499,7 +499,7 @@ export async function createFsX402BuyerSettlementStore(
   ): Promise<T> {
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
     while (!await acquireReclaimGate(owner)) {
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         throw new DacsError("timed out acquiring x402 buyer lock mutation gate");
       }
       await wait(lockPollMs);
@@ -514,7 +514,7 @@ export async function createFsX402BuyerSettlementStore(
   async function withLock<T>(settlementKey: string, operation: () => Promise<T>): Promise<T> {
     const path = lockPath(settlementKey);
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
-    const deadline = Date.now() + lockTimeoutMs;
+    const deadline = performance.now() + lockTimeoutMs;
     // Stage one complete owner for this acquisition. The candidate stays
     // unpublished while a live holder owns the canonical path and is reused
     // across polls; publication and stale recovery remain mutation-gated.
@@ -533,7 +533,7 @@ export async function createFsX402BuyerSettlementStore(
       while (true) {
         const availability = await lockAvailability(path);
         if (availability === "occupied") {
-          if (Date.now() >= deadline) {
+          if (performance.now() >= deadline) {
             throw new DacsError("timed out acquiring x402 buyer settlement lock");
           }
           await wait(lockPollMs);
@@ -554,7 +554,7 @@ export async function createFsX402BuyerSettlementStore(
             throw error;
           }
         }
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           throw new DacsError("timed out acquiring x402 buyer settlement lock");
         }
         await wait(lockPollMs);
@@ -567,7 +567,7 @@ export async function createFsX402BuyerSettlementStore(
     } finally {
       // Move only the lock we still own off the publication path before delete.
       let released: string | undefined;
-      await withLockMutationGate(Date.now() + lockTimeoutMs, async () => {
+      await withLockMutationGate(performance.now() + lockTimeoutMs, async () => {
         const observed = await readOwner(path);
         if (observed?.pid === owner.pid && observed.token === owner.token) {
           released = `${path}.${owner.token}.released`;

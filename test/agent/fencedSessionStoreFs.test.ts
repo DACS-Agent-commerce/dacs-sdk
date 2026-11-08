@@ -1,3 +1,4 @@
+import { expectMonotonicTimeout } from "../support/monotonicWait.js";
 import {
   mkdir,
   mkdtemp,
@@ -2065,3 +2066,18 @@ test("create keeps its published session locked through marker-conflict rollback
     vi.resetModules();
   }
 });
+
+for (const jump of [-60_000, 60_000]) {
+  for (const held of ["lock", "reclaim"]) {
+    test(`fenced session ${held} wait keeps its budget after a ${jump} ms wall jump`, async () => {
+      const path = join(dir, "locks", `clock-job.${held}`);
+      if (held === "lock") await writeFile(path, JSON.stringify({ pid: process.pid, token: "held", createdAt: 1 }), { mode: 0o600 });
+      else {
+        await mkdir(path, { mode: 0o700 });
+        await writeFile(join(path, "owner.json"), JSON.stringify({ pid: process.pid, token: "held" }), { mode: 0o600 });
+      }
+      await expectMonotonicTimeout(() => store.create({ jobId: "clock-job", agreementHash: "a".repeat(64), now: 1 }),
+        2_000, 5, jump, /contended|timed out/);
+    });
+  }
+}

@@ -257,7 +257,7 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
 // here and cannot be changed by a request, a bundle or the Listing. Any other
 // value, or an anchor composed in another mode, throws a TypeError before the
 // store is used. The returned capability exposes the mode.
-export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,vetMode:vetModeOption,now=()=>Date.now(),log=(line)=>process.stderr.write(line)}) {
+export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,vetMode:vetModeOption,now=()=>Date.now(),monotonicNow=()=>performance.now(),log=(line)=>process.stderr.write(line)}) {
   assertKitOperationAdmitted('createDevnetDemoAgreementContextProvider');
   const vetMode=sellerFulfilmentVetModeOf(vetModeOption);
   if(vetMode===null) throw new TypeError('unsupported Vet mode');
@@ -443,10 +443,10 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   // deadline. Any record it returns is still strictly verified by the caller.
   const READ_POLL_MS=25;
   async function readRecordSettled(request) {
-    const deadline=Date.now()+COUNTERPARTY_TIMEOUT_MS;
+    const deadline=monotonicNow()+COUNTERPARTY_TIMEOUT_MS;
     for(;;){
       const read=await callCounterparty('readRecord',request);
-      if(read?.status!=='indeterminate'||Date.now()>=deadline)return read;
+      if(read?.status!=='indeterminate'||monotonicNow()>=deadline)return read;
       await new Promise((resolve)=>setTimeout(resolve,READ_POLL_MS));
     }
   }

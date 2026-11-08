@@ -664,7 +664,7 @@ export async function createFsSellerReceiptStore(
   ): Promise<T> {
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
     while (!await acquireReclaimGate(owner)) {
-      if (Date.now() >= deadline) {
+      if (performance.now() >= deadline) {
         throw new DacsError("timed out acquiring seller receipt lock mutation gate");
       }
       await wait(lockPollMs);
@@ -678,7 +678,7 @@ export async function createFsSellerReceiptStore(
 
   async function withLock<T>(operation: () => Promise<T>): Promise<T> {
     const owner: LockOwner = { pid: process.pid, token: randomUUID() };
-    const deadline = Date.now() + lockTimeoutMs;
+    const deadline = performance.now() + lockTimeoutMs;
     while (true) {
       const candidate = `${lockPath}.${randomUUID()}.candidate`;
       try {
@@ -701,7 +701,7 @@ export async function createFsSellerReceiptStore(
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
         await maybeReclaimStale(lockPath, deadline);
-        if (Date.now() >= deadline) {
+        if (performance.now() >= deadline) {
           throw new DacsError("timed out acquiring filesystem seller receipt store lock");
         }
         await wait(lockPollMs);
@@ -711,7 +711,7 @@ export async function createFsSellerReceiptStore(
       return await operation();
     } finally {
       let released: string | undefined;
-      await withLockMutationGate(Date.now() + lockTimeoutMs, async () => {
+      await withLockMutationGate(performance.now() + lockTimeoutMs, async () => {
         const observed = await readOwner(lockPath);
         if (observed?.pid === owner.pid && observed.token === owner.token) {
           // Move only the lock we still own away from the publication path.

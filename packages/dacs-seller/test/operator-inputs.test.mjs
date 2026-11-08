@@ -38,7 +38,7 @@ test('HTTP streams stop at their byte budget and preserve successful exact JSON 
 
 for (const limit of [Infinity, NaN, 0, -1, 1.5, 10001]) test(`immutable cache refuses entry limit ${limit}`, () => { assert.throws(() => createImmutableReadbacks({ limit })); });
 test('immutable cache isolates scope, copies, TTL and capacity', () => {
-  let time = 0; const cache = createImmutableReadbacks({ limit: 2, ttlMs: 10, now: () => time });
+  let time = 0; const cache = createImmutableReadbacks({ limit: 2, ttlMs: 10, now: () => time, monotonicNow: () => time });
   const input = { purchaseId: JOB, locator: 'TEST', contentHash: 'a'.repeat(64), scope: { writer: buyer.claim } }, value = { n: 1 };
   cache.put(input, value); value.n = 2; assert.equal(cache.get(input).n, 1);
   const copy = cache.get(input); copy.n = 3; assert.equal(cache.get(input).n, 1);

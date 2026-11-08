@@ -77,17 +77,19 @@ async function attemptRead(target, { fetch, schedule, cancel }, timeoutMs) {
 }
 
 // Reads one document, retrying transient failures up to REGISTRY_READ_ATTEMPTS inside the aggregate deadline.
-async function readDocument(target, { fetch = globalThis.fetch, now = Date.now, wait = sleep, schedule = setTimeout, cancel = clearTimeout, deadline }) {
+async function readDocument(target, { fetch = globalThis.fetch, now = Date.now, monotonicNow = () => performance.now(), monotonicDeadline, wait = sleep, schedule = setTimeout, cancel = clearTimeout, deadline }) {
   if (!Number.isFinite(deadline)) throw new TypeError("a registry read needs an aggregate deadline");
+  const localDeadline = monotonicDeadline ?? monotonicNow() + (deadline - now());
+  if (!Number.isFinite(localDeadline)) throw new TypeError("a registry read needs a finite local deadline");
   let lastError;
-  for (let attempt = 1; attempt <= REGISTRY_READ_ATTEMPTS && deadline > now(); attempt += 1) {
+  for (let attempt = 1; attempt <= REGISTRY_READ_ATTEMPTS && localDeadline > monotonicNow(); attempt += 1) {
     try {
-      return await attemptRead(target, { fetch, schedule, cancel }, Math.min(NPM_HTTP_TIMEOUT_MS, deadline - now()));
+      return await attemptRead(target, { fetch, schedule, cancel }, Math.min(NPM_HTTP_TIMEOUT_MS, localDeadline - monotonicNow()));
     } catch (error) {
       if (!RETRYABLE_CODES.has(error.code)) throw error;
       lastError = error;
     }
-    if (attempt < REGISTRY_READ_ATTEMPTS) await wait(Math.max(0, Math.min(REGISTRY_RETRY_DELAY_MS, deadline - now())));
+    if (attempt < REGISTRY_READ_ATTEMPTS) await wait(Math.max(0, Math.min(REGISTRY_RETRY_DELAY_MS, localDeadline - monotonicNow())));
   }
   throw lastError ?? new ReleaseError("registry_timeout", target.subject, "the aggregate deadline passed before the read started");
 }
@@ -113,7 +115,7 @@ function validateDistTags(document, name, subject) {
 
 /**
  * Reads one version document. `options` takes the aggregate `deadline` (epoch milliseconds, required) and test seams
- * (`fetch`, `now`, `wait`, `schedule`, `cancel`). Resolves to `{ integrity, tarball }`, or undefined when absent. Throws
+ * (`fetch`, `now`, `monotonicNow`, `wait`, `schedule`, `cancel`) and optional in-process `monotonicDeadline`. Resolves to `{ integrity, tarball }`, or undefined when absent. Throws
  * a ReleaseError (registry_timeout, _refused, _oversized, _malformed, _redirect_refused or _unavailable) with its cause.
  */
 export async function readRegistryRelease(name, version, options) {
