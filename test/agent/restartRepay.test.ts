@@ -5,7 +5,7 @@ import {
   runSessionCore,
   sessionAnchorName,
   type SessionDeps,
-  } from "../../src/agent/runSessionCore.js";
+} from "../../src/agent/runSessionCore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/index.js";
@@ -43,7 +43,6 @@ const terms = {
   deliveryPhase: "deliver-attested-payload",
   deliveryFormat: "application/json",
 };
-
 
 // Test rails are plain objects, so accept them in place of createPayDemRail output.
 vi.mock("../../src/rails/payDemExecutionAuthority.js", async () =>

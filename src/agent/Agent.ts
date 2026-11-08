@@ -446,6 +446,8 @@ export interface RunSessionOptions {
    * Reconcile a previously claimed payment whose durable session record still
    * has only an intent or ambiguous outcome. Must use the same rail idempotency
    * key and reconcile every ordered `req.priorAttempts` entry before returning.
+   * Without `sessionStore`, it is also called instead of `settle` when an
+   * earlier run anchored the Agreement but not the payment evidence.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
