@@ -132,6 +132,24 @@ test('records of another boot, another host, no identity or another shape are do
   }
 });
 
+test('a clock value that is not a non-negative safe integer is refused before anything is written', async t => {
+  const values = { NaN, 'a fraction': 1.5, 'a negative integer': -1, 'a string': '5', 'Infinity': Infinity, 'an unsafe integer': 2 ** 53, 'undefined': undefined, 'null': null };
+  for (const [name, value] of Object.entries(values)) {
+    const dir = await directory(t);
+    await assert.rejects(acquireSellerStateLock(dir, { now: () => value }), { name: 'TypeError', message: /non-negative safe integer/ }, name);
+    assert.deepEqual(await readdir(dir), [], name);
+  }
+});
+
+test('a lock taken with a whole-number clock value records it and is read back as held', async t => {
+  for (const at of [0, 1_700_000_000_000, Number.MAX_SAFE_INTEGER]) {
+    const dir = await directory(t), lock = await acquireSellerStateLock(dir, { now: () => at });
+    assert.equal(JSON.parse(await readFile(lockPath(dir), 'utf8')).acquiredAt, at);
+    await assert.rejects(acquireSellerStateLock(dir), refused('held'));
+    lock.release();
+  }
+});
+
 test('a record whose lease file is missing is doubt, whatever its PID shows', async t => {
   const dir = await directory(t), { record } = await deadHolder(t, dir);
   await writeFile(lockPath(dir), JSON.stringify({ ...record, process: randomUUID() }));
@@ -252,6 +270,32 @@ test('a stale handle never removes a later holder', async t => {
   await writeFile(lockPath(dir), 'TEST another holder');
   second.release();
   assert.equal(await readFile(lockPath(dir), 'utf8'), 'TEST another holder');
+});
+
+test('a release whose removal failed keeps the lock and succeeds when called again', async t => {
+  const dir = await directory(t), lock = await acquireSellerStateLock(dir);
+  faultOnce(t, 'unlinkSync', file => file === lock.path);
+  assert.throws(() => lock.release(), { code: 'EIO' });
+  assert.equal(await exists(lock.path), true);
+  lock.release();
+  assert.equal(await exists(lock.path), false);
+  (await acquireSellerStateLock(dir)).release();
+});
+
+test('a release whose directory sync failed syncs the directory again when called again', async t => {
+  const dir = await directory(t), lock = await acquireSellerStateLock(dir);
+  faultOnce(t, 'fsyncSync', isDirectory);
+  assert.throws(() => lock.release(), { code: 'EIO' });
+  assert.equal(await exists(lock.path), false);
+  const real = fs.fsyncSync;
+  let directorySyncs = 0;
+  fs.fsyncSync = function (fd) { if (isDirectory(fd)) directorySyncs++; return real.call(this, fd); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.fsyncSync = real; syncBuiltinESMExports(); });
+  lock.release();
+  assert.equal(directorySyncs, 1);
+  lock.release();
+  assert.equal(directorySyncs, 1);
 });
 
 test('a lock released between the failed link and its read gets one fresh attempt', async t => {
