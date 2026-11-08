@@ -88,8 +88,11 @@ async function bindSellerIssuanceJournals({directory,names,evidenceDirectory,bin
   // Bound journals open first: a missing, recreated or swapped one refuses
   // before the ledger is read.
   let journals=binding?openJournals(binding.journals):null;
-  // A context line a crash tore at the end of the ledger never returned, so it
-  // is cut under the ledger lock (held by the caller) before the ledger is read.
+  // A recognizable torn context line at the end of the ledger never returned, so
+  // it is cut under the ledger lock (held by the caller) before the ledger is
+  // read. A tail too short to tell from the start of another line (for example
+  // only `{"format":"dacs-`) is kept, the ledger refuses below, and the
+  // operator repairs it.
   await cutTornContextLine(ledgerPath);
   // The ledger's exact bytes: an existing one is rewritten whole below.
   let kept=null;

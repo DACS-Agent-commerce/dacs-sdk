@@ -113,6 +113,14 @@ test('a start refuses a bound ledger with a torn context line while another writ
  assert.equal(await readFile(ledgerPath(directory),'utf8'),kept);
 });
 
+test('a start still refuses a bound ledger whose tail is only the first 16 bytes of a line and keeps it unchanged',async t=>{
+ const directory=await stateDirectory(t),openJournal=journalOpener();
+ const tail='{"format":"dacs-';
+ const kept=await boundLedgerWithTail(directory,openJournal,tail);
+ await assert.rejects(start(directory,openJournal),/ledger/i);
+ assert.equal(await readFile(ledgerPath(directory),'utf8'),`${kept}${tail}`);
+});
+
 test('a start still refuses a bound ledger whose last line is torn but not a context line',async t=>{
  const directory=await stateDirectory(t),openJournal=journalOpener();
  const tail='{"format":"not-a-seller-line","event":';
