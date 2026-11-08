@@ -33,6 +33,7 @@ import { createSessionAdmissionFixture } from './helpers/session-admission-fixtu
 import { mixedAuthentication, wireBuyer } from './helpers/wire-buyer.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
+import { createNativeRetrySeam } from './helpers/native-retry-seam.mjs';
 import { testNetwork, FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
@@ -205,7 +206,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast; 'refuse-broadcast' signs and keeps it and the node refuses it (see refusedCreates).
-async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, finishHook = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
+async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, lostFinish = false, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
   let startHost = seller.startSellerHost;
   if (agentTransform) {
     const agentUrl = await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform);
@@ -213,7 +214,10 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       source.replace("from './dacs/seller-agent.mjs'", `from '${agentUrl}'`));
     startHost = host.startSellerHost;
   }
-  if (finishHook) {
+  // Armed by the 'work-before-completion' cut: the next transport finish throws, as a process lost before it.
+  let finishCutArmed = false;
+  const finishHook = () => { if (finishCutArmed) throw new Error('TEST process lost before HTTP finish'); };
+  if (lostFinish) {
     const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), ['setFinishHook'], source =>
       source.replace('const REQUIRED =', 'let finishHook; function setFinishHook(value) { finishHook = value; }\nconst REQUIRED =')
         .replace('const authentication = createSellerTransportServerAuth(', 'const finish = store.finish.bind(store); store.finish = (...args) => { finishHook(); return finish(...args); };\nconst authentication = createSellerTransportServerAuth('));
@@ -223,8 +227,11 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const sellerKey = key(17), buyerKey = key(12), now = NOW, steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
-  // they can run ahead of wall time).
-  const clock = () => Math.max(NOW, node.latestBlockMs());
+  // they can run ahead of wall time). `advance` moves it and the counter that
+  // stands in for the monotonic clock (this base has none) by the same amount.
+  let advancedMs = 0;
+  const clock = () => Math.max(NOW, node.latestBlockMs()) + advancedMs;
+  const advance = (milliseconds) => { advancedMs += milliseconds; };
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey,now:clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
@@ -636,22 +643,40 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     const agent = await seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger() });
     try { return agent.durableSessionOf(jobId); } finally { agent.close(); }
   };
-  // A host process that died in the middle of a buyer's payment claim: its
-  // transport journal reserved the claim (a fresh nonce for the same effect)
-  // and never finished it. Left with the host stopped, through the store's
-  // own reserve, then the host starts again.
-  const crashMidClaim = async (p, txHash) => {
-    await host.close(); hosts.splice(hosts.indexOf(host), 1);
-    const body = { jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE };
+  const PAYMENTS_PATH = '/dacs/v1/payments';
+  const claimBody = (p, txHash) => ({ jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
+  const agreementHashes = new Map();
+  // The journal-specific setup of each cut, behind the seam. At this base the
+  // journal is the legacy transport store: 'reservation-before-work' reserves
+  // the claim through the store's own reserve (a fresh nonce for the same effect)
+  // and never finishes it, with the host stopped; 'work-before-completion' arms
+  // the finish hook on the running host. Both keep the cut's exact claim bytes.
+  const establishCut = async ({ point, jobId, path, rawBody }) => {
+    if (point === 'work-before-completion') { finishCutArmed = true; return; }
+    const text = Buffer.from(rawBody).toString(), body = JSON.parse(text);
     const signed = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim,
-      resolveJob: () => ({ listingPin: pin, agreementHash: p.agreementHash }), now: clock }).request('/dacs/v1/payments', body, JSON.stringify(body));
+      resolveJob: () => ({ listingPin: pin, agreementHash: agreementHashes.get(jobId) }), now: clock }).request(path, body, text);
     const store = seller.createSellerTransportStore({ path: join(dataDirectory, 'transport', 'transport.sqlite'), now: clock });
     try {
       const request = seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store, now: clock }).readRequest(signed.header);
       assert.equal(store.reserve(request, body, { keepProfile: FIXTURE_PROFILE }).disposition, 'perform', 'the claim is reserved, as a running request is');
     } finally { store.close(); }
+  };
+  // This base issues no wire lease, so the seam is in legacy mode and beforeRetry changes nothing.
+  const retrySeam = createNativeRetrySeam({ wallNow: clock, monotonicNow: () => advancedMs, advance, leaseUntil: () => null, mode: 'legacy', establishCut });
+  const cutClaim = (point, p, txHash) => {
+    agreementHashes.set(p.jobId, p.agreementHash);
+    return retrySeam.establishCut({ point, jobId: p.jobId, path: PAYMENTS_PATH, rawBody: Buffer.from(JSON.stringify(claimBody(p, txHash))) });
+  };
+  // A host process that died in the middle of a buyer's payment claim: the
+  // 'reservation-before-work' cut with the host stopped, then the host starts again.
+  const crashMidClaim = async (p, txHash) => {
+    await host.close(); hosts.splice(hosts.indexOf(host), 1);
+    await cutClaim('reservation-before-work', p, txHash);
     host = await start();
   };
+  // Ends the 'work-before-completion' cut: the next finish goes through.
+  const endFinishCut = () => { finishCutArmed = false; };
   // startSellerHost over these capabilities with `changes` (for refusals).
   const startShipped = (changes) => seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor, ...changes });
   // The host stopped and its agent composed over the same state (the caller closes it).
@@ -682,7 +707,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const writtenAt = (logicalAddress) => clone(written.get(logicalAddress));
   // Another write of the seller's account takes the nonce a kept CREATE signed.
   const overtakeWallet = () => node.create(sellerKey, { logicalAddress: 'dacs4:TEST-other-write', artifact: { TEST: 'another write of the seller wallet' }, artifactKind: 'TEST-other' });
-  return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, replaceDeliveryWallet, openDeliveryJournal, overtakeWallet, deliveryWallet: () => deliveryJournalWallet, retainedSession, crashMidClaim, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
+  return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, replaceDeliveryWallet, openDeliveryJournal, overtakeWallet, deliveryWallet: () => deliveryJournalWallet, retainedSession, crashMidClaim, cutClaim, endFinishCut, beforeRetry: retrySeam.beforeRetry, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
     host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, editRetainedSession,
     unguardedCapability: () => deliveryCapability(false), useGuardedDelivery: (guarded) => { guardedStart = guarded; },
     useDeliveryJournal: (on) => { journalInUse = on; } };
@@ -879,6 +904,7 @@ test('a payment claim a crash left reserved and unfinished is not stranded: the 
     w.faults[kind].push(fault);
     assert.equal((await p.claim(tx)).status, 'held', label);
     await w.crashMidClaim(p, tx);
+    w.beforeRetry();
     let answer = { status: 'not-claimed' };
     for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
     assert.equal(answer.status, 'payment-evidenced', `${label}: ${shown(answer)}`);
@@ -906,6 +932,7 @@ test('a paid outside buyer recovers an uncertain payment after access closes and
   access.openBuyerAccess = false;
   w.restartWallet();
   await w.crashMidClaim(p, tx);
+  w.beforeRetry();
   assert.equal(w.capabilities().buyerAccess.allowsWallet(w.buyerKey.address), false);
   const signed = await w.signedClaim(p, tx);
   const response = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
@@ -988,6 +1015,7 @@ test('a crash during the first payment claim, before any work is retained, does 
   await w.crashMidClaim(p, tx);
   assert.equal((await w.retainedSession(p.jobId)).nativeEvidenceWork, undefined, 'no work was retained before the crash');
   await w.restart();
+  w.beforeRetry();
   let answer = { status: 'not-claimed' };
   for (let claim = 0; claim < 3 && answer.status !== 'payment-evidenced'; claim++) answer = await p.claim(tx);
   assert.equal(answer.status, 'payment-evidenced', shown(answer));
@@ -1424,6 +1452,7 @@ test('a crash during a first claim that keeps nothing does not bind the job to i
   for (const [label, wrong] of [['a transfer the node does not have', () => 'ab'.repeat(32)], ['an underpaid transfer', (p) => w.node.pay({ from: w.buyerKey.address, to: p.payout.payeeAddress, amountOs: '1' })]]) {
     const p = await w.purchase(), first = wrong(p);
     await w.crashMidClaim(p, first);
+    w.beforeRetry();
     const reconciled = await p.claim(first);
     assert.ok(['indeterminate', 'rejected'].includes(reconciled.status), `${label}: ${shown(reconciled)}`);
     const tx = p.pay(), answer = await p.claim(tx);
@@ -2340,6 +2369,7 @@ test('a delivery evidence publisher outage remains retryable through crash recon
   const first = await p.claim(tx);
   assert.equal(first.delivery?.evidencePublication, 'held-readback-only', shown(first));
   await w.crashMidClaim(p, tx);
+  w.beforeRetry();
   w.faults.artifactPublish.push('SettlementEvidence');
   const held = await p.claim(tx);
   assert.equal(held.delivery?.evidencePublication, 'held-readback-only', shown(held));
@@ -3397,20 +3427,20 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
 
 test('wire-payment-retained-work-before-finish', async (t) => {
   for (const checkpoint of ['claim', 'evidence-create', 'delivery-checkpoint']) {
-    let cut = false;
-    const w = await world(t, { finishHook: () => { if (cut) throw new Error('TEST process lost before HTTP finish'); } });
+    const w = await world(t, { lostFinish: true });
     const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
     if (checkpoint === 'claim') w.faults.signCreate.push('throw');
     if (checkpoint === 'evidence-create') w.faults.broadcast.push('drop');
-    cut = true;
+    await w.cutClaim('work-before-completion', p, tx);
     const interrupted = await p.claim(tx);
     assert.ok(interrupted.error || interrupted.status !== 'payment-evidenced', shown(interrupted));
-    cut = false;
+    w.endFinishCut();
     const retained = await w.retainedSession(p.jobId);
     assert.ok(retained.nativeEvidenceWork, `${checkpoint}: exact claim is durable before HTTP finish`);
     if (checkpoint === 'evidence-create') assert.equal(w.effects.signed.length, 1, 'signed evidence was retained before the lost answer');
     if (checkpoint === 'delivery-checkpoint') assert.ok(retained.deliveryReady, 'delivery checkpoint precedes HTTP finish');
     await w.restart();
+    w.beforeRetry();
     let result;
     for (let attempt = 0; attempt < 3; attempt++) { result = await p.claim(tx); if (result.status === 'payment-evidenced') break; }
     assert.equal(result.status, 'payment-evidenced', `${checkpoint}: ${shown(result)}`);
