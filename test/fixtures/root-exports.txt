@@ -1959,4 +1959,5 @@ value x402Eip3009Nonce
 value x402PaywallCore
 value x402PaywallFulfilmentKey
 value x402PaywallSettlementKey
+value x402Settle
 value x402SettleCore
