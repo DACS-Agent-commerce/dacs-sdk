@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import fs,{ existsSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
+import { mkdir,mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeSellerApproval,createExactOperatorApproval,parsePolicyLedger,heldPolicyBudget,SELLER_LEDGER_HEADER_FORMAT,SELLER_ISSUANCE_JOURNALS } from '../src/devnet-demo/operator-approval.mjs';
 import { sellerRecordsPurchaseResolver } from '../src/devnet-demo/seller-purchase-source.mjs';
+import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
 import { address,seller,buyer,pin,sourceBinding,artifactAuthority,T0,JOBS,PAYMENT_TX_REF,deliveredHashFor,requestFor,confirmationFor,realPurchaseResolver } from './helpers/d5-policy-fixtures.mjs';
+const LOCK_FILE='seller-state.lock';
 const purchase=()=>({jobId:JOBS[0],seller,buyer,listingPin:pin,sourceBinding,agreementHash:'e'.repeat(64),amountOs:'1000000000',paymentObserved:true,paymentTxRef:{...PAYMENT_TX_REF},prePaymentOpen:false});
 // An Agreement still unpaid, as seller records see it (buyer cancellation unknown).
 const unpaid=()=>({...purchase(),paymentObserved:false,paymentTxRef:null,prePaymentOpen:null});
@@ -57,6 +59,23 @@ test('D-1 direct manual approval refuses changed bytes and retains immutable app
  assert.throws(()=>{r.content.exactCreate='{}';},TypeError);
  const lines=(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
  assert.equal(lines.at(-1).requestBytes,JSON.stringify(r));
+});
+
+test('a plain manual approval is refused while another writer holds the ledger lock, and writes no line',async t=>{
+ const f=await fixture(t),r=requestFor(),approve=createExactOperatorApproval({...f.settings,authorize:()=>true});
+ const lockDirectory=`${f.evidencePath}.policy-lock`;await mkdir(lockDirectory,{recursive:true,mode:0o700});
+ const writer=await acquireSellerStateLock(lockDirectory,{now:()=>T0});
+ await assert.rejects(approve(r),{code:'seller_state_locked'});
+ writer.release();
+ assert.equal(existsSync(f.evidencePath),false);assert.equal(Object.isFrozen(r),false);
+});
+
+test('a plain manual approval is recorded once the ledger lock is free, and releases the lock',async t=>{
+ const f=await fixture(t),r=requestFor(),approve=createExactOperatorApproval({...f.settings,authorize:()=>true});
+ assert.equal(await approve(r),true);
+ assert.equal(existsSync(join(`${f.evidencePath}.policy-lock`,LOCK_FILE)),false);
+ const lines=(await readFile(f.evidencePath,'utf8')).trim().split('\n').map(JSON.parse);
+ assert.equal(lines.at(-1).decision,'approved');assert.equal(lines.at(-1).requestBytes,JSON.stringify(r));
 });
 
 for(const [state,found] of [

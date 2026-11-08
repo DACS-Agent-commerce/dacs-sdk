@@ -738,9 +738,10 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       return accepted;
     };
     // A held attempt's answer is recorded only while this ledger still has that attempt open and unsigned for
-    // these bytes; an attempt that has ended (or another ledger's) gets no line and no approval.
+    // these bytes; an attempt that has ended (or another ledger's) gets no line and no approval. Every answer,
+    // including one with no attempt or waiver, is appended under the ledger's writer lock.
     if(waiverId)return serializedPolicy(evidencePath,async()=>waiverOpen(await readPolicyLedger(evidencePath),waiverId,approvalHash)&&record());
-    return attemptId?serializedPolicy(evidencePath,async()=>heldOpen(await readPolicyLedger(evidencePath),attemptId,approvalHash)&&record()):record();
+    return serializedPolicy(evidencePath,async()=>(attemptId?heldOpen(await readPolicyLedger(evidencePath),attemptId,approvalHash):true)&&record());
   };
   const approve=(request,validity,options={})=>{
     if(!policyMode){
