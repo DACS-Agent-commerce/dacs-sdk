@@ -243,13 +243,6 @@ export async function startSellerHost(options) {
     host = '127.0.0.1', port = 0, now = () => Date.now(), contextSessionState = () => null } = options;
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
   if (typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
-  const sessionState = input => {
-    try {
-      const value = contextSessionState(input);
-      if (value && typeof value.then === 'function') Promise.resolve(value).then(undefined, () => {});
-      return typeof value === 'string' ? value : null;
-    } catch { return null; }
-  };
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
   if (!LOOPBACK.has(host)) throw new TypeError('the seller host listens only on literal loopback (127.0.0.1 or ::1)');
@@ -290,7 +283,7 @@ export async function startSellerHost(options) {
     // The store comes first: its one challenge ledger is the agent's only challenge store, and the agent checks the
     // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, generation, stopped: stopRequested, contextSessionState: sessionState });
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, generation, stopped: stopRequested, contextSessionState });
     opened.push(() => store.close());
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
