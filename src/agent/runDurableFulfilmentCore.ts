@@ -302,8 +302,8 @@ export type ProjectDurableSellerAuditPendingInput = Omit<
  * Authenticated, caller-assembly-free input pair for seller bundle finalization.
  * This focused projection covers a terminal delivery only when it is the final
  * pinned pipeline step; suffix phases require their own authenticated WAL.
- * Callers pass this projection directly to `finalizeCompletedSellerBundleCore`;
- * rebuilding it from other caller inputs is not safe.
+ * Durable seller bundle finalization builds this projection from its WAL and
+ * refuses to finalize unless the finalizer's inputs match it exactly.
  */
 export interface VerifiedDurableSellerAuditPendingProjection {
   terminal: VerifiedDurableSellerTerminalResult;
