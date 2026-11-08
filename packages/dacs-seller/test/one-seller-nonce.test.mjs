@@ -831,8 +831,9 @@ test('R09 ledger refusal precedes retained recovery', async t => {
 
 test('R09 rejected retained body keeps challenges unchanged', async t => {
   const { f, input } = await legacyOperation(t), before = recoverySnapshot(f);
-  const store = { ...f.store, classify: () => { throw new Error('TEST classification failed'); } };
-  assert.throws(() => f.route.onRejectedBody(input.request, input.body, store), { code: 'context_challenge_mismatch' });
+  const failure = new Error('TEST classification failed');
+  const store = { ...f.store, classify: () => { throw failure; } };
+  assert.throws(() => f.route.onRejectedBody(input.request, input.body, store), error => error === failure);
   assert.doesNotThrow(() => f.route.onRejectedBody(input.request, input.body, f.store));
   assert.deepEqual(recoverySnapshot(f), before); assert.equal(f.calls.effects, 0);
 });
