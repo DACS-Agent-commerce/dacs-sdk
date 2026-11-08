@@ -11,6 +11,7 @@ import { isPaymentTxRef } from './seller-purchase-source.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 import { buildStorageProgramCreatePayload } from '../dacs/wallet-transactions.mjs';
 import { DEVNET_DEMO_ARTIFACT_KIND, DEVNET_DEMO_ARTIFACT_POLICY } from '../dacs/devnet-source.mjs';
+import { sellerDiagnostic } from '../seller-diagnostics.mjs';
 
 const sha=(value)=>createHash('sha256').update(value).digest('hex');
 const OS=/^(0|[1-9][0-9]*)$/,POSITIVE_OS=/^[1-9][0-9]*$/,HASH=/^[0-9a-f]{64}$/;
@@ -381,7 +382,7 @@ export function composeSellerApproval({mode,policy,manual}){
     // The sign line could not be retained: nothing was signed and the attempt is released, so the write is
     // decided again after a pause (before payment a refusal would be final for its artifact).
     if(answer==='unsigned'){
-      process.stderr.write(`seller-policy-sign-authorization failed: the ${held.content.artifactKind} write for job ${held.content.jobId} was not signed; it is decided again\n`);
+      process.stderr.write(`seller-policy-sign-authorization failed: ${JSON.stringify(sellerDiagnostic('seller_policy_sign_authorization_failed',{jobId:held.content.jobId}))}\n`);
       await policy.pause();return approve(request);
     }
     if(answer==='signed')prepared=request;
@@ -564,7 +565,7 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       try{await cutTornContextLine(evidencePath);const snapshot=await readPolicyLedger(evidencePath);live();return snapshot;}
       catch(error){
         if(stopped)throw stoppedError(LEDGER_STOPPED);
-        if(waited%Math.max(1,Math.ceil(60_000/ledgerRetryMs))===0)process.stderr.write(`seller-policy-ledger unreadable: ${resolve(evidencePath)}${Number.isSafeInteger(error?.ledgerLine)?` line ${error.ledgerLine}`:''} (${String(error?.code??error?.message).slice(0,120)}); the ${request?.content?.artifactKind} write for job ${request?.content?.jobId} waits, unsigned and not refused, and is decided again once the ledger reads\n`);
+        if(waited%Math.max(1,Math.ceil(60_000/ledgerRetryMs))===0)process.stderr.write(`seller-policy-ledger unreadable: ${JSON.stringify(sellerDiagnostic('seller_policy_ledger_unreadable',{jobId:request?.content?.jobId,ledgerLine:error?.ledgerLine}))}\n`);
         await pause();
       }
     }
@@ -737,9 +738,14 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
       return accepted;
     };
     // A held attempt's answer is recorded only while this ledger still has that attempt open and unsigned for
-    // these bytes; an attempt that has ended (or another ledger's) gets no line and no approval.
-    if(waiverId)return serializedPolicy(evidencePath,async()=>waiverOpen(await readPolicyLedger(evidencePath),waiverId,approvalHash)&&record());
-    return attemptId?serializedPolicy(evidencePath,async()=>heldOpen(await readPolicyLedger(evidencePath),attemptId,approvalHash)&&record()):record();
+    // these bytes; an attempt that has ended (or another ledger's) gets no line and no approval. Every answer,
+    // including one with no attempt or waiver, is appended under the ledger's writer lock.
+    // In every branch an answer is recorded and frozen only for the bytes the operator approved: a request changed
+    // while this waited for the lock is refused, with no line and no freeze.
+    const unchanged=()=>!accepted||JSON.stringify(request)===requestBytes;
+    if(waiverId)return serializedPolicy(evidencePath,async()=>waiverOpen(await readPolicyLedger(evidencePath),waiverId,approvalHash)&&unchanged()&&record());
+    if(!attemptId)return serializedPolicy(evidencePath,async()=>unchanged()&&record());
+    return serializedPolicy(evidencePath,async()=>heldOpen(await readPolicyLedger(evidencePath),attemptId,approvalHash)&&unchanged()&&record());
   };
   const approve=(request,validity,options={})=>{
     if(!policyMode){

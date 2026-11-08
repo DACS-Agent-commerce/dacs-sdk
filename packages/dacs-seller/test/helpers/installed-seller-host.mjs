@@ -12,9 +12,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as core from '@kynesyslabs/dacs';
+import * as wire from '@kynesyslabs/dacs/wire';
 import * as seller from '@kynesyslabs/dacs-seller';
 import { createSellerAgent } from '@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs';
 import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs';
+import { KIT_TP1_VET_MODE } from '@kynesyslabs/dacs-seller/src/host.mjs';
 import { createNativeDemDeliveryCapability } from '@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer } from '@kynesyslabs/dacs-seller/src/dacs/native-payment-evidence-consumer.mjs';
 
@@ -105,9 +107,9 @@ const vetRecords = new Map(), admissionCalls = [];
 const vetReceipt = (ref) => ({ receiptVersion: '1', substrate: 'demos', finalityProfile: 'TEST-installed', logicalAddress: ref.anchor.locator, nativeAddress: `TEST-native-${ref.contentHash.slice(0, 16)}`,
   contentHash: ref.contentHash, transactionRef: { kind: 'demos', value: core.sha256Hex(`installed vet tx ${ref.contentHash}`) }, writer: ref.signer, state: 'finalized', observationDisposition: 'established',
   observedAt: now, blockRef: { id: 'TEST-block', height: '1', timestamp: now }, evidence: { kind: 'TEST', value: 'installed' } });
-const verifierOf = (party) => (party === sellerKey.claim ? buyerKey : sellerKey);
+// The host's TP-1 G3 orchestrator mode: the seller verifies both parties' records.
 const vetRef = async (jobId, party, bundle) => {
-  const verifier = verifierOf(party);
+  const verifier = sellerKey;
   const record = await core.signComponentArtifact({ recordVersion: '1', jobId, evaluatedParty: party, bundleHash: core.identityBundleHash(bundle), requirementHash: core.sha256Hex(core.canonicalize(listing.buyerRequirement)),
     freshness: [], supplementary: [], dealSpecific: [], overallDecision: 'pass', generatedAt: now }, core.ARTIFACT_SEPARATORS.CompositeVerificationRecord, { algorithm: 'ed25519', signer: verifier.claim, sign: verifier.sign });
   vetRecords.set(core.contentHash(record), record);
@@ -134,24 +136,35 @@ const vettedInput = (jobId) => inputs.get(jobId) ?? inputs.set(jobId, (async () 
 // A Vet context that names a hash with no record behind it.
 const fabricatedInput = (jobId) => {
   const input = seller.agreementInput({ jobId, listing, buyerBundle: bundleFor(jobId), generatedAt: now });
-  const ref = (party) => ({ anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.sha256Hex(`installed-vet:${jobId}:${party}`), signer: verifierOf(party).claim });
+  const ref = (party) => ({ anchor: { kind: 'storage-program', locator: core.compositeVerificationAddress(jobId, party) }, contentHash: core.sha256Hex(`installed-vet:${jobId}:${party}`), signer: sellerKey.claim });
   return { ...input, buyer: { ...input.buyer, vetRecordRef: ref(buyerKey.claim) }, seller: { ...input.seller, vetRecordRef: ref(sellerKey.claim) } };
 };
 const fabricatedJobs = new Set();
-// One requirement invocation per party Vet record, each naming the evaluated party's counterparty as verifier.
+// One requirement invocation per party Vet record, each naming the seller as verifier.
 const invocationsFor = (input) => [['buyer', buyerKey.claim], ['seller', sellerKey.claim]].map(([role, evaluatedParty]) => ({
-  vetRecordRef: input[role].vetRecordRef, evaluatedParty, requirement: structuredClone(listing.buyerRequirement), verifier: verifierOf(evaluatedParty).claim, freshness: [], dealSpecific: [] }));
+  vetRecordRef: input[role].vetRecordRef, evaluatedParty, requirement: structuredClone(listing.buyerRequirement), verifier: sellerKey.claim, freshness: [], dealSpecific: [] }));
 const vetContextCalls = [];
 // The package's wallet journal over the operator's wallet primitives: it
 // answers both the evidence anchor and the host's journal question.
 const journalDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wallet-')));
 const journal = seller.createPaymentEvidenceWalletJournal({ path: join(journalDirectory, 'wallet-journal.sqlite'), signCreate: refuse('wallet.signCreate'), broadcast: refuse('wallet.broadcast'),
   readAccountNonce: refuse('wallet.readAccountNonce'), readTransactionState: refuse('wallet.readTransactionState') });
+// The wire's test-only authority semantics, inlined: this file runs alone in the consumer application,
+// where the repository's fixture helper is not available. It confirms the approved chain for the
+// connection and participants it is asked about.
+const approvedRecord = wire.TP1_APPROVED_IDENTITY_RECORD;
+const approvedProfile = { id: wire.TP1_PROFILE_ID, revision: wire.TP1_PROFILE_REVISION, base: wire.TP1_BASE_REVISION, chainIdentity: approvedRecord.chainIdentity, pinVersion: approvedRecord.pinVersion };
+const tp1Network = {
+  connection: () => ({ endpoint: 'https://rpc.example.invalid/', transportAuthority: 'installed-authority', connectionId: 'installed-conn-1' }),
+  readAuthority: (scope) => ({ local: { ...scope.local }, chainIdentity: approvedRecord.chainIdentity, provenance: 'test-only-independent-authority/v1', sessionId: scope.sessionId,
+    participants: scope.participants.map((claim) => ({ claim, profile: approvedProfile, modules: wire.TESTNET_PROFILE_TP1.tuple })) }),
+};
 const capabilities = () => ({
+  tp1Network,
   now:()=>now,
   nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: journal.anchorEvidence, fetchImpl: refuse('nativePaymentEvidence.fetch') }),
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence,
-  demDeliveryContext: createDemDeliveryContext({ authority: 'TEST-installed-package', resolveBuyer: refuse('demDeliveryContext.resolveBuyer'),
+  demDeliveryContext: createDemDeliveryContext({ authority: 'TEST-installed-package', vetMode: KIT_TP1_VET_MODE, resolveBuyer: refuse('demDeliveryContext.resolveBuyer'),
     resolveSeller: async ({ jobId }) => { vetContextCalls.push(jobId); const input = fabricatedJobs.has(jobId) ? fabricatedInput(jobId) : await vettedInput(jobId); return { disposition: 'present', value: { input, vetRequirements: invocationsFor(input) } }; } }),
   nativeDemDelivery: createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', submitAuthorized: refuse('nativeDemDelivery.submit'), reconcile: refuse('nativeDemDelivery.reconcile'),
     read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt') }),
@@ -202,7 +215,7 @@ out.refusedConfigurations = {
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
   otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
   scriptedJournal: await refusal({ signer, listing, dataDirectory, ...capabilities(), reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
-  scriptedAgent: await agentRefusal({ signer, listing, ...capabilities(), nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
+  scriptedAgent: await agentRefusal({ signer, listing, vetMode: KIT_TP1_VET_MODE, ...capabilities(), nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
     reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
 };
 

@@ -4,7 +4,6 @@ import fs, {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {connect} from 'node:net';
 import {once} from 'node:events';
-import {syncBuiltinESMExports} from 'node:module';
 import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
@@ -13,18 +12,20 @@ import Database from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import {commitmentFixture} from './helpers/commitment-fixture.mjs';
 import {privateModule} from './helpers/private-module.mjs';
+import {testNetwork} from './helpers/wire-authority-fixture.mjs';
 import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
-import {startSellerHost} from '../src/host.mjs';
+import {startSellerHost,KIT_TP1_VET_MODE} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
 import {createSellerTransportClientAuth,createSellerTransportStore,SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
 import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent}={}){
- const f=await commitmentFixture(t),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
- const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;
+ const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
+ // `vetMode` is an agent option: the host fixes it and takes no such option.
+ const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;delete config.vetMode;
  const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){testWrapper=value;}\nconst REQUIRED =').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
- api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory},hosts=[];
+ api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,tp1Network:testNetwork()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
  const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:host.listingPin,agreementHash:request.proposal.plan.agreementHash}),now:()=>NOW}),timeoutMs:60000});
@@ -254,16 +255,16 @@ test('host reports both literal loopback URLs',async t=>{
  const v6=await f.start({host:'::1'});assert.match(v6.url,/^http:\/\/\[::1\]:\d+$/);await v6.close();
 });
 
-test('host makes newly created seller and transport directories durable before listening',async t=>{
- const f=await fixture(t),original=fs.fsyncSync,synced=[];
+test('host makes newly created seller, transport and journal directories durable before listening',async t=>{
+ const f=await fixture(t),handle=await fs.promises.open(f.dataDirectory,'r'),proto=Object.getPrototypeOf(handle),original=proto.sync,synced=[];
+ await handle.close();
  try{
-  fs.fsyncSync=descriptor=>{try{synced.push(fs.realpathSync(`/proc/self/fd/${descriptor}`));}catch{}return original(descriptor);};
-  syncBuiltinESMExports();
+  proto.sync=async function(){try{synced.push(fs.realpathSync(`/proc/self/fd/${this.fd}`));}catch{}return original.call(this);};
   const host=await f.start();
   assert.ok(synced.includes(join(f.dataDirectory,'transport')),'the new transport directory entry is synced');
-  assert.ok(synced.includes(f.dataDirectory),'the new seller and transport directory entries are synced in dataDirectory');
+  assert.ok(synced.includes(f.dataDirectory),'the new seller, transport and wire-journal directory entries are synced in dataDirectory');
   await host.close();
- }finally{fs.fsyncSync=original;syncBuiltinESMExports();}
+ }finally{proto.sync=original;}
 });
 
 const lockOwner=(lease,pid,namespace)=>`${pid}:${lease}:${Date.now()}:${randomUUID()}${namespace?`:${namespace.ns}.${namespace.boot}.${namespace.start}`:''}`;
@@ -315,8 +316,10 @@ test('host refuses malformed options before opening any state',async t=>{
  const loose=await mkdtemp(join(tmpdir(),'TEST-host-loose-'));await chmod(loose,0o755);
  const link=join(root,'link');await symlink(dataDirectory,link);
  const file=join(root,'regular');await writeFile(file,'TEST');
+ // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
+ const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{}});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},tp1Network:testNetwork()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],
@@ -331,9 +334,25 @@ test('host refuses malformed options before opening any state',async t=>{
   ['non-private dataDirectory',{...base(),dataDirectory:loose},/existing private \(mode 0700\) directory/],
   ['symbolic link dataDirectory',{...base(),dataDirectory:link},/existing private \(mode 0700\) directory/],
   ['regular file dataDirectory',{...base(),dataDirectory:file},/existing private \(mode 0700\) directory/],
+  ...notExactly0700.map(([mode,directory])=>[`dataDirectory with mode ${mode.toString(8)}`,{...base(),dataDirectory:directory},/existing private \(mode 0700\) directory/]),
   ['observeDemosTransfer is not a function',{...base(),observeDemosTransfer:5},/must be functions/],
   ['now is not a function',{...base(),now:5},/must be functions/],
   ['mismatched payment evidence pair',{...base(),nativePaymentEvidence:{anchorEvidence:()=>{}}},/payment-evidence anchor and reconcilePaymentEvidence/],
  ];
  for(const [label,options,expected] of cases)await assert.rejects(startSellerHost(options),expected,label);
+});
+test('a host started with a TP-1 G3 orchestrator DEM context takes a W proposal',async t=>{
+ assert.equal(KIT_TP1_VET_MODE,'tp1-g3-orchestrator');
+ const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
+ assert.equal((await f.client(host,request).propose(request)).disposition,'complete');
+});
+test('the host refuses a counterparty DEM context with vet_mode_mismatch before the state lock',async t=>{
+ const f=await fixture(t);
+ await assert.rejects(f.start({demDeliveryContext:f.capability(undefined)}),{name:'TypeError',code:'vet_mode_mismatch'});
+ await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
+});
+test('no host option selects or changes the kit Vet mode',async t=>{
+ const f=await fixture(t);
+ for(const mode of ['counterparty',KIT_TP1_VET_MODE,undefined])await assert.rejects(f.start({vetMode:mode}),/unknown seller host option: vetMode/);
+ await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
 });

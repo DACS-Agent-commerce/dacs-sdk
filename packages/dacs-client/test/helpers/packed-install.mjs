@@ -1,4 +1,4 @@
-// Packs the core and client archives and installs them offline in an empty app
+// Packs the core, client and dacs-node archives and installs them offline in an empty app
 // directory (no registry, no source-tree import). DC-CW11: `switchedCopy` makes
 // the one-line diff P35 will make, in a temporary copy that is never committed.
 import { createHash } from 'node:crypto';
@@ -11,7 +11,10 @@ import assert from 'node:assert/strict';
 
 export const packageDir = fileURLToPath(new URL('../..', import.meta.url));
 export const sdkDir = resolve(packageDir, '../..');
+const nodeDir = join(sdkDir, 'packages/dacs-node');
 const STATE_MODULE = 'src/dacs/purchase-admission-state.mjs';
+// The lock records a version as published ("1.0.01" for pqcrypto); the installed manifest holds npm's normalized form ("1.0.1").
+const canonicalVersion = version => version.replace(/(^|\.)0+(?=\d)/g, '$1');
 
 /** A temporary copy of the client package whose hold constant reads "testnet-tp1". Removed after the test. */
 export function switchedCopy(t) {
@@ -25,7 +28,7 @@ export function switchedCopy(t) {
   return directory;
 }
 
-/** Installs the core archive and the archive of `clientDir` in an empty app; returns the app path and a runner that asserts exit 0. */
+/** Installs the core archive, the archive of `clientDir` and the dacs-node archive in an empty app; returns the app path, a runner that asserts exit 0 and the dacs-node archive's `file:` URL. */
 export function installPackedPair(t, { clientDir = packageDir } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-consumer-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -39,10 +42,12 @@ export function installPackedPair(t, { clientDir = packageDir } = {}) {
   };
   const core = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], sdkDir))[0];
   const client = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], clientDir))[0];
+  const node = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', directory], nodeDir))[0];
   const app = join(directory, 'app');
   mkdirSync(app);
   const dependencies = { '@kynesyslabs/dacs': 'file:' + join(directory, core.filename),
-    '@kynesyslabs/dacs-client': 'file:' + join(directory, client.filename) };
+    '@kynesyslabs/dacs-client': 'file:' + join(directory, client.filename),
+    '@kynesyslabs/dacs-node': 'file:' + join(directory, node.filename) };
   const manifest = { name: 'TEST-packed-buyer', private: true, type: 'module', dependencies };
   writeFileSync(join(app, 'package.json'), JSON.stringify(manifest));
   // Stage exact installed runtime packages as local artifacts. This test owns
@@ -58,18 +63,21 @@ export function installPackedPair(t, { clientDir = packageDir } = {}) {
   for (const [path, entry] of Object.entries(lock.packages)) {
     if (!path || entry.dev || entry.optional) continue;
     const installed = join(sdkDir, path);
-    assert.equal(JSON.parse(readFileSync(join(installed, 'package.json'))).version, entry.version, path);
+    const installedVersion = JSON.parse(readFileSync(join(installed, 'package.json'))).version;
+    assert.equal(canonicalVersion(installedVersion), canonicalVersion(entry.version), path);
+    entry.version = installedVersion;
     const artifact = join(dependencyArtifacts, String(Object.keys(lock.packages).indexOf(path)) + '.tgz');
     run('tar', ['-czf', artifact, '--exclude=./node_modules', '--transform=s,^.,package,', '-C', installed, '.'], directory);
     entry.resolved = 'file:' + artifact;
     entry.integrity = 'sha512-' + createHash('sha512').update(readFileSync(artifact)).digest('base64');
   }
-  for (const [name, packed, source] of [['@kynesyslabs/dacs', core, sdkDir], ['@kynesyslabs/dacs-client', client, clientDir]]) {
+  for (const [name, packed, source] of [['@kynesyslabs/dacs', core, sdkDir], ['@kynesyslabs/dacs-client', client, clientDir],
+    ['@kynesyslabs/dacs-node', node, nodeDir]]) {
     const pkg = JSON.parse(readFileSync(join(source, 'package.json')));
     lock.packages['node_modules/' + name] = { version: pkg.version, resolved: dependencies[name], integrity: packed.integrity,
       dependencies: pkg.dependencies, peerDependencies: pkg.peerDependencies, peerDependenciesMeta: pkg.peerDependenciesMeta, engines: pkg.engines };
   }
   writeFileSync(join(app, 'package-lock.json'), JSON.stringify(lock));
   run('npm', ['ci', '--offline', '--ignore-scripts', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund'], app);
-  return { app, run };
+  return { app, run, nodeArchive: dependencies['@kynesyslabs/dacs-node'] };
 }
