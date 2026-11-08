@@ -9,6 +9,7 @@ import {
   createPayDemRail,
 } from "../../src/rails/payDem.js";
 import {
+  createPayDemFundedRail,
   executePayDemFundedRun,
   readPayDemFundedPreparedTransfer,
 } from "../integration/pay-dem-funded-run.js";
@@ -135,9 +136,64 @@ beforeEach(() => {
   sdk.waitForNonce.mockResolvedValue(undefined);
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("createPayDemRail nonce coordination", () => {
+  it("funded live rail waits for delayed inclusion without another broadcast", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    sdk.nodeCall.mockImplementation(async () => Date.now() < 120_000
+      ? { state: "pending" }
+      : { state: "included", blockNumber: 42 });
+    const journalPreparedTransfer = vi.fn(async () => undefined);
+    const rail = await createPayDemFundedRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer,
+    });
+    const result = rail.settle({ recipient: RECIPIENT, amount: "1" });
+    const completed = vi.fn();
+    void result.then(completed);
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(completed).not.toHaveBeenCalled();
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(59_000);
+    await expect(result).resolves.toMatchObject({
+      ok: true, execution: "executed", txHash: TX_HASH, blockNumber: 42,
+    });
+    expect(journalPreparedTransfer).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
+    expect(sdk.nodeCall.mock.calls.every(([message, args]) =>
+      message === "getTransactionStatus" && args.hash === TX_HASH)).toBe(true);
+  });
+
+  it("funded live rail retains an unresolved hash at its observation deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    sdk.nodeCall.mockResolvedValue({ state: "pending" });
+    const rail = await createPayDemFundedRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+    const result = rail.settle({ recipient: RECIPIENT, amount: "1" });
+    const completed = vi.fn();
+    void result.then(completed);
+
+    await vi.advanceTimersByTimeAsync(179_500);
+    expect(completed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(result).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+    expect(await result).not.toHaveProperty("execution");
+    expect(await result).not.toHaveProperty("blockNumber");
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+  });
+
   it("preserves signed and confirmed wire key order through broadcast", async () => {
     const signed = {
       content: {

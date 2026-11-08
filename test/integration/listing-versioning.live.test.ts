@@ -8,7 +8,7 @@ import {
   createInMemoryBindingStore,
 } from "../../src/index.js";
 
-import { buildVersioningListing } from "./listing-versioning-fixture.js";
+import { buildVersioningListing, VERSIONING_OVERWRITE_REFUSAL } from "./listing-versioning-fixture.js";
 
 /**
  * Live-node acceptance gate for #46.
@@ -66,7 +66,7 @@ describe("LIVE listing version immutability + sequencing (#46)", () => {
           listingVersion: 1,
           offering: { ...base.offering, description: "forbidden overwrite" },
         }),
-      ).rejects.toThrow(/different signed-scope content/);
+      ).rejects.toThrow(VERSIONING_OVERWRITE_REFUSAL);
       await expect(
         agent.publishListing({
           ...base,

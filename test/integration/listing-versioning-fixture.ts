@@ -1,5 +1,8 @@
 import type { ListingDraft } from "../../src/artifacts/types.js";
 
+/** Refusal shared with the live assertion and the real-adapter offline guard. */
+export const VERSIONING_OVERWRITE_REFUSAL = /canonically confirmed create with different exact content or metadata/;
+
 /** Build the shared versioning draft without payment or payload-verification capabilities. */
 export function buildVersioningListing(
   listingId: string,

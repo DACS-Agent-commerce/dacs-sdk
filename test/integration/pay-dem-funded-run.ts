@@ -2,8 +2,10 @@ import { dirname } from "node:path";
 import { types as nodeTypes } from "node:util";
 
 import {
+  createPayDemRail,
   PayDemIncludedNonceVisibilityError,
   type PayDemPreparedTransfer,
+  type PayDemRailConfig,
 } from "../../src/rails/payDem.js";
 import {
   executeFundedRun,
@@ -18,6 +20,12 @@ const INTEGER_RE = /^[1-9][0-9]{0,31}$/;
 const ADDRESS_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const PREPARED_CHECKPOINT = "pay-dem-prepared";
+const FUNDED_INCLUSION_TIMEOUT_MS = 180_000;
+
+/** Create the funded live rail with a longer inclusion budget; propagate SDK validation errors. */
+export function createPayDemFundedRail(config: Omit<PayDemRailConfig, "inclusionTimeoutMs">) {
+  return createPayDemRail({ ...config, inclusionTimeoutMs: FUNDED_INCLUSION_TIMEOUT_MS });
+}
 
 export interface PayDemFundedRunIntent {
   directory: string;
