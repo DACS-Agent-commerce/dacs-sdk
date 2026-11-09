@@ -267,7 +267,7 @@ test('P10-T03 a restart reopens the same journal; a second run is refused on the
   assert.equal((await rejection(Promise.resolve().then(() => reserveEffect(journalStore(f.journals[1]), another)))).code, 'seller_effect_pending', 'the reopened journal still holds the first attempt');
 });
 
-test('P11b2-T21 host start releases the open slots of a finished session once, starts with a maxRecords below what is already allotted, and refuses a zero one', async (t) => {
+test('host start releases the open slots of a finished session once, starts with a maxRecords below what is already allotted, and refuses a zero one', async (t) => {
   const f = await hostFixture(t);
   await (await f.start()).close();
   const finished = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 1) }), live = generateCanonicalJobId({ timestamp: NOW, entropy: Buffer.alloc(10, 2) });

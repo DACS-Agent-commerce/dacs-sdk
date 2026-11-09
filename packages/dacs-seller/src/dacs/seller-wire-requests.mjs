@@ -49,7 +49,8 @@ function initialDraft(body) {
 /**
  * What the host retained for the request's job, for `checkWireRequest`: `{ retained, artifacts, held }` from the agent's retained
  * plan or Agreement (`held`), or from the draft an initial proposal itself carries. `null` when the host holds nothing for the job
- * (never for a proposal). Throws `peer_proposal_invalid` for an initial proposal whose draft cannot be derived.
+ * (never for a proposal). With capacity, `allocated` requires a live allocation and a successful settled context.
+ * Throws `peer_proposal_invalid` for an initial proposal whose draft cannot be derived.
  */
 function retainedFor(agent, { path, request, body }, { store, capacity } = {}) {
   const known = agent.transportAgreementOf(request.jobId);

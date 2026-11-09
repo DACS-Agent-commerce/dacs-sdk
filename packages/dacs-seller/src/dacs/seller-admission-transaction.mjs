@@ -86,7 +86,7 @@ function contextOutcomeClass(row, outcome) {
  * Creates the admission transaction on the shared store `createSellerTransportStore` returned, in its one SQLite transaction owner.
  * `policy` is `createSellerContextAdmission`'s `{ reserve, release }`; `completeWire(effect, outcome)` is synchronous and completes only
  * the wire effect handle it is given; `capacity` is the purchase capacity `createPurchaseCapacity` built on this same store (anything else
- * is a TypeError): D2 checks that a whole purchase fits, its allocation runs as the first acceptance hook, and a settlement or an abort
+ * is a TypeError): admission checks that a whole purchase fits, its allocation runs as the first acceptance hook, and a settlement or an abort
  * returns the allocation's slots in the same transaction (a validated context returns only its own); `now` and `ready` are synchronous;
  * `deadlines.policyMs` bounds the policy call.
  * `inspectContextOutcome(jobId)` is the wire's synchronous, read-only operation view; `effectEvidence(row)` resolves one `{ address, kind, cause? }` per

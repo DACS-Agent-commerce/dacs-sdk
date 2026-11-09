@@ -72,7 +72,7 @@ const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
 // One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
-// The permanent reservation budget of the wire accounting rows (moves to seller.json in P30).
+// The permanent reservation budget of the wire accounting rows.
 const DEFAULT_MAX_RECORDS = 10000;
 const JOURNAL_DIRECTORY = 'wire-journal';
 const TRANSPORT_STORE_FILE = join('transport', 'transport.sqlite');
@@ -311,7 +311,7 @@ export async function startSellerHost(options) {
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
-    // The seller takes new purchases until it stops.
+    // New purchases require room for a whole allotment while the seller is running.
     const sellerReady = () => !stopping && capacityReady();
     // The one context every signed route on `./wire` uses, with the transport store as their journal. Each signed request and
     // answer reads the operator's connection again through it.

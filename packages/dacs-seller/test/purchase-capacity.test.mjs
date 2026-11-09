@@ -1,7 +1,4 @@
-// P11b2a: purchase capacity on the shared transport store: one allocation per admitted purchase with a 17-unit slot per route,
-// its classes, returns, terminal cleanup, exhaustion annotations and the K1 admission hooks. Accounting rows are written by hand
-// (P11b1's rows for P11b2b's coordinator), the wire journal is a double and no real route reserves through capacity yet: the
-// route-level and real-journal sequences belong to P11c1, P11d3 and P12b1.
+// Purchase allocations, accounting, returns and restart recovery on the shared transport store.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -73,7 +70,7 @@ function world(t, { maxRecords = 1000, commitOnSignature = false, sessionState =
   w.current = jobId => w.within(() => w.capacity.allocationWithin(jobId));
   w.report = () => w.capacity.capacityReport();
   w.changes = () => w.db().prepare('SELECT total_changes() AS n').get().n;
-  // The rows P11b1's accounting commits for a charged request: a purchase unit when it names its allocation, a general one otherwise.
+  // Durable accounting rows for a charged request: a purchase unit when it names its allocation, a general one otherwise.
   w.charge = (jobId, route, count, allocationId = null, buyer = BUYER) => {
     w.db().prepare('INSERT OR IGNORE INTO kit_job_holds VALUES (?, ?, ?, ?, ?)').run(jobId, buyer, SELLER, canonicalize(PIN), Number(route === PATHS.context));
     for (let n = 0; n < count; n++) {
@@ -102,7 +99,7 @@ function world(t, { maxRecords = 1000, commitOnSignature = false, sessionState =
     return { jobId, input: { jobId, buyer, seller: SELLER, listingPin: PIN, contextScopeHash: hash(canonicalize(SCOPE)), nonce, presentationHash: attempt.presentationHash,
       owner: result.owner, accepted, sellerBundlePresentedBy: SELLER, delegationExpiresAt: control.clock + 3600000, purchaseProfile: PROFILE } };
   };
-  // D5 for the admitted start: the capability a completion runs on.
+  // The admitted start: the capability a completion runs on.
   w.reserveContext = jobId => w.admission.reserveContext(jobId, async () => Object.freeze({ state: 'new', operationId: hash('wire-operation'), attempt: 0, leaseUntil: control.clock + 300000 }));
   w.admissionRow = jobId => JSON.parse(w.db().prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId).record);
   return w;
@@ -112,7 +109,7 @@ const stable = report => ({ ...figures(report), allocations: report.allocations,
 const classifyInput = (purchase, route, inspection, extra = {}) => ({ ...purchase, route, binding: BINDING, inspection, retainedWork: true, ...extra });
 const refusal = (work, code, status) => assert.throws(work, error => error.code === code && error.status === status);
 
-test('P11b2-T02 a new purchase is admitted only while the whole allotment fits, for both allotment sizes; otherwise issuance is not ready with zero rows and files', t => {
+test('new purchase needs the whole allotment', t => {
   for (const [commitOnSignature, allotment] of [[false, FOUR], [true, FIVE]]) {
     for (const free of [allotment - 1, allotment, allotment + 1]) {
       const w = world(t, { maxRecords: free, commitOnSignature }), p = w.purchase(), fits = free >= allotment;
@@ -131,7 +128,7 @@ test('P11b2-T02 a new purchase is admitted only while the whole allotment fits, 
   }
 });
 
-test('P11b2-T03 while draining, challenge issuance and first admission are refused and the admitted purchase is unchanged', async t => {
+test('draining refuses new purchases', async t => {
   const w = world(t, { maxRecords: FOUR + 10 }), first = w.prepare(0x11), second = w.prepare(0x22, OTHER);
   await w.admission.begin(first.input);
   const admitted = w.current(first.jobId), before = stable(w.report());
@@ -142,7 +139,7 @@ test('P11b2-T03 while draining, challenge issuance and first admission are refus
   assert.equal(w.capacity.classify(classifyInput(first.input, PATHS.proposals, view.none)).class, 'purchase-stage');
 });
 
-test('P11b2-T05 successful context completion returns only its slot; terminal cleanup returns the rest and readiness comes back', t => {
+test('completion and terminal cleanup return only unused capacity', t => {
   const w = world(t, { maxRecords: 120 }), p = w.purchase(); w.fill(32);
   const allocation = w.allocate(p); w.charge(p.jobId, PATHS.context, 1, allocation.allocationId);
   assert.deepEqual(figures(w.report()), { used: 33, allotted: 67, free: 20 }); assert.equal(w.capacity.fitsNewPurchase(), false);
@@ -153,7 +150,7 @@ test('P11b2-T05 successful context completion returns only its slot; terminal cl
   assert.deepEqual(figures(w.report()), { used: 33, allotted: 0, free: 87 }); assert.equal(w.capacity.fitsNewPurchase(), true); assert.equal(w.current(p.jobId).state, 'released');
 });
 
-test('P11b2-T08 used, allotted, allocation ids and slot spends are identical after restarts at three states', t => {
+test('restart preserves used units, allotments and allocation ids', t => {
   const w = world(t, { maxRecords: 300 }), p = w.purchase(); w.fill(5);
   const checkpoints = [];
   const checkpoint = () => { checkpoints.push(stable(w.report())); };
@@ -169,15 +166,15 @@ test('P11b2-T08 used, allotted, allocation ids and slot spends are identical aft
   assert.deepEqual(figures(w.report()), { used: 10, allotted: 0, free: 290 });
 });
 
-test('P11b2-T09 a crash at each cut leaves identical counters and allocation id after two restarts, with no double return. After S1–S5, the nonterminal purchase continues to delivery. After S6, the allocation remains released and the terminal purchase starts no new effect; retained readback remains available. This card asserts the counter/allocation half with doubles; P11d3 repeats the full real-journal and delivery/readback sequence', async t => {
-  await t.test('D4 allocation insertion before the acceptance commit: neither lands, and a later start allocates once', async () => {
+test('crashes preserve allocation and return accounting', async t => {
+  await t.test('allocation and acceptance commit together', async () => {
     const w = world(t, { maxRecords: 300 }), p = w.prepare();
     w.failCommit('before', () => w.capacity.allocationWithin(p.jobId) !== null);
     await assert.rejects(w.admission.begin(p.input));
     w.reopen(); assert.equal(w.current(p.jobId), null); assert.equal(w.admissionRow(p.jobId).admittedAt, null);
     assert.deepEqual(figures(w.report()), { used: 0, allotted: 0, free: 300 });
   });
-  await t.test('D4 allocation insertion with the acceptance commit landed: both survive two restarts under one allocation id', async () => {
+  await t.test('allocation and acceptance committed: both survive two restarts under one allocation id', async () => {
     const w = world(t, { maxRecords: 300 }), p = w.prepare();
     w.failCommit('after', () => w.capacity.allocationWithin(p.jobId) !== null);
     await assert.rejects(w.admission.begin(p.input));
@@ -207,7 +204,7 @@ test('P11b2-T09 a crash at each cut leaves identical counters and allocation id 
   });
 });
 
-test('P11b2-T15 the retained-stage flag is true for a spent slot of an authorized stage, and false without the verified prior stage, an allocation, the route or a live allocation', t => {
+test('authorized retained stages keep their allocation flag', t => {
   const w = world(t, { maxRecords: 300 }), p = w.purchase(), flag = (purchase, route, stageAuthorized = true) => w.capacity.retainedAllocated({ ...purchase, route, stageAuthorized });
   assert.equal(flag(p, PATHS.proposals), false, 'no allocation');
   const allocation = w.allocate(p); w.charge(p.jobId, PATHS.proposals, UNITS, allocation.allocationId);
@@ -221,7 +218,7 @@ test('P11b2-T15 the retained-stage flag is true for a spent slot of an authorize
   assert.equal(signature.capacity.retainedAllocated({ ...p, route: PATHS.commitmentSignature, stageAuthorized: true }), true);
 });
 
-test('P11b2-T16 a spent retained slot at free ≤ 0: classify throws peer_store_capacity with no writes, rollback, then explicit recordExhaustion commits one bounded record; refusal is never seller_not_ready and the record survives two restarts', t => {
+test('retained exhaustion is recorded only after rollback', t => {
   const w = world(t, { maxRecords: 80 }), p = w.purchase(); w.fill(12);
   const allocation = w.allocate(p); w.charge(p.jobId, PATHS.proposals, UNITS, allocation.allocationId);
   assert.equal(w.report().free, 0);
@@ -235,7 +232,7 @@ test('P11b2-T16 a spent retained slot at free ≤ 0: classify throws peer_store_
   assert.deepEqual(w.report().exhausted, expected); w.reopen(); w.reopen(); assert.deepEqual(w.report().exhausted, expected);
 });
 
-test('P11b2-T17 table: completed class × ordinary D8a or compensation, then the aborted admission, an unavailable inspection and two sweeps and restarts', async t => {
+test('context settlement and abort clean up their allocation across restart', async t => {
   async function atSP(t) {
     const w = world(t, { maxRecords: 100 }); w.fill(32);
     const p = w.prepare(); await w.admission.begin(p.input); const allocation = w.current(p.jobId);
@@ -285,7 +282,7 @@ test('P11b2-T17 table: completed class × ordinary D8a or compensation, then the
     for (let round = 0; round < 2; round++) { await w.admission.sweep({ startup: round === 0 }); assert.deepEqual(figures(w.report()), { used: 33, allotted: 51, free: 16 }); }
     assert.equal(w.admissionRow(p.jobId).state, 'settled'); assert.equal(w.current(p.jobId).state, 'live');
   });
-  await t.test('a D2 refusal and a D4 hook refusal leave no allocation', async t => {
+  await t.test('an admission refusal and an acceptance hook refusal leave no allocation', async t => {
     const w = world(t, { maxRecords: 300 }), refused = w.prepare(0x11);
     w.admission.addAcceptanceHook(() => { throw Object.assign(new Error('hook-full'), { code: 'peer_store_capacity', status: 503 }); });
     await assert.rejects(w.admission.begin(refused.input), { code: 'peer_store_capacity' });
@@ -293,7 +290,7 @@ test('P11b2-T17 table: completed class × ordinary D8a or compensation, then the
   });
 });
 
-test('P11b2-T20 the completion hook, called for proposals, commitments, commitments/signature and payments in both commitment configurations, returns only that route\'s unspent units, once, by CAS; a second call and a stale allocation revision return nothing; used, allotted, free and slot revisions are exact, also after restart', t => {
+test('route completion returns its slot once by revision', t => {
   for (const signature of [false, true]) {
     const w = world(t, { maxRecords: 500, commitOnSignature: signature }), routes = ENABLED[signature].slice(1), p = w.purchase(), allocation = w.allocate(p);
     routes.forEach((route, index) => w.charge(p.jobId, route, index + 1, allocation.allocationId));
@@ -313,7 +310,7 @@ test('P11b2-T20 the completion hook, called for proposals, commitments, commitme
   }
 });
 
-test('P11b2-T21 at host start, a live allocation whose job the terminal-state port reports terminal releases its open slots once, across two restarts; nonterminal, unknown and throwing answers keep the allocation; a rejected Promise, a rejecting thenable and a Promise fulfilled with a terminal name keep it with no unhandled rejection, and a later synchronous terminal answer releases once', async t => {
+test('terminal cleanup trusts only synchronous terminal state', async t => {
   const unhandled = []; const listener = reason => unhandled.push(reason); process.on('unhandledRejection', listener); t.after(() => process.off('unhandledRejection', listener));
   const answers = { nonterminal: () => 'negotiating', unknown: () => null, unlisted: () => 'archived', throwing: () => { throw new Error('port down'); },
     rejected: () => Promise.reject(new Error('late failure')), thenable: () => ({ then(_, reject) { reject(new Error('late thenable failure')); } }),
@@ -528,4 +525,23 @@ test('journal refusal and result uncertainty keep the committed purchase unit af
     const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: () => null });
     assert.deepEqual(stable(reopened.capacityReport()), before);
   });
+});
+
+test('a repeated nonce cannot charge the purchase slot twice', async t => {
+  const { f, capacity, input } = await accountedPurchase(t);
+  const request = input();
+  await f.reserve(request);
+  const before = stable(capacity.capacityReport());
+  await assert.rejects(f.reserve(request), { code: 'peer_request_replayed', status: 409 });
+  assert.deepEqual(stable(capacity.capacityReport()), before); assert.equal(f.rows().length, 1);
+});
+
+test('completed capacity classification and its caller sentinel create no accounting unit', async t => {
+  const { f, capacity, purchase, input } = await accountedPurchase(t);
+  const completion = capacity.classify(classifyInput(purchase, purchase.path, view.completed(BINDING)));
+  assert.equal(completion.class, 'completed-at-capacity');
+  const sentinel = new Error('completed operation');
+  const before = stable(capacity.capacityReport()); let journalCalls = 0;
+  await assert.rejects(f.reserve(input(() => { throw sentinel; }, async () => { journalCalls++; return { state: 'new' }; })), error => error === sentinel);
+  assert.deepEqual(stable(capacity.capacityReport()), before); f.assertEmpty(); assert.equal(journalCalls, 0);
 });
