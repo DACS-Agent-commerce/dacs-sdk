@@ -18,6 +18,7 @@ import {
   type X402BuyerChallengeClient,
   type X402BuyerPreparationAuthority,
 } from "./x402BuyerTransport.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const PRIVATE_KEY_RE = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
@@ -67,16 +68,6 @@ function hasOnlyUnicodeScalars(value: string): boolean {
   return true;
 }
 
-function deepFreezeJson(value: X402BuyerJson): X402BuyerJson {
-  if (value !== null && typeof value === "object") {
-    for (const item of Array.isArray(value) ? value : Object.values(value)) {
-      deepFreezeJson(item);
-    }
-    Object.freeze(value);
-  }
-  return value;
-}
-
 function captureJson(
   value: unknown,
   ancestors = new Set<object>(),
@@ -109,7 +100,7 @@ function captureJson(
         if (item === null && descriptor.value !== null) return null;
         copy.push(item);
       }
-      return deepFreezeJson(copy);
+      return deepFreeze(copy);
     }
 
     const prototype = Object.getPrototypeOf(value);
@@ -129,7 +120,7 @@ function captureJson(
     // Enforce the same canonical-domain constraints the durable intent uses,
     // while retaining the original string bytes for EIP-712 equality below.
     canonicalize(copy);
-    return deepFreezeJson(copy);
+    return deepFreeze(copy);
   } catch {
     return null;
   } finally {
