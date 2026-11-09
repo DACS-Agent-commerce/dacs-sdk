@@ -92,6 +92,16 @@ test('P10-T15 the packed archive contains no authority fixture', () => {
   for (const file of ['src/dacs/bounded-call.mjs', 'src/dacs/kit-data-format.mjs']) assert.ok(packed.includes(file), `${file} ships`);
 });
 
+test('no EB test double or authority fixture ships in the packed kit', () => {
+  const packed = sellerPackFiles().sort();
+  for (const file of ['src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs']) assert.ok(packed.includes(file), `${file} ships`);
+  assert.deepEqual(packed.filter((path) => /authority-fixture|effect-boundary-fixture|kit-guard-fixture|(?:^|\/)test\//.test(path)), []);
+  for (const file of ['src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs']) {
+    assert.deepEqual(relativeImports(file).filter((target) => /(?:^|\/)test\//.test(target)), [], `${file} imports no test module`);
+    assert.doesNotMatch(readFileSync(join(packageDirectory, file), 'utf8'), /setKitOperationGuardForTest|authority-fixture|effect-boundary-fixture/, `${file} names no test setter or fixture`);
+  }
+});
+
 test('the import scan sees static, side-effect, re-export and literal dynamic imports', () => {
   const probe = "import { a } from './dacs/a.mjs';\nimport './dacs/b.mjs';\nexport { c } from \"../c.mjs\";\nconst d = await import('./util/d.mjs');\n";
   assert.deepEqual(relativeImports('src/probe.mjs', probe).sort(), ['c.mjs', 'src/dacs/a.mjs', 'src/dacs/b.mjs', 'src/util/d.mjs']);
