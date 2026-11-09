@@ -37,11 +37,17 @@ none of these signatures; what your own signer does with them is up to it.
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
 the host reclaim that job's retained challenge and context rows; an unknown name,
-an agent stage name, a throw or a Promise answer keeps them. A Promise answer
-counts as unknown: its result is ignored and its rejection is observed. A source
+an agent stage name or an unreadable answer keeps them. A throw, Promise or
+non-null non-string refuses issuance and new work with `session_admission_unavailable`
+503 and its cause; only explicit `null` means unknown. Promise results are ignored
+and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host without the capability reclaims nothing. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
+
+Verified additive migration is forward-only: the unchanged format marker does not
+detect downgrade, so older code can open migrated data and ignore required metadata.
+Rollback requires restoring a coherent pre-upgrade backup.
 
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
