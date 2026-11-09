@@ -20,6 +20,7 @@ pre-payment write. #59's admission reserves capacity; it is not signing authorit
 
 | Request kind / condition | Decision and authority | Why | Test |
 | --- | --- | --- | --- |
+| Signed non-bootstrap routes | SDK wire domain and bound purchase profile; payments and bundles re-admit durable commitment/Agreement and verify the current receipt under the signed Listing | Only challenge/context retain legacy transport domains | wire-signed-routes.test.mjs P11a1-T01, T02, T26 |
 | App purchase-source configuration | Refused | The kit has only seller-owned state | d5-admission.test.mjs A1 |
 | Fresh authenticated context, seller-issued challenge, exact scope, access and limits satisfied | Admit the context and reserve at most two Vet writes; each write stays held for exact seller approval | A transport signature authorizes this bounded request, while seller records cannot establish buyer-side cancellation | d5-admission.test.mjs A2; d5-limits-before-effects.test.mjs B1–B5 |
 | Authenticated context challenge request | May write one bounded challenge record; never a Vet or sign-authorization record | Seller-generated challenge binds job, buyer, seller, Listing and exact scope before the bundle is presented | d5-limits-before-effects.test.mjs B22–B25, B27–B28, B30 |
