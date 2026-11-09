@@ -67,7 +67,8 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
   const handler = createSellerHttpHandler(agent, { authentication: serverAuth, wire: hostWire });
   const client = (clientPackage ? createBuyerSellerAgentClient : createSellerAgentClient)({ url: 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
     request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return signed; },
-    verifyResponse: (...args) => faults.verify(authentication, ...args),
+    // The buyer client hands over `{header, status, body}`; the seller package's adapter reads the same bytes as `responseBytes`.
+    verifyResponse: (request, received) => faults.verify(authentication, request, clientPackage ? { header: received.header, status: received.status, responseBytes: received.body } : received),
   }, fetchImpl: async (url, options) => {
     const path = new URL(url).pathname;
     await faults.before(path);
