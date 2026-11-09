@@ -96,6 +96,7 @@ import {
   type FinalizedVetAnchor,
   type VetProduction,
 } from "./vetCore.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
  * Pure orchestration for the legacy MVP buyer session (`runSession`): negotiate
@@ -508,21 +509,9 @@ type VerifiedVetMatch =
   | { ok: false; reason: string }
   | { ok: true; record: CompositeVerificationRecord };
 
-function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreezeSnapshot(child, seen);
-  }
-  return Object.freeze(value);
-}
-
 function immutableSnapshot<T>(value: T, label: string): T {
   try {
-    return deepFreezeSnapshot(structuredClone(value));
+    return deepFreeze(structuredClone(value));
   } catch {
     throw new CounterpartyError(`${label} is not snapshot-safe`);
   }
@@ -2028,20 +2017,6 @@ function captureSessionDeps(input: SessionDeps): Readonly<SessionDeps> {
   });
 }
 
-function deepFreezeJson<T extends object>(value: T): Readonly<T> {
-  const seen = new WeakSet<object>();
-  const visit = (candidate: object): void => {
-    if (seen.has(candidate)) return;
-    seen.add(candidate);
-    for (const nested of Object.values(candidate)) {
-      if (nested !== null && typeof nested === "object") visit(nested);
-    }
-    Object.freeze(candidate);
-  };
-  visit(value);
-  return value;
-}
-
 /** Capture and strictly validate a resolver result before retaining it. */
 function snapshotAnchorLookup(value: unknown, label: string): AnchorLookup {
   let captured: unknown;
@@ -3251,7 +3226,7 @@ async function runSessionCoreWithFence(
     try {
       verified =
         (await deps.verifyListing(
-          deepFreezeJson(
+          deepFreeze(
             snapshotCanonicalJson(storedRecord, "Listing verifier input"),
           ),
           listingView.sellerClaim,
@@ -3319,7 +3294,7 @@ async function runSessionCoreWithFence(
   let buyerIdentityAuthenticated: unknown;
   try {
     buyerIdentityAuthenticated = await deps.authenticateBuyerIdentityBundle({
-      bundle: deepFreezeJson(
+      bundle: deepFreeze(
         snapshotCanonicalJson(
           deps.buyerIdentityBundle,
           "buyer IdentityBundle authentication input",
@@ -3555,7 +3530,7 @@ async function runSessionCoreWithFence(
     // the authoritative owned snapshot used for every later hash/ref so even a
     // hostile adapter that retains or mutates its argument cannot change the
     // authenticated view this session returns.
-    const publication = deepFreezeJson(
+    const publication = deepFreeze(
       snapshotCanonicalJson(built, `publication for "${name}"`),
     );
     const builtCanonical = canonicalize(built);
@@ -4435,7 +4410,7 @@ async function runSessionCoreWithFence(
     await fence.assertCurrent();
     const recovered = snapshotSettleResult(
       await deps.resumeSettlement(
-        deepFreezeJson(
+        deepFreeze(
           snapshotCanonicalJson(
             recoveryRequest,
             "settlement recovery request",
@@ -4617,7 +4592,7 @@ async function runSessionCoreWithFence(
           await fence.assertCurrent();
           const pay = snapshotSettleResult(
             await deps.settle(
-              deepFreezeJson(
+              deepFreeze(
                 snapshotCanonicalJson(settleRequest, "settlement request"),
               ),
             ),
