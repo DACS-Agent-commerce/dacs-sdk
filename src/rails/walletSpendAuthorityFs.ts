@@ -554,15 +554,15 @@ export async function createFsWalletSpendStateStoreV1(
         observedOwner.hostname === owner.hostname &&
         observedOwner.token === owner.token &&
         observedOwner.createdAt === owner.createdAt) {
-      const observed = await lstat(path);
       const quarantine = mutationQuarantinePath(scope);
       try {
-        await rename(path, quarantine);
-        await syncDirectory(locksDirectory);
-      } catch (error) {
-        if (nestedErrorCode(error) !== "ENOENT") throw error;
-      }
-      try {
+        const observed = await lstat(path);
+        try {
+          await rename(path, quarantine);
+          await syncDirectory(locksDirectory);
+        } catch (error) {
+          if (nestedErrorCode(error) !== "ENOENT") throw error;
+        }
         const moved = await lstat(quarantine);
         const movedOwner = await readLockOwner(quarantine);
         if (moved.dev !== observed.dev || moved.ino !== observed.ino ||
@@ -577,7 +577,7 @@ export async function createFsWalletSpendStateStoreV1(
       }
     }
 
-    // Recover only this exact gate if an older participant already moved it.
+    // A competing stale observer may have moved this gate before inspection.
     const prefix = mutationQuarantinePrefix(scope);
     for (const name of (await readdir(locksDirectory)).filter((item) =>
       item.startsWith(prefix) && item.endsWith(".quarantine"))) {
@@ -748,15 +748,15 @@ export async function createFsWalletSpendStateStoreV1(
   ): Promise<void> {
     const observedOwner = await readLockOwner(path);
     if (sameLockOwner(observedOwner, owner)) {
-      const observed = await lstat(path);
       const released = releasedLockPath(scope, owner.token);
       try {
-        await rename(path, released);
-        await syncDirectory(locksDirectory);
-      } catch (error) {
-        if (nestedErrorCode(error) !== "ENOENT") throw error;
-      }
-      try {
+        const observed = await lstat(path);
+        try {
+          await rename(path, released);
+          await syncDirectory(locksDirectory);
+        } catch (error) {
+          if (nestedErrorCode(error) !== "ENOENT") throw error;
+        }
         const moved = await lstat(released);
         const movedOwner = await readLockOwner(released);
         if (moved.dev !== observed.dev || moved.ino !== observed.ino ||

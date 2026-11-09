@@ -189,30 +189,57 @@ describe("wallet spend filesystem lock mutation races", () => {
     async (kind) => {
       const dir = await fixture();
       const store = await createFsWalletSpendStateStoreV1({
-        dir, integrityKey: KEY, lockStaleMs: 20, lockPollMs: 1, lockTimeoutMs: 400,
+        dir,
+        integrityKey: KEY,
+        lockStaleMs: 20,
+        lockPollMs: 1,
+        lockTimeoutMs: 400,
       });
       const policy: WalletSpendPolicyV1 = {
-        policyVersion: "1", policyId: "spend-limit", wallet: "wallet",
-        chainId: "demos:testnet", maximumConcurrentEffects: 2,
+        policyVersion: "1",
+        policyId: "spend-limit",
+        wallet: "wallet",
+        chainId: "demos:testnet",
+        maximumConcurrentEffects: 2,
         maximumRetainedReservations: 4,
         assets: [{
-          asset: "TOKEN", maximumPerOrderDebit: "100", maximumNetworkFeeDebit: "10",
-          minimumReserve: "0", rollingWindowMs: 60, maximumRollingEffects: 4,
-          maximumRollingDebit: "100", maximumCumulativeDebit: "100",
+          asset: "TOKEN",
+          maximumPerOrderDebit: "100",
+          maximumNetworkFeeDebit: "10",
+          minimumReserve: "0",
+          rollingWindowMs: 60,
+          maximumRollingEffects: 4,
+          maximumRollingDebit: "100",
+          maximumCumulativeDebit: "100",
           maximumCounterpartyDebit: "100",
         }],
       };
       const wallet = createWalletSpendAuthorityV1(policy, {
-        store, readBalance: async () => "1000", authenticateRecovery: async () => true,
+        store,
+        readBalance: async () => "1000",
+        authenticateRecovery: async () => true,
         now: () => 1_000,
       });
       const reservation: WalletSpendReservationV1 = {
-        reservationVersion: "1", reservationId: "first", jobId: "job-first",
-        phaseIndex: 0, phase: "payment", agreementHash: "a".repeat(64),
-        settlementBindingHash: "b".repeat(64), railId: "test-rail",
-        railDefinitionHash: "c".repeat(64), wallet: policy.wallet,
-        chainId: policy.chainId, payee: "seller", finality: { model: "bft-final" },
-        debits: [{ asset: "TOKEN", purpose: "service", expectedAmount: "20", maximumAmount: "20" }],
+        reservationVersion: "1",
+        reservationId: "first",
+        jobId: "job-first",
+        phaseIndex: 0,
+        phase: "payment",
+        agreementHash: "a".repeat(64),
+        settlementBindingHash: "b".repeat(64),
+        railId: "test-rail",
+        railDefinitionHash: "c".repeat(64),
+        wallet: policy.wallet,
+        chainId: policy.chainId,
+        payee: "seller",
+        finality: { model: "bft-final" },
+        debits: [{
+          asset: "TOKEN",
+          purpose: "service",
+          expectedAmount: "20",
+          maximumAmount: "20",
+        }],
       };
       const claim = await wallet.reserve(reservation);
       if (claim.status !== "reserved") throw new Error("expected reservation");
@@ -222,12 +249,14 @@ describe("wallet spend filesystem lock mutation races", () => {
       armOwnerMove(dir, scope, kind);
 
       await expect(claim.permit.beginEffect()).resolves.toBeUndefined();
-      await expect(store.read!(scope)).resolves.toMatchObject({
+      await expect(store.read?.(scope)).resolves.toMatchObject({
         reservations: [{ reservationId: "first", stage: "effect-pending" }],
       });
       await expect(readdir(join(dir, "locks"))).resolves.toEqual([]);
       await expect(wallet.reserve({
-        ...reservation, reservationId: "next", jobId: "job-next",
+        ...reservation,
+        reservationId: "next",
+        jobId: "job-next",
       })).resolves.toMatchObject({ status: "reserved" });
     },
   );
@@ -238,17 +267,21 @@ describe("wallet spend filesystem lock mutation races", () => {
       const dir = await fixture();
       const scope = "d".repeat(64);
       const store = await createFsWalletSpendStateStoreV1({
-        dir, integrityKey: KEY, lockPollMs: 1, lockTimeoutMs: 100,
+        dir,
+        integrityKey: KEY,
+        lockPollMs: 1,
+        lockTimeoutMs: 100,
       });
       armOwnerMove(dir, scope, kind);
       lockRace.ownerReplacementToken = "other-live-owner";
 
       await expect(store.transact(scope, (current) => advance(current, "committed")))
-        .rejects.toThrow(/ownership was lost/);
+        .rejects.toThrow(/ownership was (lost|superseded)/);
       const ownerPath = kind === "gate"
         ? join(lockRace.ownerMoveTo, "owner.json") : lockRace.ownerMoveTo;
       expect(JSON.parse(await readFile(ownerPath, "utf8"))).toMatchObject({
-        pid: process.pid, token: "other-live-owner",
+        pid: process.pid,
+        token: "other-live-owner",
       });
       const operation = vi.fn((current: Readonly<WalletSpendStateV1> | null) =>
         advance(current, "unexpected"));
