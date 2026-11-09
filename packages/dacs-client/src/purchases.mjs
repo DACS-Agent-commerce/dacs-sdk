@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto';
 import { createPortalCapability } from './portal-capability.mjs';
 import { contentHash, canonicalize } from './dacs/listing.mjs';
 import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
+import { generateCanonicalJobId, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { OperationError, requestHashOf } from './client-errors.mjs';
 import { buildNativeTransferPayload } from './dacs/wallet-transactions.mjs';
 import { purchaseStore } from './seams/purchase-store-not-wired.mjs';
@@ -56,6 +57,7 @@ export const PURCHASE_PROFILE = 'dacs-chatgpt-plugin/fixed-price-dem-purchase/v1
 export const PURCHASE_RAIL = 'demos-native:DEM';
 export const PURCHASE_APPROVAL_TTL_MS = 30 * 60 * 1000;
 const MAX_OBSERVATION_REASON_LENGTH = 240;
+const JOB_ID_ATTEMPTS = 3; // fresh ids tried when the unique job_id index refuses one.
 const RELEASE_AMOUNT_OS = '1000000000'; // 1 DEM: the self-transfer that takes a handed-off payment's nonce slot.
 const MAX_TRANSFER_IDENTIFIER_LENGTH = 66; // 32-byte hex, optionally prefixed with 0x.
 function errorText(error) {
@@ -225,15 +227,19 @@ export function createPublicPurchaseService(options) {
 // APPROVE_PURCHASE wallet-challenge purpose. Both are checked before any
 // statement is prepared. Every action that prepares, approves, hands off or
 // signs refuses first while purchase actions are held.
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000 }, diagnostic = () => false) {
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000, generateJobId = generateCanonicalJobId }, diagnostic = () => false) {
   const { transaction, isUniqueViolation } = purchaseStore(store);
   const PURPOSES = walletPurposes(purposes);
   if (!Number.isSafeInteger(chainReadTimeoutMs) || chainReadTimeoutMs < 1 || chainReadTimeoutMs > 60000) {
     throw new OperationError('invalid_configuration', 'chainReadTimeoutMs must be an integer from 1 to 60000');
   }
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
-  if (!db.prepare('PRAGMA table_info(operations)').all().some(column => column.name === 'handoff_expires_at')) {
+  const operationColumns = db.prepare('PRAGMA table_info(operations)').all();
+  if (!operationColumns.some(column => column.name === 'handoff_expires_at')) {
     throw new OperationError('schema_migration_required', 'Migrate operations to include handoff_expires_at and provision explicit portal lifetimes before constructing the purchase service.');
+  }
+  if (!operationColumns.some(column => column.name === 'job_id')) {
+    throw new OperationError('schema_migration_required', 'Migrate operations to include job_id with its unique index before constructing the purchase service.');
   }
   const handoffPurchase = createPortalCapability({ db, ops, now });
   const insertApproval = db.prepare(`INSERT INTO approvals (id, operation_id, challenge_id, signer_address, terms_hash, signature, approved_at)
@@ -360,6 +366,20 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     }
   }
 
+  // The job id is reserved by the host's unique job_id index in the insert that
+  // stores the terms (JID-2): no lookup grants it. Only the host's
+  // job_id_collision is retried with a new id; any other error propagates. Each
+  // refused insert rolls back its own savepoint, so a failure writes nothing.
+  function createReservingJobId(createWith) {
+    for (let attempt = 0; attempt < JOB_ID_ATTEMPTS; attempt += 1) {
+      const jobId = generateJobId();
+      if (!isCanonicalJobId(jobId)) throw new OperationError('invalid_job_id', 'the job id generator returned a value that is not a canonical job id; nothing was prepared');
+      try { return createWith(jobId); }
+      catch (error) { if (error?.code !== 'job_id_collision') throw error; }
+    }
+    throw new OperationError('job_id_unavailable', `no unused job id was found in ${JOB_ID_ATTEMPTS} attempts; nothing was prepared`);
+  }
+
   async function prepare({ accountId, listingId, version, seller, idempotencyKey, walletAddress, protocol: mode }) {
     assertPurchaseActionsAdmitted();
     const wallet = selectWallet(accountId, walletAddress);
@@ -404,14 +424,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       price: verification.price,
       preparedAt,
       approvalExpiresAt,
-      ...(dacs ? { protocol: dacs.terms } : {}),
     };
-    const { operation, created, handoffToken } = transaction(db, () => {
-      const replay = ops.findByKey(accountId, 'purchase', idempotencyKey);
-      if (!replay) {
-        assertNoUnresolved(wallet);
-        assertPurchaseLimits(accountId, wallet, '', true);
-      }
+    const createWith = (jobId) => {
+      const stored = dacs ? { ...terms, protocol: { ...dacs.terms, jobId } } : terms;
       return ops.createIdempotent({
         accountId,
         kind: 'purchase',
@@ -419,11 +434,20 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         request,
         status: dacs ? 'agreement_pending' : 'awaiting_approval',
         subjectId: `${seller}/${listingId}/v${version}`,
-        terms,
-        termsHash: contentHash(terms),
+        terms: stored,
+        termsHash: contentHash(stored),
+        ...(dacs ? { jobId } : {}),
         expiresAt: approvalExpiresAt,
         state: { ...(config.sellerIdentities === 'on' ? { sellerDisplayName: verification.listing.seller.displayName?.slice(0, 200) } : {}), preparedVerification: { checks: verification.checks, evidence: verification.evidence }, ...(dacs ? { protocol: dacs.state } : {}) },
       });
+    };
+    const { operation, created, handoffToken } = transaction(db, () => {
+      const replay = ops.findByKey(accountId, 'purchase', idempotencyKey);
+      if (!replay) {
+        assertNoUnresolved(wallet);
+        assertPurchaseLimits(accountId, wallet, '', true);
+      }
+      return dacs ? createReservingJobId(createWith) : createWith();
     });
     return { operation: expireIfNeeded(operation), created, approvalUrl: portalUrl(operation, handoffToken), verification };
   }
