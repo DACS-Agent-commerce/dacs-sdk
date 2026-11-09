@@ -6,11 +6,11 @@
 // requests, independently signed seller responses and a durable intent journal.
 // Only an authenticated definite refusal becomes SellerRefusedError in that
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
-// With the `wire` option, the proposals, state and commitment routes open every
-// request and sign every answer through `./wire` (seller-wire-requests.mjs); the
-// transport store stays their only journal, and the state route reserves nowhere.
-// The payment and bundle routes, the challenge and the context step keep the old
-// server auth. Each request has one authenticator, chosen by its route.
+// With the `wire` option, every route but the challenge and the context step opens
+// each request and signs each answer through `./wire` (seller-wire-requests.mjs); the
+// transport store stays their only journal, and the read routes reserve nowhere.
+// The challenge and the context step keep the old server auth. Each request has one
+// authenticator, chosen by its route.
 import { WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
@@ -96,7 +96,7 @@ function readRequest(req, timeoutMs) {
 // Vet and Agreement-context route. Without it the route table is unchanged.
 // `wire` (a createWireContext context) moves the mounted routes of WIRE_ROUTE_PATHS onto `./wire`, with
 // the raw transport store as their only journal. It needs `authentication`, naming the same seller and delegation rule and
-// made over the context's store, for the routes still on the old auth; the context must be made for this `agent`.
+// made over the context's store, for the challenge and the context step; the context must be made for this `agent`.
 export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs = 5000, maxRequestsPerWindow = 120, rateWindowMs = 60000, maxConcurrent = 8, commitOnSignature = false, publicSignedCreates = null, context = null, wire = null } = {}) {
   assertKitOperationAdmitted('createSellerHttpHandler');
   if (wire !== null && !authentication) throw new Error('the wire routes need the old authentication of the routes still on it');
@@ -193,6 +193,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           const outcome = transportOutcome(req.url, { answer: await route(agent, body, {}) }, { retained: false });
           return await send(res, outcome.status, outcome.value, request);
         }
+        // Payment evidence is taken only on an assembled settlement profile, whichever auth opened the request.
         if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
         if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
         // The context step reads the journal first and runs its admission only
@@ -225,7 +226,11 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           }
           // A cached refresh owns no pending reservation. Recheck its live
           // authority inside the agent's job fence, including after restore.
-          const transport = Object.freeze({ check: () => authentication.assertLive(request) });
+          // A wire request is rechecked by the wire on a fresh clock first; the old
+          // authentication knows no wire request, and its expiry bounds its delegation's. The wire's expiry, once seen at any
+          // call, is kept: a clock that later reads earlier does not let a refresh go on.
+          if (auth === wireAuth) await opened.recheck();
+          const transport = Object.freeze({ check: auth === wireAuth ? () => { if (opened.readbackOnly()) throw new WireError('peer_expired', 408); } : () => authentication.assertLive(request) });
           const answer = await route(agent, body, { transport }), text = JSON.stringify(answer);
           return await send(res, 200, answer, request, { text: await pointed(200, text, request.jobId, req.url) });
         }
