@@ -69,7 +69,7 @@ export type SellerBundleFencedComponentSigner = (
   fence: Readonly<SellerBundleEffectFence>,
 ) => ReturnType<BuildComponentSignatureOptions["sign"]>;
 
-/** #132 input with generation fencing added to the two live seller-side signers. */
+/** `finalizeCompletedSellerBundleCore` input with generation fencing added to the two live seller-side signers. */
 export type FinalizeCompletedSellerBundleDurableInput = Omit<
   FinalizeCompletedSellerBundleInput,
   "seller" | "bindingSigner"
@@ -84,7 +84,7 @@ export type FinalizeCompletedSellerBundleDurableInput = Omit<
   };
 };
 
-/** #132 provider with a mandatory generation fence on every irreversible write. */
+/** `finalizeCompletedSellerBundleCore` provider with a mandatory generation fence on every irreversible write. */
 export type DurableSellerBundleFinalizationProvider = Omit<
   SellerBundleFinalizationProvider,
   "submitSellerBundle" | "publishBundleBinding"
@@ -135,7 +135,7 @@ export interface SellerBundleFinalizationDurability {
   leaseTtlMs: number;
   /** Wall clock used only for lease acquisition/renewal and operational observations. */
   leaseNowMs?: () => number;
-  /** Re-authenticate the complete #121 terminal fulfilment spine before bundle work. */
+  /** Re-authenticate the complete durable terminal fulfilment spine before bundle work. */
   terminalVerification: DurableSellerTerminalVerification;
   reconcileSignature: (input: {
     purpose: SellerBundleSignaturePurpose;
@@ -841,7 +841,8 @@ class DurableBundleCoordinator {
   async withLeaseHeartbeat<T>(operation: () => Promise<T>): Promise<T> {
     await this.#renew();
     let heartbeat = Promise.resolve();
-    let heartbeatError: unknown;
+    const noError = Symbol();
+    let heartbeatError: unknown = noError;
     const interval = Math.max(
       1,
       Math.min(30_000, Math.floor(this.#durability.leaseTtlMs / 3)),
@@ -850,7 +851,7 @@ class DurableBundleCoordinator {
       heartbeat = heartbeat
         .then(() => this.#renew())
         .catch((error: unknown) => {
-          heartbeatError ??= error;
+          if (heartbeatError === noError) heartbeatError = error;
         });
     }, interval);
     timer.unref();
@@ -858,7 +859,7 @@ class DurableBundleCoordinator {
       const result = await operation();
       clearInterval(timer);
       await heartbeat;
-      if (heartbeatError) throw heartbeatError;
+      if (heartbeatError !== noError) throw heartbeatError;
       await this.#renew();
       return result;
     } finally {
@@ -878,7 +879,8 @@ class DurableBundleCoordinator {
     await this.#renew();
     const fence = this.#fence(idempotencyKey);
     let heartbeat = Promise.resolve();
-    let heartbeatError: unknown;
+    const noError = Symbol();
+    let heartbeatError: unknown = noError;
     const interval = Math.max(
       1,
       Math.min(30_000, Math.floor(this.#durability.leaseTtlMs / 3)),
@@ -887,7 +889,7 @@ class DurableBundleCoordinator {
       heartbeat = heartbeat
         .then(() => this.#renew())
         .catch((error: unknown) => {
-          heartbeatError ??= error;
+          if (heartbeatError === noError) heartbeatError = error;
         });
     }, interval);
     timer.unref();
@@ -895,7 +897,7 @@ class DurableBundleCoordinator {
       const result = await operation(fence);
       clearInterval(timer);
       await heartbeat;
-      if (heartbeatError) throw heartbeatError;
+      if (heartbeatError !== noError) throw heartbeatError;
       await this.#renew();
       return clone(result);
     } finally {
@@ -1919,8 +1921,8 @@ function readOnlyProvider(
 }
 
 /**
- * Restart-safe wrapper for `finalizeCompletedSellerBundleCore` (#55). It requires
- * the exact completed #121 durable handoff and adds generation-fenced bundle WAL
+ * Restart-safe wrapper for `finalizeCompletedSellerBundleCore`. It requires
+ * the exact completed `runDurableFulfilmentCore` handoff and adds generation-fenced bundle WAL
  * entries without changing any normative DACS wire shape.
  */
 export async function finalizeCompletedSellerBundleDurable(
