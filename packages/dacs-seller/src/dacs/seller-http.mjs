@@ -256,6 +256,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
             if (!settled) return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; its outcome is not established.' }, request);
             return await send(res, settled.status, settled.value, request, { text: await pointed(settled.status, JSON.stringify(settled.value), request.jobId, req.url) });
           }
+          if (authentication.store.contextHoldState?.({ jobId: request.jobId, effect: reservation.effectKey }) === 'pending') return await send(res, 503, { error: 'operation_uncertain', message: 'The retained context still has a pending owner.' }, request);
           const proof = typeof authentication.store.reconcile === 'function' ? await context.reconcile({ request, body, rawBody, ...(readOnly ? { readOnly } : {}) }) : null;
           if (proof?.disposition === 'present') {
             const text = JSON.stringify(proof.value);
@@ -266,7 +267,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           // The second exception: the context route proved a shutdown cut its step
           // before anything of it was signed or sent; the same effect runs
           // again below under the reservation the journal hands back.
-          const resumed = contextStep && proof?.disposition === 'resume' && typeof context.resume === 'function' ? await context.resume(reservation, request, authentication.store, proof) : null;
+          const resumed = !readOnly && contextStep && proof?.disposition === 'resume' && typeof context.resume === 'function' ? await context.resume(reservation, request, authentication.store, proof) : null;
           if (resumed?.disposition !== 'perform') return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; it was not performed again.' }, request);
           reservation = resumed;
         }

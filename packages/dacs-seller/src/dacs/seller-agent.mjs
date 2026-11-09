@@ -390,7 +390,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   function retainedChallengeProblem(session) {
     if (!nativeProfile || !durable) return null;
     const bundle = session.buyerBundle, nonce = bundle?.sessionNonce;
-    const challenge = challengeLedger?.retained(nonce) ?? null;
+    const challenge = challengeLedger?.retainedForSession?.(nonce) ?? challengeLedger?.retained(nonce) ?? null;
     if (!challenge) return 'the retained session names no challenge this seller issued';
     if (challenge.jobId !== session.jobId || !sameCanonicalClaimIdentity(challenge.buyer, bundle.presentedBy) || challenge.nonce !== nonce) return 'the retained session challenge was issued for another job or buyer';
     if (challenge.state !== 'accepted') return 'the retained session challenge was not consumed and admitted for this attempt';
@@ -554,6 +554,12 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     if (session.sellerContribution) {
       signatures.set(session.sellerContribution.planHash, session.sellerContribution.signature.value);
       contributions.set(session.sellerContributionProposalHash, session.sellerContribution);
+    }
+  }
+  if (nativeProfile && durable) {
+    for (const challenge of durable.legacyAcceptedChallenges()) {
+      if (typeof challengeLedger?.importAccepted !== 'function') throw new SellerAgentError('seller_state_unverified', 'the challenge ledger cannot migrate retained admissions', 503);
+      challengeLedger.importAccepted(challenge);
     }
   }
   for (const session of durable?.sessions() ?? []) await restore(session);
