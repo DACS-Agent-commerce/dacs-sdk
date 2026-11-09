@@ -1,20 +1,15 @@
 // K12-H6a / K12-H6b: the signing domain of the seller transport, as the kit's server auth and the client's signer each use it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPublicKey, verify } from 'node:crypto';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
 import { buyer as hostBuyer } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
-import { BUYER, JOB, publicKeyHex, sellerTransportPair } from './fixtures.mjs';
+import { BUYER, JOB } from './fixtures.mjs';
 import { composedKitHost, postHeader, wireSignedRequest } from './kit-host.mjs';
 
 const OLD_DOMAIN = 'dacs-chatgpt-plugin:loopback-seller-peer:v1:';
-const ED25519_SPKI_PREFIX = '302a300506032b6570032100';
 
-const buyerPublicKey = () => createPublicKey({ key: Buffer.from(ED25519_SPKI_PREFIX + publicKeyHex(BUYER), 'hex'), format: 'der', type: 'spki' });
-const decodeHeader = (header) => JSON.parse(Buffer.from(header, 'base64url').toString('utf8'));
 const signedUnder = (domain, payload) => Buffer.from(domain + canonicalize(payload), 'utf8');
-const verifiesUnder = (domain, { payload, signature }) => verify(null, signedUnder(domain, payload), buyerPublicKey(), Buffer.from(signature, 'base64url'));
 /** The header the client would send if `wallet` signed the same payload under `domain`. */
 const headerSignedUnder = (domain, payload, wallet = BUYER) => Buffer.from(canonicalize({ payload, signature: wallet.signBytes(signedUnder(domain, payload)).toString('base64url') })).toString('base64url');
 
