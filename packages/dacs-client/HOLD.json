@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "e55b5fab98ef27c7bccfb5aaa0d2ca530cb616da"
+        "blob": "acc7e01e2cf19e86db708c28be17842073c62346"
       },
       "DELTA-LEDGER.json": {
-        "blob": "c63bd32dc85305e8b3a2b9a42e1b2259d502160e"
+        "blob": "3f1e59e87389124b3bd8f682ac6b174230fd4f1e"
       },
       "DELTA-MAP.md": {
-        "blob": "c625208c6328062aab4512775cbbde7e71e40277"
+        "blob": "17d64358c5f559b224c63e034466da597924651a"
       },
       "DELTA-NOTES.md": {
-        "blob": "0d2f986bab879560827e6c94cd68205c7cdf2dba"
+        "blob": "4f3769b3fa11c8940b2369fed79674edd766073f"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "5207d4ffb82503f6ff16ec3bb9828611db6d920d"
+        "blob": "f7173f096d2d951b17ef4e7366ddd7dd3a565aaf"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1157,7 +1157,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "90f033351186197078d79ea5a96a370f9e07d543"
+        "blob": "35fea4e67f62b301d266b56ec14c57f78911f42a"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1259,7 +1259,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "c017b734516a30117cd80237e62ff8314b5e5199"
+        "blob": "cc02ca7f025758cf30e1032c53ab770952d24396"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1742,13 +1742,13 @@
         "blob": "f0228e036f7f82a8087caf1c5883419ee18c8491"
       },
       "test/helpers/stored-request-fixture.mjs": {
-        "blob": "b09dba88259bd7dbdade6509e31e40a86727a13a"
+        "blob": "0fb0482deee0820d23ee7b2f022ea3633a8acfa4"
       },
       "test/helpers/stored-request-flow-loader.mjs": {
-        "blob": "504131cea52f01a11311e619e01576a9939f87b6"
+        "blob": "1b650e43fbb462da68e37017465f8f106f778a39"
       },
       "test/helpers/stored-request-flows.mjs": {
-        "blob": "1a09e6d1fafcbe7acfa82f71b2949272a08e97da"
+        "blob": "b59171dbbc86f4612ba57ae203e0fc3822ac7a1c"
       },
       "test/helpers/tp1-node-fixture.mjs": {
         "blob": "768ebf54a4154a3474b684f4e564c174b34dd29e"
@@ -1913,7 +1913,7 @@
         "blob": "d8fa7c318c181091f7c9d6793942d5288733362e"
       },
       "test/seller-stored-request.test.mjs": {
-        "blob": "53fdb217b04d43f879c51cb1169ab5ae66b20520"
+        "blob": "a742b74fef6eb61e1fb1d103c0704978a021e077"
       },
       "test/seller-suspension.test.mjs": {
         "blob": "96cc7507687ca7947de04da9470fdeb230da7db9"

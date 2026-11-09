@@ -837,6 +837,19 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       return false;
     }
   };
+  // True only when the canonical body read back for a nonce slot is that slot's own confirmed transaction: its hash is the slot's hash,
+  // its payer (settlement's reading: the account address, else the signer) is the wallet and the observed payer, and its nonce is the slot's.
+  function slotBodyAgrees(body, seen, { hash, wallet, nonce }) {
+    let bodyHash = null;
+    try {
+      if (typeof body?.hash === 'string') bodyHash = canonicalHash(body.hash);
+    } catch {
+      return false;
+    }
+    const content = body?.content ?? {};
+    const payer = content.from_ed25519_address ?? content.from;
+    return bodyHash === hash && body.status === 'confirmed' && same(payer, wallet) && same(payer, seen.payer) && nodeProjectedNonce(content.nonce) === nonce;
+  }
   const readableAddress = (value) => {
     try {
       normalizeDemosAddress(value);
@@ -1552,12 +1565,14 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       if (slot.status !== 'found') return open('cancel pending: the nonce slot is used but its transaction could not be found in the wallet history');
       // What took the slot is read as settlement reads it: observeTransfer decodes type, payer, payee, amount,
       // inclusion and failure; the canonical body's nonce is read with nodeProjectedNonce. Its status must read confirmed, as settlement
-      // requires: inclusion can hold a failed execution, which proves nothing about the payload. Anything else leaves it open.
+      // requires: inclusion can hold a failed execution, which proves nothing about the payload. The body must also be the slot's own
+      // transaction: its hash, payer and nonce must agree with the slot and the observation. Anything else leaves it open.
       let taken = null, unreadable = 'it is not an included transfer from this wallet at this nonce';
       try {
-        const seen = transferObservationRecord(await chain.observeTransfer(slot.hash), canonicalHash(slot.hash));
+        const slotHash = canonicalHash(slot.hash);
+        const seen = transferObservationRecord(await chain.observeTransfer(slot.hash), slotHash);
         const body = seen.status === 'included' ? await chain.getTransaction(slot.hash) : null;
-        if (same(seen.payer, wallet) && body?.status === 'confirmed' && nodeProjectedNonce(body?.content?.nonce) === coords.expectedNonce) taken = seen;
+        if (slotBodyAgrees(body, seen, { hash: slotHash, wallet, nonce: coords.expectedNonce })) taken = seen;
       } catch (error) { unreadable = String(error?.message ?? error); }
       if (!taken) return open(`cancel pending: the transaction that used the nonce slot could not be read back: ${unreadable}`);
       if (same(taken.payee, operation.terms.seller.payee) && taken.amountOs === operation.terms.price.amountOs) {

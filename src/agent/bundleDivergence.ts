@@ -6,7 +6,7 @@
  *
  *  - incompatible type-aware outcome/fault meaning; OR
  *  - a `phaseSummary` entry (keyed by its stable `index`) present in ONE copy but
- *    not the other — per DACS-Standard#224 / §10.4.3, presence-mismatch IS a
+ *    not the other — per §10.4.3, presence-mismatch IS a
  *    divergence (a copy asserting a phase the other denies is a contradiction;
  *    the earlier terminal-phase carve-out was dropped); OR
  *  - a shared `phaseSummary` index whose `kind`/`outcome`/`errorClass` differ.
@@ -18,9 +18,9 @@
  * only comparing outcome + per-phase outcome/errorClass, so a party can't force a
  * spurious "disputed" classification by perturbing one.
  *
- * Both call sites MUST use this one function; a second, subtly-different copy is
- * exactly the drift #224 was raised to close (by-index here, not by-position, so
- * a reordered-but-equal phase set doesn't false-positive).
+ * Both call sites MUST use this one function so they cannot drift apart. It
+ * compares by index, not by position, so a reordered-but-equal phase set doesn't
+ * false-positive.
  */
 
 import type { FaultedParty } from "../artifacts/types.js";
@@ -63,7 +63,7 @@ function phasesByIndex(bundle: DivergenceBundle): Map<number, Record<string, unk
   return out;
 }
 
-/** Do two bundle copies canonically diverge (§10.4.3, #224)? */
+/** Do two bundle copies canonically diverge (§10.4.3)? */
 export function bundlesDiverge(a: DivergenceBundle, b: DivergenceBundle): boolean {
   const aClass = bundleOutcomeClass(a.outcome);
   const bClass = bundleOutcomeClass(b.outcome);
@@ -115,7 +115,7 @@ export function bundlesDiverge(a: DivergenceBundle, b: DivergenceBundle): boolea
   const ai = phasesByIndex(a);
   const bi = phasesByIndex(b);
   if (!ai || !bi) return true;
-  // Presence-mismatch IS divergence (#224): the size check catches a phase in `b`
+  // Presence-mismatch IS divergence: the size check catches a phase in `b`
   // that `a` lacks; the `!pb` check inside the loop catches the reverse.
   if (ai.size !== bi.size) return true;
   for (const [idx, pa] of ai) {
