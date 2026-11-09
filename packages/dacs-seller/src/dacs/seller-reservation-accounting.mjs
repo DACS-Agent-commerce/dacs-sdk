@@ -34,7 +34,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     if (ledger.recordCountWithin(at) >= limits.maxRecords) fail('peer_store_capacity', 503);
     if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
     if ((!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) ||
-        (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords)) store.retireSlotsWithin(at, undefined, { capacity: true, keepContexts: true });
+        (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords)) store.retireSlotsWithin(at, undefined, { capacity: true });
     if (!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) fail('peer_job_capacity', 503);
     if (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords) {
       fail('peer_context_capacity', 503);
@@ -46,7 +46,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   function checkJobWithin(payload, keepProfile, replay) {
     if (ledger.jobConflictWithin(payload)) fail('peer_job_conflict', 409);
     if (!replay && (ledger.jobClosedWithin(payload) ||
-        (payload.path === SELLER_CONTEXT_PATH && ledger.jobRetiredWithin(payload.jobId)))) fail('context_job_closed', 409);
+        ledger.jobRetiredWithin(payload.jobId))) fail('context_job_closed', 409);
     const tuple = canonicalize(keepProfile);
     if (canonicalize(payload.profile) !== tuple) fail('tp1_purchase_profile_mismatch', 500);
     const purchase = ledger.purchaseWithin(payload.jobId);

@@ -57,6 +57,7 @@ releases the provisional Agreement only when no effect, slot, transaction or con
 owner remains open for that buyer's corrected proposal. Retrying the refused proposal with its original nonce
 returns its saved answer even after a corrected proposal succeeds. Both context admission paths refuse retired jobs with
 context_job_closed (409), including after a restart with unknown session state. Retained completed requests can still replay.
+Every route refuses new or recoverable work on a retired job before writing a reservation or charging purchase capacity.
 
 A mutating route takes one effect per job across both reserve paths: an old-path slot or an accounted reservation the
 wire did not refuse excludes another effect with peer_operation_conflict (409). Effect-to-job records protect pending
@@ -64,7 +65,8 @@ reads too. Completed and uncertain effects keep their bindings. Empty job bindin
 reservation at capacity; owners remain. Reconciliation can make retained work eligible for retirement. Deleting the journal is not a
 supported recovery procedure. Accounted holds release their active slots through store retirement once all associated
 work is absent or terminal and its nonce and context-start retention windows have elapsed. Retirement keeps reservation
-and hold rows, preserves ownership, and never refunds used purchase units.
+and hold rows, preserves ownership, and never refunds used purchase units. Completed effects and their context admission
+proofs remain available for retries after restart; retired proofs do not count as active slots.
 
 A terminal session refuses a fresh proposal or context start with context_session_terminal (409), subject to the
 ownership and closed-job checks above. An accounted retry
@@ -199,7 +201,7 @@ Context starts have an independent active-record cap, maxContextRecords, default
 A job counts once across its context admissions and accounting hold. Active work retains its slots until it is absent
 or terminal and every nonce and context-start retention window has elapsed. Retirement preserves accounting records
 and ownership while freeing job and context capacity. Pending or uncertain effects and unknown or nonterminal sessions
-retain their slots. Fresh context starts on retired jobs are refused even after restart; completed requests still
+retain their slots until retirement is safe. Retired jobs refuse fresh starts and recovery even after restart; completed requests still
 require their authenticated binding before replay. peer_context_capacity (503) refuses fresh starts before a policy hold
 or wire effect; a recognized presentation nonce is consumed on attempt. Challenge issuance refuses at capacity before
 SQL mutation, while retained retries can read their answers.

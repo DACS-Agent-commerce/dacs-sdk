@@ -495,12 +495,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // effects may leave retention; unresolved effects and live requests fence it.
   function reclaimableContexts(time, count) {
     if (!admissions()) return [];
-    count ??= reservationLedger.contextCountWithin() + get('SELECT COUNT(*) AS n FROM peer_context_admissions a JOIN kit_slot_retirements r ON r.job = a.job WHERE r.context_retired = 1').n;
+    count ??= reservationLedger.contextCountWithin();
     const needed = Math.max(0, count - maxContextRecords + 1);
     if (!needed) return [];
     const rows = [];
     for (const row of db.prepare(`SELECT a.job, a.effect FROM peer_context_admissions a
       JOIN peer_effects e ON e.effect = a.effect WHERE a.admitted_at <= ? AND e.state = 'complete'
+      AND NOT EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = a.job AND r.context_retired = 1)
       AND NOT EXISTS (${activeHold('a.job')})
       AND NOT EXISTS (${activeK1('a.job', 'context')})
       AND NOT EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
@@ -543,11 +544,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       job, closed, contextRetired, canonicalize({ buyer: owner.buyer, seller: owner.seller, listingPin: JSON.parse(owner.pin) }));
     }
     for (const job of jobs) {
-      reclaimContexts(db.prepare('SELECT effect FROM peer_effect_jobs WHERE job = ?').all(job));
       run('DELETE FROM kit_purchase_profiles WHERE job = ?', job); run('DELETE FROM peer_jobs WHERE job = ?', job);
     }
-    // Challenge admission releases the slot while retaining the proof for the next reserve or sweep.
-    if (!plan?.keepContexts) reclaimContexts(contexts);
   }
   function freeJobWithin(job) {
     retireSlotsWithin(now(), job, { jobs: [job], contexts: [] });
@@ -564,13 +562,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     if (!reservationLedger.contextHeldWithin(p.jobId) && reservationLedger.contextCountWithin() >= maxContextRecords) fail('peer_context_capacity', 503);
     claimJobWithin(p);
   }
-  function reclaimContexts(rows) {
-    for (const row of rows) {
-      run('DELETE FROM peer_nonce_retention WHERE nonce IN (SELECT nonce FROM peer_nonces WHERE effect = ?)', row.effect);
-      run('DELETE FROM peer_nonces WHERE effect = ?', row.effect);
-      deleteEffect(row.effect);
-    }
-  }
   function deleteEffect(effect) {
     for (const table of ['peer_effects', 'kit_context_reservations', 'peer_slots', 'peer_transactions', 'peer_effect_jobs', ...(admissions() ? ['peer_context_admissions'] : [])]) run(`DELETE FROM ${table} WHERE effect = ?`, effect);
   }
@@ -585,7 +576,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   }
   const { maxStartsPerHour, maxStartsPerBuyerPerHour } = contextStartLimits;
   const ledger = createSellerChallengeLedger({ db, transaction, now, generation, ready, stopped, sessionState: ({ jobId }) => readSessionStateWithin(jobId), admissionCounts: () => {
-      retireSlotsWithin(now(), undefined, { capacity: true, keepContexts: true, jobs: [] }); return admissionCounts();
+      retireSlotsWithin(now(), undefined, { capacity: true, jobs: [] }); return admissionCounts();
     },
     limits: { maxChallenges, maxContextRecords, maxPerHour: maxStartsPerHour, maxPerBuyerPerHour: maxStartsPerBuyerPerHour, maxStartsPerHour, maxStartsPerBuyerPerHour } });
   // Keep acceptance proof until the context effect retires, even if its terminal challenge is reclaimed.
@@ -692,12 +683,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           if (get('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1', p.jobId) && reservationLedger.sessionTerminalWithin(p.jobId)) fail('context_session_terminal', 409);
           fail('peer_job_conflict', 409);
         }
-        if (!existing && get('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1', p.jobId)) fail('context_session_terminal', 409);
+        if (existing?.state !== 'complete' && reservationLedger.jobRetiredWithin(p.jobId)) fail('context_session_terminal', 409);
         if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
         // The SDK buyer coordinator reconciles before publishing a proposal.
         // An unadmitted job has no authenticated state to disclose or reserve.
         const unknownState = !job && p.path === STATE;
-        if (!job && p.path !== PROPOSAL && !contextStep && !unknownState) fail('peer_unknown_job', 404);
+        if (!job && p.path !== PROPOSAL && !contextStep && !unknownState && existing?.state !== 'complete') fail('peer_unknown_job', 404);
         const slot = `${p.jobId}:${p.path}`;
         const occupied = READ_ROUTES.has(p.path) ? null : get('SELECT effect FROM peer_slots WHERE slot = ?', slot);
         if ((occupied && occupied.effect !== effectKey) || reservationLedger.accountedSlotWithin(p.jobId, p.path)) fail('peer_operation_conflict', 409);

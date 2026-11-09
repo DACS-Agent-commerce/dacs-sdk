@@ -176,7 +176,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
   // Check readiness and start limits after the store's capacity guard; recheck context capacity after policy awaits.
   function checkLimits(buyer, ownRow) {
     if (ready() !== true) fail('seller_not_ready', 503);
-    retireSlotsWithin(clock(), undefined, { capacity: true, keepContexts: true, jobs: [] });
+    retireSlotsWithin(clock(), undefined, { capacity: true, jobs: [] });
     const counts = admissionCounts();
     if (ownRow && counts.contextRecords - 1 >= limits.maxContextRecords) fail('peer_context_capacity', 503);
     if (counts.starts >= limits.maxStartsPerHour) fail('unpaid_start_limit', 429);
