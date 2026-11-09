@@ -306,7 +306,7 @@ test('T10 total context capacity bounds admissions, effects and slots across hou
 });
 
 test('terminal context retirement preserves the full hour and expired-request fence, with stored retries after restart', t => {
-  const w = world(t, { maxContextRecords: 1 });
+  const w = world(t, { maxRecords: 2, maxContextRecords: 1 });
   const old = context(w, 0);
   w.store.finish(w.store.reserve(old, contextBody(0), { admit: () => w.now() }), 409, '{}');
   w.terminal(jid('job-0')); w.advance(HOUR - 1); w.reopen();
