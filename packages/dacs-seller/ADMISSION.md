@@ -48,6 +48,11 @@ The transport journal holds at most 10,000 live nonce records and, independently
 maxRecords and maxJobs independently. A job counts once across its Agreement row, context admission and accounting
 reservation hold. Both reserve paths share these counts and the per-buyer window. New jobs at the job limit return
 peer_job_capacity (503) before mutation unless completed work can safely retire.
+The host's durable agent excludes a saved session from this limit only after the transport store records job
+retirement and no transport source still holds its slot. Saved sessions, payment history and retry answers remain
+available after retirement and restart. Without transport retirement proof, a saved session still counts.
+After retirement removes the active purchase tuple, a completed retry must match the operation binding retained in
+the wire journal. A held job without that completed binding still requires its purchase tuple.
 
 A job belongs to its retained buyer, seller and Listing pin even after its job row leaves. Another party gets
 peer_job_conflict (409); the earlier reserve path returns context_session_terminal (409) for a retired job

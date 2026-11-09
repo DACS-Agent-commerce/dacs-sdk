@@ -602,6 +602,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   const store = {
     reservationAccounting,
     challenges,
+    // A marker alone is insufficient while any transport source still holds the job.
+    jobSlotReleased: jobId => reservationLedger.jobRetiredWithin(jobId) && !reservationLedger.jobHeldWithin(jobId),
     // Only the holder of the seller state lock calls this at startup, after `challenges.closeLostValidations()`
     // and before serving or policy-hold reconciliation: every context step still `pending` belongs to a dead owner.
     // One the ledger never accepted ran nothing: it ends as a definite refusal and its hold is later found absent.

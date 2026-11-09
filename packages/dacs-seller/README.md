@@ -68,7 +68,7 @@ const host = await startSellerHost({
   deliverableProducer,  // synchronous, deterministic (input) -> JSON bound to the Agreement and settlement
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
-  maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
+  maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)

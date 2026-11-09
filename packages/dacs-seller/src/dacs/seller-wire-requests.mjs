@@ -126,8 +126,8 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
  * on a fresh clock for work that follows without a reservation (a cached refresh). Records in `limits` the times the admitted
  * request and its delegation expire, for the store calls that follow admission.
  * Throws the wire's own refusal with its code, status and cause, `peer_unknown_job` 404 for a job the host holds nothing for
- * (only after the exchange checks pass), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with no kept
- * tuple, or the seller's body refusal.
+ * (only after the exchange checks pass), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with neither
+ * a kept tuple nor a bound completed operation after retirement, or the seller's body refusal.
  */
 async function admitWireRoute(wire, agent, limits, { header, method, path, rawBody, body, onOpened }) {
   const opened = await openWireEnvelope(header, 'request', { binding: wire.binding, local: wire.local(), purchaseProfile: null, requireDelegation: wire.requireDelegation });
@@ -152,9 +152,15 @@ async function admitWireRoute(wire, agent, limits, { header, method, path, rawBo
   const checked = await checkWireRequest(opened, check());
   if (invalidDraft !== null) throw invalidDraft;
   if (records === null) throw new SellerTransportError('peer_unknown_job', 404);
-  // The one tuple gate of every wire route: a job the agent holds with no kept tuple (one retained before tuples were kept, or
-  // whose store row is gone) is never answered, and never reserved, where a new reservation would adopt the request's tuple.
-  if (held && kept === null) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
+  // Retirement removes the active purchase tuple. Only a completed operation whose journal
+  // binds this request can replay without it; other held jobs still need their kept tuple.
+  if (held && kept === null) {
+    const view = wire.store.jobSlotReleased(request.jobId) && !isReadRoute(path)
+      ? inspectWireOperation(wire.journal, request) : null;
+    if (view?.state !== 'completed' || view.binding !== wireOperationBinding(request)) {
+      throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
+    }
+  }
   validateBody(request, checked.body);
   limits.set(request, { request: request.expiresAt, delegation: opened.delegation?.payload.expiresAt ?? Infinity });
   return { checked, body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, profile: request.profile, recheck: () => authorizeWireRequest(opened, check()) };
