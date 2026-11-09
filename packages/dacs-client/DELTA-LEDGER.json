@@ -6783,6 +6783,17 @@
           "after": "f0834ba649d3a26ad1136f96195fea50feb9d8c3"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the recorded-suspension buyer seller client after the merge and refresh package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "a7bde64bb0b01a411fe520bb19a8d973fb05775c",
+          "after": "a7bde64bb0b01a411fe520bb19a8d973fb05775c"
+        }
+      ]
     }
   ]
 }
