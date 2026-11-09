@@ -362,7 +362,9 @@ function walletReservation(
     settlementBindingHash: payment.orderLocalBindingHash,
     railId: payment.railId,
     railDefinitionHash: payment.railDescriptorHash,
-    wallet: payment.payer,
+    // Wallet policies name the Demos wallet as the adapter reports it
+    // (`0x`-prefixed); the payment input keeps the bare canonical hex.
+    wallet: `0x${payment.payer}`,
     chainId: payment.network,
     payee: payment.payee,
     finality: Object.freeze({ model: "bft-final" }),
@@ -479,7 +481,7 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
           typeof chain.nonce !== "number" || !Number.isSafeInteger(chain.nonce) ||
           chain.nonce < 0 || Object.is(chain.nonce, -0) || chain.nonce !== prepared.nonce ||
           chain.txHash !== prepared.txHash ||
-          chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
+          chain.payer !== payment.payer || chain.payee !== reservation.payee ||
           chain.amountOs !== payment.amountOs) {
         return false;
       }
@@ -532,7 +534,7 @@ function capturePrepared(
   if (!plainObject(value) || !exactKeys(value, [
     "txHash", "nonce", "payer", "payee", "amountOs", "network",
     "maxTotalDebitOs", "recovery",
-  ], ["denomination", "confirmedTotalDebitOs"]) || typeof value.txHash !== "string" ||
+  ], ["denomination", "confirmedTotalDebitOs", "confirmedRecordFeeOs"]) || typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) ||
       !Number.isSafeInteger(value.nonce) || (value.nonce as number) < 0 ||
       value.payer !== payment.payer || value.payee !== payment.payee ||
@@ -546,6 +548,11 @@ function capturePrepared(
           !INTEGER_RE.test(value.confirmedTotalDebitOs) ||
           BigInt(value.confirmedTotalDebitOs) < BigInt(payment.amountOs) ||
           BigInt(value.confirmedTotalDebitOs) > BigInt(payment.maxTotalDebitOs))) ||
+      // The record's declared fee is kept beside the real debit, never alone (#604).
+      (value.confirmedRecordFeeOs !== undefined &&
+        (value.confirmedTotalDebitOs === undefined ||
+          typeof value.confirmedRecordFeeOs !== "string" ||
+          !/^(?:0|[1-9][0-9]*)$/.test(value.confirmedRecordFeeOs))) ||
       canonicalize(value.recovery) !== canonicalize(recoveryContext(payment))) {
     throw new DacsPayDemBuyerPaymentError("pay-dem-prepared-transfer-invalid");
   }
@@ -560,7 +567,7 @@ function captureSettlement(
   if (!plainObject(value) || !exactKeys(value, [
     "ok", "txHash", "chainId", "payer", "payee", "finality",
     "blockNumber", "txRefKind", ...(requireNetworkFee ? ["networkFeeOs"] : []),
-  ], requireNetworkFee ? [] : ["networkFeeOs"]) ||
+  ], requireNetworkFee ? ["recordFeeOs"] : ["networkFeeOs", "recordFeeOs"]) ||
       value.ok !== true || typeof value.txHash !== "string" ||
       !HASH_RE.test(value.txHash) || value.chainId !== payment.network ||
       canonicalAddress(value.payer) !== payment.payer ||
@@ -572,6 +579,9 @@ function captureSettlement(
           !/^(?:0|[1-9][0-9]*)$/.test(value.networkFeeOs) ||
           BigInt(payment.amountOs) + BigInt(value.networkFeeOs) >
             BigInt(payment.maxTotalDebitOs))) ||
+      (Object.hasOwn(value, "recordFeeOs") &&
+        (!Object.hasOwn(value, "networkFeeOs") || typeof value.recordFeeOs !== "string" ||
+          !/^(?:0|[1-9][0-9]*)$/.test(value.recordFeeOs))) ||
       !Number.isSafeInteger(value.blockNumber) || (value.blockNumber as number) < 0 ||
       value.txRefKind !== "demos") {
     throw new DacsPayDemBuyerPaymentError("pay-dem-settlement-invalid");
@@ -827,9 +837,21 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         let claim: Extract<WalletSpendReservationClaimV1, { status: "reserved" }> |
           undefined;
         let claimFailure: DacsLiveEffectExecutionControlV1 | undefined;
+        // The rail type makes the pre-broadcast hook optional. A failure is
+        // named "before broadcast" only when the hook was entered and did not
+        // pass; a rail that skipped the hook may already have broadcast.
+        let broadcastHookEntered = false;
+        let broadcastReleased = false;
+        let reserveFailed = false;
         const reserveWallet = async (): Promise<NonNullable<typeof claim>> => {
           if (claim !== undefined) return claim;
-          const next = await walletSpendAuthority.reserve(reservation);
+          let next: WalletSpendReservationClaimV1;
+          try {
+            next = await walletSpendAuthority.reserve(reservation);
+          } catch (error) {
+            reserveFailed = true;
+            throw error;
+          }
           if (next.status !== "reserved") {
             claimFailure = walletClaimControl(next);
             throw new DacsPayDemBuyerPaymentError(
@@ -898,8 +920,10 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               preparedCheckpointed = true;
             },
             assertCurrentBeforeBroadcast: async () => {
+              broadcastHookEntered = true;
               await beginPreparedEffect();
               await fence.assertCurrent();
+              broadcastReleased = true;
             },
           }, railEffectFence);
           if (beginEffect === undefined) {
@@ -920,7 +944,14 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           });
         } catch {
           if (claimFailure !== undefined) return claimFailure;
-          return control("pay-dem-settlement-ambiguous");
+          // Still indeterminate either way: a prepared checkpoint may exist and
+          // only reconciliation can retire it. The reason says how far it got.
+          if (!broadcastHookEntered || broadcastReleased) {
+            return control("pay-dem-settlement-ambiguous");
+          }
+          return control(reserveFailed
+            ? "pay-dem-wallet-reservation-failed"
+            : "pay-dem-stopped-before-broadcast");
         }
         return result(settlement);
       },

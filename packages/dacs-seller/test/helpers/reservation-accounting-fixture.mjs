@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, contentHash, createFixedPriceAgreementSignatureContribution, createFixedPriceAgreementSigningPlan, deriveFixedPriceAgreement, finalizeFixedPriceAgreementContributions, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, bindTp1Profile, checkWireRequest, openWireEnvelope, openWireRequestJournal, TP1_APPROVED_IDENTITY_RECORD, wireOperationId } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, admitPreAgreementRequest, bindTp1Profile, checkWireRequest, inspectWireOperation, openWireEnvelope, openWireRequestJournal, TP1_APPROVED_IDENTITY_RECORD, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { createSellerTransportStore as createUnboundStore } from '../../src/dacs/seller-transport-auth.mjs';
 import { bindPurchaseCapacity } from './bound-transport-store.mjs';
 import { testWallet } from './protocol-fixture.mjs';
@@ -18,6 +18,7 @@ export const JOB2 = '01M5YKPJG048H248H248H248H2';
 export const PROPOSALS = '/dacs/v1/agreements/proposals';
 export const PAYMENTS = '/dacs/v1/payments';
 export const CONTEXT = '/dacs/v1/agreements/context';
+export const PAYMENT_TX = sha256Hex('default payment transaction');
 export const BUYER = testWallet(1), SELLER = testWallet(2);
 export const OTHER = testWallet(4);
 const SESSION = testWallet(3);
@@ -34,7 +35,9 @@ export async function accountingFixture(t, { leaveCapacityToTest = false, ...opt
   const path = join(dir, 'transport.sqlite');
   let time = T0, sequence = 0;
   const now = () => time;
-  let store = createSellerTransportStore({ path, now, ...options });
+  // The store reads the wire's own record of an operation, as the host does with its journal.
+  const wireOperationView = target => inspectWireOperation(journal, target);
+  let store = createSellerTransportStore({ path, now, wireOperationView, ...options });
   const db = new DatabaseSync(path);
   const journal = openWireRequestJournal(journalDir, { clock: now, leaseMs: 300000 });
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: TEST_CONNECTION, readAuthority: authorityReader() });
@@ -43,7 +46,7 @@ export async function accountingFixture(t, { leaveCapacityToTest = false, ...opt
     buyer: BUYER.claim, seller: SELLER.claim, listingPin: PIN, jobId: JOB, agreementHash: sha256Hex('agreement'),
     nonce: Buffer.from(String(++sequence).padStart(24, '0')).toString('base64url'), profile: FIXTURE_PROFILE,
     bodyHash: sha256Hex('{}'), expiresAt: time + 30000, ...change });
-  const admit = async (p = payload(), change = {}, delegated = false) => {
+  const openSigned = async (p, delegated) => {
     const signer = delegated ? SESSION : BUYER;
     const signature = signer.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.request + canonicalize(p))).toString('base64url');
     const delegationPayload = { version: '1', kind: 'seller-session-delegation', buyer: BUYER.claim, seller: SELLER.claim,
@@ -51,20 +54,33 @@ export async function accountingFixture(t, { leaveCapacityToTest = false, ...opt
       notBefore: T0 - 1000, expiresAt: T0 + 60000, profile: FIXTURE_PROFILE };
     const delegation = { payload: delegationPayload,
       signature: BUYER.signBytes(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(delegationPayload))).toString('base64url') };
-    const opened = await openWireEnvelope(Buffer.from(canonicalize({ payload: p, signature, ...(delegated ? { delegation } : {}) })).toString('base64url'), 'request', { binding, local: TEST_CONNECTION, purchaseProfile: FIXTURE_PROFILE });
+    return openWireEnvelope(Buffer.from(canonicalize({ payload: p, signature, ...(delegated ? { delegation } : {}) })).toString('base64url'), 'request', { binding, local: TEST_CONNECTION, purchaseProfile: FIXTURE_PROFILE });
+  };
+  const admit = async (p = payload(), change = {}, delegated = false) => {
+    const opened = await openSigned(p, delegated);
     const checked = await checkWireRequest(opened, { binding, local: TEST_CONNECTION, purchaseProfile: FIXTURE_PROFILE,
       method: 'POST', path: p.path, rawBody: Buffer.from('{}'), now: time, seller: SELLER.claim, listingPin: p.listingPin,
       retained: { buyer: p.buyer, seller: p.seller, jobId: p.jobId, agreementHash: p.agreementHash, allocated: false }, ready: true, requestJournal: journal, ...change });
     return { checked, payload: p, route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE };
   };
-  const args = (p = payload(), change = {}) => ({ checked: { reserve: async () => ({ state: 'new' }) }, payload: p,
-    route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE, ...change });
+  // The context start through the wire's pre-Agreement admission, which carries the context scope hash instead of an Agreement.
+  const admitContext = async (p = payload({ path: CONTEXT, agreementHash: sha256Hex('context scope') }), change = {}, delegated = false) => {
+    const opened = await openSigned(p, delegated);
+    const checked = await admitPreAgreementRequest(opened, { binding, local: TEST_CONNECTION, purchaseProfile: FIXTURE_PROFILE,
+      route: 'context', method: 'POST', path: p.path, rawBody: Buffer.from('{}'), now: time, seller: SELLER.claim, listingPin: p.listingPin,
+      retained: { buyer: p.buyer, seller: p.seller, jobId: p.jobId, agreementHash: p.agreementHash, accepted: false }, ready: true, requestJournal: journal, ...change });
+    return { checked, payload: p, route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE };
+  };
+  // A payment request carries its transaction in the admitted body and claims it; `change` may override either.
+  const args = (p = payload(), change = {}) => ({ checked: { reserve: async () => ({ state: 'new' }), body: p.path === PAYMENTS ? { payerPayingKey: p.buyer, txHash: PAYMENT_TX } : {} },
+    payload: p, route: p.path, operationId: wireOperationId(p), keepProfile: FIXTURE_PROFILE, ...(p.path === PAYMENTS ? { paymentTx: PAYMENT_TX } : {}), ...change });
   const reserve = (input) => store.reservationAccounting.reserveAccounted(input);
   const rows = () => db.prepare('SELECT * FROM kit_reservations ORDER BY rowid').all();
   const files = () => readdirSync(journalDir).sort();
   const nonces = () => files().filter(name => name.startsWith('k-'));
   // Each payment passes the real continuation gate with a signed Agreement, Listing and commitment.
-  const payment = async (jobId = JOB, change = {}) => {
+  const payment = async (jobId = JOB, change = {}, tx = sha256Hex('payment of ' + jobId)) => {
+    const rawBody = Buffer.from(JSON.stringify({ payerPayingKey: BUYER.claim, txHash: tx }));
     const listing = fixtureListing(SELLER, { now: T0 });
     const draft = deriveFixedPriceAgreement(agreementInput({ jobId, listing, buyerBundle: fixtureIdentityBundle(BUYER, T0 - 1000), generatedAt: T0 - 1000 }));
     const plan = createFixedPriceAgreementSigningPlan(draft);
@@ -82,21 +98,24 @@ export async function accountingFixture(t, { leaveCapacityToTest = false, ...opt
         contentHash: contentHash(record), transactionRef: { kind: 'demos', value: 'TEST commitment write' }, writer: SELLER.claim, nonce: '1',
         state: 'finalized', observationDisposition: 'established', observedAt: T0,
         blockRef: { id: 'TEST-block', height: '1', timestamp: T0 }, evidence: { kind: 'TEST-finality', value: 'TEST-proof' } } };
-    return admit(payload({ path: PAYMENTS, jobId, agreementHash, listingPin: pin }), {
-      commitment: Buffer.from(JSON.stringify(commitment)), agreement: Buffer.from(JSON.stringify(agreement)), signedListing: Buffer.from(JSON.stringify(listing)),
+    const input = await admit(payload({ path: PAYMENTS, jobId, agreementHash, listingPin: pin, bodyHash: sha256Hex(rawBody) }), {
+      rawBody, commitment: Buffer.from(JSON.stringify(commitment)), agreement: Buffer.from(JSON.stringify(agreement)), signedListing: Buffer.from(JSON.stringify(listing)),
       retained: { buyer: BUYER.claim, seller: SELLER.claim, jobId, agreementHash },
       readCommitmentReceipt: Object.assign(async () => 'valid', { chainIdentity: FIXTURE_PROFILE.chainIdentity }),
       ...change,
     });
+    return { ...input, paymentTx: tx };
   };
-  return { dir, path, db, journal, journalDir, payload, admit, payment, args, reserve, rows, files, nonces, now,
+  return { dir, path, db, journal, journalDir, payload, admit, admitContext, payment, args, reserve, rows, files, nonces, now,
     store: () => store, setTime: value => { time = value; },
-    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, ...options }); },
+    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, wireOperationView, ...options }); },
     tuples: () => db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n,
     payments: () => db.prepare('SELECT * FROM kit_payment_transactions').all(),
     jobRows: () => db.prepare('SELECT * FROM peer_jobs ORDER BY rowid').all(),
+    holds: () => db.prepare('SELECT * FROM kit_job_holds ORDER BY rowid').all(),
     assertEmpty: () => {
       assert.equal(rows().length, 0); assert.equal(files().length, 0);
+      assert.equal(db.prepare('SELECT COUNT(*) AS n FROM kit_job_holds').get().n, 0);
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n, 0);
       assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_jobs').get().n, 0);
     },

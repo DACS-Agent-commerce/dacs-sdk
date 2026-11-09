@@ -10,7 +10,6 @@ import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {agentFixture} from './helpers/seller-agent-isolated-fixture.mjs';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
 import {railSteward} from './helpers/rail-authority-fixture.mjs';
-import {withFixtureProfile} from './helpers/wire-authority-fixture.mjs';
 import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 import {createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
@@ -21,7 +20,7 @@ function command(agent,path,body,agreementHash){const rawBody=Buffer.from(JSON.s
 // Real store, server auth, HTTP handler and client. `serve` swaps the agent behind the same journal (a restart).
 async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals',storeOptions={}){
  const now=storeOptions.now??(()=>NOW);
- const store=withFixtureProfile(createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now,...storeOptions}));t.after(()=>store.close());
+ const store=createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now,...storeOptions});t.after(()=>store.close());
  let hash=body.proposal?.plan.agreementHash??core.contentHash(agent.transportAgreementOf(body.jobId));
  const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:hash}),now});
  const auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now});

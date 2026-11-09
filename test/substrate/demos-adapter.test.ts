@@ -12,6 +12,11 @@ import {
   type DemosRawClient,
 } from "../../src/substrate/index.js";
 import {
+  STORAGE_SEARCH_MAX_RESPONSE_BYTES,
+  STORAGE_SEARCH_PAGE_SIZE,
+  STORAGE_SEARCH_TIMEOUT_MS,
+} from "../../src/substrate/DemosAdapter.js";
+import {
   ed25519Verify,
   privateKeyFromSeed,
   publicKeyFromSeed,
@@ -20,6 +25,8 @@ import {
 import { DEMOS_CCI_RESPONSE_LIMITS } from "../../src/identity/index.js";
 
 const RPC = "https://node2.demos.sh";
+const searchReply = (response: unknown) =>
+  new Response(JSON.stringify({ result: 200, response }));
 const makeAdapter = (
   writeJournal = createInMemoryDemosWriteJournal(),
 ) => new DemosAdapter({
@@ -903,27 +910,20 @@ describe("DemosAdapter", () => {
     vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          result: 200,
-          response: [
-            {
-              storageAddress: "stor-mine",
-              programName: "listing-prefix-v1",
-            },
-            {
-              storageAddress: "stor-other",
-              programName: "listing-prefix-v1",
-            },
-            {
-              storageAddress: "stor-substring",
-              programName: "not-listing-prefix-v1",
-            },
-          ],
-        }),
-      }),
+      vi.fn().mockImplementation(async () => searchReply([
+        {
+          storageAddress: "stor-mine",
+          programName: "listing-prefix-v1",
+        },
+        {
+          storageAddress: "stor-other",
+          programName: "listing-prefix-v1",
+        },
+        {
+          storageAddress: "stor-substring",
+          programName: "not-listing-prefix-v1",
+        },
+      ])),
     );
     vi.spyOn(adapter.raw.storagePrograms, "read").mockImplementation(
       async (address: string) =>
@@ -949,6 +949,87 @@ describe("DemosAdapter", () => {
           value: { listingVersion: 1 },
         },
       ],
+    });
+  });
+
+  describe("storage-program search reply bounds", () => {
+    const connectedAdapter = () => {
+      const adapter = makeAdapter();
+      Object.assign(adapter, { connected: true });
+      vi.spyOn(adapter.raw, "getAddress").mockReturnValue("0xWriter");
+      return adapter;
+    };
+
+    it("stops reading a search reply that streams past the byte limit", async () => {
+      const adapter = connectedAdapter();
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(async () =>
+        new Response(JSON.stringify({
+          result: 200,
+          response: [],
+          padding: "a".repeat(STORAGE_SEARCH_MAX_RESPONSE_BYTES),
+        }))));
+
+      await expect(adapter.scanOwnAnchorsByNamePrefix("listing-prefix-v"))
+        .resolves.toEqual({
+          status: "indeterminate",
+          reason: expect.stringMatching(/exceeds maxResponseBytes/),
+        });
+    });
+
+    it("rejects a search reply whose declared length exceeds the byte limit", async () => {
+      const adapter = connectedAdapter();
+      const cancel = vi.fn();
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(async () =>
+        new Response(new ReadableStream({ cancel }), {
+          headers: {
+            "content-length": String(STORAGE_SEARCH_MAX_RESPONSE_BYTES + 1),
+          },
+        })));
+
+      await expect(adapter.resolveAnchorByName("listing-v1", "0xWriter"))
+        .resolves.toEqual({
+          status: "indeterminate",
+          reason: expect.stringMatching(/exceeds maxResponseBytes/),
+        });
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
+
+    it("fails a search that exceeds its deadline with a timeout error", async () => {
+      const adapter = connectedAdapter();
+      vi.useFakeTimers();
+      try {
+        vi.stubGlobal("fetch", vi.fn().mockImplementation(
+          () => new Promise<Response>(() => undefined),
+        ));
+        const scan = adapter.scanOwnAnchorsByNamePrefix("listing-prefix-v");
+        await vi.advanceTimersByTimeAsync(STORAGE_SEARCH_TIMEOUT_MS);
+
+        await expect(scan).resolves.toEqual({
+          status: "indeterminate",
+          reason: expect.stringMatching(/timed out/),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("refuses a search page larger than the requested page size", async () => {
+      const adapter = connectedAdapter();
+      const oversizedPage = Array.from(
+        { length: STORAGE_SEARCH_PAGE_SIZE + 1 },
+        (_, index) => ({
+          storageAddress: `stor-${index}`,
+          programName: "listing-prefix-v1",
+        }),
+      );
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(async () =>
+        searchReply(oversizedPage)));
+
+      await expect(adapter.scanOwnAnchorsByNamePrefix("listing-prefix-v"))
+        .resolves.toEqual({
+          status: "indeterminate",
+          reason: expect.stringMatching(/more items than requested/),
+        });
     });
   });
 });

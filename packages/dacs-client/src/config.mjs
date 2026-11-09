@@ -233,6 +233,8 @@ export function loadConfig(env = process.env) {
   const dataDir = env.DACS_DATA_DIR || join(process.cwd(), '.data');
   const demAmountEncoding = env.DACS_DEM_AMOUNT_ENCODING || 'os-string';
   if (!['os-string', 'dem-number'].includes(demAmountEncoding)) throw new ConfigError('DACS_DEM_AMOUNT_ENCODING must be os-string (post denomination fork) or dem-number');
+  const nonceSlotProof = env.DACS_NONCE_SLOT_PROOF || 'off';
+  if (!['off', 'account'].includes(nonceSlotProof)) throw new ConfigError('DACS_NONCE_SLOT_PROOF must be off, or account once P40 has shown that the bound network counts one account nonce for every key it accepts');
 
   const config = {
     publicOrigin,
@@ -270,6 +272,7 @@ export function loadConfig(env = process.env) {
         }
       : null,
     demAmountEncoding,
+    nonceSlotProof,
     fundingHelpUrl: env.DACS_FUNDING_HELP_URL ? parseFundingUrl('DACS_FUNDING_HELP_URL', env.DACS_FUNDING_HELP_URL) : '',
     showcaseReportView,
     purchaseLimits: Object.freeze({

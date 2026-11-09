@@ -1,0 +1,54 @@
+{
+  "recording": {
+    "capturedAt": "2026-11-06",
+    "node": {
+      "version": "0.9.9 RC",
+      "commit": "<stabilisation>e6af8f4023fa4e77f482503dae97f1ca00834bf9"
+    },
+    "request": "GET https://node2.demos.sh/storage-program/stor-cffaa62d9cef33e5b2257dd1417dc150e624cd78 (the route demosdk storagePrograms.read uses)",
+    "httpStatus": 200,
+    "scrubbed": [
+      "body.data.signature.value replaced with a same-length placeholder"
+    ]
+  },
+  "body": {
+    "success": true,
+    "storageAddress": "stor-cffaa62d9cef33e5b2257dd1417dc150e624cd78",
+    "owner": "0xbf93f243e99b72cdd26bf0e58e5d770589c3dda988a0ce0814a8458fa6aa344c",
+    "programName": "dacs3%3Acommit%3A01M5Y3MEF9CHTJS67KDBTMB140",
+    "encoding": "json",
+    "data": {
+      "jobId": "01M5Y3MEF9CHTJS67KDBTMB140",
+      "parties": [
+        "did:demos:agent:73382fc037e5c0bc4441e4da7912e3393fd92f100fac5d0d96456485c6d8c92f",
+        "did:demos:agent:bf93f243e99b72cdd26bf0e58e5d770589c3dda988a0ce0814a8458fa6aa344c"
+      ],
+      "pattern": "fixed-price",
+      "createdAt": 1793085657286,
+      "signature": {
+        "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "signer": "did:demos:agent:bf93f243e99b72cdd26bf0e58e5d770589c3dda988a0ce0814a8458fa6aa344c",
+        "algorithm": "ed25519"
+      },
+      "listingRef": {
+        "version": 3,
+        "listingId": "pstack-cov2-pay-dem",
+        "contentHash": "f5f55669e5ba3061a3457853ddd18ae0f2f856352db318556f41d86605c434a8"
+      },
+      "agreementHash": "52a4d7c6cc7efd3fb0dbc0ed367edb919091f880aed92bc1bc7ec3528e31185d",
+      "finalityCommitmentVersion": "1"
+    },
+    "metadata": {
+      "contentHash": "293c2ccb00f9d35fe7d3d81f87f0a123cb7cf750493a95c4f72e60b3a2904dcf",
+      "envelopeHash": "6d4f5ed5309e644f1e0b9000674ac94f1ba464a928fae3d575537d84d56865c3",
+      "logicalAddress": "dacs3:commit:01M5Y3MEF9CHTJS67KDBTMB140"
+    },
+    "acl": {
+      "mode": "public"
+    },
+    "storageLocation": "onchain",
+    "sizeBytes": 748,
+    "createdAt": "2026-10-27T07:22:36.555Z",
+    "updatedAt": "2026-10-27T07:22:36.555Z"
+  }
+}

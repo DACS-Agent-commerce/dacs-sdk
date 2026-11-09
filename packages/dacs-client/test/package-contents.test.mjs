@@ -21,10 +21,13 @@ function entryPointClosure() {
   }
   visit('src/index.mjs');
   visit('src/wallet/durable-journal.mjs');
+  visit('src/wallet/node-wallet-session.mjs');
   return [...files].sort();
 }
 
-test('npm pack ships only the two entry points and their reviewed import closure', t => {
+// The quiet hook is registered by URL, so no import reaches it; the three entry points determine the rest of the closure.
+const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
+test('npm pack ships the three entry points, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const path of ['src', 'package.json', 'README.md', 'LICENSE']) {
@@ -42,9 +45,10 @@ test('npm pack ships only the two entry points and their reviewed import closure
   const [pack] = JSON.parse(result.stdout);
   const files = pack.files.map(file => file.path).sort();
   for (const path of files) {
+    if (path === 'src/public/portal/embedded-wallet/sdk-provider.mjs') continue; // the session's one reviewed portal module
     assert.doesNotMatch(path, /(?:^|\/)(?:public|portal|portal-intent|config|seller-agent|seller-durable-state|switch-files|FIX-REPORT|\.fix-tmp|\.rr-tmp|\.stack)(?:[/.]|$)/, path);
   }
-  assert.deepEqual(files, [...entryPointClosure(), 'package.json', 'README.md', 'LICENSE'].sort());
+  assert.deepEqual(files, [...entryPointClosure(), ...LOADING_MODULES, 'package.json', 'README.md', 'LICENSE'].sort());
   for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs']) assert.ok(files.includes(path), `${path} ships`);
 });
 
@@ -102,8 +106,13 @@ test('the packed client includes the incarnation module, ships no lease fixture,
   run(process.execPath, ['reclaim.mjs'], app);
 });
 
-test('paired packed artifacts supply the schema needed by every buyer factory', async t => {
-  const { app, run } = installPackedPair(t);
+test('paired packed artifacts with dacs-node supply the schema needed by every buyer factory, and dacs-node resolves to its packed archive', async t => {
+  const { app, run, nodeArchive } = installPackedPair(t);
+  await t.test('installed dacs-node is the candidate archive and exports the demos loader', () => {
+    const listing = JSON.parse(run('npm', ['ls', '--json', '--all', '@kynesyslabs/dacs-node'], app));
+    assert.equal(listing.dependencies['@kynesyslabs/dacs-node'].resolved, nodeArchive);
+    run(process.execPath, ['--input-type=module', '-e', "import.meta.resolve('@kynesyslabs/dacs-node/demos-loader');"], app);
+  });
   await t.test('installed root resolves the complete diagnostic factory graph', () => {
     run(process.execPath, ['--input-type=module', '-e', `
       import assert from 'node:assert/strict';
