@@ -564,6 +564,35 @@ beforeEach(() => {
 });
 
 describe("durable buyer bundle finalization", () => {
+  test.each([undefined, null, 0, "", false, 0n, NaN, new Error("renewal failed")])("stops after a heartbeat rejection with %s", async (reason) => {
+    vi.useFakeTimers();
+    try {
+      const h = await fixture();
+      const renew = h.store.renewLease.bind(h.store);
+      let rejectRenewal = false;
+      vi.spyOn(h.store, "renewLease").mockImplementation(async (input) => {
+        if (rejectRenewal) { rejectRenewal = false; throw reason; }
+        return renew(input);
+      });
+      const sign = h.input.buyer.signer;
+      h.input.buyer.signer = async (...args) => {
+        rejectRenewal = true;
+        await vi.advanceTimersByTimeAsync(40_000);
+        return sign(...args);
+      };
+      await expect(advanceCompletedBuyerBundleDurable(h.input, h.provider, h.durability)).resolves.toMatchObject({ disposition: "indeterminate", stage: "counter-signature" });
+      const loaded = await h.store.load(JOB_ID);
+      expect(loaded.status).toBe("ok");
+      if (loaded.status !== "ok") throw new Error("session missing");
+      expect(loaded.record.checkpoints.some((entry) =>
+        entry.key === buyerBundleFinalizationCheckpointKey.counterSignature && entry.stage === "outcome",
+      )).toBe(false);
+      expect(h.state.counterSignature).toBeUndefined();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   test.each(["pure", "write-input"] as const)(
     "finalizes the authenticated %s mapping with exact primitive checkpoints",
     async (mapping) => {

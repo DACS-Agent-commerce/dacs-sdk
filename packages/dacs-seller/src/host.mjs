@@ -305,7 +305,7 @@ export async function startSellerHost(options) {
     let stopping = false;
     // The seller takes new purchases until it stops.
     const sellerReady = () => !stopping;
-    // The one context every signed route on `./wire` uses, with the transport store as their journal. Each signed request and
+    // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
     const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt });
     // The state directories and the new transport database entry are durable

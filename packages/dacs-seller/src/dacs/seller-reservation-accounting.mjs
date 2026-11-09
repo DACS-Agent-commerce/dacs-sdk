@@ -23,7 +23,7 @@ const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isI
  * The store owns the schema and BEGIN IMMEDIATE; every check and hook runs within that same transaction.
  */
 export function createReservationAccounting({ store, now, limits, contextRecords }) {
-  if (![limits?.maxJobs, limits?.maxContextRecords, limits?.maxNoncesPerBuyerPerWindow].every(value => uint(value) && value > 0) ||
+  if (![limits?.maxRecords, limits?.maxJobs, limits?.maxContextRecords, limits?.maxNoncesPerBuyerPerWindow].every(value => uint(value) && value > 0) ||
       typeof now !== 'function') throw new TypeError('positive reservation limits required');
   const { get, run, transaction, ledger } = store;
   const countContextRecords = contextRecords ?? (() => ledger.contextCountWithin());
@@ -31,6 +31,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // Steps 2 to 4 count every ledger record, whichever path wrote it. A job, or its context record, already held
   // by any record takes no second slot.
   function checkLimitsWithin(payload, contextStart, at) {
+    if (ledger.recordCountWithin(at) >= limits.maxRecords) fail('peer_store_capacity', 503);
     if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
     if ((!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) ||
         (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords)) store.retireSlotsWithin(at, undefined, { capacity: true, keepContexts: true });
@@ -134,7 +135,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
      * failure leaves the charged row `reserving`, never refunded.
      * The store decides whether the job and its context record are new; the context route is the context start.
      * A completed replay on a retired job spends a nonce unit without spending purchase capacity or recreating the purchase.
-     * Throws before any row on an absent keepProfile, an unsafe clock, a full buyer window, job or context
+     * Throws before any row on an absent keepProfile, an unsafe clock, a full store, buyer window, job or context
      * capacity, a job held by other parties, a closed job (context_job_closed), a tuple mismatch, a replayed nonce key,
      * or a refusal from checkCapacityWithin. Ownership remains after the job row is removed; a no-effect end
      * releases only its provisional Agreement binding when nothing else retains the job.

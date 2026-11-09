@@ -58,6 +58,7 @@ import {
 } from "./bundleSemantics.js";
 import type { StrictCompositeVerification } from "./compositeVerification.js";
 import type { EvidenceBoundBundleVerification } from "./evidenceBoundBundle.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
  * Attestation-bundle verification (DACS-5). Two independent checks must BOTH
@@ -76,7 +77,7 @@ import type { EvidenceBoundBundleVerification } from "./evidenceBoundBundle.js";
  *     content-addressed and independently signed under artifact-specific
  *     domains.
  *     Normative session refs use DACS-2 §7.5.2
- *     `{anchor:{kind,locator},contentHash,signer?}`; the pre-#308 `{kind,id,...}`
+ *     `{anchor:{kind,locator},contentHash,signer?}`; the pre-normative `{kind,id,...}`
  *     record is accepted only by the explicit legacy-MVP read path. A valid
  *     bundle signature only binds those *hashes*; it does NOT prove the
  *     referenced artifacts exist or are authentic. We therefore dereference
@@ -212,7 +213,7 @@ export interface VerifyBundleDeps {
    * Resolve a referenced session artifact to its stored signed form, by ref kind
    * + the bundle's jobId. Session artifacts are anchored BY A SESSION PARTY (the
    * buyer orchestrates and anchors in this SDK), so name resolution must be
-   * owner-bound to THAT party — not to whoever happens to be verifying (#70):
+   * owner-bound to THAT party — not to whoever happens to be verifying:
    * a third-party verifier resolving under its own address finds nothing, and
    * owner-binding to the wrong party would let a name-squatter serve forged
    * artifacts. `parties` is the bundle's party list; derive the anchoring
@@ -243,7 +244,7 @@ export interface VerifyBundleDeps {
     parties: readonly BundleParty[],
   ) => Promise<Record<string, unknown> | null>;
   /**
-   * @deprecated Pre-#308 MVP resolver keyed by SDK-only artifact kind. It is
+   * @deprecated Pre-normative MVP resolver keyed by SDK-only artifact kind. It is
    * retained solely for explicit legacy reads. Normative AttestationRef
    * resolution uses `resolveAttestationRef` and normative ListingPin resolution
    * uses `resolveListingRef`; those paths MUST NOT fall back to this resolver.
@@ -302,18 +303,6 @@ export interface VerifyBundleDeps {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreezeSnapshot(child, seen);
-  }
-  return Object.freeze(value);
-}
-
 function snapshotRecord(
   value: Record<string, unknown> | null,
 ): Record<string, unknown> | null {
@@ -323,7 +312,7 @@ function snapshotRecord(
   // into a valid-looking signed record.
   if (!isExactJsonRecord(value)) return null;
   try {
-    const captured = deepFreezeSnapshot(structuredClone(value));
+    const captured = deepFreeze(structuredClone(value));
     return isExactJsonRecord(captured) ? captured : null;
   } catch {
     return null;
@@ -354,9 +343,9 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
             ) =>
               snapshotRecord(
                 await resolveAttestationSource(
-                  deepFreezeSnapshot(structuredClone(ref)),
+                  deepFreeze(structuredClone(ref)),
                   jobId,
-                  deepFreezeSnapshot(structuredClone(parties)),
+                  deepFreeze(structuredClone(parties)),
                   outcome,
                 ),
               ),
@@ -370,8 +359,8 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
             ) =>
               snapshotRecord(
                 await resolveListingSource(
-                  deepFreezeSnapshot(structuredClone(listingRef)),
-                  deepFreezeSnapshot(structuredClone(parties)),
+                  deepFreeze(structuredClone(listingRef)),
+                  deepFreeze(structuredClone(parties)),
                 ),
               ),
           }
@@ -388,10 +377,10 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
                 await resolveLegacySource(
                   kind,
                   jobId,
-                  deepFreezeSnapshot(structuredClone(parties)),
+                  deepFreeze(structuredClone(parties)),
                   ref === undefined
                     ? undefined
-                    : deepFreezeSnapshot(structuredClone(ref)),
+                    : deepFreeze(structuredClone(ref)),
                 ),
               ),
           }
@@ -417,8 +406,8 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
               context: BundleEvidenceVerificationContext,
             ) => {
               const raw = await verifyEvidenceSource(
-                deepFreezeSnapshot(structuredClone(evidence)),
-                deepFreezeSnapshot(structuredClone(context)),
+                deepFreeze(structuredClone(evidence)),
+                deepFreeze(structuredClone(context)),
               );
               const captured = snapshotRecord(
                 raw as unknown as Record<string, unknown>,
@@ -437,8 +426,8 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
               bundle: Readonly<ReadableAttestationBundle>,
             ) => {
               const raw = await verifyCompositeSource(
-                deepFreezeSnapshot(structuredClone(record)),
-                deepFreezeSnapshot(structuredClone(bundle)),
+                deepFreeze(structuredClone(record)),
+                deepFreeze(structuredClone(bundle)),
               );
               const captured = snapshotRecord(
                 raw as unknown as Record<string, unknown>,
@@ -454,7 +443,7 @@ function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
         ? {
             verifyEvidenceBound: async (bundle: Readonly<Record<string, unknown>>) => {
               const raw = await verifyEvidenceBoundSource(
-                deepFreezeSnapshot(structuredClone(bundle)),
+                deepFreeze(structuredClone(bundle)),
               );
               const captured = snapshotRecord(raw as unknown as Record<string, unknown>);
               if (!captured) throw new TypeError("EBFAB verifier returned a non-wire verdict");
@@ -633,8 +622,8 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
             deps,
             );
             const raw = await callback(
-              deepFreezeSnapshot(structuredClone(record)),
-              deepFreezeSnapshot(structuredClone(bundle)),
+              deepFreeze(structuredClone(record)),
+              deepFreeze(structuredClone(bundle)),
             );
             return snapshotDependencyRecord(
               raw,
@@ -1722,7 +1711,7 @@ export async function verifyBundleCore(
         ) {
           try {
             const rawDecision = await deps.verifyAlternativePaymentProjection(
-              deepFreezeSnapshot({
+              deepFreeze({
                 bundle: structuredClone(bundle as AnyAttestationBundle),
                 listing: structuredClone(prefetchedNormativeListing),
                 agreement: structuredClone(agreementArtifact),

@@ -48,6 +48,8 @@ const PROPOSALS = '/dacs/v1/agreements/proposals';
 const STATE = '/dacs/v1/agreements/state';
 // The host's handler serves at most this many requests at once.
 const HANDLER_CONCURRENCY = 8;
+// The challenge ledger issues one buyer at most this many challenges an hour (CHALLENGE_LIMIT_DEFAULTS.maxPerBuyerPerHour).
+const PROPOSALS_PER_BUYER = 5;
 const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
 const SELLER = { claim: seller.claim, sign: seller.signBytes };
 const MISMATCH = { code: 'tp1_purchase_profile_mismatch', status: 500 };
@@ -427,8 +429,10 @@ test('the reader each signed request calls is bounded: a stalled read is pending
     const host = await f.start({ tp1Network: testNetwork({ readAuthority }) });
     const [binding] = f.bindings;
     const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
-    const body = await f.proposal(host, jobId('stalled'));
-    const proposals = await Promise.all(Array.from({ length: HANDLER_CONCURRENCY }, () => {
+    // Signed proposals up to the buyer's challenge limit; the other stalled requests are signed state reads, which need no challenge.
+    const proposals = await Promise.all(Array.from({ length: HANDLER_CONCURRENCY }, async (_, index) => {
+      if (index >= PROPOSALS_PER_BUYER) return unknownStateRequest(buyerWire, `stalled-${index}`);
+      const body = await f.proposal(host, jobId(`stalled-${index}`));
       return buyerWire.signRequest(PROPOSALS, body, { jobId: body.transportIdentity.jobId, agreementHash: body.transportIdentity.agreementHash });
     }));
     assert.equal(new Set(proposals.map(({ payload }) => payload.nonce)).size, HANDLER_CONCURRENCY);
@@ -1015,4 +1019,19 @@ test('R20 detached profiles do not hold job slots', t => {
   assert.equal(w.store.reserve(w.request(jobId('active')), {}, { keepProfile: OTHER_PROFILE }).disposition, 'perform');
   w.reopen(); assert.deepEqual(w.store.purchaseProfile(detached), PROFILE);
   assert.throws(() => w.store.reserve(w.request(jobId('full')), {}, { keepProfile: PROFILE }), { code: 'peer_job_capacity', status: 503 });
+});
+
+test('started host signed proposal creates accounting and wire operation records', async (t) => {
+  const f = await hostFixture(t), host = await f.start();
+  const body = await f.proposal(host), { jobId: id, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const answer = await postSigned(host, await buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash }));
+  const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
+  try {
+    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations').all(), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
+  } finally { db.close(); }
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, 1);
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length, 1);
+  assert.ok(answer.header, 'the started host signs the result');
 });

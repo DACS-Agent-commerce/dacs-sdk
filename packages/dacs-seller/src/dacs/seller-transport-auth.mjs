@@ -244,10 +244,15 @@ export const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'nego
 const CHALLENGE_RATE_WINDOW_MS = 3600000;
 const storeInternals = new WeakMap();
 const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
+// Only expired completed/no-effect nonces are reclaimable; unknown and pending effects stay fenced.
+const RECLAIMABLE_NONCES = `SELECT n.nonce FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
+  LEFT JOIN peer_effects e ON e.effect = n.effect WHERE r.expires_at <= ?
+  AND (e.state = 'complete' OR (e.state = 'retry' AND n.response IS NOT NULL) OR (e.effect IS NULL AND n.response IS NOT NULL))`;
 /**
  * The one list of the records behind each reservation limit. The old reserve path and reservation accounting
  * count only these, so a record either path writes counts against both. Each source selects `job`, or a unit's
  * `buyer` and `at`; an owner source also selects the buyer, seller and Listing pin that hold the job.
+ * Total records use the overlapping old nonce/retention counts plus the accounting rows that have not expired (see RETIRABLE_RESERVATION).
  */
 export const RESERVATION_LEDGER = Object.freeze({
   buyerUnits: Object.freeze(['SELECT buyer, created_at AS at FROM peer_nonce_retention', 'SELECT buyer, at FROM kit_reservations']),
@@ -357,6 +362,13 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       ON CONFLICT(job) DO UPDATE SET agreement_hash = COALESCE(kit_job_owners.agreement_hash, excluded.agreement_hash)`,
     p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), p.path === CONTEXT ? null : p.agreementHash);
   }
+  // An accounting row stops counting once its request has expired (a request admitted at `at` is expired by
+  // `at` plus one transport lifetime, and the wire journal refuses its nonce key again). It is kept while it is `reserving`
+  // (a crash left it) and while it is the first non-refused row of its job and route, the witness of that route's one effect
+  // (`accountedSlotWithin`, `terminalStartWithin`). The one parameter is the cutoff time.
+  const reservationRetentionMs = Math.max(MAX_TRANSPORT_LIFETIME_MS, nonceWindowMs);
+  const RETIRABLE_RESERVATION = `at <= ? AND state <> 'reserving' AND (state = 'refused' OR EXISTS (SELECT 1 FROM kit_reservations w
+    WHERE w.jobId = kit_reservations.jobId AND w.route = kit_reservations.route AND w.state <> 'refused' AND w.key < kit_reservations.key))`;
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
   transaction(() => {
@@ -387,6 +399,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   };
   // Every read runs in the caller's transaction.
   const reservationLedger = Object.freeze({
+    recordCountWithin: (time) => Math.max(
+      get(`SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES})`, time).n,
+      get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
+        OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${RECLAIMABLE_NONCES}))`, time, time - nonceWindowMs, time).n,
+    ) + get(`SELECT COUNT(*) AS n FROM kit_reservations WHERE NOT (${RETIRABLE_RESERVATION})`, time - reservationRetentionMs).n,
     buyerUnitsWithin: (buyer, time) => get(`SELECT COUNT(*) AS n FROM (${ledgerSources('buyerUnits').join(' UNION ALL ')})
       WHERE buyer = ? AND at > ?`, buyer, time - nonceWindowMs).n,
     jobHeldWithin: (jobId) => Boolean(get(`SELECT job FROM (${retainedJobs()}) WHERE job = ?`, jobId)),
@@ -586,12 +603,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   const retainedJobs = () => ledgerJobs('jobs');
   const reservationAccounting = createReservationAccounting({
     store: { get, run, transaction, ledger: reservationLedger, holdJobWithin, keepJobWithin, retireSlotsWithin },
-    now, limits: { maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow },
+    now, limits: { maxRecords, maxJobs, maxContextRecords, maxNoncesPerBuyerPerWindow },
     contextRecords: contextRecords ?? (() => admissionCounts().contextRecords),
   });
   const store = {
-    challenges,
     reservationAccounting,
+    challenges,
     // Only the holder of the seller state lock calls this at startup, after `challenges.closeLostValidations()`
     // and before serving or policy-hold reconciliation: every context step still `pending` belongs to a dead owner.
     // One the ledger never accepted ran nothing: it ends as a definite refusal and its hold is later found absent.
@@ -708,13 +725,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         }
         // Only expired completed/no-effect nonces are reclaimable. Unknown or
         // pending effects remain fenced, even after request expiry.
-        const reclaimable = `SELECT n.nonce FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
-          LEFT JOIN peer_effects e ON e.effect = n.effect WHERE r.expires_at <= ?
-          AND (e.state = 'complete' OR (e.state = 'retry' AND n.response IS NOT NULL) OR (e.effect IS NULL AND n.response IS NOT NULL))`;
-        const expired = get('SELECT COUNT(*) AS n FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time).n;
-        if (get('SELECT COUNT(*) AS n FROM peer_nonces').n - expired >= maxRecords ||
-            get(`SELECT COUNT(*) AS n FROM peer_nonce_retention WHERE expires_at > ? OR created_at > ?
-              OR nonce IN (SELECT nonce FROM peer_nonces WHERE nonce NOT IN (${reclaimable}))`, time, time - nonceWindowMs, time).n >= maxRecords) fail('peer_store_capacity', 503);
+        if (reservationLedger.recordCountWithin(time) >= maxRecords) fail('peer_store_capacity', 503);
         if (reservationLedger.buyerUnitsWithin(p.buyer, time) >= maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
         const newJob = !job && !contextStep && !retained;
         // A job takes a slot unless a record already holds one: a context step's admission takes it for the job.
@@ -729,7 +740,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         }
         const reclaimNonces=()=>{
           if(dryRun)return;
-          run('DELETE FROM peer_nonces WHERE nonce IN (' + reclaimable + ')', time);
+          run('DELETE FROM peer_nonces WHERE nonce IN (' + RECLAIMABLE_NONCES + ')', time);
           run('DELETE FROM peer_nonce_retention WHERE expires_at <= ? AND created_at <= ? AND nonce NOT IN (SELECT nonce FROM peer_nonces)', time, time - nonceWindowMs);
         };
         let admittedAt=null;
@@ -782,6 +793,21 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       requireJobId(jobId);
       const text = keptProfileText(jobId);
       return text === null ? null : JSON.parse(text);
+    },
+    // Whether the job's seller context session has ended (the policy `assertPending` and `claim` apply to proposal work);
+    // it reads only the session reader, so it holds whichever tables accounted the job. An unreadable source is never "not
+    // terminal": a throw, a thenable or a non-null non-string answer is refused `session_admission_unavailable` 503 with its
+    // cause, and only an explicit null reads as no session.
+    sessionTerminal(jobId) {
+      requireJobId(jobId);
+      const unavailable = (cause) => new SellerTransportError('session_admission_unavailable', 503, { cause });
+      let state;
+      try { state = contextSessionState({ jobId }); } catch (cause) { throw unavailable(cause); }
+      if (state === null) return false;
+      if (typeof state === 'string') return TERMINAL_CONTEXT_STATES.has(state);
+      // A rejected answer is observed so it cannot surface later; no eventual value is used.
+      try { if (typeof state?.then === 'function') state.then(undefined, () => {}); } catch { /* the refusal below is the answer */ }
+      throw unavailable(new TypeError('the seller session reader answered a non-string state'));
     },
     // The context step's pre-Agreement admission record for a job, or null:
     // {jobId, buyer, seller, listingPin, scopeHash, effect, admittedAt}.

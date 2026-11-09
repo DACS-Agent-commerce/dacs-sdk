@@ -80,6 +80,10 @@ An accounted read without a job row returns peer_unknown_job (404) before chargi
 to the admitted body's txHash; other routes cannot carry paymentTx. Violations return wire_input_invalid (500) before
 charging.
 
+Both reserve paths count live nonce records and retained accounting rows against maxRecords. An accounting row stops
+counting after its request retention window unless it is still reserving or is the first non-refused row for its job
+and route. Reservation and hold records remain durable when they stop counting.
+
 Nonce retention covers the full minute, with at most 120 new rows per buyer per minute. Cached-effect retries and
 unknown-job state reads insert no rows. Expired completed and no-effect nonces can be reclaimed before new work; the
 effect answer remains durable. Pending and uncertain effects require reconciliation and cannot expire into permission to
