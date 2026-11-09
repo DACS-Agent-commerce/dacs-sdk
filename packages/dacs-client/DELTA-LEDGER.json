@@ -6474,6 +6474,30 @@
     },
     {
       "delta": "WF",
+      "sha": "e807dbf34a72b959905418192a4f144560cea331",
+      "subject": "fix(client): publish the first proposal after a signed unknown-job read",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b",
+          "after": "8d7ca761300e216e0785b7e91aee208e39a3a12d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e282e93ac2fcd26bb666d0981fd23c10a9cffb53",
+      "subject": "fix(client): wait for the response verifier in the buyer seller client",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "3b37b663b20165b7a8a14a8a25ee62bf662cc5e6",
+          "after": "eb89bc99364dc00d325530e5249981917b9cdb87"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
       "files": [
         {

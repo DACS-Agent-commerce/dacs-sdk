@@ -4,13 +4,13 @@
 import {canonicalize,contentHash,isAnchorReceipt} from '@kynesyslabs/dacs';
 import {verifyDemosSignature,addressForClaim} from '../../src/dacs/demos-claims.mjs';
 const same=(a,b)=>canonicalize(a)===canonicalize(b);
-export function finalizedCommitmentReader(reader,signer){
+export function finalizedCommitmentReader(reader,signer,{substrate='TEST-finality-oracle'}={}){
  const observations=new Map();
  const proof=receipt=>{const {evidence,...material}=receipt;return 'TEST-finalized-commitment:'+canonicalize(material);};
  const matches=(row,artifact,projection)=>row&&same(row.artifact,artifact)&&same(row.signedProjection,projection);
  return{
   record({logicalAddress,artifact,signedProjection,blockRef}){
-   const material={receiptVersion:'1',substrate:'TEST-finality-oracle',finalityProfile:'TEST-scripted-finalized',logicalAddress,nativeAddress:signedProjection.content.to,
+   const material={receiptVersion:'1',substrate,finalityProfile:'TEST-scripted-finalized',logicalAddress,nativeAddress:signedProjection.content.to,
     contentHash:contentHash(artifact),writer:signer.claim,transactionRef:{kind:'demos',value:signedProjection.hash},state:'finalized',observationDisposition:'established',observedAt:blockRef.timestamp,blockRef};
    const receipt={...material,evidence:{kind:'TEST-finality-signature',value:signer.sign(Buffer.from(proof(material))).toString('base64url')}};
    observations.set(logicalAddress,structuredClone({artifact,signedProjection,receipt}));
