@@ -32,6 +32,7 @@ import {
   parseCanonicalClaimReference,
   sameCanonicalClaimIdentity,
 } from "../identity/index.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** Exact DACS-1 §6.3.3 subset consumed by DACS-2 §7.7.1 aggregation. */
 export interface CompositeClaimRequirement {
@@ -337,20 +338,6 @@ const isPositiveSafeInt = (value: unknown): value is number =>
 const isSha256 = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 
-function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  // Uint8Array cannot be frozen on every supported runtime. Byte-bearing
-  // callback inputs are isolated separately below and never reused afterward.
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreezeSnapshot(child, seen);
-  }
-  return Object.freeze(value);
-}
-
 function cloneResolvedContent(value: unknown): ResolvedVerificationContent | null {
   // Validate callback-owned bytes before cloning. structuredClone deliberately
   // normalises prototypes and invokes accessors, which must not turn a non-wire
@@ -368,7 +355,7 @@ function cloneResolvedContent(value: unknown): ResolvedVerificationContent | nul
   }
   return {
     encoding: "canonical-json",
-    value: deepFreezeSnapshot(snapshot.value),
+    value: deepFreeze(snapshot.value),
   };
 }
 
@@ -1201,7 +1188,7 @@ async function resolveResult<TKey>(
   let resolutionReturnedValue = false;
   try {
     const rawResolved = await deps.resolve(
-      deepFreezeSnapshot(structuredClone(ref)),
+      deepFreeze(structuredClone(ref)),
     );
     if (rawResolved) {
       resolutionReturnedValue = true;
@@ -1219,7 +1206,7 @@ async function resolveResult<TKey>(
   let rawRecipe: (RecipeDescriptor & { signature: ComponentSignature }) | null;
   try {
     rawRecipe = await deps.resolveRecipe(
-      deepFreezeSnapshot({
+      deepFreeze({
         scheme: expected.scheme,
         method: expected.method,
         recipeVersion: ref.recipeVersion,
@@ -1242,7 +1229,7 @@ async function resolveResult<TKey>(
   }
   let recipeSnapshot: unknown;
   try {
-    recipeSnapshot = deepFreezeSnapshot(structuredClone(rawRecipe));
+    recipeSnapshot = deepFreeze(structuredClone(rawRecipe));
   } catch {
     return invalid("recipe-shape", "resolved recipe is not snapshot-safe");
   }
@@ -1296,7 +1283,7 @@ async function resolveResult<TKey>(
   ) {
     return invalid("verify-result-shape", ref.anchor.locator);
   }
-  const result = deepFreezeSnapshot(resolvedSnapshot.value);
+  const result = deepFreeze(resolvedSnapshot.value);
   let hash: string;
   try {
     hash = contentHash(result);
@@ -1337,7 +1324,7 @@ async function resolveResult<TKey>(
   let rawAttestation: ResolvedVerificationContent | null;
   try {
     rawAttestation = await deps.resolve(
-      deepFreezeSnapshot(structuredClone(result.attestation)),
+      deepFreeze(structuredClone(result.attestation)),
     );
   } catch (error) {
     return unresolved("authority-resolution", String(error));
@@ -1364,14 +1351,14 @@ async function resolveResult<TKey>(
   let authority: AuthorityVerification;
   try {
     const authorityInput: VerifyAuthorityAttestationInput = {
-      result: deepFreezeSnapshot(structuredClone(result)),
-      expected: deepFreezeSnapshot(structuredClone(expected)),
-      recipe: deepFreezeSnapshot(structuredClone(recipe)),
+      result: deepFreeze(structuredClone(result)),
+      expected: deepFreeze(structuredClone(expected)),
+      recipe: deepFreeze(structuredClone(recipe)),
       content: attestation.encoding === "bytes"
         ? { encoding: "bytes", value: Uint8Array.from(attestation.value) }
         : {
             encoding: "canonical-json",
-            value: deepFreezeSnapshot(structuredClone(attestation.value)),
+            value: deepFreeze(structuredClone(attestation.value)),
           },
     };
     authority = await deps.verifyAuthorityAttestation(authorityInput);
@@ -1509,14 +1496,14 @@ async function qualifyResolvedMember<TKey>(
   sharedProjection: boolean,
 ): Promise<VerificationDecision | StrictCompositeVerification | null> {
   const verificationInput = (): VerifyAuthorityAttestationInput => ({
-    result: deepFreezeSnapshot(structuredClone(resolved.result)),
-    expected: deepFreezeSnapshot(structuredClone(expected)),
-    recipe: deepFreezeSnapshot(structuredClone(resolved.recipe)),
+    result: deepFreeze(structuredClone(resolved.result)),
+    expected: deepFreeze(structuredClone(expected)),
+    recipe: deepFreeze(structuredClone(resolved.recipe)),
     content: resolved.content.encoding === "bytes"
       ? { encoding: "bytes", value: Uint8Array.from(resolved.content.value) }
       : {
           encoding: "canonical-json",
-          value: deepFreezeSnapshot(structuredClone(resolved.content.value)),
+          value: deepFreeze(structuredClone(resolved.content.value)),
         },
   });
   if (
@@ -1576,14 +1563,14 @@ export async function verifyCompositeVerificationRecord<TKey>(
     return invalid("record-shape", "record is not snapshot-safe");
   }
   if (!isCompositeVerificationRecord(valueSnapshot)) return invalid("record-shape");
-  const record = deepFreezeSnapshot(valueSnapshot);
+  const record = deepFreeze(valueSnapshot);
 
   if (!isCompositeVerificationExpectations(expected)) {
     return invalid("expectation-shape");
   }
   let expectedSnapshot: CompositeVerificationExpectations;
   try {
-    expectedSnapshot = deepFreezeSnapshot(structuredClone(expected));
+    expectedSnapshot = deepFreeze(structuredClone(expected));
   } catch {
     return invalid("expectation-shape", "expectations are not snapshot-safe");
   }

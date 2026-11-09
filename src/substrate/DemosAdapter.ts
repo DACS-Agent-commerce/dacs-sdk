@@ -513,12 +513,9 @@ function serializeSignedTransaction(value: unknown): string {
 }
 
 /**
- * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`.
- *
- * T1 scaffold status: `connect` / `getAddress` are wired to the real SDK so the
- * package provably reaches a Demos RPC. The substrate operations (`anchor`,
- * `readAnchor`, `proxyFetch`, `resolveIdentity`, `sign`) are defined by the seam
- * but land in later tasks — see the per-method task refs.
+ * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`. It
+ * connects to a Demos RPC and implements `anchor`, `readAnchor`, `proxyFetch`,
+ * `resolveIdentity` and `sign` against it.
  */
 export class DemosAdapter implements SubstrateAdapter {
   readonly #demos: Demos;
