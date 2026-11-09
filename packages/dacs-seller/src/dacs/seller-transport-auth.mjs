@@ -492,7 +492,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   }
   // Plan reclamation with reads only. Full-capacity refusals must execute no
   // mutations, even ones a transaction could roll back. Only terminal context
-  // effects may leave retention; unresolved effects and live requests fence it.
+  // slots may retire; unresolved effects and live requests fence retirement.
   function reclaimableContexts(time, count) {
     if (!admissions()) return [];
     count ??= reservationLedger.contextCountWithin();
@@ -579,7 +579,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       retireSlotsWithin(now(), undefined, { capacity: true, jobs: [] }); return admissionCounts();
     },
     limits: { maxChallenges, maxContextRecords, maxPerHour: maxStartsPerHour, maxPerBuyerPerHour: maxStartsPerBuyerPerHour, maxStartsPerHour, maxStartsPerBuyerPerHour } });
-  // Keep acceptance proof until the context effect retires, even if its terminal challenge is reclaimed.
+  // Keep acceptance proof with the retained context answer, even if its terminal challenge is reclaimed.
   function acceptWithin(owner, nonce, record) {
     const accepted = ledger.acceptWithin(owner, nonce, record);
     if (accepted) run('UPDATE kit_context_reservations SET accepted = 1 WHERE nonce = ?', nonce);
