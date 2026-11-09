@@ -191,7 +191,11 @@ const effectIdentity = (p) => sha256Hex(canonicalize({ ...requestIdentity(p), me
 // The journal's effect key for an authenticated request (the context route ties its write reservation to it).
 export const sellerTransportEffect = effectIdentity;
 
-function validateBody(p, body) {
+/**
+ * The seller's own checks of an authenticated request's body against the request's payload (the wire leaves them to the
+ * seller): the job and identity it names, and the proposal or payment it carries. Returns nothing; throws a SellerTransportError.
+ */
+export function validateBody(p, body) {
   if (!record(body)) fail('peer_body_invalid', 409);
   if (p.path === SELLER_CONTEXT_CHALLENGE_PATH) {
     if (!keys(body, ['scope']) || !keys(body.scope, SELLER_CONTEXT_SCOPE_KEYS.filter(k => k !== 'buyerBundleHash')) ||
@@ -738,6 +742,12 @@ export function sellerStoreInternals(store) {
   return internals;
 }
 
+// The raw store each server auth was made over: `authentication.store` is the guarded wrapper, which names no owner.
+const authenticationStores = new WeakMap();
+
+/** The raw transport store `authentication` (from createSellerTransportServerAuth) journals in; `undefined` for any other value. */
+export const transportStoreOf = (authentication) => authenticationStores.get(authentication);
+
 /** Create request validation and response signing over a supplied store; throw on invalid configuration. */
 export function createSellerTransportServerAuth({ sellerSigner, listingPin, store, now = () => Date.now(), maxLifetimeMs = MAX_TRANSPORT_LIFETIME_MS, requireDelegation = false }) {
   assertKitOperationAdmitted('createSellerTransportServerAuth');
@@ -782,7 +792,7 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   });
   const pin = clone(listingPin);
   store.bind({ seller: sellerSigner.claim, listingPin: pin });
-  return {
+  const authentication = {
     seller: sellerSigner.claim,
     listingPin: pin,
     store: guardedStore,
@@ -850,6 +860,8 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
       return signedHeader(payload, sellerSigner);
     },
   };
+  authenticationStores.set(authentication, store);
+  return authentication;
 }
 
 // A delegated app supplies only its session signer and the wallet-signed

@@ -5,7 +5,7 @@
 // needs the unshipped guard loader, which the test passes as NODE_OPTIONS.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { sign, verify } from 'node:crypto';
+import { randomBytes, sign, verify } from 'node:crypto';
 import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -238,8 +238,40 @@ const proposalFor = async (input) => {
 // presentation on a job the seller issued no challenge for.
 fabricatedJobs.add(fabricatedJobId);
 let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted, fabricated, replayed, bare;
-const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: seller.createSellerTransportClientAuth({
-  buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, now:()=>now,resolveJob: () => ({ listingPin, agreementHash }) }) });
+// The wire buyer, inlined for the same reason as the authority above: it binds the approved profile, holds the
+// seller's signed discovery document and the buyer's endpoint proof of it, signs each request under the wire
+// domain and verifies each answer over its exact received bytes.
+const wireEndpoint = 'https://seller.example.invalid';
+const wireBuyerSession = async () => {
+  const binding = await wire.bindTp1Profile({ record: approvedRecord, local: tp1Network.connection(), readAuthority: tp1Network.readAuthority });
+  const document = await wire.signDiscoveryDocument({ format: wire.DACS_SELLER_DISCOVERY_FORMAT, profile: binding.profile, seller: sellerKey.claim, publicEndpoint: wireEndpoint, transport: [wire.DACS_SELLER_HTTP_V1],
+    listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + 600_000 }, signer, binding, tp1Network.connection());
+  const listingRecord = { seller: sellerKey.claim, publicEndpoint: wireEndpoint, listingPin: pin };
+  const readListingEligibility = () => ({ ...listingRecord, pricingKind: 'fixed', negotiation: 'negotiate-fixed-price', commitPhase: wire.TP1_COMMIT_PHASE, rail: 'pay-dem', delivery: wire.TP1_CAPABILITIES.delivery,
+    service: { kind: 'fixed-text' }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: now - 86_400_000, expiresAt: now + 86_400_000 });
+  const endpointProof = await wire.verifyEndpointProof(document, { listing: listingRecord, binding, local: tp1Network.connection(), now, readListingEligibility });
+  return { binding, endpointProof };
+};
+let wireBuyerReady = null;
+const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: {
+  request: async (path, body, text) => {
+    const { binding, endpointProof } = await (wireBuyerReady ??= wireBuyerSession());
+    const jobId = body.transportIdentity?.jobId ?? body.jobId;
+    if (listingPin !== pin) {
+      // The wire's signer will not name a Listing its endpoint proof does not cover, so a request for another Listing is built by hand.
+      const payload = { version: '1', kind: 'request', method: 'POST', path, bodyHash: core.sha256Hex(text), jobId, buyer: buyerKey.claim, seller: sellerKey.claim, listingPin, agreementHash,
+        nonce: randomBytes(24).toString('base64url'), expiresAt: now + 30_000, profile: binding.profile };
+      const signature = buyerKey.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.request + core.canonicalize(payload))).toString('base64url');
+      return { payload, header: Buffer.from(core.canonicalize({ payload, signature })).toString('base64url') };
+    }
+    return wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: tp1Network.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
+      jobId, text, seller: sellerKey.claim, job: { listingPin, agreementHash, profile: binding.profile }, delegation: null, now, lifetimeMs: 30_000 });
+  },
+  verifyResponse: async (request, { header, status, responseBytes }) => {
+    const { binding } = await wireBuyerReady;
+    return wire.verifyWireResponse(request, { header, status, body: responseBytes, now, binding, local: tp1Network.connection() });
+  },
+} });
 // Independent of the package: node:crypto against the seller's own key.
 const independentVerifier = ({ party, algorithm, value, signedBytes }) => {
   if (algorithm !== 'ed25519' || party !== sellerKey.claim && party !== buyerKey.claim) return 'invalid';
