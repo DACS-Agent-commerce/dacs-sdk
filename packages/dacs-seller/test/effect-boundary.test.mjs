@@ -182,6 +182,90 @@ test('authority reads that reject, stall, resolve late or exceed their byte or l
   }
 });
 
+for (const check of ['stop', 'binding']) {
+  const code = check === 'stop' ? 'stop_check_timeout' : 'tp1_authority_timeout';
+  const install = (w, answer) => {
+    if (check === 'stop') w.control.stopHook = (n) => (n === 3 ? answer() : false);
+    else w.control.readHook = async (n, scope, base) => { if (n === 2) await answer(); return base(scope); };
+  };
+
+  for (const [timing, elapsed] of [['at the deadline', DEADLINE_MS], ['after the deadline', DEADLINE_MS + 1]]) {
+    for (const rejects of [false, true]) {
+      test(`a ${check} check that ${rejects ? 'rejects' : 'answers'} ${timing} before its timer runs refuses without signing or dispatching`, async (t) => {
+        const w = await ebWorld(t);
+        const { boundary, history } = w.build();
+        let now = 0;
+        w.clock.now = () => now;
+        install(w, async () => {
+          now = elapsed;
+          if (rejects) throw failure('check_unreachable');
+          return false;
+        });
+        await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code });
+        assert.deepEqual([w.counts.signer, w.counts.transport], [0, 0]);
+        assert.deepEqual(await states(history), []);
+      });
+    }
+  }
+
+  test(`a ${check} check that answers just before the deadline still permits the pass`, async (t) => {
+    const w = await ebWorld(t);
+    const { boundary, history } = w.build();
+    let now = 0;
+    w.clock.now = () => now;
+    install(w, async () => { now = DEADLINE_MS - 1; return false; });
+    assert.deepEqual(await boundary.pass(w.op(), w.sign(), w.send()), { bytes: SIGNED_BYTES, answer: 'accepted' });
+    assert.deepEqual([w.counts.signer, w.counts.transport], [1, 1]);
+    assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-acknowledged']);
+  });
+
+  test(`a ${check} check that rejects after its timer wins stays handled`, async (t) => {
+    const w = await ebWorld(t);
+    const { boundary, history } = w.build();
+    const pending = gate();
+    install(w, async () => { await pending.arrive(); throw failure('check_unreachable'); });
+    const outcome = assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code });
+    await pending.reached;
+    await w.clock.advance(DEADLINE_MS);
+    await outcome;
+    pending.release();
+    await flush();
+    assert.deepEqual([w.counts.signer, w.counts.transport], [0, 0]);
+    assert.deepEqual(await states(history), []);
+  });
+}
+
+test('a final stop answer after the deadline before its timer runs withholds transport', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  let now = 0;
+  w.clock.now = () => now;
+  w.control.stopHook = async (n) => { if (n === 5) now = DEADLINE_MS + 1; return false; };
+  await assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code: 'stop_check_timeout' });
+  assert.deepEqual([w.counts.signer, w.counts.transport], [1, 0]);
+  assert.deepEqual(await states(history), ['signed', 'dispatch-started', 'dispatch-withheld']);
+});
+
+test('an expired fence waiter is refused before its timer runs and the next waiter can proceed', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  let now = 0;
+  w.clock.now = () => now;
+  const park = gate();
+  const holder = boundary.withFence(w.op(), () => park.arrive());
+  await park.reached;
+  const outcome = assert.rejects(boundary.pass(w.op(), w.sign(), w.send()), { code: 'tp1_fence_timeout' });
+  await flush();
+  now = DEADLINE_MS + 1;
+  park.release();
+  await holder;
+  await outcome;
+  assert.deepEqual([w.counts.signer, w.counts.transport], [0, 0]);
+  assert.deepEqual(await states(history), []);
+  await boundary.pass(w.op(), w.sign(), w.send());
+  assert.deepEqual([w.counts.signer, w.counts.transport], [1, 1]);
+});
+
 test('a stop check that rejects, stalls or answers a non-boolean counts as stopped with its cause', async (t) => {
   const broken = failure('stop_source_down');
   const cases = [
