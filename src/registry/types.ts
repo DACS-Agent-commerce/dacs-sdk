@@ -1,5 +1,5 @@
 /**
- * Steward registries (T12/T13). A registry is an anchored, versioned list of
+ * Steward registries. A registry is an anchored, versioned list of
  * entries — each entry steward-signed under its domain separator. The steward
  * key (PA-2) is the trust root: a rail/recipe is honoured only because the
  * steward signed it, so the SDK pins the steward public key and rejects any
@@ -16,10 +16,10 @@ import type {
 } from "../artifacts/types.js";
 
 /**
- * §9.4.4 / §7.4.5 availability values — the CLOSED spec set (issue #5: the
- * previous `live|deprecated|planned` trio was an SDK invention). Resolution
- * preserves the authenticated value; point-of-use policy applies DACS-4
- * RAV-R1..RAV-R5 and the corresponding DACS-2 recipe rules.
+ * §9.4.4 / §7.4.5 availability values — the CLOSED spec set, with no
+ * SDK-local values added. Resolution preserves the authenticated value;
+ * point-of-use policy applies DACS-4 RAV-R1..RAV-R5 and the corresponding
+ * DACS-2 recipe rules.
  */
 export type Availability =
   | "live"

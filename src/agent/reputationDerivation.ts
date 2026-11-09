@@ -22,6 +22,7 @@ import {
   isFaultBundle,
   scoredBundleOutcome,
 } from "./bundleSemantics.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
  * DACS-5 §10.5 reputation derivation — the spec-faithful, windowed reputation
@@ -473,16 +474,6 @@ function exactObjectKeys(
   const expected = [...required].sort();
   return keys.length === expected.length &&
     keys.every((key, index) => key === expected[index]);
-}
-
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return Object.freeze(value);
 }
 
 function capturedAuthenticatedRating(

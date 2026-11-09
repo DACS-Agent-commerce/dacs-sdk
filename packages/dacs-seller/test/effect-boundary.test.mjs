@@ -266,6 +266,29 @@ test('an expired fence waiter is refused before its timer runs and the next wait
   assert.deepEqual([w.counts.signer, w.counts.transport], [1, 1]);
 });
 
+test('a very long queue of expired fence waiters is refused one by one without overflowing the stack', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build();
+  let now = 0;
+  w.clock.now = () => now;
+  const park = gate();
+  const holder = boundary.withFence(w.op(), () => park.arrive());
+  await park.reached;
+  const WAITERS = 12000;
+  const outcomes = Array.from({ length: WAITERS }, (_, index) => boundary.withFence(w.op({ operationId: `queued-${index}`, lane: `lane-${index}` }), async () => {}).then(
+    () => 'ran',
+    (error) => error.code,
+  ));
+  await flush();
+  now = DEADLINE_MS + 1;
+  park.release();
+  await holder;
+  const results = await Promise.all(outcomes);
+  assert.deepEqual([...new Set(results)], ['tp1_fence_timeout']);
+  assert.equal(results.length, WAITERS);
+  await boundary.withFence(w.op(), async () => {});
+});
+
 test('a stop check that rejects, stalls or answers a non-boolean counts as stopped with its cause', async (t) => {
   const broken = failure('stop_source_down');
   const cases = [

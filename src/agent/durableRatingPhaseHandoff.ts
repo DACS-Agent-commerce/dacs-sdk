@@ -29,6 +29,7 @@ import {
   type RatingPhaseAuthenticationVerdict,
   type RatingPhaseReadyHandoff,
 } from "./ratingPhase.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export const RATING_PHASE_HANDOFF_CHECKPOINT_KEY =
   "rating-phase:ready-handoff" as const;
@@ -117,16 +118,6 @@ interface RatingHandoffCheckpointData extends Record<string, CheckpointValue> {
   planHash: string;
   handoffHash: string;
   payload: string;
-}
-
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return Object.freeze(value);
 }
 
 function exactKeys(
