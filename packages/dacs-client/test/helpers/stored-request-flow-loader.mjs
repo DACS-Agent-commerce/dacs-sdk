@@ -12,7 +12,7 @@ export function resolve(specifier, context, next) {
     ['native-payment-evidence-consumer', `export const nativePaymentEvidenceConfig = () => ${state}.evidence;`],
     ['seller-http', `import { createSellerAgentClient as actual } from ${JSON.stringify(source('seller-http'))};
       export const createSellerAgentClient = options => {
-        const client = actual({ ...options, fetchImpl: ${state}.fetch, clock: ${state}.clock });
+        const client = actual({ ...options, fetchImpl: ${state}.fetch });
         if (client.commitOnSignature) {
           const send = client.commitOnSignature;
           client.commitOnSignature = (...args) => (${state}.signature = send(...args));
