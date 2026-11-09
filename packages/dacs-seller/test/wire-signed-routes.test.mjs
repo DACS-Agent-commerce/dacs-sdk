@@ -1,19 +1,20 @@
 // P11a1a: the signed read, proposal and commitment routes on `./wire`. Every request is opened and every answer signed by
-// the wire; the old transport store stays the only journal. The handler runs over a real transport store, a bound TP1
+// the wire; reservation accounting commits before the wire journal publishes each effect. The handler runs over a real transport store, a bound TP1
 // profile and a counting stub agent; the buyer signs with `signWireRequest` (helpers/wire-buyer.mjs).
 //
 // Journal-opening cases need a runner where `/` is root-owned (K5-J0).
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync } from 'node:fs';
+import fs, { mkdirSync, readdirSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, compositeVerificationAddress, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_CAPABILITIES, WireError, admitWireArtifact, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_CAPABILITIES, WireError, admitWireArtifact, inspectWireOperation, openWireRequestJournal, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { proposalForInput } from './helpers/proposal-admission-fixture.mjs';
@@ -96,7 +97,7 @@ function stubAgent() {
     readCommitment: async ({ jobId }) => { agent.onWork('commit-read'); return { status: 'committed', jobId }; },
     continuationEvidenceOf: () => null,
     agreementState: (identity) => { agent.calls.states++; return { proposal: null, contribution: null, jobId: identity.jobId }; },
-    submitPayment: async () => { agent.calls.payments++; agent.onWork('payment'); return { status: 'payment-evidenced' }; },
+    submitPayment: async () => { agent.calls.payments++; agent.onWork('payment'); return { status: 'payment-evidenced', delivery: { status: 'delivered' } }; },
     reconcileTransport: async ({ request, transport }) => {
       agent.calls.reconciled++;
       transport.claim();
@@ -113,7 +114,7 @@ async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader()
   t.after(() => rm(directory, { recursive: true, force: true }));
   mkdirSync(join(directory, 'transport'), { mode: 0o700 });
   const storePath = join(directory, 'transport', 'transport.sqlite');
-  const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [] };
+  const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [], session: null };
   // The wire measures the time an admission takes with `performance.now`: the test moves it forward by `elapsedMs`.
   const monotonicNow = performance.now.bind(performance);
   mock.method(performance, 'now', () => monotonicNow() + state.elapsedMs);
@@ -152,16 +153,22 @@ async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader()
     agent.continuationEvidenceOf = (jobId) => fixture.agent().continuationEvidenceOf(jobId);
   }
   const handle = { store: null, handler: null, finishFails: false, wireOverrides: {} };
+  const link = fs.linkSync;
+  mock.method(fs, 'linkSync', (source, destination) => {
+    if (handle.finishFails && destination.endsWith('.end')) throw new Error('TEST process died before outcome publication');
+    return link(source, destination);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { mock.restoreAll(); syncBuiltinESMExports(); });
   const mount = () => {
     if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
-    const store = createSellerTransportStore({ path: storePath, maxJobs, maxRecords, now: clock });
-    const finish = store.finish.bind(store);
-    store.finish = (...args) => { if (handle.finishFails) throw new Error('TEST process died before the answer was stored'); return finish(...args); };
-    const reserve = store.reserve.bind(store);
-    store.reserve = (...args) => { state.readsAtReserve = state.authorityReads; return reserve(...args); };
-    const journalDirectory = join(directory, `wire-journal-${state.journals.length}`);
-    mkdirSync(journalDirectory, { mode: 0o700 });
-    state.journals.push(journalDirectory);
+    const store = createSellerTransportStore({ path: storePath, maxJobs, maxRecords, now: clock, contextSessionState: () => state.session, wireOperationView: target => inspectWireOperation(handle.wire.journal, target) });
+    const accounted = store.reservationAccounting.reserveAccounted.bind(store.reservationAccounting);
+    store.reservationAccounting.reserveAccounted = input => accounted({ ...input, checked: { ...input.checked, reserve: async () => {
+      try { return await input.checked.reserve(); } finally { state.readsAtReserve = state.authorityReads; }
+    } } });
+    const journalDirectory = join(directory, 'wire-journal');
+    if (state.journals.length === 0) { mkdirSync(journalDirectory, { mode: 0o700 }); state.journals.push(journalDirectory); }
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: JOURNAL_LEASE_MS, clock });
     const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: pin, store, now: clock });
     const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
@@ -259,7 +266,8 @@ test('P11a1-T05: answers of null, an array, a number, a boolean, a string, malfo
     assert.deepEqual({ status: refused.status, error: refused.body.error, signed: refused.signed }, { status: 500, error: 'outgoing_body_rejected', signed: true }, `answer ${index}`);
     await w.verified(refused);
   }
-  assert.equal(w.rows().peer_effects, refusedAnswers.length);
+  assert.equal(accountingRows(w).length, refusedAnswers.length);
+  assert.equal(w.journalFiles().some(name => name.endsWith('.done')), false);
   const db = new DatabaseSync(w.storePath, { readonly: true });
   try { assert.deepEqual(db.prepare("SELECT state FROM peer_effects WHERE state = 'complete'").all(), [], 'no refused answer became a terminal entry'); } finally { db.close(); }
   const { encode } = wireAuthenticator(w.handle.wire, w.agent, w.handle.authentication);
@@ -487,22 +495,19 @@ test('P11a1-T18: a wire refusal keeps its code and status; a request naming anot
   assert.equal(w.effects(), 0);
 });
 
-test('P11a1-T19: no request creates a wire journal file in this PR. Non-pre-Agreement effect routes reserve only in the old store. Round 4: both signed read routes reserve and complete nowhere, while returning their authenticated answers. This covers a known job, SA-10\'s unknown job, a live delegation, an expired delegation\'s readback, an old store at `peer_store_capacity`, and a restart. The old store sees zero statements and zero row changes, with no `reserve`, `classify`, `finish`, `reconcile` or `resume` call. The accounting, allocation and completion-hook counters do not exist yet; H-2\'s rerun asserts them as zero', async (t) => {
-  const w = await world(t, { maxRecords: 2 });
+test('P11a1-T19: signed reads never account or complete, including at old store capacity and after restart', async (t) => {
+  // The shared record count includes accounted rows: the accounted proposal takes one slot, two old-store reserves the others.
+  const w = await world(t, { maxRecords: 3 });
   const job = await proposeJob(w, 't19');
   assert.equal((await job.post()).status, 200);
-  assert.equal(w.rows().peer_effects, 1, 'the proposal reserved in the old store');
-  const old = createSellerTransportClientAuth({ buyerSigner: BUYER, seller: seller.claim, resolveJob: () => ({ listingPin: PIN, agreementHash: job.agreementHash }), now: w.clock });
-  const paymentBody = { jobId: job.jobId, payerPayingKey: buyer.claim, txHash: derive('payment').slice(0, 64) };
-  const { header } = await old.request(PATHS.payments, paymentBody, JSON.stringify(paymentBody));
-  const payment = await exchange(w.handle.handler, { url: PATHS.payments, text: JSON.stringify(paymentBody), header });
-  assert.ok(payment.status >= 400, 'payments refuse the old signing domain');
-  assert.equal(payment.headers[SELLER_TRANSPORT_HEADER], undefined);
-  assert.equal(w.rows().peer_effects, 1, 'the refusal reserves nowhere');
-  assert.equal((await (await proposeJob(w, 't19-fill')).post()).status, 200);
-  const refusedAtCapacity = await (await proposeJob(w, 't19-full')).post();
-  assert.equal(refusedAtCapacity.body.error, 'peer_store_capacity', 'the old store is now at capacity for effects');
-
+  assert.equal(accountingRows(w).length, 1);
+  for (const path of [PATHS.commitments, PATHS.commitmentSignature]) {
+    const payload = w.payloadFor(path, '{}', { jobId: job.jobId, agreementHash: job.agreementHash });
+    w.handle.store.reserve(payload, {}, { keepProfile: payload.profile });
+  }
+  const full = w.payloadFor(PATHS.payments, '{}', { jobId: job.jobId, agreementHash: job.agreementHash });
+  assert.throws(() => w.handle.store.reserve(full, {}, { keepProfile: full.profile }), { code: 'peer_store_capacity' });
+  const filesBefore = w.journalFiles(), accountedBefore = accountingRows(w);
   const storeCalls = { reserve: 0, classify: 0, finish: 0, reconcile: 0, resume: 0 };
   const watchStore = () => { for (const name of Object.keys(storeCalls)) { const method = w.handle.store[name].bind(w.handle.store); w.handle.store[name] = (...args) => { storeCalls[name]++; return method(...args); }; } };
   watchStore();
@@ -526,7 +531,8 @@ test('P11a1-T19: no request creates a wire journal file in this PR. Non-pre-Agre
     assert.deepEqual(storeCalls, callsBefore, `${label}: no reserve, classify, finish, reconcile or resume call`);
     await w.verified(answer);
   }
-  assert.deepEqual(w.journalFiles(), [], 'no wire journal file exists');
+  assert.deepEqual(w.journalFiles(), filesBefore, 'reads publish nothing');
+  assert.deepEqual(accountingRows(w), accountedBefore, 'reads account nothing');
 });
 
 test('one tuple gate on every wire route: a job the agent holds with no kept tuple, with no store row or a row from before tuples were kept, is refused tp1_purchase_profile_mismatch, signed, with no agent call and nothing written, also after restart and under a delegation; a fresh proposal keeps exactly one tuple and a job with its tuple is answered', async (t) => {
@@ -568,7 +574,8 @@ test('with commitOnSignature, commitments/signature is a wire route: a signed re
   assert.deepEqual({ status: first.status, body: first.body }, { status: 200, body: { status: 'committed', jobId: job.jobId } });
   await w.verified(first);
   const calls = w.agent.calls.signatureCommits;
-  const replay = await w.send(PATHS.commitmentSignature, signed);
+  assert.equal((await w.send(PATHS.commitmentSignature, signed)).body.error, 'peer_request_replayed');
+  const replay = await w.post(PATHS.commitmentSignature, { jobId: job.jobId }, { jobId: job.jobId, agreementHash: job.agreementHash });
   assert.equal(replay.status, 200);
   await w.verified(replay);
   assert.equal(w.agent.calls.signatureCommits, calls, 'the replay ran no second commitment');
@@ -592,6 +599,7 @@ test('a fenced settlement whose answer the wire cannot sign is refused outgoing_
   try { assert.deepEqual(db.prepare("SELECT state FROM peer_effects WHERE state = 'complete'").all(), [], 'the unsignable answer is no terminal entry'); } finally { db.close(); }
   w.agent.fenced = undefined;
   const proposals = w.agent.calls.proposals;
+  w.state.time += JOURNAL_LEASE_MS;
   const retried = await job.post();
   assert.equal(retried.status, 200);
   assert.deepEqual({ proposals: w.agent.calls.proposals, reconciled: w.agent.calls.reconciled }, { proposals, reconciled: 1 }, 'the retry reconciled the uncertain effect');
@@ -792,7 +800,8 @@ test('wire-proposal-commitment-final-authorization-barrier', async (t) => {
     assert.deepEqual({ status: lapsed.status, error: lapsed.body.error }, { status: 408, error: 'peer_expired' }, `${route}: expiry between admission and reservation`);
     for (const reopened of [false, true]) {
       if (reopened) w.reopen();
-      assert.deepEqual(w.rows(), rowsBefore, `${route}: no tuple, nonce or effect was left (reopened: ${reopened})`);
+      assert.equal(w.rows().peer_effects, rowsBefore.peer_effects, `${route}: no old effect (reopened: ${reopened})`);
+      assert.ok(accountingRows(w).filter(row => row.state === 'refused').length >= 2, 'late refusals retain their charges');
       assert.deepEqual(w.agent.calls, callsBefore, `${route}: no agent work`);
     }
   }
@@ -801,6 +810,7 @@ test('wire-proposal-commitment-final-authorization-barrier', async (t) => {
 test('wire-proposal-commitment-effect-before-finish', async (t) => {
   const w = await world(t);
   for (const route of ['proposals', 'commitments']) {
+    w.state.time = NOW;
     const job = await proposeJob(w, `before-finish-${route}`);
     const first = route === 'proposals' ? () => job.post() : () => w.post(PATHS.commitments, { jobId: job.jobId }, { jobId: job.jobId, agreementHash: job.agreementHash });
     if (route === 'commitments') assert.equal((await job.post()).status, 200);
@@ -812,6 +822,7 @@ test('wire-proposal-commitment-effect-before-finish', async (t) => {
     assert.ok(cut.status >= 500, `${route}: the cut request is not answered as done`);
     assert.equal(w.agent.calls[counter], worked + 1, `${route}: the agent retained its work`);
     w.reopen();
+    w.state.time += JOURNAL_LEASE_MS;
     const resumed = await first();
     assert.equal(resumed.status, 200, `${route}: the retried request is answered`);
     assert.equal(w.agent.calls.reconciled, reconciledBefore + 1, `${route}: the retained work was reconciled`);
@@ -828,7 +839,8 @@ test('wire-stored-answer-lost-response', async (t) => {
   const lost = await job.post();
   assert.deepEqual({ status: lost.status, error: lost.body.error, signed: lost.signed }, { status: 503, error: 'operation_uncertain', signed: false });
   const db = new DatabaseSync(w.storePath, { readonly: true });
-  try { assert.deepEqual(db.prepare('SELECT state, status, response FROM peer_effects').all(), [{ state: 'complete', status: 200, response: original }], 'the admitted text is stored unchanged'); } finally { db.close(); }
+  try { assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0); } finally { db.close(); }
+  assert.equal(inspectWireOperation(w.handle.wire.journal, { seller: seller.claim, jobId: job.jobId, path: PATHS.proposals }).outcome.text, original, 'exact admitted text');
   w.reopen();
   const retried = await job.post();
   assert.deepEqual({ status: retried.status, text: retried.text }, { status: 200, text: original });
@@ -845,7 +857,7 @@ test('wire-response-signing-credit-withdrawal', async (t) => {
   assert.notEqual(first.status, 200, 'success is withheld after signing');
   assert.equal((await job.post()).status, 503, 'a replay is withheld too');
   w.reopen();
-  assert.equal(w.rows().peer_effects, 1, 'the operation is retained across the restart');
+  assert.equal(accountingRows(w).filter(row => row.state === 'new').length, 1, 'the operation is retained across restart');
   w.agent.credit = () => {};
   const restored = await job.post();
   assert.equal(restored.status, 200);
@@ -879,10 +891,10 @@ const assertRefusedWithoutWork = async (w, path, work, code) => {
 
 const BARRIER_REQUEST_MS = 10;
 /**
- * The final recheck between wire admission and the old store's reservation. `send` makes one request that expires
+ * The final recheck in the deferred wire reservation, after accounting commits. `send` makes one request that expires
  * BARRIER_REQUEST_MS after the check starts; time passes at that request's last authority read before the reservation. One
  * millisecond short of the expiry it is answered, at the expiry it is refused `peer_expired`, and a withdrawn authority there
- * keeps its own code; neither refusal leaves a row or reaches the agent.
+ * keeps its own code; both stay charged without publishing or reaching the agent.
  */
 async function assertFinalBarrier(w, path, send) {
   const start = w.state.authorityReads;
@@ -908,7 +920,7 @@ test('P11a1-T01: every non-pre-Agreement route answers with a wire response enve
     await w.verified(answer);
     assert.deepEqual(JSON.parse(Buffer.from(answer.header, 'base64url')).payload.profile, w.buyerWire.binding.profile);
   }
-  assert.deepEqual(w.journalFiles(), []);
+  assert.equal(w.journalFiles().filter(name => name.startsWith('k-')).length, EFFECTS.length + 1);
 });
 
 test('P11a1-T02: an old-domain request on any wire route is refused unsigned with zero agent calls; a wire request on the old-auth context route is refused, never downgraded', async (t) => {
@@ -999,7 +1011,11 @@ test("P11a1-T15: a continuing route without a commitment, with another job's com
 test('P11a1-T16: when not ready, new-purchase routes are refused signed while state and payments continue', async (t) => {
   const w = await continuingWorld(t);
   w.state.ready = false;
-  for (const path of [PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature]) {
+  const freshWorld = await world(t); freshWorld.state.ready = false;
+  const fresh = await proposeJob(freshWorld, 'not-ready-fresh');
+  await assertRefusedWithoutWork(freshWorld, PATHS.proposals, () => fresh.post(), 'seller_not_ready');
+  assert.equal((await w.request(PATHS.proposals)).status, 200, 'a retained completed proposal remains readable');
+  for (const path of [PATHS.commitments, PATHS.commitmentSignature]) {
     const answer = await assertRefusedWithoutWork(w, path, () => w.request(path), 'seller_not_ready');
     assert.equal(answer.signed, true);
   }
@@ -1010,7 +1026,7 @@ test('P11a1-T16: when not ready, new-purchase routes are refused signed while st
   }
 });
 
-test("P11a1-T24: on proposals, commitments, commitments/signature and payments, paused after initial admission and before the old-store reservation (round 3, change 4): a direct request, a delegated request expiring before its delegation, and equal request and delegation expiries each pass 1 ms before the request's expiry and refuse peer_expired at it, with no old-store row and no agent call. A current-authority refusal at the same barrier keeps its own code. At admission, a delegation already expired while its request is not, and a request that outlives a live delegation, each refuse peer_delegation_expired on the effect route. A late peer_delegation_expired is not tested as its own outcome: it is defence in depth (SA-1). An ordinary stored-answer retry still answers", async (t) => {
+test("P11a1-T24: request and delegation expiry and current authority are rechecked before wire publication, with late refusals charged and no agent effect", async (t) => {
   mock.method(performance, 'now', () => 0);
   const w = await continuingWorld(t);
   for (const path of [PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature, PATHS.payments]) {
@@ -1124,7 +1140,9 @@ test("P11a1-T27: a job the agent holds with no kept tuple is refused tp1_purchas
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: sha256Hex(canonicalize(material)) };
   const transportIdentity = { jobId: JOBS[0], buyer: legacy.buyer.claim, seller: legacy.seller.claim, agreementHash: plan.agreementHash, planHash: plan.planHash, proposalHash: proposal.proposalHash };
   const agent = { claim: legacy.seller.claim, listingPin: legacy.pin, transportAgreementOf: () => null, continuationEvidenceOf: () => null, receiveProposal: async () => ({ disposition: 'complete' }) };
-  const { binding, journal, readCommitmentReceipt } = w.handle.wire;
+  const { binding, readCommitmentReceipt } = w.handle.wire;
+  const journalDirectory = join(w.directory, 'legacy-wire'); mkdirSync(journalDirectory, { mode: 0o700 });
+  const journal = openWireRequestJournal(journalDirectory, { leaseMs: JOURNAL_LEASE_MS, clock: legacy.now });
   const wire = createWireContext({ binding, tp1Network: { connection: w.buyerWire.connection }, signer: legacy.seller, store: legacy.store, journal, ready: () => true, now: legacy.now, agent, requireDelegation: false, readCommitmentReceipt });
   const handler = createSellerHttpHandler(agent, { authentication: legacy.auth, wire });
   const buyerWire = await wireBuyer({ buyer: legacy.buyer, seller: legacy.seller, listingPin: legacy.pin, clock: legacy.now });
@@ -1203,6 +1221,7 @@ async function uncertainProposal(w, label) {
   w.agent.fenced = null;
   assert.equal((await job.post()).body.error, 'outgoing_body_rejected');
   w.agent.fenced = undefined;
+  w.state.time += JOURNAL_LEASE_MS;
   return job;
 }
 
@@ -1214,6 +1233,7 @@ async function uncertainCommitment(w, path, label) {
   const body = { jobId: job.jobId }, ids = { jobId: job.jobId, agreementHash: job.agreementHash };
   assert.ok((await w.post(path, body, ids)).status >= 500);
   w.reopen();
+  w.state.time += JOURNAL_LEASE_MS;
   return { job, sign: () => w.buyerWire.signRequest(path, body, ids) };
 }
 
@@ -1255,9 +1275,12 @@ test('a retained proposal effect claimed read-only is never settled for retry or
     w.state.time = NOW;
     assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 408, error: 'peer_expired' }, Object.keys(outcome)[0]);
     const db = new DatabaseSync(w.storePath, { readonly: true });
-    try { assert.deepEqual(db.prepare('SELECT state FROM peer_effects').all(), [{ state: 'uncertain' }], 'the effect is neither set to retry nor deleted'); } finally { db.close(); }
-    const claims = claimAt(w, () => NOW);
-    assert.equal((await job.post()).status, 200);
+    try { assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0); } finally { db.close(); }
+    assert.equal(inspectWireOperation(w.handle.wire.journal, { seller: seller.claim, jobId: job.jobId, path: PATHS.proposals }).state, 'pending', 'the effect is neither completed nor ended null');
+    w.state.time += 2 * JOURNAL_LEASE_MS;
+    const claims = claimAt(w, () => w.state.time);
+    const text = JSON.stringify(job.body), payload = w.payloadFor(PATHS.proposals, text, { jobId: job.jobId, agreementHash: job.agreementHash, expiresAt: w.state.time + MAX_SIGNED_LIFETIME_MS });
+    assert.equal((await w.send(PATHS.proposals, { text, payload, header: w.headerFor(payload) })).status, 200);
     assert.deepEqual(claims, [true], 'a live request claims it live');
   }
 });
@@ -1266,7 +1289,7 @@ test('a retained proposal effect under a delegation is claimed read-only once th
   const w = await world(t);
   for (const [label, delta, live] of [['one millisecond before the delegation expires', -1, true], ['when it expires', 0, false]]) {
     const job = await uncertainProposal(w, `late-claim-delegated-${label}`);
-    const expiresAt = NOW + 20_000, text = JSON.stringify(job.body);
+    const expiresAt = w.state.time + 20_000, text = JSON.stringify(job.body);
     const delegation = w.delegationFor({ jobId: job.jobId, expiresAt });
     const payload = w.payloadFor(PATHS.proposals, text, { jobId: job.jobId, agreementHash: job.agreementHash, expiresAt });
     const claims = claimAt(w, () => expiresAt + delta);
@@ -1276,7 +1299,7 @@ test('a retained proposal effect under a delegation is claimed read-only once th
   }
 });
 
-test('the wire authenticator reserves read-only once the request has expired, reads the clock in readbackOnly(), and treats a request it did not admit as expired', async (t) => {
+test('the wire authenticator charges late expiry, reads the clock in readbackOnly(), and refuses unadmitted requests', async (t) => {
   const w = await world(t);
   const auth = wireAuthenticator(w.handle.wire, w.agent, w.handle.authentication);
   const admit = async (label) => {
@@ -1288,17 +1311,18 @@ test('the wire authenticator reserves read-only once the request has expired, re
   };
   const live = await admit('reserve-live');
   assert.equal(live.opened.readbackOnly(), false);
-  assert.equal(auth.store.reserve(live.request, live.opened.body, live.opened.reserveOptions).disposition, 'perform', 'a live request reserves');
+  assert.equal((await auth.store.reserve(live.request, live.opened.body, live.opened.reserveOptions)).disposition, 'perform', 'a live request reserves');
   const lapsing = await admit('reserve-lapsing'), unadmitted = await admit('reserve-unadmitted');
   const rowsBefore = w.rows();
   w.state.time = lapsing.signed.payload.expiresAt - 1;
   assert.equal(lapsing.opened.readbackOnly(), false, 'one millisecond before expiry');
   w.state.time = lapsing.signed.payload.expiresAt;
   assert.equal(lapsing.opened.readbackOnly(), true, 'at expiry');
-  assert.throws(() => auth.store.reserve(lapsing.request, lapsing.opened.body, lapsing.opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'an expired request starts no effect');
+  await assert.rejects(auth.store.reserve(lapsing.request, lapsing.opened.body, lapsing.opened.reserveOptions), { code: 'peer_expired', status: 408 }, 'an expired request starts no effect');
   w.state.time = NOW;
-  assert.throws(() => auth.store.reserve({ ...unadmitted.request }, unadmitted.opened.body, unadmitted.opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'a request this authenticator did not admit starts no effect');
-  assert.deepEqual(w.rows(), rowsBefore, 'the refusals left nothing behind');
+  await assert.rejects(auth.store.reserve({ ...unadmitted.request }, unadmitted.opened.body, unadmitted.opened.reserveOptions), { code: 'peer_expired', status: 408 }, 'a request this authenticator did not admit starts no effect');
+  assert.equal(w.rows().peer_effects, rowsBefore.peer_effects, 'no old effect');
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'refused']);
 });
 
 test('a request the wire authenticator has seen expired stays expired when the clock later reads earlier', async (t) => {
@@ -1314,8 +1338,9 @@ test('a request the wire authenticator has seen expired stays expired when the c
   assert.equal(opened.readbackOnly(), true, 'at expiry');
   w.state.time = NOW;
   assert.equal(opened.readbackOnly(), true, 'a clock corrected to an earlier time does not revive it');
-  assert.throws(() => auth.store.reserve(request, opened.body, opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'and it still starts no effect');
-  assert.deepEqual(w.rows(), rowsBefore, 'nothing was reserved');
+  await assert.rejects(auth.store.reserve(request, opened.body, opened.reserveOptions), { code: 'peer_expired', status: 408 }, 'and it still starts no effect');
+  assert.equal(w.rows().peer_effects, rowsBefore.peer_effects, 'no effect was published');
+  assert.equal(accountingRows(w)[0].code, 'peer_expired', 'the late refusal stays charged');
 });
 
 test('a cached payment refresh that finds its request expired at the job fence stays refused when the clock later reads earlier', async (t) => {
@@ -1339,4 +1364,351 @@ test('a cached payment refresh that finds its request expired at the job fence s
   const text = JSON.stringify(w.bodyFor(PATHS.payments)), payload = w.payloadFor(PATHS.payments, text, { jobId: w.jobId, agreementHash: w.agreementHash, expiresAt: NOW + 1000 });
   assert.equal((await w.send(PATHS.payments, { text, payload, header: w.headerFor(payload) })).status, 200, 'the replay refreshes the cached answer');
   assert.deepEqual(checks, ['live', 'peer_expired', 'peer_expired'], 'the expiry the fence saw is kept');
+});
+
+// P11b1L3: production HTTP dispatch over the real SQL store and wire journal.
+function accountingRows(w) {
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { return db.prepare('SELECT * FROM kit_reservations ORDER BY rowid').all(); } finally { db.close(); }
+}
+function accountingCut(w, change) {
+  const accounting = w.handle.store.reservationAccounting, reserve = accounting.reserveAccounted.bind(accounting);
+  accounting.reserveAccounted = input => reserve(change(input));
+}
+function failSql(t, match) {
+  const prepare = DatabaseSync.prototype.prepare;
+  return t.mock.method(DatabaseSync.prototype, 'prepare', function(sql) {
+    if (match(sql)) throw new Error('TEST accounting write interrupted');
+    return prepare.call(this, sql);
+  });
+}
+
+test('host wire effects account before publishing and invoking the agent', async (t) => {
+  const w = await continuingWorld(t);
+  w.agent.onWork = kind => {
+    if (kind === 'commit-read') return;
+    const row = accountingRows(w).at(-1);
+    assert.equal(row?.state, 'new', 'accounting committed before agent work');
+    assert.equal(inspectWireOperation(w.handle.wire.journal, { seller: seller.claim, jobId: row.jobId, path: row.route }).state, 'pending');
+  };
+  for (const path of EFFECTS.slice(1)) assert.equal((await w.request(path)).status, 200, path);
+  assert.deepEqual(accountingRows(w).map(row => row.route), EFFECTS);
+  assert.equal(w.rows().peer_effects, 0);
+  assert.equal(w.journalFiles().filter(name => name.startsWith('k-')).length, EFFECTS.length);
+});
+
+test('host wire reads leave accounting and journal unchanged', async (t) => {
+  const w = await continuingWorld(t), before = accountingRows(w), files = w.journalFiles();
+  for (const path of [PATHS.state, PATHS.bundleBuyerCopy]) assert.equal((await w.request(path)).status, 200);
+  assert.equal(before.length, 1);
+  assert.deepEqual(accountingRows(w), before); assert.deepEqual(w.journalFiles(), files);
+});
+
+test('host wire failed accounting commit publishes nothing', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-rollback');
+  const exec = DatabaseSync.prototype.exec;
+  const failure = t.mock.method(DatabaseSync.prototype, 'exec', function(sql) {
+    if (sql === 'COMMIT') throw new Error('TEST accounting commit interrupted');
+    return exec.call(this, sql);
+  });
+  assert.equal((await job.post()).status, 503); failure.mock.restore();
+  assert.deepEqual(accountingRows(w), []); assert.deepEqual(w.journalFiles(), []);
+  assert.equal(w.rows().kit_purchase_profiles, 0); assert.equal(w.agent.calls.proposals, 0);
+  w.reopen(); assert.equal((await job.post()).status, 200); assert.equal(accountingRows(w).length, 1);
+});
+
+test('host wire restart after accounting commit retains the charge without publication', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-before-reserve');
+  accountingCut(w, input => ({ ...input, checked: { ...input.checked, reserve: async () => { throw new Error('TEST cut before reserve'); } } }));
+  assert.equal((await job.post()).status, 503);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving']);
+  assert.deepEqual(w.journalFiles(), []); assert.equal(w.agent.calls.proposals, 0);
+  w.reopen(); assert.equal((await job.post()).status, 200);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving', 'new']); assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('host wire nonce-only publication never authorizes recovery', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-nonce'), link = fs.linkSync;
+  const cut = t.mock.method(fs, 'linkSync', (source, destination) => {
+    if (/o-.*-0$/.test(destination)) throw new Error('TEST cut before attempt');
+    return link(source, destination);
+  });
+  syncBuiltinESMExports(); assert.equal((await job.post()).status, 503);
+  cut.mock.restore(); syncBuiltinESMExports();
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving']); assert.equal(w.journalFiles().length, 1);
+  w.reopen(); assert.equal((await job.post()).status, 200);
+  assert.equal(w.agent.calls.reconciled, 0); assert.equal(w.agent.calls.proposals, 1); assert.equal(accountingRows(w).length, 2);
+});
+
+test('host wire restart after publication retains the reserving row and attempt', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-after-reserve');
+  const failure = failSql(t, sql => sql.includes('UPDATE kit_reservations SET state'));
+  assert.equal((await job.post()).status, 503); failure.mock.restore();
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving']);
+  assert.equal(w.journalFiles().filter(name => /^o-.*-0$/.test(name)).length, 1); assert.equal(w.agent.calls.proposals, 0);
+  w.reopen(); assert.equal((await job.post()).body.error, 'seller_effect_pending'); w.state.time += JOURNAL_LEASE_MS;
+  assert.equal((await job.post()).status, 200);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['reserving', 'refused', 'recover']);
+  assert.equal(w.agent.calls.proposals, 0); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire late refusal retains its accounting charge and original code', async (t) => {
+  for (const failedSave of [false, true]) {
+    const w = await world(t), job = await proposeJob(w, 'accounting-refusal-' + failedSave);
+    accountingCut(w, input => ({ ...input, checked: { ...input.checked, reserve: async () => { throw new WireError('peer_expired', 408); } } }));
+    const failure = failedSave ? failSql(t, sql => sql.includes('UPDATE kit_reservations SET state')) : null;
+    const answer = await job.post(); failure?.mock.restore();
+    assert.deepEqual([answer.status, answer.body.error], [408, 'peer_expired']);
+    assert.equal(accountingRows(w)[0].state, failedSave ? 'reserving' : 'refused');
+    assert.equal(accountingRows(w)[0].code, failedSave ? null : 'peer_expired');
+    assert.deepEqual(w.journalFiles(), []); assert.equal(w.agent.calls.proposals, 0);
+    w.reopen(); assert.equal(accountingRows(w).length, 1);
+  }
+});
+
+test('host wire restart reconciles an issued recovery attempt without repeating the effect', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-outcome-cut'); w.handle.finishFails = true;
+  assert.equal((await job.post()).status, 503); assert.equal(w.agent.calls.proposals, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new']);
+  w.reopen(); assert.equal((await job.post()).body.error, 'seller_effect_pending'); w.state.time += JOURNAL_LEASE_MS;
+  assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire lost response reuses the completed outcome after restart', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-lost-response'); w.signing.failures = 2;
+  assert.equal((await job.post()).status, 503); assert.deepEqual(accountingRows(w).map(row => row.state), ['new']);
+  assert.equal(w.journalFiles().filter(name => name.endsWith('.done')).length, 1);
+  w.reopen(); const answer = await job.post(); assert.equal(answer.status, 200);
+  assert.equal((await w.verified(answer)).body.disposition, 'complete');
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'completed']); assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('host wire retained progress stays pending until lease recovery', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-progress');
+  w.agent.retains = true; w.agent.answer = () => ({ disposition: 'waiting' });
+  assert.equal((await job.post()).body.disposition, 'waiting'); assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  assert.equal(w.agent.calls.proposals, 1); assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'refused']);
+  assert.equal(w.journalFiles().some(name => name.endsWith('.done') || name.endsWith('.end')), false);
+  w.reopen(); w.state.time += JOURNAL_LEASE_MS; assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire proven no-effect answer ends null without losing the charge', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-null'); w.agent.answer = () => ({ disposition: 'rejected' });
+  assert.equal((await job.post()).body.disposition, 'rejected'); assert.equal(w.journalFiles().filter(name => name.endsWith('.end')).length, 1);
+  assert.equal(w.journalFiles().some(name => name.endsWith('.done')), false);
+  w.reopen(); assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1); assert.equal(w.agent.calls.reconciled, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'recover']);
+});
+
+test('host wire binding mismatches and pending polls are accounted', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-polls');
+  w.agent.retains = true; w.agent.answer = () => ({ disposition: 'waiting' }); assert.equal((await job.post()).status, 200);
+  assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  const other = await world(t), mismatch = await proposeJob(other, 'accounting-mismatch');
+  const { reserveEffect, journalStore } = await import('../../../dist/wire/journal.js');
+  reserveEffect(journalStore(other.handle.wire.journal), { seller: seller.claim, jobId: mismatch.jobId, path: PATHS.proposals,
+    key: derive('other-nonce-key'), requestHash: derive('other-request'), binding: derive('other-binding') });
+  assert.equal((await mismatch.post()).body.error, 'peer_operation_mismatch');
+  assert.deepEqual(accountingRows(w).map(row => [row.class, row.state, row.code]), [
+    ['general', 'new', null], ['general', 'refused', 'seller_effect_pending'],
+  ]);
+  assert.deepEqual(accountingRows(other).map(row => [row.class, row.state, row.code]), [['general', 'refused', 'peer_operation_mismatch']]);
+  assert.equal(w.agent.calls.proposals, 1); assert.equal(other.agent.calls.proposals, 0);
+});
+
+test('host wire payments retain only the admitted transaction claim', async (t) => {
+  const w = await continuingWorld(t); assert.equal((await w.request(PATHS.payments)).status, 200);
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { assert.deepEqual(db.prepare('SELECT * FROM kit_payment_transactions').all(), [{ tx: w.bodyFor(PATHS.payments).txHash, jobId: w.jobId,
+    operationId: wireOperationId({ seller: seller.claim, jobId: w.jobId, path: PATHS.payments }) }]); } finally { db.close(); }
+  assert.equal(w.agent.calls.payments, 1);
+});
+
+test('host wire recovery claim preserves expiry and rejects repeated claims', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-expired-claim'); w.handle.finishFails = true;
+  assert.equal((await job.post()).status, 503);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new']);
+  w.reopen(); w.state.time += JOURNAL_LEASE_MS;
+  w.agent.reconcileTransport = async ({ request, transport }) => {
+    w.state.time = request.expiresAt; assert.equal(transport.claim().live, false);
+    assert.throws(() => transport.claim(), { code: 'peer_reconciliation_conflict' }); w.state.time--;
+    assert.throws(() => transport.settle({ status: 200, value: {}, noEffect: true }), { code: 'peer_expired' });
+    transport.settle({ status: 200, value: { disposition: 'complete' } });
+  };
+  assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('host wire superseded worker cannot complete a newer attempt', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-superseded'); let unblock, entered;
+  const paused = new Promise(resolve => { entered = resolve; }), barrier = new Promise(resolve => { unblock = resolve; });
+  const receive = w.agent.receiveProposal;
+  w.agent.receiveProposal = async (...args) => { const result = await receive(...args); entered(); await barrier; return result; };
+  const first = job.post(); await paused; w.state.time += JOURNAL_LEASE_MS;
+  assert.equal((await job.post()).status, 200); unblock(); assert.equal((await first).status, 503);
+  assert.equal(w.agent.calls.proposals, 1); assert.equal(w.agent.calls.reconciled, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'recover']);
+});
+
+test('host wire crash after recovery claim retains the attempt until its lease ends', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-claim-cut');
+  w.handle.finishFails = true;
+  assert.equal((await job.post()).status, 503);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new']);
+  w.reopen(); w.state.time += JOURNAL_LEASE_MS;
+  const recover = w.agent.reconcileTransport;
+  w.agent.reconcileTransport = async ({ transport }) => { transport.claim(); throw new Error('TEST cut after claim'); };
+  assert.equal((await job.post()).status, 503);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'recover']);
+  w.reopen();
+  assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  w.state.time += JOURNAL_LEASE_MS; w.agent.reconcileTransport = recover;
+  const text = JSON.stringify(job.body), payload = w.payloadFor(PATHS.proposals, text,
+    { jobId: job.jobId, agreementHash: job.agreementHash, expiresAt: w.state.time + MAX_SIGNED_LIFETIME_MS });
+  assert.equal((await w.send(PATHS.proposals, { payload, text, header: w.headerFor(payload) })).status, 200);
+  assert.equal(w.agent.calls.proposals, 1); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire crash after reservation result requires recovery before agent work', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-after-result');
+  const accounting = w.handle.store.reservationAccounting, reserve = accounting.reserveAccounted.bind(accounting);
+  accounting.reserveAccounted = async input => { await reserve(input); throw new Error('TEST cut after result CAS'); };
+  assert.equal((await job.post()).status, 503);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new']); assert.equal(w.agent.calls.proposals, 0);
+  w.reopen(); assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  w.state.time += JOURNAL_LEASE_MS;
+  assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 0); assert.equal(w.agent.calls.reconciled, 1);
+});
+
+test('host wire outcome end record survives a cut before outcome publication', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'accounting-end-outcome-cut'), link = fs.linkSync;
+  const cut = t.mock.method(fs, 'linkSync', (source, destination) => {
+    if (destination.endsWith('.done')) throw new Error('TEST cut before outcome publication');
+    return link(source, destination);
+  });
+  syncBuiltinESMExports(); assert.equal((await job.post()).status, 503);
+  cut.mock.restore(); syncBuiltinESMExports();
+  assert.equal(w.journalFiles().filter(name => name.endsWith('.end')).length, 1);
+  assert.equal(w.journalFiles().some(name => name.endsWith('.done')), false);
+  w.reopen(); assert.equal((await job.post()).status, 200); assert.equal(w.agent.calls.proposals, 1);
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'completed']);
+});
+
+// The terminal-context fence of the old store, on the wire's job-fence checks.
+const TERMINAL_SESSIONS = ['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate'];
+const codeOf = (work) => { try { work(); return null; } catch (error) { return `${error.code} ${error.status}`; } };
+
+test('wire proposal fence: a context session that ends after accounting refuses the work before it signs, in every terminal state, and a live session is admitted', async (t) => {
+  const w = await world(t);
+  for (const terminal of [null, ...TERMINAL_SESSIONS]) {
+    w.state.session = null;
+    const job = await proposeJob(w, `terminal-fence-${terminal}`);
+    // The real agent reads the session after its Vet and context waits, just before it signs: it is admitted live and ends here.
+    w.agent.onWork = () => { w.state.session = terminal; };
+    const answer = await job.post();
+    w.agent.onWork = () => {};
+    assert.equal(w.agent.transportAgreementOf(job.jobId) !== null, terminal === null, `${terminal}: the contribution is retained only for a live session`);
+    assert.deepEqual({ status: answer.status, error: answer.body.error }, terminal === null ? { status: 200, error: undefined } : { status: 503, error: 'operation_uncertain' }, String(terminal));
+  }
+});
+
+test('wire proposal fence: a retained proposal is not claimed live in a terminal session, a claim made before it ends is refused at its next check, and read-only recovery goes on', async (t) => {
+  const w = await world(t);
+  const observed = [];
+  const recover = (afterClaim) => async ({ transport }) => {
+    w.agent.calls.reconciled++;
+    let claim;
+    try { claim = transport.claim(); } catch (error) { observed.push({ refused: codeOf(() => { throw error; }) }); return; }
+    w.state.session = afterClaim;
+    observed.push({ live: claim.live, check: codeOf(() => claim.check()) });
+    transport.settle({ status: 200, value: { disposition: 'complete', contribution: { signed: true } } });
+  };
+  const retried = async (label, session, { expire = false } = {}) => {
+    w.state.time = NOW; w.state.session = null;
+    const job = await uncertainProposal(w, `terminal-recovery-${label}`);
+    const signed = await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash });
+    w.state.session = session;
+    if (expire) w.agent.reconcileTransport = async (input) => { w.state.time = signed.payload.expiresAt; return recover(session)(input); };
+    return w.send(PATHS.proposals, signed);
+  };
+  w.agent.reconcileTransport = recover(null);
+  assert.equal((await retried('live-session', null)).status, 200);
+  w.agent.reconcileTransport = recover(null);
+  assert.equal((await retried('terminal-at-claim', 'aborted-by-other')).status, 503);
+  w.agent.reconcileTransport = recover('vet-failed');
+  assert.equal((await retried('terminal-after-claim', null)).status, 200);
+  w.agent.reconcileTransport = recover('aborted-by-other');
+  const readOnly = await retried('read-only', 'aborted-by-other', { expire: true });
+  w.state.time = NOW;
+  assert.equal(readOnly.status, 200);
+  assert.deepEqual(observed, [
+    { live: true, check: null },
+    { refused: 'seller_unavailable 503' },
+    { live: true, check: 'context_session_terminal 409' },
+    { live: false, check: null },
+  ]);
+});
+
+// A session source that cannot be read: the accessor answers each read with a fresh fault, and an assignment ends the fault.
+const SESSION_FAULTS = {
+  throws: () => { throw new Error('the session reader is down'); },
+  thenable: () => ({ then() {} }),
+  rejecting: () => Promise.reject(new Error('the session reader failed late')),
+  'resolved terminal': () => Promise.resolve('aborted-by-other'),
+  number: () => 7,
+  object: () => ({ state: 'aborted-by-other' }),
+  undefined: () => undefined,
+};
+const failSession = (w, read) => Object.defineProperty(w.state, 'session', { configurable: true, enumerable: true, get: read,
+  set(value) { Object.defineProperty(w.state, 'session', { configurable: true, enumerable: true, writable: true, value }); } });
+
+test('wire proposal fence: an unreadable session source is never read as not terminal at the live claim, its next check or the pending assertion', async (t) => {
+  const w = await world(t);
+  const observed = [], original = w.agent.reconcileTransport;
+  const probe = async ({ transport }) => {
+    w.agent.calls.reconciled++;
+    let claim;
+    // The store's admission-time start check reads the source too, so the fault starts at the agent's own claim.
+    if (w.failBeforeClaim) failSession(w, w.fault);
+    try { claim = transport.claim(); } catch (error) { observed.push({ label: w.label, claim: codeOf(() => { throw error; }), cause: error.cause instanceof Error }); return; }
+    failSession(w, w.fault);
+    observed.push({ label: w.label, live: claim.live, check: codeOf(() => claim.check()) });
+    w.state.session = null;
+    transport.settle({ status: 200, value: { disposition: 'complete', contribution: { signed: true } } });
+  };
+  assert.equal(w.handle.store.sessionTerminal(jobFor('no-session')), false, 'an explicit null is no session');
+  for (const [label, fault] of Object.entries(SESSION_FAULTS)) {
+    w.fault = fault; w.label = label;
+    failSession(w, fault);
+    assert.throws(() => w.handle.store.sessionTerminal(jobFor(`direct-${label}`)), { code: 'session_admission_unavailable', status: 503 }, `${label}: the reader refuses`);
+    // Before the pending assertion: the agent reads the session after its waits, just before it signs.
+    w.state.session = null;
+    const job = await proposeJob(w, `unreadable-pending-${label}`);
+    w.agent.onWork = () => failSession(w, fault);
+    const answer = await job.post();
+    w.agent.onWork = () => {};
+    w.state.session = null;
+    assert.equal(w.agent.transportAgreementOf(job.jobId), null, `${label}: nothing is signed or retained`);
+    assert.deepEqual({ status: answer.status, error: answer.body.error }, { status: 503, error: 'operation_uncertain' }, `${label}: pending assertion`);
+    // At the live claim, and at the check of a claim made before the source failed.
+    w.agent.reconcileTransport = probe;
+    for (const stage of ['claim', 'check']) {
+      w.state.time = NOW; w.state.session = null;
+      const retained = await uncertainProposal(w, `unreadable-${stage}-${label}`);
+      const signed = await w.buyerWire.signRequest(PATHS.proposals, retained.body, { jobId: retained.jobId, agreementHash: retained.agreementHash });
+      w.failBeforeClaim = stage === 'claim';
+      await w.send(PATHS.proposals, signed);
+      w.state.session = null;
+    }
+    w.agent.reconcileTransport = original;
+  }
+  w.state.time = NOW;
+  assert.deepEqual(observed.filter((entry) => 'claim' in entry), Object.keys(SESSION_FAULTS).map((label) => ({ label, claim: 'session_admission_unavailable 503', cause: true })));
+  assert.deepEqual(observed.filter((entry) => 'check' in entry), Object.keys(SESSION_FAULTS).map((label) => ({ label, live: true, check: 'session_admission_unavailable 503' })));
+});
+
+test('wire proposal fence: a terminal session fences proposal work only, not the commitment of a held job', async (t) => {
+  const w = await world(t), job = await proposeJob(w, 'terminal-fence-commitments');
+  assert.equal((await job.post()).status, 200);
+  w.state.session = 'aborted-by-other';
+  assert.equal((await w.post(PATHS.commitments, { jobId: job.jobId }, { jobId: job.jobId, agreementHash: job.agreementHash })).status, 200);
 });
