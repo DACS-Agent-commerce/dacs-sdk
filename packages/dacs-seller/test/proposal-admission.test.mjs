@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {identityBundleHash,canonicalize,sha256Hex} from '@kynesyslabs/dacs';
+import {identityBundleHash,canonicalize} from '@kynesyslabs/dacs';
 import Database from 'better-sqlite3';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
 import {testWallet,NOW,JOB,buyer,seller} from './helpers/protocol-fixture.mjs';
@@ -9,7 +9,6 @@ import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {SESSION_CHALLENGE_LIFETIME_MS} from '../src/dacs/session-admission.mjs';
 import {listingPin} from '../src/dacs/purchase-protocol.mjs';
 import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
-import {admittedSession} from './helpers/challenge-api.mjs';
 const staged=error=>error.code==='proposal_not_assembled';
 test('accepted presentation and exact admission are atomically retained and replay after restart',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
@@ -72,11 +71,11 @@ test('an accepted row without its exact retained presentation holds without read
 // accepted presentation and its validated admission answer are the only proof
 // this seller admitted it. A row accepted for other bytes is not enough.
 test('a saved proposal stage session without its accepted presentation does not restore',async t=>{
- const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);agent.close();
- const bundle=input.buyerIdentityBundle,hash=sha256Hex(canonicalize(bundle)),other=fixtureIdentityBundle(buyer,NOW+1);
- const {owner}=f.store.challenges.attempt({path:'proposal',nonce:bundle.sessionNonce,jobId:JOB,buyer:buyer.claim,challengeScopeHash:null,presentationHash:hash});
- const admission=admittedSession({jobId:JOB,bundle:other,bundleHash:identityBundleHash(other),seller:seller.claim,listingPin:listingPin(f.listing)});
- assert.equal(f.store.challenges.accept(owner,bundle.sessionNonce,{buyerBundleText:canonicalize(other),buyerBundleHash:identityBundleHash(other),admission,admittedAt:NOW,firstAdmission:{challengeExpiresAt:NOW,generatedAt:NOW,checkedAt:NOW}}),true);
+ const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
+ // The ledger refuses to accept bytes other than the attempted ones, so the row
+ // is rewritten to hold another presentation, as the test above empties it.
+ const bundle=input.buyerIdentityBundle,other=fixtureIdentityBundle(buyer,NOW+1),db=new Database(f.storePath);
+ try{assert.equal(db.prepare("UPDATE kit_challenges SET accepted = json_set(accepted, '$.buyerBundleText', ?, '$.buyerBundleHash', ?) WHERE state = 'accepted'").run(canonicalize(other),identityBundleHash(other)).changes,1);}finally{db.close();}
  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:identityBundleHash(bundle),stage:'proposed'}));state.close();
  await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/accepted presentation/.test(error.message));

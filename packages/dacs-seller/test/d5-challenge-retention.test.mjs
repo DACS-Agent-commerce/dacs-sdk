@@ -1,3 +1,4 @@
+import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 import { issueChallenge, attemptChallenge } from './helpers/challenge-api.mjs';
 import test from 'node:test';
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
@@ -6,7 +7,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
-import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 const { createSellerTransportClientAuth, createSellerTransportServerAuth, createSellerTransportStore, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
 const buyer = 'did:demos:agent:' + 'a'.repeat(64), seller = 'did:demos:agent:' + 'b'.repeat(64);
 const HOUR = 3600000;
@@ -19,7 +19,7 @@ function world(t, options = {}) {
   writeFileSync(states, '{}');
   let time = 1800000000000, store;
   const config = { path, now: () => time, maxRecords: 1, contextStartLimits: { maxStartsPerHour: 1, maxStartsPerBuyerPerHour: 1 },
-    contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId], ...options };
+    contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId] ?? null, ...options };
   // hostStart: what the host does with the lock held, right after it opens the store.
   const reopen = ({ hostStart = false, ...changes } = {}) => {
     store?.close(); store = withFixtureProfile(createSellerTransportStore({ ...config, ...changes }));
@@ -733,7 +733,7 @@ test('buyer nonce quota survives reopen and nonce cleanup until the full rate wi
   const first = request(w, 0, { expiresAt: w.now() + 10 });
   w.store.finish(w.store.reserve(first, {}), 409, '{}', { noEffect: true }); w.reopen();
   noMutations(() => assert.throws(() => w.store.classify(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' }));
-  const secondHandle = withFixtureProfile(createSellerTransportStore({ ...options, path: w.path, now: w.now }));
+  const secondHandle = createSellerTransportStore({ ...options, path: w.path, now: w.now });
   try { assert.throws(() => secondHandle.reserve(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' }); }
   finally { secondHandle.close(); }
   w.advance(20);

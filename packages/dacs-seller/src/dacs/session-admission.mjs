@@ -62,6 +62,8 @@
 //    authentic is verifyVetAnchorReceipt's.
 //    A record with no receipt, one for another address or hash, or one not yet
 //    accepted (or dropped, replaced, expired, reorged, indeterminate) is refused.
+//    Under the TP-1 G3 orchestrator mode (W) the seller verifies both records
+//    (the seller's own too) and only a `finalized` receipt counts (DC6).
 //  - verifyVetAnchorReceipt({ jobId, role, party, ref, record, receipt }) answers
 //    'valid', 'invalid' or 'indeterminate' for that exact record and receipt
 //    (CORE SR2-4: "the receipt fields alone are assertions, not proof"; DACS-2
@@ -70,7 +72,7 @@
 //    before any signature. The receipt's writer is not compared with the
 //    record's signer: the Standard does not tie them (SR2-5 binds the writer
 //    the receipt names, not the record's verifier).
-import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isDurableSessionRecipeRegistrySnapshot, isIdentityBundle, publicKeyFromRaw, resolveRecipe as authenticatePinnedRecipe, selectDurableSessionRecipe, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
+import { ARTIFACT_SEPARATORS, admitRawJson, canonicalDemosAgentPublicKey, sameCanonicalClaimIdentity, canonicalize, checkListingRevocation, compositeVerificationAddress, contentHash, ed25519Verify, identityBundleHash, isAnchorReceipt, isCanonicalBase64Url, isCompositeVerificationRecord, isDurableSessionRecipeRegistrySnapshot, isIdentityBundle, publicKeyFromRaw, resolveRecipe as authenticatePinnedRecipe, SELLER_FULFILMENT_VET_MODES, selectDurableSessionRecipe, signedBytes, verifyCompositeVerificationRecord } from '@kynesyslabs/dacs';
 import { verifyComponent } from './listing.mjs';
 import { isCanonicalEd25519Signature, isSmallOrderPublicKey } from './demos-claims.mjs';
 
@@ -104,6 +106,22 @@ export function sellerSessionPresentationProblem(bundle, listingIdentity) {
   const fixed = ({ presentedAt: _at, sessionNonce: _nonce, presentation: _presentation, ...rest }) => rest;
   if (!same(fixed(bundle), fixed(listingIdentity))) return 'the seller bundle is not a presentation of the Listing identity';
   return identityPresentationValid(bundle, identityBundleHash(bundle)) ? null : 'the seller bundle presentation does not verify';
+}
+
+/** Whether `vetMode` is the TP-1 G3 orchestrator mode ("W"): the seller verifies
+ * both Vet records, only `finalized` receipts count and only the Listing's own
+ * seller bundle is used. Every other value is the counterparty rule. */
+export const isOrchestratorVetMode = (vetMode) => vetMode ===SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
+
+/** The party that verifies the seller's own Vet record: the buyer, or the seller under W. */
+export const sellerRecordVerifier = (vetMode, sellerClaim, buyerClaim) => (isOrchestratorVetMode(vetMode) ? sellerClaim : buyerClaim);
+
+/** Why `bundle` is not the seller's identity under `vetMode`, or null. Under W it
+ * must canonically equal the Listing's bundle (no fresh presentation, K4 DC7);
+ * otherwise sellerSessionPresentationProblem decides. */
+export function sellerBundleProblem(bundle, listingIdentity, vetMode) {
+  if (!isOrchestratorVetMode(vetMode)) return sellerSessionPresentationProblem(bundle, listingIdentity);
+  return same(bundle, listingIdentity) ? null : 'the seller bundle is not exactly the Listing identity';
 }
 
 // DACS-1 BP-4 for a per-claim presentation: whether the presenter signed the
@@ -276,13 +294,15 @@ export const VET_RECEIPT_STATES = Object.freeze(['accepted', 'included', 'finali
 // The reason a Vet record's SR-2 receipt does not back its reference, or null:
 // DACS-2 VPC-3 and §7.7.2. The receipt is a well-formed CORE §5.1 receipt for
 // the reference's exact hash, at the job's canonical composite address (the
-// reference's own locator), observed (not indeterminate), at `accepted` or later.
-export function vetAnchorReceiptProblem(receipt, { ref, jobId, party }) {
+// reference's own locator), observed (not indeterminate), at `accepted` or later;
+// under W (`vetMode`, DC6) only at `finalized`.
+export function vetAnchorReceiptProblem(receipt, { ref, jobId, party, vetMode }) {
   if (receipt == null) return 'the Vet record has no SR-2 receipt';
   if (!isAnchorReceipt(receipt)) return 'the Vet record SR-2 receipt is not a CORE receipt';
   if (ref?.anchor?.locator !== compositeVerificationAddress(jobId, party)) return 'the Vet reference is not at the job\'s canonical composite address';
   if (receipt.logicalAddress !== ref.anchor.locator || receipt.contentHash !== ref.contentHash) return 'the Vet record SR-2 receipt is for another address or hash';
   if (receipt.observationDisposition !== 'established') return 'the Vet record SR-2 receipt is not an established observation';
+  if (isOrchestratorVetMode(vetMode) && receipt.state !== 'finalized') return `the Vet record SR-2 receipt is ${receipt.state}, not finalized (TP-1 G3 orchestrator mode)`;
   // DEMOS-MAPPING A.2: Demos has no verifiable durable accepted state.
   if (receipt.substrate === 'demos' && receipt.state === 'accepted') return 'the Demos Vet record SR-2 receipt must be included or finalized';
   if (!VET_RECEIPT_STATES.includes(receipt.state)) return `the Vet record SR-2 receipt is ${receipt.state}, not accepted or later`;
@@ -486,12 +506,14 @@ const operatorRecipeJobs = new WeakSet();
 // the authenticated snapshot object seeds the pin;
 // later records must use that same authority. String pins cannot establish
 // durable snapshot authority. Recovered snapshots match by authenticated hash.
-export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, invocation, now, evidence, presence, sessionSnapshot, sessionRegistryPins }) {
+export async function vetRecordProblem(record, { ref, jobId, role, party, bundleHash, verifier, vetMode, invocation, now, evidence, presence, sessionSnapshot, sessionRegistryPins }) {
   if (!isCompositeVerificationRecord(record)) return 'the Vet reference names no CompositeVerificationRecord';
   if (contentHash(record) !== ref?.contentHash) return 'the Vet record does not hash to its reference';
   if (record.jobId !== jobId || record.evaluatedParty !== party || record.bundleHash !== bundleHash) return 'the Vet record evaluates another job, party or bundle';
   if (!sameCanonicalClaimIdentity(record.signature.signer, verifier) || (ref.signer !== undefined && !sameCanonicalClaimIdentity(ref.signer, verifier)) || !isCanonicalBase64Url(record.signature.value)
-      || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) return 'the Vet record is not signed by its counterparty verifier';
+      || !verifyComponent({ signedBytes: signedBytes(ARTIFACT_SEPARATORS.CompositeVerificationRecord, contentHash(record)), signature: record.signature })) {
+    return isOrchestratorVetMode(vetMode) && role === 'seller' ? 'the Vet record is not signed by the seller as orchestrator verifier' : 'the Vet record is not signed by its counterparty verifier';
+  }
   if (record.overallDecision !== 'pass') return `the Vet decision is ${record.overallDecision}`;
   if (!object(invocation)) return 'the Vet record has no requirement invocation';
   const presenceOnly = hasPresenceOnlyClaim(invocation.requirement);
