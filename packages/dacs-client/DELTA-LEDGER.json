@@ -6531,6 +6531,17 @@
           "after": "83e1364efe976f2b3125cd8466c459d1600f6795"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF check that the effect boundary module is not exported without listing every export",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "eed744fccb73e1c4c24346fffa91172a1d9029a1",
+          "after": "db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa"
+        }
+      ]
     }
   ]
 }

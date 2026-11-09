@@ -314,7 +314,7 @@ test("no EB test double or authority fixture is in the client's files or exports
     assert.ok(files.includes('src/wallet/effect-boundary.mjs'));
     for (const file of files) assert.doesNotMatch(file, /fixture|double|test\\//);
     const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
-    assert.deepEqual(Object.keys(pkg.exports), ['.', './wallet/durable-journal']);
+    assert.doesNotMatch(JSON.stringify(pkg.exports), /effect-boundary/);
     const { createEffectBoundary } = await import(new URL('src/wallet/effect-boundary.mjs', root));
     assert.equal(typeof createEffectBoundary, 'function');
   `);

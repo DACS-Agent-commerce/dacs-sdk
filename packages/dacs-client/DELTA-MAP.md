@@ -1114,6 +1114,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | abe08190196e3a17ccbb29ce6785df334c20d080 |
 | WF | delta(client): WF P16a1b record the merged package-contents blob after carrying part 01 up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 83e1364efe976f2b3125cd8466c459d1600f6795 |
+| WF | delta(client): WF check that the effect boundary module is not exported without listing every export | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa |
 
 ## Complete commit and file inventory
 
@@ -3502,6 +3504,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
 | delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends | `packages/dacs-client/test/effect-history.test.mjs:1` |
 | delta(client): WF key each dispatch history record by its pass and state and release the actor fence only when its operation ends | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/test/package-contents.test.mjs:1` |
 
 ## Original moved files
 
