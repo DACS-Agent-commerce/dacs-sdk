@@ -110,9 +110,11 @@ import {
  * keyed by jobId, so the anchored artifacts ARE the session state. On resume
  * (same jobId) each phase checks-before-acting — a present agreement/evidence/
  * bundle is reused, never re-signed or re-anchored, and crucially settlement is
- * skipped if evidence already exists (no double-pay). A crash between paying and
- * anchoring evidence is the rail's idempotency window — `settle` is handed the
- * jobId so the rail can dedupe there.
+ * skipped if evidence already exists (no double-pay). A job whose Agreement an
+ * earlier run anchored but whose evidence is absent, with no settled outcome on
+ * record, never calls `settle`, with or without a session store: it goes
+ * through `resumeSettlement`, which must reconcile through the original rail
+ * idempotency binding.
  */
 
 export interface SessionTerms {
@@ -277,7 +279,8 @@ export interface SessionDeps {
    * wired, callers must therefore also wire `resumeSettlement` to the durable
    * rail-idempotency/reconciliation path. The SessionStore and rail store are
    * complementary: one guards the orchestration claim, the other resolves the
-   * post-payment crash window.
+   * post-payment crash window. A resumed run that finds its Agreement already
+   * anchored never calls `settle`; see `resumeSettlement`.
    */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -306,6 +309,12 @@ export interface SessionDeps {
    * wrapper is the intended implementation with a durable atomic SettlementLog.
    * Callers may then wire the same wrapper as both `settle` and
    * `resumeSettlement`.
+   *
+   * It is also called instead of `settle` whenever a resumed run finds its
+   * Agreement already anchored and no settled outcome on record, with or
+   * without a session store. The rail's own durable state is then the record
+   * of whether an earlier run paid; when it shows no earlier effect under the
+   * original binding, the wrapper above may pay once.
    *
    * For a saved native success this is a read-only audit of the original
    * transfer's execution, including its retained signed nonce. Return executed
@@ -423,7 +432,10 @@ export interface SessionDeps {
    *      `resumeSettlement`, never blindly re-paid.
    *   3. The agreement/settlement/bundle receipts + final status are recorded
    *      for restart-safe status/receipt queries without an app-specific job DB.
-   * Fully additive: with no store wired the session behaves exactly as before.
+   * Whatever the store holds, a resumed run whose Agreement an earlier run
+   * anchored, with no settled outcome on record, reconciles through
+   * `resumeSettlement` instead of calling `settle`, and is refused when
+   * `resumeSettlement` is not wired.
    */
   sessionStore?: SessionStore;
 }
@@ -4132,7 +4144,11 @@ async function runSessionCoreWithFence(
   }
 
   // Negotiate (fixed-price): accept the listed terms.
-  const { ref: agreementRef, value: agreementValue } = await anchorOnce(
+  const {
+    ref: agreementRef,
+    value: agreementValue,
+    existing: agreementExisting,
+  } = await anchorOnce(
     legacyMvpSessionAnchorName.agreement(jobId),
     matchAgreement,
     () => {
@@ -4591,6 +4607,12 @@ async function runSessionCoreWithFence(
           // the rail proves no payment landed. It is safe where ordinary `settle`
           // would be an unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
+        } else if (agreementExisting) {
+          // An earlier run anchored this Agreement and may have paid before it
+          // stopped. No session-store record can rule that out: there may be no
+          // store, a fresh one, or a record a failed or concurrent resume just
+          // created. So this run may only reconcile, never pay afresh.
+          settlement = await recoverRailOutcome("Agreement anchored by an earlier run");
         } else {
           await fence.assertCurrent();
           const pay = snapshotSettleResult(
