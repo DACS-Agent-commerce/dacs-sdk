@@ -92,9 +92,9 @@ export interface SellerEffectFence extends SessionLeaseToken {
 type Fenced<T> = T & { fence: Readonly<SellerEffectFence> };
 
 /**
- * The #120 dependency surface with explicit owner+generation fencing on every
- * irreversible callback. Reversible resolvers and verifiers retain their #120
- * signatures.
+ * The `runFulfilmentCore` dependency surface with explicit owner+generation
+ * fencing on every irreversible callback. Reversible resolvers and verifiers
+ * keep their `runFulfilmentCore` signatures.
  */
 export type DurableSellerFulfilmentDeps = Omit<
   SellerFulfilmentDeps,
@@ -292,7 +292,7 @@ export type ProjectDurableSellerAuditPendingInput = Omit<
   VerifyDurableSellerTerminalResultInput,
   "suppliedResult"
 > & {
-  /** Independently authenticated CA-7 Agreement view retained for #132 handoff. */
+  /** Independently authenticated CA-7 Agreement view retained for bundle finalization. */
   verifiedAgreement: SellerFulfilmentAgreement;
   /** Independently authenticated exact Listing version pinned by that Agreement. */
   verifiedListing: SellerFulfilmentListing;
@@ -302,9 +302,10 @@ export type ProjectDurableSellerAuditPendingInput = Omit<
  * Authenticated, caller-assembly-free input pair for seller bundle finalization.
  * This focused projection covers a terminal delivery only when it is the final
  * pinned pipeline step; suffix phases require their own authenticated WAL.
- * The #132/#133 restack must pass this projection directly to
- * `finalizeCompletedSellerBundleCore` in an integration test; that finalizer is
- * intentionally absent from this branch and no caller reconstruction is safe.
+ * Durable seller bundle finalization builds this projection from its WAL and
+ * refuses to finalize unless the finalizer's terminal result, session and
+ * session artifacts equal the projected ones (vet entries are compared without
+ * their `sourceJobId`).
  */
 export interface VerifiedDurableSellerAuditPendingProjection {
   terminal: VerifiedDurableSellerTerminalResult;
@@ -2596,13 +2597,13 @@ class DurableCoordinator {
     const requiresVerifiedHistory = delivery !== undefined ||
       publication !== undefined || readback !== undefined;
     if (!requiresVerifiedHistory) {
-      // A consumed handoff imported from pre-#121 recovery may have an
+      // A consumed handoff imported from older, non-durable recovery may have an
       // externally terminal delivery without local payload WAL history.
       return;
     }
     if (!publication && delivery === undefined &&
         readback?.output.status === "verified") {
-      // Imported pre-#121 delivery: the exact raw record is bound directly to
+      // Imported older delivery: the exact raw record is bound directly to
       // the consumed handoff even though no local publication WAL exists.
       return;
     }
@@ -3597,12 +3598,12 @@ class DurableCoordinator {
         if (inspection.status === "already-consumed") {
           await this.establish(inspection.claim, inspection.handoff);
           // The authoritative store has proved both consumption and the exact
-          // retained handoff. Return that proof so #120 can set its public
+          // retained handoff. Return that proof so `runFulfilmentCore` can set its public
           // consumed-authorization context and continue in this same run.
           return inspection;
         }
       } catch {
-        // Preserve the original ambiguous consumption error for #120.
+        // Preserve the original ambiguous consumption error for `runFulfilmentCore`.
       }
       throw error;
     }
@@ -4120,7 +4121,7 @@ class DurableCoordinator {
         const persisted = decodeDurable<PayloadAnchorInput>(publication.data.input);
         if (!exact((result.value as SellerResolvedPayloadAttestation).record, persisted.record)) {
           // The independently resolved raw signed record is itself evidence. Fence
-          // this contradiction before returning it to #120 so a later resolver or
+          // this contradiction before returning it to `runFulfilmentCore` so a later resolver or
           // verifier outage cannot demote the permanent DPA failure.
           await this.persistDpaFailure(
             "payload readback differs from the exact retained publication record",
@@ -4686,7 +4687,7 @@ class DurableCoordinator {
     const delivery = this.#readDeliveryCheckpoint(record);
     if (delivery?.stage === "intent") return "pending";
     if (!delivery && !preexistingReconciliation) {
-      // The DPA fact can only be recorded after #120's opening reconciliation
+      // The DPA fact can only be recorded after `runFulfilmentCore`'s opening reconciliation
       // returned absent. With no durable delivery WAL, this generation never
       // started an effect; polling again could invent a later contradictory
       // observation instead of closing the already-observed pre-delivery fact.
@@ -4917,7 +4918,7 @@ class DurableCoordinator {
       throw new Error("delivery reconciliation changed its reconciliation identity");
     }
 
-    // The generic #120 core validates the same terminal observation after this
+    // The generic `runFulfilmentCore` validates the same terminal observation after this
     // callback returns. Commit only observations that are already within a
     // stronger lower bound: the exact candidate was validated after the
     // finalized agreement, payment observation and SessionRecord timestamp.
@@ -4936,8 +4937,8 @@ class DurableCoordinator {
       return result;
     }
     // Reject a contradictory accepted id before retaining the observation.
-    // A rejected acknowledgement is intentionally not contradictory: #120
-    // permits an authoritative complete/failed reconciliation to supersede it.
+    // A rejected acknowledgement is intentionally not contradictory:
+    // `runFulfilmentCore` permits an authoritative complete/failed reconciliation to supersede it.
     const deliveryAtObservation = this.#readDeliveryCheckpoint(await this.#load());
     this.#assertDeliveryCheckpointMatchesReconciliation(
       deliveryAtObservation,
@@ -5000,7 +5001,7 @@ class DurableCoordinator {
     try {
       inputBefore = encodeDurable(input);
     } catch {
-      // #120 owns malformed verifier-input classification. Never turn an input
+      // `runFulfilmentCore` owns malformed verifier-input classification. Never turn an input
       // we cannot snapshot exactly into a durable terminal contradiction.
     }
     const output = clone(await operation());
@@ -5014,7 +5015,7 @@ class DurableCoordinator {
         output.disposition === "invalid") {
       if (!this.hasAuthority()) return nonDpaVerificationResult(output);
       await this.persistDpaFailure(`${label}: ${output.reason}`);
-      // Do not let #120 publish differently worded/timestamped failure evidence
+      // Do not let `runFulfilmentCore` publish differently worded/timestamped failure evidence
       // in this pass. The outer durable runner immediately re-enters through
       // the retained DPA reconciliation fact.
       return {
@@ -6023,7 +6024,7 @@ async function runDurableFulfilmentInternal(
       try {
         inputBefore = encodeDurable(input);
       } catch {
-        // Let #120 classify malformed verifier inputs without persisting them.
+        // Let `runFulfilmentCore` classify malformed verifier inputs without persisting them.
       }
       const output = clone(await capturedDeps.verifyAnchorReceipt(input));
       let inputUnchanged = false;
@@ -6095,7 +6096,7 @@ async function runDurableFulfilmentInternal(
       await coordinator.persistDpaFailure(result.reasons.join("; "));
     }
     if (await coordinator.terminalNeedsDpaReplay(result)) {
-      // #120 reconciles before candidate verifiers, so the exact durable fact
+      // `runFulfilmentCore` reconciles before candidate verifiers, so the exact durable fact
       // produces one consistently worded/timestamped DPA-7 failure without
       // allowing the first pass to publish a competing evidence record.
       result = await runFulfilmentCore(requestSnapshot, wrapped);
@@ -6131,7 +6132,7 @@ async function runDurableFulfilmentInternal(
 
 /**
  * Restart-safe seller fulfilment. Durable identity is established only from an
- * already-consumed #120 receipt-store handoff; an available permit cannot create
+ * already-consumed seller receipt-store handoff; an available permit cannot create
  * session state. All irreversible adapters share one generation-fenced WAL.
  */
 export async function runDurableFulfilmentCore(
