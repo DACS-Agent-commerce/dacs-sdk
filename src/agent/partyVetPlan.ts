@@ -76,7 +76,7 @@ export type PartyVetMethodInput =
 
 type PartyVetSignedRecipe = DurableSessionRecipePin["provenance"]["recipe"];
 
-/** Exact serializable evidence copied from #143's runtime-authenticated pin. */
+/** Exact serializable evidence copied from the runtime-authenticated recipe pin. */
 export type PartyVetRecipePinBinding = Pick<
   DurableSessionRecipePin,
   Extract<keyof DurableSessionRecipePin, string>
@@ -89,7 +89,7 @@ export interface PartyVetAttemptInput {
   classification: "freshness" | "dealSpecific";
   /** Exact method selected from the authenticated recipe family. */
   methodInput: PartyVetMethodInput;
-  /** Generation-fenced #143 pin established before any Vet effect. */
+  /** Generation-fenced recipe pin established before any Vet effect. */
   recipePin: DurableSessionRecipePin;
 }
 
@@ -168,7 +168,7 @@ export interface PartyVetRequirementAttempt {
 export interface PartyVetPlan {
   planVersion: "1";
   planHash: string;
-  /** Pre-pin scope hash consumed by #143; deliberately excludes recipe pins. */
+  /** Pre-pin scope hash consumed by recipe pinning; deliberately excludes recipe pins. */
   pinScopeHash: string;
   /** Exact job-wide registry snapshot shared by every attempt pin. */
   sessionRecipeRegistrySnapshotHash?: string;
@@ -729,7 +729,7 @@ function capturePinScopeAttempt(
 }
 
 /**
- * Exact pre-pin party-plan scope used by #143 to bind every durable path pin
+ * Exact pre-pin party-plan scope used by recipe pinning to bind every durable path pin
  * without creating a circular dependency on the pins contained by the final
  * plan. Recipe family/version/ref fields are deliberately absent.
  */
