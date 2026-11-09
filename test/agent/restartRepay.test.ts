@@ -254,4 +254,31 @@ describe("resume with a session store that never saw the earlier run", () => {
     await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1")).resolves.toBeDefined();
     expect(counter.transfers).toBe(1);
   });
+
+  test("a durable session store with the job but no claim resumes through resumeSettlement and pays once", async () => {
+    const { counter, rail, cfg, evmTerms } = evmFixture();
+    const kv = new Map<string, Record<string, unknown>>();
+    const crash = { hit: true }; // evidence anchoring does not crash in this case
+    const sessionStore = createInMemorySessionStore(); // stands in for a durable store shared by both processes
+    const durableRailStore = createIdempotencyStore();
+    const bridge = evmErc20Settle(rail, cfg, { store: durableRailStore });
+    // Process 1 stops after the Agreement and the store record, before the settlement claim.
+    const first = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
+    const resolve = first.deps.resolveAnchor;
+    first.deps.resolveAnchor = async (name) => {
+      if (name === sessionAnchorName.evidence("job-1")) throw new Error("simulated stop before the claim");
+      return resolve(name);
+    };
+    await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/lookup for/);
+    expect(counter.transfers).toBe(0);
+    expect((await sessionStore.load("job-1")).status).toBe("ok");
+    // Without resumeSettlement the resume is refused; with it, the job completes once.
+    const refused = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
+    await expect(runSessionCore(refused.listingRef, evmTerms, refused.deps, "job-1"))
+      .rejects.toThrow(/resumeSettlement is required/);
+    const second = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee",
+      { sessionStore, resumeSettlement: bridge });
+    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1")).resolves.toBeDefined();
+    expect(counter.transfers).toBe(1);
+  });
 });

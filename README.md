@@ -695,13 +695,16 @@ so no-repayment across a whole-process crash requires a rail-idempotent
 `resumeSettlement` backed by durable rail state. A resumed run that finds the
 settlement evidence already anchored reuses it; only a successful native DEM
 (`pay-dem`) settlement still calls `resumeSettlement` to confirm the transaction
-on chain. When no evidence is anchored, a run with a durable `sessionStore` calls
-it if the session record holds an unresolved payment intent, an ambiguous
-outcome or a native DEM success. Otherwise a resumed run calls it whenever an
-earlier run anchored the Agreement, with or without a `sessionStore`, because a
-session record cannot prove the earlier run did not pay (a fresh store, or a
-record that a failed or concurrent resume created, looks the same). A resume
-that needs `resumeSettlement` is refused when it is absent.
+on chain. When no evidence is anchored but a durable `sessionStore` records a
+settled outcome, the run reuses that outcome without calling `resumeSettlement`,
+except a native DEM success, which it still confirms. If the record holds an
+unresolved payment intent or an ambiguous outcome, the run calls
+`resumeSettlement`. With no settled outcome on record, a resumed run also calls
+it whenever an earlier run anchored the Agreement, with or without a
+`sessionStore`, because a session record cannot prove the earlier run did not
+pay (a fresh store, or a record that a failed or concurrent resume created,
+looks the same). A resume that needs `resumeSettlement` is refused when it is
+absent.
 The legacy native-ref input remains available for callers with a separate trusted
 pin.
 

@@ -434,8 +434,9 @@ export interface RunSessionOptions {
   /**
    * Resume an interrupted session by passing the prior run's jobId. Anchored
    * artifacts are reused. If the earlier run anchored the Agreement but not the
-   * payment evidence, the resume never calls `settle`, with or without
-   * `sessionStore`: it calls `resumeSettlement`, and is refused without one. That
+   * payment evidence, and no settled outcome is on record, the resume never
+   * calls `settle`, with or without `sessionStore`: it calls `resumeSettlement`,
+   * and is refused without one. That
    * seam must reconcile through a durable rail store, since a job id alone
    * cannot show whether the interrupted run paid. Omit for a new session.
    */
@@ -447,7 +448,8 @@ export interface RunSessionOptions {
    * has only an intent or ambiguous outcome. Must use the same rail idempotency
    * key and reconcile every ordered `req.priorAttempts` entry before returning.
    * It is also called instead of `settle` whenever an earlier run anchored the
-   * Agreement but not the payment evidence, with or without `sessionStore`.
+   * Agreement but not the payment evidence and no settled outcome is on record,
+   * with or without `sessionStore`.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**

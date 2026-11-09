@@ -111,9 +111,10 @@ import {
  * (same jobId) each phase checks-before-acting — a present agreement/evidence/
  * bundle is reused, never re-signed or re-anchored, and crucially settlement is
  * skipped if evidence already exists (no double-pay). A job whose Agreement an
- * earlier run anchored but whose evidence is absent never calls `settle`, with
- * or without a session store: it goes through `resumeSettlement`, which must
- * reconcile through the original rail idempotency binding.
+ * earlier run anchored but whose evidence is absent, with no settled outcome on
+ * record, never calls `settle`, with or without a session store: it goes
+ * through `resumeSettlement`, which must reconcile through the original rail
+ * idempotency binding.
  */
 
 export interface SessionTerms {
