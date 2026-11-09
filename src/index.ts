@@ -115,18 +115,15 @@ export {
 } from "./negotiate/durableRfqLifecycleStoreFs.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
-  LEGACY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
   commitFixedPriceAgreement,
   commitRfqAgreement,
-  readLegacyFixedPriceAgreementCommitment,
   validateFixedPriceAgreementBinding,
   validateRfqAgreementBinding,
   type CommitmentVerificationDisposition,
   type CommitmentSignatureVerificationInput,
   type CommitmentSignatureVerifier,
   type AnchoredFinalityCommitment,
-  type AnchoredLegacyCommitment,
   type AnchoredAgreementCommitment,
   type FinalityCommitmentLookup,
   type FinalityCommitmentReader,
@@ -136,9 +133,7 @@ export {
   type CommitAgreementInput,
   type CommitFixedPriceAgreementInput,
   type CommitRfqAgreementInput,
-  type ReadLegacyFixedPriceAgreementCommitmentInput,
   type FinalizedFinalityAgreementCommitment,
-  type FinalizedLegacyAgreementCommitment,
   type FinalizedAgreementCommitment,
 } from "./negotiate/commitment.js";
 export {
