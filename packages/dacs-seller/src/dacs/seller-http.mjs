@@ -10,13 +10,15 @@
 // each request and signs each answer through `./wire` (seller-wire-requests.mjs); the
 // transport store stays their only journal, and the read routes reserve nowhere.
 // The challenge and the context step keep the old server auth.
-import { isReadRoute, signWireResponse, WireError } from '@kynesyslabs/dacs/wire';
+import { completeWireEffect, isReadRoute, signWireResponse, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
 import { SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH, SELLER_TRANSPORT_HEADER, SELLER_TRANSPORT_MAX_RESPONSE, SellerTransportError } from './seller-transport-auth.mjs';
 import { WIRE_ROUTE_PATHS, admitAnswerText, admitWireRoute } from './seller-wire-requests.mjs';
+import { createCompletionRecords } from './seller-completion-records.mjs';
+import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 
 const MAX_BODY = 64 * 1024;
 const MAX_RESPONSE_LIST = 256;
@@ -68,6 +70,70 @@ const ROUTES = {
 const POINTED_ROUTES = new Set(['/dacs/v1/commitments', '/dacs/v1/payments']);
 // Registered only with DACS_COMMIT_ON_SIGNATURE=on; off keeps main's route table.
 const SIGNATURE_ROUTES = { ...ROUTES, '/dacs/v1/commitments/signature': (agent, body, options) => agent.commitOnSignature(body, options) };
+
+// The ordinary completion port. A port is made for one journal and store; a receipt is issued by that port for one coordinator-issued
+// effect. Both are known only by these maps, so a copy or a look-alike object is not accepted.
+const completionPorts = new WeakMap();
+const completionReceipts = new WeakMap();
+const END_CLEANUPS = new Set(['route', 'purchase-final']);
+
+function capacityClassOf(row) {
+  if (row.class === 'purchase' && typeof row.allocationId === 'string') return { class: 'purchase-stage', allocationId: row.allocationId, route: row.route };
+  if (row.class === 'general') return { class: 'general' };
+  throw new SellerTransportError('wire_input_invalid', 500);
+}
+
+/**
+ * Creates the port that issues receipts for the coordinator's effects and takes their ends. `store` is the transport store and
+ * `capacity` the purchase capacity built on it; `journal` is the wire journal the effects were issued from. Returns a frozen port whose
+ * `capture({ effect, key })` binds a `new` or `recover` effect to its committed accounting row (`key` is the request's nonce key) and
+ * returns the frozen receipt `{ effect, capacityClass }`, the class being the one the row persisted. Capture throws a TypeError for input
+ * that is not such an effect and key, and SellerTransportError wire_input_invalid (500) when no row matches the effect.
+ * Throws a TypeError when the capacity is not the one built on `store` or `journal` is missing.
+ */
+export function createOrdinaryCompletionPort({ journal, store, capacity }) {
+  if (typeof journal !== 'object' || journal === null || !ownsPurchaseCapacity(store, capacity)) {
+    throw new TypeError('a completion port needs the wire journal and the purchase capacity built on its own store');
+  }
+  const records = createCompletionRecords({ store, capacity });
+  const port = Object.freeze({
+    capture({ effect, key }) {
+      if (!['new', 'recover'].includes(effect?.state) || typeof effect.operationId !== 'string' || !Number.isSafeInteger(effect.attempt) || effect.attempt < 0 || typeof key !== 'string') {
+        throw new TypeError('a capture needs the new or recover effect the coordinator issued and its request key');
+      }
+      const row = records.reservationRow(key);
+      if (row === undefined || row.operationId !== effect.operationId || row.state !== effect.state) throw new SellerTransportError('wire_input_invalid', 500);
+      const capacityClass = Object.freeze(capacityClassOf(row));
+      const receipt = Object.freeze({ effect, capacityClass });
+      completionReceipts.set(receipt, { port, effect, operationId: row.operationId, attempt: effect.attempt, requestHash: row.requestHash, jobId: row.jobId, buyer: row.buyer, route: row.route, capacityClass });
+      return receipt;
+    },
+  });
+  completionPorts.set(port, { journal, records });
+  return port;
+}
+
+/**
+ * Ends the attempt a receipt stands for. `decision` is `{ kind: 'outcome', outcome, cleanup }` (`cleanup` is `route` or `purchase-final`),
+ * `{ kind: 'no-effect' }` or `{ kind: 'open' }`. An outcome is published through completeWireEffect and then, in one store transaction,
+ * recorded and its capacity returned: the receipt's own route slot, and for `purchase-final` what remains of its allocation. A
+ * no-effect decision publishes a null end and returns nothing; an open one does nothing. Throws a TypeError, before any write, for a port
+ * or receipt it did not issue and for a malformed decision. The journal's WireErrors propagate unchanged and return nothing. A failure of
+ * the store transaction propagates after the outcome is published: ending again with the same outcome finishes the cleanup once.
+ */
+export function endWireAttempt(completion, reservation, decision) {
+  const port = completionPorts.get(completion);
+  const held = completionReceipts.get(reservation);
+  if (port === undefined || held === undefined || held.port !== completion) throw new TypeError('an attempt is ended with the completion port and a receipt it issued');
+  const { kind } = decision ?? {};
+  if (kind === 'open') return;
+  if (kind === 'no-effect') { completeWireEffect(port.journal, held.effect, null); return; }
+  if (kind !== 'outcome' || !END_CLEANUPS.has(decision.cleanup) || typeof decision.outcome !== 'object' || decision.outcome === null) {
+    throw new TypeError('an end decision is an outcome with a cleanup, no-effect or open');
+  }
+  completeWireEffect(port.journal, held.effect, decision.outcome);
+  port.records.complete(held, { status: decision.outcome.status, cleanup: decision.cleanup });
+}
 
 function readRequest(req, timeoutMs) {
   return new Promise((resolve, reject) => {
