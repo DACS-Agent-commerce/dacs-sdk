@@ -427,10 +427,11 @@ test('the reader each signed request calls is bounded: a stalled read is pending
     const host = await f.start({ tp1Network: testNetwork({ readAuthority }) });
     const [binding] = f.bindings;
     const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
-    const proposals = await Promise.all(Array.from({ length: HANDLER_CONCURRENCY }, async (_, index) => {
-      const body = await f.proposal(host, jobId(`stalled-${index}`));
+    const body = await f.proposal(host, jobId('stalled'));
+    const proposals = await Promise.all(Array.from({ length: HANDLER_CONCURRENCY }, () => {
       return buyerWire.signRequest(PROPOSALS, body, { jobId: body.transportIdentity.jobId, agreementHash: body.transportIdentity.agreementHash });
     }));
+    assert.equal(new Set(proposals.map(({ payload }) => payload.nonce)).size, HANDLER_CONCURRENCY);
     const [overflow, afterwards] = [await unknownStateRequest(buyerWire, 'overflow'), await unknownStateRequest(buyerWire, 'afterwards')];
     stall = true;
     mock.timers.enable({ apis: ['setTimeout'] });
