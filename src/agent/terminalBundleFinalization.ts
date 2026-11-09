@@ -38,6 +38,7 @@ import {
   type BundleOutcome,
   type BundleOutcomeClass,
 } from "./bundleSemantics.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const ROLE_ORDER = Object.freeze([
   "buyer",
@@ -387,12 +388,6 @@ function captureData(value: unknown, subject: string, ancestors: Set<object>): u
 
 function immutableDataSnapshot<T>(value: T, subject: string): T {
   return deepFreeze(captureData(value, subject, new Set<object>()) as T);
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;
-  for (const child of Object.values(value as DataRecord)) deepFreeze(child);
-  return Object.freeze(value);
 }
 
 function sameCanonicalValue(left: unknown, right: unknown): boolean {
