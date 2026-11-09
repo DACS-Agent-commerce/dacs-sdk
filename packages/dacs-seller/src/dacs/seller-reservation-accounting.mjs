@@ -45,7 +45,8 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // Returns whether the job has its purchase (job row) already.
   function checkJobWithin(payload, keepProfile, replay) {
     if (ledger.jobConflictWithin(payload)) fail('peer_job_conflict', 409);
-    if (!replay && ledger.jobClosedWithin(payload)) fail('context_job_closed', 409);
+    if (!replay && (ledger.jobClosedWithin(payload) ||
+        (payload.path === SELLER_CONTEXT_PATH && ledger.jobRetiredWithin(payload.jobId)))) fail('context_job_closed', 409);
     const tuple = canonicalize(keepProfile);
     if (canonicalize(payload.profile) !== tuple) fail('tp1_purchase_profile_mismatch', 500);
     const purchase = ledger.purchaseWithin(payload.jobId);

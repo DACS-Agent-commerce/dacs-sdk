@@ -181,3 +181,24 @@ for (const maxContextRecords of [1, 2]) test(`capacity retirement finds an activ
   port.transaction(() => port.retireSlotsWithin(w.now(), undefined, { capacity: true, keepContexts: true }));
   assert.equal(port.db.prepare('SELECT COUNT(*) AS n FROM peer_jobs WHERE job = ?').get(NEXT_JOB).n, 0);
 });
+
+
+test('a retired job refuses a fresh accounted context and preserves job capacity after restart', async t => {
+  let session = null;
+  const f = await accountingFixture(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === JOB ? session : null });
+  const first = f.payload();
+  f.store().finish(f.store().reserve(first, {}, { keepProfile: FIXTURE_PROFILE }), 200, '{}');
+  session = 'finalised'; f.setTime(T0 + HOUR + 61000);
+  f.store().finish(f.store().reserve(f.payload({ jobId: JOB2 }), {}, { keepProfile: FIXTURE_PROFILE }), 422, '{}', { noEffect: true });
+  assert.equal(f.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
+  assert.equal(f.db.prepare('SELECT closed FROM kit_job_owners WHERE job = ?').get(JOB).closed, 0);
+  session = null; f.reopen();
+  const context = await f.admitContext(), rows = f.rows(), holds = f.holds(), files = f.files();
+  await assert.rejects(f.reserve(context), { code: 'context_job_closed', status: 409 });
+  assert.deepEqual(f.rows(), rows);
+  assert.deepEqual(f.holds(), holds);
+  assert.deepEqual(f.files(), files);
+  assert.equal(sellerStoreInternals(f.store()).admissionCounts().contextRecords, 0);
+  assert.equal((await f.reserve(f.args(f.payload({ jobId: JOB2 })))).state, 'new');
+  await assert.rejects(f.reserve(f.args(f.payload({ jobId: NEXT_JOB }))), { code: 'peer_job_capacity', status: 503 });
+});
