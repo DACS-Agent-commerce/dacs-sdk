@@ -110,9 +110,9 @@ import {
  * keyed by jobId, so the anchored artifacts ARE the session state. On resume
  * (same jobId) each phase checks-before-acting — a present agreement/evidence/
  * bundle is reused, never re-signed or re-anchored, and crucially settlement is
- * skipped if evidence already exists (no double-pay). Without a session store,
- * a job whose Agreement an earlier run anchored but whose evidence is absent
- * never calls `settle`: it goes through `resumeSettlement`, which must
+ * skipped if evidence already exists (no double-pay). A job whose Agreement an
+ * earlier run anchored but whose evidence is absent never calls `settle`, with
+ * or without a session store: it goes through `resumeSettlement`, which must
  * reconcile through the original rail idempotency binding.
  */
 
@@ -279,8 +279,7 @@ export interface SessionDeps {
    * rail-idempotency/reconciliation path. The SessionStore and rail store are
    * complementary: one guards the orchestration claim, the other resolves the
    * post-payment crash window. A resumed run that finds its Agreement already
-   * anchored but no session-store record of the job never calls `settle`; see
-   * `resumeSettlement`.
+   * anchored never calls `settle`; see `resumeSettlement`.
    */
   settle: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -310,10 +309,10 @@ export interface SessionDeps {
    * Callers may then wire the same wrapper as both `settle` and
    * `resumeSettlement`.
    *
-   * It is also called instead of `settle` when a resumed run finds its
-   * Agreement already anchored but no session-store record of the job (or no
-   * store at all). The rail's own durable state is then the only record of
-   * whether the earlier run paid; when it shows no earlier effect under the
+   * It is also called instead of `settle` whenever a resumed run finds its
+   * Agreement already anchored and no settled outcome on record, with or
+   * without a session store. The rail's own durable state is then the record
+   * of whether an earlier run paid; when it shows no earlier effect under the
    * original binding, the wrapper above may pay once.
    *
    * For a saved native success this is a read-only audit of the original
@@ -432,10 +431,10 @@ export interface SessionDeps {
    *      `resumeSettlement`, never blindly re-paid.
    *   3. The agreement/settlement/bundle receipts + final status are recorded
    *      for restart-safe status/receipt queries without an app-specific job DB.
-   * Without a store, or with one that holds no record of the job, a resumed
-   * run whose Agreement an earlier run anchored cannot tell whether that run
-   * paid, so it reconciles through `resumeSettlement` instead of calling
-   * `settle`, and is refused when `resumeSettlement` is not wired.
+   * Whatever the store holds, a resumed run whose Agreement an earlier run
+   * anchored, with no settled outcome on record, reconciles through
+   * `resumeSettlement` instead of calling `settle`, and is refused when
+   * `resumeSettlement` is not wired.
    */
   sessionStore?: SessionStore;
 }
@@ -4202,9 +4201,6 @@ async function runSessionCoreWithFence(
   // hash. `create` binds the hash atomically and THROWS on a cross-session reuse,
   // so a replayed deal aborts here — before any call to `settle`.
   const store = fence.protect(runtime.sessionStore);
-  // A store with no record of this job did not see any earlier run, so it
-  // cannot show whether that run paid.
-  let storeSawEarlierRuns = false;
   if (store) {
     const loaded = await store.load(jobId);
     if (loaded.status === "corrupt" || loaded.status === "unsupported") {
@@ -4215,7 +4211,6 @@ async function runSessionCoreWithFence(
     if (loaded.status === "missing") {
       await store.create({ jobId, agreementHash, phase: "negotiated", now: runtime.nowMs() });
     } else {
-      storeSawEarlierRuns = true;
       // Resume: enforce that the live record's bound hash is THIS deal's — a
       // mismatch is a replayed/altered agreement under a reused jobId.
       if (loaded.record.agreementHash !== agreementHash) {
@@ -4610,12 +4605,12 @@ async function runSessionCoreWithFence(
           // the rail proves no payment landed. It is safe where ordinary `settle`
           // would be an unproven second submission.
           settlement = await recoverRailOutcome("unresolved settlement intent");
-        } else if (!storeSawEarlierRuns && agreementExisting) {
+        } else if (agreementExisting) {
           // An earlier run anchored this Agreement and may have paid before it
-          // stopped. With no session store, or one that holds no record of this
-          // job (a fresh in-memory store after a restart), nothing shows whether
-          // it did, so this run may only reconcile, never pay afresh.
-          settlement = await recoverRailOutcome("earlier run not recorded in a session store");
+          // stopped. No session-store record can rule that out: there may be no
+          // store, a fresh one, or a record a failed or concurrent resume just
+          // created. So this run may only reconcile, never pay afresh.
+          settlement = await recoverRailOutcome("Agreement anchored by an earlier run");
         } else {
           await fence.assertCurrent();
           const pay = snapshotSettleResult(

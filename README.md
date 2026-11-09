@@ -697,12 +697,11 @@ settlement evidence already anchored reuses it; only a successful native DEM
 (`pay-dem`) settlement still calls `resumeSettlement` to confirm the transaction
 on chain. When no evidence is anchored, a run with a durable `sessionStore` calls
 it if the session record holds an unresolved payment intent, an ambiguous
-outcome or a native DEM success. A run without a `sessionStore`, or with one
-that holds no record of the job (for example a fresh in-memory store after a
-restart), calls it whenever an earlier run anchored the Agreement, because
-nothing records whether that run paid. A wired `sessionStore` must therefore be
-durable for its records to help. A resume that needs `resumeSettlement` is
-refused when it is absent.
+outcome or a native DEM success. Otherwise a resumed run calls it whenever an
+earlier run anchored the Agreement, with or without a `sessionStore`, because a
+session record cannot prove the earlier run did not pay (a fresh store, or a
+record that a failed or concurrent resume created, looks the same). A resume
+that needs `resumeSettlement` is refused when it is absent.
 The legacy native-ref input remains available for callers with a separate trusted
 pin.
 

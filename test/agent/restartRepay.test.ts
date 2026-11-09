@@ -196,6 +196,49 @@ describe("resume with a session store that never saw the earlier run", () => {
     expect(counter.transfers).toBe(1);
   });
 
+  test("a retry after a failed resume on the same fresh store does not transfer again", async () => {
+    const { counter, rail, cfg, evmTerms } = evmFixture();
+    const kv = new Map<string, Record<string, unknown>>();
+    const crash = { hit: false };
+    const first = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee");
+    await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/simulated crash/);
+    expect(counter.transfers).toBe(1);
+    // Process 2: one fresh store. The first resume fails on the evidence lookup
+    // after the store has created its record of the job; the retry reuses it.
+    const sessionStore = createInMemorySessionStore();
+    const second = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
+    const resolve = second.deps.resolveAnchor;
+    let failNext = true;
+    second.deps.resolveAnchor = async (name) => {
+      if (name === sessionAnchorName.evidence("job-1") && failNext) {
+        failNext = false;
+        throw new Error("simulated network error");
+      }
+      return resolve(name);
+    };
+    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1")).rejects.toThrow();
+    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1"))
+      .rejects.toThrow(/resumeSettlement is required/);
+    expect(counter.transfers).toBe(1);
+  });
+
+  test("two resumes at once on one fresh store do not transfer again", async () => {
+    const { counter, rail, cfg, evmTerms } = evmFixture();
+    const kv = new Map<string, Record<string, unknown>>();
+    const crash = { hit: false };
+    const first = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee");
+    await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/simulated crash/);
+    const sessionStore = createInMemorySessionStore();
+    const a = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
+    const b = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
+    const results = await Promise.allSettled([
+      runSessionCore(a.listingRef, evmTerms, a.deps, "job-1"),
+      runSessionCore(b.listingRef, evmTerms, b.deps, "job-1"),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    expect(counter.transfers).toBe(1);
+  });
+
   test("a crash before paying resumes through a durable resumeSettlement and pays once", async () => {
     const { counter, rail, cfg, evmTerms } = evmFixture();
     const kv = new Map<string, Record<string, unknown>>();
