@@ -6549,6 +6549,22 @@
           "after": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd"
         }
       ]
+    },
+    {
+      "delta": "D33",
+      "subject": "delta(client): D33 report a wallet-lock holder's falsy rejection as a failure",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a284092528a7f3564c8def91dd5fee530ae04b93",
+          "after": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
+        },
+        {
+          "path": "packages/dacs-client/test/durable-journal-rejections.test.mjs",
+          "before": null,
+          "after": "4f259862831e602f05118d5aa005a73e7d676320"
+        }
+      ]
     }
   ]
 }

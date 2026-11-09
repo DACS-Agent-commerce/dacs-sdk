@@ -49,6 +49,7 @@ describe("dacs doctor node build check", () => {
   });
 
   it("passes when the node commit equals the pin", async () => {
+    vi.useFakeTimers();
     const report = await doctorWith(stubFetch(async () => jsonReply(recordedVersionReply.body)));
 
     const check = nodeBuildCheck(report);
@@ -59,6 +60,7 @@ describe("dacs doctor node build check", () => {
       pinned: nodeBuildPin.commitSha,
     });
     expect(report.exitCode).toBe(REPORT_EXIT_WITH_BLOCKED_CHECKS);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("matches on the bare sha whatever branch label the node prefixes", async () => {
@@ -96,11 +98,13 @@ describe("dacs doctor node build check", () => {
   });
 
   it("keeps the underlying cause of a failed fetch in the detail", async () => {
+    vi.useFakeTimers();
     const report = await doctorWith(stubFetch(async () => {
       throw new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED 127.0.0.1:9") });
     }));
 
     expect(nodeBuildCheck(report).detail).toContain("ECONNREFUSED");
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("reports an unknown build when the node has no /version endpoint", async () => {
@@ -261,6 +265,52 @@ describe("dacs doctor node build check", () => {
     expect(check.status).toBe("skip");
     expect(check.summary).toBe(UNKNOWN_SUMMARY);
     expect(check.detail).toContain("timed out");
+  });
+
+  it("finishes at the deadline when fetch ignores abort and never settles", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>(() => {}));
+
+    const pending = doctorWith(fetchImpl);
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const report = await pending;
+
+    expect(nodeBuildCheck(report)).toMatchObject({
+      status: "skip",
+      summary: UNKNOWN_SUMMARY,
+      detail: "node build read timed out",
+    });
+    expect(report.exitCode).toBe(REPORT_EXIT_WITH_BLOCKED_CHECKS);
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps the timeout result when fetch returns a matching build after the deadline", async () => {
+    vi.useFakeTimers();
+    let respond!: (response: Response) => void;
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>((resolve) => {
+      respond = resolve;
+    }));
+
+    const pending = doctorWith(fetchImpl);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const report = await pending;
+    const check = nodeBuildCheck(report);
+    expect(check).toMatchObject({
+      status: "skip",
+      summary: UNKNOWN_SUMMARY,
+      detail: "node build read timed out",
+    });
+    const reported = JSON.stringify(report);
+
+    respond(jsonReply(recordedVersionReply.body));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(JSON.stringify(report)).toBe(reported);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("does not read the node build offline or without an RPC URL", async () => {
