@@ -1100,6 +1100,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | D26 | delta(client): D26 import PURCHASE_LIMITS in config so loadConfig can read it | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/config.mjs:4`, `packages/dacs-client/src/config.mjs:237`, `packages/dacs-client/src/config.mjs:276` | be9bb71e94aaacb2ffb8155d76070feb0032b3b1 |
 | | `packages/dacs-client/test/config-nonce-slot-proof.test.mjs:1` | e18570d5cd4b514b98c9b4b8b8177ff7eba80c12 |
+| D27 | delta(client): D27 operator approver re-checks the request bytes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/devnet-demo/operator-approval.mjs:270`, `packages/dacs-client/src/devnet-demo/operator-approval.mjs:355` | 05e2fec203bfa93fcc9e7f833b976d641b2a1cde |
+| | `packages/dacs-client/test/operator-approval-request-bytes.test.mjs:1` | da57bb91604b30e2b60a4edb7011a473fd9e5d3a |
 
 ## Complete commit and file inventory
 
@@ -3468,6 +3471,14 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D26 import PURCHASE_LIMITS in config so loadConfig can read it | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D26 import PURCHASE_LIMITS in config so loadConfig can read it | `packages/dacs-client/src/config.mjs:4`, `packages/dacs-client/src/config.mjs:237`, `packages/dacs-client/src/config.mjs:276` |
 | delta(client): D26 import PURCHASE_LIMITS in config so loadConfig can read it | `packages/dacs-client/test/config-nonce-slot-proof.test.mjs:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/src/devnet-demo/operator-approval.mjs:270`, `packages/dacs-client/src/devnet-demo/operator-approval.mjs:355` |
+| delta(client): D27 operator approver re-checks the request bytes | `packages/dacs-client/test/operator-approval-request-bytes.test.mjs:1` |
 
 ## Original moved files
 
@@ -3509,7 +3520,7 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | `packages/dacs-client/src/devnet-demo/deliverable.mjs` | `http-mcp/src/devnet-demo/deliverable.mjs` | fc85372db90d6780070efc1eff696418ba62f4b2 | unchanged | fc85372db90d6780070efc1eff696418ba62f4b2 |
 | `packages/dacs-client/src/devnet-demo/issued-readback.mjs` | `http-mcp/src/devnet-demo/issued-readback.mjs` | 74a51d2c12afbe4bac618969b912aa264cfda95c | unchanged | 74a51d2c12afbe4bac618969b912aa264cfda95c |
 | `packages/dacs-client/src/devnet-demo/native-delivery.mjs` | `http-mcp/src/devnet-demo/native-delivery.mjs` | 44e46bf0721380ddd15a7e6551430835f64cfd89 | unchanged | 44e46bf0721380ddd15a7e6551430835f64cfd89 |
-| `packages/dacs-client/src/devnet-demo/operator-approval.mjs` | `http-mcp/src/devnet-demo/operator-approval.mjs` | 14fe5209bdc2fff3a21ce4a13d12756fef1ce091 | unchanged | 14fe5209bdc2fff3a21ce4a13d12756fef1ce091 |
+| `packages/dacs-client/src/devnet-demo/operator-approval.mjs` | `http-mcp/src/devnet-demo/operator-approval.mjs` | 14fe5209bdc2fff3a21ce4a13d12756fef1ce091 | changed by D27 | 05e2fec203bfa93fcc9e7f833b976d641b2a1cde |
 | `packages/dacs-client/src/devnet-demo/stop-request.mjs` | `http-mcp/src/devnet-demo/stop-request.mjs` | 9013bb2f8b75088b04f6e477beb28388cee156a8 | unchanged | 9013bb2f8b75088b04f6e477beb28388cee156a8 |
 | `packages/dacs-client/src/devnet-demo/storage-write-recovery.mjs` | `http-mcp/src/devnet-demo/storage-write-recovery.mjs` | 339752ef02b10b9f2740e833f9b6a1be239ed2b8 | unchanged | 339752ef02b10b9f2740e833f9b6a1be239ed2b8 |
 | `packages/dacs-client/src/public/portal-intent/intent.mjs` | `http-mcp/public/portal-intent/intent.mjs` | a0e0f6cb3f742e3f3e79796404a47b86a2f1e64e | changed by D20 | 3d60f6151608b59fda215fb362bb54a5721c82ce |

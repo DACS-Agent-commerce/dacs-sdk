@@ -6471,6 +6471,22 @@
           "after": "e18570d5cd4b514b98c9b4b8b8177ff7eba80c12"
         }
       ]
+    },
+    {
+      "delta": "D27",
+      "subject": "delta(client): D27 operator approver re-checks the request bytes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/devnet-demo/operator-approval.mjs",
+          "before": "14fe5209bdc2fff3a21ce4a13d12756fef1ce091",
+          "after": "05e2fec203bfa93fcc9e7f833b976d641b2a1cde"
+        },
+        {
+          "path": "packages/dacs-client/test/operator-approval-request-bytes.test.mjs",
+          "before": null,
+          "after": "da57bb91604b30e2b60a4edb7011a473fd9e5d3a"
+        }
+      ]
     }
   ]
 }
