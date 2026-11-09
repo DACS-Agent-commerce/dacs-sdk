@@ -690,10 +690,23 @@ npm run test:live:pay-dem
 `(listingId, listingVersion, contentHash)` tuple used by the session. To resume
 an interrupted session safely, pass the prior `jobId` and the same authenticated
 Listing to `runSession`; anchored artifacts are reused and the Listing remains
-pinned. No-repayment across a whole-process crash additionally requires a durable
-`sessionStore` and a rail-idempotent `resumeSettlement` implementation—a job id
-alone cannot prove whether a lost rail response moved value. The legacy native-ref
-input remains available for callers with a separate trusted pin.
+pinned. A job id alone cannot prove whether a lost rail response moved value,
+so no-repayment across a whole-process crash requires a rail-idempotent
+`resumeSettlement` backed by durable rail state. A resumed run that finds the
+settlement evidence already anchored reuses it; only a successful native DEM
+(`pay-dem`) settlement still calls `resumeSettlement` to confirm the transaction
+on chain. When no evidence is anchored but a durable `sessionStore` records a
+settled outcome, the run reuses that outcome without calling `resumeSettlement`,
+except a native DEM success, which it still confirms. If the record holds an
+unresolved payment intent or an ambiguous outcome, the run calls
+`resumeSettlement`. With no settled outcome on record, a resumed run also calls
+it whenever an earlier run anchored the Agreement, with or without a
+`sessionStore`, because a session record cannot prove the earlier run did not
+pay (a fresh store, or a record that a failed or concurrent resume created,
+looks the same). A resume that needs `resumeSettlement` is refused when it is
+absent.
+The legacy native-ref input remains available for callers with a separate trusted
+pin.
 
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write
