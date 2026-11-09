@@ -2,6 +2,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
+import { assertAdmissionJobLease } from './seller-admission-transaction.mjs';
 import { SELLER_CONTEXT_PATH, SellerTransportError } from './seller-transport-auth.mjs';
 
 // The wire journal's lease; accounting refuses a clock whose lease sum the journal could not take.
@@ -179,23 +180,14 @@ function createKeyedMutex() {
   };
 }
 
-// What step 5 charges for a classification: a purchase unit for a purchase stage, a general one otherwise. A completed operation
-// at capacity has no unit to charge and is answered by P11d2 after revalidating its source, so here it is refused like exhaustion.
-function chargedClass(classified) {
-  if (classified.class === 'purchase-stage') return { class: 'purchase', allocationId: classified.allocationId };
-  if (classified.class === 'general') return GENERAL_CAPACITY;
-  if (classified.class === 'completed-at-capacity') return fail(STORE_CAPACITY_CODE, 503);
-  return fail('wire_input_invalid', 500);
-}
-
 /**
- * Compose the reservation coordinator (K5 step 5, DC24) over the accounting, the purchase capacity and `inspectOperation(payload)`, the
+ * Compose the reservation coordinator over the accounting, the purchase capacity and `inspectOperation(payload)`, the
  * synchronous read-only wire inspection of the payload's operation. `admissionTransaction`, when given, validates the job lease the
  * context route borrows. Returns an object with reserveCoordinated; throws a TypeError when a port is missing or unusable.
  */
 export function createReservationCoordinator({ accounting, capacity, inspectOperation, admissionTransaction }) {
   if (typeof accounting?.reserveAccounted !== 'function' || typeof capacity?.classify !== 'function' || typeof capacity.recordExhaustion !== 'function'
-      || typeof inspectOperation !== 'function' || (admissionTransaction != null && typeof admissionTransaction.requireJobLease !== 'function')) {
+      || typeof inspectOperation !== 'function') {
     throw new TypeError('the reservation coordinator needs accounting, purchase capacity, an operation inspection and, for context, the admission transaction');
   }
   const acquire = createKeyedMutex();
@@ -207,7 +199,7 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
     const acquiring = acquire(operationId);
     try { return await boundedCall(() => acquiring, { timeoutMs: MUTEX_WAIT_MS }); } catch (cause) {
       if (!isBoundedCallTimeout(cause)) throw cause;
-      void acquiring.then((release) => release());
+      void acquiring.then(release => release(), () => {});
       throw new SellerTransportError('seller_effect_pending', 503, { cause });
     }
   }
@@ -217,8 +209,7 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
       if (ownership !== undefined) throw new TypeError('only the context route runs under a borrowed job lease');
       return acquireWithinDeadline(operationId);
     }
-    if (admissionTransaction == null) throw new TypeError('a context reservation needs the admission transaction that owns the job mutex');
-    admissionTransaction.requireJobLease(ownership?.jobLease, payload.jobId);
+    assertAdmissionJobLease(admissionTransaction, payload.jobId, ownership?.jobLease);
     return releaseNothing;
   }
 
@@ -232,7 +223,8 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
   async function reserveUnderMutex({ retainedWork, ...accounted }) {
     const { payload, route } = accounted;
     const inspection = inspectOperation(payload);
-    let refusal = null;
+    const completed = {};
+    let completion, refusal = null;
     const checkCapacityWithin = () => {
       let classified;
       try {
@@ -242,9 +234,14 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
         if (error?.code === STORE_CAPACITY_CODE) refusal = error;
         throw error;
       }
-      return chargedClass(classified);
+      if (classified.class === 'completed-at-capacity') {
+        completion = Object.freeze({ state: 'completed', operationId: accounted.operationId, outcome: classified.outcome });
+        throw completed;
+      }
+      return classified;
     };
     try { return await accounting.reserveAccounted({ ...accounted, checkCapacityWithin }); } catch (error) {
+      if (error === completed) return completion;
       if (refusal !== null && error === refusal) annotateExhaustion(accounted, refusal);
       throw error;
     }
@@ -258,7 +255,8 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
      * The mutex is released only once reserveAccounted has settled, whether it returned or threw; a context request borrows the
      * `ownership.jobLease` its caller holds instead, validated against the job and never released here.
      * Throws seller_effect_pending 503 (the timeout as its cause) after 10,000 ms without the mutex, before inspecting and with no
-     * row, unit or file; peer_store_capacity 503 where the class has no capacity, after its exhaustion record; wire_input_invalid 500
+     * row, unit or file. A completed operation at capacity returns its inspected outcome without a charge; the caller revalidates its source.
+     * Throws peer_store_capacity 503 where the class has no capacity, after its exhaustion record; wire_input_invalid 500
      * for malformed input; a TypeError for a context request without a live lease of its job or any other route given one;
      * otherwise the inspection's, accounting's or reservation's own error.
      */

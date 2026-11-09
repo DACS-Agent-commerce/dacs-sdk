@@ -58,7 +58,9 @@ reduce what has been charged. The host composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
 accounting and recording the reservation result. A request that cannot acquire
 the mutex within 10,000 ms receives 503 `seller_effect_pending` before inspection
-or writes. Admission and accounting accept capacity through their internal ports.
+or writes. Context reservations borrow the admission transaction's job lease
+without acquiring or releasing another mutex. Admission and accounting accept
+capacity through their internal ports.
 HTTP routes use the transport journal directly; terminal allocation cleanup runs
 at startup.
 

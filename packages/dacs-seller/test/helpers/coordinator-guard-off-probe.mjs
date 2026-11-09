@@ -1,4 +1,4 @@
-// Child process for purchase-capacity.test.mjs (P11b2-T19): with the shipped guard off, `reserveCoordinated` refuses before it
+// With the shipped guard off, `reserveCoordinated` refuses before it
 // inspects, classifies, reserves or writes. Prints one line of JSON. The parent starts it without the unshipped guard fixture.
 import { mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';

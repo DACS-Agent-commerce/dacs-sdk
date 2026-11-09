@@ -32,6 +32,7 @@ const OPEN_CLEANUP = `json_extract(record, '$.cleanup.releasePending') = 1 OR js
 
 // Per transaction instance: the live-begin reader below, kept off the frozen API so that nothing outside the module can take it for authority.
 const instanceReaders = new WeakMap();
+const instanceLeaseChecks = new WeakMap();
 const ALLOCATION_CLEANUP = new Map([['success', 'context-slot'], ['vet-non-pass', 'all'], ['other', 'all'], ['none', 'all']]);
 
 const isHash = (value) => typeof value === 'string' && HASH.test(value);
@@ -96,8 +97,7 @@ function contextOutcomeClass(row, outcome) {
  * `reserveContext(jobId, reserveWire)` is D5: it resolves the wire's completed result (which grants no capability; its source is the
  * caller's to revalidate; the row first settles on the journal's own completed outcome, when it holds one) or the attempt's capability
  * `{ effect, operationId, attempt, rev, complete(outcome, { jobLease }) }`. `runningCheck(jobId, attempt, rev)` is the synchronous D6 fence.
- * `jobEffectMutex(jobId)` is `{ acquire(), run(work) }` over opaque leases; `requireJobLease(lease, jobId)` returns when `lease` is a live
- * lease of that job's mutex and throws a TypeError otherwise, for the reservation coordinator that borrows it. `addAcceptanceHook(hook)` registers a synchronous hook that
+ * `jobEffectMutex(jobId)` is `{ acquire(), run(work) }` over opaque leases. `addAcceptanceHook(hook)` registers a synchronous hook that
  * runs inside D4's transaction and refuses by throwing; the first `begin` seals registration.
  * `compensate(jobId, trigger)` fences the row for trigger `a`, `b`, `c` (only from the delegation's expiry plus 30,000 ms) or `d`, then runs C2-C4 under the
  * job mutex; it settles a completed context outcome, aborts only on proof of no effect, and otherwise keeps the row `compensating` with its cause.
@@ -608,9 +608,9 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     addAcceptanceHook(hook) {
       if (hooksSealed || typeof hook !== 'function') throw new TypeError('an acceptance hook is a synchronous function registered before the first begin');
       acceptanceHooks.push(hook);
-    },
-    requireJobLease(lease, jobId) { heldLease(lease, jobId); } });
+    } });
   instanceReaders.set(api, Object.freeze({ ownedIntent }));
+  instanceLeaseChecks.set(api, heldLease);
   return api;
 }
 
@@ -619,4 +619,11 @@ export function admissionTransactionInternals(transaction) {
   const readers = instanceReaders.get(transaction);
   if (readers === undefined) throw new TypeError('admissionTransactionInternals needs a transaction made by createContextAdmissionTransaction');
   return readers;
+}
+
+/** Verify a live same-job lease belonging to this admission transaction. Throws TypeError before I/O for any other lease. */
+export function assertAdmissionJobLease(transaction, jobId, lease) {
+  const checkLease = instanceLeaseChecks.get(transaction);
+  if (checkLease === undefined) throw new TypeError('the job lease needs its owning admission transaction');
+  checkLease(lease, jobId);
 }
