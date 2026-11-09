@@ -9,9 +9,10 @@ import {
 } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
- * Settlement idempotency (issue #43).
+ * Settlement idempotency.
  *
  * The evidence anchor follows the irreversible rail effect, so an ordinary
  * cache cannot close the crash window. This module records a rail-terms hash,
@@ -25,7 +26,7 @@ import { DacsError } from "../errors.js";
  * cross-process recovery requires a durable {@link SettlementLog} implementing
  * every transition as a compare-and-set transaction. That adapter must also bind
  * the enclosing agreement identity; this rail-local contract does not yet carry
- * `agreementHash` and is therefore a foundation for, not full closure of, #43.
+ * `agreementHash`, so on its own it does not bind a settlement to one agreement.
  */
 
 const DEFAULT_LEASE_DURATION_MS = 300_000;
@@ -233,16 +234,6 @@ function leaseExpiry(now: number, duration: number): number {
     throw new DacsError("settlement lease timestamp or duration is invalid");
   }
   return now + duration;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const item of Object.values(value as Record<string, unknown>)) {
-      deepFreeze(item);
-    }
-    Object.freeze(value);
-  }
-  return value;
 }
 
 function frozenClone<T>(value: T, label: string): Readonly<T> {

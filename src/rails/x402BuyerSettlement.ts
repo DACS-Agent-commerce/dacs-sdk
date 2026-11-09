@@ -4,6 +4,7 @@ import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { MAX_NESTING_DEPTH } from "../canonical/jcs.js";
 import { DacsError } from "../errors.js";
 import { deriveX402ReceiptCommitment } from "../seller/x402Receipt.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** Durable wire/schema version for the normative buyer x402 boundary. */
 export const X402_BUYER_SETTLEMENT_STORE_VERSION = 1 as const;
@@ -483,17 +484,6 @@ function snapshotRecord(
   const captured = snapshotJson(value, label);
   if (!isRecord(captured)) throw new DacsError(`${label} must be a JSON record`);
   return captured as Record<string, X402BuyerJson>;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function nfcString(value: unknown, label: string): string {
