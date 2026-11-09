@@ -142,6 +142,34 @@ test('a suspension write racing a save of the same stage reloads and records', a
   assert.equal(s.record(P).lastClass, 'suspended'); assert.equal(s.fetches.length, 1);
 });
 
+test('a signed seller_stopped is recorded on the latest row when another flow moved the stage during the request', async t => {
+  const s = await storedWorld(t);
+  const respond = init => { s.patch({ stage: 'agreement-anchored' }); return s.reply(init, 503, { error: 'seller_stopped' }); };
+  await assert.rejects(s.client({ respond }).propose(bodyFor(P)), error => isSuspended(error) && error.cause === undefined);
+  assert.equal(s.p.get().state.protocol.stage, 'agreement-anchored');
+  assert.deepEqual({ ...suspension(s), id: 'TEST-id' }, { id: 'TEST-id', cause: 'seller_stopped', path: P, at: new Date(s.w.state.time).toISOString() });
+  assert.equal(s.record(P).lastClass, 'suspended'); assert.equal(s.record(P).attempts, 1); assert.equal(s.fetches.length, 1);
+});
+
+test('a signed seller_stopped for a purchase that ended during the request records nothing and still suspends the call', async t => {
+  const s = await storedWorld(t);
+  const respond = init => { s.patch({}, 'cancelled'); return s.reply(init, 503, { error: 'seller_stopped' }); };
+  await assert.rejects(s.client({ respond }).propose(bodyFor(P)), error => isSuspended(error) && error.cause === undefined);
+  assert.equal(s.p.get().status, 'cancelled'); assert.equal(suspension(s), undefined); assert.equal(s.fetches.length, 1);
+});
+
+test('a re-hold seen from an older snapshot is recorded on the latest row only when it has queued work, and keeps its stage', async t => {
+  for (const queued of [true, false]) {
+    const s = await storedWorld(t), older = s.p.get();
+    s.patch({ stage: 'agreement-anchored', ...(queued ? { signatures: { agreement: 'TEST-queued-contribution' } } : {}) });
+    s.records({ get: () => older, set() {} }).suspendQueued('profile_not_admitted');
+    const protocol = s.p.get().state.protocol;
+    assert.equal(protocol.stage, 'agreement-anchored', `${queued}`);
+    assert.equal(protocol.sellerSuspension?.cause, queued ? 'profile_not_admitted' : undefined, `${queued}`);
+    assert.equal(protocol.signatures?.agreement, queued ? 'TEST-queued-contribution' : undefined, `${queued}`);
+  }
+});
+
 test("a suspension recorded after verifyDeal's entry check stops the continuation before any request is signed (signer counter 0)", async t => {
   const { sellerFlow } = await import('./helpers/stored-request-flows.mjs'); let flow;
   await assert.rejects(sellerFlow(t, 'agreement', (s, state) => {

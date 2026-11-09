@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "499fabe0db15556e1c067136f7f9569926de91e8"
+        "blob": "0996a1a7c61cb53385fe05b17feb6d7c5f1170dc"
       },
       "DELTA-LEDGER.json": {
-        "blob": "3cd0703672a97bec0bdd3ae6a7c8a55cc46d0991"
+        "blob": "112d10aeb241b8905539ab956b6f13fe0c14bf3d"
       },
       "DELTA-MAP.md": {
-        "blob": "28299a4957ad35c2a514cc00e2bb5ce798e44ab8"
+        "blob": "0e81e478c29afe83e89df22cab7ae0c691b2cb8d"
       },
       "DELTA-NOTES.md": {
-        "blob": "24f598d20a020065529d9bc7f2ada5ce7628ab2e"
+        "blob": "f3a33fea76a399c96b5fc22ef7f424f66fb1c462"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "6d8de6d356bd9259dc0b1511c5eec118bde4604a"
+        "blob": "054402af5c9b1ca2b1beac2998d2301b94bdb62a"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1157,7 +1157,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "35fea4e67f62b301d266b56ec14c57f78911f42a"
+        "blob": "30ca1bb14b9725f274d755d77aaf3300161ff3da"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1742,7 +1742,7 @@
         "blob": "b401cf5c221e9285f73a923cf90c1a0a291b3f35"
       },
       "test/helpers/stored-request-fixture.mjs": {
-        "blob": "0fb0482deee0820d23ee7b2f022ea3633a8acfa4"
+        "blob": "b09dba88259bd7dbdade6509e31e40a86727a13a"
       },
       "test/helpers/stored-request-flow-loader.mjs": {
         "blob": "1b650e43fbb462da68e37017465f8f106f778a39"
@@ -1916,10 +1916,10 @@
         "blob": "d8fa7c318c181091f7c9d6793942d5288733362e"
       },
       "test/seller-stored-request.test.mjs": {
-        "blob": "a742b74fef6eb61e1fb1d103c0704978a021e077"
+        "blob": "e6286d5490face166248a41c993be87823af8fdc"
       },
       "test/seller-suspension.test.mjs": {
-        "blob": "96cc7507687ca7947de04da9470fdeb230da7db9"
+        "blob": "97a78d7307c1ac3947efdcba2d3368ac353a582a"
       },
       "test/signatures-claim-ref.test.mjs": {
         "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"

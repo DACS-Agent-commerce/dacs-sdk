@@ -351,13 +351,14 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
   // Queued work: a request whose outcome is still unknown (answered unknown or suspended), or buyer contributions waiting to be sent.
   const UNRESOLVED_CLASSES = new Set([SELLER_ANSWER_CLASS.UNKNOWN, SELLER_ANSWER_CLASS.SUSPENDED]);
   const hasQueuedWork = (protocol) => Boolean(protocol.signatures) || Object.values(protocol.sellerRequests ?? {}).some((record) => UNRESOLVED_CLASSES.has(record.lastClass));
-  // One transaction on the stored row: a newer save of the same status and stage does not drop the suspension, a moved stage writes nothing.
+  // One transaction on the latest stored row: a newer save, even one that moved the status or stage, does not drop the suspension.
+  // An ended purchase takes no further requests, so nothing is recorded for it.
   // With an attempt id the route's unknown outcome becomes `suspended`; the attempt counts are untouched, so it stays possibly dispatched.
   function recordSuspension(cause, path, { attemptId, queuedOnly = false } = {}) {
     const saved = transaction(db, () => {
       const seen = holder.get(), row = ops.get(seen.accountId, seen.id), protocol = row?.state.protocol;
-      if (!row || row.status !== seen.status || protocol.stage !== seen.state.protocol.stage) throw new StaleProtocolCheck(seen);
-      if (queuedOnly && !hasQueuedWork(protocol)) return row;
+      if (!row) throw new StaleProtocolCheck(seen);
+      if ((ENDED_STATUSES.has(row.status) && row.status !== 'settled_verified') || (queuedOnly && !hasQueuedWork(protocol))) return row;
       const prior = protocol.sellerRequests?.[path];
       const outcome = attemptId && prior?.attemptId === attemptId && prior.lastClass === SELLER_ANSWER_CLASS.UNKNOWN
         ? { sellerRequests: { ...protocol.sellerRequests, [path]: { ...prior, lastClass: SELLER_ANSWER_CLASS.SUSPENDED } } } : {};
@@ -401,7 +402,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
       });
       holder.set(saved);
     },
-    /** Records a re-hold's suspension only when the purchase has queued work; throws StaleProtocolCheck when the stage moved. */
+    /** Records a re-hold's suspension on the latest row, only when the purchase has queued work; throws StaleProtocolCheck when the row is gone. */
     suspendQueued: (cause) => recordSuspension(cause, null, { queuedOnly: true }),
     start(path, body) {
       const result = suspendOnHold(path, () => transaction(db, () => {
