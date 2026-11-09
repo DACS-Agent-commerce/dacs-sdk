@@ -226,15 +226,20 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
       if (request.jobId !== body.scope.jobId) refuse('peer_job_mismatch');
       if (!keys(body, ['scope']) || !keys(body.scope, CHALLENGE_SCOPE_KEYS)) refuse('peer_context_mismatch');
       const scopeHash = sellerContextScopeHash(body.scope);
+      // Each admission reads the clock, readiness, kept tuple and authority anew.
+      const admit = () => admitPreAgreementRequest(opened, { route: 'contextChallenge', binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId),
+        seller, listingPin: pin, method, path, rawBody, now: wire.now(), requireDelegation: wire.requireDelegation, ready: wire.ready(),
+        retained: { jobId: body.scope.jobId, agreementHash: scopeHash, buyer: body.scope.buyer, seller } });
       try {
         assertOpenForChallenges(wire.stopped);
-        const admitted = await admitPreAgreementRequest(opened, { route: 'contextChallenge', binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId),
-          seller, listingPin: pin, method, path, rawBody, now: wire.now(), requireDelegation: wire.requireDelegation, ready: wire.ready(),
-          retained: { jobId: body.scope.jobId, agreementHash: scopeHash, buyer: body.scope.buyer, seller } });
+        const admitted = await admit();
         const problem = scopeProblem(admitted.body, true);
         if (problem) refuse(problem);
         await checkPolicy(request);
-        return wire.store.challenges.issue(request, scopeHash, expiryRecheck(wire.now, request, admitted.delegationExpiresAt));
+        // The two callbacks above may each take their full deadline, and nothing after this admission awaits: authority, the
+        // delegation or readiness that closed meanwhile refuses here, before the ledger's insert.
+        const current = await admit();
+        return wire.store.challenges.issue(request, scopeHash, expiryRecheck(wire.now, request, current.delegationExpiresAt));
       } catch (error) {
         throw error instanceof KitOperationGuardError ? new SellerTransportError(error.code, 503, { cause: error }) : error;
       }

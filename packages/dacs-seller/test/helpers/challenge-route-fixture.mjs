@@ -58,10 +58,12 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
   const path = join(directory, 'transport.sqlite'), journalDirectory = join(directory, 'wire-journal');
   mkdirSync(journalDirectory, { mode: 0o700 });
   const listing = fixtureListing(SELLER, { now: T0 }), pin = listingPin(listing), support = purchaseSupport(listing);
-  const state = { time: T0, ledgerClock: null, stop: () => false, ready: () => true, sessionState: () => null, generation: 0 };
+  const state = { time: T0, ledgerClock: null, stop: () => false, ready: () => true, sessionState: () => null, generation: 0, authority: true };
   const calls = { access: 0, known: 0, connection: 0, continuationEvidenceOf: 0, readCommitmentReceipt: 0, transportAgreementOf: 0 };
   const policy = { access: async () => {}, known: async () => true };
-  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority: authorityReader() });
+  const confirmed = authorityReader();
+  const readAuthority = (scope) => { if (!state.authority) throw new Error('TEST the authority was withdrawn'); return confirmed(scope); };
+  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority });
   const now = () => state.time;
   let store = null, handler = null;
   const open = () => {

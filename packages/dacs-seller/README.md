@@ -835,8 +835,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   wire's pre-Agreement admission (Listing pin, parties, delegation, `seller_not_ready`); the
   scope against the Listing (`context_scope_invalid`, `context_generated_at`), buyer access
   and the known job (ten seconds each, `session_admission_unavailable` with its cause);
-  then the ledger's limits and capacity and a last check of the request's and delegation's
-  expiry (`peer_expired`, `peer_delegation_expired`) before the insert. Every refusal after
+  then the wire's pre-Agreement admission again, so that authority, delegation or readiness
+  that closed during those callbacks refuses before anything is written; then the ledger's
+  limits and capacity and a last check of the request's and delegation's expiry
+  (`peer_expired`, `peer_delegation_expired`) before the insert. Every refusal after
   the envelope is signed. The answer is `{ sessionNonce, expiresAt }`, signed; the same job,
   buyer and scope get the same nonce back, also after a restart. The context step, and the
   challenge of a handler composed without `wire`, stay on the old auth.

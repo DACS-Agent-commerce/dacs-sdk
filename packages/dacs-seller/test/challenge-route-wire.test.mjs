@@ -202,6 +202,38 @@ test('K1-L37 a stop that appears after step 5 and before the insert refuses at s
   });
 });
 
+test('authority or readiness that closes during a stalled callback issues nothing, with the stall in {buyer access, known job}', async (t) => {
+  const closings = [
+    ['the authority is withdrawn', (w) => { w.state.authority = false; }, (answer) => assert.deepEqual(summary(answer), [503, 'operation_uncertain'])],
+    ['the seller stops being ready', (w) => { w.state.ready = () => false; }, (answer) => assert.deepEqual(summary(answer), [503, 'seller_not_ready'])],
+  ];
+  for (const stalled of ['access', 'known']) for (const [name, close, assertRefused] of closings) await t.test(`${name} during the ${stalled} callback`, async (t) => {
+    const w = await challengeWorld(t);
+    const stall = gate();
+    w.policy[stalled] = stalled === 'known' ? async () => { await stall.pass(); return true; } : stall.pass;
+    const signed = await w.sign();
+    const sql = watchSql(t);
+    const pending = w.post(signed);
+    await stall.entered;
+    close(w);
+    stall.release();
+    const answer = await pending;
+    assertRefused(answer);
+    assert.equal(answer.body.sessionNonce, undefined, 'no nonce is answered');
+    assertNothingWritten(w, sql);
+  });
+  await t.test('the same stall released with nothing changed issues one challenge', async (t) => {
+    const w = await challengeWorld(t);
+    const stall = gate();
+    w.policy.access = stall.pass;
+    const pending = w.post(await w.sign());
+    await stall.entered;
+    stall.release();
+    assert.equal((await pending).status, 200);
+    assert.equal(w.rows().length, 1);
+  });
+});
+
 test('A39 a challenge under an expired delegation is refused peer_delegation_expired 408 with no readback and no write', async (t) => {
   const w = await challengeWorld(t);
   const delegation = w.delegationFor({ lifetimeMs: 60_000 });
