@@ -2884,7 +2884,8 @@ function createNativeSettlementFence() {
   const owner = randomUUID();
   let active: { store: SessionStore; jobId: string; now: () => number; revision: number } | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
-  let lost: unknown;
+  const noError = Symbol();
+  let lost: unknown = noError;
   let queue = Promise.resolve();
   const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
     const pending = queue.then(operation);
@@ -2892,7 +2893,7 @@ function createNativeSettlementFence() {
     return pending;
   };
   const check = async (): Promise<void> => {
-    if (lost !== undefined) throw lost;
+    if (lost !== noError) throw lost;
     if (!active) return;
     const loaded = await active.store.load(active.jobId);
     if (loaded.status !== "ok" || loaded.record.lease?.owner !== owner ||
