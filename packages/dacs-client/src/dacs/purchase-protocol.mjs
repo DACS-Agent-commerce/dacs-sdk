@@ -305,6 +305,11 @@ export async function exchangeAgreement({ plan, draft, buyerClaim, buyerBundle, 
             const state = await seller.agreementState(identity);
             return state.proposal ? { disposition: 'present', value: state.proposal } : { disposition: 'absent', reason: 'seller holds no proposal' };
           } catch (error) {
+            // The wire host signs absence as 404, after checking the request.
+            // Only proposal reconciliation uses it as permission to publish.
+            if (error?.name === 'SellerRefusedError' && error.code === 'peer_unknown_job' && error.status === 404) {
+              return { disposition: 'absent', reason: 'seller holds no proposal' };
+            }
             return indeterminate(error);
           }
         },

@@ -42,6 +42,13 @@ test('the package root exports the context route and its buyer-side client a hos
   for (const name of ['createSellerContextRoute', 'createSellerContextClient']) assert.equal(typeof exported[name], 'function', `the root exports ${name}`);
 });
 
+test('the package root exports the buyer-side wire signer, and the README says which routes it signs and which keep the old client auth', async () => {
+  const exported = await import(new URL('src/index.mjs', packageUrl));
+  assert.equal(typeof exported.createSellerWireClientAuth, 'function', 'the root exports createSellerWireClientAuth');
+  assert.match(readme, /`createSellerWireClientAuth\(\{[^`]*\}\)`: it signs\s+and verifies every route but the challenge and the context step/);
+  assert.match(readme, /`createSellerTransportClientAuth`[^.]*(?:challenge|context)[^.]*old/s);
+});
+
 test('the README names the module the handler agent comes from; it exports createSellerAgent and the root does not', async () => {
   assert.ok(readme.includes(`\`${PACKAGE}/src/dacs/seller-agent.mjs\``), 'the README names the seller agent module path');
   assert.equal(typeof (await import(moduleFor(`${PACKAGE}/src/dacs/seller-agent.mjs`))).createSellerAgent, 'function');
