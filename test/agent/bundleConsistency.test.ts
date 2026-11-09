@@ -402,7 +402,7 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
       ).toBe(true);
     });
 
-    test("every legacy three-party reconciliation vector gets its expected verdict", () => {
+    test.skipIf(!haveVectors)("every legacy three-party reconciliation vector gets its expected verdict", () => {
       const file = JSON.parse(readFileSync(new URL(
         "../../vendor/DACS-Standard/conformance/vectors/security/legacy-three-party-fault-reconciliation-v0.3.json",
         import.meta.url,
