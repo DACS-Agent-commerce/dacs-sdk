@@ -74,15 +74,16 @@ function createFence(clock) {
   let holder = null;
   const waiting = [];
   const grantNext = () => {
-    if (holder !== null || waiting.length === 0) return;
-    const waiter = waiting.shift();
-    waiter.cancel();
-    if (clock.now() >= waiter.deadline) {
-      waiter.reject(refuse('tp1_fence_timeout', undefined, timeoutCause(EFFECT_FENCE_TIMEOUT_MS)));
-      return grantNext();
+    while (holder === null && waiting.length > 0) {
+      const waiter = waiting.shift();
+      waiter.cancel();
+      if (clock.now() >= waiter.deadline) {
+        waiter.reject(refuse('tp1_fence_timeout', undefined, timeoutCause(EFFECT_FENCE_TIMEOUT_MS)));
+        continue;
+      }
+      holder = waiter.token;
+      waiter.resolve(waiter.token);
     }
-    holder = waiter.token;
-    waiter.resolve(waiter.token);
   };
   return {
     acquire: () => new Promise((resolve, reject) => {
