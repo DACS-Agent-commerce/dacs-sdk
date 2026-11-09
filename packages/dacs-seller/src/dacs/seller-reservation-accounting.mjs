@@ -33,7 +33,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   function checkLimitsWithin(payload, contextStart, at) {
     if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
     if ((!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) ||
-        (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords)) store.retireSlotsWithin(at);
+        (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords)) store.retireSlotsWithin(at, undefined, { capacity: true, keepContexts: true });
     if (!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) fail('peer_job_capacity', 503);
     if (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords) {
       fail('peer_context_capacity', 503);
@@ -44,6 +44,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // Returns whether the job has its purchase (job row) already.
   function checkJobWithin(payload, keepProfile) {
     if (ledger.jobConflictWithin(payload)) fail('peer_job_conflict', 409);
+    if (ledger.jobClosedWithin(payload)) fail('context_job_closed', 409);
     const tuple = canonicalize(keepProfile);
     if (canonicalize(payload.profile) !== tuple) fail('tp1_purchase_profile_mismatch', 500);
     const purchase = ledger.purchaseWithin(payload.jobId);
@@ -137,7 +138,9 @@ export function createReservationAccounting({ store, now, limits, contextRecords
      * The store decides whether the job and its context record are new; the context route is the context start.
      * A completed replay on a retired job spends a nonce unit without spending purchase capacity or recreating the purchase.
      * Throws before any row on an absent keepProfile, an unsafe clock, a full buyer window, job or context
-     * capacity, a job held by other parties, a tuple mismatch, a replayed nonce key, or a refusal from checkCapacityWithin.
+     * capacity, a job held by other parties, a closed job (context_job_closed), a tuple mismatch, a replayed nonce key,
+     * or a refusal from checkCapacityWithin. Ownership remains after the job row is removed; a no-effect end
+     * releases only its provisional Agreement binding when nothing else retains the job.
      * checkCapacityWithin is step 5: synchronous, run inside the transaction, returning {class, allocationId};
      * its SQL writes roll back with the rest. Without it every row is general capacity.
      */

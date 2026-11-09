@@ -44,7 +44,42 @@ body read. Authenticated responses are capped at 512 KiB. Context starts are
 limited to five per buyer and twelve globally per rolling hour; only accepted
 starts count, durably, including after restart. A start exactly one hour old is
 outside that window. New work needs generatedAt within ten minutes inclusive.
-The transport journal holds at most 10,000 live nonce records and, independently, 10,000 jobs (nonce records use maxRecords; jobs use maxJobs, supplied independently by the host); new jobs at that total cap are refused before mutation. A job counts once whichever record holds it: an Agreement job row, a context admission or a reservation-accounting hold (`RESERVATION_LEDGER` in `seller-transport-auth.mjs`, which both reserve paths read, as they do for the per-buyer window and context records). A held job belongs to the buyer, seller and Listing pin that hold it; another party's request for it is refused peer_job_conflict (409). A job with an Agreement job row also refuses any other Agreement, on either reserve path and before any charge (a context step carries a scope hash, not an Agreement, and is checked against the parties and pin only). A mutating route takes one effect per job whichever path reserved it, by an old-path slot or an accounted reservation the wire did not refuse: the other path is refused peer_operation_conflict (409). A fresh proposal or context start for a terminal session is refused context_session_terminal (409) on both paths; on the accounted path a retry is a start whose earlier reservation the wire answered (new, recover or completed), or whose `reserving` row the wire's own record holds, and in both cases the record, read through the host's `wireOperationView` (a read of the journal's operation), carries this request's binding (`wireOperationBinding`: profile, buyer and Agreement or context scope hash). An operation is only seller, job and route, so a start with another scope or Agreement hash is a fresh start, refused before any charge; so is a row left before the reservation published, or by a refusal whose write failed, and any row when no reader is supplied or it shows no record. An accounted read of a job with no job row is refused peer_unknown_job (404) before any charge. An accounted payment request must carry a `paymentTx` equal to its admitted body's `txHash`, and no other route may carry one: either is refused wire_input_invalid (500) before any charge. A definite no-effect completion releases its job binding only when no effect, slot, transaction or context admission still refers to it. Effect-to-job records also protect pending read effects; completed or uncertain effects keep their bindings. Existing empty bindings are reclaimed on a successful new reservation at capacity. T7–T9 and T15–T16 cover another buyer, restart, retained refusals and concurrent references. The cap remains a backstop for real retained work: at capacity new jobs return peer_job_capacity (503). D12 must reconcile that work and provide a verified terminal archive/rotation procedure under the seller-state lock; deleting the journal to restore capacity is not a supported recovery procedure. Nonce rate-retention rows cover the full minute, with at most 120 new rows per buyer per minute. Cached-effect retries and unknown-job state reads insert no rows. Expired completed/no-effect nonce rows are reclaimed before admitting new work; the effect answer remains durable. Legacy rows retain a conservative one-minute grace on upgrade. Pending or uncertain effects remain fenced and require reconciliation, rather than expiry into repeat authority. Policy defaults remain
+The transport journal holds at most 10,000 live nonce records and, independently, 10,000 jobs. The host supplies
+maxRecords and maxJobs independently. A job counts once across its Agreement row, context admission and accounting
+reservation hold. Both reserve paths share these counts and the per-buyer window. New jobs at the job limit return
+peer_job_capacity (503) before mutation unless completed work can safely retire.
+
+A job belongs to its retained buyer, seller and Listing pin even after its job row leaves. Another party gets
+peer_job_conflict (409); the earlier reserve path returns context_session_terminal (409) for a retired job
+with a terminal session. The first purchase also fixes its Agreement; a context step carries a scope hash and checks
+only the parties and pin. A closed owner refuses fresh work with context_job_closed (409). A definite no-effect end
+releases the provisional Agreement only when no effect, slot, transaction or context admission retains the job. The
+owner remains open for that buyer's corrected proposal. Retrying the refused proposal with its original nonce
+returns its saved answer even after a corrected proposal succeeds.
+
+A mutating route takes one effect per job across both reserve paths: an old-path slot or an accounted reservation the
+wire did not refuse excludes another effect with peer_operation_conflict (409). Effect-to-job records protect pending
+reads too. Completed and uncertain effects keep their bindings. Empty job bindings can be reclaimed on a successful
+reservation at capacity; owners remain. Reconciliation can make retained work eligible for retirement. Deleting the journal is not a
+supported recovery procedure.
+
+A terminal session refuses a fresh proposal or context start with context_session_terminal (409). An accounted retry
+requires an earlier reservation answered by the wire (new, recover or completed), or a reserving row held by the wire's
+operation record. In either case wireOperationView must show this request's wireOperationBinding: profile, buyer and
+Agreement or context scope hash. An operation identifies only seller, job and route, so a different binding is a fresh
+start and is refused before charging. So is an unpublished or definitely refused reservation without a matching wire
+record, including when no reader is supplied.
+
+An accounted read without a job row returns peer_unknown_job (404) before charging. A payment must carry paymentTx equal
+to the admitted body's txHash; other routes cannot carry paymentTx. Violations return wire_input_invalid (500) before
+charging.
+
+Nonce retention covers the full minute, with at most 120 new rows per buyer per minute. Cached-effect retries and
+unknown-job state reads insert no rows. Expired completed and no-effect nonces can be reclaimed before new work; the
+effect answer remains durable. Pending and uncertain effects require reconciliation and cannot expire into permission to
+repeat work.
+
+Policy defaults remain
 six writes per job, 24 writes and 96 DEM per hour, and 4 DEM per write. Unresolved
 writes count beyond the hour until completed. Configuration may lower or raise
 the PR-defined configurable limits; it cannot disable their validation.
