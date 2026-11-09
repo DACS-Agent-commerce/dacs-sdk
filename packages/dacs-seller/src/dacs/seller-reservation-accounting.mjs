@@ -42,9 +42,9 @@ export function createReservationAccounting({ store, now, limits, contextRecords
 
   // The job belongs to the parties and Agreement already holding it; an existing purchase must hold this exact tuple.
   // Returns whether the job has its purchase (job row) already.
-  function checkJobWithin(payload, keepProfile) {
+  function checkJobWithin(payload, keepProfile, replay) {
     if (ledger.jobConflictWithin(payload)) fail('peer_job_conflict', 409);
-    if (ledger.jobClosedWithin(payload)) fail('context_job_closed', 409);
+    if (!replay && ledger.jobClosedWithin(payload)) fail('context_job_closed', 409);
     const tuple = canonicalize(keepProfile);
     if (canonicalize(payload.profile) !== tuple) fail('tp1_purchase_profile_mismatch', 500);
     const purchase = ledger.purchaseWithin(payload.jobId);
@@ -77,14 +77,11 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
     const replay = ledger.retiredReplayWithin(payload, operationId);
-    if (!replay && get('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1', payload.jobId)) {
-      checkJobWithin(payload, keepProfile); fail('context_session_terminal', 409);
-    }
     if (replay) {
       if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
       if (get('SELECT key FROM kit_reservations WHERE key = ?', key)) fail('peer_request_replayed', 409);
     } else checkLimitsWithin(payload, contextStart, at);
-    const purchased = checkJobWithin(payload, keepProfile);
+    const purchased = checkJobWithin(payload, keepProfile, replay);
     if (!replay) checkRouteWithin(payload, operationId);
     const capacity = replay ? GENERAL_CAPACITY : capacityWithin(input, at, key);
     // The hold comes first because every reservation row references its job.

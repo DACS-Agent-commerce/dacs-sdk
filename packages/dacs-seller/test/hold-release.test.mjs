@@ -24,7 +24,7 @@ test('a retired paid job refuses an old-path proposal with another Agreement aft
   const snapshot = () => ({ rows: f.rows(), holds: f.holds(), jobs: f.jobRows(), payments: f.payments(), files: f.files() });
   const before = snapshot();
   const proposal = f.payload({ listingPin: input.payload.listingPin, agreementHash: sha256Hex('another Agreement') });
-  assert.throws(() => f.store().reserve(proposal, {}, { keepProfile: FIXTURE_PROFILE }), { code: 'context_session_terminal', status: 409 });
+  assert.throws(() => f.store().reserve(proposal, {}, { keepProfile: FIXTURE_PROFILE }), { code: 'peer_job_conflict', status: 409 });
   assert.deepEqual(snapshot(), before);
   const retry = await f.reserve(await f.payment());
   assert.equal(retry.state, 'completed'); assert.deepEqual(retry.outcome, outcome);

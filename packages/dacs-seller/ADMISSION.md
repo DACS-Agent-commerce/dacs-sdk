@@ -61,14 +61,20 @@ A mutating route takes one effect per job across both reserve paths: an old-path
 wire did not refuse excludes another effect with peer_operation_conflict (409). Effect-to-job records protect pending
 reads too. Completed and uncertain effects keep their bindings. Empty job bindings can be reclaimed on a successful
 reservation at capacity; owners remain. Reconciliation can make retained work eligible for retirement. Deleting the journal is not a
-supported recovery procedure.
+supported recovery procedure. Accounted holds release their active slots through store retirement once all associated
+work is absent or terminal and its nonce and context-start retention windows have elapsed. Retirement keeps reservation
+and hold rows, preserves ownership, and never refunds used purchase units.
 
-A terminal session refuses a fresh proposal or context start with context_session_terminal (409). An accounted retry
+A terminal session refuses a fresh proposal or context start with context_session_terminal (409), subject to the
+ownership and closed-job checks above. An accounted retry
 requires an earlier reservation answered by the wire (new, recover or completed), or a reserving row held by the wire's
 operation record. In either case wireOperationView must show this request's wireOperationBinding: profile, buyer and
 Agreement or context scope hash. An operation identifies only seller, job and route, so a different binding is a fresh
 start and is refused before charging. So is an unpublished or definitely refused reservation without a matching wire
-record, including when no reader is supplied.
+record, including when no reader is supplied. After retirement, a stored completed reservation also permits a completed
+replay without a current operation view. Ownership and purchase identity still apply. The wire checks the binding
+and must return a completed answer. A wire refusal keeps the counted nonce. The replay consumes a buyer nonce unit
+without spending purchase capacity or recreating the job.
 
 An accounted read without a job row returns peer_unknown_job (404) before charging. A payment must carry paymentTx equal
 to the admitted body's txHash; other routes cannot carry paymentTx. Violations return wire_input_invalid (500) before

@@ -72,7 +72,7 @@ for (const limit of ['context records', 'jobs']) test(`hold-release refuses a re
     assert.equal(liveJobs.size, 2);
     await assert.rejects(f.reserve(await f.admit(f.payload({ jobId: job4 }))), capacity);
   }
-  assert.equal(error?.code, 'context_session_terminal'); assert.equal(error.status, 409);
+  assert.equal(error?.code, 'context_job_closed'); assert.equal(error.status, 409);
   assert.deepEqual(refused, before); assert.deepEqual(calls, { reserve: 1, release: 0 });
 });
 
@@ -183,7 +183,7 @@ test('hold-release keeps the owner on both reserve paths and replays the stored 
   assert.equal(retired(f)[0]?.job_retired, 1);
   const before = proof(f), foreign = f.payload({ buyer: OTHER.claim });
   await assert.rejects(f.reserve(f.args(foreign)), { code: 'peer_job_conflict', status: 409 });
-  assert.throws(() => f.store().reserve(foreign, {}, { keepProfile: FIXTURE_PROFILE }), { code: 'peer_job_conflict', status: 409 });
+  assert.throws(() => f.store().reserve(foreign, {}, { keepProfile: FIXTURE_PROFILE }), { code: 'context_session_terminal', status: 409 });
   assert.deepEqual(proof(f), before);
   assert.equal((await next(f)).state, 'new');
   const rows = f.rows(), holds = f.holds(), jobs = f.jobRows();
@@ -198,7 +198,20 @@ test('hold-release retired jobs reject fresh work after restart with unknown ses
   await completed(f); session.state = 'finalised'; f.setTime(T0 + HOUR + 1); retire(f);
   assert.equal(retired(f)[0]?.job_retired, 1);
   session.state = null; f.reopen(); const before = proof(f);
-  await assert.rejects(f.reserve(await f.admitContext()), { code: 'context_session_terminal', status: 409 });
+  await assert.rejects(f.reserve(await f.admitContext()), { code: 'context_job_closed', status: 409 });
+  assert.deepEqual(proof(f), before);
+});
+
+test('retired work preserves buyer and job capacity refusal order', async t => {
+  const [f, session] = await fixture(t, { maxNoncesPerBuyerPerWindow: 1 });
+  await completed(f);
+  session.state = 'finalised'; f.setTime(T0 + HOUR + 1); retire(f);
+  await next(f);
+  const before = proof(f);
+  const foreign = f.args(f.payload({ buyer: OTHER.claim, path: CONTEXT }));
+  foreign.checkCapacityWithin = () => assert.fail('a refused request must not spend capacity');
+  await assert.rejects(f.reserve(foreign), capacity);
+  await assert.rejects(f.reserve(f.args(f.payload({ path: CONTEXT }))), { code: 'peer_buyer_nonce_limit', status: 429 });
   assert.deepEqual(proof(f), before);
 });
 
@@ -219,9 +232,9 @@ test('hold-release a stored completed operation proves completion without a curr
   assert.equal((await next(f)).state, 'new'); assert.equal(retired(f)[0]?.job_retired, 1);
   const rows = f.rows();
   assert.equal((await f.reserve(await f.admit())).state, 'completed');
-  await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: sha256Hex('another agreement') }))), { code: 'peer_operation_mismatch', status: 409 });
-  assert.deepEqual(f.rows().slice(0, -2), rows);
-  assert.deepEqual(f.rows().slice(-2).map(row => row.state), ['completed', 'refused']);
+  await assert.rejects(f.reserve(await f.admit(f.payload({ agreementHash: sha256Hex('another agreement') }))), { code: 'peer_job_conflict', status: 409 });
+  assert.deepEqual(f.rows().slice(0, -1), rows);
+  assert.equal(f.rows().at(-1).state, 'completed');
 });
 
 for (const state of ['pending', 'unknown', 'reader-throws', 'no-effect', 'absent', 'refused']) test(`hold-release checks every operation: ${state}`, async t => {
@@ -260,11 +273,15 @@ test('hold-release a retired context job cannot create an uncounted accounted ho
   const [f, session] = await fixture(t);
   const p = f.payload({ path: CONTEXT });
   const record = { jobId: JOB, buyer: p.buyer, seller: p.seller, listingPin: p.listingPin, state: 'settled', admittedAt: T0, rev: 1 };
-  f.db.prepare('INSERT INTO kit_context_admissions VALUES (?, ?, ?, ?, ?, ?)').run(JOB, p.buyer, T0, 'settled', 1, JSON.stringify(record));
+  const port = internals(f);
+  port.transaction(() => {
+    port.reserveAdmissionWithin(p, T0);
+    port.db.prepare('INSERT INTO kit_context_admissions VALUES (?, ?, ?, ?, ?, ?)').run(JOB, p.buyer, T0, 'settled', 1, JSON.stringify(record));
+  });
   session.state = 'finalised'; f.setTime(T0 + 2 * HOUR); retire(f);
   assert.equal(retired(f)[0]?.job_retired, 1); assert.equal(f.holds().length, 0);
   session.state = null; f.reopen(); const before = proof(f);
-  await assert.rejects(f.reserve(await f.admit()), { code: 'context_session_terminal', status: 409 });
+  await assert.rejects(f.reserve(await f.admit()), { code: 'context_job_closed', status: 409 });
   assert.deepEqual(proof(f), before);
   assert.equal((await next(f)).state, 'new');
   await assert.rejects(f.reserve(await f.admit(f.payload({ jobId: '01ARZ3NDEKTSV4RRFFQ69G5FAW' }))), capacity);
