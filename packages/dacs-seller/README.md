@@ -38,9 +38,7 @@ The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
 the host reclaim that job's retained challenge and context rows; an unknown name,
 an agent stage name or an unreadable answer keeps them. A throw, Promise or
-non-null non-string refuses issuance and new work with `session_admission_unavailable`
-503 and its cause; only explicit `null` means unknown. Promise results are ignored
-and rejections observed. A source
+non-string answer is unknown. Promise results are ignored and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host without the capability reclaims nothing. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
@@ -74,9 +72,9 @@ pending, so no later transaction or request passes it. A closure answers termina
 after a restart whatever the port then says; an unknown, nonterminal or
 asynchronous answer creates none. The coordinator refuses a request for a closed job
 `context_session_terminal` (409) after inspecting its operation and before any
-accounting, unless that operation already completed under the request's binding; it
-first runs the gates registered with `addPreAccountingGate`, which are synchronous
-and read-only. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+accounting, unless that operation already completed under the request's binding. After the
+terminal check, the coordinator runs the synchronous, read-only gates registered
+with `addPreAccountingGate` in registration order. Completed operations bypass both checks. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
 is the one synchronous check for other callers, and the purchase capacity must be
 built on a store before any reader runs. These observation writes are counted apart
 from the challenge, admission and reservation writes, which a refusal still leaves

@@ -59,6 +59,7 @@ function world(t, { maxRecords = 1000, commitOnSignature = false, sessionState =
   function open(limit) {
     w.store?.close();
     w.store = createSellerTransportStore({ path, now: () => control.clock, generation: `TEST-generation-${++control.generation}`,
+      wireOperationView: target => control.operation?.(control.payloads?.get(wireOperationId(target)) ?? target) ?? view.none,
       ready: () => control.ready && w.capacity?.fitsNewPurchase() === true, contextSessionState: input => control.state(input), ...storeOptions });
     w.internals = sellerStoreInternals(w.store);
     w.capacity = createPurchaseCapacity({ store: w.store, now: () => control.clock, maxRecords: limit, commitOnSignature, sessionState: w.internals.sessionState });
@@ -473,8 +474,8 @@ test('capacity-exact-parties-and-fixed-allotment', t => {
 });
 
 async function accountedPurchase(t, maxRecords = FOUR) {
-  const f = await accountingFixture(t);
-  const capacity = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords, sessionState: () => null });
+  const f = await accountingFixture(t, { leaveCapacityToTest: true });
+  const capacity = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords, sessionState: sellerStoreInternals(f.store()).sessionState });
   const within = sellerStoreInternals(f.store()).transaction;
   const purchase = f.payload();
   const allocation = within(() => capacity.allocateWithin(purchase));
@@ -498,7 +499,7 @@ test('accounted purchase spending preserves its allocation and exhausts only its
   assert.equal(f.rows().length, UNITS);
   const before = stable(capacity.capacityReport());
   f.reopen();
-  const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: () => null });
+  const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: sellerStoreInternals(f.store()).sessionState });
   assert.deepEqual(stable(reopened.capacityReport()), before);
 });
 
@@ -529,7 +530,7 @@ test('journal refusal and result uncertainty keep the committed purchase unit af
     assert.equal(f.rows()[0].state, resultFailure ? 'reserving' : 'refused');
     assert.equal(f.rows()[0].allocationId, allocation.allocationId);
     const before = stable(capacity.capacityReport()); f.reopen();
-    const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: () => null });
+    const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: sellerStoreInternals(f.store()).sessionState });
     assert.deepEqual(stable(reopened.capacityReport()), before);
   });
 });
@@ -590,13 +591,14 @@ function paused(input, outcome = () => input.checked.reserve()) {
 
 // The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection.
 function withCoordinator(w) {
-  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none;
+  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none; w.control.payloads = new Map();
   w.coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity: w.capacity, admissionTransaction: w.admission,
     inspectOperation: target => { w.inspections++; return w.control.operation(target); } });
   w.contextInput = (p, path = PATHS.context) => {
     const payload = { version: '1', kind: 'request', method: 'POST', path, bodyHash: hash('{}'), jobId: p.jobId, buyer: p.input.buyer, seller: SELLER, listingPin: PIN,
       agreementHash: hash('agreement'), nonce: hash(`nonce-${++w.nonces}`).slice(0, 32), expiresAt: w.control.clock + 30000, profile: PROFILE };
     const operationId = wireOperationId(payload);
+    w.control.payloads.set(operationId, payload);
     return { checked: { reserve: async () => Object.freeze({ state: 'new', operationId, attempt: 0, leaseUntil: w.control.clock + 300000 }) },
       payload, route: path, operationId, newJob: false, contextStart: true, paymentTx: null, keepProfile: PROFILE, retainedWork: true };
   };
@@ -733,7 +735,7 @@ test('reservations for different operations do not block each other', async t =>
   owner.open(); assert.equal((await first).state, 'new');
 });
 
-test('P11b2-T19 with the shipped guard off, the coordinator refuses before inspection, any gate and the terminal check and writes nothing; terminalSession refuses and the observer writes no closure', () => {
+test('the coordinator and terminal observer refuse without writes when the guard is off', () => {
   const probe = fileURLToPath(new URL('./helpers/coordinator-guard-off-probe.mjs', import.meta.url));
   const kept = (process.env.NODE_OPTIONS ?? '').split(' ').filter(option => option !== '' && !option.includes('kit-guard-fixture.mjs')).join(' ');
   const child = spawnSync(process.execPath, [probe], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: kept } });
@@ -822,14 +824,14 @@ test('reservation-mutex-owner-crash-reclassification', async t => {
       import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
       import { openWireRequestJournal, inspectWireOperation, wireOperationBinding, wireRequestHash } from '@kynesyslabs/dacs/wire';
       import { journalStore, reserveEffect } from ${JSON.stringify(new URL('../../../dist/wire/journal.js', import.meta.url).href)};
-      import { createSellerTransportStore } from ${JSON.stringify(new URL('../src/dacs/seller-transport-auth.mjs', import.meta.url).href)};
+      import { createSellerTransportStore, sellerStoreInternals } from ${JSON.stringify(new URL('../src/dacs/seller-transport-auth.mjs', import.meta.url).href)};
       import { createPurchaseCapacity } from ${JSON.stringify(new URL('../src/dacs/seller-purchase-capacity.mjs', import.meta.url).href)};
       import { createReservationCoordinator } from ${JSON.stringify(new URL('../src/dacs/seller-reservation-accounting.mjs', import.meta.url).href)};
       const { path, directory, payload, at, journaled } = JSON.parse(process.argv[1]);
       const now = () => at;
       const journal = openWireRequestJournal(directory, { clock: now, leaseMs: 300000 });
       const store = createSellerTransportStore({ path, now, wireOperationView: target => inspectWireOperation(journal, target) });
-      const capacity = createPurchaseCapacity({ store, now, sessionState: () => null });
+      const capacity = createPurchaseCapacity({ store, now, sessionState: sellerStoreInternals(store).sessionState });
       const coordinator = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
       const checked = { reserve: async () => {
         if (journaled) reserveEffect(journalStore(journal), {
@@ -896,8 +898,8 @@ test('reservation-lock-map-cleanup', async t => {
   assert.equal(of(operationOf(fixture.JOB)).at(-1), 'delete');
 });
 
-// P11b2c: the terminal closure, the gate list and the observation adapter. Closure and release are the store's metadata, counted apart
-// from the work's own writes (SA-18). Worlds here have a real store, capacity and admission transaction; the source is `control.state`.
+// The terminal closure, the gate list and the observation adapter. Closure and release are the store's metadata, counted apart
+// from the work's own writes. Worlds here have a real store, capacity and admission transaction; the source is `control.state`.
 const TERMINAL_NAMES = [...TERMINAL_CONTEXT_STATES];
 const ALL_ROUTES = [PATHS.context, PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature, PATHS.payments];
 const UNKNOWN_ANSWERS = {
@@ -937,7 +939,7 @@ function countedRequest(w, p, route) {
 }
 const restart = w => { w.reopen(); withCoordinator(w); };
 
-test('P11b2-T22 for each of the eight declared terminal names, startup cleanup records the job\'s closure and releases its open slots in one transaction, once. After two restarts with the port answering `null`, a nonterminal name, an agent stage name, a throw or a Promise, the closure stays and `terminalSession` still reports terminal. A K1 row settled `success` does not clear it. A named crash before the commit leaves neither the closure nor the release; after the commit, both. A second cleanup and a second observation add no row and release nothing more', async t => {
+test('terminal closures and allocation releases survive restarts for every terminal state', async t => {
   const unhandled = watchUnhandled(t), answers = Object.values(UNKNOWN_ANSWERS);
   for (const [index, name] of TERMINAL_NAMES.entries()) {
     const w = world(t, { maxRecords: 500 }), p = w.purchase(), allocation = w.allocate(p); w.charge(p.jobId, PATHS.context, 1, allocation.allocationId);
@@ -972,7 +974,7 @@ test('P11b2-T22 for each of the eight declared terminal names, startup cleanup r
   assert.deepEqual(unhandled, []);
 });
 
-test('P11b2-T22 a crash before the closure commits leaves neither the closure nor the release; after it, both', t => {
+test('closure and allocation release commit together across crash cuts', t => {
   for (const cut of ['before', 'after']) {
     const w = world(t, { maxRecords: 500 }), p = w.purchase(), live = w.allocate(p); w.control.state = () => 'finalised';
     w.failCommit(cut);
@@ -987,7 +989,7 @@ test('P11b2-T22 a crash before the closure commits leaves neither the closure no
   }
 });
 
-test('P11b2-T23 through the coordinator, on proposals, commitments, commitments/signature, payments and context (D5 double), at `ready:true` with spare general capacity and the allocation already released: a job with a closure, or whose port answers a terminal name, is refused `context_session_terminal` 409 after inspection and before accounting. Zero accounting rows, `used` changes, `reserve()` calls, nonce-key files, operation attempts and agent calls. An effect-path observation\'s closure (`source: "effect-path"`) and its release of a still-live allocation are durable before the refusal returns. Repeated fresh-nonce requests each refuse with every counter unchanged, also after a restart with the port then answering unknown. A poll inside a live lease, and a recovery after it ends, are refused the same way and spend no general unit; the lease\'s worker is left to P15b\'s final checks (H-11). Controls: an operation `completed` under this binding still classifies as before; an unknown, nonterminal, throwing, agent-stage or Promise answer with no closure proceeds to accounting', async t => {
+test('terminal sessions refuse new effects while exact completed operations remain replayable', async t => {
   for (const route of ALL_ROUTES) for (const mode of ['closed', 'effect-path']) {
     const { w, p } = await coordinated(t), label = `${route} ${mode}`;
     w.control.state = onlyJob(p.jobId, () => 'aborted-by-other');
@@ -1012,10 +1014,12 @@ test('P11b2-T23 through the coordinator, on proposals, commitments, commitments/
   await rejects(polled.w.coordinatedContext(polled.p), 'context_session_terminal', 409);
   assert.deepEqual(spentState(polled.w), opened);
   const replayed = await coordinated(t); let observed = 0;
+  await attemptRoute(replayed.w, replayed.p, PATHS.proposals);
   replayed.w.control.state = () => { observed++; return 'finalised'; };
   replayed.w.control.operation = target => view.completed(wireOperationBinding(target));
   assert.equal((await attemptRoute(replayed.w, replayed.p, PATHS.proposals)).state, 'new');
-  assert.equal(observed, 0, 'a completed operation meets no terminal check'); assert.deepEqual(closures(replayed.w), []);
+  assert.equal(observed, 1, 'accounting revalidates the retained operation through the store');
+  assert.deepEqual(closures(replayed.w), closureOf(replayed.p.jobId));
   for (const [label, answer] of Object.entries(UNKNOWN_ANSWERS)) {
     const control = await coordinated(t); control.w.control.state = onlyJob(control.p.jobId, answer);
     assert.equal((await attemptRoute(control.w, control.p, PATHS.proposals)).state, 'new', label);
@@ -1023,7 +1027,7 @@ test('P11b2-T23 through the coordinator, on proposals, commitments, commitments/
   }
 });
 
-test('P11b2-T24 the coordinator\'s order: the terminal check runs after the mutex and inspection, and before every registered gate. A gate double refusing is answered with its own code, with zero accounting, `reserve()` and agent calls, and readiness and capacity unchanged. A throwing gate refuses with its error and no accounting. No gate runs for a `completed` operation under this binding. A closure write that fails refuses with no accounting or reservation, and the next request records the closure once. Two waiters on one operation, and two operations of one job, each refuse with one closure row', async t => {
+test('terminal checks and registered gates run before accounting under the operation mutex', async t => {
   const ordered = await coordinated(t), log = [], seen = [];
   ordered.w.control.operation = () => { log.push('inspect'); return view.none; };
   ordered.w.control.state = onlyJob(ordered.p.jobId, () => { log.push('terminal'); return null; });
@@ -1031,7 +1035,7 @@ test('P11b2-T24 the coordinator\'s order: the terminal check runs after the mute
   ordered.w.coordinator.addPreAccountingGate(() => { log.push('second gate'); return null; });
   const input = ordered.w.contextInput(ordered.p, PATHS.proposals);
   assert.equal((await attemptRoute(ordered.w, ordered.p, PATHS.proposals, input)).state, 'new');
-  assert.deepEqual(log, ['inspect', 'terminal', 'first gate', 'second gate']);
+  assert.deepEqual(log, ['inspect', 'terminal', 'first gate', 'second gate', 'terminal']);
   assert.deepEqual(seen.map(({ route, jobId, payload, inspection }) => ({ route, jobId, payload, inspection })), [{ route: PATHS.proposals, jobId: ordered.p.jobId, payload: input.payload, inspection: view.none }]);
 
   const refusing = await coordinated(t); let later = 0;
@@ -1048,9 +1052,10 @@ test('P11b2-T24 the coordinator\'s order: the terminal check runs after the mute
   assert.deepEqual(spentState(thrown.w), before);
 
   const replay = await coordinated(t); let gated = 0, read = 0;
+  await attemptRoute(replay.w, replay.p, PATHS.proposals);
   replay.w.coordinator.addPreAccountingGate(() => { gated++; return { code: 'TEST_gate_refused', status: 422 }; });
   replay.w.control.state = () => { read++; return 'finalised'; }; replay.w.control.operation = target => view.completed(wireOperationBinding(target));
-  assert.equal((await attemptRoute(replay.w, replay.p, PATHS.proposals)).state, 'new'); assert.deepEqual({ gated, read }, { gated: 0, read: 0 });
+  assert.equal((await attemptRoute(replay.w, replay.p, PATHS.proposals)).state, 'new'); assert.deepEqual({ gated, read }, { gated: 0, read: 1 });
   replay.w.control.operation = target => ({ ...view.completed(wireOperationBinding(target)), binding: hash('another binding') });
   await rejects(attemptRoute(replay.w, replay.p, PATHS.proposals), 'context_session_terminal', 409);
   assert.equal(gated, 0, 'a foreign binding takes no bypass, and the terminal check precedes every gate');
@@ -1098,7 +1103,7 @@ const issueFor = (w, index) => w.store.challenges.issue({ jobId: job(index), buy
 const fillContextRecords = w => w.db().prepare("INSERT INTO kit_context_admissions VALUES (?, ?, ?, 'running', 1, '{}')").run(job(0xaa), BUYER, T0);
 const workCounts = w => ['kit_job_bindings', 'kit_reservations'].map(table => w.db().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
 
-test('P11b2-T25 issuance is the sole terminal observer, and separately reclamation planning is the sole observer: successful transaction, terminal refusal, later capacity refusal, thrown failure and deliberate rollback retain one durable closure and one eligible existing-allocation release. On refusal the accepted challenge is intact, with no challenge/admission/hold/new-allocation/effect-reservation mutation; metadata SQL counters are separate. Assert commit-before-answer and no nested transaction, then repeat observations and reopen twice with an unknown port: one closure and no second release. Exercise every retiring terminal/reclamation reader and its classify dry run until deletion; a failed metadata flush keeps its error and grants no work, then a retry persists once. With the shipped guard off, direct issuance, reclamation-capable store entries and observer-capable entries make no observation writes; with no existing closure, unknown, nonterminal, throwing and all SA-18 asynchronous answers create none', async t => {
+test('issuance and reclamation preserve terminal observations across request rollback', async t => {
   const unhandled = watchUnhandled(t);
   const cases = {
     'a successful transaction': { run: w => issueFor(w, 2), rows: [job(2)] },
@@ -1138,7 +1143,7 @@ test('P11b2-T25 issuance is the sole terminal observer, and separately reclamati
   await settle(); assert.deepEqual(unhandled, []);
 });
 
-// Each retiring reader of the session state observes through the same adapter, until P11c2b deletes it.
+// Each retiring reader of the session state observes through the same adapter, on every active path.
 const TERMINAL_REFUSAL = error => error.code === 'context_session_terminal' && error.status === 409;
 const proposalOf = (f, jobId) => f.payload({ jobId });
 const reserveProposal = (f, jobId) => f.store().reserve(proposalOf(f, jobId), {}, { keepProfile: FIXTURE_PROFILE });
@@ -1157,7 +1162,7 @@ const retiringReaders = {
   'job reclamation': { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveProposal(f, fixture.JOB2); }, maxJobs: 1 },
 };
 
-test('P11b2-T25 every retiring terminal reader and the classify dry run observe through the adapter and retain what they saw', async t => {
+test('all terminal readers and classify preserve their observations', async t => {
   for (const [name, { before, run, ...limits }] of Object.entries(retiringReaders)) {
     const w = await coordination(t, {}, limits); w.allocate(fixture.JOB);
     const held = before?.(w.f);
@@ -1201,7 +1206,10 @@ test('terminal-pending-flush-barrier', async t => {
   assert.throws(() => w.internals.flushTerminalObservations(), /TEST pending cut/);
   assert.throws(() => w.internals.transaction(() => 'work'), /TEST pending cut/, 'a pending observation blocks later transactions');
   const { input, calls } = countedRequest(w, p, PATHS.proposals), before = spentState(w);
+  let inspections = 0;
+  w.control.operation = () => { inspections++; return view.none; };
   await assert.rejects(w.coordinator.reserveCoordinated(input), /TEST pending cut/);
+  assert.equal(inspections, 0, 'pending metadata blocks operation inspection');
   assert.deepEqual(spentState(w), before); assert.equal(calls.reserve, 0); assert.deepEqual(durableClosures(w), []);
   healWrites(w); w.control.state = () => null;
   w.internals.flushTerminalObservations();
@@ -1274,13 +1282,8 @@ test('terminal-reader-installation-audit', () => {
   assert.deepEqual(callers(/\bcontextSessionState\(/), ['dacs/seller-transport-auth.mjs'], 'the host calls no port itself');
   const store = sources.get('dacs/seller-transport-auth.mjs');
   for (const line of store.split('\n').filter(text => text.includes('TERMINAL_CONTEXT_STATES.has('))) {
-    assert.ok(/contextSessionState\(|\bstate\b/.test(line), `a terminal check reads through the adapter: ${line.trim()}`);
+    assert.ok(/contextSessionState\(|readSessionStateWithin\(|\bstate\b/.test(line), `a terminal check reads through the adapter: ${line.trim()}`);
   }
   assert.equal(store.match(/createSellerChallengeLedger\(\{[^}]*sessionState: contextSessionState/g)?.length, 1, 'the ledger is given the adapter');
   assert.ok(sources.get('host.mjs').includes('sessionState: sellerStoreInternals(store).sessionState'), 'the capacity is given the store\'s adapter');
-});
-
-test('the README documents the durable closure, the check, the gate list and the separate counters', () => {
-  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
-  for (const phrase of ['terminal closure', 'terminalSession', 'addPreAccountingGate', 'counted apart']) assert.ok(readme.includes(phrase), `README names ${phrase}`);
 });

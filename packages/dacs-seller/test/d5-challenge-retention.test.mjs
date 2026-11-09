@@ -184,7 +184,7 @@ test('terminal job cleanup keeps unresolved effects and retention windows', t =>
   }
 });
 
-// Terminal-observation metadata (a closure and the release of an existing allocation, SA-18) is counted apart from the work's own writes.
+// Terminal-observation metadata (a closure and the release of an existing allocation) is counted apart from the work's own writes.
 const OBSERVATION_METADATA = /^\s*(INSERT OR IGNORE INTO kit_terminal_closures|UPDATE kit_allocations)/i;
 function noMutations(work) {
   const prepare = DatabaseSync.prototype.prepare, exec = DatabaseSync.prototype.exec, mutations = [];
@@ -478,7 +478,7 @@ test('T18 context capacity uses indexed nonce lookups and stops after enough ter
     if (method === 'issue') issue('room');
     else if (method === 'reserve') assert.equal(w.store.reserve(context(w, 'room'), contextBody('room'), { admit: () => w.now() }).disposition, 'perform');
     else noMutations(() => assert.equal(w.store.classify(context(w, 'room'), contextBody('room'), { admit: () => w.now() }), 'start'));
-    // The first run reads the port once; its closure then answers for that admission, so later runs read nothing (SA-18).
+    // The first run reads the port once; its closure then answers for that admission, so later runs read nothing.
     assert.equal(calls.filter(job => oldJobs.has(job)).length, method === 'classify' ? 1 : 0, 'stop after one reclaimable admission');
     assert.equal(w.count('peer_context_admissions'), 10000, 'planning retains rows; reserve replaces only the necessary row');
   }

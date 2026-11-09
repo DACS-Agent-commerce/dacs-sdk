@@ -91,7 +91,7 @@ test('recovery does not run a proposal again after its context session ended and
  assert.equal(w.store.reserve(w.request,body).disposition,'perform');state='aborted-by-self';const signed=f.signed.length;
  await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
- // The session's end is kept as a closure (SA-18), so the port no longer reporting it does not reopen the proposal.
+ // The session's end is kept as a closure, so the port no longer reporting it does not reopen the proposal.
  state=null;await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
  assert.equal(w.store.reserve({...w.request,nonce:'TEST-terminal-inspection-00001'},body).disposition,'uncertain','the effect was held, not released');
@@ -125,7 +125,7 @@ for(const retained of ['pending contribution','uncertain contribution','signatur
   assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before,'terminal attempts sign nothing');
   assert.equal(w.store.reserve(inspection,body).disposition,'uncertain');assert.equal(agent.retainsProposalWork(JOB),true);
  }
- // The session's end is kept as a closure (SA-18): the port no longer reporting it leaves the work retained and still refused.
+ // The session's end is kept as a closure: the port no longer reporting it leaves the work retained and still refused.
  state=null;
  await assert.rejects(w.peer.propose(body),{name:'SellerUnavailableError',code:'seller_unavailable'});
  assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before);

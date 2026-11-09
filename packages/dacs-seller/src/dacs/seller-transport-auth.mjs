@@ -59,19 +59,6 @@ export class SellerTransportError extends Error {
   constructor(code, status = 401, options) { super(code, options); this.code = code; this.status = status; }
 }
 
-/** Internal synchronous session read: returns a state or null; throws unavailable 503 with the original cause. */
-export function readSellerSessionState(source, jobId) {
-  try {
-    const state = source({ jobId });
-    if (state === null || typeof state === 'string') return state;
-    if (typeof state?.then === 'function') Promise.resolve(state).then(undefined, () => {});
-    throw new TypeError('sessionState must answer a state string or null', { cause: state });
-  } catch (cause) {
-    if (cause instanceof SellerTransportError && cause.code === 'session_admission_unavailable' && cause.status === 503) throw cause;
-    throw new SellerTransportError('session_admission_unavailable', 503, { cause });
-  }
-}
-
 /** True for a Listing pin of exactly `{ listingId, version, contentHash }` with a non-empty id, a positive version and a SHA-256 hex hash. */
 export function pinValid(pin) {
   return keys(pin, ['listingId', 'version', 'contentHash']) &&
@@ -335,7 +322,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       return result;
     } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
-  // The terminal observer (SA-18): every DACS-5 state any reader sees goes through `contextSessionState`. A terminal name waits in
+  // The terminal observer: every DACS-5 state any reader sees goes through `contextSessionState`. A terminal name waits in
   // `pending` until `closeTerminalWithin`, the one writer of a closure, records it with the capacity's cleanup: in the commit of the work
   // that saw it, otherwise in a transaction of its own after that work rolled back, before the answer or error leaves.
   const pending = new Map();
@@ -632,7 +619,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       starts: starts(since), buyerStarts: buyer => starts(since, buyer) };
   }
   const { maxStartsPerHour, maxStartsPerBuyerPerHour } = contextStartLimits;
-  const ledger = createSellerChallengeLedger({ db, transaction, now, generation, ready, stopped, sessionState: ({ jobId }) => readSessionStateWithin(jobId), admissionCounts: () => {
+  const ledger = createSellerChallengeLedger({ db, transaction, now, generation, ready, stopped, sessionState: contextSessionState, admissionCounts: () => {
       retireSlotsWithin(now(), undefined, { capacity: true, keepContexts: true, jobs: [] }); return admissionCounts();
     },
     limits: { maxChallenges, maxContextRecords, maxPerHour: maxStartsPerHour, maxPerBuyerPerHour: maxStartsPerBuyerPerHour, maxStartsPerHour, maxStartsPerBuyerPerHour } });
@@ -840,7 +827,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     },
     // Read-only reserve: 'start' for new work, 'known' for journaled answers;
     // conflicts throw reserve's refusal. No request work is written and the transaction rolls back; a terminal session state it
-    // observed is still committed in a transaction of its own before this returns (SA-18).
+    // observed is still committed in a transaction of its own before this returns.
     classify(p, body, { journaledOnly = false, admit = () => 0, keepProfile } = {}) {
       return this.reserve(p, body, { journaledOnly, admit, dryRun: true, keepProfile }).disposition === 'perform' ? 'start' : 'known';
     },

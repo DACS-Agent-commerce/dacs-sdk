@@ -166,8 +166,7 @@ function replayAnswer(row, input) {
  * (the adapter reads a throw or a promise as unknown), whose errors propagate. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
  * over durable rows. `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
  * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
- * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class; the
- * unreadable `sessionState` refuses session_admission_unavailable 503 with its cause);
+ * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class);
  * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
  * it, the guard and the stop check also run before a reused live nonce is returned.
  * `attempt(input)` returns `{ kind: 'validate', owner }`, `{ kind: 'continuation', accepted }` or

@@ -235,7 +235,7 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
       throw new SellerTransportError(answer.code, answer.status);
     }
   }
-  // K5's pre-accounting order: a terminal session refuses, then each gate may, unless this very operation already completed under the
+  // A terminal session refuses, then each gate may, unless this very operation already completed under the
   // request's binding, whose source-verified replay stays available.
   function refuseBeforeAccounting({ payload, route }, inspection) {
     if (inspection?.state === 'completed' && inspection.binding === wireOperationBinding(payload)) return;
@@ -244,8 +244,8 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
   }
   async function reserveUnderMutex({ retainedWork, ...accounted }) {
     const { payload, route } = accounted;
-    const inspection = inspectOperation(payload);
     capacity.flushTerminalObservations();
+    const inspection = inspectOperation(payload);
     refuseBeforeAccounting(accounted, inspection);
     const completed = {};
     let completion, refusal = null;

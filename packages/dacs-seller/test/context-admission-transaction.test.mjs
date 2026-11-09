@@ -1511,7 +1511,7 @@ test('R06 sweep retires current old-context holders without count-only subtracti
   terminal = false; w.reopen();
   assert.equal(w.internals.admissionCounts().contextRecords, 0);
   const foreign = accountingInput(job(0x11), '/dacs/v1/agreements/proposals', `did:demos:agent:${hash('foreign')}`).payload;
-  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+  assert.throws(() => w.store.reserve(foreign, {}, { keepProfile: PROFILE }), { code: 'context_session_terminal', status: 409 });
 });
 
 test('R20 accounting adopts a detached tuple without another insert or timestamp change', async t => {
@@ -1643,7 +1643,10 @@ test('refused admission intent rolls retirement back across restart', async t =>
   assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
   w.reopen(); assert.deepEqual(workSnapshot(w), before); assert.equal(ownerRow(w, next.input.jobId), undefined);
   w.control.ready = true; terminal = false;
-  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+  const replacement = w.prepare(0x33);
+  await w.admission.begin(replacement.input);
+  assert.equal(w.row(replacement.input.jobId).state, 'admitted');
+  assert.equal(w.db.prepare('SELECT state FROM kit_terminal_closures WHERE jobId = ?').get(p.input.jobId).state, 'finalised');
 });
 
 test('intent commit cuts preserve atomic ownership across restart', async t => {
@@ -1859,20 +1862,23 @@ test('a refused proposal keeps its saved answer after a corrected proposal succe
 });
 
 for (const boundary of ['old', 'accounted']) for (const source of ['rejecting promise', 'throw', 'non-state']) {
-  test(`${boundary} proposal gate refuses a session source returning ${source} without work`, async t => {
+  test(`${boundary} proposal gate treats a session source returning ${source} as unknown`, async t => {
     const cause = new Error('session unavailable'); let broken = false;
     const w = world(t, { contextSessionState: () => {
       if (!broken) return null;
       if (source === 'throw') throw cause;
       return source === 'rejecting promise' ? Promise.reject(cause) : 7;
     } });
-    const args = accountingInput(job(0x11), PROPOSALS), before = workSnapshot(w);
+    const args = accountingInput(job(0x11), PROPOSALS);
     broken = true;
-    const expected = { code: 'session_admission_unavailable', status: 503 };
-    if (boundary === 'old') assert.throws(() => w.store.reserve(args.payload, {}, { keepProfile: PROFILE }), expected);
-    else await assert.rejects(w.store.reservationAccounting.reserveAccounted(args), expected);
+    if (boundary === 'old') assert.equal(w.store.reserve(args.payload, {}, { keepProfile: PROFILE }).disposition, 'perform');
+    else {
+      args.checked.reserve = async () => ({ state: 'new' });
+      assert.equal((await w.store.reservationAccounting.reserveAccounted(args)).state, 'new');
+    }
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, 0);
+    assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_terminal_closures').get().n, 0);
+    assert.equal(w.calls.reserve, 0);
   });
 }
 
