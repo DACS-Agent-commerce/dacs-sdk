@@ -9,7 +9,9 @@ import {
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import type { IdentityBundle } from "../../src/artifacts/types.js";
 import { ed25519Sign, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey } from "../../src/crypto/index.js";
+import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { evmErc20Settle } from "../../src/rails/evmErc20.js";
+import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import { payDemSettle } from "../../src/rails/payDem.js";
 
 const seed = Uint8Array.from(Buffer.alloc(32, 5));
@@ -48,7 +50,7 @@ const terms = {
 vi.mock("../../src/rails/payDemExecutionAuthority.js", async () =>
   import("../support/payDemExecutionAuthority.js"));
 
-async function makeDeps(settle: SessionDeps["settle"], kv: Map<string, Record<string, unknown>>, crash: { hit: boolean }, rail: string, expectedSettlementPayee?: string) {
+async function makeDeps(settle: SessionDeps["settle"], kv: Map<string, Record<string, unknown>>, crash: { hit: boolean }, rail: string, expectedSettlementPayee?: string, extra: Partial<SessionDeps> = {}) {
   const listingRef = "stor:listing";
   kv.set(listingRef, (await buildSignedArtifact({ ...listing, supportedPaymentRails: [rail] }, ARTIFACT_SEPARATORS.Listing, sign)) as Record<string, unknown>);
   const evidenceName = sessionAnchorName.evidence("job-1");
@@ -80,6 +82,7 @@ async function makeDeps(settle: SessionDeps["settle"], kv: Map<string, Record<st
     nowMs: () => 1780000000000,
     trustListing: true,
     authenticateRecoveredArtifact: () => true,
+    ...extra,
   };
   return { deps, listingRef };
 }
@@ -148,5 +151,64 @@ describe("restart with the default in-memory rail store, then resume", () => {
     await expect(runSessionCore(second.listingRef, demTerms, second.deps, "job-1"))
       .rejects.toThrow(/resumeSettlement is required/);
     expect(transfers).toBe(1);
+  });
+});
+
+function evmFixture() {
+  const counter = { transfers: 0 };
+  const rail = {
+    address: "0xbuyer",
+    finalityBlocks: 1,
+    async settle() {
+      counter.transfers += 1;
+      return {
+        ok: true as const,
+        txHash: `0x${String(counter.transfers).padStart(64, "0")}`,
+        chainId: "eip155:84532",
+        payer: "0xbuyer",
+        payee: "0xpayee",
+        finality: { model: "block-depth" as const, finalityBlocks: 1 },
+      };
+    },
+  };
+  const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
+  const evmTerms = {
+    ...terms,
+    price: { amount: "1000000", asset: "USDC", decimals: 6, rail: "pay-evm-erc20" },
+  };
+  return { counter, rail, cfg, evmTerms };
+}
+
+describe("resume with a session store that never saw the earlier run", () => {
+  test("a fresh in-memory session store after a restart does not transfer again", async () => {
+    const { counter, rail, cfg, evmTerms } = evmFixture();
+    const kv = new Map<string, Record<string, unknown>>();
+    const crash = { hit: false };
+    const first = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee",
+      { sessionStore: createInMemorySessionStore() });
+    await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/simulated crash/);
+    expect(counter.transfers).toBe(1);
+    // Process 2: the session store is new and empty, so it has no record of job-1.
+    const second = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee",
+      { sessionStore: createInMemorySessionStore() });
+    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1"))
+      .rejects.toThrow(/resumeSettlement is required/);
+    expect(counter.transfers).toBe(1);
+  });
+
+  test("a crash before paying resumes through a durable resumeSettlement and pays once", async () => {
+    const { counter, rail, cfg, evmTerms } = evmFixture();
+    const kv = new Map<string, Record<string, unknown>>();
+    const crash = { hit: true }; // evidence anchoring does not crash in this case
+    const durableRailStore = createIdempotencyStore(); // shared by both processes
+    const first = await makeDeps(async () => {
+      throw new Error("simulated crash before paying");
+    }, kv, crash, "pay-evm-erc20", "0xpayee");
+    await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/before paying/);
+    expect(counter.transfers).toBe(0);
+    const bridge = evmErc20Settle(rail, cfg, { store: durableRailStore });
+    const second = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee", { resumeSettlement: bridge });
+    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1")).resolves.toBeDefined();
+    expect(counter.transfers).toBe(1);
   });
 });
