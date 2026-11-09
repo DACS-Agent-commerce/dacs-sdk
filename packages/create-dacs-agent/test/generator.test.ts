@@ -1,3 +1,6 @@
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
+import { ModuleKind, transpileModule } from "typescript";
 import {
   lstat,
   mkdtemp,
@@ -11,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createDacsAgentProject } from "../src/index.js";
 import { parseCreateDacsAgentArguments } from "../src/cli.js";
@@ -20,6 +23,7 @@ import { publishCompleteStagingDirectory } from "../src/publication.js";
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, { recursive: true, force: true })
@@ -436,6 +440,33 @@ describe("create-dacs-agent", () => {
     expect(combined).toContain("registry.npmjs.org");
     expect(combined).toContain("automatic-upgrade-not-supported");
     expect(combined).not.toContain('availableVersion: "not-queried"');
+  });
+
+  test.each(["pay-dem", "both"] as const)("configures a network pin in a generated live project: %s", async (rails) => {
+    const target = join(await temporaryDirectory(), "agent");
+    await createDacsAgentProject({
+      targetDirectory: target, mode: "live-demos", profile: "dacs-sdk:fixed-price-x402:v1",
+      role: "seller", deployment: "docker", rails, install: false,
+    });
+    const source = await readFile(join(target, "dacs.config.ts"), "utf8");
+    const compiled = transpileModule(source, { compilerOptions: { module: ModuleKind.CommonJS } });
+    const exports = {} as { generatedRoleConfig(role: string): { demos: unknown } };
+    runInNewContext(compiled.outputText, { exports, require: createRequire(import.meta.url), process });
+    vi.stubEnv("DACS_DEMOS_RPC_URL", "https://rpc.example");
+    vi.stubEnv("DACS_DEMOS_GENESIS_HASH", "a".repeat(64));
+    vi.stubEnv("DACS_DEMOS_CHAIN_ID", "demos-test");
+    expect(exports.generatedRoleConfig("seller").demos).toMatchObject({
+      rpcUrl: "https://rpc.example", expectedIdentity: { genesisHash: "a".repeat(64), chainId: "demos-test" },
+    });
+    vi.stubEnv("DACS_DEMOS_CHAIN_ID", "");
+    expect(exports.generatedRoleConfig("buyer").demos).toMatchObject({ expectedIdentity: { genesisHash: "a".repeat(64) } });
+    vi.stubEnv("DACS_DEMOS_GENESIS_HASH", "");
+    expect(exports.generatedRoleConfig("buyer").demos).not.toHaveProperty("expectedIdentity");
+    for (const file of [".env.example", "compose.yaml"]) {
+      const environment = await readFile(join(target, file), "utf8");
+      expect(environment).toContain("DACS_DEMOS_GENESIS_HASH");
+      expect(environment).toContain("DACS_DEMOS_CHAIN_ID");
+    }
   });
 
   test("generates a native DEM project without EVM or x402 dependencies", async () => {

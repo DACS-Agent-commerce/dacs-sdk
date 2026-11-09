@@ -4,6 +4,7 @@ import { resolve, sep } from "node:path";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   baseUnits,
+  DacsError,
   createPayDemRail as createSdkPayDemRail,
   type PayDemRail,
   type PayDemSettleParams,
@@ -21,6 +22,7 @@ import type {
   AnchorResolution,
   AnchorWriteOnceOptions,
   DemosWriteJournal,
+  ExpectedDemosChainIdentity,
   DemosWriteJournalLease,
   DemosWriteJournalRecord,
   OwnedAnchorScan,
@@ -115,6 +117,7 @@ export interface DacsDemosActorRuntimeOptionsV1 {
   /** Deterministic test/custom-host seam. Production omits this callback. */
   createAdapter?: (input: Readonly<{
     rpc: string;
+    expectedIdentity?: ExpectedDemosChainIdentity;
     secret: string;
     writeJournal: DemosWriteJournal;
     maximumFeeOs: bigint;
@@ -232,6 +235,7 @@ async function privateJournalDirectory(
 
 async function defaultAdapter(input: Readonly<{
   rpc: string;
+  expectedIdentity?: ExpectedDemosChainIdentity;
   secret: string;
   writeJournal: DemosWriteJournal;
   maximumFeeOs: bigint;
@@ -420,11 +424,16 @@ export async function createDacsDemosActorRuntimeV1(
     try {
       adapter = await makeAdapter({
         rpc: config.demos.rpcUrl,
+        ...(config.demos.expectedIdentity === undefined ? {} : { expectedIdentity: config.demos.expectedIdentity }),
         secret,
         writeJournal,
         maximumFeeOs: BigInt(baseUnits(config.limits.maxDemosNetworkFeeDem, 9)),
       });
       await adapter.connect();
+      if (config.demos.expectedIdentity !== undefined) {
+        if (!adapter.getChainIdentity) throw new DacsDemosRuntimeError("demos-chain-identity-unavailable");
+        await adapter.getChainIdentity();
+      }
       if (rawOptions.role === "buyer" && rawOptions.writePolicy !== "read-only" &&
           dacsLiveRailProfiles(config).includes("pay-dem")) {
         const makePayDemRail = rawOptions.createPayDemRail ?? createSdkPayDemRail;
@@ -448,7 +457,8 @@ export async function createDacsDemosActorRuntimeV1(
           payDemRail = markDacsSdkPreparedPayDemRailV1(payDemRail);
         }
       }
-    } catch {
+    } catch (cause) {
+      if (cause instanceof DacsError) throw cause;
       throw new DacsDemosRuntimeError("demos-adapter-connect-failed");
     }
   } finally {

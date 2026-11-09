@@ -65,3 +65,5 @@ export type {
   OwnedAnchorScan,
 } from "./anchorResolution.js";
 export { classifyAnchorResolution } from "./anchorResolution.js";
+
+export { DemosChainIdentityError, type DemosChainIdentity, type ExpectedDemosChainIdentity } from "./demosChainIdentity.js";

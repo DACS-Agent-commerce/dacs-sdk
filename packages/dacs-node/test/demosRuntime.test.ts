@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
+import { DacsError } from "@kynesyslabs/dacs";
 import type { DemosWriteJournal } from "@kynesyslabs/dacs/substrate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -149,6 +150,42 @@ describe("role-owned Demos runtime", () => {
     for (const directory of roots.splice(0)) {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    ["chain_identity_mismatch", "permanent"],
+    ["state_not_ready", "transient"],
+  ] as const)("preserves a network pin refusal before exposing signers: %s", async (code, category) => {
+    const directory = root();
+    const configured = payDemConfig(directory);
+    const error = Object.assign(new DacsError(code, { category }), { code });
+    const roleAdapter = adapter({ getChainIdentity: vi.fn(async () => { throw error; }) });
+    const createPayDemRail = vi.fn();
+    const loaded = await secret(directory);
+    await expect(createDacsDemosActorRuntimeV1({
+      config: { ...configured, demos: { ...configured.demos, expectedIdentity: { genesisHash: "a".repeat(64) } } },
+      role: "buyer", authority: AUTHORITY, demosIdentity: loaded,
+      createAdapter: async () => roleAdapter, createPayDemRail,
+    })).rejects.toBe(error);
+    expect(roleAdapter.sign).not.toHaveBeenCalled();
+    expect(createPayDemRail).not.toHaveBeenCalled();
+    expect(loaded.destroyed).toBe(true);
+  });
+
+  it("passes the configured identity pin to the role adapter", async () => {
+    const directory = root();
+    const configured = payDemConfig(directory);
+    const expectedIdentity = { genesisHash: "a".repeat(64), chainId: "demos-test" };
+    const roleAdapter = adapter({ getAddress: vi.fn(() => Buffer.from(PUBLIC_KEY).toString("hex")) });
+    const createAdapter = vi.fn(async () => roleAdapter);
+    await createDacsDemosActorRuntimeV1({
+      config: { ...configured, demos: { ...configured.demos, expectedIdentity } },
+      role: "buyer", authority: AUTHORITY, demosIdentity: await secret(directory),
+      createAdapter,
+      createPayDemRail: async () => ({ address: roleAdapter.getAddress(), settle: vi.fn() }),
+    });
+    expect(createAdapter).toHaveBeenCalledWith(expect.objectContaining({ expectedIdentity }));
+    expect(roleAdapter.getChainIdentity).toHaveBeenCalledOnce();
   });
 
   it("connects a journalled wallet and proves its exact primary authority", async () => {

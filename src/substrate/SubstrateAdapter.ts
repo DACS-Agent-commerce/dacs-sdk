@@ -1,3 +1,4 @@
+import type { ExpectedDemosChainIdentity } from "./demosChainIdentity.js";
 import type { AnchorResolution, OwnedAnchorScan } from "./anchorResolution.js";
 import type { DemosWriteJournal } from "./demosWriteJournal.js";
 
@@ -19,10 +20,11 @@ export interface DemosAdapterConfig {
    */
   writeJournal?: DemosWriteJournal;
   /**
-   * Optional pinned genesis-block hash. When omitted, the adapter reads block
-   * zero from the connected node before its first write.
+   * Optional genesis-block hash, checked against the connected node.
    */
   chainIdentity?: string;
+  /** Expected network, checked before signing or acquiring a write lease. */
+  expectedIdentity?: ExpectedDemosChainIdentity;
 }
 
 /**
