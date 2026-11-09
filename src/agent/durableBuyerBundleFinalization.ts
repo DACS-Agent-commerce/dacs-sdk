@@ -49,6 +49,7 @@ import {
   type VerifyCompletedSellerBundleCounterSignatureRequestInput,
   type VerifyFinalizedSellerBundleInput,
 } from "../seller/bundleFinalization.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const MAX_CAS_ATTEMPTS = 16;
 const MAX_RELEASE_ATTEMPTS = 8;
@@ -415,19 +416,6 @@ async function callbackResult<T>(
     throw new TypeError(`${subject} cannot return a proxy`);
   }
   return value instanceof Promise ? await value : value;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    value instanceof Uint8Array ||
-    Object.isFrozen(value)
-  ) return value;
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return Object.freeze(value);
 }
 
 function immutable<T>(value: T): T {
