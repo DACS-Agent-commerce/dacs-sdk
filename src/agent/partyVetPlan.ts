@@ -42,6 +42,7 @@ import {
   type CompositeClaimRequirement,
   type PresenceClaimDecision,
 } from "./compositeVerification.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** Reserved supplementary type emitted only by the native CCI Vet wrapper. */
 export const PARTY_VET_NATIVE_CCI_TLSN_SIGNAL_TYPE =
@@ -76,7 +77,7 @@ export type PartyVetMethodInput =
 
 type PartyVetSignedRecipe = DurableSessionRecipePin["provenance"]["recipe"];
 
-/** Exact serializable evidence copied from #143's runtime-authenticated pin. */
+/** Exact serializable evidence copied from the runtime-authenticated recipe pin. */
 export type PartyVetRecipePinBinding = Pick<
   DurableSessionRecipePin,
   Extract<keyof DurableSessionRecipePin, string>
@@ -89,7 +90,7 @@ export interface PartyVetAttemptInput {
   classification: "freshness" | "dealSpecific";
   /** Exact method selected from the authenticated recipe family. */
   methodInput: PartyVetMethodInput;
-  /** Generation-fenced #143 pin established before any Vet effect. */
+  /** Generation-fenced recipe pin established before any Vet effect. */
   recipePin: DurableSessionRecipePin;
 }
 
@@ -168,7 +169,7 @@ export interface PartyVetRequirementAttempt {
 export interface PartyVetPlan {
   planVersion: "1";
   planHash: string;
-  /** Pre-pin scope hash consumed by #143; deliberately excludes recipe pins. */
+  /** Pre-pin scope hash consumed by recipe pinning; deliberately excludes recipe pins. */
   pinScopeHash: string;
   /** Exact job-wide registry snapshot shared by every attempt pin. */
   sessionRecipeRegistrySnapshotHash?: string;
@@ -324,18 +325,6 @@ function snapshotData(
   }
   seen.delete(value);
   return result;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function snapshot<T>(value: T, label: string): T {
@@ -729,7 +718,7 @@ function capturePinScopeAttempt(
 }
 
 /**
- * Exact pre-pin party-plan scope used by #143 to bind every durable path pin
+ * Exact pre-pin party-plan scope used by recipe pinning to bind every durable path pin
  * without creating a circular dependency on the pins contained by the final
  * plan. Recipe family/version/ref fields are deliberately absent.
  */

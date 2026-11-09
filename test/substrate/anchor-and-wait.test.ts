@@ -502,7 +502,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(raw.getTxByHash).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts only the live node's equivalent integer wire projection", async () => {
+  it.each(["empty", "transaction"])("accepts canonical integer wire fields with %s edit hashes", async (hashKind) => {
     const { adapter, raw } = await makeAdapter();
     const sign = raw.storagePrograms.sign.getMockImplementation()!;
     raw.storagePrograms.sign.mockImplementation(async (...args: any[]) => {
@@ -527,6 +527,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     const canonical = raw.getTxByHash.getMockImplementation()!;
     raw.getTxByHash.mockImplementation(async (txRef: string) => {
       const transaction = await canonical(txRef);
+      const storedTxHash = hashKind === "empty" ? "" : txRef;
       return {
         ...transaction,
         content: {
@@ -541,20 +542,21 @@ describe("DemosAdapter.anchorAndWait", () => {
             rpc_address: null,
           },
           gcr_edits: [
-            { type: "balance", amount: 1000, txhash: txRef },
-            { type: "nonce", amount: "1", txhash: txRef },
+            { type: "balance", amount: 1000, txhash: storedTxHash },
+            { type: "nonce", amount: "1", txhash: storedTxHash },
           ],
         },
       };
     });
 
-    await expect(
-      adapter.anchorAndWait(
-        "live-wire-integer-projection",
-        { value: 1 },
-        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
-      ),
-    ).resolves.toMatchObject({ state: "included" });
+    const receipt = await adapter.anchorAndWait(
+      "live-wire-integer-projection",
+      { value: 1 },
+      { completion: "read-visible", timeoutMs: 1_000, pollMs: 1 },
+    );
+    expect(receipt).toMatchObject({ state: "read-visible" });
+    await expect(adapter.verifyDemosWriteEvidence(receipt.demosEvidence!))
+      .resolves.toBe(true);
   });
 
   it("refuses a mutable create signed with a different nonce", async () => {

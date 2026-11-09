@@ -183,12 +183,12 @@ export function createSellerContextRoute({ listing, resolveBuyer, assertBuyerAcc
   }
   // Bytes the journal already holds (an answer, or an effect it keeps fenced) are answered by the journal alone when the ledger has no
   // record of their challenge (an earlier store's, or one reclaimed) or already accepted it. A challenge the ledger refused or still
-  // validates keeps the ledger's answer. The journal's own read-only reserve decides; a refusal or missing capability means not known.
+  // validates keeps the ledger's answer. The journal's own read-only reserve decides; its errors propagate rather than claiming the bytes are new.
   // The reserve that follows a known answer gets no admission callback, so it can never start new work without a challenge.
   function journalKnows(request, body, store) {
     const row = store.challenges.retained(body.buyerIdentityBundle?.sessionNonce);
     if (row !== null && row.state !== 'accepted') return false;
-    try { return store.classify?.(request, body) === 'known'; } catch { return false; }
+    return store.classify?.(request, body) === 'known';
   }
   function attemptRefused(request, code = 'operation_uncertain') {
     const entry = attempts.get(request);

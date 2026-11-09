@@ -45,6 +45,7 @@ import {
   sellerFulfilmentAuditSourceHash,
   type SellerFulfilmentAuditSourceV1,
 } from "./fulfilmentAuditSource.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export type SellerPaymentIntakeDisposition =
   | "verified"
@@ -687,7 +688,7 @@ function hasExactKeys(
 }
 
 /**
- * The exact phase-aware identity used by #120 before a prepared candidate may
+ * The exact phase-aware identity used by `runFulfilmentCore` before a prepared candidate may
  * cross the one-shot payment-permit boundary. Byte-bearing DPA candidates are
  * projected to explicit length+digest records because raw Uint8Array values
  * are not JCS values; the other delivery profiles bind their complete JSON
@@ -905,15 +906,6 @@ type SecurityBoundaryResult<T> =
   | { status: "ok"; value: T }
   | { status: "threw" | "invalid-input" | "invalid-output" | "mutated-input" };
 
-function deepFreezeJson<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value)) return value;
-  seen.add(value);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreezeJson(child, seen);
-  }
-  return Object.freeze(value);
-}
-
 /** Snapshot a security-bearing callback result before its first property read. */
 async function callSecurityBoundary<T>(
   call: () => T | Promise<T>,
@@ -942,7 +934,7 @@ async function callSecurityBoundaryWithInput<I, O>(
   let isolated: I;
   let canonical: string;
   try {
-    isolated = deepFreezeJson(structuredClone(input));
+    isolated = deepFreeze(structuredClone(input));
     canonical = canonicalize(isolated);
   } catch {
     return { status: "invalid-input" };

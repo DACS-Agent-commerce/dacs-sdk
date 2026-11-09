@@ -84,7 +84,7 @@ function world(t, config = {}) {
     if (!control.killed) store?.close();
     control.killed = false;
     store = createSellerTransportStore({ path, generation: `test-generation-${++control.generation}`, now: () => control.clock, ready: () => control.ready,
-      maxContextRecords: options.maxContextRecords, maxJobs: options.maxJobs, contextRecords: options.contextRecords, contextSessionState: options.contextSessionState, wireOperationView: options.wireOperationView, contextStartLimits: options.contextStartLimits });
+      maxContextRecords: options.maxContextRecords, contextStartLimits: options.contextStartLimits });
     internals = sellerStoreInternals(store);
     admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity: options.capacity ?? null,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
@@ -1315,95 +1315,4 @@ test('admission-live-begin-owner-is-held-while-the-d4-hooks-run-and-removed-afte
   await w.admission.jobEffectMutex(jobId).run(() => {}); await flush();
   // The refusal is compensated under the same lease: no effect happened, so the row aborts and its hold is released.
   assert.equal(w.row(jobId).state, 'aborted'); assert.equal(w.holds.size, 0); assert.equal(w.calls.effective, 1); assert.equal(owned(w, jobId, 1), false);
-});
-
-// D21: accounting sees durable K1 rows before any purchase tuple exists, as well as after restart.
-const accountingInput = (jobId, path, buyer = BUYER) => {
-  const payload = { version: '1', kind: 'request', method: 'POST', path, jobId, buyer, seller: SELLER, listingPin: PIN,
-    agreementHash: hash('accounting agreement'), bodyHash: hash('{}'), nonce: hash('accounting nonce'), expiresAt: T0 + 60000, profile: PROFILE };
-  return { payload, route: path, operationId: wireOperationId(payload), keepProfile: PROFILE,
-    checked: { body: {}, reserve: async () => { throw new Error('refused accounting reached wire reservation'); } } };
-};
-for (const limit of ['jobs', 'context']) test(`D21 accounting counts K1 intent and admitted rows without tuples toward ${limit}`, async t => {
-  const w = world(t, { maxJobs: limit === 'jobs' ? 1 : 20, maxContextRecords: limit === 'context' ? 1 : 20 });
-  const gate = deferred(); w.control.beforeReserve = () => gate.promise.then(() => null);
-  const { input } = w.prepare(), pending = w.admission.begin(input);
-  await flush();
-  const args = accountingInput(job(0x22), limit === 'jobs' ? '/dacs/v1/agreements/proposals' : SELLER_CONTEXT_PATH);
-  const refusal = { code: limit === 'jobs' ? 'peer_job_capacity' : 'peer_context_capacity', status: 503 };
-  try {
-    assert.equal(w.row(input.jobId).state, 'intent');
-    assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n, 0);
-    await assert.rejects(w.store.reservationAccounting.reserveAccounted(args), refusal);
-  } finally { gate.resolve(); await pending; }
-  w.reopen();
-  assert.equal(w.row(input.jobId).state, 'admitted');
-  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n, 0);
-  await assert.rejects(w.store.reservationAccounting.reserveAccounted(args), refusal);
-  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
-});
-test('D21 accounting keeps the K1 row owner before a purchase tuple exists', async t => {
-  const w = world(t), { input } = w.prepare();
-  await w.admission.begin(input);
-  await assert.rejects(w.store.reservationAccounting.reserveAccounted(accountingInput(input.jobId, '/dacs/v1/agreements/proposals', OTHER)),
-    { code: 'peer_job_conflict', status: 409 });
-  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
-});
-test('D21 accounting preserves the optional contextRecords override', async t => {
-  const w = world(t, { maxContextRecords: 1, contextRecords: () => 1 });
-  assert.equal(w.internals.admissionCounts().contextRecords, 0);
-  await assert.rejects(w.store.reservationAccounting.reserveAccounted(accountingInput(job(0x22), SELLER_CONTEXT_PATH)),
-    { code: 'peer_context_capacity', status: 503 });
-  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
-});
-
-test('D21 old-path reclamation cannot free the job slot still held by a K1 row', async t => {
-  let terminal = false, retainedJob;
-  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => terminal && jobId === retainedJob ? 'finalised' : null });
-  const { input } = w.prepare(); retainedJob = input.jobId;
-  await w.admission.begin(input);
-  const proposal = accountingInput(retainedJob, '/dacs/v1/agreements/proposals').payload;
-  w.store.finish(w.store.reserve(proposal, {}, { keepProfile: PROFILE }), 200, '{}');
-  terminal = true; w.control.clock += HOUR + 60001;
-  w.reopen();
-  const other = { ...accountingInput(job(0x22), proposal.path).payload, nonce: hash('other nonce') };
-  assert.throws(() => w.store.reserve(other, {}, { keepProfile: PROFILE }), { code: 'peer_job_capacity', status: 503 });
-  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM peer_jobs').get().n, 1);
-  assert.equal(w.internals.admissionCounts().contextRecords, 1);
-});
-
-test('D21 integration retains r31 payment-route transaction binding before any charge', async t => {
-  const w = world(t), tx = hash('payment claim');
-  const valid = accountingInput(job(0x22), '/dacs/v1/payments');
-  const invalid = [
-    { ...valid, checked: { body: { txHash: tx }, reserve: valid.checked.reserve } },
-    { ...valid, paymentTx: tx },
-    { ...valid, paymentTx: tx, checked: { body: { txHash: hash('other claim') }, reserve: valid.checked.reserve } },
-    { ...accountingInput(job(0x22), SELLER_CONTEXT_PATH), paymentTx: tx },
-  ];
-  for (const input of invalid) {
-    await assert.rejects(w.store.reservationAccounting.reserveAccounted(input), { code: 'wire_input_invalid', status: 500 });
-    assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, 0);
-  }
-  await w.store.reservationAccounting.reserveAccounted({ ...valid, paymentTx: '0x' + tx.toUpperCase(),
-    checked: { body: { txHash: tx }, reserve: async () => ({ state: 'new' }) } });
-  assert.equal(w.db.prepare('SELECT tx FROM kit_payment_transactions').get().tx, tx);
-});
-test('D21 integration retains P11b1L1 terminal retry binding through the accounting ledger', async t => {
-  let terminal = false, view = null;
-  const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null, wireOperationView: () => view });
-  const first = accountingInput(job(0x22), SELLER_CONTEXT_PATH);
-  first.checked.reserve = async () => ({ state: 'new' });
-  await w.store.reservationAccounting.reserveAccounted(first);
-  terminal = true;
-  view = { state: 'present', binding: wireOperationBinding(first.payload) };
-  const retry = { ...first, payload: { ...first.payload, nonce: hash('retry nonce') } };
-  await w.store.reservationAccounting.reserveAccounted(retry);
-  const before = w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n;
-  const different = { ...first, payload: { ...first.payload, nonce: hash('different nonce'), agreementHash: hash('different scope') } };
-  await assert.rejects(w.store.reservationAccounting.reserveAccounted(different), { code: 'context_session_terminal', status: 409 });
-  view = null;
-  await assert.rejects(w.store.reservationAccounting.reserveAccounted({ ...first, payload: { ...first.payload, nonce: hash('missing view nonce') } }),
-    { code: 'context_session_terminal', status: 409 });
-  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n, before);
 });

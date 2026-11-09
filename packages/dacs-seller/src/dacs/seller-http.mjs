@@ -8,7 +8,7 @@
 // mode; unsigned, malformed, interrupted or ambiguous answers are unavailable.
 // With the `wire` option, every route but the challenge and the context step opens
 // each request and signs each answer through `./wire` (seller-wire-requests.mjs); the
-// transport store stays their only journal, and the read routes reserve nowhere.
+// wire journal owns their effects, the transport store accounts for reservations, and read routes reserve nowhere.
 // With `context` and `wire` together the challenge is on the wire too (`context.challengeOnWire`),
 // before any Agreement and with no journal. The context step keeps the old server auth, and so
 // does the challenge of a handler composed without `wire`. Each request has one authenticator,
@@ -193,9 +193,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           return await send(res, 200, answer, request, { text: auth.encode(JSON.stringify(answer)) });
         }
         let opened;
-        try { opened = await auth.open({ header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; },
-          ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
-        } catch (error) { if (contextStep) context.attemptRefused?.(request, error?.code); throw error; }
+        try {
+          opened = await auth.open({ header: req.headers[SELLER_TRANSPORT_HEADER], method: req.method, path: req.url, rawBody, body, onOpened: (authenticated) => { request = authenticated; },
+            ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
+        } catch (error) { if (contextStep && request) context.attemptRefused?.(request, error?.code); throw error; }
         body = opened.body;
         // A signed read reserves and completes nowhere: it answers from the agent's current state.
         if (opened.read) {
@@ -208,7 +209,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         // The context step reads the journal first and runs its admission only
         // for new work, recording the start in the reserve transaction. A wire request's
         // reservation keeps the job's TP-1 tuple in the same transaction.
-        reservation = contextStep ? await context.reserve(request, body, authentication.store) : auth.store.reserve(request, body, opened.reserveOptions);
+        reservation = contextStep ? await context.reserve(request, body, authentication.store) : await auth.store.reserve(request, body, opened.reserveOptions);
         if (reservation.disposition === 'cached') agent.assertSettlementCredit?.(request.jobId);
         if (reservation.disposition === 'cached' && reservation.status === 200 && ['/dacs/v1/commitments','/dacs/v1/commitments/signature'].includes(req.url)) {
           // The commitment is already anchored: a failed readback (closed buyer access, an Agreement

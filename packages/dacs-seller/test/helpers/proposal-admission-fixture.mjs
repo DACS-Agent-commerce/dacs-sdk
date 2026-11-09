@@ -18,7 +18,7 @@ import {createNativePaymentEvidenceConsumer} from '../../src/dacs/native-payment
 // `vetMode` selects the records and capability the fixture builds: the TP-1 G3
 // orchestrator mode has the seller verify its own record (default: counterparty).
 export const ORCHESTRATOR_MODE='tp1-g3-orchestrator';
-export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,ledger=null,publicEndpoint=null,vetMode}={}){
+export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expectedSizeBytes=1024,buyerRequirement=null,publicEndpoint=null,ledger=null,vetMode}={}){
  const dir=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-'));t.after(()=>rm(dir,{recursive:true,force:true}));let time=NOW;const signed=[];const contexts=new Map();
  let store=null,generations=0;const storeDirectory=await mkdtemp(join(tmpdir(),'TEST-proposal-admission-ledger-'));t.after(()=>rm(storeDirectory,{recursive:true,force:true}));
  const openStore=()=>store=createSellerTransportStore({path:join(storeDirectory,'transport.sqlite'),now:()=>time,generation:'TEST-generation-'+ ++generations});

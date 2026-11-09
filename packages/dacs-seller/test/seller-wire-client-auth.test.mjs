@@ -175,10 +175,10 @@ async function runningHost(t) {
   const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-wire-client-auth-'));
   const { nativeArtifactAnchor, ...config } = f.config;
+  delete config.challengeLedger; // the host builds its own ledger
   delete config.durableDirectory;
   delete config.commitOnSignature;
   delete config.vetMode;
-  delete config.challengeLedger; // The host owns and opens its D21 ledger.
   const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { f, host };

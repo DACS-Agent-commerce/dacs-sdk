@@ -22,6 +22,7 @@ import {
   isFaultBundle,
   scoredBundleOutcome,
 } from "./bundleSemantics.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
  * DACS-5 §10.5 reputation derivation — the spec-faithful, windowed reputation
@@ -109,9 +110,8 @@ export interface ReputationWindow {
 
 // §10.4.3(d) divergence uses the ONE shared predicate (bundleDivergence.js),
 // identical to the two-sided consistency verdict — presence-mismatch by phase
-// `index` counts as divergence (DACS-Standard#224). Previously a private
-// by-position copy here that disagreed with bundleConsistency on
-// length-mismatched phaseSummary.
+// `index` counts as divergence. Sharing it keeps this deriver and
+// bundleConsistency in agreement on length-mismatched phaseSummary.
 
 /** §10.4.1 signed-scope content hash of a bundle (omit signatures + anchoredByRole). */
 function bundleContentHash(bundle: AnyAttestationBundle): string {
@@ -474,16 +474,6 @@ function exactObjectKeys(
   const expected = [...required].sort();
   return keys.length === expected.length &&
     keys.every((key, index) => key === expected[index]);
-}
-
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return Object.freeze(value);
 }
 
 function capturedAuthenticatedRating(

@@ -14,6 +14,7 @@ type Job = { "runs-on"?: string };
 const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as { jobs: Record<string, Job> };
 const RUNS_ON = workflow.jobs["build-test"]?.["runs-on"] ?? "";
 const POOL = ["self-hosted", "linux", "x64", "dacs-pool"];
+const BLACKSMITH = "blacksmith-2vcpu-ubuntu-2404";
 
 type Value = unknown;
 type Token = { kind: "op" | "str" | "num" | "id"; text: string };
@@ -131,21 +132,26 @@ function evaluate(source: string, context: Record<string, Value>): Value {
 }
 
 function route(over: {
-  enabled?: string; authors?: string; node?: string; event?: string; headRepo?: string;
-  author?: string; actor?: string; triggering?: string; labels?: string[];
+  enabled?: string; authors?: string; blacksmith?: string; node?: string; event?: string; headRepo?: string;
+  author?: string; actor?: string; triggering?: string; labels?: string[]; prPayload?: boolean;
 }) {
   const match = /^\$\{\{([\s\S]*)\}\}$/.exec(RUNS_ON.trim());
   if (!match) throw new Error("runs-on is not a single expression");
   const event = over.event ?? "pull_request";
   return evaluate(match[1] ?? "", {
-    vars: { SDK_SELF_HOSTED: over.enabled ?? "on", SDK_SELF_HOSTED_AUTHORS: over.authors ?? "owner,second" },
+    vars: {
+      SDK_SELF_HOSTED: over.enabled ?? "on",
+      SDK_SELF_HOSTED_AUTHORS: over.authors ?? "owner,second",
+      // Off by default, so the cases above test the project-runner rules alone.
+      SDK_BLACKSMITH: over.blacksmith ?? "off",
+    },
     matrix: { "node-version": over.node ?? "22" },
     github: {
       event_name: event,
       repository: "org/repo",
       actor: over.actor ?? "owner",
       triggering_actor: over.triggering ?? "owner",
-      event: event === "pull_request"
+      event: event === "pull_request" || over.prPayload
         ? { pull_request: {
           head: { repo: { full_name: over.headRepo ?? "org/repo" } },
           user: { login: over.author ?? "owner" },
@@ -205,5 +211,40 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
     expect(route({ labels: ["ci-hosted"] })).toBe("ubuntu-latest");
     expect(route({ labels: ["bug", "ci-hosted"] })).toBe("ubuntu-latest");
     expect(route({ labels: ["bug"] })).toEqual(POOL);
+  });
+
+  describe("Blacksmith", () => {
+    it("sends both legs of every same-repository pull request to Blacksmith when the switch is on", () => {
+      expect(route({ blacksmith: "on" })).toBe(BLACKSMITH);
+      expect(route({ blacksmith: "on", node: "20.19.0" })).toBe(BLACKSMITH);
+      expect(route({ blacksmith: "on", enabled: "off" })).toBe(BLACKSMITH);
+    });
+
+    it("takes precedence over ci-hosted and the project-runner author rules", () => {
+      expect(route({ blacksmith: "on", labels: ["ci-hosted"] })).toBe(BLACKSMITH);
+      expect(route({ blacksmith: "on", author: "outsider", actor: "outsider", triggering: "outsider" })).toBe(BLACKSMITH);
+    });
+
+    it("treats the switch as on in any letter case, as GitHub's == does", () => {
+      for (const blacksmith of ["ON", "On", "oN"]) expect(route({ blacksmith })).toBe(BLACKSMITH);
+    });
+
+    it("leaves routing unchanged unless the switch is on", () => {
+      for (const blacksmith of ["off", "", "yes", "ON "]) {
+        expect(route({ blacksmith })).toEqual(POOL);
+        expect(route({ blacksmith, node: "20.19.0" })).toBe("ubuntu-latest");
+        expect(route({ blacksmith, enabled: "off" })).toBe("ubuntu-latest");
+      }
+    });
+
+    it("never takes pushes, merge-queue runs or fork pull requests", () => {
+      for (const node of ["22", "20.19.0"]) {
+        expect(route({ blacksmith: "on", event: "push", node })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", event: "merge_group", node })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", headRepo: "someone/fork", node })).toBe("ubuntu-latest");
+        // An event that carries a pull request payload but is not pull_request (not a trigger of this workflow today).
+        expect(route({ blacksmith: "on", event: "pull_request_target", prPayload: true, node })).toBe("ubuntu-latest");
+      }
+    });
   });
 });

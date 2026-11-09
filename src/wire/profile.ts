@@ -1,17 +1,18 @@
 // Testnet profile TP-1 and the network identity gate in front of every wire
 // signature.
 //
-// The immutable Demos testnet identity record was approved on 2026-10-20,
-// when node2 began serving a new chain; the 2026-10-15 record is no longer
-// approved. Approval is held in SDK source
-// (./approval.ts) and never taken from the caller. No network label, fixture
-// constant or value observed from an RPC can stand in for it.
+// The approved immutable Demos testnet identity record pins the chain node2
+// serves; the earlier testnet identity record is no longer approved.
+// Approval is held in SDK source (./approval.ts) and never taken from the
+// caller. No network label, fixture constant or value observed from an RPC can
+// stand in for it.
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_REFUSED_CHAIN_IDENTITIES } from "./approval.js";
 import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_V1 } from "./routes.js";
-import { deepFreeze, fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
+import { fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export const TP1_PROFILE_ID = "dacs-testnet-tp1";
 /** The profile revision. Each later revision (TP-1.1, ...) is a new value with its own base. */
