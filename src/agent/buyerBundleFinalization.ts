@@ -40,6 +40,7 @@ import {
   type VerifyCompletedSellerBundleCounterSignatureRequestInput,
   type VerifyFinalizedSellerBundleInput,
 } from "../seller/bundleFinalization.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /** A role-neutral reuse of the authenticated SR-2 bundle readback shape. */
 export type AnchoredBuyerBundle = AnchoredSellerBundle;
@@ -329,21 +330,6 @@ async function callbackResult<T>(
     throw new DacsError(`${subject} cannot return a proxy`);
   }
   return value instanceof Promise ? await value : value;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    value instanceof Uint8Array ||
-    Object.isFrozen(value)
-  ) {
-    return value;
-  }
-  for (const nested of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(nested);
-  }
-  return Object.freeze(value);
 }
 
 function immutableSnapshot<T>(value: T, subject: string): T {
