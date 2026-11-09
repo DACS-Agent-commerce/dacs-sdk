@@ -959,8 +959,8 @@ export function x402Settle(
       }, effectFence);
     // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
     // idempotency store (in-process default; inject a durable one for cross-process
-    // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
-    // on a reconciled resubmit is the SB-3 work in #33. A durable recovery may
+    // crash-safety). NOTE: a reconciled resubmit does not rebuild the x402
+    // authorization/session binding (SB-3) by itself. A durable recovery may
     // replay only when `reconcile` returns an authorization bound to this exact
     // deterministic EIP-3009 nonce; absence alone still fails closed.
     return store.once(
