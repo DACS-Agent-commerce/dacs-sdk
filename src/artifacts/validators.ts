@@ -212,8 +212,7 @@ const isMinimalUnsignedDecimal = (v: unknown): v is string =>
   isStr(v) && /^(0|[1-9][0-9]*)$/.test(v);
 
 // DACS-3's pinned compatibility vectors still carry the historical prefixed
-// spelling. Keep reader compatibility until DACS-Standard#378 defines the
-// byte-exact cross-stage migration into DACS-5 terminal bundles.
+// spelling, so readers accept it alongside the bare hex form.
 const isIdentityBundleHash = (v: unknown): v is string =>
   isSha256(v) || (isStr(v) && /^sha256:[0-9a-f]{64}$/.test(v));
 const hasValidOptionalComponentSignature = (
