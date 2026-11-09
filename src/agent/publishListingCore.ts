@@ -32,7 +32,7 @@ import {
 
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
- * version-slot immutability (#29 / #46). Pure over injected substrate deps, so
+ * version-slot immutability. Pure over injected substrate deps, so
  * it's unit-tested without a node; Agent.publishListing wires the binding-aware
  * repository over DemosAdapter.
  *
@@ -57,7 +57,7 @@ import {
  * — `logicalAddress` + the native `ref` — so the logical→native mapping is
  * discoverable (spec point (c), via return). Carrying the logical address as
  * on-record metadata + a published index (points (b)/(c)-via-index) is the fuller
- * discovery surface, tracked with #54.
+ * discovery surface, which is not implemented here.
  */
 
 export interface PublishListingResult {
