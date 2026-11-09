@@ -1539,3 +1539,46 @@ test('R06 per-job retirement leaves another settled holder active', async t => {
   await w.admission.sweep({ startup: false });
   assert.equal(w.internals.admissionCounts().contextRecords, 0);
 });
+
+
+test('an aborted admission frees job and context capacity immediately and after restart', async t => {
+  const w = world(t, { maxJobs: 1, maxContextRecords: 1 }), p = w.prepare();
+  w.control.beforeReserve = () => 'budget-refused';
+  await reject(w.admission.begin(p.input), 'seller_budget_refused', 409);
+  await drained(w, p.input.jobId);
+  assert.equal(w.row(p.input.jobId).state, 'aborted');
+  for (const reopen of [false, true]) {
+    if (reopen) w.reopen();
+    assert.equal(w.internals.admissionCounts().contextRecords, 0);
+    assert.equal(w.db.prepare("SELECT COUNT(*) AS n FROM kit_context_admissions WHERE state <> 'aborted'").get().n, 0);
+    const request = accountingInput(job(0x22), '/dacs/v1/agreements/proposals').payload;
+    assert.equal(w.store.classify(request, {}, { keepProfile: PROFILE }), 'start');
+  }
+  w.control.beforeReserve = null;
+  await w.admission.begin(w.prepare(0x33).input);
+});
+
+test('failed and settled starts release both slots before a third start after restart', async t => {
+  let terminal = false;
+  const w = world(t, { maxJobs: 2, maxContextRecords: 2, contextSessionState: ({ jobId }) => terminal && jobId === job(0x11) ? 'finalised' : null });
+  const settled = w.prepare(), failed = w.prepare(0x22), third = w.prepare(0x33);
+  await (await running(w, settled)).complete(outcome);
+  // Keep the failed start uncertain until the sweep proves it had no effect.
+  w.control.inspect = () => ({ state: 'none' });
+  w.control.evidence = record => w.evidenceOf(record, 'undetermined');
+  w.control.beforeReserve = () => { throw new Error('policy-refused'); };
+  await reject(w.admission.begin(failed.input), 'seller_budget_unavailable');
+  await drained(w, failed.input.jobId);
+  assert.equal(w.row(failed.input.jobId).state, 'compensating');
+  await reject(w.admission.begin(third.input), 'peer_context_capacity', 503);
+  w.control.evidence = null; w.control.beforeReserve = null;
+  terminal = true; w.control.clock += HOUR + 61000;
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.row(failed.input.jobId).state, 'aborted');
+  assert.equal(w.row(settled.input.jobId).state, 'settled');
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  terminal = false; w.reopen();
+  assert.equal(w.internals.admissionCounts().contextRecords, 0);
+  await w.admission.begin(w.prepare(0x44).input);
+  assert.equal(w.internals.admissionCounts().contextRecords, 1);
+});

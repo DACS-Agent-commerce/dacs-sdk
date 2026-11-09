@@ -174,6 +174,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
   // D2's dry check and D4's authoritative one: readiness, the context-record and unpaid-start limits, then purchase capacity.
   function checkLimits(buyer, ownRow) {
     if (ready() !== true) fail('seller_not_ready', 503);
+    retireSlotsWithin(clock(), undefined, { capacity: true, keepContexts: true, jobs: [] });
     const counts = admissionCounts();
     if (counts.contextRecords - Number(ownRow) >= limits.maxContextRecords) fail('peer_context_capacity', 503);
     if (counts.starts >= limits.maxStartsPerHour) fail('unpaid_start_limit', 429);
