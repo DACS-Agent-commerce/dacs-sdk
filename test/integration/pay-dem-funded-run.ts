@@ -2,8 +2,10 @@ import { dirname } from "node:path";
 import { types as nodeTypes } from "node:util";
 
 import {
+  createPayDemRail,
   PayDemIncludedNonceVisibilityError,
   type PayDemPreparedTransfer,
+  type PayDemRailConfig,
 } from "../../src/rails/payDem.js";
 import {
   executeFundedRun,
@@ -18,6 +20,12 @@ const INTEGER_RE = /^[1-9][0-9]{0,31}$/;
 const ADDRESS_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;
 const PREPARED_CHECKPOINT = "pay-dem-prepared";
+const FUNDED_INCLUSION_TIMEOUT_MS = 180_000;
+
+/** Create the funded live rail with a longer inclusion budget; propagate SDK validation errors. */
+export function createPayDemFundedRail(config: Omit<PayDemRailConfig, "inclusionTimeoutMs">) {
+  return createPayDemRail({ ...config, inclusionTimeoutMs: FUNDED_INCLUSION_TIMEOUT_MS });
+}
 
 export interface PayDemFundedRunIntent {
   directory: string;
@@ -45,6 +53,8 @@ export interface PayDemFundedPreparedTransfer {
   amountOs: string;
   denomination: "os" | "dem";
   maxTotalDebitOs: string;
+  confirmedTotalDebitOs: string;
+  confirmedRecordFeeOs: string;
   network: "demos";
 }
 
@@ -151,12 +161,20 @@ function capturePreparedTransfer(
     "amountOs",
     "denomination",
     "maxTotalDebitOs",
+    "confirmedTotalDebitOs",
+    "confirmedRecordFeeOs",
     "network",
   ]) || !Number.isSafeInteger(snapshot.nonce) || (snapshot.nonce as number) < 0 ||
       Object.is(snapshot.nonce, -0) || typeof snapshot.amountOs !== "string" ||
       !INTEGER_RE.test(snapshot.amountOs) ||
       typeof snapshot.maxTotalDebitOs !== "string" ||
       !INTEGER_RE.test(snapshot.maxTotalDebitOs) ||
+      typeof snapshot.confirmedTotalDebitOs !== "string" ||
+      !/^[1-9][0-9]*$/.test(snapshot.confirmedTotalDebitOs) ||
+      BigInt(snapshot.confirmedTotalDebitOs) < BigInt(snapshot.amountOs) ||
+      BigInt(snapshot.confirmedTotalDebitOs) > BigInt(snapshot.maxTotalDebitOs) ||
+      typeof snapshot.confirmedRecordFeeOs !== "string" ||
+      !/^(?:0|[1-9][0-9]*)$/.test(snapshot.confirmedRecordFeeOs) ||
       (snapshot.denomination !== "os" && snapshot.denomination !== "dem") ||
       snapshot.network !== "demos") {
     throw new Error("pay-dem-live:prepared-transfer-invalid");
@@ -169,6 +187,8 @@ function capturePreparedTransfer(
     amountOs: snapshot.amountOs,
     denomination: snapshot.denomination as "os" | "dem",
     maxTotalDebitOs: snapshot.maxTotalDebitOs,
+    confirmedTotalDebitOs: snapshot.confirmedTotalDebitOs,
+    confirmedRecordFeeOs: snapshot.confirmedRecordFeeOs,
     network: "demos" as const,
   };
   if (
