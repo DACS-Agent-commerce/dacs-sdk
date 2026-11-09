@@ -16,10 +16,10 @@ origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
 `agreementAnchor` and `artifactAnchor` only by shape, and the wallet journal's
 `broadcast` is the operator's own callback, so an operator-supplied anchor or
 broadcast can still reach a real Demos node: keep them on the fixture too. It
-is not qualified for mainnet. The standalone host retains all jobs and refuses
-new jobs before admission after `maxJobs` (default 10,000); terminal DACS-5
-bundle completion is not wired, and transport-row reclamation needs the
-`contextSessionState` capability described below.
+is not qualified for mainnet. The standalone host preserves job ownership and refuses
+new jobs before admission at `maxJobs` (default 10,000) unless completed work
+can safely retire. Terminal DACS-5 bundle completion is not wired; slot retirement
+needs the `contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 

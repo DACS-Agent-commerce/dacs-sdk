@@ -59,7 +59,7 @@ test("P11b1-T01 a buyer's 121st reservation in the window is refused with no row
   assert.equal(f.rows().length, 120); assert.equal(f.nonces().length, 120);
   f.setTime(T0 + 60000);
   await assert.rejects(f.reserve(await f.admit()), refused('seller_effect_pending'));
-  assert.equal(f.rows().length, 2, 'the 119 expired refusals are retired, the first request stays'); assert.equal(f.nonces().length, 121);
+  assert.equal(f.rows().length, 121, 'expired refusals remain durable after their buyer window ends'); assert.equal(f.nonces().length, 121);
 });
 
 test('P11b1-T02 a full job capacity refuses a new job and admits a retry for an existing job', async t => {
