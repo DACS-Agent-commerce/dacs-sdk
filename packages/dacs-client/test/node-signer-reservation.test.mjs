@@ -391,9 +391,10 @@ async function restarted(w, settle, extra) { const reservations = create(w.reope
 async function sellerWorld(t) {
   const { api, mnemonicBytes, world: buildWorld } = await import('./helpers/tp1-node-fixture.mjs');
   const { reentrantOwner, sellerPublications } = await import('./helpers/effect-gate-world.mjs');
+  const { recordingApproval } = await import('./helpers/payment-evidence-approval-double.mjs');
   const w = await buildWorld(t, { ownerWrap: reentrantOwner, createSession: api.createNodeSellerComposition, sessionOptions: { approveConfirmedWrite: null, publications: sellerPublications() } });
   const construct = stateOwnership => api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), key: mnemonicBytes(), publications: sellerPublications(),
-    approveConfirmedWrite: null, approve: async () => true, clock: w.clock, ...(stateOwnership === undefined ? {} : { stateOwnership }) });
+    approveConfirmedWrite: null, approve: async () => true, clock: w.clock, paymentEvidenceApproval: recordingApproval(), ...(stateOwnership === undefined ? {} : { stateOwnership }) });
   return Object.assign(w, { construct });
 }
 

@@ -6776,6 +6776,62 @@
           "after": "bb26d97d15d59c621b149847feebd7c7095dbe7e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3ba sign payment-evidence CREATEs on the signer reservation",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+          "before": "fb364397ed046fb1211d620fb5dfa68563715c1a",
+          "after": "fedbd31b661b3ee5540213629d5e895c2a55ea3f"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+          "before": "7e61b54257846f628b2984bc6bee811470401dc2",
+          "after": "16c28532b8fe2b1ff6cf5acc3b50c9987aa87bfe"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+          "before": null,
+          "after": "b364d1682f678eb9c063da18de4f5646a0ce4442"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "89db1bf53f2e62853119805060587931c6b7078f",
+          "after": "63a2acf64382c128935d4bacc0c22498b2a0fe6e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/effect-gate-world.mjs",
+          "before": "10beba68fcc095df465df8e74e5e0e27fe8dd251",
+          "after": "fb5e0177bac913dd0af186c40d8097af8503fbce"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+          "before": null,
+          "after": "a10c91b1ac1ba5e0b3754533229744649f337ce3"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+          "before": "b20c12b6561dea8fadb54a7e3c52e9f83e0e72e4",
+          "after": "78ca854a5b322c34ff1b099ad13b0c3b5b75d5a1"
+        },
+        {
+          "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+          "before": null,
+          "after": "659ceb2cc65e2139daf5032d9bf8dc4e1a6a72c7"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "bb26d97d15d59c621b149847feebd7c7095dbe7e",
+          "after": "deabf958f007e8e98be26cc53fd7a7d9f869f635"
+        },
+        {
+          "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+          "before": "15e7ac95a7940b8712e966a83885505142afd796",
+          "after": "92d81e3b5e5bcc7381036bdc1ca189f54154e8c3"
+        }
+      ]
     }
   ]
 }

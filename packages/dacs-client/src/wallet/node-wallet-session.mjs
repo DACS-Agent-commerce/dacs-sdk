@@ -15,8 +15,9 @@ import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purch
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
 import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
+import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
-import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
+import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
 // A comparison value inside the descriptor only: `_doPost` checks the URL it is given equals the
 // descriptor's `rpcUrl` and never fetches it, and `bindingRelay` replaces the binding fetches.
@@ -30,6 +31,7 @@ const PASSIVE_TRANSPORT_METHODS = ['readRpc', 'observeBinding', 'chainReader', '
   'nativeTransferRefused', 'nativeNonceConsumer', 'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
 const READBACK_PHASE = 'readback';
 const NODE_INFO_MESSAGES = Object.freeze(['getNetworkInfo', 'getNetworkParameters']);
+const PAYMENT_EVIDENCE_APPROVAL_MEMBERS = ['prepare', 'open', 'reopen', 'confirm', 'settle'];
 const OBSERVER_PROVENANCE_PREFIX = `dacs-node-observer:${TP1_APPROVED_IDENTITY_RECORD.recordId}`;
 const RPC_FAILED = 'node_wallet_rpc_failed';
 const RPC_INVALID = 'node_wallet_rpc_invalid';
@@ -87,6 +89,12 @@ export function createHeldTransportFacade({ admission, transport } = {}) {
   } });
   registerHeldTransportFacade(facade, transport);
   return facade;
+}
+
+// The adapter's members are all active: each call refuses profile_not_admitted while held and checks the binding before it runs.
+function createHeldAdapter(admission, adapter) {
+  const wrapped = admitPublicFactory(() => adapter, { purchase: true })({ admission });
+  return Object.freeze(Object.fromEntries(Object.entries(wrapped).filter(([name]) => name !== 'actionsAdmitted')));
 }
 
 /**
@@ -490,15 +498,19 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
 }
 
 /**
- * Returns a Promise for `{wallet, walletFactory, transport, observer, internalCauseOf, close}`: the session of `createNodeWalletSession` over a seller transport.
+ * Returns a Promise for `{wallet, walletFactory, transport, observer, paymentEvidenceAdapter, internalCauseOf, close}`: the session of `createNodeWalletSession` over a seller transport.
  * `transport` is the registered held facade of `createHeldTransportFacade`; `observer` is `createNodeObserver({owner, clock})` over the same owner, with no fence.
+ * `paymentEvidenceAdapter` is `{signCreate(input, {signal})}`, an active member under the hold: it signs one payment-evidence storage CREATE on the signer
+ * reservation, inside the caller's effect pass, and sends nothing (see `node-payment-evidence-adapter.mjs`).
  * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}` and the required
  * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed). A confirmation by another sender, or of a Listing CREATE,
  * is answered `true` without calling it; every other seller confirmation calls it once, and `false` or a throw (kept as `cause`) refuses `approval_required`.
  * Also requires `stateOwnership` `{directory, held()}`, the host's proof that it holds the state lock for the directory containing `journal`. Before it
- * returns, the composition removes the lock rows of dead holders from `journal` and reconciles every incomplete signer reservation.
+ * returns, the composition removes the lock rows of dead holders from `journal` and reconciles every incomplete signer reservation. It also requires
+ * `paymentEvidenceApproval` `{prepare, open, reopen, confirm, settle}`, the kit's approval ledger for payment-evidence CREATEs; `open` and `settle` serve the
+ * signer reservation.
  * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value, the transport's own refusal of the publications,
- * and `state_ownership_required` (cause kept when the proof itself failed) without a valid proof.
+ * `state_ownership_required` (cause kept when the proof itself failed) without a valid proof, and `invalid_params` when a ledger member is not a function.
  */
 export function createNodeSellerComposition(options = {}) {
   return buildNodeComposition(options, true);
@@ -506,15 +518,16 @@ export function createNodeSellerComposition(options = {}) {
 
 async function buildNodeComposition(options, seller) {
   const key = options?.key;
-  let keyCopy, transport, session, sellerAddress;
+  let keyCopy, transport, session, sellerAddress, evidenceDemos;
   try {
-    const { owner, journal, approve, approveConfirmedWrite, publications, qualify, stateOwnership, clock = { now: () => Date.now() } } = checkConstruction(options).options;
+    const { owner, journal, approve, approveConfirmedWrite, publications, qualify, stateOwnership, paymentEvidenceApproval, clock = { now: () => Date.now() } } = checkConstruction(options).options;
     const admission = { ...options.admission };
     if (seller && approveConfirmedWrite !== null && typeof approveConfirmedWrite !== 'function') throw new TypeError('approveConfirmedWrite must be a function or an explicit null');
     if (!(key instanceof Uint8Array)) fail('invalid_mnemonic');
     keyCopy = Uint8Array.from(key);
     if (qualify !== undefined && (!seller || typeof qualify !== 'function')) fail('invalid_params');
     if (seller && typeof stateOwnership?.held !== 'function') fail('state_ownership_required');
+    if (seller && !PAYMENT_EVIDENCE_APPROVAL_MEMBERS.every(name => typeof paymentEvidenceApproval?.[name] === 'function')) fail('invalid_params');
     const { Demos, validateMnemonic } = await loadNodeDemos();
     const expected = readExpectedPins(admission.binding, owner);
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
@@ -538,24 +551,35 @@ async function buildNodeComposition(options, seller) {
     const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const stamps = createRpcStampSource(clock);
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
-    session = createSdkWalletSession({ DemosCtor: nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate }), approve, transactionTransport,
+    const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate });
+    session = createSdkWalletSession({ DemosCtor: NodeDemos, approve, transactionTransport,
       validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
-    await session.importMnemonic(decodeMnemonic(keyCopy));
+    const mnemonic = decodeMnemonic(keyCopy);
+    await session.importMnemonic(mnemonic);
     // Routing identity outlives signing custody, which passive wallet.lock() clears.
     if (seller) sellerAddress = session.getPublicAccount().address;
     const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => ({
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
-    const reservations = seller ? createSignerReservations({ journal, pins: expected, clock }) : null;
+    const reservations = seller ? createSignerReservations({ journal, pins: expected, clock, openApproval: requestText => paymentEvidenceApproval.open(requestText),
+      settleApproval: (ledgerId, outcome, reason) => paymentEvidenceApproval.settle(ledgerId, outcome, reason) }) : null;
     await reservations?.recover({ stateOwnership });
+    const observer = seller ? createNodeObserver({ owner, clock }) : null;
+    // The adapter signs with its own Demos instance over the same phrase, and refuses once the session is locked.
+    if (seller) {
+      evidenceDemos = new NodeDemos();
+      await evidenceDemos.connectWallet(normalizeMnemonic(mnemonic), { algorithm: 'ed25519' });
+    }
+    const paymentEvidenceAdapter = seller ? createHeldAdapter(admission, createPaymentEvidenceCreateAdapter({ reservations, approval: paymentEvidenceApproval,
+      demos: evidenceDemos, observer, journal, pins: expected, clock, rpcUrl: transactionTransport.rpcUrl, isWalletLocked: () => session.isLocked() })) : null;
     const composition = Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass,
-      ...(seller ? { transport: createHeldTransportFacade({ admission, transport }), observer: createNodeObserver({ owner, clock }) } : {}),
-      async close() { session.lock(); await transport.close(); } });
+      ...(seller ? { transport: createHeldTransportFacade({ admission, transport }), observer, paymentEvidenceAdapter } : {}),
+      async close() { session.lock(); evidenceDemos?.disconnect(); await transport.close(); } });
     if (seller) sellerReservations.set(composition, reservations);
     return composition;
   } catch (error) {
-    try { session?.lock(); await transport?.close(); } catch { /* the construction error is the one to report */ }
+    try { session?.lock(); evidenceDemos?.disconnect(); await transport?.close(); } catch { /* the construction error is the one to report */ }
     throw error;
   } finally {
     keyCopy?.fill(0);

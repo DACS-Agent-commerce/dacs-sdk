@@ -39,12 +39,12 @@ export function reentrantOwner(owner) {
  * `clock` is the composition's mutable clock; `qualify` is installed on a seller. With `directOwner` the composition runs on
  * the exported owner itself, with no wrapper.
  */
-export async function gateWorld(t, { seller = true, qualify, directOwner = false, sessionOptions = {} } = {}) {
+export async function gateWorld(t, { seller = true, qualify, directOwner = false, sessionOptions = {}, journalWrap } = {}) {
   const clock = { now: () => T0 };
   let owner;
   const w = await spiedWorld(t, {
     createSession: seller ? api.createNodeSellerComposition : api.createNodeWalletSession,
-    ownerWrap: raw => { owner = directOwner ? raw : reentrantOwner(raw); return owner; },
+    ownerWrap: raw => { owner = directOwner ? raw : reentrantOwner(raw); return owner; }, journalWrap,
     sessionOptions: { clock, ...(seller ? { approveConfirmedWrite: null, publications: sellerPublications(), ...(qualify ? { qualify } : {}) } : {}), ...sessionOptions },
   });
   return Object.assign(w, { clock, currentOwner: () => owner });
