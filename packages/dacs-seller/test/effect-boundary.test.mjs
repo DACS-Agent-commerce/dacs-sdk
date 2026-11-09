@@ -394,3 +394,44 @@ test('the boundary refuses to be built without a stop check, a binding, a histor
   await assert.rejects(boundary.recordObserved({}, 'dispatch', {}), { code: 'eb_operation_invalid' });
   assert.equal(w.counts.signer, 0);
 });
+
+test('a signer that changes its returned array while the record is written cannot change what is sent', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary, history } = w.build();
+  const signerArray = Uint8Array.from([1, 2, 3, 4]);
+  w.control.appendHook = (record) => { if (record.state === 'signed') signerArray[0] = 9; };
+  const { bytes } = await boundary.pass(w.op(), w.sign(signerArray), w.send());
+  const durable = Uint8Array.from(Buffer.from((await history.read('lane-1')).find((record) => record.state === 'signed').bytes, 'base64'));
+  assert.deepEqual(durable, Uint8Array.from([1, 2, 3, 4]));
+  assert.deepEqual(w.sent, [durable]);
+  assert.deepEqual(bytes, durable);
+});
+
+test('a transport that changes the bytes it was handed cannot change what a later stage sends', async (t) => {
+  const w = await ebWorld(t);
+  const { boundary } = w.build();
+  await boundary.withFence(w.op(), async (fenced) => {
+    await boundary.signPass(fenced, w.sign(Uint8Array.from([1, 2, 3, 4])));
+    await boundary.dispatchPass(fenced, (bytes) => { bytes[0] = 9; return 'confirmed'; }, { stage: 'confirm' });
+    await boundary.dispatchPass(fenced, w.send('broadcast'), { stage: 'broadcast' });
+  });
+  assert.deepEqual(w.sent, [Uint8Array.from([1, 2, 3, 4])]);
+});
+
+test('a confirmation whose reply was lost and is then found by readback lets a restarted pass broadcast, and a dispatch readback does not', async (t) => {
+  const w = await ebWorld(t);
+  const first = w.build();
+  const timeout = failure('ETIMEDOUT');
+  await assert.rejects(first.boundary.pass(w.op(), w.sign(), () => { throw timeout; }, { stage: 'confirm' }), (error) => error === timeout);
+  const restarted = w.build();
+  await assert.rejects(restarted.boundary.pass(w.op(), w.sign(), w.send(), { stage: 'broadcast' }), { code: 'confirm_not_acknowledged' });
+  await restarted.boundary.recordObserved(w.op(), 'confirm', { found: 1 });
+  await restarted.boundary.pass(w.op(), w.sign(), w.send('broadcast'), { stage: 'broadcast' });
+  assert.deepEqual([w.counts.signer, w.counts.transport], [1, 1]);
+  assert.deepEqual(await states(restarted.history), ['signed', 'confirm-started', 'confirm-unknown', 'observed', 'broadcast-started', 'broadcast-acknowledged']);
+  const other = w.op({ operationId: 'op-2', lane: 'lane-2' });
+  await assert.rejects(restarted.boundary.pass(other, w.sign(), () => { throw timeout; }, { stage: 'dispatch' }), (error) => error === timeout);
+  await restarted.boundary.recordObserved(other, 'dispatch', { found: 1 });
+  await assert.rejects(restarted.boundary.pass(other, w.sign(), w.send(), { stage: 'broadcast' }), { code: 'confirm_not_acknowledged' });
+  assert.equal(w.counts.transport, 1);
+});
