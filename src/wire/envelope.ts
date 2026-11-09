@@ -20,10 +20,11 @@ import { assertPeerProfile, assertPurchaseProfile, assertTp1Binding, assertTp1Au
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPreAgreementRoute, isReadRoute } from "./routes.js";
 import { verifySellerSessionDelegation, type SellerSessionDelegation, type SellerSessionDelegationPayload } from "./delegation.js";
 import {
-  admitWireJson, claimKey, cloneJson, deepFreeze, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, withCanonicalClaims,
+  admitWireJson, claimKey, cloneJson, envelopeSignatureBytes, fail, hasKeys, isClaim, isHash, isListingPin, withCanonicalClaims,
   isRecord, isUint, lacksProfile, NONCE, ownedArtifact, ownedBytes, ownedConfig, ownedFields, ownedOrNothing, sameCanonical,
   uncurry, verifyEd25519, walletSignatureBytes, type JsonRecord, type ListingPin, type WireSigner,
 } from "./validate.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export interface WireRequestPayload {
   version: "1";

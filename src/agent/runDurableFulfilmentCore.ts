@@ -3417,20 +3417,21 @@ class DurableCoordinator {
   async #withHeartbeat<T>(operation: () => Promise<T>): Promise<T> {
     await this.#renew();
     let stopped = false;
-    let heartbeatError: unknown;
+    const noError = Symbol();
+    let heartbeatError: unknown = noError;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const interval = Math.max(1, Math.floor(this.#durability.leaseTtlMs / 3));
     const tick = (): void => {
       timer = setTimeout(() => {
         void this.#renew()
           .catch((error) => { heartbeatError = error; })
-          .finally(() => { if (!stopped && heartbeatError === undefined) tick(); });
+          .finally(() => { if (!stopped && heartbeatError === noError) tick(); });
       }, interval);
     };
     tick();
     try {
       const value = await operation();
-      if (heartbeatError !== undefined) throw heartbeatError;
+      if (heartbeatError !== noError) throw heartbeatError;
       await this.#renew();
       return value;
     } finally {
