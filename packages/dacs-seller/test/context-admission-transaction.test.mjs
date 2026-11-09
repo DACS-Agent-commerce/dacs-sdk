@@ -1950,3 +1950,24 @@ test('failed and settled starts release both slots before a third start after re
   await w.admission.begin(w.prepare(0x44).input);
   assert.equal(w.internals.admissionCounts().contextRecords, 1);
 });
+
+
+test('a retired completed job refuses a fresh context admission after restart', async t => {
+  const completedJob = job(0x11);
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === completedJob ? session : null });
+  const first = accountingInput(completedJob, PROPOSALS).payload;
+  w.store.finish(w.store.reserve(first, {}, { keepProfile: PROFILE }), 200, '{}');
+  session = 'finalised'; w.control.clock += HOUR + 61000;
+  const next = { ...accountingInput(job(0x22), PROPOSALS).payload, nonce: hash('replacement job nonce'), expiresAt: w.control.clock + 60000 };
+  w.store.finish(w.store.reserve(next, {}, { keepProfile: PROFILE }), 422, '{}', { noEffect: true });
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(completedJob).job_retired, 1);
+  assert.equal(ownerRow(w, completedJob).closed, 0);
+  session = null; w.reopen();
+  const { input } = w.prepare();
+  await assert.rejects(w.admission.begin(input), { code: 'context_job_closed', status: 409 });
+  assert.equal(w.row(completedJob), null);
+  assert.equal(w.calls.reserve, 0);
+  assert.equal(w.calls.wire, 0);
+  assert.equal(w.store.challenges.retained(input.nonce).failure.code, 'context_job_closed');
+});

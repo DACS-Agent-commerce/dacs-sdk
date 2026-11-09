@@ -420,6 +420,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       return db.prepare(`SELECT buyer, seller, pin FROM (${ledgerSources('owners').join(' UNION ALL ')}) WHERE job = ?`)
         .all(p.jobId).some(row => row.buyer !== p.buyer || row.seller !== p.seller || canonicalize(JSON.parse(row.pin)) !== canonicalize(p.listingPin));
     },
+    jobRetiredWithin: jobId => Boolean(get('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1', jobId)),
     jobClosedWithin: p => get('SELECT closed FROM kit_job_owners WHERE job = ?', p.jobId)?.closed === 1 && !wireHoldsWithin(p),
     // Only a job row establishes a purchase; its kept tuple, or null for an old-path job kept without one.
     purchaseWithin: (jobId) => get('SELECT k.profile FROM peer_jobs j LEFT JOIN kit_purchase_profiles k ON k.job = j.job WHERE j.job = ?', jobId),
@@ -555,7 +556,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   function reserveAdmissionWithin(input, time) {
     const p = { ...input, path: CONTEXT };
     if (reservationLedger.jobConflictWithin(p)) fail('peer_job_conflict', 409);
-    if (get('SELECT closed FROM kit_job_owners WHERE job = ?', p.jobId)?.closed === 1 ||
+    if (reservationLedger.jobRetiredWithin(p.jobId) || get('SELECT closed FROM kit_job_owners WHERE job = ?', p.jobId)?.closed === 1 ||
         get('SELECT 1 FROM kit_context_admissions WHERE jobId = ?', p.jobId) ||
         (admissions() && get('SELECT 1 FROM peer_context_admissions WHERE job = ?', p.jobId))) fail('context_job_closed', 409);
     retireSlotsWithin(time);

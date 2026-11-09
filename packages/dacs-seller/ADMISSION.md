@@ -55,7 +55,8 @@ with a terminal session. The first purchase also fixes its Agreement; a context 
 only the parties and pin. A closed owner refuses fresh work with context_job_closed (409). A definite no-effect end
 releases the provisional Agreement only when no effect, slot, transaction or context admission retains the job. The
 owner remains open for that buyer's corrected proposal. Retrying the refused proposal with its original nonce
-returns its saved answer even after a corrected proposal succeeds.
+returns its saved answer even after a corrected proposal succeeds. The context admission transaction also refuses
+retired jobs with context_job_closed (409), including after a restart with unknown session state.
 
 A mutating route takes one effect per job across both reserve paths: an old-path slot or an accounted reservation the
 wire did not refuse excludes another effect with peer_operation_conflict (409). Effect-to-job records protect pending
