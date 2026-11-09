@@ -1679,12 +1679,12 @@ for (const state of ['aborted', 'settled', 'retired']) test(`${state} admission 
   await assert.rejects(w.admission.begin(foreign.input), { code: 'peer_job_conflict', status: 409 });
   assert.equal(w.store.challenges.retained(foreign.input.nonce).failure.code, 'peer_job_conflict');
   await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
-  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: 'peer_job_conflict', status: 409 });
+  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: state === 'retired' && boundary === 'old' ? 'context_session_terminal' : 'peer_job_conflict', status: 409 });
   assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, calls); assert.equal(ownerRow(w, p.input.jobId).buyer, BUYER);
   if (state !== 'settled') assert.equal(ownerRow(w, p.input.jobId).closed, 1);
   w.reopen();
   assert.throws(() => w.internals.transaction(() => w.internals.reserveAdmissionWithin(foreign.input, w.control.clock)), { code: 'peer_job_conflict', status: 409 });
-  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: 'peer_job_conflict', status: 409 });
+  for (const boundary of ['old', 'accounted']) await assert.rejects(Promise.resolve().then(() => claimAt(w, boundary, foreign.input)), { code: state === 'retired' && boundary === 'old' ? 'context_session_terminal' : 'peer_job_conflict', status: 409 });
   assert.deepEqual(workSnapshot(w), before);
 });
 
@@ -1831,6 +1831,26 @@ for (const completion of ['finish', 'reconcile']) for (const restart of [false, 
     assert.throws(() => w.store.reserve({ ...args.payload, nonce: hash('refused agreement retry') }, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
   });
 }
+
+test('a refused proposal keeps its saved answer after a corrected proposal succeeds', t => {
+  const w = world(t), args = accountingInput(job(0x11), PROPOSALS);
+  const text = '{"error":"proposal_refused"}';
+  const first = w.store.reserve(args.payload, {}, { keepProfile: PROFILE });
+  w.store.finish(first, 422, text, { noEffect: true });
+  const corrected = { ...args.payload, nonce: hash('corrected proposal'), agreementHash: hash('corrected agreement') };
+  const second = w.store.reserve(corrected, {}, { keepProfile: PROFILE });
+  assert.equal(second.disposition, 'perform');
+  w.store.finish(second, 200, '{}');
+  const before = workSnapshot(w);
+  for (const reopen of [false, true]) {
+    if (reopen) w.reopen();
+    assert.deepEqual(w.store.reserve(args.payload, {}, { keepProfile: PROFILE }), { disposition: 'cached', status: 422, text });
+    assert.throws(() => w.store.reserve({ ...args.payload, agreementHash: corrected.agreementHash }, {}, { keepProfile: PROFILE }), { code: 'peer_nonce_conflict', status: 409 });
+    assert.throws(() => w.store.reserve({ ...args.payload, nonce: hash('fresh refused proposal') }, {}, { keepProfile: PROFILE }), { code: 'peer_job_conflict', status: 409 });
+    assert.deepEqual(workSnapshot(w), before);
+    assert.equal(ownerRow(w, corrected.jobId).agreement_hash, corrected.agreementHash);
+  }
+});
 
 for (const boundary of ['old', 'accounted']) for (const source of ['rejecting promise', 'throw', 'non-state']) {
   test(`${boundary} proposal gate refuses a session source returning ${source} without work`, async t => {

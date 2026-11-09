@@ -370,7 +370,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   // RESERVATION_LEDGER's sources in this store: the context admission table exists only once a first admission commits.
   const activeK1 = (job, slot) => `SELECT 1 FROM kit_context_admissions k WHERE k.jobId = ${job} AND k.state <> 'aborted' AND NOT EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = k.jobId AND r.${slot}_retired = 1)`;
   const ledgerSources = (kind) => {
-    const hasAdmissions = admissions();
+    const hasAdmissions = kind !== 'buyerUnits' && admissions();
     return RESERVATION_LEDGER[kind].filter(sql => hasAdmissions || !sql.includes('peer_context_admissions')).map(sql =>
     kind !== 'owners' && sql.includes('peer_context_admissions') ? `${sql} WHERE NOT EXISTS (SELECT 1 FROM kit_slot_retirements r WHERE r.job = peer_context_admissions.job AND r.${kind === 'jobs' ? 'job' : 'context'}_retired = 1)` :
     kind !== 'owners' && sql.includes('kit_context_admissions') ? `${sql} WHERE EXISTS (${activeK1('kit_context_admissions.jobId', kind === 'jobs' ? 'job' : 'context')})` : sql);
@@ -394,10 +394,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // A job belongs to the buyer, seller and Listing pin of every record that holds it. A job row also fixes the
     // Agreement, which a context step does not carry (its agreementHash slot is the context scope hash).
     jobConflictWithin: (p) => {
-      const owner = get('SELECT agreement_hash FROM kit_job_owners WHERE job = ?', p.jobId);
-      if (owner?.agreement_hash != null && p.path !== CONTEXT && owner.agreement_hash !== p.agreementHash) return true;
-      const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
-      if (job && p.path !== CONTEXT && job.context !== canonicalize(requestIdentity(p))) return true;
+      const binding = get(`SELECT (SELECT agreement_hash FROM kit_job_owners WHERE job = ?) AS agreement_hash,
+        (SELECT context FROM peer_jobs WHERE job = ?) AS context`, p.jobId, p.jobId);
+      if (p.path !== CONTEXT && binding.agreement_hash !== null && binding.agreement_hash !== p.agreementHash) return true;
+      if (p.path !== CONTEXT && binding.context !== null && binding.context !== canonicalize(requestIdentity(p))) return true;
       return db.prepare(`SELECT buyer, seller, pin FROM (${ledgerSources('owners').join(' UNION ALL ')}) WHERE job = ?`)
         .all(p.jobId).some(row => row.buyer !== p.buyer || row.seller !== p.seller || canonicalize(JSON.parse(row.pin)) !== canonicalize(p.listingPin));
     },
@@ -633,7 +633,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const requestHash = sha256Hex(canonicalize(p));
         const nonce = `${p.buyer}:${p.nonce}`;
         const previous = get('SELECT * FROM peer_nonces WHERE nonce = ?', nonce);
-        if (reservationLedger.jobConflictWithin(p)) fail('peer_job_conflict', 409);
         if (previous && previous.request_hash !== requestHash) fail('peer_nonce_conflict', 409);
         const job = get('SELECT context FROM peer_jobs WHERE job = ?', p.jobId);
         // The tuple is not part of the request hash, so this comes before a repeated nonce's answer.
