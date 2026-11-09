@@ -109,9 +109,8 @@ export interface ReputationWindow {
 
 // §10.4.3(d) divergence uses the ONE shared predicate (bundleDivergence.js),
 // identical to the two-sided consistency verdict — presence-mismatch by phase
-// `index` counts as divergence (DACS-Standard#224). Previously a private
-// by-position copy here that disagreed with bundleConsistency on
-// length-mismatched phaseSummary.
+// `index` counts as divergence. Sharing it keeps this deriver and
+// bundleConsistency in agreement on length-mismatched phaseSummary.
 
 /** §10.4.1 signed-scope content hash of a bundle (omit signatures + anchoredByRole). */
 function bundleContentHash(bundle: AnyAttestationBundle): string {
