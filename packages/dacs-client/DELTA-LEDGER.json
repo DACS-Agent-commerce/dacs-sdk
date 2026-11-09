@@ -6730,6 +6730,17 @@
           "after": "c0e9061d13141e783f3fdb484b97f66f9b45253c"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF P21a3aa record the journal blob chosen at the base sync and re-pin the freeze",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a14bf40eabc66742e0cb3c7e99093246a16c72d3",
+          "after": "a14bf40eabc66742e0cb3c7e99093246a16c72d3"
+        }
+      ]
     }
   ]
 }
