@@ -8,6 +8,7 @@ import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { accountingFixture, BUYER, SELLER, JOB, JOB2, PIN, T0, CONTEXT, PROPOSALS } from './helpers/reservation-accounting-fixture.mjs';
 
 const HOUR = 3600000;
+const LIVE_JOB = '01' + '3'.repeat(24), NEXT_JOB = '01' + 'Z'.repeat(24), CHALLENGE_JOB = '01' + '5'.repeat(24);
 function fixture(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'slot-retirement-'));
   const path = join(directory, 'transport.sqlite');
@@ -79,4 +80,63 @@ test('an accounted context start retires an ended old-route slot without other t
   const next = f.payload({ path: CONTEXT, jobId: JOB2 });
   const result = await f.reserve(f.args(next));
   assert.equal(result.state, 'new');
+});
+
+function retainedContextProof(t, options = {}) {
+  const w = fixture(t, { maxJobs: 2, maxContextRecords: 2, ...options });
+  const first = w.payload(JOB, { path: CONTEXT });
+  w.store.finish(w.store.reserve(first, { scope: { jobId: JOB } }, { admit: w.now }), 200, '{}');
+  w.advance(HOUR + 61000);
+  w.store.reserve(w.payload(LIVE_JOB, { path: CONTEXT }), { scope: { jobId: LIVE_JOB } }, { admit: w.now });
+  w.terminal('finalised');
+  w.store.challenges.issue({ jobId: CHALLENGE_JOB, buyer: BUYER.claim }, 'c'.repeat(64));
+  const db = sellerStoreInternals(w.store).db;
+  assert.deepEqual(db.prepare('SELECT job_retired, context_retired FROM kit_slot_retirements WHERE job = ?').get(JOB),
+    { job_retired: 1, context_retired: 1 });
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions WHERE job = ?').get(JOB).n, 1);
+  return w;
+}
+
+test('a retained retired context proof cannot free a job slot twice', t => {
+  const w = retainedContextProof(t);
+  w.store.reserve(w.payload(NEXT_JOB), {}, { keepProfile: FIXTURE_PROFILE });
+  assert.throws(() => w.store.reserve(w.payload(JOB2, { path: CONTEXT }), { scope: { jobId: JOB2 } }, { admit: w.now }),
+    { code: 'peer_job_capacity', status: 503 });
+  assert.equal(sellerStoreInternals(w.store).admissionCounts().contextRecords, 1);
+});
+
+test('a retained retired context proof cannot free a context slot twice', async t => {
+  const w = retainedContextProof(t, { maxJobs: 10 });
+  const f = await accountingFixture(t, { maxJobs: 10, maxContextRecords: 2 });
+  f.setTime(w.now());
+  const next = f.payload({ jobId: NEXT_JOB, path: CONTEXT });
+  assert.equal((await w.store.reservationAccounting.reserveAccounted(f.args(next))).state, 'new');
+  assert.equal(sellerStoreInternals(w.store).admissionCounts().contextRecords, 2);
+  assert.throws(() => w.store.reserve(w.payload(JOB2, { path: CONTEXT }), { scope: { jobId: JOB2 } }, { admit: w.now }),
+    { code: 'peer_context_capacity', status: 503 });
+});
+
+test('one reserve reuses a genuinely reclaimable job and context slot', t => {
+  const w = fixture(t, { maxJobs: 1, maxContextRecords: 1 });
+  const first = w.payload(JOB, { path: CONTEXT });
+  w.store.finish(w.store.reserve(first, { scope: { jobId: JOB } }, { admit: w.now }), 200, '{}');
+  w.advance(HOUR + 61000); w.terminal('finalised');
+  assert.equal(w.store.reserve(w.payload(JOB2, { path: CONTEXT }), { scope: { jobId: JOB2 } }, { admit: w.now }).disposition, 'perform');
+  const port = sellerStoreInternals(w.store);
+  assert.equal(port.admissionCounts().contextRecords, 1);
+  assert.deepEqual(port.db.prepare('SELECT job FROM peer_context_admissions').all(), [{ job: JOB2 }]);
+  assert.equal(port.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
+});
+
+for (const maxContextRecords of [1, 2]) test(`capacity retirement finds an active terminal job beyond a retired proof with context limit ${maxContextRecords}`, t => {
+  const w = retainedContextProof(t);
+  w.store.finish(w.store.reserve(w.payload(NEXT_JOB), {}, { keepProfile: FIXTURE_PROFILE }), 200, '{}');
+  w.advance(HOUR + 61000);
+  // The terminal job is separate from the retained context proof.
+  const store = createSellerTransportStore({ path: w.path, now: w.now, maxJobs: 2, maxContextRecords,
+    contextSessionState: ({ jobId }) => [JOB, NEXT_JOB].includes(jobId) ? 'finalised' : null });
+  t.after(() => store.close());
+  const port = sellerStoreInternals(store);
+  port.transaction(() => port.retireSlotsWithin(w.now(), undefined, { capacity: true, keepContexts: true }));
+  assert.equal(port.db.prepare('SELECT COUNT(*) AS n FROM peer_jobs WHERE job = ?').get(NEXT_JOB).n, 0);
 });

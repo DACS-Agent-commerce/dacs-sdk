@@ -256,7 +256,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     return true;
   }
 
-  // D2: the intent commits in one transaction, or its refusal fails the owning challenge alone and nothing else is written.
+  // A refused intent rolls back its reservation writes and fails only its owning challenge.
   // Same-nonce re-entry leaves the live worker's challenge untouched.
   function commitIntent(input, row) {
     const refusal = transaction(() => {
