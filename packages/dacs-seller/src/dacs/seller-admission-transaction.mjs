@@ -37,7 +37,8 @@ const isUint = (value) => Number.isSafeInteger(value) && value >= 0;
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = (code, status = 409, cause) => { throw new SellerTransportError(code, status, cause === undefined ? undefined : { cause }); };
 // An error that names its own refusal (a seller or wire error: a code and an HTTP error status) keeps it; any other local error is an uncertain operation.
-const refusalOf = (error) => (typeof error?.code === 'string' && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599
+const isRefusal = (error) => typeof error?.code === 'string' && Number.isInteger(error.status) && error.status >= 400 && error.status <= 599;
+const refusalOf = (error) => (isRefusal(error)
   ? { code: error.code, status: error.status } : { code: 'operation_uncertain', status: 503 });
 const storedCause = (cause) => ({ ...refusalOf(cause), message: cause?.message ?? String(cause) });
 // boundedCall answers at the deadline or at the work's end, whichever is first. A late hold or lease needs the work's own end too, so
@@ -172,9 +173,10 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     return held;
   }
 
-  // D2 checks readiness and starts after the store's capacity guard; D4 re-checks context capacity too, after policy awaits.
+  // Check readiness and start limits after the store's capacity guard; recheck context capacity after policy awaits.
   function checkLimits(buyer, ownRow) {
     if (ready() !== true) fail('seller_not_ready', 503);
+    retireSlotsWithin(clock(), undefined, { capacity: true, keepContexts: true, jobs: [] });
     const counts = admissionCounts();
     if (ownRow && counts.contextRecords - 1 >= limits.maxContextRecords) fail('peer_context_capacity', 503);
     if (counts.starts >= limits.maxStartsPerHour) fail('unpaid_start_limit', 429);
@@ -269,7 +271,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
       } catch (error) {
         db.exec('ROLLBACK TO admission_intent'); db.exec('RELEASE admission_intent');
         const { code, status } = refusalOf(error);
-        if (typeof error?.code !== 'string' || !Number.isInteger(error.status) || error.status < 400 || error.status > 599) throw error;
+        if (!isRefusal(error)) throw error;
         if (verified) challenges.recordFailedWithin(input.owner, input.nonce, code, status);
         return error;
       }
