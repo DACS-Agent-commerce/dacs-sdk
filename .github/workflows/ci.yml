@@ -2,8 +2,8 @@ name: CI
 
 on:
   push:
-    # phase0-completion is the shared base of the phase 0 PRs: a run on its newest head shows whether a red PR
-    # check comes from the base or from the PR itself (older heads' unfinished runs end as cancelled, see below).
+    # phase0-completion is the shared base of the phase 0 PRs: a finished run on a recent head shows whether a red
+    # PR check comes from the base or from the PR itself (see the concurrency note below for which runs finish).
     branches: [main, phase0-completion]
   pull_request:
   merge_group:
@@ -11,13 +11,15 @@ on:
 permissions:
   contents: read
 
-# Push runs on phase0-completion share one group and never cancel each other: the running one always finishes (a full
-# run takes about two hours and merges come faster, so cancelling left no finished run for a whole day). GitHub keeps
-# at most one pending run in the group: a newer push replaces the pending one, so pushes made while a run is going
-# collapse into one run of the newest head when it ends. Every other event gets its own group (run_id), so pull
-# request, merge queue and main runs are never cancelled or replaced.
-# A re-run of an older head's push run joins the same group: it waits for the running one and replaces any pending
-# newer-head run. Re-run only the newest head; if its run shows cancelled, re-run it to get the base signal back.
+# Push runs on phase0-completion share one group and a running one is never cancelled, so it always finishes: a full
+# run is longer than the gap between merges, and cancelling the running run would leave no finished run at all.
+# GitHub keeps at most one pending run in the group; a run admitted later replaces it (shown as cancelled). Runs are
+# usually admitted in push order, so the pending run is usually the newest head, but GitHub does not promise that
+# order. Every other event gets its own group (run_id), so pull request, merge queue and main runs are never cancelled
+# or replaced.
+# A re-run joins the same group and also replaces the pending run. A re-run of a run created before this setting may
+# keep that run's old workflow file, including cancel-in-progress: true. Re-run only the newest head; if its run
+# shows cancelled, re-run it to get the base signal back.
 concurrency:
   group: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/phase0-completion') && 'ci-phase0-completion-push' || format('ci-{0}', github.run_id) }}
   cancel-in-progress: false
