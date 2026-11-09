@@ -254,7 +254,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     return true;
   }
 
-  // D2: the intent commits in one transaction, or its refusal fails the owning challenge alone and nothing else is written.
+  // A refused intent fails its owning challenge and may commit eligible slot retirements.
   // A job that already has a row is refused without touching the challenge: its owner may still be validating.
   function commitIntent(input, row) {
     const refusal = transaction(() => {

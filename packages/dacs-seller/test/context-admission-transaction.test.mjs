@@ -1524,6 +1524,24 @@ test('R20 accounting adopts a detached tuple without another insert or timestamp
 });
 
 
+test('retired settled admissions do not reread session state during later capacity checks', async t => {
+  let terminal = false, retiredReads = 0;
+  const w = world(t, { contextSessionState: ({ jobId }) => {
+    if (jobId !== job(0x11)) return null;
+    if (terminal) retiredReads++;
+    return terminal ? 'finalised' : null;
+  } });
+  const first = w.prepare(0x11);
+  await (await running(w, first)).complete(outcome);
+  terminal = true; w.control.clock += HOUR + 61000;
+  w.internals.transaction(() => w.internals.retireSlotsWithin(w.control.clock));
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(first.input.jobId).job_retired, 1);
+  retiredReads = 0;
+  const next = w.prepare(0x22);
+  await w.admission.begin(next.input);
+  assert.equal(retiredReads, 0);
+});
+
 test('R06 per-job retirement leaves another settled holder active', async t => {
   let terminal = false;
   const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null });
