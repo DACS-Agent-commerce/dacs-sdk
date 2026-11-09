@@ -537,7 +537,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     const jobs = (plan?.jobs ?? reclaimableJobs(plan?.capacity ? Math.max(0, reservationLedger.jobCountWithin() - freed.size - maxJobs + 1) : Number.MAX_SAFE_INTEGER, jobId, time, freed)).filter(job => jobId === undefined || job === jobId);
     for (const job of new Set([...jobs, ...contexts.map(row => row.job)])) {
       const owner = get(`SELECT buyer, seller, pin FROM (${ledgerSources('owners').join(' UNION ALL ')}) WHERE job = ? LIMIT 1`, job);
-      const contextRetired = Number(contexts.some(row => row.job === job));
+      const contextRetired = Number(Boolean(contexts.some(row => row.job === job) ||
+        (jobs.includes(job) && admissions() && get('SELECT 1 FROM peer_context_admissions WHERE job = ?', job))));
       const closed = Number(Boolean(contextRetired || get('SELECT 1 FROM peer_effect_jobs WHERE job = ?', job)));
       if (owner) run(`INSERT INTO kit_slot_retirements(job, job_retired, context_retired, owner) VALUES (?, ?, ?, ?)
         ON CONFLICT(job) DO UPDATE SET job_retired = MAX(job_retired, excluded.job_retired), context_retired = MAX(context_retired, excluded.context_retired), owner = excluded.owner`,

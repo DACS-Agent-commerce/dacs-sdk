@@ -357,7 +357,8 @@ test('the old path still retires a terminal admission-only job to free a job slo
   assert.throws(() => oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })), refused('peer_job_capacity', 503));
   f.setTime(T0 + 7200000); terminal = true;
   assert.doesNotThrow(() => oldReserve(f, f.payload({ buyer: OTHER.claim, jobId: JOB2 })));
-  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions').get().n, 0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_context_admissions').get().n, 1);
+  assert.equal(f.db.prepare('SELECT context_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).context_retired, 1);
   assert.deepEqual(f.jobRows().map(row => row.job), [JOB2]);
 });
 
@@ -373,8 +374,9 @@ const overCap = async (t, terminalJobs, live = []) => {
   f.setTime(T0 + 7200000); f.reopen(); terminal = terminalJobs;
   return f;
 };
-const ledgerJobs = (f) => f.db.prepare(`SELECT job FROM peer_jobs UNION SELECT job FROM peer_context_admissions
-  UNION SELECT jobId FROM kit_job_holds ORDER BY job`).all().map(row => row.job);
+const ledgerJobs = (f) => f.db.prepare(`SELECT job FROM (SELECT job FROM peer_jobs UNION SELECT job FROM peer_context_admissions
+  UNION SELECT jobId FROM kit_job_holds) jobs WHERE NOT EXISTS (
+    SELECT 1 FROM kit_slot_retirements r WHERE r.job = jobs.job AND r.job_retired = 1) ORDER BY job`).all().map(row => row.job);
 const startC = (f, extra = {}) => f.store().reserve(contextPayload(f, { buyer: OTHER.claim, jobId: JOB3 }), { scope: { jobId: JOB3 } }, { admit: f.now, ...extra });
 
 test('a job count above the cap after a restart counts a retired admission-only job once: the context start is refused with nothing retired', async t => {
