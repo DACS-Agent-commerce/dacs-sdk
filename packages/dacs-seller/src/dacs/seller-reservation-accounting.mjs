@@ -80,6 +80,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
     const replay = ledger.retiredReplayWithin(payload, operationId);
     if (replay) {
+      if (ledger.recordCountWithin(at) >= limits.maxRecords) fail('peer_store_capacity', 503);
       if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
       if (get('SELECT key FROM kit_reservations WHERE key = ?', key)) fail('peer_request_replayed', 409);
     } else checkLimitsWithin(payload, contextStart, at);

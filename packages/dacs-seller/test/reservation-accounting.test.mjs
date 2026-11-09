@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { completeWireEffect, inspectWireOperation, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
-import { RESERVATION_LEDGER, SellerTransportError, createSellerTransportStore, sellerContextChallengeScope, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
+import { RESERVATION_LEDGER, sellerStoreInternals, SellerTransportError, createSellerTransportStore, sellerContextChallengeScope, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
 import { createSellerDurableState } from '../src/dacs/seller-durable-state.mjs';
 import { createReservationAccounting } from '../src/dacs/seller-reservation-accounting.mjs';
 import DatabaseSync from 'better-sqlite3';
@@ -809,6 +809,25 @@ test('a job that already holds the only context record retries its retained chal
   }
 });
 
+test('a job that already holds the only context record is issued a fresh challenge for its retry; another job is not', async t => {
+  const holders = [
+    { name: 'old context admission', hold: f => oldContextStep(f), retry: 'cached' },
+    // The accounted start holds the context slot: the old path no longer runs the same job's context step.
+    { name: 'accounted context start', hold: f => f.reserve(f.args(contextPayload(f))), conflict: true },
+  ];
+  for (const holder of holders) for (const restart of [false, true]) await t.test(`${holder.name}${restart ? ' after restart' : ''}`, async t => {
+    const f = await accountingFixture(t, { maxContextRecords: 1 });
+    await holder.hold(f);
+    if (restart) f.reopen();
+    const issue = (jobId = JOB) => f.store().challenges.issue({ jobId, buyer: BUYER.claim }, sha256Hex('context scope'));
+    const challenge = issue();
+    assert.equal(challenge.expiresAt, T0 + SESSION_CHALLENGE_LIFETIME_MS, holder.name);
+    assert.throws(() => issue(JOB2), refused('peer_context_capacity', 503), holder.name);
+    if (holder.conflict) assert.throws(() => oldReserve(f, contextPayload(f)), refused('peer_operation_conflict', 409), holder.name);
+    else assert.equal(oldReserve(f, contextPayload(f)).disposition, holder.retry, holder.name);
+  });
+});
+
 // One job identity rule for both paths: a job row fixes the job's Agreement, so another Agreement for the job is refused
 // before any charge, unit, file or write.
 const OTHER_AGREEMENT = sha256Hex('other agreement');
@@ -1269,4 +1288,26 @@ test('a refused charge leaves the expired rows in place', async t => {
   f.setTime(T0 + REPLAY_WINDOW_MS);
   await assert.rejects(f.reserve(await f.admit(f.payload({ jobId: JOB2 }))), refused('peer_job_capacity', 503));
   assert.deepEqual(f.rows(), before);
+});
+
+for (const restart of [false, true]) test(`completed retired replays respect the shared record limit${restart ? ' after restart' : ''}`, async t => {
+  let session = null, charges = 0;
+  const f = await accountingFixture(t, { maxRecords: 1, maxJobs: 1,
+    contextSessionState: ({ jobId }) => jobId === JOB ? session : null });
+  const answer = { status: 200, text: '{"proposal":"kept"}' };
+  completeWireEffect(f.journal, await f.reserve(await f.admit()), answer);
+  session = 'finalised'; f.setTime(T0 + 2 * 3600000);
+  const port = sellerStoreInternals(f.store());
+  port.transaction(() => port.retireSlotsWithin(f.now(), JOB));
+  assert.equal(port.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
+  if (restart) { session = null; f.reopen(); }
+  const replay = async () => {
+    const input = await f.admit();
+    input.checkCapacityWithin = () => { charges++; return { class: 'general', allocationId: null }; };
+    return f.reserve(input);
+  };
+  const before = { rows: f.rows(), holds: f.holds(), files: f.files() };
+  await assert.rejects(replay(), { code: 'peer_store_capacity', status: 503 });
+  assert.deepEqual({ rows: f.rows(), holds: f.holds(), files: f.files() }, before);
+  assert.equal(charges, 0); assert.equal(f.jobRows().length, 0);
 });

@@ -555,10 +555,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   function reserveAdmissionWithin(input, time) {
     const p = { ...input, path: CONTEXT };
     if (reservationLedger.jobConflictWithin(p)) fail('peer_job_conflict', 409);
+    retireSlotsWithin(time);
     if (reservationLedger.jobRetiredWithin(p.jobId) || get('SELECT closed FROM kit_job_owners WHERE job = ?', p.jobId)?.closed === 1 ||
         get('SELECT 1 FROM kit_context_admissions WHERE jobId = ?', p.jobId) ||
         (admissions() && get('SELECT 1 FROM peer_context_admissions WHERE job = ?', p.jobId))) fail('context_job_closed', 409);
-    retireSlotsWithin(time);
     if (!reservationLedger.jobHeldWithin(p.jobId) && reservationLedger.jobCountWithin() >= maxJobs) fail('peer_job_capacity', 503);
     if (!reservationLedger.contextHeldWithin(p.jobId) && reservationLedger.contextCountWithin() >= maxContextRecords) fail('peer_context_capacity', 503);
     claimJobWithin(p);
@@ -570,14 +570,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   const starts = (since, buyer) => (admissions() ? startsIn('peer_context_admissions', 'admitted_at', since, buyer) : 0) + startsIn('kit_context_admissions', 'admittedAt', since, buyer);
   // The ledger's unpaid-start counts over the union of this journal's admission records and the K1 admission rows (SA-5):
   // a start counts once admitted, compensated ones included; an intent that never admitted has no `admittedAt`.
-  function admissionCounts() {
+  function admissionCounts({ jobId } = {}) {
     const time = now(), since = time - CHALLENGE_RATE_WINDOW_MS, contextCount = reservationLedger.contextCountWithin();
-    return { contextRecords: contextCount,
+    return { contextRecords: jobId !== undefined && reservationLedger.contextHeldWithin(jobId) ? 0 : contextCount,
       starts: starts(since), buyerStarts: buyer => starts(since, buyer) };
   }
   const { maxStartsPerHour, maxStartsPerBuyerPerHour } = contextStartLimits;
-  const ledger = createSellerChallengeLedger({ db, transaction, now, generation, ready, stopped, sessionState: ({ jobId }) => readSessionStateWithin(jobId), admissionCounts: () => {
-      retireSlotsWithin(now(), undefined, { capacity: true, jobs: [] }); return admissionCounts();
+  const ledger = createSellerChallengeLedger({ db, transaction, now, generation, ready, stopped, sessionState: ({ jobId }) => readSessionStateWithin(jobId), admissionCounts: input => {
+      retireSlotsWithin(now(), undefined, { capacity: true, jobs: [] }); return admissionCounts(input);
     },
     limits: { maxChallenges, maxContextRecords, maxPerHour: maxStartsPerHour, maxPerBuyerPerHour: maxStartsPerBuyerPerHour, maxStartsPerHour, maxStartsPerBuyerPerHour } });
   // Keep acceptance proof with the retained context answer, even if its terminal challenge is reclaimed.
@@ -684,6 +684,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           if (get('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1', p.jobId) && reservationLedger.sessionTerminalWithin(p.jobId)) fail('context_session_terminal', 409);
           fail('peer_job_conflict', 409);
         }
+        const time = now();
+        if (!uint(time)) fail('peer_clock_invalid', 503);
+        if (!dryRun) retireSlotsWithin(time, undefined, { jobs: [], contexts: [] });
         if (existing?.state !== 'complete' && reservationLedger.jobRetiredWithin(p.jobId)) fail('context_session_terminal', 409);
         if (journaledOnly && !READ_ROUTES.has(p.path) && !get('SELECT effect FROM peer_effects WHERE effect = ?', effectKey)) fail('peer_delegation_expired', 408);
         // The SDK buyer coordinator reconciles before publishing a proposal.
@@ -705,9 +708,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const retry = existing?.state === 'retry' && !contextStep;
         if (existing && !retry && !retained) retained = existing.state === 'complete' ? { disposition: 'cached', status: existing.status, text: existing.response } : { disposition: 'uncertain', effectKey, owner: existing.owner };
         if (!retained && reservationLedger.jobClosedWithin(p)) fail('context_job_closed', 409);
-        const time = now();
-        if (!uint(time)) fail('peer_clock_invalid', 503);
-        if (!dryRun) retireSlotsWithin(time, undefined, { jobs: [], contexts: [] });
         const retired = [];
         if (!retained && !existing && p.path === PROPOSAL && reservationLedger.sessionTerminalWithin(p.jobId)) fail('context_session_terminal', 409);
         if (contextStep && !retained) {

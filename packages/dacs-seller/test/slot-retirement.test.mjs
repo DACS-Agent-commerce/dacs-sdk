@@ -246,3 +246,17 @@ test('a retired job refuses a fresh accounted context and preserves job capacity
   assert.equal((await f.reserve(f.args(f.payload({ jobId: JOB2 })))).state, 'new');
   await assert.rejects(f.reserve(f.args(f.payload({ jobId: NEXT_JOB }))), { code: 'peer_job_capacity', status: 503 });
 });
+
+test('old reserve refuses fresh work when its sweep retires the job', async t => {
+  let session = null;
+  const f = await accountingFixture(t, { maxJobs: 1,
+    contextSessionState: ({ jobId }) => jobId === JOB ? session : null });
+  completeWireEffect(f.journal, await f.reserve(await f.admit()), { status: 200, text: '{"proposal":"kept"}' });
+  f.setTime(T0 + 2 * HOUR); session = 'finalised';
+  const fresh = f.payload({ path: '/dacs/v1/bundles/buyer-copy' });
+  const before = { rows: f.rows(), holds: f.holds(), files: f.files() };
+  assert.throws(() => f.store().reserve(fresh, {}, { keepProfile: FIXTURE_PROFILE }),
+    { code: 'context_session_terminal', status: 409 });
+  assert.deepEqual({ rows: f.rows(), holds: f.holds(), files: f.files() }, before);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 0);
+});

@@ -158,6 +158,45 @@ function gatedPolicy(w) {
   return jobId => { const gate = { entered: deferred(), barrier: deferred() }; gates.set(jobId, gate); return gate; };
 }
 const reject = (promise, code, status) => assert.rejects(promise, { code, ...(status ? { status } : {}) });
+test('begin refuses a job retired by the readiness limit sweep', async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === job(0x11) ? session : null });
+  const payload = { version: '1', kind: 'request', path: '/dacs/v1/agreements/proposals', method: 'POST', jobId: job(0x11), buyer: BUYER, seller: SELLER,
+    listingPin: PIN, profile: PROFILE, agreementHash: hash('agreement'), bodyHash: hash('{}'), nonce: Buffer.alloc(24, 1).toString('base64url'), expiresAt: T0 + 60000 };
+  await w.store.reservationAccounting.reserveAccounted({ payload, route: payload.path, operationId: wireOperationId(payload), keepProfile: PROFILE,
+    checked: { body: {}, reserve: async () => ({ state: 'completed', outcome: { status: 200, text: '{}' } }) } });
+  w.control.clock += HOUR + 61000;
+  const p = w.prepare();
+  Object.defineProperty(w.control, 'ready', { get() { session = 'finalised'; return true; } });
+  await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
+  assert.equal(w.row(p.input.jobId), null); assert.equal(w.holds.size, 0); assert.equal(w.calls.reserve, 0);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+});
+
+test('begin refuses a job retired by its admission sweep without taking a hold', async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === job(0x11) ? session : null });
+  const payload = { path: '/dacs/v1/agreements/proposals', method: 'POST', jobId: job(0x11), buyer: BUYER, seller: SELLER,
+    listingPin: PIN, agreementHash: hash('agreement'), bodyHash: hash('{}'), nonce: 'completed-proposal', expiresAt: T0 + 60000 };
+  w.store.finish(w.store.reserve(payload, {}, { keepProfile: PROFILE }), 200, '{"proposal":"kept"}');
+  w.control.clock += HOUR + 61000;
+  const p = w.prepare();
+  session = 'finalised';
+  let result, error;
+  try { result = await w.admission.begin(p.input); } catch (cause) { error = cause; }
+  const retired = w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(p.input.jobId)?.job_retired ?? 0;
+  assert.deepEqual({ code: error?.code, status: error?.status, state: w.row(p.input.jobId)?.state ?? null, retired,
+    holds: w.holds.size, policyCalls: w.calls.reserve },
+  { code: 'context_job_closed', status: 409, state: null, retired: 0, holds: 0, policyCalls: 0 });
+  assert.equal(result, undefined);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+  const next = w.prepare(0x22); await w.admission.begin(next.input);
+  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+  const retry = { ...payload, nonce: 'completed-proposal-retry', expiresAt: w.control.clock + 60000 };
+  assert.deepEqual(w.store.reserve(retry, {}, { keepProfile: PROFILE }),
+    { disposition: 'cached', status: 200, text: '{"proposal":"kept"}' });
+});
+
 async function running(w, p) { await w.admission.begin(p.input); return w.admission.reserveContext(p.input.jobId, w.reserveWire); }
 const openHolds = path => parsePolicyLedger(readFileSync(path, 'utf8')).rows.filter(entry => entry.contextHold && !entry.released).length;
 
