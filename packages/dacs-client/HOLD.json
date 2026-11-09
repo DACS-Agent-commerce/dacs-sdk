@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "2f1b2494035715c8f3f04a5ef9795e02b60df0c6"
+        "blob": "9d84ebb9f71902ab5ec0327545fe009c4250d17a"
       },
       "DELTA-LEDGER.json": {
-        "blob": "fc6ff58b804754fead8f96e89d9b733107587859"
+        "blob": "74a22d50e23071dd05a44c0a16e4a4e1b7ef1675"
       },
       "DELTA-MAP.md": {
-        "blob": "88ca6a4b2930e85f620484b1f821b4699a952c92"
+        "blob": "8cdcdebdd39d455b57a5022dc18f5bfd1bfe1f85"
       },
       "DELTA-NOTES.md": {
         "blob": "65177883b50083fd8ba97862120a5d20bb29ed4a"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "80a5257df053e7052999cd0321ae65a89cbe2087"
+        "blob": "08f0526f6a6f508441db1b48be5b028f5d3a4985"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "f181753270f0765d1dfb3b4029b2ced9c0c89a0e"
+        "blob": "a2b8736d13af50a178a128ef3373a1106c9ff792"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1094,7 +1094,7 @@
         "blob": "242423938795f24b31349c0477c6b9942059d930"
       },
       "src/config.mjs": {
-        "blob": "ecf6e88e28749d3b52dc37cd1c12405e9b2720db"
+        "blob": "be9bb71e94aaacb2ffb8155d76070feb0032b3b1"
       },
       "src/dacs/action-admission.mjs": {
         "blob": "7217935d49f313bd7c93fe41651bff2d0506c83e"
@@ -1339,8 +1339,11 @@
       "test/commitment-contradiction-classifier.test.mjs": {
         "blob": "7381805f1e7cc2924a0c22b7972d2b48ae05023b"
       },
+      "test/completion-readiness.test.mjs": {
+        "blob": "923878fe95df659ad6e0e363fce339d4a826a074"
+      },
       "test/config-nonce-slot-proof.test.mjs": {
-        "blob": "eaa78ba0cb607ed12ef8a6f9a2410f574b624a4d"
+        "blob": "e18570d5cd4b514b98c9b4b8b8177ff7eba80c12"
       },
       "test/d11-deadline-watch.test.mjs": {
         "blob": "d2502b88a4b1bf5763ba381a771ede78882325da"
