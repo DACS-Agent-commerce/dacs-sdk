@@ -66,7 +66,6 @@ type AnchoredCommit
 type AnchoredCounterpartyBundle
 type AnchoredFinalityCommitment
 type AnchoredFixedPriceAgreementReadback
-type AnchoredLegacyCommitment
 type AnchoredReveal
 type AnchoredSellerBundle
 type AnyAttestationBundle
@@ -466,7 +465,6 @@ type FinalizedAgreementCommitment
 type FinalizedBuyerBundle
 type FinalizedCounterpartyBundle
 type FinalizedFinalityAgreementCommitment
-type FinalizedLegacyAgreementCommitment
 type FinalizedSellerBundle
 type FinalizedSellerBundleDependency
 type FinalizedSessionSettlement
@@ -813,7 +811,6 @@ type RawJsonAdmissionOptions
 type RawJsonAdmissionStage
 type RawScanPage
 type ReachabilityProbeResult
-type ReadLegacyFixedPriceAgreementCommitmentInput
 type ReadableCompositeVerificationRecord
 type ReadableListing
 type RecipeAnchoringPhase
@@ -1389,7 +1386,6 @@ value FIXED_PRICE_X402_COMMERCE_PROFILE
 value FIXED_PRICE_X402_COORDINATOR_STORE_VERSION
 value FIXED_PRICE_X402_REGISTRY_INDEX_REF
 value FIXED_PRICE_X402_STANDARD_REVISION
-value LEGACY_COMMITMENT_SEPARATOR
 value MIN_COMMIT_LEAD_MS
 value MIN_REVEAL_WINDOW_SECONDS
 value MIN_SALT_BYTES
@@ -1827,7 +1823,6 @@ value ratingAddress
 value rawPublicKey
 value readAuthenticatedDomainClaims
 value readCompositeVerificationRecord
-value readLegacyFixedPriceAgreementCommitment
 value readListingArtifact
 value readPartyVetNativeCciTlsnEvidence
 value readPrivateFile
