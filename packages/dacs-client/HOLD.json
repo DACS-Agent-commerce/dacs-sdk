@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "8de66e6a578fcd5476982ac99bbea4bbf181acae"
+        "blob": "dc6a939ece871940de8ae90cd84a2c635e1fa6c0"
       },
       "DELTA-LEDGER.json": {
-        "blob": "5487a85a252b617588b8192c0d792902046ef3db"
+        "blob": "c8e982dde1de2bbbc055b719ddd0365a1940e0a4"
       },
       "DELTA-MAP.md": {
-        "blob": "8a7602a2c666b2a18198bbc1e2b4308d6ff4f8e8"
+        "blob": "0c7d23eef80e872f7075a0ad56834fa54eede615"
       },
       "DELTA-NOTES.md": {
         "blob": "a581ff4f6f5f53cb6876baade9ee29a53ea52bf7"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "2980456b85ba69fb258fae0bbe06389a4ec9d3ca"
+        "blob": "c32c6874918939b371c0a7e6ce324fd759ee3d52"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "021dc0934ddca6c5e6f36693c86e058eb2a972d2"
+        "blob": "81978fcbe3083502c446ba1dbbe5912b369382c5"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1307,7 +1307,7 @@
         "blob": "7e61b54257846f628b2984bc6bee811470401dc2"
       },
       "src/wallet/durable-journal.mjs": {
-        "blob": "a284092528a7f3564c8def91dd5fee530ae04b93"
+        "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
       },
       "src/wallet/holder-incarnation.mjs": {
         "blob": "0d50723061fa03dc704eb75965fc5db36f79ac72"
@@ -1377,6 +1377,9 @@
       },
       "test/durable-journal-recovery.test.mjs": {
         "blob": "9e0eea8347fa209477848f388b17d7b4218d733a"
+      },
+      "test/durable-journal-rejections.test.mjs": {
+        "blob": "4f259862831e602f05118d5aa005a73e7d676320"
       },
       "test/engine-floor-portability.test.mjs": {
         "blob": "8734b5bb1b9a3e995bc8f148b6d4b85f7f53f5e5"
