@@ -15,6 +15,57 @@ import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 import {createSellerTransportStore,createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
 import {SellerAgentError,transportOutcome} from '../src/dacs/seller-agent.mjs';
 import {createOperatorBuyerAccess} from '../src/devnet-demo/buyer-access.mjs';
+import {privateModule} from './helpers/private-module.mjs';
+
+const {createSellerAgent:createOperationAgent}=await privateModule(new URL('../src/dacs/seller-agent.mjs',import.meta.url),[],source=>source.replace(
+ '  return api;',
+ '  return {...api,runOperation:recoveryCall(({operation})=>operation())};',
+));
+const operationFailures=[['undefined',undefined],['null',null],['zero',0],['empty string',''],['false',false],['bigint zero',0n],['NaN',NaN],['Error',new Error('operation failed')]];
+
+for(const path of ['/dacs/v1/payments','/dacs/v1/commitments'])for(const [label,failure] of operationFailures){
+ test(`transport classifies ${label} failure as uncertain on ${path}`,()=>{
+  const result=transportOutcome(path,{error:failure});
+  assert.deepEqual([result.disposition,result.status,result.retry,result.noEffect],['indeterminate',503,false,false]);
+  assert.equal(Object.hasOwn(result,'cause'),true);
+  assert.equal(result.cause,failure);
+ });
+}
+for(const path of ['/dacs/v1/payments','/dacs/v1/commitments'])test(`fenced operations reject failures on ${path}`,async t=>{
+ const f=await agentFixture();f.agent.close();
+ let agent;t.after(()=>{agent?.close();f.close();});agent=await createOperationAgent(f.config);
+ for(const [label,failure] of operationFailures)for(const asynchronous of [false,true])await t.test(`${label} ${asynchronous?'rejection':'throw'}`,async()=>{
+  const settled=[];
+  const transport={path,check(){},settle:result=>settled.push(result)};
+  let calls=0;
+  const operation=()=>{calls++;if(asynchronous)return Promise.reject(failure);throw failure;};
+  const rejected=await agent.runOperation({jobId:JOBS[0],operation},{transport}).then(()=>false,error=>{
+   assert.equal(error,failure);
+   return true;
+  });
+  assert.equal(settled.length,1);
+  assert.deepEqual([settled[0].disposition,settled[0].status,settled[0].retry,settled[0].noEffect],['indeterminate',503,false,false]);
+  assert.equal(Object.hasOwn(settled[0],'cause'),true);
+  assert.equal(settled[0].cause,failure);
+  assert.equal(rejected,true,'the operation must reject');
+  assert.equal(calls,1);
+ });
+});
+
+test('transport recovery keeps failures uncertain',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);
+ await agent.receiveProposal(body);
+ const input=command(agent,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash);
+ for(const [label,value] of operationFailures)await t.test(label,async()=>{
+ let checks=0;
+ const result=await agent.reconcileTransport({...input,transport:{claim:()=>({check(){checks++;throw value;}}),settle(){}}});
+ assert.ok(checks>0);
+ assert.deepEqual([result.disposition,result.status,result.retry,result.settle],['indeterminate',503,false,false]);
+ assert.equal(Object.hasOwn(result,'cause'),true);
+ assert.equal(result.cause,value);
+ });
+});
+
 function command(agent,path,body,agreementHash){const rawBody=Buffer.from(JSON.stringify(body));return{body,rawBody,request:{method:'POST',path,jobId:body.transportIdentity?.jobId??body.jobId,buyer:buyer.claim,seller:seller.claim,listingPin:agent.listingPin,agreementHash,bodyHash:core.sha256Hex(rawBody)}};}
 // Real store, server auth, HTTP handler and client. `serve` swaps the agent behind the same journal (a restart).
 async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals',storeOptions={}){
