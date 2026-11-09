@@ -1003,7 +1003,7 @@ export interface VetRequest {
 export interface PartyVetAttemptRequest {
   requirementPath: PartyVetRequirementPath;
   claimSubject: string;
-  /** Exact generation-fenced recipe pin produced by #143. */
+  /** Exact generation-fenced recipe pin from `pinSessionRecipeSelection`. */
   recipePin: DurableSessionRecipePin;
   methodInput: PartyVetMethodInput;
 }

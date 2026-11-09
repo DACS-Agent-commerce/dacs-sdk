@@ -1302,7 +1302,8 @@ class DurableBuyerCoordinator {
     await this.#renew();
     const fence = this.#fence(idempotencyKey);
     let heartbeat = Promise.resolve();
-    let heartbeatError: unknown;
+    const noError = Symbol();
+    let heartbeatError: unknown = noError;
     const interval = Math.max(
       1,
       Math.min(30_000, Math.floor(this.#durability.leaseTtlMs / 3)),
@@ -1311,7 +1312,7 @@ class DurableBuyerCoordinator {
       heartbeat = heartbeat
         .then(() => this.#renew())
         .catch((error: unknown) => {
-          heartbeatError ??= error;
+          if (heartbeatError === noError) heartbeatError = error;
         });
     }, interval);
     timer.unref();
@@ -1319,7 +1320,7 @@ class DurableBuyerCoordinator {
       const result = await callbackResult(operation(fence), "buyer effect callback");
       clearInterval(timer);
       await heartbeat;
-      if (heartbeatError) throw heartbeatError;
+      if (heartbeatError !== noError) throw heartbeatError;
       await this.#renew();
       return result;
     } finally {

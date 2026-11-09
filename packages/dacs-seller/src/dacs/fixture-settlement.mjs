@@ -92,6 +92,8 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
     // The durable job fence refuses a second holder; memory mode has none, so a
     // job's payment is refused, before any await, while another is in progress.
     async function submitPayment(input) {
+        if (typeof input?.txHash !== 'string')
+            error('payment_tx_hash_invalid', 'the transaction hash must be a string', 422);
         if (paying.has(input?.jobId))
             error('seller_state_busy', 'another payment for this job is in progress');
         paying.add(input?.jobId);
