@@ -21,6 +21,7 @@ import {
   type SealedEnvelopeParams,
   type SelectionRule,
 } from "./sealedBid.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const VERIFIED_RULE: unique symbol = Symbol("verified-sealed-selection-rule");
 
@@ -557,16 +558,6 @@ const isStructuralReason = (reason: string): boolean =>
   /non-conformant|acceptancePredicate|verified rule|rule-ref|acceptance rule|deterministic|reserve currency/.test(
     reason,
   );
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const child of Object.values(value as Record<string, unknown>)) {
-      deepFreeze(child);
-    }
-    Object.freeze(value);
-  }
-  return value;
-}
 
 function immutableCanonicalValue(value: unknown): {
   canonical: string;

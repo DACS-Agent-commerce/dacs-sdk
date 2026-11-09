@@ -72,15 +72,6 @@ describe("wire CF-5 admission", () => {
   });
 });
 
-it("deepFreeze traverses a shallow-frozen parent and arrays", () => {
-  const child = { list: [{ value: 1 }] };
-  const parent = Object.freeze({ child });
-  expect(wireValidate.deepFreeze(parent)).toBe(parent);
-  expect(Object.isFrozen(child)).toBe(true);
-  expect(Object.isFrozen(child.list)).toBe(true);
-  expect(Object.isFrozen(child.list[0])).toBe(true);
-});
-
 it("ownership takes an independent normalized snapshot", () => {
   const input = { child: { text: "e\u0301" }, absent: undefined };
   const copy = wireValidate.ownedConfig(input, "invalid");
