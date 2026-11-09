@@ -28,6 +28,7 @@ function exportsOf(entry: string, options: ts.CompilerOptions): string[] {
   const source = program.getSourceFile(entry);
   const module = source && checker.getSymbolAtLocation(source);
   if (!module) throw new Error(`${entry} has no module symbol`);
+  refuseTypeOnlyStarExports(program);
   return checker.getExportsOfModule(module).map((symbol) => {
     const target = symbol.flags & ts.SymbolFlags.Alias
       ? checker.getAliasedSymbol(symbol)
@@ -49,6 +50,9 @@ function typeOnlyOnTheWay(checker: ts.TypeChecker, start: ts.Symbol): boolean {
         (ts.isImportSpecifier(declaration) &&
           (declaration.isTypeOnly || declaration.parent.parent.isTypeOnly)) ||
         (ts.isImportClause(declaration) && declaration.isTypeOnly) ||
+        (ts.isNamespaceImport(declaration) && declaration.parent.isTypeOnly) ||
+        (ts.isNamespaceExport(declaration) && declaration.parent.isTypeOnly) ||
+        (ts.isImportEqualsDeclaration(declaration) && declaration.isTypeOnly) ||
         (ts.isExportDeclaration(declaration) && declaration.isTypeOnly)
       ) {
         return true;
@@ -57,6 +61,25 @@ function typeOnlyOnTheWay(checker: ts.TypeChecker, start: ts.Symbol): boolean {
     symbol = checker.getImmediateAliasedSymbol(symbol);
   }
   return false;
+}
+
+/**
+ * `export type * from` hands its names on without an alias the checker can
+ * see, so a value behind it would be listed as a value. Refuse it until the
+ * classifier handles it, rather than record a wrong kind.
+ */
+function refuseTypeOnlyStarExports(program: ts.Program): void {
+  for (const file of program.getSourceFiles()) {
+    if (file.isDeclarationFile || program.isSourceFileFromExternalLibrary(file)) continue;
+    for (const statement of file.statements) {
+      if (ts.isExportDeclaration(statement) && statement.isTypeOnly && !statement.exportClause) {
+        throw new Error(
+          `${file.fileName}: \`export type * from\` is not supported by the root export list; ` +
+            "re-export the names one by one",
+        );
+      }
+    }
+  }
 }
 
 test("the package root exports exactly the reviewed list", () => {
@@ -87,4 +110,46 @@ test("a type-only re-export of a class is listed as a type", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+const fixtureOptions: ts.CompilerOptions = {
+  module: ts.ModuleKind.NodeNext,
+  moduleResolution: ts.ModuleResolutionKind.NodeNext,
+  target: ts.ScriptTarget.ES2022,
+};
+
+function exportsOfFiles(files: Record<string, string>): string[] {
+  const dir = mkdtempSync(join(tmpdir(), "root-exports-"));
+  try {
+    for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+    return exportsOf(join(dir, "index.ts"), fixtureOptions);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("type-only namespace re-exports and imports are listed as types", () => {
+  expect(exportsOfFiles({
+    "a.ts": "export const x = 1;\n",
+    "index.ts": "export type * as ns from \"./a.js\";\n",
+  })).toEqual(["type ns"]);
+  expect(exportsOfFiles({
+    "a.ts": "export const x = 1;\n",
+    "index.ts": "import type * as ns from \"./a.js\";\nexport { ns };\n",
+  })).toEqual(["type ns"]);
+  expect(exportsOfFiles({
+    "a.ts": "export const x = 1;\n",
+    "index.ts": "export * as ns from \"./a.js\";\n",
+  })).toEqual(["value ns"]);
+});
+
+test("a type-only star re-export is refused rather than listed as values", () => {
+  expect(() => exportsOfFiles({
+    "a.ts": "export const x = 1;\n",
+    "index.ts": "export type * from \"./a.js\";\n",
+  })).toThrow(/export type \* from/);
+  expect(exportsOfFiles({
+    "a.ts": "export const x = 1;\n",
+    "index.ts": "export * from \"./a.js\";\n",
+  })).toEqual(["value x"]);
 });
