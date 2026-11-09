@@ -3494,6 +3494,10 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): record the buyer client verifier wait and refresh package pins | `packages/dacs-client/DELTA-NOTES.md:1` |
 | delta(client): record the buyer client verifier wait and refresh package pins | `packages/dacs-client/HOLD.json:1` |
 | delta(client): record the buyer client verifier wait and refresh package pins | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| Keep client delta records compact | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| Keep client delta records compact | `packages/dacs-client/DELTA-MAP.md:1` |
+| Keep client delta records compact | `packages/dacs-client/HOLD.json:1` |
+| Keep client delta records compact | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
