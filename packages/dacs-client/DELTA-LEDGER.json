@@ -6597,6 +6597,17 @@
           "after": "eb89bc99364dc00d325530e5249981917b9cdb87"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged buyer seller client and refresh package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "add72c0add7c8188d6cc86e7476207a4882c93af",
+          "after": "add72c0add7c8188d6cc86e7476207a4882c93af"
+        }
+      ]
     }
   ]
 }
