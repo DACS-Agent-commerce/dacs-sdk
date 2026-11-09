@@ -31,6 +31,8 @@ const GUARD_SITES = {
   'src/dacs/seller-challenge-ledger.mjs': ['issue', 'issueForOperator'],
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
   'src/dacs/seller-transport-auth.mjs': ['createSellerTransportServerAuth', 'createSellerTransportClientAuth'],
+  'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted'],
+  'src/dacs/seller-wire-client-auth.mjs': ['createSellerWireClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],
   'src/dacs/native-payment-evidence-consumer.mjs': ['createNativePaymentEvidenceConsumer'],
