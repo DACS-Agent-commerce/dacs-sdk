@@ -254,7 +254,7 @@
   },
   "packages/dacs-seller/src/dacs/seller-transport-auth.mjs": {
     "no-unused-vars": {
-      "count": 6
+      "count": 5
     }
   },
   "packages/dacs-seller/src/dacs/session-admission.mjs": {
