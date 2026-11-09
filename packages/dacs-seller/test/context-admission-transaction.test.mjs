@@ -91,7 +91,7 @@ function world(t, config = {}) {
     admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
       inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,
-      now: () => control.clock, ready: () => control.ready, deadlines: { policyMs: POLICY_MS } });
+      now: () => control.clock, ready: () => options.ready?.() ?? control.ready, deadlines: { policyMs: POLICY_MS } });
   }
   reopen();
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -1804,7 +1804,7 @@ test('SQL INSERT failure rolls back owner and retirement without failing a chall
 
 
 test('a definite operation_uncertain refusal commits only the owning challenge failure', async t => {
-  const w = world(t, { capacity: { fitsNewPurchase() { throw Object.assign(new Error('definite'), { code: 'operation_uncertain', status: 503 }); }, allocateWithin() { assert.fail('refusal allocated'); } } });
+  const w = world(t, { ready() { throw Object.assign(new Error('definite'), { code: 'operation_uncertain', status: 503 }); } });
   const p = w.prepare(), before = workSnapshot(w);
   await assert.rejects(w.admission.begin(p.input), { code: 'operation_uncertain', status: 503 });
   assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'operation_uncertain');
@@ -1878,15 +1878,15 @@ for (const boundary of ['old', 'accounted']) for (const source of ['rejecting pr
 
 test('a purchase capacity refusal rolls back the retirement it observed across restart', async t => {
   let terminal = false, refuse = false, observed = false, w;
-  const capacity = { fitsNewPurchase() {
+  const ready = () => {
     if (refuse) {
       assert.equal(ownerRow(w, job(0x11)).closed, 1);
       assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(job(0x11)).job_retired, 1);
       observed = true; return false;
     }
     return true;
-  }, allocateWithin() {} };
-  w = world(t, { maxJobs: 1, maxContextRecords: 1, capacity, contextSessionState: () => terminal ? 'finalised' : null });
+  };
+  w = world(t, { maxJobs: 1, maxContextRecords: 1, ready, contextSessionState: () => terminal ? 'finalised' : null });
   const p = w.prepare(), next = w.prepare(0x22);
   await (await running(w, p)).complete(outcome);
   w.control.clock += HOUR + 1; terminal = true; refuse = true;

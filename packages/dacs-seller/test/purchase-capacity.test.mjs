@@ -8,10 +8,11 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canonicalize, generateCanonicalJobId } from '@kynesyslabs/dacs';
+import { canonicalize, generateCanonicalJobId, identityBundleHash } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { privateModule } from './helpers/private-module.mjs';
 const { retainedFor } = await privateModule(new URL('../src/dacs/seller-wire-requests.mjs', import.meta.url), ['retainedFor']);
+import { accountingFixture } from './helpers/reservation-accounting-fixture.mjs';
 import { SELLER_PROFILE } from '../src/dacs/session-admission.mjs';
 
 const T0 = Date.UTC(2026, 10, 4, 12), UNITS = 17, FOUR = 68, FIVE = 85;
@@ -23,9 +24,9 @@ const PIN = { listingId: 'capacity-listing', version: 1, contentHash: hash('capa
 const PROFILE = Object.freeze({ id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISION, base: TP1_BASE_REVISION,
   chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, pinVersion: TP1_APPROVED_IDENTITY_RECORD.pinVersion });
 const SCOPE = { agreement: 'capacity-scope' };
-const vetRef = tag => ({ vetRecordRef: { contentHash: hash(tag) } });
+const vetRef = tag => ({ vetRecordRef: { anchor: { kind: 'storage-program', locator: `vet-${tag}` }, contentHash: hash(tag) } });
 const success = jobId => ({ status: 200, text: JSON.stringify({ disposition: 'present', value: { scope: SCOPE, input: { jobId, buyer: vetRef('buyer'), seller: vetRef('seller') } } }) });
-const nonPass = { status: 409, text: JSON.stringify({ disposition: 'rejected', code: 'party_vet_non_pass', errorClass: 'permanent' }) };
+const nonPass = { status: 200, text: JSON.stringify({ disposition: 'rejected', code: 'party_vet_non_pass', errorClass: 'permanent' }) };
 const otherOutcome = { status: 200, text: 'not a context answer' };
 const ROUTES = [PATHS.context, PATHS.proposals, PATHS.commitments, PATHS.payments];
 const ENABLED = { false: ROUTES, true: [...ROUTES, PATHS.commitmentSignature] };
@@ -74,6 +75,7 @@ function world(t, { maxRecords = 1000, commitOnSignature = false, sessionState =
   w.changes = () => w.db().prepare('SELECT total_changes() AS n').get().n;
   // The rows P11b1's accounting commits for a charged request: a purchase unit when it names its allocation, a general one otherwise.
   w.charge = (jobId, route, count, allocationId = null, buyer = BUYER) => {
+    w.db().prepare('INSERT OR IGNORE INTO kit_job_holds VALUES (?, ?, ?, ?, ?)').run(jobId, buyer, SELLER, canonicalize(PIN), Number(route === PATHS.context));
     for (let n = 0; n < count; n++) {
       w.db().prepare(`INSERT INTO kit_reservations (key, buyer, jobId, operationId, route, allocationId, class, requestHash, at, state, rev)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', 2)`).run(hash(`key-${++control.spent}`), buyer, jobId, wireOperationId({ seller: SELLER, jobId, path: route }),
@@ -94,7 +96,7 @@ function world(t, { maxRecords = 1000, commitOnSignature = false, sessionState =
     const bundle = { presentedBy: buyer, sessionNonce: nonce, presentation: { proof: 'TEST-fixture' } };
     const attempt = { nonce, jobId, buyer, challengeScopeHash: scope, presentationHash: hash(canonicalize(bundle)), path: 'context' };
     const result = w.store.challenges.attempt(attempt);
-    const accepted = { buyerBundleText: JSON.stringify(bundle), buyerBundleHash: hash('bundle'), admission: { disposition: 'admitted', jobId, buyer, buyerBundleHash: hash('bundle'),
+    const accepted = { buyerBundleText: canonicalize(bundle), buyerBundleHash: identityBundleHash(bundle), admission: { disposition: 'admitted', jobId, buyer, buyerBundleHash: identityBundleHash(bundle),
       listingPin: PIN, participants: [{ role: 'buyer', claim: buyer, ...SELLER_PROFILE }, { role: 'seller', claim: SELLER, ...SELLER_PROFILE }] },
     firstAdmission: { challengeExpiresAt: control.clock + 600000, generatedAt: control.clock, checkedAt: control.clock } };
     return { jobId, input: { jobId, buyer, seller: SELLER, listingPin: PIN, contextScopeHash: hash(canonicalize(SCOPE)), nonce, presentationHash: attempt.presentationHash,
@@ -464,4 +466,66 @@ test('capacity-exact-parties-and-fixed-allotment', t => {
     assert.equal(w.report().allocations.length, 1);
   }
   assert.throws(() => createPurchaseCapacity({ store: {}, now: () => T0, sessionState: () => null }), TypeError);
+});
+
+async function accountedPurchase(t, maxRecords = FOUR) {
+  const f = await accountingFixture(t);
+  const capacity = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords, sessionState: () => null });
+  const within = sellerStoreInternals(f.store()).transaction;
+  const purchase = f.payload();
+  const allocation = within(() => capacity.allocateWithin(purchase));
+  const classify = () => capacity.classify(classifyInput(purchase, purchase.path, view.none));
+  const input = (check = classify, reserve = async () => ({ state: 'new' })) => f.args(f.payload(), {
+    checkCapacityWithin: check, checked: { reserve },
+  });
+  return { f, capacity, within, purchase, allocation, classify, input };
+}
+
+test('accounted purchase spending preserves its allocation and exhausts only its own slot', async t => {
+  const { f, capacity, allocation, input } = await accountedPurchase(t);
+  for (let n = 1; n <= UNITS; n++) {
+    await f.reserve(input());
+    assert.deepEqual(figures(capacity.capacityReport()), { used: n, allotted: FOUR - n, free: 0 });
+    assert.equal(f.rows().at(-1).class, 'purchase');
+    assert.equal(f.rows().at(-1).allocationId, allocation.allocationId);
+    assert.equal(capacity.capacityReport().allocations[0].rev, allocation.rev + n);
+  }
+  await assert.rejects(f.reserve(input()), { code: 'peer_store_capacity', status: 503 });
+  assert.equal(f.rows().length, UNITS);
+  const before = stable(capacity.capacityReport());
+  f.reopen();
+  const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: () => null });
+  assert.deepEqual(stable(reopened.capacityReport()), before);
+});
+
+test('a stale allocation revision refuses an accounting charge before the journal', async t => {
+  const { f, capacity, within, allocation, classify, input } = await accountedPurchase(t);
+  const stale = classify();
+  within(() => capacity.returnRouteSlotWithin({ allocationId: allocation.allocationId, allocationRev: allocation.rev, route: PATHS.proposals }));
+  let calls = 0;
+  await assert.rejects(f.reserve(input(() => stale, async () => { calls++; return { state: 'new' }; })), { code: 'peer_store_capacity', status: 503 });
+  assert.equal(calls, 0); assert.equal(f.rows().length, 0); assert.equal(capacity.capacityReport().used, 0);
+});
+
+test('a failed accounting insert rolls the allocation revision and spend back', async t => {
+  const { f, capacity, input } = await accountedPurchase(t);
+  const before = stable(capacity.capacityReport());
+  f.db.exec("CREATE TRIGGER stop_charge BEFORE INSERT ON kit_reservations BEGIN SELECT RAISE(ABORT, 'charge stopped'); END");
+  await assert.rejects(f.reserve(input()), /charge stopped/);
+  assert.deepEqual(stable(capacity.capacityReport()), before); f.assertEmpty();
+});
+
+test('journal refusal and result uncertainty keep the committed purchase unit after restart', async t => {
+  for (const resultFailure of [false, true]) await t.test(resultFailure ? 'result write fails' : 'journal refuses', async t => {
+    const { f, capacity, allocation, input } = await accountedPurchase(t);
+    const refusal = Object.assign(new Error('journal refused'), { code: 'seller_effect_pending', status: 503 });
+    if (resultFailure) f.db.exec("CREATE TRIGGER stop_result BEFORE UPDATE ON kit_reservations BEGIN SELECT RAISE(ABORT, 'result stopped'); END");
+    await assert.rejects(f.reserve(input(undefined, async () => { throw refusal; })), error => error === refusal);
+    assert.deepEqual(figures(capacity.capacityReport()), { used: 1, allotted: FOUR - 1, free: 0 });
+    assert.equal(f.rows()[0].state, resultFailure ? 'reserving' : 'refused');
+    assert.equal(f.rows()[0].allocationId, allocation.allocationId);
+    const before = stable(capacity.capacityReport()); f.reopen();
+    const reopened = createPurchaseCapacity({ store: f.store(), now: f.now, maxRecords: FOUR, sessionState: () => null });
+    assert.deepEqual(stable(reopened.capacityReport()), before);
+  });
 });
