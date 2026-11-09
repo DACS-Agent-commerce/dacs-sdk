@@ -690,10 +690,23 @@ npm run test:live:pay-dem
 `(listingId, listingVersion, contentHash)` tuple used by the session. To resume
 an interrupted session safely, pass the prior `jobId` and the same authenticated
 Listing to `runSession`; anchored artifacts are reused and the Listing remains
-pinned. No-repayment across a whole-process crash additionally requires a durable
-`sessionStore` and a rail-idempotent `resumeSettlement` implementation—a job id
-alone cannot prove whether a lost rail response moved value. The legacy native-ref
-input remains available for callers with a separate trusted pin.
+pinned. A job id alone cannot prove whether a lost rail response moved value,
+so no-repayment across a whole-process crash requires a rail-idempotent
+`resumeSettlement` backed by durable rail state. A resumed run that finds the
+settlement evidence already anchored reuses it; only a successful native DEM
+(`pay-dem`) settlement still calls `resumeSettlement` to confirm the transaction
+on chain. When no evidence is anchored but a durable `sessionStore` records a
+settled outcome, the run reuses that outcome without calling `resumeSettlement`,
+except a native DEM success, which it still confirms. If the record holds an
+unresolved payment intent or an ambiguous outcome, the run calls
+`resumeSettlement`. With no settled outcome on record, a resumed run also calls
+it whenever an earlier run anchored the Agreement, with or without a
+`sessionStore`, because a session record cannot prove the earlier run did not
+pay (a fresh store, or a record that a failed or concurrent resume created,
+looks the same). A resume that needs `resumeSettlement` is refused when it is
+absent.
+The legacy native-ref input remains available for callers with a separate trusted
+pin.
 
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write
@@ -993,11 +1006,12 @@ dacs doctor --json --rpc-file ./rpc.url
 dacs doctor --json --wallet-secret-file ./wallet.secret --rpc https://node2.demos.sh
 ```
 
-The first slice checks runtime/package state, optional RPC reachability, secret
-redaction, and rail availability without funding, transferring, anchoring, or
-broadcasting. StorageProgram binding resolution and read-visible anchor
-completion currently report `blocked` until the resolver/completion work lands
-(tracked by dacs-sdk #58 and #57).
+It checks runtime/package state, optional RPC reachability, secret redaction,
+and rail availability without funding, transferring, anchoring, or
+broadcasting. Five checks are not done by doctor and always report `blocked`:
+wallet balance, wallet nonce, StorageProgram binding resolution, read-visible
+anchor completion, and cost estimate. Each one's remediation says why, or which
+API to use instead (for example `anchorAndWait` for anchor completion).
 
 With `--rpc`, the `node.build` check reads the node's `GET /version` (4 KiB
 limit, 5 second deadline, redirects not followed) and compares its commit with
@@ -1024,14 +1038,13 @@ does not appear in shell history or process listings.
 
 Exit codes are stable:
 
-- `0`: all required checks passed or warned. In this first slice, required
-  funding/storage/cost checks are still `blocked`, so a complete preflight is
-  expected to exit `5` until those follow-up checks are implemented.
+- `0`: all required checks passed or warned. Because the five checks above
+  always report `blocked`, a run with no failed check exits `5`.
 - `1`: at least one non-RPC check failed.
 - `2`: invalid CLI usage.
 - `3`: requested RPC check failed.
 - `4`: unexpected doctor internal error.
-- `5`: required checks are still blocked/incomplete.
+- `5`: at least one required check is `blocked` (not done by doctor).
 
 ### Canonical JSON compatibility
 
