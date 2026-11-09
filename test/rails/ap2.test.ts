@@ -235,6 +235,18 @@ function input(
 }
 
 describe("advanceAp2Settlement", () => {
+  test("refuses a mandate holding a byte array before verifying or submitting it", async () => {
+    const submit = vi.fn(provider().submit);
+    await expect(advanceAp2Settlement(input({
+      paymentMandate: { kind: "PaymentMandate", bytes: new Uint8Array([1]) },
+      provider: provider({ submit }),
+    }))).resolves.toEqual({
+      status: "indeterminate",
+      reason: "ap2-mandate-verification-unavailable",
+    });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   test("persists one binding and returns only attested, term-bound captured status", async () => {
     const submit = vi.fn(provider().submit);
     const readAttestedStatus = vi.fn(provider().readAttestedStatus);
