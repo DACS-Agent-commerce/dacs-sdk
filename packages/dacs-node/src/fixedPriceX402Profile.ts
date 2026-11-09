@@ -366,8 +366,8 @@ export function resolveDacsFixedPriceX402BuyerRequirementsV1(
   }
   return Object.freeze({
     buyer: deepFreeze(copy(application.listing.buyerRequirement)),
-    // Standard #331 does not yet define complementary requirement provenance.
-    // The generated v1 profile is therefore explicit and intentionally empty.
+    // The DACS Standard does not yet define how a complementary requirement
+    // proves its session provenance, so the v1 profile is intentionally empty.
     seller: DACS_FIXED_PRICE_X402_EMPTY_REQUIREMENT_V1,
   });
 }

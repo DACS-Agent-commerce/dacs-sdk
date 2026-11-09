@@ -87,13 +87,6 @@ export function withCanonicalClaims<T>(p: T, fields: readonly string[]): T {
 }
 export const sameCanonical = (a: unknown, b: unknown): boolean => canonicalize(a) === canonicalize(b);
 export const cloneJson = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
-export function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object") {
-    for (const item of Object.values(value)) deepFreeze(item);
-    if (!Object.isFrozen(value)) Object.freeze(value);
-  }
-  return value;
-}
 /**
  * One owned copy of a caller's configuration (an identity record, a local
  * connection), taken once, so every later check, digest and bound field reads
