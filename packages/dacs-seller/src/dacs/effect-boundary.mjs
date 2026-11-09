@@ -62,7 +62,10 @@ function within(clock, deadline, work) {
     const remaining = deadline - clock.now();
     if (remaining <= 0) return resolve({ timedOut: true });
     const cancel = clock.after(remaining, () => resolve({ timedOut: true }));
-    Promise.resolve().then(work).then((value) => resolve({ value }), reject).finally(cancel);
+    Promise.resolve().then(work).then(
+      (value) => resolve(clock.now() < deadline ? { value } : { timedOut: true }),
+      (error) => clock.now() < deadline ? reject(error) : resolve({ timedOut: true }),
+    ).finally(cancel);
   });
 }
 
@@ -73,13 +76,17 @@ function createFence(clock) {
   const grantNext = () => {
     if (holder !== null || waiting.length === 0) return;
     const waiter = waiting.shift();
-    holder = waiter.token;
     waiter.cancel();
+    if (clock.now() >= waiter.deadline) {
+      waiter.reject(refuse('tp1_fence_timeout', undefined, timeoutCause(EFFECT_FENCE_TIMEOUT_MS)));
+      return grantNext();
+    }
+    holder = waiter.token;
     waiter.resolve(waiter.token);
   };
   return {
     acquire: () => new Promise((resolve, reject) => {
-      const waiter = { token: Object.freeze({}), resolve, cancel: () => {} };
+      const waiter = { token: Object.freeze({}), resolve, reject, deadline: clock.now() + EFFECT_FENCE_TIMEOUT_MS, cancel: () => {} };
       waiter.cancel = clock.after(EFFECT_FENCE_TIMEOUT_MS, () => {
         waiting.splice(waiting.indexOf(waiter), 1);
         reject(refuse('tp1_fence_timeout', undefined, timeoutCause(EFFECT_FENCE_TIMEOUT_MS)));
