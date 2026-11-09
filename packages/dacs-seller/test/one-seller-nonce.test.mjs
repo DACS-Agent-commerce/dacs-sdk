@@ -10,7 +10,7 @@ import { canonicalize, generateCanonicalJobId, identityBundleHash, sha256Hex } f
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerTransportServerAuth, createSellerTransportClientAuth,
   sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
-  sellerSessionDelegationSigningBytes, SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
+  sellerSessionDelegationSigningBytes, SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { TP1_APPROVED_IDENTITY_RECORD, TP1_PROFILE_ID, TP1_PROFILE_REVISION, TP1_BASE_REVISION } from '@kynesyslabs/dacs/wire';
 import { createSellerChallengeLedger } from '../src/dacs/seller-challenge-ledger.mjs';
 import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
@@ -745,29 +745,24 @@ test('context-journal-readback-after-delegation-expiry', async t => {
   assert.equal(reservation.disposition, 'cached'); assert.equal(reservation.status, 200); assert.equal(f.calls.effects, 0);
 });
 
-test('host-refuses-issuance-when-the-session-reader-fails', async t => {
+test('host retains its live challenge when the session reader becomes unknown', async t => {
   for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
     const source = unreadableSource(name), f = await hostFixture(t); let broken = false;
     await f.start({ contextSessionState: () => broken ? source.read() : null });
     const issue = () => f.api.testStore.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope'));
     assert.match(issue().sessionNonce, /^[0-9a-f]{64}$/);
     const before = challengeRowsAt(f.path); broken = true;
-    assert.throws(issue, error => unavailable(error, source)); assert.deepEqual(challengeRowsAt(f.path), before);
+    assert.equal(issue().sessionNonce, before[0].nonce); assert.deepEqual(challengeRowsAt(f.path), before);
   });
 });
 
-// Each source retains the exact offending value so error causes are checked by identity.
+// Unusable source answers must not invent terminal state.
 function unreadableSource(name) {
   const thrown = new Error('TEST session source failed');
   const answer = name === 'thenable' ? { then(_resolve, reject) { reject(thrown); } } : 7;
   return { name, thrown, answer, read() { if (name === 'throws') throw thrown; return answer; } };
 }
-function unavailable(error, source) {
-  assert.ok(error instanceof SellerTransportError, error.stack); assert.equal(error.code, 'session_admission_unavailable'); assert.equal(error.status, 503);
-  if (source.name === 'throws') assert.equal(error.cause, source.thrown);
-  else { assert.ok(error.cause instanceof TypeError); assert.equal(error.cause.cause, source.answer); }
-  return true;
-}
+
 const recoveryTables = ['kit_challenges', 'peer_effects', 'peer_effect_jobs', 'peer_jobs', 'peer_context_admissions', 'kit_purchase_profiles', 'kit_context_reservations'];
 const recoverySnapshot = f => recoveryTables.map(table => [table, f.rows(table)]);
 const proposalInput = (f, jobId = JOB) => {
@@ -847,24 +842,27 @@ test('R09 unavailable retained proof keeps uncertainty', async t => {
   assert.equal(f.calls.releases, 0); assert.equal(f.calls.effects, 0); assert.equal(f.calls.holds, 0);
 });
 
-test('R13 standalone ledger maps unreadable authority', async t => {
-  for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, t => {
-    const source = unreadableSource(name), db = new Database(':memory:'); t.after(() => db.close());
+test('standalone ledger uses the shared adapter for unknown session answers', async t => {
+  for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
+    const source = unreadableSource(name), directory = await mkdtemp(join(tmpdir(), 'TEST-observer-'));
+    const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: () => T0, contextSessionState: source.read });
+    t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }); });
+    const db = new Database(':memory:'); t.after(() => db.close());
     const ledger = createSellerChallengeLedger({ db, transaction: fn => db.transaction(fn)(), now: () => T0, generation: 'TEST generation',
-      sessionState: source.read, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false });
-    assert.throws(() => ledger.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope'), { assertStillLive() {} }), error => unavailable(error, source));
-    assert.equal(db.prepare('SELECT count(*) n FROM kit_challenges').get().n, 0);
+      sessionState: sellerStoreInternals(store).sessionState, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false });
+    assert.match(ledger.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope'), { assertStillLive() {} }).sessionNonce, /^[0-9a-f]{64}$/);
+    assert.equal(db.prepare('SELECT count(*) n FROM kit_challenges').get().n, 1);
   });
 });
 
-test('R13 mapped session error preserves its identity', async t => {
+test('an unavailable source error remains an unknown observation', async t => {
   const error = new SellerTransportError('session_admission_unavailable', 503, { cause: new Error('TEST original cause') });
   const f = await fixture(t, { store: { contextSessionState: () => { throw error; } } });
-  assert.throws(() => f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')), actual => actual === error);
-  assert.equal(f.rows().length, 0);
+  assert.match(f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')).sessionNonce, /^[0-9a-f]{64}$/);
+  assert.equal(f.rows().length, 1);
 });
 
-test('R19 transport gates refuse unreadable authority', async t => {
+test('transport gates treat unusable source answers as unknown', async t => {
   for (const gate of ['proposal', 'context start', 'resume', 'claim', 'claim check', 'assertPending']) for (const name of ['throws', 'thenable', 'non-state']) await t.test(`${gate}: ${name}`, async t => {
     const source = unreadableSource(name); let broken = false;
     const f = await fixture(t, { store: { contextSessionState: () => broken ? source.read() : null } });
@@ -889,8 +887,9 @@ test('R19 transport gates refuse unreadable authority', async t => {
         }
       }
     }
-    const before = recoverySnapshot(f); broken = true;
-    assert.throws(invoke, error => unavailable(error, source)); assert.deepEqual(recoverySnapshot(f), before);
+    broken = true;
+    assert.doesNotThrow(invoke);
+    assert.deepEqual(f.rows('kit_terminal_closures'), []);
     assert.equal(f.calls.effects, 0); assert.equal(f.calls.holds, 0);
   });
 });
@@ -1016,11 +1015,10 @@ test('R09 cached readback revalidates retained source proof', async t => {
 });
 
 
-test('R13 a wrongly tagged source error keeps its cause under unavailable 503', async t => {
+test('source error tags grant no terminal authority', async t => {
   const cause = new SellerTransportError('session_admission_unavailable', 409);
   const f = await fixture(t, { store: { contextSessionState: () => { throw cause; } } });
-  assert.throws(() => f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')), error => {
-    assert.equal(error.code, 'session_admission_unavailable'); assert.equal(error.status, 503); assert.equal(error.cause, cause); return true;
-  });
-  assert.equal(f.rows().length, 0);
+  assert.match(f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')).sessionNonce, /^[0-9a-f]{64}$/);
+  assert.equal(f.rows().length, 1);
+  assert.deepEqual(f.rows('kit_terminal_closures'), []);
 });
