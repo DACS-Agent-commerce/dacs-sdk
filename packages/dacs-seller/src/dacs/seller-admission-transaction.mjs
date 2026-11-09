@@ -259,7 +259,9 @@ export function createContextAdmissionTransaction({ store, policy, capacity = nu
     const refusal = transaction(() => {
       if (read(row.jobId) !== null) fail('context_job_closed');
       try {
-        requireOwner(input); checkLimits(input.buyer, false);
+        requireOwner(input);
+        if (db.prepare('SELECT 1 FROM kit_slot_retirements WHERE job = ? AND job_retired = 1').get(row.jobId)) fail('context_session_terminal');
+        checkLimits(input.buyer, false);
       } catch (error) {
         const { code, status } = refusalOf(error);
         challenges.recordFailedWithin(input.owner, input.nonce, code, status);

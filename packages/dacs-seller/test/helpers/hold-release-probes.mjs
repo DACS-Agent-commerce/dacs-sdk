@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
+import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
+import { SELLER_PROFILE } from '../../src/dacs/session-admission.mjs';
 import { sellerStoreInternals, SellerTransportError } from '../../src/dacs/seller-transport-auth.mjs';
 import { T0, JOB, JOB2, OTHER, CONTEXT } from './reservation-accounting-fixture.mjs';
 import { FIXTURE_PROFILE } from './wire-authority-fixture.mjs';
@@ -26,6 +28,63 @@ const completed = async (f, context = false) => {
   completeWireEffect(f.journal, effect, outcome);
   return input;
 };
+
+function contextStart(f, jobId) {
+  const { buyer, seller, listingPin } = f.payload({ jobId });
+  const challengeScopeHash = sha256Hex('challenge scope');
+  const { sessionNonce: nonce } = f.store().challenges.issue({ jobId, buyer }, challengeScopeHash);
+  const bundle = { presentedBy: buyer, sessionNonce: nonce, presentation: { proof: 'TEST-fixture' } };
+  const presentationHash = sha256Hex(canonicalize(bundle)), buyerBundleHash = identityBundleHash(bundle);
+  const { owner } = f.store().challenges.attempt({ nonce, jobId, buyer, challengeScopeHash, presentationHash, path: 'context' });
+  return { jobId, buyer, seller, listingPin, nonce, presentationHash, owner, contextScopeHash: sha256Hex('context scope'),
+    sellerBundlePresentedBy: seller, delegationExpiresAt: null, purchaseProfile: FIXTURE_PROFILE,
+    accepted: { buyerBundleText: canonicalize(bundle), buyerBundleHash,
+      admission: { disposition: 'admitted', jobId, buyer, buyerBundleHash, listingPin,
+        participants: [{ role: 'buyer', claim: buyer, ...SELLER_PROFILE }, { role: 'seller', claim: seller, ...SELLER_PROFILE }] },
+      firstAdmission: { challengeExpiresAt: f.now() + 600000, generatedAt: f.now(), checkedAt: f.now() } } };
+}
+function contextTransaction(f, calls) {
+  return createContextAdmissionTransaction({ store: f.store(), now: f.now, ready: () => true, deadlines: { policyMs: 10000 },
+    policy: { reserve: async () => { calls.reserve++; return null; }, release: async () => { calls.release++; } },
+    effectEvidence: async () => [], inspectContextOutcome: () => ({ state: 'none' }), completeWire: () => {} });
+}
+
+for (const limit of ['context records', 'jobs']) test(`hold-release refuses a retired context start and preserves the limit on ${limit}`, async t => {
+  const [f, session] = await fixture(t, { maxJobs: 2 });
+  await completed(f);
+  session.state = 'finalised'; f.setTime(T0 + 2 * HOUR); retire(f, JOB);
+  assert.equal(retired(f)[0]?.job_retired, 1);
+  session.state = null; f.reopen();
+  const calls = { reserve: 0, release: 0 }, admission = contextTransaction(f, calls);
+  const before = proof(f);
+  const error = await admission.begin(contextStart(f, JOB)).then(() => null, cause => cause);
+  const refused = proof(f);
+  await admission.begin(contextStart(f, JOB2));
+  const admissions = f.db.prepare("SELECT jobId FROM kit_context_admissions WHERE state <> 'aborted'").all();
+  const job3 = '01M5YKPJG068H248H248H248H3', job4 = '01M5YKPJG088H248H248H248H4';
+  if (limit === 'context records') {
+    assert.equal(admissions.length, 1);
+    assert.equal(internals(f).admissionCounts().contextRecords, 1);
+    assert.throws(() => contextStart(f, job3), { code: 'peer_context_capacity', status: 503 });
+  } else {
+    assert.equal((await f.reserve(await f.admit(f.payload({ jobId: job3 })))).state, 'new');
+    const liveJobs = new Set([...admissions.map(row => row.jobId), ...f.holds().filter(row => row.jobId !== JOB).map(row => row.jobId)]);
+    assert.equal(liveJobs.size, 2);
+    await assert.rejects(f.reserve(await f.admit(f.payload({ jobId: job4 }))), capacity);
+  }
+  assert.equal(error?.code, 'context_session_terminal'); assert.equal(error.status, 409);
+  assert.deepEqual(refused, before); assert.deepEqual(calls, { reserve: 1, release: 0 });
+});
+
+test('hold-release admits a context start on a non-retired accounted job', async t => {
+  const [f] = await fixture(t, { maxJobs: 2 });
+  await completed(f);
+  const calls = { reserve: 0, release: 0 }, admission = contextTransaction(f, calls);
+  assert.equal((await admission.begin(contextStart(f, JOB))).jobId, JOB);
+  assert.equal(admission.admissionRecord(JOB).state, 'admitted');
+  assert.equal(internals(f).admissionCounts().contextRecords, 1);
+  assert.equal(retired(f).length, 0); assert.deepEqual(calls, { reserve: 1, release: 0 });
+});
 
 for (const [name, elapsed, state, nonceWindowMs] of [
   ['nonce window', HOUR + 1, 'finalised', 2 * HOUR],

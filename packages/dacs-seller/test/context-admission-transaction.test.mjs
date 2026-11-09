@@ -1471,6 +1471,23 @@ for (const [name, terminal, elapsed] of [
   }
 });
 
+test('a stored context challenge keeps its exact answer after retirement and restart', async t => {
+  let session = null;
+  const w = world(t, { contextSessionState: () => session }), p = w.prepare();
+  const capability = await running(w, p);
+  await capability.complete(outcome);
+  const stored = w.store.challenges.attempt(p.attempt), record = w.admission.admissionRecord(p.input.jobId);
+  assert.equal(stored.kind, 'continuation');
+  session = 'finalised'; w.control.clock += 2 * HOUR;
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(p.input.jobId).job_retired, 1);
+  session = null; w.reopen();
+  const changes = w.changes(), calls = structuredClone(w.calls);
+  assert.deepEqual(w.store.challenges.attempt(p.attempt), stored);
+  assert.deepEqual(w.admission.admissionRecord(p.input.jobId), record);
+  assert.deepEqual(w.calls, calls); assert.equal(w.changes(), changes);
+});
+
 test('R06 retirement rollback preserves slots and restart can retry', async t => {
   let terminal = false;
   const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null }), p = w.prepare();
