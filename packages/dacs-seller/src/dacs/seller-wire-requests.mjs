@@ -105,7 +105,7 @@ function admitAnswerText(text) {
  * only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
  */
 export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt }) {
-  const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.reserve, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
+  const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reserve, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   const context = Object.freeze({ binding, signer, journal, store, requireDelegation, readCommitmentReceipt,
