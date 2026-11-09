@@ -47,6 +47,7 @@ import {
   type RfqAgreementInput,
 } from "./rfqAgreement.js";
 import type { AgreementSigner } from "./fixedPrice.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export const DURABLE_RFQ_LIFECYCLE_STORE_VERSION = 1 as const;
 
@@ -316,20 +317,6 @@ const roleClaim = (
 
 const otherRole = (role: DurableRfqLifecycleRole): DurableRfqLifecycleRole =>
   role === "buyer" ? "seller" : "buyer";
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    seen.has(value as object) ||
-    Object.isFrozen(value)
-  ) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as DataRecord)) deepFreeze(child, seen);
-  return Object.freeze(value);
-}
 
 function snapshot<T>(value: T, subject: string): T {
   return deepFreeze(snapshotCanonicalJsonRead(value, subject));
