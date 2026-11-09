@@ -88,7 +88,7 @@ export type X402SellerCommittedSessionResolution =
   | { disposition: "verified"; session: X402SellerCommittedSessionScope }
   | { disposition: "rejected" | "indeterminate"; reason: string };
 
-/** Opaque post-settlement authority passed from #119 into #120/#121. */
+/** Opaque post-settlement authority passed from payment intake into seller fulfilment. */
 export interface X402SellerPaymentPermitAuthorization {
   authorizationVersion: "1";
   sessionAuthorization: X402SellerCommittedSessionScope;
@@ -128,7 +128,7 @@ export interface X402SellerSpineOptions<T = unknown> {
     X402SellerPaymentPermitAuthorization,
     T
   >["reconcileSettlement"];
-  /** One authority shared by #119 permit creation and #120 permit consumption. */
+  /** One authority shared by payment-intake permit creation and fulfilment permit consumption. */
   receiptStore: SellerFulfilmentReceiptStore;
   /**
    * Resolve authenticated, immutable session state before the facilitator may
@@ -165,7 +165,7 @@ export type X402SellerSpine<T = unknown> = X402PaywallHandlers<
   "authorizeSettlement"
 > & {
   /**
-   * Rebuild #119 authorization from the exact settled WAL entry. This is the
+   * Rebuild the payment-intake authorization from the exact settled WAL entry. This is the
    * seller-owned recovery path when value moved but the HTTP response was lost
    * before the post-settlement permit could be retained.
    */
@@ -905,8 +905,9 @@ function validRenderedResponse<T>(value: unknown): value is X402SellerRenderedRe
 }
 
 /**
- * Compose the x402 transport with the real #119 payment gate and generation-
- * fenced #120/#121 fulfilment spine. No delivery callback or response renderer
+ * Compose the x402 transport with the real payment-intake gate
+ * (`verifySellerPaymentIntake`) and the generation-fenced fulfilment spine
+ * (`runDurableFulfilmentCore`). No delivery callback or response renderer
  * can run unless the exact pre-settlement scope survives both lower gates.
  */
 export function createX402SellerSpine<T = unknown>(

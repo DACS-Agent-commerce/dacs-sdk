@@ -11,7 +11,7 @@ import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 
 /**
- * Settlement idempotency (issue #43).
+ * Settlement idempotency.
  *
  * The evidence anchor follows the irreversible rail effect, so an ordinary
  * cache cannot close the crash window. This module records a rail-terms hash,
@@ -25,7 +25,7 @@ import { DacsError } from "../errors.js";
  * cross-process recovery requires a durable {@link SettlementLog} implementing
  * every transition as a compare-and-set transaction. That adapter must also bind
  * the enclosing agreement identity; this rail-local contract does not yet carry
- * `agreementHash` and is therefore a foundation for, not full closure of, #43.
+ * `agreementHash`, so on its own it does not bind a settlement to one agreement.
  */
 
 const DEFAULT_LEASE_DURATION_MS = 300_000;
