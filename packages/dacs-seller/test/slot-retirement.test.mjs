@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createSellerTransportStore, sellerStoreInternals, SELLER_CONTEXT_PATH } from '../src/dacs/seller-transport-auth.mjs';
+import { sellerStoreInternals, SELLER_CONTEXT_PATH } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { accountingFixture, BUYER, SELLER, JOB, JOB2, PIN, T0, CONTEXT, PROPOSALS } from './helpers/reservation-accounting-fixture.mjs';
 

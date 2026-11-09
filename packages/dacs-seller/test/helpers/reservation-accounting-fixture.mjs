@@ -27,7 +27,8 @@ export const nonceKey = (p) => sha256Hex(canonicalize({ buyer: p.buyer, seller: 
 
 // Actual SQL and wire journal, with a clock that never depends on wall time. The store has its purchase capacity bound, as the host's
 // has, unless `leaveCapacityToTest` is set: the test then builds the capacity itself.
-export async function accountingFixture(t, { leaveCapacityToTest = false, ...options } = {}) {
+export async function accountingFixture(t, options = {}) {
+  const { leaveCapacityToTest = false } = options;
   t.mock.method(performance, 'now', () => 0);
   const createSellerTransportStore = storeOptions => (leaveCapacityToTest ? createUnboundStore(storeOptions) : bindPurchaseCapacity(createUnboundStore(storeOptions), now));
   const dir = mkdtempSync(join(tmpdir(), 'TEST-accounting-'));
