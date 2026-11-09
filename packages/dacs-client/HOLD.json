@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "789b3a7cd0ad3de470568d411c9abbf9d4a90af8"
+        "blob": "6a5ffdf3d852c739d82f3f2e5e6e066acd5d80a4"
       },
       "DELTA-LEDGER.json": {
-        "blob": "fd5a7c6a2f1899ca17d897e80ba2603e3ac76ed4"
+        "blob": "698c7e737a1d628391052a4b97de6ae9b661816d"
       },
       "DELTA-MAP.md": {
-        "blob": "90448ee99ac2e7343f271f5389d8d2aecef5b887"
+        "blob": "0a84b41af67bff2d8d46eee5aec5b8429722508e"
       },
       "DELTA-NOTES.md": {
         "blob": "989a1aa010208285aa64b66bcd62b32426366500"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "f568cb7e5c616f834a67b90bb73c3350bbc7a279"
+        "blob": "17cfe8a9aafa391cb498c1fd21fc4cfd3df00ba9"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "021dc0934ddca6c5e6f36693c86e058eb2a972d2"
+        "blob": "81978fcbe3083502c446ba1dbbe5912b369382c5"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1304,7 +1304,7 @@
         "blob": "bfbca32a0a354e166cc7ae7ee659a3a84867f93e"
       },
       "src/wallet/durable-journal.mjs": {
-        "blob": "a284092528a7f3564c8def91dd5fee530ae04b93"
+        "blob": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
       },
       "src/wallet/effect-fence.mjs": {
         "blob": "f084d06e7fcac773a024fb36149b1f68b2826403"
@@ -1380,6 +1380,9 @@
       },
       "test/durable-journal-recovery.test.mjs": {
         "blob": "9e0eea8347fa209477848f388b17d7b4218d733a"
+      },
+      "test/durable-journal-rejections.test.mjs": {
+        "blob": "4f259862831e602f05118d5aa005a73e7d676320"
       },
       "test/effect-boundary.test.mjs": {
         "blob": "2afc55221675d0f677f5553f81c02acbe47e7c87"
