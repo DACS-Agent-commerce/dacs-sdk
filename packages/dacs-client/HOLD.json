@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "c2c59ed8b067e850c8a79c23353013d1ede666c1"
+        "blob": "052690f635d1ad3ee828dc6798983d16c05e531f"
       },
       "DELTA-LEDGER.json": {
-        "blob": "c99fd37f47d6f35d504fd568b4a782d90960cfde"
+        "blob": "ecb763a60e4a24f2852d38f8cb1f5ed9930aaffc"
       },
       "DELTA-MAP.md": {
-        "blob": "f6c9f1dbdf4bc27c0ee977727d1459637e028990"
+        "blob": "4ea26686836340ff5af87afb37701ba23b40dd5b"
       },
       "DELTA-NOTES.md": {
-        "blob": "1af512c36e63cf44c18cd3f5aad9e4f5ad0820d1"
+        "blob": "9c7712e4a079849dd3e261aa1d223bd0cbb65f42"
       },
       "HOLD.json": {
         "control": "record"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "4f4e2fce47e4f40ef47fe8a9595d683a1d71b5bb"
+        "blob": "3112fff66422c05c40bd8454dacdf132dcab4520"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1157,7 +1157,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "8d5cb43d014a022fc44efbef334926c18521ef69"
+        "blob": "adee53d7d4e45d18f64313effd1a055ed5f7ce47"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1259,7 +1259,7 @@
         "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
       },
       "src/purchases.mjs": {
-        "blob": "93ec1d4ba6bf5285c5da423817b610e2f36b1647"
+        "blob": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1742,13 +1742,13 @@
         "blob": "f0228e036f7f82a8087caf1c5883419ee18c8491"
       },
       "test/helpers/stored-request-fixture.mjs": {
-        "blob": "b09dba88259bd7dbdade6509e31e40a86727a13a"
+        "blob": "0fb0482deee0820d23ee7b2f022ea3633a8acfa4"
       },
       "test/helpers/stored-request-flow-loader.mjs": {
-        "blob": "504131cea52f01a11311e619e01576a9939f87b6"
+        "blob": "1b650e43fbb462da68e37017465f8f106f778a39"
       },
       "test/helpers/stored-request-flows.mjs": {
-        "blob": "f7b21b70231518c359487627ed207c4bc39dbc2d"
+        "blob": "6755532d932f0f7295a35a96010a317b16e81eb5"
       },
       "test/helpers/tp1-node-fixture.mjs": {
         "blob": "768ebf54a4154a3474b684f4e564c174b34dd29e"
@@ -1913,7 +1913,7 @@
         "blob": "d8fa7c318c181091f7c9d6793942d5288733362e"
       },
       "test/seller-stored-request.test.mjs": {
-        "blob": "53fdb217b04d43f879c51cb1169ab5ae66b20520"
+        "blob": "1577747ef14623e5e0b7880a13cf656d3963d610"
       },
       "test/signatures-claim-ref.test.mjs": {
         "blob": "f0696e4cc8a8d54e4833adde9e465638d792a03c"

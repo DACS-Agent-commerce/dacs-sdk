@@ -1019,7 +1019,10 @@ const lineStart=(format)=>Buffer.from(`{"format":${JSON.stringify(format)},`);
 const TORN_CONTEXT_PREFIX=lineStart(CONTEXT_FORMAT);
 const commonBytes=(a,b)=>{let count=0;while(count<a.length&&count<b.length&&a[count]===b[count])count++;return count;};
 const AMBIGUOUS_TAIL_BYTES=Math.max(...[EVIDENCE_FORMAT,ATTEMPT_FORMAT,SIGN_FORMAT,SELLER_LEDGER_HEADER_FORMAT].map(format=>commonBytes(TORN_CONTEXT_PREFIX,lineStart(format))));
-async function cutTornContextLine(evidencePath,{atAnyLength=false}={}){
+// Called under the ledger's policy lock. Resolves once the ledger has no
+// recognizable torn context line (a missing ledger has none); an ambiguous short
+// tail stays and needs operator repair. Rejects on a read, truncate or sync error.
+export async function cutTornContextLine(evidencePath,{atAnyLength=false}={}){
   let bytes;
   try{bytes=await readFile(evidencePath);}catch(error){if(error.code==='ENOENT')return;throw error;}
   const start=bytes.lastIndexOf(0x0a)+1,tail=bytes.subarray(start);

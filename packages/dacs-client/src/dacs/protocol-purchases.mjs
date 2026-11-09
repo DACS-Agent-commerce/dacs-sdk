@@ -100,10 +100,9 @@ export const DEM_DELIVERY_CONTEXT_LIMITS = Object.freeze({
 // Prepared while `dacsProtocol.sellerSr2Commitment` was configured
 // (seller-sr2-agreement-consumer.mjs): after the native Agreement anchors, the
 // seller commitment is requested and read back; payment stays held.
-// The wire's authority reads have no deadline of their own and wait this long.
-// A composition may set dacsProtocol.sellerRequestTimeoutMs (1-300s): it bounds
-// those reads and each seller route (15 s by default; context 240-300 s), after
-// which an unknown outcome is recorded and the next explicit call retries.
+// The authenticated source seller signs native CREATEs only after its exact
+// interactive approval and then waits for Node2 inclusion; 15s is too short.
+// A composition may set dacsProtocol.sellerRequestTimeoutMs (1-300s).
 const AUTHENTICATED_SELLER_TIMEOUT_MS = 240000;
 // A page request waits this long for a running Agreement plan step (which can
 // wait on seller approvals), inside a tunnel's 100 s response limit. A
@@ -471,7 +470,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
           deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
     }
     const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now });
-    const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: dacsProtocol?.sellerRequestTimeoutMs } : {}) });
+    const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: sellerRequestTimeoutMs } : {}) });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');
     return client;
   }
