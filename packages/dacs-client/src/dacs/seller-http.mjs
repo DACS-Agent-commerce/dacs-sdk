@@ -216,22 +216,20 @@ export class SellerRefusedError extends Error {
   }
 }
 
-// Closed route policy: durable effects, bootstrap provenance, retained replay and default time budget.
+// Closed route policy: durable effects, bootstrap provenance and retained replay.
 /** Policy for the ten admitted seller routes; unknown routes have no durable identity. */
 export const SELLER_REQUEST_POLICY = Object.freeze(Object.fromEntries([
-  [DACS_SELLER_HTTP_PATHS.context, true, true, false, 240000],
-  [DACS_SELLER_HTTP_PATHS.contextChallenge, true, true, false, 15000],
-  [DACS_SELLER_HTTP_PATHS.proposals, true, false, false, 15000],
-  [DACS_SELLER_HTTP_PATHS.commitments, true, false, true, 15000],
-  [DACS_SELLER_HTTP_PATHS.commitmentSignature, true, false, true, 15000],
-  [DACS_SELLER_HTTP_PATHS.payments, true, false, true, 15000],
-  [DACS_SELLER_HTTP_PATHS.bundleRequest, true, false, true, 15000],
-  [DACS_SELLER_HTTP_PATHS.bundleCountersignature, true, false, true, 15000],
-  [DACS_SELLER_HTTP_PATHS.state, false, false, false, 15000],
-  [DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, false, false, false, 15000],
-].map(([path, durable, bootstrap, retained, timeoutMs]) => [path, Object.freeze({ durable, bootstrap, retained, timeoutMs })])));
-const SELLER_MAX_TIMEOUT_MS = 300000;
-const SELLER_CLOCK = Object.freeze({ now: () => performance.now() });
+  [DACS_SELLER_HTTP_PATHS.context, true, true, false],
+  [DACS_SELLER_HTTP_PATHS.contextChallenge, true, true, false],
+  [DACS_SELLER_HTTP_PATHS.proposals, true, false, false],
+  [DACS_SELLER_HTTP_PATHS.commitments, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.commitmentSignature, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.payments, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.bundleRequest, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.bundleCountersignature, true, false, true],
+  [DACS_SELLER_HTTP_PATHS.state, false, false, false],
+  [DACS_SELLER_HTTP_PATHS.bundleBuyerCopy, false, false, false],
+].map(([path, durable, bootstrap, retained]) => [path, Object.freeze({ durable, bootstrap, retained })])));
 // A refusal raised by the request records (stale row, purchase no longer authorizing): not a seller answer.
 const recordRefusals = new WeakSet();
 const SELLER_OPERATOR_MESSAGE = 'the seller reports this operation is unresolved and needs the seller operator; it is not retried automatically';
@@ -255,9 +253,8 @@ function answerOrError(verdict, answer, status) {
  * classifyAnswer is the injectable K5 classifier; the default is the real one. requestRecords is the adapter's durable
  * record store (`start(path, body)` returns the attempt `{text, continuation, newPurchase, check(), finish(answerClass)}`
  * and `failure(error)` records a refusal). Each call sends once, using the stored bytes when present.
- * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
-export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords, clock = SELLER_CLOCK }) {
+export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords }) {
   const base = new URL(String(url).replace(/\/$/, ''));
   if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
@@ -268,17 +265,11 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
   if (authentication && prefix) throw new Error('authenticated seller transport uses the exact /dacs/v1 paths');
   let lastFailureCause, lastFailureDispatched, hasDispatched = false;
 
-  const routeDeadlineMs = (path) => {
-    const policy = SELLER_REQUEST_POLICY[path];
-    return Math.min(SELLER_MAX_TIMEOUT_MS, Math.max(policy?.timeoutMs === 240000 ? policy.timeoutMs : 0, timeoutMs ?? policy?.timeoutMs ?? 15000));
-  };
-
   // Commit the exact bytes and unknown intent before the call's single send.
   async function post(path, body) {
-    const deadline = clock.now() + routeDeadlineMs(path);
     const attempt = requestRecords?.start(path, body);
     try {
-      const answer = await send(path, body, attempt, deadline - clock.now());
+      const answer = await send(path, body, attempt);
       attempt?.finish(answer.answerClass);
       return answer.body;
     } catch (error) {
@@ -287,7 +278,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     }
   }
 
-  async function send(path, requestBody, attempt, remainingMs) {
+  async function send(path, requestBody, attempt) {
     lastFailureCause = undefined;
     lastFailureDispatched = undefined;
     let phase = 'other', signal;
@@ -296,7 +287,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       const body = attempt ? JSON.parse(text) : requestBody;
       if (Buffer.byteLength(text) > MAX_BODY) throw new Error('request exceeds byte limit');
       // One deadline covers signing too: the wire's authority and proof reads and the host's signer have none of their own.
-      signal = AbortSignal.timeout(Math.max(1, Math.ceil(remainingMs)));
+      signal = AbortSignal.timeout(timeoutMs);
       phase = 'client-sign';
       const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal }), signal) : null;
       try { attempt?.check(); } catch (refusal) { recordRefusals.add(refusal); throw refusal; }

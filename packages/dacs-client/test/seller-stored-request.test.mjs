@@ -5,7 +5,6 @@ import { storedWorld, PATHS, bodyFor, errorCode, nonce, sameBodies } from './hel
 const { signatureCommitmentAnchor } = await import('../src/dacs/commit-on-signature.mjs');
 const { createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
 const P = PATHS.proposals;
-const CONTEXT_LIMITS = { min: 240000, max: 300000 };
 
 test("route, stage, exact body bytes, body hash and attempt id are durable before the first send, written by compare-and-set on the purchase revision", async (t) => {
   const s = await storedWorld(t); const initial = s.p.get().state.protocol.revision ?? 0;
@@ -25,7 +24,7 @@ test("a crash after the record and before the send resends the stored bytes on r
   assert.equal(s.record(P).attempts, 2); assert.equal(s.record(P).clearAttempts, 0);
 });
 
-test("at the route deadline the outcome is unknown and recorded, and the next explicit call retries the stored bytes", async (t) => {
+test("a timed-out send is recorded unknown, and the next explicit call resends the stored bytes", async (t) => {
   const s = await storedWorld(t); let expired = false;
   const respond = async init => { if (!expired) { expired = true; s.advance(15000); throw Object.assign(new Error('TEST-timeout'), { name: 'TimeoutError' }); } return s.reply(init); };
   await assert.rejects(s.client({ respond }).propose(bodyFor(P)), e => e.answerClass === 'unknown');
@@ -148,13 +147,48 @@ test("stored request byte and metadata bounds fail closed before signing", async
   assert.equal(s.fetches.length, 0); assert.equal(s.w.state.signs.length, 0);
 });
 
-test("route deadlines: context is clamped to 240 through 300 seconds and every other route defaults to 15 seconds", async (t) => {
-  for (const [path, timeoutMs, expected] of [[PATHS.context, 1000, CONTEXT_LIMITS.min], [PATHS.context, 400000, CONTEXT_LIMITS.max], [P, undefined, 15000]]) {
-    const s = await storedWorld(t);
-    await s.client({ timeoutMs, respond: () => { s.advance(expected); throw new Error('TEST-deadline'); } }).request(path, bodyFor(path)).catch(() => {});
-    assert.equal(s.clock.now(), expected); assert.equal(s.fetches.length, 1);
+// Budgets passed to AbortSignal.timeout while `work` runs.
+const budgetsDuring = async (t, work) => {
+  const spy = t.mock.method(AbortSignal, 'timeout');
+  await work();
+  const budgets = spy.mock.calls.map(call => call.arguments[0]);
+  spy.mock.restore();
+  return budgets;
+};
+
+test("in each of the five seller flows an authenticated send gets the approval-capable default budget", async (t) => {
+  const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
+  for (const kind of ['agreement', 'commit', 'replay', 'payment', 'signature']) {
+    const spy = t.mock.method(AbortSignal, 'timeout');
+    const { s } = await sellerFlow(t, kind);
+    const budgets = spy.mock.calls.map(call => call.arguments[0]);
+    spy.mock.restore();
+    assert.ok(s.fetches.length > 0, kind);
+    assert.ok(budgets.length > 0 && budgets.every(budget => budget === 240000), `${kind}: ${budgets}`);
   }
 });
+
+test("a configured sellerRequestTimeoutMs is the send budget on every route", async (t) => {
+  const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
+  for (const configured of [1000, 300000]) {
+    const spy = t.mock.method(AbortSignal, 'timeout');
+    await sellerFlow(t, 'commit', { sellerRequestTimeoutMs: configured });
+    const budgets = spy.mock.calls.map(call => call.arguments[0]);
+    spy.mock.restore();
+    assert.ok(budgets.length > 0 && budgets.every(budget => budget === configured), `${configured}: ${budgets}`);
+  }
+  const s = await storedWorld(t);
+  const budgets = await budgetsDuring(t, () => s.client({ timeoutMs: 1000 }).request(PATHS.context, bodyFor(PATHS.context)).catch(() => {}));
+  assert.deepEqual(budgets, [1000]);
+});
+
+test("the unauthenticated transport defaults to 15 seconds on the context route", async (t) => {
+  const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
+  const fetchImpl = async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+  const budgets = await budgetsDuring(t, () => createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl }).request(PATHS.context, {}).catch(() => {}));
+  assert.deepEqual(budgets, [15000]);
+});
+
 
 test("retained payment and commitment bytes stay replayable after their authorized stage advances", async (t) => {
   for (const [path, first, next] of [[PATHS.payments, 'payment-observed', 'payment-evidenced'], [PATHS.commitments, 'agreement-anchored', 'seller-committed']]) {

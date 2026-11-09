@@ -17,7 +17,7 @@ const FLOW_PATHS = { agreement: PATHS.proposals, commit: PATHS.commitments, sign
  * verification, SQLite saves and the note reducers. The coordinator and the authenticated source readbacks are
  * supplied at their existing seams.
  */
-export async function sellerFlow(t, kind) {
+export async function sellerFlow(t, kind, configOverrides = {}) {
   const s = await storedWorld(t, { paid: true, configureTerms(terms, listing) {
     const unsigned = { ...listing };
     delete unsigned.signature;
@@ -26,10 +26,10 @@ export async function sellerFlow(t, kind) {
     terms.seller.payee = terms.seller.claim.slice('did:demos:agent:'.length);
     if (kind === 'commit') delete terms.protocol.sellerAgreementProjection;
   } });
-  return run(s, kind);
+  return run(s, kind, configOverrides);
 }
 
-async function run(s, kind) {
+async function run(s, kind, configOverrides) {
   const { p, w, made } = s, jobId = w.job.jobId, address = fixedPriceAgreementLogicalAddress(jobId);
   const agreement = { artifact: made.agreement, hash: made.agreementHash,
     ref: { anchor: { kind: 'storage-program', locator: address }, contentHash: made.agreementHash },
@@ -41,14 +41,14 @@ async function run(s, kind) {
     agreement, sessionDelegation: delegation, signatures: { agreement: 'TEST-retained-contribution' }, commitment: made.summaryWithBytes,
     paymentEvidence: null });
   const state = globalThis[Symbol.for('TEST-stored-request-flows')] = {
-    clock: s.clock, signature: null,
+    signature: null,
     payment: { unresolved() {}, withWorkflow: (_op, work) => work(), verifyAgreement: async () => {} },
     evidence: { rpcOrigin: new URL(p.config.walletAgreement.rpcUrl).origin, readEvidence: async () => ({ disposition: 'indeterminate', reason: 'TEST-readback-pending' }) },
     chain: { readCommitment: async () => ({ status: 'indeterminate', reason: 'TEST-readback-pending' }) },
     async fetch(_url, init) { s.fetches.push(init); return s.reply(init); },
     exchange: async ({ seller }) => { await seller.propose(bodyFor(PATHS.proposals)); return { disposition: 'indeterminate', stage: 'proposal', reason: 'TEST-retained' }; },
   };
-  const config = { ...p.config, walletAgreement: { ...p.config.walletAgreement } };
+  const config = { ...p.config, ...configOverrides, walletAgreement: { ...p.config.walletAgreement } };
   if (kind === 'commit') {
     state.exchange = async () => ({ disposition: 'anchored', result: { agreement: made.agreement, agreementHash: made.agreementHash,
       agreementRef: agreement.ref, anchorReceipt: agreement.anchorReceipt } });
