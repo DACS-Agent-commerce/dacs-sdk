@@ -6768,6 +6768,17 @@
           "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the authenticated-retry buyer seller client after the merge and refresh package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f0834ba649d3a26ad1136f96195fea50feb9d8c3",
+          "after": "f0834ba649d3a26ad1136f96195fea50feb9d8c3"
+        }
+      ]
     }
   ]
 }
