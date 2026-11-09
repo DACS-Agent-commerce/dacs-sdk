@@ -10,7 +10,11 @@ import { describe, expect, it } from "vitest";
 // property is null, and contains() on a string is a case-insensitive substring test.
 
 const repoRoot = resolve(import.meta.dirname, "../..");
-type Job = { "runs-on"?: string; steps?: { name?: string; if?: string }[] };
+type Job = {
+  "runs-on"?: string;
+  strategy?: { matrix?: { "node-version"?: (string | number)[] } };
+  steps?: { name?: string; if?: string }[];
+};
 const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as { jobs: Record<string, Job> };
 const RUNS_ON = workflow.jobs["build-test"]?.["runs-on"] ?? "";
 const POOL = ["self-hosted", "linux", "x64", "dacs-pool"];
@@ -272,6 +276,19 @@ describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", (
         expect(runs(name, event, "20.19.0")).toBe(true);
       }
     }
+  });
+
+  // The legs come from the matrix itself, so pinning a leg (say "22" to "22.21.1") can't leave a suite running on no
+  // pull request leg while the literal cases above still pass.
+  it("runs each long suite on at least one matrix leg of a pull request, and on every leg otherwise", () => {
+    const legs = (workflow.jobs["build-test"]?.strategy?.matrix?.["node-version"] ?? []).map(String);
+    expect(legs.length).toBeGreaterThan(1);
+    for (const name of suites) {
+      expect(legs.some((node) => runs(name, "pull_request", node))).toBe(true);
+      for (const event of ["push", "merge_group"]) for (const node of legs) expect(runs(name, event, node)).toBe(true);
+    }
+    const demosdk = "Typecheck and test against demosdk 4.0.18";
+    for (const event of ["push", "merge_group"]) expect(legs.some((node) => runs(demosdk, event, node))).toBe(true);
   });
 
   it("runs the older-demosdk step on node 22 outside pull requests only", () => {
