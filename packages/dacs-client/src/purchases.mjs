@@ -1101,9 +1101,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       observation = { status: 'unavailable', reason: errorText(error) };
     }
     observation = transferObservationRecord(observation, hash);
-    let body = null, bodyError = null;
+    let body = null, bodyError = null, bodyFailed = false;
     if (!['malformed', 'unavailable', 'pending', 'not-found'].includes(observation.status)) {
-      try { body = await chain.getTransaction(hash); } catch (error) { bodyError = error; }
+      try { body = await chain.getTransaction(hash); } catch (error) { bodyFailed = true; bodyError = error; }
     }
     const decided = transaction(db, () => {
       // BEGIN IMMEDIATE serializes the pointer check with nonce consumption,
@@ -1137,9 +1137,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         recordUnverified(result);
         return { operation, verification: { outcome: 'awaiting_inclusion', ...result } };
       }
-      if (bodyError) {
+      if (bodyFailed) {
         recordUnverified(result);
-        return { operation, verification: { outcome: 'chain_unavailable', reason: `transaction body unavailable: ${bodyError.message}`, ...result } };
+        return { operation, verification: { outcome: 'chain_unavailable', reason: `transaction body unavailable: ${errorText(bodyError)}`, ...result } };
       }
       let bodyHash = null;
       try {

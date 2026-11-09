@@ -6406,6 +6406,22 @@
           "after": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
         }
       ]
+    },
+    {
+      "delta": "D34",
+      "subject": "delta(client): D34 report a failed transaction-body read as chain unavailable",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd",
+          "after": "55a0b3db0633bcebea37746ac31e5ae1700d06bf"
+        },
+        {
+          "path": "packages/dacs-client/test/host-observations.test.mjs",
+          "before": "5b20530a130bb00f75d07d1aef1f0c5b96dd93a4",
+          "after": "340d541daecd3e501767c1cf341ea1e7c2c1683f"
+        }
+      ]
     }
   ]
 }
