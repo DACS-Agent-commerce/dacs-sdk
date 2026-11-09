@@ -346,11 +346,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     ON CONFLICT(jobId) DO UPDATE SET context = MAX(context, excluded.context)`, p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), context ? 1 : 0);
   // An accounting row stops counting, and is deleted, once its request has expired (a request admitted at `at` is expired by
   // `at` plus one transport lifetime, and the wire journal refuses its nonce key again). It is kept while it is `reserving`
-  // (a crash left it) and while it is the first non-refused row of its job and route, the witness of that route's one effect
+  // (a crash left it) and while it is the first settled row of its job and route, the witness of that route's one effect
   // (`accountedSlotWithin`, `terminalStartWithin`). The one parameter is the cutoff time.
   const reservationRetentionMs = Math.max(MAX_TRANSPORT_LIFETIME_MS, nonceWindowMs);
   const RETIRABLE_RESERVATION = `at <= ? AND state <> 'reserving' AND (state = 'refused' OR EXISTS (SELECT 1 FROM kit_reservations w
-    WHERE w.jobId = kit_reservations.jobId AND w.route = kit_reservations.route AND w.state <> 'refused' AND w.key < kit_reservations.key))`;
+    WHERE w.jobId = kit_reservations.jobId AND w.route = kit_reservations.route AND w.state IN ('new', 'recover', 'completed') AND w.key < kit_reservations.key))`;
   const retireReservationsWithin = (time) => run(`DELETE FROM kit_reservations WHERE ${RETIRABLE_RESERVATION}`, time - reservationRetentionMs);
   // Legacy nonce rows did not carry expiry. Keep them for one full maximum
   // request lifetime from upgrade before considering safe reclamation.
