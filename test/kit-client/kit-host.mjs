@@ -14,10 +14,10 @@ import { SELLER_TRANSPORT_HEADER } from '../../packages/dacs-seller/src/dacs/sel
 export async function composedKitHost(t) {
   const fixture = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE });
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-kit-client-host-'));
-  // The fixture's agent options that the host does not take (it owns its directory and Vet mode and has no early commit) are left out.
+  // The fixture's agent options that the host does not take (it owns its directory and Vet mode, builds its own challenge ledger and has no early commit) are left out.
   const config = { ...fixture.config };
   const { nativeArtifactAnchor } = config;
-  for (const key of ['durableDirectory', 'commitOnSignature', 'nativeArtifactAnchor', 'vetMode']) delete config[key];
+  for (const key of ['durableDirectory', 'commitOnSignature', 'nativeArtifactAnchor', 'challengeLedger', 'vetMode']) delete config[key];
   const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { fixture, host, dataDirectory };
