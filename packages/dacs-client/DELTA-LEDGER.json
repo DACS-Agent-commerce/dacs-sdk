@@ -6715,6 +6715,74 @@
           "after": "e18570d5cd4b514b98c9b4b8b8177ff7eba80c12"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e807dbf34a72b959905418192a4f144560cea331",
+      "subject": "fix(client): publish the first proposal after a signed unknown-job read",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/purchase-protocol.mjs",
+          "before": "72c1516bb64d61bc224c380c1c020fdeef8f6e6b",
+          "after": "8d7ca761300e216e0785b7e91aee208e39a3a12d"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "sha": "e282e93ac2fcd26bb666d0981fd23c10a9cffb53",
+      "subject": "fix(client): wait for the response verifier in the buyer seller client",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "3b37b663b20165b7a8a14a8a25ee62bf662cc5e6",
+          "after": "eb89bc99364dc00d325530e5249981917b9cdb87"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged buyer seller client and refresh package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "add72c0add7c8188d6cc86e7476207a4882c93af",
+          "after": "add72c0add7c8188d6cc86e7476207a4882c93af"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the exact-byte buyer seller client after the merge and refresh package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "b88097dc5621acb7affa393aade0133f1c873923",
+          "after": "b88097dc5621acb7affa393aade0133f1c873923"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the stored-request buyer seller client after the merge and refresh package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f80404d442afea5c691c15c3b729ec10ea9bf319",
+          "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the authenticated-retry buyer seller client after the merge and refresh package pins",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f0834ba649d3a26ad1136f96195fea50feb9d8c3",
+          "after": "f0834ba649d3a26ad1136f96195fea50feb9d8c3"
+        }
+      ]
     }
   ]
 }
