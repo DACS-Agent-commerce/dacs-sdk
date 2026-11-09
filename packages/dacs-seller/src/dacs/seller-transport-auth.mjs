@@ -484,7 +484,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       run('INSERT INTO kit_slot_retirements(job, job_retired, context_retired) VALUES (?, 1, 1) ON CONFLICT(job) DO UPDATE SET job_retired = 1, context_retired = 1', job);
       if (!get('SELECT 1 FROM peer_jobs WHERE job = ?', job)) run('DELETE FROM kit_purchase_profiles WHERE job = ?', job);
     }
-    const contexts = (plan?.contexts ?? reclaimableContexts(time, plan?.capacity ? reservationLedger.contextCountWithin() : Number.MAX_SAFE_INTEGER)).filter(row => jobId === undefined || row.job === jobId);
+    const contexts = (plan?.contexts ?? reclaimableContexts(time, plan?.capacity ? undefined : Number.MAX_SAFE_INTEGER)).filter(row => jobId === undefined || row.job === jobId);
     const freed = new Set(contexts.filter(row => reservationLedger.jobHeldWithin(row.job) && !get('SELECT 1 FROM peer_jobs WHERE job = ?', row.job)).map(row => row.job));
     const jobs = (plan?.jobs ?? reclaimableJobs(plan?.capacity ? Math.max(0, reservationLedger.jobCountWithin() - freed.size - maxJobs + 1) : Number.MAX_SAFE_INTEGER, jobId, time, freed)).filter(job => jobId === undefined || job === jobId);
     for (const job of new Set([...jobs, ...contexts.map(row => row.job)])) {

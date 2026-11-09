@@ -128,6 +128,47 @@ test('one reserve reuses a genuinely reclaimable job and context slot', t => {
   assert.equal(port.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
 });
 
+function retainedProofBeforeReclaimableContext(t) {
+  const terminal = new Set();
+  const w = fixture(t, { maxJobs: 10, maxContextRecords: 2,
+    contextSessionState: ({ jobId }) => terminal.has(jobId) ? 'finalised' : null });
+  const context = jobId => w.store.reserve(w.payload(jobId, { path: CONTEXT }), { scope: { jobId } }, { admit: w.now });
+  for (const jobId of [JOB, JOB2]) w.store.finish(context(jobId), 200, '{}');
+  w.advance(HOUR + 61000); terminal.add(JOB);
+  assert.ok(w.store.challenges.issue({ jobId: LIVE_JOB, buyer: BUYER.claim }, 'c'.repeat(64)).sessionNonce);
+  assert.deepEqual(context(JOB), { disposition: 'cached', status: 200, text: '{}' });
+  assert.equal(context(LIVE_JOB).disposition, 'perform');
+  w.advance(61000); terminal.add(JOB2);
+  assert.equal(sellerStoreInternals(w.store).admissionCounts().contextRecords, 2);
+  return w;
+}
+
+for (const restart of [false, true]) {
+  for (const caller of ['challenge', 'accounting']) {
+    test(`${caller} retires an active context beyond a kept retired proof${restart ? ' after restart' : ''}`, async t => {
+      const w = retainedProofBeforeReclaimableContext(t);
+      if (restart) w.reopen();
+      const before = sellerStoreInternals(w.store).db.prepare('SELECT * FROM kit_slot_retirements WHERE job = ?').get(JOB);
+      assert.equal(before.context_retired, 1);
+      assert.equal(JSON.parse(before.owner).buyer, BUYER.claim);
+      if (caller === 'challenge') {
+        assert.ok(w.store.challenges.issue({ jobId: NEXT_JOB, buyer: BUYER.claim }, 'd'.repeat(64)).sessionNonce);
+      } else {
+        const f = await accountingFixture(t);
+        f.setTime(w.now());
+        const next = f.payload({ path: CONTEXT, jobId: NEXT_JOB });
+        assert.equal((await w.store.reservationAccounting.reserveAccounted(f.args(next))).state, 'new');
+      }
+      const port = sellerStoreInternals(w.store);
+      assert.equal(port.admissionCounts().contextRecords, caller === 'challenge' ? 1 : 2);
+      assert.equal(port.db.prepare('SELECT context_retired FROM kit_slot_retirements WHERE job = ?').get(JOB2).context_retired, 1);
+      assert.deepEqual(port.db.prepare('SELECT * FROM kit_slot_retirements WHERE job = ?').get(JOB), before);
+      assert.deepEqual(port.db.prepare('SELECT job FROM peer_context_admissions WHERE job IN (?, ?) ORDER BY job').all(JOB, JOB2),
+        [JOB, JOB2].sort().map(job => ({ job })));
+    });
+  }
+}
+
 for (const maxContextRecords of [1, 2]) test(`capacity retirement finds an active terminal job beyond a retired proof with context limit ${maxContextRecords}`, t => {
   const w = retainedContextProof(t);
   w.store.finish(w.store.reserve(w.payload(NEXT_JOB), {}, { keepProfile: FIXTURE_PROFILE }), 200, '{}');
