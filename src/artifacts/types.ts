@@ -1,9 +1,8 @@
 /**
- * DACS spine artifacts for the MVP fixed-price + x402 path (T3).
+ * DACS spine artifacts for the MVP fixed-price + x402 path.
  * Field shapes track the reproducibly pinned DACS-Standard `next` §14 oracle
- * selected by scripts/sync-vectors.mjs. DACS-Standard#308 was resolved by
- * Standard PR #310: the oracle and normative prose now agree on DACS-2 §7.5.2
- * AttestationRef and DACS-4 §9.3 ChainTxRef.
+ * selected by scripts/sync-vectors.mjs. The oracle and normative prose agree on
+ * DACS-2 §7.5.2 AttestationRef and DACS-4 §9.3 ChainTxRef.
  *
  * Each artifact is signed under its domain separator (see ./registry) over the
  * content hash of its signed scope (the object with the signature field omitted).
@@ -1019,7 +1018,7 @@ export interface PhaseSummaryEntry {
   errorClass?: BundlePhaseErrorClass;
   txRefs?: TxRef[];
   /**
-   * OPTIONAL per DACS-5 §10.4.3 / DACS-Standard#204: the authoritative
+   * OPTIONAL per DACS-5 §10.4.3: the authoritative
    * attestation set is the top-level `vetRecords[]` / `settlementEvidence[]`, so
    * a phaseSummary entry MAY omit its attestationRef. Producers SHOULD still emit
    * it for attestation-bearing phases (runSessionCore does).

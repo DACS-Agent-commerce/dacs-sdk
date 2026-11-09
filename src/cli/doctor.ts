@@ -408,28 +408,28 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
   }
 
   checks.push(
-    check("wallet.balance", "blocked", "Wallet balance check is not wired yet", {
-      remediation: "Add a stable demosdk balance API before making funding claims.",
+    check("wallet.balance", "blocked", "Wallet balance is not checked by doctor", {
+      remediation: "Not checked here; doctor has no stable balance API to read from.",
     }),
   );
   checks.push(
-    check("wallet.nonce", "blocked", "Wallet nonce check is not wired yet", {
-      remediation: "Track dacs-sdk #58 and #57 for nonce-safe anchoring.",
+    check("wallet.nonce", "blocked", "Wallet nonce is not checked by doctor", {
+      remediation: "Not checked here; anchoring computes the writer's next nonce at write time.",
     }),
   );
   checks.push(
     check(
       "storage.binding-resolution",
       "blocked",
-      "Binding-aware StorageProgram resolution is not implemented yet",
+      "Binding-aware StorageProgram resolution is not checked by doctor",
       {
-        remediation: "Track dacs-sdk #58 and DACS-Standard #242/#248.",
+        remediation: "Not checked here; resolve artifacts through a published binding index, not by program name.",
       },
     ),
   );
   checks.push(
-    check("anchor.completion", "blocked", "Read-visible anchor completion is not implemented yet", {
-      remediation: "Track dacs-sdk #57.",
+    check("anchor.completion", "blocked", "Read-visible anchor completion is not checked by doctor", {
+      remediation: "Not checked here; use anchorAndWait to wait for an explicit completion level.",
     }),
   );
 
@@ -458,7 +458,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
 
   checks.push(
     check("cost.estimate", "blocked", "Cost estimate needs fee and funding APIs", {
-      remediation: "Track dacs-sdk #60 follow-up after #57/#58 land.",
+      remediation: "Not checked here; doctor has no fee or funding source to estimate from.",
     }),
   );
 
