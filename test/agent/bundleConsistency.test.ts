@@ -364,6 +364,72 @@ describe("bundleConsistency (§10.4.3 two-sided verdict)", () => {
     expect(bundlesDiverge(faultBuyer, legacySeller)).toBe(false);
     expect(bundlesDiverge({ ...faultBuyer, faultedParty: "buyer" }, legacySeller)).toBe(true);
   });
+
+  describe("legacy copies from opposite anchors that blame someone other than themselves", () => {
+    const buyerCopy = (outcome: string, roles: string[]) => ({
+      bundleVersion: "1",
+      outcome,
+      anchoredByRole: "buyer",
+      parties: roles.map((role) => ({ role })),
+      phaseSummary: [],
+    });
+    const sellerCopy = (outcome: string, roles: string[]) => ({
+      ...buyerCopy(outcome, roles),
+      anchoredByRole: "seller",
+    });
+
+    test("three-party aborted-by-other copies agree when both can blame the orchestrator", () => {
+      const roles = ["buyer", "seller", "orchestrator"];
+      expect(
+        bundlesDiverge(buyerCopy("aborted-by-other", roles), sellerCopy("aborted-by-other", roles)),
+      ).toBe(false);
+    });
+
+    test("three-party failed-counterparty copies agree when both can blame the orchestrator", () => {
+      const roles = ["buyer", "seller", "orchestrator"];
+      expect(
+        bundlesDiverge(
+          buyerCopy("failed-counterparty", roles),
+          sellerCopy("failed-counterparty", roles),
+        ),
+      ).toBe(false);
+    });
+
+    test("two-party aborted-by-other copies diverge because each blames the other", () => {
+      const roles = ["buyer", "seller"];
+      expect(
+        bundlesDiverge(buyerCopy("aborted-by-other", roles), sellerCopy("aborted-by-other", roles)),
+      ).toBe(true);
+    });
+
+    test("every legacy three-party reconciliation vector gets its expected verdict", () => {
+      const file = JSON.parse(readFileSync(new URL(
+        "../../vendor/DACS-Standard/conformance/vectors/security/legacy-three-party-fault-reconciliation-v0.3.json",
+        import.meta.url,
+      ), "utf8")) as {
+        vectors: Array<{
+          name: string;
+          copies: [Record<string, unknown>, Record<string, unknown>];
+          want: { convergence: "unified" | "divergent" };
+        }>;
+      };
+      expect(file.vectors).toHaveLength(5);
+      for (const vector of file.vectors) {
+        expect(
+          [vector.name, bundlesDiverge(vector.copies[0], vector.copies[1])],
+        ).toEqual([vector.name, vector.want.convergence === "divergent"]);
+      }
+    });
+
+    test("three-party aborted-by-other copies diverge when their phases differ", () => {
+      const roles = ["buyer", "seller", "orchestrator"];
+      const seller = {
+        ...sellerCopy("aborted-by-other", roles),
+        phaseSummary: [{ index: 0, kind: "settle", outcome: "failed" }],
+      };
+      expect(bundlesDiverge(buyerCopy("aborted-by-other", roles), seller)).toBe(true);
+    });
+  });
 });
 
 describe.skipIf(!haveVectors)("§14 verify golden — two-sided verdicts over reference bundles", () => {
