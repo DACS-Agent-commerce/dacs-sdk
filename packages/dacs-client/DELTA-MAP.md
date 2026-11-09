@@ -1119,6 +1119,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | 83e1364efe976f2b3125cd8466c459d1600f6795 |
 | WF | delta(client): WF check that the effect boundary module is not exported without listing every export | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa |
+| WF | delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 4e5486337d9cddb235f415cfe4bd819c78ae6593 |
 
 ## Complete commit and file inventory
 
@@ -3521,6 +3523,11 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): WF check that the effect boundary module is not exported without listing every export | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
