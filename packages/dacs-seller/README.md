@@ -259,7 +259,17 @@ per-client limiter so one client cannot exhaust the shared request budget.
   cannot release stays busy until the operator releases it.
 - Every request must carry a buyer transport signature over its method, path
   and body, for this seller and Listing; unsigned or mismatched requests are
-  refused before the agent runs. Effects are journaled before they run, so a
+  refused before the agent runs. The Agreement proposal, Agreement state and
+  commitment routes (`commitments`, and `commitments/signature` when enabled)
+  open every request and sign every answer through the SDK's `./wire` (domain
+  `dacs-seller-http:v1`, the host's bound TP-1 profile and the tuple kept for the
+  job); a request signed under the old domain is refused, so
+  `createSellerTransportClientAuth` does not reach these routes. The transport store
+  stays the journal of the proposal and commitment routes; the state route
+  reserves and stores nothing. A job the seller holds nothing for gets a signed 404
+  `peer_unknown_job`, and a delegated request for one is refused
+  `peer_delegation_agreement_required`. The payment and bundle routes, including
+  the buyer-copy read, still use the old server auth. Effects are journaled before they run, so a
   restarted host answers a completed request again and reconciles uncertain
   work through the agent's retained state. A commitment retry first reads back
   the original CREATE and publishes again only with proof that nothing was signed.
