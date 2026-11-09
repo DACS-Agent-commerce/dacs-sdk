@@ -619,8 +619,23 @@ test('the reservation ledger lists the sources and writers the matrix below cove
 const WRITERS = [
   { name: 'an old proposal', job: true, context: false, write: f => { oldReserve(f, f.payload()); } },
   { name: 'an old context admission', job: true, context: true, write: f => oldContextStep(f) },
-  { name: 'an old refusal record', job: false, context: false,
-    write: f => assert.throws(() => f.store().reserve(contextPayload(f), { scope: { jobId: JOB } }, { admit: f.now, verdict: 'TEST-refused' }), refused('TEST-refused', 409)) },
+  { name: 'a retained no-effect refusal', job: false, context: false, owner: true,
+    write: f => {
+      const request = f.payload(), text = JSON.stringify({ error: 'buyer_bundle_unauthenticated' });
+      f.store().finish(oldReserve(f, request), 422, text, { noEffect: true });
+      assert.equal(f.jobRows().length, 0); assert.equal(f.tuples(), 0);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
+      assert.deepEqual(f.db.prepare('SELECT buyer, agreement_hash FROM kit_job_owners WHERE job = ?').get(JOB),
+        { buyer: BUYER.claim, agreement_hash: null });
+      return { request, text };
+    },
+    replay: (f, { request, text }) => {
+      const expected = { disposition: 'cached', status: 422, text };
+      assert.deepEqual(oldReserve(f, request), expected);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 1);
+      assert.deepEqual(f.db.prepare('SELECT buyer, created_at FROM peer_nonce_retention').all(), [{ buyer: BUYER.claim, created_at: T0 }]);
+      assert.equal(f.jobRows().length, 0); assert.equal(f.tuples(), 0);
+    } },
   { name: 'an accounted proposal', job: true, context: false, write: f => f.reserve(f.args()) },
   { name: 'an accounted context start', job: true, context: true, write: f => f.reserve(f.args(contextPayload(f))) },
   { name: 'an accounted context start that crashes before its reservation', job: true, context: true,
@@ -639,7 +654,7 @@ const LIMITS = [
   { name: 'jobs', options: { maxJobs: 1 }, contender: f => f.payload({ buyer: OTHER.claim, jobId: JOB2 }), counts: w => w.job, refusal: refused('peer_job_capacity', 503) },
   { name: 'context records', options: { maxContextRecords: 1 }, contender: f => contextPayload(f, { buyer: OTHER.claim, jobId: JOB2 }),
     counts: w => w.context, refusal: refused('peer_context_capacity', 503) },
-  { name: 'job owner', options: {}, contender: f => f.payload({ buyer: OTHER.claim }), counts: w => w.job, refusal: refused('peer_job_conflict', 409) },
+  { name: 'job owner', options: {}, contender: f => f.payload({ buyer: OTHER.claim }), counts: w => w.owner ?? w.job, refusal: refused('peer_job_conflict', 409) },
   // Only a job row fixes the Agreement; a context admission or an accounting hold carries none.
   { name: 'job Agreement', options: {}, contender: f => f.payload({ agreementHash: sha256Hex('other agreement') }), counts: w => w.job && !w.context,
     refusal: refused('peer_job_conflict', 409) },
@@ -651,7 +666,8 @@ const READERS = [
 for (const writer of WRITERS) for (const limit of LIMITS) for (const reader of READERS) {
   test(`ledger matrix: after ${writer.name} and a restart, the ${reader.name} path ${limit.counts(writer) ? 'counts it against' : 'leaves free'} the ${limit.name}`, async t => {
     const f = await accountingFixture(t, limit.options);
-    await writer.write(f); f.reopen();
+    const written = await writer.write(f); f.reopen();
+    writer.replay?.(f, written);
     const read = reader.read(f, limit.contender(f));
     if (limit.counts(writer)) await assert.rejects(read, limit.refusal);
     else await read;
