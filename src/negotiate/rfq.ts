@@ -38,6 +38,7 @@ import {
   type VerifiedListingInput,
 } from "./fixedPrice.js";
 import { requireCanonicalJobId } from "./jobId.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export type RfqPricing = Extract<
   PricingSpec,
@@ -196,21 +197,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isSafeTime(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0;
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    seen.has(value as object) ||
-    Object.isFrozen(value)
-  ) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as DataRecord))
-    deepFreeze(child, seen);
-  return Object.freeze(value);
 }
 
 function failure(
