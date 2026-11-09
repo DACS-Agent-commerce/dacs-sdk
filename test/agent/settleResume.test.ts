@@ -123,6 +123,8 @@ async function makeDeps(opts: { store: ReturnType<typeof createIdempotencyStore>
     authenticateRecoveredArtifact: () => true,
     // kv shared across resume via the same closure
   };
+  // A resumed job reconciles through the same durable-store wrapper.
+  deps.resumeSettlement = deps.settle;
   return { deps, kv, listingRef };
 }
 
