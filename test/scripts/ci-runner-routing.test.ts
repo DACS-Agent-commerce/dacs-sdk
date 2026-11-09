@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // property is null, and contains() on a string is a case-insensitive substring test.
 
 const repoRoot = resolve(import.meta.dirname, "../..");
-type Job = { "runs-on"?: string };
+type Job = { "runs-on"?: string; steps?: { name?: string; if?: string }[] };
 const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as { jobs: Record<string, Job> };
 const RUNS_ON = workflow.jobs["build-test"]?.["runs-on"] ?? "";
 const POOL = ["self-hosted", "linux", "x64", "dacs-pool"];
@@ -246,5 +246,39 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
         expect(route({ blacksmith: "on", event: "pull_request_target", prPayload: true, node })).toBe("ubuntu-latest");
       }
     });
+  });
+});
+
+describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", () => {
+  const steps = workflow.jobs["build-test"]?.steps ?? [];
+  const runs = (name: string, event: string, node: string) => {
+    const step = steps.find((s) => s.name === name);
+    if (!step) throw new Error(`no step ${name}`);
+    if (step.if === undefined) return true;
+    return truthy(evaluate(step.if, { matrix: { "node-version": node }, github: { event_name: event } }));
+  };
+  const suites = [
+    "Test seller internal primitives and journals",
+    "Test (unit + conformance harness)",
+    "Test durable RFQ filesystem record-size boundaries",
+  ];
+
+  it("runs the long suites on both legs except the node 20 leg of a pull request", () => {
+    for (const name of suites) {
+      expect(runs(name, "pull_request", "22")).toBe(true);
+      expect(runs(name, "pull_request", "20.19.0")).toBe(false);
+      for (const event of ["push", "merge_group"]) {
+        expect(runs(name, event, "22")).toBe(true);
+        expect(runs(name, event, "20.19.0")).toBe(true);
+      }
+    }
+  });
+
+  it("runs the older-demosdk step on node 22 outside pull requests only", () => {
+    const name = "Typecheck and test against demosdk 4.0.18";
+    expect(runs(name, "pull_request", "22")).toBe(false);
+    expect(runs(name, "push", "22")).toBe(true);
+    expect(runs(name, "merge_group", "22")).toBe(true);
+    for (const event of ["pull_request", "push", "merge_group"]) expect(runs(name, event, "20.19.0")).toBe(false);
   });
 });
