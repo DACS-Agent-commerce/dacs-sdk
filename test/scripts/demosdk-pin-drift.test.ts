@@ -144,7 +144,10 @@ describe("pull-request demosdk step", () => {
     const { result, calls } = runPinnedStep(registryReplying([PINNED]));
     expect(result.status).toBe(0);
     // The step names every client file one by one and later changes append theirs, so the loading suite is one whole argument, never a glob.
-    expect(calls.some((call) => call.startsWith("node --test") && call.split(" ").includes("packages/dacs-client/test/node-demos-loading.test.mjs"))).toBe(true);
+    const install = calls.findIndex((call) => call.startsWith("install"));
+    const loadingSuite = calls.findIndex((call) => call.startsWith("node --test") && call.split(" ").includes("packages/dacs-client/test/node-demos-loading.test.mjs"));
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(loadingSuite).toBeGreaterThan(install);
   });
 
   it("still fails when the installed demosdk is not the pinned version", () => {
