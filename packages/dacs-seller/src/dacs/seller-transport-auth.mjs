@@ -405,14 +405,14 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // Only a job row establishes a purchase; its kept tuple, or null for an old-path job kept without one.
     purchaseWithin: (jobId) => get('SELECT k.profile FROM peer_jobs j LEFT JOIN kit_purchase_profiles k ON k.job = j.job WHERE j.job = ?', jobId),
     // The refusals of the old reserve path that read journal state, shared so both paths apply each one.
-    sessionTerminalWithin: (jobId) => TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId })),
+    sessionTerminalWithin: (jobId) => TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(jobId)),
     // A terminal session refuses a fresh proposal or context start; an operation already reserved is a retry, which
     // still reaches the wire for its recover or completed answer. A retry is a row of the operation the wire answered
     // (new, recover, completed) or, still `reserving`, one the wire's own record holds (an attempt, not a nonce key
     // alone: after a crash before publication, or a refusal whose write failed, the wire would answer `new`), and in
     // both cases the wire's record carries this request's binding (another context scope or Agreement hash is a fresh start).
     // With no reader, no record or another binding, the request is refused.
-    terminalStartWithin: (p, operationId) => (p.path === PROPOSAL || p.path === CONTEXT) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId })) &&
+    terminalStartWithin: (p, operationId) => (p.path === PROPOSAL || p.path === CONTEXT) && TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(p.jobId)) &&
       !(get("SELECT 1 FROM kit_reservations WHERE jobId = ? AND operationId = ? AND state IN ('new', 'recover', 'completed', 'reserving')", p.jobId, operationId) && wireHoldsWithin(p)),
     // A mutating route has one effect per job. An accounted reservation holds it unless the wire definitely refused it
     // (a definite refusal is no effect); a `reserving` row left by a crash holds it too.
@@ -513,9 +513,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   }
   function freeJobWithin(job) {
     retireSlotsWithin(now(), job, { jobs: [job], contexts: [] });
+    run('UPDATE kit_job_owners SET agreement_hash = NULL WHERE job = ? AND closed = 0 AND NOT EXISTS (SELECT 1 FROM peer_jobs WHERE job = ?)', job, job);
   }
   function reserveAdmissionWithin(input, time) {
-    if (!db.inTransaction) throw new TypeError('admission reservation needs the store transaction');
     const p = { ...input, path: CONTEXT };
     if (reservationLedger.jobConflictWithin(p)) fail('peer_job_conflict', 409);
     if (get('SELECT closed FROM kit_job_owners WHERE job = ?', p.jobId)?.closed === 1 ||
