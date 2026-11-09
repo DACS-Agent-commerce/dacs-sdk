@@ -335,12 +335,10 @@ function resignAgreement(f, signers) {
   f.p.agreement.artifact = { ...unsigned, signatures: unsigned.parties.map((party, i) => ({ party: party.primaryClaim, algorithm: 'ed25519', value: signers[i](message) })) };
   f.p.agreement.hash = hash;
 }
-test('identity-key Agreement forgery accepted by the shared helper is rejected', () => {
+test('identity-key Agreement signature is refused', () => {
   const f = fixture(), key = SMALL_ORDER_KEYS[0];
   f.operation.terms.buyer.wallet = `0x${key}`; f.p.agreement.artifact.parties[0].primaryClaim = `did:demos:agent:${key}`;
   resignAgreement(f, [() => FORGED, (m) => f.seller.signBytes(m).toString('base64url')]);
-  // Pins the current shared helper, which accepts this signature; it will change when the helper is hardened. Not an inspector regression.
-  assert.equal(verifyDemosSignature({ address: `0x${key}`, message: `${ARTIFACT_SEPARATORS.PayeeBoundAgreementDocument}${f.p.agreement.hash}`, signature: FORGED }), true);
   expect(f, 'agreement.signed', 'mismatch', 'agreement.signature');
 });
 for (const key of SMALL_ORDER_KEYS) test(`small-order key ${key.slice(0, 8)}…${key.slice(-2)} cannot forge a bundle signature`, () => {
@@ -350,8 +348,6 @@ for (const key of SMALL_ORDER_KEYS) test(`small-order key ${key.slice(0, 8)}…$
     found = verifyDemosSignature({ address: `0x${key}`, message, signature: FORGED });
     if (found) Object.assign(f.p.bundle, { bundleHash, message, buyerSignature: FORGED });
   }
-  // Pins the current shared helper, which accepts a constant forgery for these keys; it will change when the helper is hardened. Not an inspector regression.
-  assert.ok(found, 'the shared helper accepts a constant forgery for this key');
   f.operation.terms.buyer.wallet = `0x${key}`;
   expect(f, 'bundle.buyer.signature', 'mismatch', 'bundle.signature-invalid');
 });

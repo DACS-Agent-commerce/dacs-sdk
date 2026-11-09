@@ -6419,6 +6419,17 @@
       ]
     },
     {
+      "delta": "D23",
+      "subject": "delta(client): D23 completion readiness tests: keep the assertions on the inspector's own refusals",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-readiness.test.mjs",
+          "before": "911e9637bf0fd857efd07b6952edc414cc21a2f4",
+          "after": "923878fe95df659ad6e0e363fce339d4a826a074"
+        }
+      ]
+    },
+    {
       "delta": "D26",
       "subject": "delta(client): D26 import PURCHASE_LIMITS in config so loadConfig can read it",
       "files": [
