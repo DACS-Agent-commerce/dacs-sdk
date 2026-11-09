@@ -21,6 +21,7 @@ import {testWallet,NOW}from './helpers/protocol-fixture.mjs';
 import * as core from '@kynesyslabs/dacs';
 import {sellerApi as seller}from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
+import { KIT_TP1_VET_MODE } from '../src/host.mjs';
 import { createNativeDemDeliveryCapability, deadRefusedCreate, isDeadRefusedCreate, provenUnsignedAbsence } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '../src/dacs/native-payment-evidence-consumer.mjs';
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE_CHAIN_IDENTITY } from '../src/dacs/demos-sr2-adapter.mjs';
@@ -199,8 +200,8 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // `reconcile: false` leaves it out. `projectionReader: false` composes the
 // evidence consumer as the README does, without a reader of its own.
 // `sellerPresentation`: 'session' gives the Vet context a fresh seller
-// presentation of the Listing identity, as the package's Vet provider makes,
-// 'forged' one not signed by the seller. `faults.sign`: 'throw-evidence' fails
+// presentation of the Listing identity, 'forged' one not signed by the seller;
+// the host's orchestrator mode refuses both. `faults.sign`: 'throw-evidence' fails
 // the seller signer's next SettlementEvidence signature; `faults.deliverySubmit`: 'fail' refuses
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
@@ -268,15 +269,16 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     return { ...bundle, presentation: { kind: 'per-claim', signatures: [{ ref: sellerKey.claim, signature }] } };
   };
 
-  // The operator's Vet context for each job: references to the
-  // counterparty-verified records its session admission keeps (DACS-2 §7.7.2).
+  // The operator's Vet context for each job: references to the records its
+  // session admission keeps, both verified by the seller as orchestrator (the
+  // host's TP-1 G3 mode).
   const inputs = new Map();
   const vettedInput = async (jobId) => {
     if (!inputs.has(jobId)) {
       const buyerBundle = await buyerBundleFor(jobId), input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
       const sellerBundle = sellerPresentation ? sessionSeller(sellerPresentation === 'forged' ? buyerKey : sellerKey) : listing.seller.identity;
       inputs.set(jobId, { ...input, buyer: { ...input.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
-        seller: { identityBundle: sellerBundle, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, sellerBundle, { requirement: SELLER_REQUIREMENT }) } });
+        seller: { identityBundle: sellerBundle, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, sellerBundle, { requirement: SELLER_REQUIREMENT, verifier: sellerKey }) } });
     }
     return clone(inputs.get(jobId));
   };
@@ -448,15 +450,15 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const replaceWallet = (file) => { journal.close(); journal = openJournal(file); };
   const evidenceConsumer = (anchorEvidence) => createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl, anchorEvidence,
     ...(projectionReader ? { readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) } : {}) });
-  const demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-host-native-delivery',
+  const demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-host-native-delivery', vetMode: KIT_TP1_VET_MODE,
     resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
     resolveSeller: async ({ jobId }) => {
       const input = await vettedInput(jobId);
       // One requirement invocation per Vet record the Agreement references,
-      // each naming the evaluated party's counterparty as verifier.
+      // each naming the seller as verifier.
       const invocation = (party, claim, verifier) => ({ vetRecordRef: input[party].vetRecordRef, evaluatedParty: claim, requirement: clone(party === 'buyer' ? listing.buyerRequirement : SELLER_REQUIREMENT),
         verifier, freshness: [], dealSpecific: [] });
-      return { disposition: 'present', value: { input, vetRequirements: [invocation('buyer', buyerKey.claim, sellerKey.claim), invocation('seller', sellerKey.claim, buyerKey.claim)] } };
+      return { disposition: 'present', value: { input, vetRequirements: [invocation('buyer', buyerKey.claim, sellerKey.claim), invocation('seller', sellerKey.claim, sellerKey.claim)] } };
     } });
   // The seller's Deliverable CREATE and its public readback.
   const deliverable = async (input) => readBack(input.logicalAddress, 'Deliverable', input.deliveryBinding);
@@ -633,7 +635,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // read with the host stopped, from the host's own durable state.
   const retainedSession = async (jobId) => {
     await host.close(); hosts.splice(hosts.indexOf(host), 1);
-    const agent = await seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger() });
+    const agent = await seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger() });
     try { return agent.durableSessionOf(jobId); } finally { agent.close(); }
   };
   // A host process that died in the middle of a buyer's payment claim: its
@@ -658,7 +660,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentFor = async ({ stopHost = true, readIssued = null, deliveryEvidenceEnabled: publishEvidence = deliveryEvidenceEnabled, beforePublish = null } = {}) => {
     if (stopHost) { await host.close(); hosts.splice(hosts.indexOf(host), 1); }
     const anchor = beforePublish ? { ...artifactAnchor, publish: async input => { await beforePublish(); return artifactAnchor.publish(input); } } : artifactAnchor;
-    return seller.createSellerAgent({ ...capabilities(), durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger() });
+    return seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger() });
   };
   // Model an authenticated checkpoint written by an older agent before its
   // adapter recovery fix, using the store's own fenced save and signature.
@@ -1949,18 +1951,20 @@ test('the host takes the Deliverable resume only from the journal whose guarded 
   }
 });
 
-// The package's Vet provider presents the seller's Listing identity afresh for
-// each session (to the buyer's challenge): the seller accepts that exact
-// presentation, signed by itself, and refuses one it did not sign.
-test('the seller takes its own session presentation from the Vet context to delivery, and refuses one it did not sign', async (t) => {
-  const w = await world(t, { sellerPresentation: 'session' });
+// Under the host's TP-1 G3 orchestrator mode the seller's identity is the
+// Listing's own bundle exactly: a fresh session presentation is refused, whether
+// the seller signed it or not.
+test('the host takes only the Listing seller bundle to delivery and refuses a session presentation, signed or forged', async (t) => {
+  const w = await world(t);
   const p = await w.purchase(), tx = p.pay();
   const seller = p.agreement.parties.find((party) => party.role === 'seller');
-  assert.notEqual(seller.bundleHash, core.identityBundleHash(w.listing.seller.identity), 'the Agreement carries the session presentation');
+  assert.equal(seller.bundleHash, core.identityBundleHash(w.listing.seller.identity), 'the Agreement carries the Listing bundle');
   const answer = await p.claim(tx);
   assert.equal(answer.delivery?.status, 'delivery-ready', shown(answer));
-  const forged = await world(t, { sellerPresentation: 'forged' });
-  await assert.rejects(forged.purchase(), /the seller signs the vetted Agreement: .*seller identity differs: the seller bundle presentation does not verify/);
+  for (const sellerPresentation of ['session', 'forged']) {
+    const presented = await world(t, { sellerPresentation });
+    await assert.rejects(presented.purchase(), /the seller signs the vetted Agreement: .*seller identity differs: the seller bundle is not exactly the Listing identity/, sellerPresentation);
+  }
 });
 
 // A signer that fails while signing the payment evidence released no
@@ -3350,8 +3354,7 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
     return agent.submitPayment(body, options);
   } };
   const { wire, createBuyer } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: w.buyerKey, seller: w.sellerKey, store, now,
-    readCommitmentReceipt: w.capabilities().readCommitmentReceipt });
-  wire.requireDelegation = true;
+    readCommitmentReceipt: w.capabilities().readCommitmentReceipt, requireDelegation: true });
   const handler = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({
     sellerSigner: w.sellerKey, listingPin: pin, store, now, requireDelegation: true,
   }) });

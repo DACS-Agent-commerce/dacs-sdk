@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createContextAdmissionTransaction } from '../../src/dacs/seller-admission-transaction.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
+import assert from 'node:assert/strict';
 
 let portCalls = 0;
 const port = () => { portCalls++; throw new Error('a port was called while the guard is off'); };
@@ -20,6 +21,7 @@ const admission = createContextAdmissionTransaction({ store, capacity, policy: {
 const changes = () => db.prepare('SELECT total_changes() AS n').get().n;
 const before = changes();
 const begin = await refusalCode(() => admission.begin({}));
+assert.throws(() => admission.addAcceptanceHook(() => {}), TypeError, 'the first guard check seals hooks even when begin is refused');
 const compensate = await refusalCode(() => admission.compensate('01ARZ3NDEKTSV4RRFFQ69G5FAW', 'd'));
 console.log(JSON.stringify({ begin, compensate, written: changes() - before, portCalls }));
 store.close();

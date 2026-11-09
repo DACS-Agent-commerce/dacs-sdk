@@ -44,11 +44,10 @@ describe("pinned read-only node observations", () => {
     expect(manifest.deploymentOverlay).toBeNull();
     expect(manifest.executionFailedTransaction.observed).toBe(false);
   });
-  it("ships every observation file", () => {
+  it("keeps every observation file out of the packed package: they are test evidence, not read at runtime", () => {
     const files = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { files: string[] }).files;
-    const observations = readdirSync(dir).filter((name) => name.endsWith(".json"));
-    expect(observations).toHaveLength(12);
-    for (const name of observations) expect(files).toContain(`conformance/tp1-node-observations/${name}`);
+    expect(readdirSync(dir).filter((name) => name.endsWith(".json"))).toHaveLength(12);
+    expect(files.filter((file) => file.startsWith("conformance/tp1-node-observations"))).toEqual([]);
   });
   it("the approved record names the chain node2 reported on 2026-10-20; the 2026-10-18 chain is history and not approved", () => {
     const chain = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;

@@ -10,7 +10,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalize, generateCanonicalJobId } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, wireOperationId } from '@kynesyslabs/dacs/wire';
-import { retainedFor } from '../src/dacs/seller-wire-requests.mjs';
+import { privateModule } from './helpers/private-module.mjs';
+const { retainedFor } = await privateModule(new URL('../src/dacs/seller-wire-requests.mjs', import.meta.url), ['retainedFor']);
 import { SELLER_PROFILE } from '../src/dacs/session-admission.mjs';
 
 const T0 = Date.UTC(2026, 10, 4, 12), UNITS = 17, FOUR = 68, FIVE = 85;
