@@ -8,6 +8,7 @@ import { dirname, isAbsolute } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { admitRawJson, RawJsonAdmissionError, canonicalize, createFixedPriceAgreementSigningPlan, isCanonicalJobId, sha256Hex } from '@kynesyslabs/dacs';
 import { isTp1WireProfile } from '@kynesyslabs/dacs/wire';
+import { createSellerChallengeLedger } from './seller-challenge-ledger.mjs';
 import { decodeSignature, isSmallOrderPublicKey } from './demos-claims.mjs';
 import { assertSellerSessionLifetime } from '../public/portal/seller-session-limits.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
@@ -57,7 +58,21 @@ export class SellerTransportError extends Error {
   constructor(code, status = 401, options) { super(code, options); this.code = code; this.status = status; }
 }
 
-function pinValid(pin) {
+/** Internal synchronous session read: returns a state or null; throws unavailable 503 with the original cause. */
+export function readSellerSessionState(source, jobId) {
+  try {
+    const state = source({ jobId });
+    if (state === null || typeof state === 'string') return state;
+    if (typeof state?.then === 'function') Promise.resolve(state).then(undefined, () => {});
+    throw new TypeError('sessionState must answer a state string or null', { cause: state });
+  } catch (cause) {
+    if (cause instanceof SellerTransportError && cause.code === 'session_admission_unavailable' && cause.status === 503) throw cause;
+    throw new SellerTransportError('session_admission_unavailable', 503, { cause });
+  }
+}
+
+/** True for a Listing pin of exactly `{ listingId, version, contentHash }` with a non-empty id, a positive version and a SHA-256 hex hash. */
+export function pinValid(pin) {
   return keys(pin, ['listingId', 'version', 'contentHash']) &&
     typeof pin.listingId === 'string' && pin.listingId.length > 0 && pin.listingId.length <= 256 &&
     uint(pin.version) && pin.version > 0 && typeof pin.contentHash === 'string' && isHash(pin.contentHash);
@@ -219,18 +234,31 @@ const CONTEXT_ADMISSIONS = `CREATE TABLE IF NOT EXISTS peer_context_admissions (
   listing_pin TEXT NOT NULL, scope_hash TEXT NOT NULL, effect TEXT NOT NULL, admitted_at INTEGER NOT NULL); ${CONTEXT_EFFECT_INDEX}`;
 
 // Trusted seller state retains terminal ownership; unknown state retains challenges.
-const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
+// Read-only membership test for the challenge ledger; nothing may add to it.
+export const TERMINAL_CONTEXT_STATES = new Set(['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']);
 const CHALLENGE_RATE_WINDOW_MS = 3600000;
+const storeInternals = new WeakMap();
 const NO_EFFECT_KEY = 'no-effect'; // Outside the effect-hash namespace; preserves definite nonce answers.
-// markPendingContextEffectsUncertain: the caller holds the seller state lock, so no other
-// process owns this journal. Every context step still `pending` at open belongs to an owner
-// that is gone and becomes `uncertain`, which `resume` can take. Only the host sets it.
-export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null, maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), markPendingContextEffectsUncertain = false }) {
+const NO_DELEGATION = Object.freeze({ assertStillLive: () => {} });
+// The route's default unpaid-start limits (seller-context-route.mjs SELLER_CONTEXT_LIMITS).
+const SELLER_CONTEXT_START_LIMITS = Object.freeze({ maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 5 });
+/**
+ * Opens the private transport journal and the one challenge ledger on its SQLite handle.
+ * `generation` names this process (drawn after the seller state lock), `ready` and `stopped` are
+ * synchronous booleans, `contextSessionState({ jobId })` is synchronous (DACS-5 name or unknown), and
+ * `contextStartLimits` are the route's own unpaid-start limits, which the ledger enforces too.
+ * Returns the store, whose `challenges` is the ledger; `recoverLostContextReservations()` runs only
+ * while the caller holds the seller state lock. Throws on an unusable option or storage.
+ */
+export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null,
+  contextStartLimits = SELLER_CONTEXT_START_LIMITS, generation = randomBytes(16).toString('hex'), ready = () => true, stopped = () => false,
+  maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now() }) {
   if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
   if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
   if (!uint(maxChallenges) || maxChallenges === 0 || typeof contextSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
   if (!uint(maxContextRecords) || maxContextRecords === 0) throw new Error('positive context capacity required');
   if (![maxNoncesPerBuyerPerWindow, nonceWindowMs].every(n => uint(n) && n > 0)) throw new Error('positive nonce limits required');
+  if (!['maxStartsPerHour', 'maxStartsPerBuyerPerHour'].every(key => uint(contextStartLimits?.[key]) && contextStartLimits[key] > 0)) throw new TypeError('positive context start limits required');
   const parent = dirname(path);
   const directory = lstatSync(parent);
   if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0 ||
@@ -250,8 +278,10 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     CREATE TABLE IF NOT EXISTS peer_transactions (tx TEXT PRIMARY KEY, job TEXT NOT NULL, effect TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS peer_nonces (nonce TEXT PRIMARY KEY, request_hash TEXT NOT NULL, effect TEXT NOT NULL, status INTEGER, response TEXT);
     CREATE TABLE IF NOT EXISTS peer_nonce_retention (nonce TEXT PRIMARY KEY, buyer TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS peer_context_challenges (nonce TEXT PRIMARY KEY, job TEXT NOT NULL, buyer TEXT NOT NULL, scope TEXT NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, attempted INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS kit_context_reservations (effect TEXT PRIMARY KEY, nonce TEXT NOT NULL UNIQUE, accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)));
     CREATE TABLE IF NOT EXISTS kit_purchase_profiles (job TEXT PRIMARY KEY REFERENCES peer_jobs(job) ON DELETE CASCADE, profile TEXT NOT NULL, kept_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS kit_context_admissions (jobId TEXT PRIMARY KEY, buyer TEXT NOT NULL, admittedAt INTEGER, state TEXT NOT NULL, rev INTEGER NOT NULL, record TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS kit_context_admissions_starts ON kit_context_admissions(admittedAt, buyer);
     CREATE INDEX IF NOT EXISTS peer_effect_jobs_job ON peer_effect_jobs(job);
     CREATE INDEX IF NOT EXISTS peer_transactions_job ON peer_transactions(job);
     CREATE INDEX IF NOT EXISTS peer_nonces_effect ON peer_nonces(effect);`);
@@ -262,6 +292,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
   }
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
+  const readSessionStateWithin = jobId => readSellerSessionState(contextSessionState, jobId);
+  const terminalForReclamation = jobId => { try { return TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(jobId)); } catch { return false; } };
   // A purchase's TP-1 tuple, as the canonical text kept for its job.
   const purchaseProfileText = (profile) => {
     if (!isTp1WireProfile(profile)) fail('tp1_purchase_profile_mismatch', 500);
@@ -284,9 +316,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     run("INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, substr(slot, 1, instr(slot, ':') - 1) FROM peer_slots WHERE instr(slot, ':') > 0");
     if (admissions()) run('INSERT OR IGNORE INTO peer_effect_jobs SELECT effect, job FROM peer_context_admissions');
   });
-  if (markPendingContextEffectsUncertain && admissions()) {
-    transaction(() => run("UPDATE peer_effects SET state = 'uncertain' WHERE state = 'pending' AND effect IN (SELECT effect FROM peer_context_admissions)"));
-  }
   function reclaimableJobs(needed, jobId, time) {
     // Unmapped legacy effects fence all reclamation; empty bindings need no terminal evidence.
     if (!needed || get('SELECT 1 FROM peer_effects e WHERE NOT EXISTS (SELECT 1 FROM peer_effect_jobs m WHERE m.effect = e.effect) LIMIT 1')) return [];
@@ -306,7 +335,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))))
       ${admissions() ? 'AND NOT EXISTS (SELECT 1 FROM peer_context_admissions a WHERE a.job = j.job AND a.admitted_at > ?)' : ''}`)
       .iterate(time, time - nonceWindowMs, ...(admissions() ? [time - CHALLENGE_RATE_WINDOW_MS] : []))) {
-      if (!jobs.includes(job) && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: job }))) jobs.push(job);
+      if (!jobs.includes(job) && terminalForReclamation(job)) jobs.push(job);
       if (jobs.length === needed) break;
     }
     return jobs;
@@ -323,7 +352,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       JOIN peer_effects e ON e.effect = a.effect WHERE a.admitted_at <= ? AND e.state = 'complete'
       AND NOT EXISTS (SELECT 1 FROM peer_nonces n LEFT JOIN peer_nonce_retention r ON r.nonce = n.nonce
         WHERE n.effect = a.effect AND (r.nonce IS NULL OR r.expires_at > ? OR r.created_at > ?))`).iterate(time - CHALLENGE_RATE_WINDOW_MS, time, time - nonceWindowMs)) {
-      if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: row.job }))) rows.push(row);
+      if (terminalForReclamation(row.job)) rows.push(row);
       if (rows.length === needed) break;
     }
     return rows;
@@ -336,62 +365,52 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     }
   }
   function deleteEffect(effect) {
-    for (const table of ['peer_effects', 'peer_slots', 'peer_transactions', 'peer_effect_jobs', ...(admissions() ? ['peer_context_admissions'] : [])]) run(`DELETE FROM ${table} WHERE effect = ?`, effect);
+    for (const table of ['peer_effects', 'kit_context_reservations', 'peer_slots', 'peer_transactions', 'peer_effect_jobs', ...(admissions() ? ['peer_context_admissions'] : [])]) run(`DELETE FROM ${table} WHERE effect = ?`, effect);
   }
-  function contextPresentationProblem(request,body) {
-        const nonce = body.buyerIdentityBundle?.sessionNonce;
-        if (typeof nonce !== 'string' || !HASH.test(nonce)) return 'context_challenge_mismatch';
-        const row = get('SELECT * FROM peer_context_challenges WHERE nonce = ?', nonce);
-        if (!row) return 'context_challenge_mismatch';
-        if (row.attempted) return 'context_challenge_consumed';
-        run('UPDATE peer_context_challenges SET attempted = 1 WHERE nonce = ?', row.nonce);
-        try {
-          if (row.job !== request.jobId || row.buyer !== request.buyer || row.scope !== sellerContextScopeHash(sellerContextChallengeScope(body.scope))) return 'context_challenge_mismatch';
-        } catch { return 'context_challenge_mismatch'; }
-        if (row.expires_at <= now()) return 'context_challenge_expired';
-        return null;
+  const startsIn = (table, column, since, buyer) => get(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n;
+  const starts = (since, buyer) => (admissions() ? startsIn('peer_context_admissions', 'admitted_at', since, buyer) : 0) + startsIn('kit_context_admissions', 'admittedAt', since, buyer);
+  // The ledger's unpaid-start counts over the union of this journal's admission records and the K1 admission rows (SA-5):
+  // a start counts once admitted, compensated ones included; an intent that never admitted has no `admittedAt`.
+  function admissionCounts() {
+    const time = now(), since = time - CHALLENGE_RATE_WINDOW_MS;
+    return { contextRecords: (admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) + get('SELECT COUNT(*) AS n FROM kit_context_admissions').n - reclaimableContexts(time).length,
+      starts: starts(since), buyerStarts: buyer => starts(since, buyer) };
   }
-  return {
-    issueContextChallenge(request, scope, { maxPerBuyer = 5, maxGlobal = 12, admit } = {}) {
-      requireJobId(request?.jobId);
-      requireJobId(scope?.jobId);
-      if (request.jobId !== scope.jobId) fail('peer_job_mismatch', 409);
+  const { maxStartsPerHour, maxStartsPerBuyerPerHour } = contextStartLimits;
+  const ledger = createSellerChallengeLedger({ db, transaction, now, generation, ready, stopped, sessionState: ({ jobId }) => readSessionStateWithin(jobId), admissionCounts,
+    limits: { maxChallenges, maxContextRecords, maxPerHour: maxStartsPerHour, maxPerBuyerPerHour: maxStartsPerBuyerPerHour, maxStartsPerHour, maxStartsPerBuyerPerHour } });
+  // Keep acceptance proof until the context effect retires, even if its terminal challenge is reclaimed.
+  function acceptWithin(owner, nonce, record) {
+    const accepted = ledger.acceptWithin(owner, nonce, record);
+    if (accepted) run('UPDATE kit_context_reservations SET accepted = 1 WHERE nonce = ?', nonce);
+    return accepted;
+  }
+  // The routes hold a whole request; the ledger keeps its job and buyer. Without a delegation to check
+  // (this store's own callers), the final liveness check is a no-op: the guarded store of the server auth passes its own.
+  const challenges = Object.freeze({ ...ledger, acceptWithin,
+    issue: (request, challengeScopeHash, authorization = NO_DELEGATION) => ledger.issue({ jobId: request?.jobId, buyer: request?.buyer }, challengeScopeHash, authorization),
+    issueForOperator: request => ledger.issueForOperator({ jobId: request?.jobId, buyer: request?.buyer }),
+    accept: (owner, nonce, record) => transaction(() => acceptWithin(owner, nonce, record)) });
+  const store = {
+    challenges,
+    // Only the holder of the seller state lock calls this at startup, after `challenges.closeLostValidations()`
+    // and before serving or policy-hold reconciliation: every context step still `pending` belongs to a dead owner.
+    // One the ledger never accepted ran nothing: it ends as a definite refusal and its hold is later found absent.
+    // One it accepted (or an earlier version's, which has no marker) becomes `uncertain`; only the route's
+    // reconciliation proof can resume it. The marker outlives the challenge row's reclamation.
+    recoverLostContextReservations() {
       return transaction(() => {
-        const time = now(), hash = sellerContextScopeHash(scope);
-        if (!uint(time)) fail('peer_clock_invalid', 503);
-        if (![maxPerBuyer, maxGlobal].every(n => uint(n) && n > 0)) fail('context_challenge_limits_invalid', 503);
-        if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('context_session_terminal', 409);
-        const prior = get('SELECT * FROM peer_context_challenges WHERE job = ? AND buyer = ? AND scope = ? AND attempted = 0 AND expires_at > ?', request.jobId, request.buyer, hash, time);
-        if (prior) return { sessionNonce: prior.nonce, expiresAt: prior.expires_at };
-        if (get('SELECT COUNT(*) AS n FROM peer_context_challenges WHERE issued_at > ?', time - CHALLENGE_RATE_WINDOW_MS).n >= maxGlobal) fail('context_challenge_limit', 429);
-        if (get('SELECT COUNT(*) AS n FROM peer_context_challenges WHERE buyer = ? AND issued_at > ?', request.buyer, time - CHALLENGE_RATE_WINDOW_MS).n >= maxPerBuyer) fail('buyer_context_challenge_limit', 429);
-        // Keep every issued/consumed row through session termination (SN-4),
-        // and through its rate window. Inspect first: a refused issuance must
-        // execute no mutation, including cleanup that would later roll back.
-        const needed = Math.max(0, get('SELECT COUNT(*) AS n FROM peer_context_challenges').n - maxChallenges + 1);
-        const reclaimable = [];
-        if (needed) for (const row of db.prepare('SELECT nonce, job, buyer FROM peer_context_challenges WHERE expires_at <= ? AND issued_at <= ?').iterate(time, time - CHALLENGE_RATE_WINDOW_MS)) {
-          if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: row.job }))) reclaimable.push(row);
-          if (reclaimable.length === needed) break;
+        if (!admissions()) return;
+        for (const row of db.prepare(`SELECT e.effect, e.owner, v.accepted, v.nonce FROM peer_effects e JOIN peer_context_admissions a ON a.effect = e.effect
+          LEFT JOIN kit_context_reservations v ON v.effect = e.effect WHERE e.state = 'pending'`).all()) {
+          if (row.accepted !== 0) run("UPDATE peer_effects SET state = 'uncertain' WHERE effect = ? AND owner = ? AND state = 'pending'", row.effect, row.owner);
+          else {
+            const cause = ledger.retained(row.nonce)?.failure?.code ?? 'validator_lost';
+            run('UPDATE peer_nonces SET status = 409, response = ?, effect = ? WHERE effect = ? AND response IS NULL', JSON.stringify({ error: 'context_challenge_failed', cause }), NO_EFFECT_KEY, row.effect);
+            deleteEffect(row.effect);
+          }
         }
-        if (reclaimable.length < needed) fail('context_challenge_capacity', 503);
-        const retired = reclaimableContexts(time);
-        if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
-        if (typeof admit !== 'function') fail('peer_context_unadmitted', 503);
-        admit({ starts: (since, buyer) => admissions() ? get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer === undefined ? '' : ' AND buyer = ?'}`, since, ...(buyer === undefined ? [] : [buyer])).n : 0 });
-        for (const row of reclaimable) run('DELETE FROM peer_context_challenges WHERE nonce = ?', row.nonce);
-        const sessionNonce = randomBytes(32).toString('hex'), expiresAt = time + 60000;
-        run('INSERT INTO peer_context_challenges VALUES (?, ?, ?, ?, ?, ?, 0)', sessionNonce, request.jobId, request.buyer, hash, time, expiresAt);
-        return { sessionNonce, expiresAt };
       });
-    },
-    // Called after transport authentication, before admission or presentation validation.
-    // Consumption commits even when proof verification subsequently refuses.
-    attemptContextPresentation(request, body) {
-      requireJobId(request?.jobId);
-      requireJobId(body?.scope?.jobId);
-      const problem=transaction(()=>contextPresentationProblem(request,body));
-      if (problem) fail(problem, 409);
     },
     bind({ seller, listingPin }) {
       const config = canonicalize({ storeVersion: '1', seller, listingPin });
@@ -417,11 +436,12 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // transaction, once every capacity, rate and admission check has passed. Every refusal is
     // tp1_purchase_profile_mismatch and rolls back the whole reservation. The kept tuple leaves
     // with its job.
-    reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, contextDecision = false, verdict = null, keepProfile } = {}) {
+    reserve(p, body, { journaledOnly = false, admit = null, dryRun = false, keepProfile, challengeNonce = null } = {}) {
       requireJobId(p?.jobId);
       const profileText = keepProfile === undefined ? null : purchaseProfileText(keepProfile);
       if (profileText !== null && p.path === CONTEXT) fail('tp1_purchase_profile_mismatch', 500);
       if (p.path === CONTEXT) {
+        if (challengeNonce !== null && !isHash(challengeNonce)) fail('context_challenge_attempt_invalid', 409);
         requireJobId(body?.scope?.jobId);
         if (body.scope.jobId !== p.jobId) fail('peer_job_mismatch', 409);
       }
@@ -478,11 +498,11 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const time = now();
         if (!uint(time)) fail('peer_clock_invalid', 503);
         const retired = [];
-        if (!retained && !existing && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+        if (!retained && !existing && p.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(p.jobId))) fail('context_session_terminal', 409);
         if (contextStep && !retained) {
-          if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: p.jobId }))) fail('context_session_terminal', 409);
+          if (TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(p.jobId))) fail('context_session_terminal', 409);
           retired.push(...reclaimableContexts(time));
-          if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) { if(contextDecision)contextPresentationProblem(p,body);return {contextRefusal:'peer_context_capacity',status:503}; }
+          if ((admissions() ? get('SELECT COUNT(*) AS n FROM peer_context_admissions').n : 0) - retired.length >= maxContextRecords) fail('peer_context_capacity', 503);
         }
         // Only expired completed/no-effect nonces are reclaimable. Unknown or
         // pending effects remain fenced, even after request expiry.
@@ -504,23 +524,9 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           run('DELETE FROM peer_nonce_retention WHERE expires_at <= ? AND created_at <= ? AND nonce NOT IN (SELECT nonce FROM peer_nonces)', time, time - nonceWindowMs);
         };
         let admittedAt=null;
-        if(contextStep&&!existing) {
-          let problem=contextDecision?contextPresentationProblem(p,body):null;
-          problem??=verdict;
-          if(!problem) {
-            const starts=(since,buyer)=>admissions()?get(`SELECT COUNT(*) AS n FROM peer_context_admissions WHERE admitted_at > ?${buyer===undefined?'':' AND buyer = ?'}`,since,...(buyer===undefined?[]:[buyer])).n:0;
-            try { admittedAt=typeof admit==='function'?admit({starts}):null; }
-            catch(error) { if(!contextDecision)throw error;problem=error.code; }
-            if(!problem&&!uint(admittedAt))fail('peer_context_unadmitted',503);
-          }
-          if(problem) {
-            if(dryRun)return {contextRefusal:problem};
-            reclaimNonces();
-            const text=JSON.stringify({error:problem});
-            run('INSERT INTO peer_nonces VALUES (?, ?, ?, ?, ?)',nonce,requestHash,NO_EFFECT_KEY,409,text);
-            run('INSERT INTO peer_nonce_retention VALUES (?, ?, ?, ?)',nonce,p.buyer,time,p.expiresAt);
-            return {contextRefusal:problem};
-          }
+        if (contextStep && !existing) {
+          admittedAt = typeof admit === 'function' ? admit({ starts }) : null;
+          if (!uint(admittedAt)) fail('peer_context_unadmitted', 503);
         }
         if (p.path === PAYMENT && !retained) {
           const tx = body.txHash.replace(/^0x/, '').toLowerCase();
@@ -547,6 +553,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
           return retained;
         }
         if (contextStep) run('INSERT INTO peer_context_admissions VALUES (?, ?, ?, ?, ?, ?, ?)', p.jobId, p.buyer, p.seller, canonicalize(p.listingPin), p.agreementHash, effectKey, admittedAt);
+        if (contextStep && challengeNonce !== null) run('INSERT INTO kit_context_reservations VALUES (?, ?, 0)', effectKey, challengeNonce);
         const owner = randomBytes(24).toString('hex');
         if (retry) {
           run('UPDATE peer_effects SET owner = ?, state = ?, status = NULL, response = NULL WHERE effect = ?', owner, 'pending', effectKey);
@@ -557,7 +564,6 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (!READ_ROUTES.has(p.path) && !occupied) run('INSERT INTO peer_slots VALUES (?, ?)', slot, effectKey);
         return { disposition: 'perform', effectKey, owner, readOnly: READ_ROUTES.has(p.path) };
       }, dryRun);
-      if(result.contextRefusal)fail(result.contextRefusal,result.status??409);
       return result;
     },
     // Read-only reserve: 'start' for new work, 'known' for journaled answers;
@@ -609,7 +615,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       const row = get('SELECT owner, state FROM peer_effects WHERE effect = ?', reservation?.effectKey);
       if (!row || row.owner !== reservation.owner || row.state !== 'pending') fail('peer_store_conflict', 503);
       const slot=get('SELECT slot FROM peer_slots WHERE effect = ?',reservation.effectKey)?.slot;
-      if(slot?.endsWith(`:${PROPOSAL}`)&&TERMINAL_CONTEXT_STATES.has(contextSessionState({jobId:slot.slice(0,-PROPOSAL.length-1)})))fail('context_session_terminal',409);
+      if(slot?.endsWith(`:${PROPOSAL}`)&&TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(slot.slice(0,-PROPOSAL.length-1))))fail('context_session_terminal',409);
     },
     // Called inside the seller job fence, before any restore or work, by the
     // one recovery of an uncertain seller command (not the context step). The
@@ -626,7 +632,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
             !current || current.owner !== reservation.owner || !['pending', 'uncertain'].includes(current.state) ||
             get('SELECT job FROM peer_effect_jobs WHERE effect = ?', reservation.effectKey)?.job !== request.jobId ||
             get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request))) fail('peer_reconciliation_conflict', 503);
-        if (live && request.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('seller_unavailable', 503);
+        if (live && request.path === PROPOSAL && TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(request.jobId))) fail('seller_unavailable', 503);
         const owner = randomBytes(24).toString('hex');
         run('UPDATE peer_effects SET owner = ?, state = ? WHERE effect = ?', owner, 'uncertain', reservation.effectKey);
         const effectKey=reservation.effectKey,jobId=request.jobId,proposal=request.path===PROPOSAL;
@@ -635,7 +641,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         const check=()=>{
           const row=get('SELECT owner,state FROM peer_effects WHERE effect = ?',effectKey);
           if(!row||row.owner!==owner||row.state!=='uncertain')fail('peer_reconciliation_conflict',503);
-          if(live&&proposal&&TERMINAL_CONTEXT_STATES.has(contextSessionState({jobId})))fail('context_session_terminal',409);
+          if(live&&proposal&&TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(jobId)))fail('context_session_terminal',409);
         };
         return Object.freeze({ disposition: 'uncertain', effectKey, owner, live, check });
       });
@@ -665,8 +671,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     // The host may resolve only the SAME retained operation, after its seller
     // reducer has authenticated durable context and fresh native readback. No
     // reservation, slot or transaction is released; no expired intent retries.
-    // A pending effect may be performed by a live run: only readback of a
-    // finished effect (200) can complete it; retry and noEffect need `uncertain`.
+    // Pending contexts stay with their live worker; other routes retain their
+    // readback completion path. Retry and noEffect require `uncertain`.
     // retry (payments and proposals): the agent resumed its durable operation;
     // the effect goes back to `retry`, so the next claim runs it again.
     // noEffect (payments and proven unsigned proposals): the command ended
@@ -680,7 +686,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
       transaction(() => {
         const current = get('SELECT * FROM peer_effects WHERE effect = ?', reservation.effectKey);
         if (reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
-            !current || current.owner !== reservation.owner || !(current.state === 'uncertain' || (current.state === 'pending' && !retry && !noEffect)) ||
+            !current || current.owner !== reservation.owner || !(current.state === 'uncertain' || (current.state === 'pending' && request.path !== CONTEXT && !retry && !noEffect)) ||
             // The context step is bound by its admission record, the other steps by the job's Agreement row.
             (request.path === CONTEXT ? !admissions() || get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey
               : get('SELECT context FROM peer_jobs WHERE job = ?', request.jobId)?.context !== canonicalize(requestIdentity(request)))) fail('peer_reconciliation_conflict', 503);
@@ -707,7 +713,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
         if (request.path !== CONTEXT || reservation.disposition !== 'uncertain' || reservation.effectKey !== effectIdentity(request) ||
             !current || current.owner !== reservation.owner || current.state !== 'uncertain' || !admissions() ||
             get('SELECT effect FROM peer_context_admissions WHERE job = ? AND buyer = ?', request.jobId, request.buyer)?.effect !== reservation.effectKey) fail('peer_reconciliation_conflict', 503);
-        if (TERMINAL_CONTEXT_STATES.has(contextSessionState({ jobId: request.jobId }))) fail('context_session_terminal', 409);
+        if (TERMINAL_CONTEXT_STATES.has(readSessionStateWithin(request.jobId))) fail('context_session_terminal', 409);
         const owner = randomBytes(24).toString('hex');
         run('UPDATE peer_effects SET owner = ?, state = ?, status = NULL, response = NULL WHERE effect = ?', owner, 'pending', reservation.effectKey);
         return { disposition: 'perform', effectKey: reservation.effectKey, owner, readOnly: false, resumed: true };
@@ -716,6 +722,20 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     close: () => db.close(),
     journaledOnlyReserve: true,
   };
+  storeInternals.set(store, Object.freeze({ db, transaction, challenges, admissionCounts, limits: Object.freeze({ maxContextRecords, maxStartsPerHour, maxStartsPerBuyerPerHour }) }));
+  return store;
+}
+
+/**
+ * The one SQLite owner behind a store that `createSellerTransportStore` returned: `{ db, transaction, challenges, admissionCounts, limits }`
+ * (`limits`: the context-record and unpaid-start limits the ledger enforces at issue), for the seller's own admission modules, which run
+ * their reads and writes in that store's immediate transactions. It hands out the raw handle: only code that owns the store holds it.
+ * Throws a TypeError for anything else.
+ */
+export function sellerStoreInternals(store) {
+  const internals = typeof store === 'object' && store !== null ? storeInternals.get(store) : undefined;
+  if (internals === undefined) throw new TypeError('sellerStoreInternals needs a store from createSellerTransportStore');
+  return internals;
 }
 
 /** Create request validation and response signing over a supplied store; throw on invalid configuration. */
@@ -737,12 +757,18 @@ export function createSellerTransportServerAuth({ sellerSigner, listingPin, stor
   const refuseExpired = request => fail(delegations.get(request)?.payload.expiresAt <= now() ? 'peer_delegation_expired' : 'peer_expired', 408);
   const guardedStore = Object.freeze({
     bind: (value) => store.bind(value),
-    issueContextChallenge: (request, ...args) => isReadbackOnly(request) ? refuseExpired(request) : store.issueContextChallenge(request, ...args),
-    attemptContextPresentation: (request, ...args) => isReadbackOnly(request) ? refuseExpired(request) : store.attemptContextPresentation(request, ...args),
+    // An expired delegation cannot issue or consume a challenge; the ledger repeats the check as its last step.
+    challenges: Object.freeze({ ...store.challenges,
+      issue: (request, challengeScopeHash) => isReadbackOnly(request) ? refuseExpired(request)
+        : store.challenges.issue(request, challengeScopeHash, { assertStillLive: () => { if (isReadbackOnly(request)) refuseExpired(request); } }),
+      issueForOperator: request => isReadbackOnly(request) ? refuseExpired(request) : store.challenges.issueForOperator(request),
+      attempt: input => isReadbackOnly(input.request) ? refuseExpired(input.request) : store.challenges.attempt(input),
+    }),
     reserve: (request, body, options = {}) => store.reserve(request, body, isReadbackOnly(request) ? { ...options, journaledOnly: true } : options),
     ...(typeof store.classify === 'function' ? { classify: (request, body, options = {}) => store.classify(request, body, isReadbackOnly(request) ? { ...options, journaledOnly: true } : options) } : {}),
     ...(typeof store.contextAdmission === 'function' ? { contextAdmission: (jobId) => store.contextAdmission(jobId) } : {}),
     ...(typeof store.contextAnswer === 'function' ? { contextAnswer: (jobId) => store.contextAnswer(jobId) } : {}),
+    ...(typeof store.contextHoldState === 'function' ? { contextHoldState: input => store.contextHoldState(input) } : {}),
     finish: (...args) => store.finish(...args),
     ...(typeof store.assertPending === 'function' ? { assertPending: reservation => store.assertPending(reservation) } : {}),
     // An expired delegation may still take an effect to read it back, never to run it again.

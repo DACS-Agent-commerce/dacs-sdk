@@ -148,7 +148,9 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       if (!body || typeof body !== 'object' || Array.isArray(body)) return await send(res, 400, { error: 'bad_request' }, null);
       if (authentication) {
         request = authentication.readRequest(req.headers[SELLER_TRANSPORT_HEADER]);
-        authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId), ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
+        try {
+          authentication.validate(request, { method: req.method, path: req.url, rawBody, body, agreement: agent.transportAgreementOf?.(request.jobId), ...(contextStep && context.onRejectedBody ? {onRejectedBody:()=>context.onRejectedBody(request,body,authentication.store)} : {}) });
+        } catch (error) { if (contextStep) context.attemptRefused?.(request, error?.code); throw error; }
         if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
         if (contextChallenge) return await send(res, 200, await context.challenge(request, body, authentication.store), request);
         // The context step reads the journal first and runs its admission only
@@ -206,6 +208,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
             if (!settled) return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; its outcome is not established.' }, request);
             return await send(res, settled.status, settled.value, request, { text: await pointed(settled.status, JSON.stringify(settled.value), request.jobId, req.url) });
           }
+          if (authentication.store.contextHoldState?.({ jobId: request.jobId, effect: reservation.effectKey }) === 'pending') return await send(res, 503, { error: 'operation_uncertain', message: 'The retained context still has a pending owner.' }, request);
           const proof = typeof authentication.store.reconcile === 'function' ? await context.reconcile({ request, body, rawBody, ...(readOnly ? { readOnly } : {}) }) : null;
           if (proof?.disposition === 'present') {
             const text = JSON.stringify(proof.value);
@@ -216,7 +219,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           // The second exception: the context route proved a shutdown cut its step
           // before anything of it was signed or sent; the same effect runs
           // again below under the reservation the journal hands back.
-          const resumed = contextStep && proof?.disposition === 'resume' && typeof context.resume === 'function' ? await context.resume(reservation, request, authentication.store, proof) : null;
+          const resumed = !readOnly && contextStep && proof?.disposition === 'resume' && typeof context.resume === 'function' ? await context.resume(reservation, request, authentication.store, proof) : null;
           if (resumed?.disposition !== 'perform') return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; it was not performed again.' }, request);
           reservation = resumed;
         }
@@ -239,7 +242,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const beforeEffect = !reservation || reservation.disposition !== 'perform';
       const refusal = error instanceof SellerTransportError && beforeEffect;
       // A refusal the agent settled inside its fence is answered as settled.
-      const outcome = fenced ?? (refusal ? { status: error.status, value: { error: error.code, message: error.message } }
+      const outcome = fenced ?? (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(error.code === 'context_challenge_failed' && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
         : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId, body), resumed: reservation?.resumed === true }));
       const { status, value: answer } = outcome;
       if (authentication && reservation?.disposition === 'perform' && !settled) {

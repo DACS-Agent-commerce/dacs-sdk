@@ -1901,7 +1901,7 @@ describe("advisory-ID baseline", () => {
     const prose = (path: string) => readFileSync(join(repoRoot, path), "utf8").replace(/\s+/g, " ");
     expect(prose("SECURITY.md")).toContain("baseline (exit 4) passes that prerequisite, so baseline-only findings do " +
       "not stop a prerelease");
-    expect(prose("SECURITY.md")).toContain("always does, even when the #191 baseline lists it");
+    expect(prose("SECURITY.md")).toContain("always does, even when the baseline lists it");
     expect(prose("docs/npm-prerelease-release.md")).toContain("so baseline-only findings do not stop a prerelease. " +
       "The baseline waives transitive findings only");
   });
