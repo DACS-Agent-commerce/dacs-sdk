@@ -93,6 +93,10 @@ const safeInt = (v) => Number.isSafeInteger(v) && !Object.is(v, -0);
 const didOf = (address) => `${DID_PREFIX}${address.slice(2)}`;
 const addressOf = (did) => `0x${did.slice(DID_PREFIX.length)}`;
 
+// CORE §B.2 CF-5 and the SDK's MAX_NESTING_DEPTH: a top-level container has
+// depth 1; depth 128 is admitted and 129 is refused.
+const MAX_NESTING_DEPTH = 128;
+
 // DACS CF-1 / RFC 8785 canonical JSON, as the SDK's canonicalize: object
 // member names sorted by UTF-16 code units and kept byte-exact, string values
 // NFC-normalised, only safe-integer-range finite numbers, plain JSON only.
@@ -108,7 +112,7 @@ export function canonicalJson(value, depth = 0, seen = new Set()) {
     if (!Number.isFinite(value) || Math.abs(value) > Number.MAX_SAFE_INTEGER) bad();
     return JSON.stringify(value);
   }
-  if (typeof value !== 'object' || depth >= 64 || seen.has(value)) bad();
+  if (typeof value !== 'object' || depth >= MAX_NESTING_DEPTH || seen.has(value)) bad();
   const array = Array.isArray(value);
   if (Object.getPrototypeOf(value) !== (array ? Array.prototype : Object.prototype)) bad();
   const keys = Reflect.ownKeys(value);

@@ -175,7 +175,7 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * Return `completed` only when the node's transaction record for the
    * prepared hash shows the transfer executed. A status-index `included`
    * alone is not execution: a node reports it for a transaction whose record
-   * `failed` (#338). Every completed settlement must attest
+   * `failed`. Every completed settlement must attest
    * `execution: "executed"` after checking a bound confirmed record. The track
    * checks and removes that attestation before storing the settlement or
    * publishing its notice. Missing or other execution evidence stays
@@ -565,7 +565,7 @@ function capturePrepared(
           !INTEGER_RE.test(value.confirmedTotalDebitOs) ||
           BigInt(value.confirmedTotalDebitOs) < BigInt(payment.amountOs) ||
           BigInt(value.confirmedTotalDebitOs) > BigInt(payment.maxTotalDebitOs))) ||
-      // The record's declared fee is kept beside the real debit, never alone (#604).
+      // The record's declared fee is kept beside the real debit, never alone.
       (value.confirmedRecordFeeOs !== undefined &&
         (value.confirmedTotalDebitOs === undefined ||
           typeof value.confirmedRecordFeeOs !== "string" ||
