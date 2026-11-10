@@ -77,6 +77,8 @@ export function createReservationAccounting({ store, now, limits }) {
     const purchased = checkJobWithin(payload, keepProfile);
     checkRouteWithin(payload, operationId);
     const capacity = capacityWithin(input, at, key);
+    // Every refusal is behind us: expired rows leave only with a charge that commits. The limits above already left them uncounted.
+    store.retireReservationsWithin(at);
     // The hold comes first: the row references it, so no charged row exists without its counted job.
     store.holdJobWithin(payload, contextStart);
     // The first claim for a transaction is retained for accounting only: a competing job still reaches settlement intake.
