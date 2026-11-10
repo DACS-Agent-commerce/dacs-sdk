@@ -1269,6 +1269,8 @@ export {
   resumeWalletSpendAuthorityOperationV1,
   validateWalletSpendAuthorityOperationV1,
   validateWalletSpendStateV1,
+  captureWalletSpendPolicyV1,
+  canonicalWalletSpendWalletV1,
   executeWalletSpendEffectV1,
   combineWalletSpendEffectFenceV1,
   createFsWalletSpendStateStoreV1,

@@ -5,6 +5,7 @@ import { canonicalize, sha256Hex } from "../canonical/index.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import type { SettlementEffectFence } from "./idempotency.js";
+import { canonicalWalletSpendWalletV1 } from "./walletSpendWallet.js";
 
 /** Durable schema written by wallet-spend stores. */
 export const WALLET_SPEND_STATE_VERSION = 1 as const;
@@ -494,7 +495,16 @@ function frozenSnapshot<T>(value: T, label: string): Readonly<T> {
   return snapshot;
 }
 
-function capturePolicy(value: Readonly<WalletSpendPolicyV1>): Readonly<WalletSpendPolicyV1> {
+/**
+ * Validate a policy and return a frozen copy whose wallet is written in the
+ * canonical form, so every spelling of one wallet gets one lineage, one budget
+ * and one policy hash.
+ *
+ * @throws DacsError when the policy is malformed or its wallet has no canonical form.
+ */
+export function captureWalletSpendPolicyV1(
+  value: Readonly<WalletSpendPolicyV1>,
+): Readonly<WalletSpendPolicyV1> {
   const policy = frozenSnapshot(value, "wallet spend policy");
   const allowed = new Set([
     "policyVersion", "policyId", "wallet", "chainId",
@@ -506,7 +516,12 @@ function capturePolicy(value: Readonly<WalletSpendPolicyV1>): Readonly<WalletSpe
     throw new DacsError("wallet spend policy has an invalid shape");
   }
   nonEmpty(policy.policyId, "wallet spend policy id");
-  nonEmpty(policy.wallet, "wallet spend policy wallet");
+  const wallet = canonicalWalletSpendWalletV1(policy.wallet);
+  if (wallet === null) {
+    throw new DacsError(
+      "wallet spend policy wallet must be a 20-byte or 32-byte hex address",
+    );
+  }
   nonEmpty(policy.chainId, "wallet spend policy chainId");
   safeInteger(policy.maximumConcurrentEffects, "wallet maximumConcurrentEffects", true);
   safeInteger(policy.maximumRetainedReservations, "wallet maximumRetainedReservations", true);
@@ -537,7 +552,7 @@ function capturePolicy(value: Readonly<WalletSpendPolicyV1>): Readonly<WalletSpe
       positiveAmount(entry.operatorApprovalThreshold, "operatorApprovalThreshold");
     }
   }
-  return policy;
+  return Object.freeze({ ...policy, wallet });
 }
 
 function captureReservation(
@@ -553,7 +568,8 @@ function captureReservation(
   ]);
   if (Object.keys(reservation).some((key) => !allowed.has(key)) ||
       reservation.reservationVersion !== "1" ||
-      reservation.wallet !== policy.wallet || reservation.chainId !== policy.chainId ||
+      canonicalWalletSpendWalletV1(reservation.wallet) !== policy.wallet ||
+      reservation.chainId !== policy.chainId ||
       !Array.isArray(reservation.debits) || reservation.debits.length === 0) {
     throw new DacsError("wallet spend reservation has an invalid shape or scope");
   }
@@ -741,7 +757,7 @@ export function validateWalletSpendAuthorityOperationV1(
   operation: WalletSpendAuthorityOperationV1,
   payloadInput: unknown,
 ): void {
-  const policy = capturePolicy(policyInput);
+  const policy = captureWalletSpendPolicyV1(policyInput);
   const payload = frozenSnapshot(payloadInput, "wallet spend authority operation payload");
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
     throw new DacsError("wallet spend authority operation payload is invalid");
@@ -981,7 +997,7 @@ export function validateWalletSpendStateV1(
   value: Readonly<WalletSpendStateV1>,
   inputPolicy: Readonly<WalletSpendPolicyV1>,
 ): Readonly<WalletSpendStateV1> {
-  const policy = capturePolicy(inputPolicy);
+  const policy = captureWalletSpendPolicyV1(inputPolicy);
   const policyHash = sha256Hex(
     `dacs-wallet-spend-policy:v1:${canonicalize(policy)}`,
   );
@@ -1084,7 +1100,7 @@ export function createWalletSpendAuthorityV1(
   inputPolicy: Readonly<WalletSpendPolicyV1>,
   dependencies: Readonly<WalletSpendAuthorityDependenciesV1>,
 ): WalletSpendAuthorityV1 {
-  const policy = capturePolicy(inputPolicy);
+  const policy = captureWalletSpendPolicyV1(inputPolicy);
   const policyHash = sha256Hex(
     `dacs-wallet-spend-policy:v1:${canonicalize(policy)}`,
   );

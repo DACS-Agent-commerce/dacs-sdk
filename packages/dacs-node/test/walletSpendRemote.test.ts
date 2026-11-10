@@ -28,6 +28,7 @@ import {
   type DacsWalletSpendContinuityReceiptV1,
 } from "../src/walletSpendPostgres.js";
 
+const WALLET_A = `0x${"5e".repeat(20)}`;
 const roots: string[] = [];
 const HASH = "a".repeat(64);
 const TOKEN = "role-scoped-test-token-which-is-long-enough";
@@ -41,7 +42,7 @@ afterEach(async () => {
 const policy = (policyId = "policy-a"): WalletSpendPolicyV1 => ({
   policyVersion: "1",
   policyId,
-  wallet: "wallet-a",
+  wallet: WALLET_A,
   chainId: "chain-a",
   maximumConcurrentEffects: 1,
   maximumRetainedReservations: 10,
@@ -68,7 +69,7 @@ const reservation = (): WalletSpendReservationV1 => ({
   settlementBindingHash: "b".repeat(64),
   railId: "rail-one",
   railDefinitionHash: "c".repeat(64),
-  wallet: "wallet-a",
+  wallet: WALLET_A,
   chainId: "chain-a",
   payee: "payee-a",
   finality: { model: "final" },
@@ -214,7 +215,7 @@ describe("remote PostgreSQL wallet authority boundary", () => {
       const operationId = version === "1"
         ? "00000000-0000-4000-8000-000000000101"
         : "00000000-0000-4000-8000-000000000102";
-      const unknownWallet = "wallet-unprovisioned";
+      const unknownWallet = `0x${"6f".repeat(20)}`;
       const item = { ...reservation(), wallet: unknownWallet };
       const common = {
         operationId,
@@ -350,7 +351,7 @@ describe("remote PostgreSQL wallet authority boundary", () => {
           protocolVersion: "1",
           operationId,
           policyHash: HASH,
-          wallet: "wallet-a",
+          wallet: WALLET_A,
           chainId: "chain-a",
           operation: "reserve",
           payload: { reservation: reservation(), options: {} },
@@ -1445,6 +1446,58 @@ describe("remote PostgreSQL wallet authority boundary", () => {
 
     expect((await remote.reserve(reservation())).status).toBe("reserved");
     expect((await remote.inspect()).revision).toBe(1);
+  });
+
+  it("accepts a status naming the policy wallet in any spelling of the client policy and refuses another wallet", async () => {
+    const tokenFilePath = await tokenFile();
+    const local = server();
+    const statusNaming = (wallet: string | undefined): typeof fetch =>
+      (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const response = await local.handler(new Request(input, init));
+        if (wallet === undefined || !response.ok) return response;
+        const body = await response.json() as Record<string, unknown>;
+        const result = body.result as Record<string, unknown>;
+        return new Response(JSON.stringify({ ...body, result: { ...result, wallet } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch;
+    const inspectWith = async (policyWallet: string, statusWallet?: string) => {
+      const remote = await createDacsRemoteWalletSpendAuthorityV1({
+        policy: { ...policy(), wallet: policyWallet },
+        endpoint: "http://127.0.0.1:8080/",
+        tokenFilePath,
+        allowInsecureLoopback: true,
+        fetch: statusNaming(statusWallet),
+      });
+      return remote.inspect();
+    };
+
+    await expect(inspectWith(WALLET_A)).resolves.toMatchObject({ wallet: WALLET_A });
+    await expect(inspectWith(WALLET_A.slice(2).toUpperCase())).resolves.toMatchObject({
+      wallet: WALLET_A,
+    });
+    await expect(inspectWith(WALLET_A, WALLET_A.slice(2))).resolves.toMatchObject({
+      wallet: WALLET_A.slice(2),
+    });
+    for (const otherWallet of [`0x${"6f".repeat(20)}`, "wallet-a"]) {
+      await expect(inspectWith(WALLET_A, otherWallet)).rejects.toMatchObject({
+        reasonCode: "wallet-spend-authority-status-invalid",
+      });
+    }
+  });
+
+  it("refuses a client policy whose wallet has no canonical form before sending anything", async () => {
+    const tokenFilePath = await tokenFile();
+    const fetchSpy = vi.fn();
+    await expect(createDacsRemoteWalletSpendAuthorityV1({
+      policy: { ...policy(), wallet: "wallet-a" },
+      endpoint: "http://127.0.0.1:8080/",
+      tokenFilePath,
+      allowInsecureLoopback: true,
+      fetch: fetchSpy as unknown as typeof fetch,
+    })).rejects.toThrow(/20-byte or 32-byte hex address/);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("keeps inspect read-only and fails closed for unavailable or stale authority", async () => {

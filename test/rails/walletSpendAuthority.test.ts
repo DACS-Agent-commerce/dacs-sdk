@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
+  captureWalletSpendPolicyV1,
   combineWalletSpendEffectFenceV1,
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
@@ -25,11 +26,13 @@ import {
   type WalletSpendStateStore,
 } from "../../src/rails/walletSpendAuthority.js";
 import { createFsWalletSpendStateStoreV1 } from "../../src/rails/walletSpendAuthorityFs.js";
+import { canonicalWalletSpendWalletV1 } from "../../src/rails/walletSpendWallet.js";
 import { canonicalize, sha256Hex } from "../../src/canonical/index.js";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
+const WALLET = `0x${"1a".repeat(20)}`;
 const KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const dirs: string[] = [];
 
@@ -44,7 +47,7 @@ function policy(
   return {
     policyVersion: "1",
     policyId: "buyer-production-v1",
-    wallet: "wallet-1",
+    wallet: WALLET,
     chainId: "demos:testnet",
     maximumConcurrentEffects: 1,
     maximumRetainedReservations: 100,
@@ -77,7 +80,7 @@ function reservation(
     settlementBindingHash: HASH_C,
     railId: "pay-dem-main",
     railDefinitionHash: HASH_B,
-    wallet: "wallet-1",
+    wallet: WALLET,
     chainId: "demos:testnet",
     payee: "seller-1",
     finality: { model: "bft-final" },
@@ -151,7 +154,7 @@ describe("wallet-wide spend authority (#291)", () => {
       revision: 3,
       policyId: "buyer-production-v1",
       policyHash: wallet.policyHash,
-      wallet: "wallet-1",
+      wallet: WALLET,
       chainId: "demos:testnet",
       maximumConcurrentEffects: 1,
       activeEffects: 0,
@@ -1069,5 +1072,79 @@ describe("authenticated filesystem wallet spend store", () => {
       dir,
       integrityKey: KEY,
     })).rejects.toThrow(/not private/);
+  });
+});
+
+describe("canonical wallet identity", () => {
+  const BARE = WALLET.slice(2);
+  const MIXED_CASE = `0x${"1A".repeat(10)}${"1a".repeat(10)}`;
+
+  async function filesystemAuthority(dir: string, wallet: string) {
+    const store = await createFsWalletSpendStateStoreV1({ dir, integrityKey: KEY });
+    return createWalletSpendAuthorityV1(policy({ wallet }), {
+      store,
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+      now: () => 1_000,
+      leaseDurationMs: 100,
+    });
+  }
+
+  async function expectOneBudget(first: string, second: string): Promise<void> {
+    const dir = await mkdtemp(join(tmpdir(), "dacs-wallet-spend-"));
+    dirs.push(dir);
+    const early = await filesystemAuthority(dir, first);
+    const late = await filesystemAuthority(dir, second);
+    const claim = await early.reserve(reservation("one", { wallet: first }));
+    expect(claim.status).toBe("reserved");
+    expect(await late.reserve(reservation("two", { wallet: second }))).toMatchObject({
+      status: "denied",
+      reason: "concurrency-limit",
+    });
+    expect(await late.inspect()).toMatchObject({ activeEffects: 1 });
+    expect(late.policyHash).toBe(early.policyHash);
+  }
+
+  test("0x and bare spellings of one wallet share one budget in the filesystem store", async () => {
+    await expectOneBudget(WALLET, BARE);
+  });
+
+  test("mixed letter case of one wallet shares one budget in the filesystem store", async () => {
+    await expectOneBudget(MIXED_CASE, WALLET);
+  });
+
+  test("capture writes the policy wallet in canonical form", () => {
+    const captured = captureWalletSpendPolicyV1(policy({ wallet: BARE.toUpperCase() }));
+    expect(captured.wallet).toBe(WALLET);
+    expect(canonicalWalletSpendWalletV1(`0X${BARE.toUpperCase()}`)).toBe(WALLET);
+  });
+
+  test("a 32-byte hex wallet is canonical too", () => {
+    const demosWallet = `0x${"3c".repeat(32)}`;
+    expect(canonicalWalletSpendWalletV1(demosWallet.slice(2).toUpperCase())).toBe(demosWallet);
+  });
+
+  test.each([
+    ["a label", "wallet-1"],
+    ["an empty string", ""],
+    ["a bare prefix", "0x"],
+    ["a 30-byte hex string", `0x${"1a".repeat(30)}`],
+    ["non-hex digits", `0x${"zz".repeat(20)}`],
+    ["surrounding space", ` ${WALLET}`],
+  ])("a wallet with no canonical form is refused at capture: %s", (_label, wallet) => {
+    expect(canonicalWalletSpendWalletV1(wallet)).toBeNull();
+    expect(() => createWalletSpendAuthorityV1(policy({ wallet }), {
+      store: createInMemoryWalletSpendStateStore(),
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => true,
+    })).toThrow(/20-byte or 32-byte hex address/);
+  });
+
+  test("a reservation may use any spelling of the policy wallet and keeps it", async () => {
+    const wallet = authority({});
+    const claim = await wallet.reserve(reservation("one", { wallet: BARE }));
+    expect(claim.status).toBe("reserved");
+    await expect(wallet.reserve(reservation("two", { wallet: `0x${"4d".repeat(20)}` })))
+      .rejects.toThrow(/invalid shape or scope/);
   });
 });
