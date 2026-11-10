@@ -2,7 +2,7 @@
 // Keeps source files short. A new source file may not pass MAX_LINES; files
 // that were already longer are listed in file-size-baseline.json with their
 // length at the time. See tools/lint/README.md.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -74,7 +74,8 @@ function readBaseline(repoRoot) {
 }
 
 function writeBaseline(repoRoot, baseline) {
-  const sorted = Object.fromEntries(Object.entries(baseline).sort(([a], [b]) => a.localeCompare(b)));
+  // Plain code-point order, so the file does not change with the locale.
+  const sorted = Object.fromEntries(Object.entries(baseline).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   writeFileSync(join(repoRoot, BASELINE_FILE), `${JSON.stringify(sorted, null, 2)}\n`);
 }
 
@@ -87,12 +88,13 @@ function main(argv) {
     console.log(`file-size: wrote ${Object.keys(over).length} files to ${BASELINE_FILE}`);
     return 0;
   }
-  const baseline = readBaseline(repoRoot);
+  let baseline = readBaseline(repoRoot);
   const result = compare(sizes, baseline);
   const { tooLong, grown } = result;
   let { stale } = result;
   if (argv.includes("--prune") && stale.length > 0) {
-    writeBaseline(repoRoot, Object.fromEntries(Object.entries(baseline).filter(([path]) => !stale.includes(path))));
+    baseline = Object.fromEntries(Object.entries(baseline).filter(([path]) => !stale.includes(path)));
+    writeBaseline(repoRoot, baseline);
     console.log(`file-size: removed ${stale.length} entries from ${BASELINE_FILE}`);
     stale = [];
   }
@@ -113,6 +115,6 @@ function main(argv) {
   return failed === 0 ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exitCode = main(process.argv.slice(2));
 }
