@@ -1143,8 +1143,9 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1` | 767519509759e6d77c030f38e5601eab455922a0 |
 | | `packages/dacs-client/test/wire-delegation.test.mjs:1` | cd60876eb390082bbb372c2fe29f3827488e0af5 |
 | | `packages/dacs-client/test/wire-request-signing.test.mjs:1` | e4a43f5d39bc6806039a4f3f7421d0874504effc |
-| WF | delta(client): WF record the merged buyer seller client and refresh package pins | Git subject selector (must resolve exactly once after publication checkpoint) |
+| WF | test(client): cover changed signed response bytes | Git commit selector cedf85a39a23d95242c9b3a393ca6206d2550ef1 |
 | | `packages/dacs-client/src/dacs/seller-http.mjs:7`, `packages/dacs-client/src/dacs/seller-http.mjs:17`, `packages/dacs-client/src/dacs/seller-http.mjs:118`, `packages/dacs-client/src/dacs/seller-http.mjs:162`, `packages/dacs-client/src/dacs/seller-http.mjs:164`, `packages/dacs-client/src/dacs/seller-http.mjs:169`, `packages/dacs-client/src/dacs/seller-http.mjs:183`, `packages/dacs-client/src/dacs/seller-http.mjs:190`, `packages/dacs-client/src/dacs/seller-http.mjs:196`, `packages/dacs-client/src/dacs/seller-http.mjs:197`, `packages/dacs-client/src/dacs/seller-http.mjs:210`, `packages/dacs-client/src/dacs/seller-http.mjs:215`, `packages/dacs-client/src/dacs/seller-http.mjs:219`, `packages/dacs-client/src/dacs/seller-http.mjs:276`, `packages/dacs-client/src/dacs/seller-http.mjs:283`, `packages/dacs-client/src/dacs/seller-http.mjs:317`, `packages/dacs-client/src/dacs/seller-http.mjs:323`, `packages/dacs-client/src/dacs/seller-http.mjs:326`, `packages/dacs-client/src/dacs/seller-http.mjs:330`, `packages/dacs-client/src/dacs/seller-http.mjs:335`, `packages/dacs-client/src/dacs/seller-http.mjs:339`, `packages/dacs-client/src/dacs/seller-http.mjs:344`, `packages/dacs-client/src/dacs/seller-http.mjs:346`, `packages/dacs-client/src/dacs/seller-http.mjs:349`, `packages/dacs-client/src/dacs/seller-http.mjs:353`, `packages/dacs-client/src/dacs/seller-http.mjs:356`, `packages/dacs-client/src/dacs/seller-http.mjs:361`, `packages/dacs-client/src/dacs/seller-http.mjs:363`, `packages/dacs-client/src/dacs/seller-http.mjs:372`, `packages/dacs-client/src/dacs/seller-http.mjs:374`, `packages/dacs-client/src/dacs/seller-http.mjs:377`, `packages/dacs-client/src/dacs/seller-http.mjs:379`, `packages/dacs-client/src/dacs/seller-http.mjs:388` | add72c0add7c8188d6cc86e7476207a4882c93af |
+| | `packages/dacs-client/test/wire-request-signing.test.mjs:1` | 38eeb443a089821c4d313f54db21022689d7b1ff |
 | WF | delta(client): WF P13a2 sign continuing routes and committed reads with the finalized commitment | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:28`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:149`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:161`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:167`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:178`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:193`, `packages/dacs-client/src/dacs/buyer-chain-readback.mjs:206` | 540cf6a903cdb9d0f40bef3c22a70ee61c2b0540 |
 | | `packages/dacs-client/src/dacs/continuation-evidence.mjs:1` | 2f1540dbcd68897c5e95ae7c588684172c0eaf42 |
@@ -3775,6 +3776,38 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the recorded-suspension buyer seller client after the merge and refresh package pins | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the recorded-suspension buyer seller client after the merge and refresh package pins | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the recorded-suspension buyer seller client after the merge and refresh package pins | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/DELTA-MAP.md:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/DELTA-NOTES.md:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/HOLD.json:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/HOLD.json:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): reconcile split provenance map | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): reconcile split provenance map | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): reconcile split provenance map | `packages/dacs-client/HOLD.json:1` |
+| delta(client): reconcile split provenance map | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): keep only changed source records | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): keep only changed source records | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): keep only changed source records | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): keep only changed source records | `packages/dacs-client/HOLD.json:1` |
+| delta(client): keep only changed source records | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| test(client): cover changed signed response bytes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| test(client): cover changed signed response bytes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| test(client): cover changed signed response bytes | `packages/dacs-client/DELTA-MAP.md:1` |
+| test(client): cover changed signed response bytes | `packages/dacs-client/HOLD.json:1` |
+| test(client): cover changed signed response bytes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| test(client): cover changed signed response bytes | `packages/dacs-client/test/wire-request-signing.test.mjs:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/scripts/delta-map.mjs:1` |
 
 ## Original moved files
 

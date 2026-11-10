@@ -98,6 +98,16 @@ test("the response passed to verification is the exact received bytes and the ad
   });
   assert.deepEqual(await client.agreementState({ jobId: w.payload.jobId }), { admitted: true });
 });
+test('a signed response with changed body bytes is refused before its status is used', async (t) => {
+  const w = await world(t);
+  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async (_url, init) => {
+    const envelope = JSON.parse(Buffer.from(init.headers[wire.DACS_SELLER_HTTP_HEADER], 'base64url'));
+    const signed = await response(w, envelope, { text: '{"ok":true}' });
+    return new Response('{"ok":false}', { headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: signed.header } });
+  } });
+  await assert.rejects(client.agreementState({ jobId: w.payload.jobId }));
+  assert.equal(client.failureCause, 'response-auth');
+});
 test("the injected session signer receives the exact wire signing bytes once per request", async (t) => {
   const w = await world(t), s = await request(w);
   assert.equal(w.state.signs.length, 1);
