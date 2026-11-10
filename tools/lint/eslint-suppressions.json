@@ -440,7 +440,7 @@
       "count": 1
     }
   },
-  "scripts/verify-pr303-test-effectiveness.mjs": {
+  "scripts/verify-node-test-effectiveness.mjs": {
     "no-useless-assignment": {
       "count": 1
     }
