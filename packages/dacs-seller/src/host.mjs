@@ -48,7 +48,7 @@ import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-durable-state.mjs';
-import { createSellerHttpHandler } from './dacs/seller-http.mjs';
+import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/seller-http.mjs';
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
@@ -305,12 +305,13 @@ export async function startSellerHost(options) {
     let stopping = false;
     // The seller takes new purchases until it stops and while a whole purchase allotment fits; every later readiness term is ANDed in by the PR that owns it (SA-7).
     const sellerReady = () => !stopping && capacityReady();
-    // The routes that reserve through it do so under one mutex per operation, inspected from this journal; no route does yet, and the
-    // context route's job lease is validated once the host composes the admission transaction.
+    // Every effect route reserves through it under one mutex per operation, inspected from this journal; the context route's job
+    // lease is validated once the host composes the admission transaction. The completion port ends the attempts it issued.
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
-    // The context every signed route on `./wire` uses (the transport store is their journal). The binding is read once at
+    const completion = createOrdinaryCompletionPort({ journal, store, capacity });
+    // The context every signed route on `./wire` uses (its journal is the wire request journal). The binding is read once at
     // startup; a later connection is never compared.
-    const wire = Object.freeze({ binding, connection: tp1Network.connection, signer, journal, store, reservations, ready: sellerReady, now, requireDelegation: false,
+    const wire = Object.freeze({ binding, connection: tp1Network.connection, signer, journal, store, reservations, completion, ready: sellerReady, now, requireDelegation: false,
       retainedFor: (request) => retainedFor(agent, request, { store, capacity }), continuationFor: (request) => continuationFor(agent, request, signedListing), readCommitmentReceipt });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the

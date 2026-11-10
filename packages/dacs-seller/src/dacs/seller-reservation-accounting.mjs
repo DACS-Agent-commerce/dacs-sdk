@@ -14,6 +14,8 @@ const CAPACITY_CLASSES = new Set(['general', 'purchase']);
 const GENERAL_CAPACITY = Object.freeze({ class: 'general', allocationId: null });
 const uint = value => Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0);
 const fail = (code, status) => { throw new SellerTransportError(code, status); };
+/** The key a request's accounting row is stored under: the hash of its buyer, seller, profile and nonce. */
+export const requestNonceKey = (payload) => sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
 // A refusal of the wire or the host carries a string code and an HTTP status; a system error's code (EIO) has no status.
 const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isInteger(error.status);
 
@@ -118,7 +120,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       assertKitOperationAdmitted('reserveAccounted');
       const input = admittedInput(options);
       const { checked, payload } = input;
-      const key = sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
+      const key = requestNonceKey(payload);
       transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
       let effect;
       try { effect = await checked.reserve(); }

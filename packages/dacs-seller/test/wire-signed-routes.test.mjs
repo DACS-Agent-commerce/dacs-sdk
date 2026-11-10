@@ -6,200 +6,26 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
-import { canonicalize, compositeVerificationAddress, sha256Hex } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS, TP1_CAPABILITIES, WireError, admitWireArtifact, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
-import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { DACS_SELLER_HTTP_DOMAINS, TP1_CAPABILITIES, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { exchange } from './helpers/d5-http-fixture.mjs';
-import { proposalForInput } from './helpers/proposal-admission-fixture.mjs';
-import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
+import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './helpers/wire-authority-fixture.mjs';
 import { wireBuyer } from './helpers/wire-buyer.mjs';
 import { agreementInput, listingPin } from '../src/dacs/purchase-protocol.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
-import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import * as wireRequests from '../src/dacs/seller-wire-requests.mjs';
-import { wireContinuationFixture, receiptReader } from './helpers/wire-continuation-fixture.mjs';
 import { retainedFor } from '../src/dacs/seller-wire-requests.mjs';
 import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportServerAuth } from '../src/dacs/seller-transport-auth.mjs';
-import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
+import { boundPurchaseOf, createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 
-const PATHS = DACS_SELLER_HTTP_PATHS;
-const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
-const SELLER = { claim: seller.claim, sign: seller.signBytes };
-const session = testWallet(3);
-const SESSION = { claim: session.claim, sign: session.signBytes };
-const LISTING = fixtureListing(seller, { now: NOW });
-const PIN = listingPin(LISTING);
-const CLAIM_PREFIX = 'did:demos:agent:';
-const MAX_RESPONSE_BYTES = 512 * 1024;
-const MAX_BODY_BYTES = 64 * 1024;
-const MAX_HEADER_CHARS = 4096;
-const MAX_REQUEST_LIFETIME_MS = 60_000;
-const MAX_SIGNED_LIFETIME_MS = 30_000;
-const SKEW_MS = 30_000;
-const DAY_MS = 86_400_000;
-const REQUEST_NONCE_BYTE = 0x6e;
-const JOURNAL_LEASE_MS = 300_000;
-const OLD_PIN_VERSION = 'dacs-demos-testnet-identity/2026-10-15';
-
-const derive = (label) => sha256Hex(`wire-signed-routes:${label}`);
-const jobFor = (label) => `0${derive(`job-${label}`).slice(0, 25).toUpperCase()}`;
-const publicKeyHex = (wallet) => wallet.claim.slice(CLAIM_PREFIX.length);
-let nonceCounter = 0;
-const nextNonce = () => Buffer.alloc(24, (REQUEST_NONCE_BYTE + ++nonceCounter) % 256).toString('base64url');
-const vetRef = (jobId, party) => ({ anchor: { kind: 'storage-program', locator: compositeVerificationAddress(jobId, party.claim) }, contentHash: derive(`vet:${jobId}:${party.claim}`), signer: seller.claim });
-const MUTATING = /^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|BEGIN)/i;
-
-/** A valid proposals body for `jobId`, with the Agreement hash and deadline its draft names. */
-async function proposalFor(jobId) {
-  const base = agreementInput({ jobId, listing: LISTING, buyerBundle: fixtureIdentityBundle(buyer, NOW), generatedAt: NOW });
-  const input = { ...base, buyer: { ...base.buyer, vetRecordRef: vetRef(jobId, buyer) }, seller: { ...base.seller, vetRecordRef: vetRef(jobId, seller) } };
-  const body = await proposalForInput(input);
-  return { body, agreementHash: body.transportIdentity.agreementHash, deadline: body.proposal.plan.draft.terms.deadline };
-}
-const identityBody = (jobId, agreementHash) => ({ transportIdentity: { jobId, buyer: buyer.claim, seller: seller.claim, agreementHash } });
-
-/** The statements the store's database ran while `work` ran. */
-async function statementsDuring(work) {
-  const { prepare, exec } = DatabaseSync.prototype;
-  const seen = [];
-  DatabaseSync.prototype.prepare = function recordPrepare(sql) { seen.push(sql); return prepare.call(this, sql); };
-  DatabaseSync.prototype.exec = function recordExec(sql) { seen.push(sql); return exec.call(this, sql); };
-  try { await work(); } finally { Object.assign(DatabaseSync.prototype, { prepare, exec }); }
-  return seen;
-}
-
-/** A counting stand-in for the seller agent: it retains each proposal's draft, as the real agent's session does. */
-function stubAgent() {
-  const drafts = new Map();
-  const agent = {
-    claim: seller.claim, listingPin: PIN, retains: false, credit: () => {}, onWork: () => {}, answer: undefined,
-    calls: { proposals: 0, commits: 0, states: 0, reconciled: 0, payments: 0 },
-    transportAgreementOf: (jobId) => structuredClone(drafts.get(jobId) ?? null),
-    retainsProposalWork: (jobId) => agent.retains && drafts.has(jobId),
-    assertSettlementCredit: (jobId) => agent.credit(jobId),
-    receiveProposal: async (body, { transport } = {}) => {
-      agent.calls.proposals++;
-      agent.onWork('proposal', body);
-      transport?.check();
-      drafts.set(body.transportIdentity.jobId, body.proposal.plan.draft);
-      return agent.answer ? agent.answer() : { disposition: 'complete', contribution: { signed: true } };
-    },
-    commit: async (body) => { agent.calls.commits++; agent.onWork('commit', body); return agent.answer ? agent.answer() : { status: 'committed', jobId: body.jobId }; },
-    readCommitment: async ({ jobId }) => { agent.onWork('commit-read'); return { status: 'committed', jobId }; },
-    agreementState: (identity) => { agent.calls.states++; return { proposal: null, contribution: null, jobId: identity.jobId }; },
-    submitPayment: async () => { agent.calls.payments++; agent.onWork('payment'); return { status: 'payment-evidenced' }; },
-    reconcileTransport: async ({ request, transport }) => {
-      agent.calls.reconciled++;
-      transport.claim();
-      transport.settle({ status: 200, value: request.path === PATHS.proposals ? { disposition: 'complete', contribution: { signed: true } } : { status: 'committed', jobId: request.jobId }, settle: true });
-    },
-  };
-  return agent;
-}
-
-/** One seller: a transport store, a bound profile, the wire journal and the handler, with a buyer that signs for it. */
-async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader(), fixture = null } = {}) {
-  const pin = fixture ? listingPin(fixture.listing) : PIN;
-  const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-routes-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  mkdirSync(join(directory, 'transport'), { mode: 0o700 });
-  const storePath = join(directory, 'transport', 'transport.sqlite');
-  const state = { time: NOW, ready: true, connection: { ...TEST_CONNECTION }, authorityReads: 0, withdrawAtRead: null, lapseAtRead: null, lapseMs: MAX_SIGNED_LIFETIME_MS + 1, elapsedMs: 0, readsAtReserve: 0, journals: [] };
-  // The wire measures the time an admission takes with `performance.now`: the test moves it forward by `elapsedMs`.
-  const monotonicNow = performance.now.bind(performance);
-  mock.method(performance, 'now', () => monotonicNow() + state.elapsedMs);
-  t.after(() => mock.restoreAll());
-  const clock = () => state.time;
-  const connection = () => ({ ...state.connection });
-  const signing = { calls: 0, failures: 0 };
-  const sellerSigner = { claim: seller.claim, sign: (bytes) => {
-    signing.calls++;
-    if (signing.failures > 0) { signing.failures--; throw new Error('TEST signer failure'); }
-    return seller.signBytes(bytes);
-  } };
-  const reader = (scope) => {
-    state.authorityReads++;
-    if (state.withdrawAtRead === state.authorityReads) throw new WireError('tp1_participant_refused', 503, undefined, new Error('TEST authority withdrawn'));
-    if (state.lapseAtRead === state.authorityReads) state.elapsedMs += state.lapseMs;
-    return readAuthority(scope);
-  };
-  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: pin, clock, connection, readAuthority: reader,
-    readCommitmentReceipt: receiptReader(), publicEndpoint: fixture?.listing.seller.publicEndpoint,
-    evidenceFor: async (path, id) => fixture && [...CONTINUING, PATHS.bundleBuyerCopy].includes(path) ? {
-      commitment: Buffer.from(fixture.agent().continuationEvidenceOf(id).commitmentText),
-      agreement: Buffer.from(fixture.agent().continuationEvidenceOf(id).agreementText), signedListing: Buffer.from(JSON.stringify(fixture.listing)),
-    } : {} });
-  const agent = stubAgent();
-  agent.listingPin = pin;
-  agent.bundleRequest = async () => { agent.calls.bundles++; agent.onWork('bundle'); return { status: 'held' }; };
-  agent.countersign = agent.bundleRequest;
-  agent.confirmBuyerCopy = async () => ({ status: 'held' });
-  agent.commitOnSignature = agent.commit;
-  agent.calls.bundles = 0;
-  if (fixture) {
-    agent.transportAgreementOf = (jobId) => fixture.agent().transportAgreementOf(jobId);
-    agent.continuationEvidenceOf = (jobId) => fixture.agent().continuationEvidenceOf(jobId);
-  }
-  const handle = { store: null, handler: null, finishFails: false };
-  const mount = () => {
-    if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
-    const store = createSellerTransportStore({ path: storePath, maxJobs, maxRecords, now: clock });
-    const finish = store.finish.bind(store);
-    store.finish = (...args) => { if (handle.finishFails) throw new Error('TEST process died before the answer was stored'); return finish(...args); };
-    const reserve = store.reserve.bind(store);
-    store.reserve = (...args) => { state.readsAtReserve = state.authorityReads; return reserve(...args); };
-    const journalDirectory = join(directory, `wire-journal-${state.journals.length}`);
-    mkdirSync(journalDirectory, { mode: 0o700 });
-    state.journals.push(journalDirectory);
-    const journal = openWireRequestJournal(journalDirectory, { leaseMs: JOURNAL_LEASE_MS, clock });
-    const authentication = createSellerTransportServerAuth({ sellerSigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: pin, store, now: clock });
-    const wire = { binding: buyerWire.binding, connection, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, requireDelegation: false,
-      retainedFor: (input) => retainedFor(agent, input),
-      continuationFor: (input) => fixture ? wireRequests.continuationFor(agent, input, fixture.admittedListing ?? fixture.listing) : {},
-      readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader() };
-    Object.assign(handle, { store, wire, handler: createSellerHttpHandler(agent, { authentication, wire, commitOnSignature: true }) });
-  };
-  mount();
-  t.after(() => handle.store.close());
-  const reopen = () => { handle.store.close(); handle.finishFails = false; mount(); };
-  const answerOf = (res, payload) => ({ status: res.status, text: res.text, body: JSON.parse(res.text), header: res.headers?.[SELLER_TRANSPORT_HEADER], signed: res.headers?.[SELLER_TRANSPORT_HEADER] !== undefined, payload });
-  const send = async (path, { text, header, payload = null }) => answerOf(await exchange(handle.handler, { url: path, text, header }), payload);
-  /** A request the buyer's `signWireRequest` signs, sent through the handler. */
-  const post = async (path, body, { jobId, agreementHash, ...options } = {}) => {
-    const signed = await buyerWire.signRequest(path, body, { jobId, agreementHash, ...options });
-    return send(path, signed);
-  };
-  const verified = (answer) => buyerWire.authentication(() => null).verifyResponse(answer.payload, { header: answer.header, status: answer.status, responseBytes: Buffer.from(answer.text) });
-  const rows = () => {
-    const db = new DatabaseSync(storePath, { readonly: true });
-    try { return Object.fromEntries(['peer_effects', 'peer_nonces', 'peer_jobs', 'peer_slots', 'kit_purchase_profiles'].map((name) => [name, db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n])); } finally { db.close(); }
-  };
-  const journalFiles = () => state.journals.flatMap((directoryPath) => readdirSync(directoryPath));
-  const effects = (counter = agent.calls) => Object.values(counter).reduce((sum, n) => sum + n, 0);
-  /** A hand-built request header, signed as `signer` under `domain`: payloads the wire's own signer refuses to make. */
-  const payloadFor = (path, text, { jobId, agreementHash, expiresAt = NOW + MAX_SIGNED_LIFETIME_MS, buyerClaim = buyer.claim, ...rest }) => ({ version: '1', kind: 'request', method: 'POST', path, bodyHash: sha256Hex(text),
-    jobId, buyer: buyerClaim, seller: seller.claim, listingPin: pin, agreementHash, nonce: nextNonce(), expiresAt, profile: buyerWire.binding.profile, ...rest });
-  const headerFor = (payload, { signer = BUYER, domain = DACS_SELLER_HTTP_DOMAINS.request, delegation } = {}) => Buffer.from(canonicalize({ payload,
-    signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url'), ...(delegation ? { delegation } : {}) })).toString('base64url');
-  const delegationFor = ({ jobId, expiresAt, domain = DACS_SELLER_HTTP_DOMAINS.delegation, ...rest }) => {
-    const payload = { version: '1', kind: 'seller-session-delegation', buyer: buyer.claim, seller: seller.claim, sessionPublicKey: publicKeyHex(session), listingPin: pin, jobId,
-      notBefore: NOW - SKEW_MS, expiresAt, profile: buyerWire.binding.profile, ...rest };
-    return { payload, signature: BUYER.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url') };
-  };
-  return { directory, state, agent, signing, buyerWire, handle, mount, reopen, post, send, verified, rows, journalFiles, effects, payloadFor, headerFor, delegationFor, storePath, clock };
-}
-
-const proposeJob = async (w, label) => {
-  const jobId = jobFor(label), proposal = await proposalFor(jobId);
-  return { jobId, ...proposal, post: (options) => w.post(PATHS.proposals, proposal.body, { jobId, agreementHash: proposal.agreementHash, ...options }) };
-};
+import { PATHS, CONTINUING, continuingWorld, BUYER, session, SESSION, PIN, CLAIM_PREFIX, MAX_RESPONSE_BYTES, MAX_BODY_BYTES, MAX_HEADER_CHARS, MAX_REQUEST_LIFETIME_MS, MAX_SIGNED_LIFETIME_MS, SKEW_MS, DAY_MS, JOURNAL_LEASE_MS, OLD_PIN_VERSION, derive, jobFor, MUTATING, identityBody, statementsDuring, world, proposeJob } from './helpers/wire-routes-world.mjs';
 
 test('P11a1-T03: a missing revision, an unknown revision or an old pin version is refused before any store access; the own profile is accepted', async (t) => {
   const w = await world(t);
@@ -244,19 +70,17 @@ test('P11a1-T04: a new purchase keeps its tuple inside the reservation transacti
   assert.throws(() => w.handle.store.reserve(request, job.body), { code: 'tp1_purchase_profile_mismatch', status: 500 }, 'the old store refuses an absent tuple on a moved route');
 });
 
-test('P11a1-T05: answers of null, an array, a number, a boolean, a string, malformed Unicode, malformed JSON, duplicate members and 512 KiB + 1 byte are each refused outgoing_body_rejected with no stored terminal answer; an object of exactly 512 KiB and an ordinary object are stored as given, and sign and verify unchanged on replay', async (t) => {
+test('P11a1-T05: answers of null, an array, a number, a boolean, a string, malformed Unicode, malformed JSON, duplicate members and 512 KiB + 1 byte are each not completed and answer operation_uncertain; an object of exactly 512 KiB and an ordinary object are stored as given, and sign and verify unchanged on replay', async (t) => {
   const w = await world(t);
   const refusedAnswers = [null, [], 7, true, 'text', { pad: 'x'.repeat(MAX_RESPONSE_BYTES) }];
   for (const [index, answer] of refusedAnswers.entries()) {
     const job = await proposeJob(w, `t05-refused-${index}`);
     w.agent.answer = () => answer;
     const refused = await job.post();
-    assert.deepEqual({ status: refused.status, error: refused.body.error, signed: refused.signed }, { status: 500, error: 'outgoing_body_rejected', signed: true }, `answer ${index}`);
+    assert.deepEqual({ status: refused.status, error: refused.body.error, signed: refused.signed }, { status: 503, error: 'operation_uncertain', signed: true }, `answer ${index}`);
     await w.verified(refused);
   }
-  assert.equal(w.rows().peer_effects, refusedAnswers.length);
-  const db = new DatabaseSync(w.storePath, { readonly: true });
-  try { assert.deepEqual(db.prepare("SELECT state FROM peer_effects WHERE state = 'complete'").all(), [], 'no refused answer became a terminal entry'); } finally { db.close(); }
+  assert.equal(w.journalFiles().length, 2 * refusedAnswers.length, 'each refused answer left its attempt and nonce key only: no end record and no outcome');
   const { admitAnswerText } = await import('../src/dacs/seller-wire-requests.mjs');
   for (const text of ['\ud800', '{"a":', '{"a":1,"a":2}', '{"a":1,"\\u0061":2}', '[1]', 'null']) {
     assert.throws(() => admitAnswerText(text), { code: 'outgoing_body_rejected', status: 500 }, JSON.stringify(text));
@@ -445,9 +269,12 @@ test('P11a1-T17: a connection changed after binding makes response signing refus
   assert.deepEqual({ status: answered.status, error: answered.body.error, signed: answered.signed }, { status: 503, error: 'operation_uncertain', signed: false });
   assert.equal(w.signing.calls, 0, 'the signer was never asked');
   w.state.connection = { ...TEST_CONNECTION };
+  assert.equal((await job.post()).body.error, 'seller_effect_pending', 'the unsigned answer ended nothing: the attempt is open');
+  w.state.time += JOURNAL_LEASE_MS;
   const retried = await job.post();
-  assert.equal(retried.status, 200, 'the stored answer is signed once the connection is the bound one');
-  assert.equal(w.agent.calls.proposals, 1, 'the effect was not run again');
+  assert.equal(retried.status, 200, 'the recovery answers once the connection is the bound one');
+  assert.equal(w.agent.calls.proposals, 1, 'the effect was not run again: the agent reconciled');
+  assert.equal(w.agent.calls.reconciled, 1);
 });
 
 test('P11a1-T18: a wire refusal keeps its code and status; a request naming another seller is answered unsigned', async (t) => {
@@ -482,21 +309,19 @@ test('P11a1-T18: a wire refusal keeps its code and status; a request naming anot
   assert.equal(w.effects(), 0);
 });
 
-test('P11a1-T19: no request creates a wire journal file in this PR. Non-pre-Agreement effect routes reserve only in the old store. Round 4: both signed read routes reserve and complete nowhere, while returning their authenticated answers. This covers a known job, SA-10\'s unknown job, a live delegation, an expired delegation\'s readback, an old store at `peer_store_capacity`, and a restart. The old store sees zero statements and zero row changes, with no `reserve`, `classify`, `finish`, `reconcile` or `resume` call. The accounting, allocation and completion-hook counters do not exist yet; H-2\'s rerun asserts them as zero', async (t) => {
+test('both signed read routes reserve and complete nowhere, while returning their authenticated answers: a known job, an unknown job, a live delegation, an expired delegation\'s readback and a restart leave the transport store and the wire journal unchanged', async (t) => {
   const w = await world(t, { maxRecords: 2 });
   const job = await proposeJob(w, 't19');
   assert.equal((await job.post()).status, 200);
-  assert.equal(w.rows().peer_effects, 1, 'the proposal reserved in the old store');
+  assert.equal(w.rows().peer_effects, 0, 'the proposal reserved in the wire journal, not in the old store');
   const old = createSellerTransportClientAuth({ buyerSigner: BUYER, seller: seller.claim, resolveJob: () => ({ listingPin: PIN, agreementHash: job.agreementHash }), now: w.clock });
   const paymentBody = { jobId: job.jobId, payerPayingKey: buyer.claim, txHash: derive('payment').slice(0, 64) };
   const { header } = await old.request(PATHS.payments, paymentBody, JSON.stringify(paymentBody));
   const payment = await exchange(w.handle.handler, { url: PATHS.payments, text: JSON.stringify(paymentBody), header });
   assert.ok(payment.status >= 400, 'payments refuse the old signing domain');
   assert.equal(payment.headers[SELLER_TRANSPORT_HEADER], undefined);
-  assert.equal(w.rows().peer_effects, 1, 'the refusal reserves nowhere');
-  assert.equal((await (await proposeJob(w, 't19-fill')).post()).status, 200);
-  const refusedAtCapacity = await (await proposeJob(w, 't19-full')).post();
-  assert.equal(refusedAtCapacity.body.error, 'peer_store_capacity', 'the old store is now at capacity for effects');
+  assert.equal(w.rows().peer_effects, 0, 'the refusal reserves nowhere');
+  const journalBefore = w.journalFiles();
 
   const storeCalls = { reserve: 0, classify: 0, finish: 0, reconcile: 0, resume: 0 };
   const watchStore = () => { for (const name of Object.keys(storeCalls)) { const method = w.handle.store[name].bind(w.handle.store); w.handle.store[name] = (...args) => { storeCalls[name]++; return method(...args); }; } };
@@ -521,7 +346,7 @@ test('P11a1-T19: no request creates a wire journal file in this PR. Non-pre-Agre
     assert.deepEqual(storeCalls, callsBefore, `${label}: no reserve, classify, finish, reconcile or resume call`);
     await w.verified(answer);
   }
-  assert.deepEqual(w.journalFiles(), [], 'no wire journal file exists');
+  assert.deepEqual(w.journalFiles(), journalBefore, 'no wire journal file was written');
 });
 
 test('a state read for a job the agent holds with no kept tuple is refused tp1_purchase_profile_mismatch (missing), signed, with no agent call and nothing written; a read for a job with its tuple is answered, also after restart', async (t) => {
@@ -671,8 +496,8 @@ test('wire-proposal-commitment-final-authorization-barrier', async (t) => {
     const probe = await prepare(`barrier-${route}-probe`);
     const readsToAgent = await readsBeforeAgent(w, async () => assert.equal((await probe()).status, 200));
     const withdrawn = await prepare(`barrier-${route}-withdrawn`), expired = await prepare(`barrier-${route}-expired`);
-    const rowsBefore = w.rows(), callsBefore = { ...w.agent.calls };
-    // The request makes the same reads as the probe up to the agent; its last one is the recheck's, after body checks and just before the reservation.
+    const filesBefore = w.journalFiles(), callsBefore = { ...w.agent.calls };
+    // The request makes the same reads as the probe up to the agent; its last one is the recheck's, which the journal's reservation makes first.
     w.state.withdrawAtRead = w.state.authorityReads + readsToAgent;
     const authority = await withdrawn();
     w.state.withdrawAtRead = null;
@@ -684,26 +509,27 @@ test('wire-proposal-commitment-final-authorization-barrier', async (t) => {
     assert.deepEqual({ status: lapsed.status, error: lapsed.body.error }, { status: 408, error: 'peer_expired' }, `${route}: expiry between admission and reservation`);
     for (const reopened of [false, true]) {
       if (reopened) w.reopen();
-      assert.deepEqual(w.rows(), rowsBefore, `${route}: no tuple, nonce or effect was left (reopened: ${reopened})`);
+      assert.deepEqual(w.journalFiles(), filesBefore, `${route}: no journal file was left (reopened: ${reopened})`);
       assert.deepEqual(w.agent.calls, callsBefore, `${route}: no agent work`);
     }
   }
 });
 
 test('wire-proposal-commitment-effect-before-finish', async (t) => {
-  const w = await world(t);
   for (const route of ['proposals', 'commitments']) {
+    const w = await world(t);
     const job = await proposeJob(w, `before-finish-${route}`);
     const first = route === 'proposals' ? () => job.post() : () => w.post(PATHS.commitments, { jobId: job.jobId }, { jobId: job.jobId, agreementHash: job.agreementHash });
     if (route === 'commitments') assert.equal((await job.post()).status, 200);
     const counter = route === 'proposals' ? 'proposals' : 'commits';
     const worked = w.agent.calls[counter], reconciledBefore = w.agent.calls.reconciled;
     w.agent.retains = route === 'proposals';
-    w.handle.finishFails = true;
+    w.signing.failures = 1;
     const cut = await first();
     assert.ok(cut.status >= 500, `${route}: the cut request is not answered as done`);
     assert.equal(w.agent.calls[counter], worked + 1, `${route}: the agent retained its work`);
     w.reopen();
+    w.state.time += JOURNAL_LEASE_MS;
     const resumed = await first();
     assert.equal(resumed.status, 200, `${route}: the retried request is answered`);
     assert.equal(w.agent.calls.reconciled, reconciledBefore + 1, `${route}: the retained work was reconciled`);
@@ -719,9 +545,9 @@ test('wire-stored-answer-lost-response', async (t) => {
   w.signing.failures = 2;
   const lost = await job.post();
   assert.deepEqual({ status: lost.status, error: lost.body.error, signed: lost.signed }, { status: 503, error: 'operation_uncertain', signed: false });
-  const db = new DatabaseSync(w.storePath, { readonly: true });
-  try { assert.deepEqual(db.prepare('SELECT state, status, response FROM peer_effects').all(), [{ state: 'complete', status: 200, response: original }], 'the admitted text is stored unchanged'); } finally { db.close(); }
+  assert.equal(w.journalFiles().length, 2, 'the unsigned answer ended nothing: only the attempt and the nonce key exist');
   w.reopen();
+  w.state.time += JOURNAL_LEASE_MS;
   const retried = await job.post();
   assert.deepEqual({ status: retried.status, text: retried.text }, { status: 200, text: original });
   assert.equal((await w.verified(retried)).body.disposition, 'complete');
@@ -735,10 +561,11 @@ test('wire-response-signing-credit-withdrawal', async (t) => {
   w.agent.credit = () => { throw withdrawn; };
   const first = await job.post();
   assert.notEqual(first.status, 200, 'success is withheld after signing');
-  assert.equal((await job.post()).status, 503, 'a replay is withheld too');
+  assert.equal((await job.post()).status, 503, 'a repeat is withheld too');
   w.reopen();
-  assert.equal(w.rows().peer_effects, 1, 'the operation is retained across the restart');
+  assert.ok(w.journalFiles().length > 0, 'the operation is retained across the restart');
   w.agent.credit = () => {};
+  w.state.time += JOURNAL_LEASE_MS;
   const restored = await job.post();
   assert.equal(restored.status, 200);
   assert.equal(restored.text, JSON.stringify({ disposition: 'complete', contribution: { signed: true } }));
@@ -747,23 +574,12 @@ test('wire-response-signing-credit-withdrawal', async (t) => {
 
 
 // P11a1b: real durable continuation artifacts, counting effects and injected clocks.
-const CONTINUING = [PATHS.payments, PATHS.bundleRequest, PATHS.bundleCountersignature];
 const EFFECTS = [PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature, ...CONTINUING];
-async function continuingWorld(t) {
-  const fixture = await wireContinuationFixture(t), w = await world(t, { fixture });
-  const jobId = fixture.agreement.jobId, agreementHash = fixture.request.transportIdentity.agreementHash;
-  const bodyFor = (path) => path === PATHS.proposals ? fixture.request : path === PATHS.state ? identityBody(jobId, agreementHash)
-    : path === PATHS.payments ? { jobId, txHash: derive('continuing-payment'), payerPayingKey: buyer.claim }
-      : path === PATHS.commitmentSignature ? { jobId, agreement: fixture.agreement, signedProjection: {} } : { jobId };
-  const post = (path, options = {}) => w.post(path, bodyFor(path), { jobId, agreementHash, ...options });
-  assert.equal((await post(PATHS.proposals)).status, 200);
-  return { ...w, fixture, jobId, agreementHash, bodyFor, request: post };
-}
 const assertRefusedWithoutWork = async (w, path, work, code) => {
-  const before = w.rows(), calls = { ...w.agent.calls };
+  const before = w.journalFiles(), calls = { ...w.agent.calls };
   const answer = await work();
   assert.equal(answer.body.error, code, `${path}: ${JSON.stringify(answer.body)}`);
-  assert.deepEqual(w.rows(), before, 'no journal or tuple changes');
+  assert.deepEqual(w.journalFiles(), before, 'no journal change');
   assert.deepEqual(w.agent.calls, calls, 'no agent effects');
   return answer;
 };
@@ -799,7 +615,6 @@ test('P11a1-T01: every non-pre-Agreement route answers with a wire response enve
     await w.verified(answer);
     assert.deepEqual(JSON.parse(Buffer.from(answer.header, 'base64url')).payload.profile, w.buyerWire.binding.profile);
   }
-  assert.deepEqual(w.journalFiles(), []);
 });
 
 test('P11a1-T02: an old-domain request on any wire route is refused unsigned with zero agent calls; a wire request on the old-auth context route is refused, never downgraded', async (t) => {
@@ -891,7 +706,9 @@ test("P11a1-T15: a continuing route without a commitment, with another job's com
 test('P11a1-T16: when not ready, new-purchase routes are refused signed while state and payments continue', async (t) => {
   const w = await continuingWorld(t);
   w.state.ready = false;
-  for (const path of [PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature]) {
+  // The job's proposal is completed: a completed operation is answered again even when the seller is not ready.
+  assert.equal((await w.request(PATHS.proposals)).status, 200);
+  for (const path of [PATHS.commitments, PATHS.commitmentSignature]) {
     const answer = await assertRefusedWithoutWork(w, path, () => w.request(path), 'seller_not_ready');
     assert.equal(answer.signed, true);
   }
@@ -1012,12 +829,17 @@ test("P11a1-T27: the old store's reserve and classify without a tuple on proposa
   const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: legacy.buyer.claim, algorithm: 'ed25519', sign: legacy.buyer.sign });
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: sha256Hex(canonicalize(material)) };
   const transportIdentity = { jobId: JOBS[0], buyer: legacy.buyer.claim, seller: legacy.seller.claim, agreementHash: plan.agreementHash, planHash: plan.planHash, proposalHash: proposal.proposalHash };
-  const agent = { claim: legacy.seller.claim, listingPin: legacy.pin, transportAgreementOf: () => null, receiveProposal: async () => ({ disposition: 'complete' }) };
-  const wire = { ...w.handle.wire, store: legacy.store, signer: legacy.seller, now: legacy.now, retainedFor: input => retainedFor(agent, input) };
+  const agent = { claim: legacy.seller.claim, listingPin: legacy.pin, transportAgreementOf: () => null, receiveProposal: async () => ({ disposition: 'complete' }), retainsPaymentClaim: () => false, assertSettlementCredit: () => {} };
+  const legacyJournal = join(w.directory, 'legacy-journal');
+  mkdirSync(legacyJournal, { mode: 0o700 });
+  const journal = openWireRequestJournal(legacyJournal, { leaseMs: JOURNAL_LEASE_MS, clock: legacy.now }), { store: rawStore, capacity } = boundPurchaseOf(legacy.store);
+  const reservations = createReservationCoordinator({ accounting: legacy.store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
+  const wire = { ...w.handle.wire, journal, store: legacy.store, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }), signer: legacy.seller, now: legacy.now, retainedFor: input => retainedFor(agent, input) };
   const handler = createSellerHttpHandler(agent, { authentication: legacy.auth, wire });
   const buyerWire = await wireBuyer({ buyer: legacy.buyer, seller: legacy.seller, listingPin: legacy.pin, clock: legacy.now });
   const signed = await buyerWire.signRequest(PATHS.proposals, { proposal, transportIdentity, buyerIdentityBundle: contextBody.buyerIdentityBundle }, transportIdentity);
-  assert.equal((await exchange(handler, { url: PATHS.proposals, ...signed })).status, 200);
+  const proposed = await exchange(handler, { url: PATHS.proposals, ...signed });
+  assert.equal(proposed.status, 200, proposed.text);
   assert.deepEqual(legacy.store.purchaseProfile(JOBS[0]), buyerWire.binding.profile);
   const first = await exchange(legacy.handler, { url: PATHS.context, ...request });
   assert.equal(first.status, 200, first.text);
@@ -1052,9 +874,7 @@ test("P11a1-T28: table: route (payments with a cached completed answer, commitme
   w.agent.submitPayment = async () => { w.agent.calls.payments++; publications++; return { status: 'payment-evidenced', delivery: { status: 'delivered' } }; };
   w.agent.readCommitment = async () => { refresh++; effectSignatures++; return { status: 'committed', jobId: w.jobId }; };
   for (const path of [PATHS.payments, PATHS.commitments, PATHS.commitmentSignature]) {
-    w.signing.failures = 2;
-    assert.ok((await w.request(path)).status >= 500, 'response signing is lost after the completed answer is stored');
-    w.signing.failures = 0;
+    assert.equal((await w.request(path)).status, 200, 'the operation completes and its answer is stored');
     for (const restarted of [false, true]) {
       if (restarted) w.reopen();
       for (const expired of [false, true]) {

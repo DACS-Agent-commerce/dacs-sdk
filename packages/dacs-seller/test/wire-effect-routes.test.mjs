@@ -1,11 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import DatabaseSync from 'better-sqlite3';
+import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
+import { retainedFor } from '../src/dacs/seller-wire-requests.mjs';
+import { NOW } from './helpers/protocol-fixture.mjs';
+import { BUYER as WORLD_BUYER, PIN as WORLD_PIN, SELLER as WORLD_SELLER, continuingWorld, derive, identityBody, jobFor, proposalFor, proposeJob, world as routeWorld } from './helpers/wire-routes-world.mjs';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
-import { createOrdinaryCompletionPort, endWireAttempt } from '../src/dacs/seller-http.mjs';
-import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { createOrdinaryCompletionPort, createSellerHttpHandler, endWireAttempt } from '../src/dacs/seller-http.mjs';
+import { createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { BUYER, JOB, JOB2, PIN, SELLER, T0, accountingFixture, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 
 // The ordinary completion port runs on the real reservation coordinator, purchase capacity, SQL store and wire journal: no route
@@ -265,4 +271,390 @@ test('a completion port needs the capacity built on its own store and a journal'
   assert.throws(() => createOrdinaryCompletionPort({ journal: undefined, store: w.store, capacity: w.capacity }), TypeError);
   assert.throws(() => createOrdinaryCompletionPort({ journal: w.f.journal, store: {}, capacity: w.capacity }), TypeError);
   assert.throws(() => createOrdinaryCompletionPort(), TypeError);
+});
+
+// ---- The routes: every effect route decides from the wire journal's answer and ends each attempt through the completion port ----
+// The wire bounds a discovery document's lifetime, so a test that lapses many attempts shortens the journal's lease.
+const SHORT_LEASE_MS = 1000;
+const CASES_PER_WORLD = 20;
+const lapse = (w, ms = w.leaseMs) => { w.state.time += ms; };
+const plainFailure = () => { throw new Error('TEST the agent failed after an unknown amount of work'); };
+// Leaves one attempt open: the agent's answer is computed, then the answer cannot be signed, so nothing is completed.
+const leaveOpen = async (w, send) => {
+  w.signing.failures = 2;
+  const answer = await send();
+  assert.equal(answer.status, 503);
+  assert.equal(answer.signed, false);
+};
+const recordOrder = (w, order) => {
+  const reconcile = w.agent.reconcileTransport;
+  w.agent.reconcileTransport = (input) => { order.push('reconcile'); return reconcile(input); };
+  for (const name of ['receiveProposal', 'commit', 'commitOnSignature', 'submitPayment', 'bundleRequest', 'countersign']) {
+    const route = w.agent[name];
+    w.agent[name] = (...args) => { order.push('route'); return route(...args); };
+  }
+};
+const accountingRows = (w) => {
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { return db.prepare('SELECT state, code FROM kit_reservations ORDER BY rowid').all(); } finally { db.close(); }
+};
+
+test('A16 a new proposal runs the agent once and completes its attempt with the exact answer text after the agent\'s durable write', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 'a16-new');
+  let filesAtWrite = null;
+  w.agent.onWork = () => { filesAtWrite = w.journalFiles().length; };
+  const first = await job.post();
+  assert.equal(first.status, 200);
+  assert.equal(filesAtWrite, 2, 'when the agent wrote, the journal held only the attempt and the nonce key');
+  assert.equal(w.journalFiles().length, 4, 'the end record and the outcome were published after it');
+  const again = await job.post();
+  assert.equal(again.text, first.text, 'a repeat gets the exact stored text');
+  assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('A13 a completed payments operation answers a later claim with another transaction with the stored outcome and runs no intake', async t => {
+  const w = await continuingWorld(t);
+  const first = await w.request(PATHS.payments);
+  assert.equal(first.status, 200);
+  const files = w.journalFiles().length;
+  const later = await w.post(PATHS.payments, { ...w.bodyFor(PATHS.payments), txHash: derive('another-transaction') }, { jobId: w.jobId, agreementHash: w.agreementHash });
+  assert.equal(later.text, first.text);
+  assert.equal(w.agent.calls.payments, 1);
+  assert.equal(w.journalFiles().length, files + 1, 'only the later request\'s nonce key was added: no new attempt');
+});
+
+for (const route of ['proposals', 'commitments', 'commitmentSignature', 'payments', 'bundleRequest', 'bundleCountersignature']) {
+  test(`A12 a recover attempt asks the agent to reconcile before any route effect, on ${PATHS[route]}`, async t => {
+    const w = route === 'proposals' ? await routeWorld(t) : await continuingWorld(t);
+    const job = route === 'proposals' ? await proposeJob(w, 'a12') : null;
+    const send = () => job ? job.post() : w.request(PATHS[route]);
+    const order = [];
+    recordOrder(w, order);
+    await leaveOpen(w, send);
+    assert.deepEqual(order, ['route']);
+    lapse(w);
+    const recovered = await send();
+    assert.equal(recovered.status, 200);
+    assert.deepEqual(order, ['route', 'reconcile'], 'the reconciliation ran, and no route effect ran again');
+  });
+}
+
+test('A12 a reconciliation answer maps to the attempt: present completes, no-effect ends null, retry stays open, anything else stays open and uncertain', async t => {
+  const reconciling = (disposition) => async ({ transport }) => {
+    transport.claim();
+    if (disposition !== 'unsettled') await transport.settle({ disposition, status: 200, value: { disposition: 'complete', contribution: { signed: true } }, settle: true });
+  };
+  for (const [disposition, status, nextAnswer] of [['present', 200, 200], ['no-effect', 200, 200], ['retry', 200, 'seller_effect_pending'], ['unsettled', 503, 'seller_effect_pending']]) {
+    const w = await routeWorld(t), job = await proposeJob(w, `a12-${disposition}`);
+    await leaveOpen(w, () => job.post());
+    lapse(w);
+    w.agent.reconcileTransport = reconciling(disposition);
+    const answered = await job.post();
+    assert.equal(answered.status, status, disposition);
+    const files = w.journalFiles().length;
+    const next = await job.post();
+    if (nextAnswer === 200) assert.equal(next.status, 200, `${disposition}: ${disposition === 'present' ? 'completed' : 'the null end lets the next request recover at once'}`);
+    else assert.equal(next.body.error, nextAnswer, `${disposition}: the attempt is still open`);
+    if (disposition === 'present') assert.equal(w.journalFiles().length, files + 1, 'a completed replay adds only its nonce key');
+  }
+});
+
+test('every no-effect code, one unlisted SellerAgentError and a plain Error × proposals, commitments and payments × retained work absent/present × before/after completion', async t => {
+  // The handler admits 120 requests a minute: each world serves a few dozen cases.
+  let w;
+  const failures = [...NO_EFFECT_ERRORS.map((code) => ({ code, listed: true, error: new SellerAgentError(code, 'TEST refusal', 409) })),
+    { code: 'TEST_UNLISTED', listed: false, error: new SellerAgentError('TEST_UNLISTED', 'TEST unlisted', 409) }, { code: 'plain', listed: false, error: new Error('TEST plain') }];
+  let index = 0;
+  for (const retained of [false, true]) for (const failure of failures) {
+    if (index % CASES_PER_WORLD === 0) w = await routeWorld(t, { leaseMs: SHORT_LEASE_MS });
+    w.agent.retains = retained;
+    const proposal = await proposeJob(w, `t04-${index++}`);
+    w.agent.answer = () => { throw failure.error; };
+    const reconciledBefore = w.agent.calls.reconciled;
+    const refused = await proposal.post();
+    assert.equal(refused.signed, true, failure.code);
+    if (failure.listed && !retained) {
+      assert.equal(refused.status, 409, `${failure.code}: a listed refusal before any work answers with its own status`);
+      assert.equal((await proposal.post()).status, 200, `${failure.code}: the null end let the next request recover at once`);
+      assert.equal(w.agent.calls.reconciled, reconciledBefore + 1);
+    } else {
+      assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 503, error: 'operation_uncertain' }, `${failure.code}: retained ${retained}`);
+      w.state.time += SHORT_LEASE_MS - 1;
+      assert.equal((await proposal.post()).body.error, 'seller_effect_pending', `${failure.code}: pending until the lease ends`);
+      w.state.time += 1;
+      assert.equal((await proposal.post()).status, 200, `${failure.code}: recovered at the lease's end`);
+    }
+  }
+  // A returned rejected proposal with no retained work ends null and answers 200 without a signature of the agent.
+  w = await routeWorld(t);
+  w.agent.retains = false;
+  const rejected = await proposeJob(w, 't04-rejected');
+  w.agent.answer = () => ({ disposition: 'rejected', reason: 'TEST' });
+  const answered = await rejected.post();
+  assert.deepEqual({ status: answered.status, disposition: answered.body.disposition, signed: answered.signed }, { status: 200, disposition: 'rejected', signed: true });
+  assert.equal((await rejected.post()).status, 200, 'the null end: the next request recovers at once');
+});
+
+test('every no-effect code and a plain Error on commitments and payments keep the proposal rule: a listed refusal ends null, anything else stays open', async t => {
+  for (const [code, error, answer] of [['peer_job_capacity', new SellerAgentError('peer_job_capacity', 'TEST', 503), 'peer_job_capacity'], ['plain', new Error('TEST plain'), 'operation_uncertain']]) {
+    const w = await continuingWorld(t);
+    w.agent.answer = () => { throw error; };
+    const answered = await w.post(PATHS.commitments, { jobId: w.jobId }, { jobId: w.jobId, agreementHash: w.agreementHash });
+    assert.deepEqual({ status: answered.status, error: answered.body.error }, { status: 503, error: answer }, code);
+  }
+  for (const [retained, listed] of [[false, true], [true, true], [false, false]]) {
+    const payments = await continuingWorld(t);
+    payments.agent.retains = retained;
+    const failure = listed ? new SellerAgentError('rail_unavailable', 'TEST', 503) : new Error('TEST plain');
+    payments.agent.submitPayment = async () => { throw failure; };
+    const answered = await payments.request(PATHS.payments);
+    assert.equal(answered.body.error, listed ? 'rail_unavailable' : 'operation_uncertain', `payments retained ${retained} listed ${listed}`);
+    payments.state.time += listed && !retained ? 0 : payments.leaseMs - 1;
+    const next = await payments.request(PATHS.payments);
+    assert.equal(next.body.error === 'seller_effect_pending', !(listed && !retained), 'a null end recovers at once; an open attempt is pending');
+  }
+});
+
+test('an agent result the wire refuses as an outcome is not completed and answers signed 503 operation_uncertain; later recovery remains possible', async t => {
+  const twoByte = { pad: 'é'.repeat(262144) };
+  assert.ok(JSON.stringify(twoByte).length < 524288 && Buffer.byteLength(JSON.stringify(twoByte)) > 524288);
+  for (const [label, answer] of [['an escaped lone surrogate', { text: '\ud800' }], ['text over 524,288 UTF-8 bytes', twoByte]]) {
+    const w = await routeWorld(t), job = await proposeJob(w, 't06');
+    w.agent.answer = () => answer;
+    const refused = await job.post();
+    assert.deepEqual({ status: refused.status, error: refused.body.error, signed: refused.signed }, { status: 503, error: 'operation_uncertain', signed: true }, label);
+    assert.equal(w.journalFiles().length, 2, `${label}: no end record and no outcome`);
+    lapse(w);
+    assert.equal((await job.post()).status, 200, `${label}: the next request recovers`);
+  }
+});
+
+test('a valid answer containing non-NFC text completes and is replayed with byte-identical stored text', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 't21');
+  const answer = { text: 'é' };
+  w.agent.answer = () => answer;
+  const first = await job.post(), again = await job.post();
+  assert.equal(first.status, 200);
+  assert.ok(Buffer.from(first.text).equals(Buffer.from(JSON.stringify(answer))), 'the sent bytes are the exact answer');
+  assert.ok(Buffer.from(again.text).equals(Buffer.from(first.text)), 'the replay sends the same bytes');
+  await w.verified(again);
+});
+
+test('a completion the journal refuses as superseded answers signed 503 operation_uncertain, never the computed answer', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 't07');
+  let release;
+  w.agent.answer = () => new Promise((resolve) => { release = resolve; });
+  const slow = job.post();
+  for (let turn = 0; turn < 100 && release === undefined; turn++) await new Promise(setImmediate);
+  lapse(w);
+  w.agent.answer = undefined;
+  const successor = await job.post();
+  assert.equal(successor.status, 200, 'the successor recovers and completes');
+  release({ disposition: 'complete', contribution: { signed: 'computed by the worker that lost its lease' } });
+  const lost = await slow;
+  assert.deepEqual({ status: lost.status, error: lost.body.error }, { status: 503, error: 'operation_uncertain' });
+  assert.ok(!lost.text.includes('lost its lease'));
+  assert.equal((await job.post()).text, successor.text, 'the successor\'s outcome stands');
+});
+
+test('A14 a request whose host-retained binding changed is peer_operation_mismatch 409 while open, after completion and after a restart; the agent is not called', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 't10');
+  const other = await proposalFor(job.jobId, NOW + 1000);
+  const mismatched = () => w.post(PATHS.proposals, other.body, { jobId: job.jobId, agreementHash: other.agreementHash });
+  await leaveOpen(w, () => job.post());
+  const original = w.agent.transportAgreementOf;
+  w.agent.transportAgreementOf = () => structuredClone(other.body.proposal.plan.draft);
+  const calls = w.agent.calls.proposals;
+  for (const [label, before] of [['while open', () => {}], ['after completion', () => { w.agent.transportAgreementOf = original; lapse(w); }], ['after a restart', () => { w.reopen(); }]]) {
+    if (label === 'after completion') { await job.post(); }
+    before();
+    if (label !== 'while open') w.agent.transportAgreementOf = () => structuredClone(other.body.proposal.plan.draft);
+    const files = w.journalFiles().length;
+    const refused = await mismatched();
+    assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 409, error: 'peer_operation_mismatch' }, label);
+    assert.equal(w.journalFiles().length, files + 1, `${label}: the refused request still published its nonce key`);
+    assert.equal(w.agent.calls.proposals, calls, `${label}: the agent was not called`);
+  }
+});
+
+test('A15 sixteen lapsed attempts then seller_effect_unresolved 500 on every later request, recorded in the accounting row, with no automatic reset; the state route still answers', async t => {
+  const w = await routeWorld(t, { leaseMs: SHORT_LEASE_MS }), job = await proposeJob(w, 't11');
+  w.agent.answer = plainFailure;
+  w.agent.reconcileTransport = async () => {};
+  for (let attempt = 0; attempt < 16; attempt++) {
+    assert.equal((await job.post()).status, 503, `attempt ${attempt}`);
+    lapse(w);
+  }
+  for (const request of [17, 18]) {
+    const refused = await job.post();
+    assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 500, error: 'seller_effect_unresolved' }, `request ${request}`);
+  }
+  assert.deepEqual(accountingRows(w).at(-1), { state: 'refused', code: 'seller_effect_unresolved' });
+  const state = await w.post(PATHS.state, identityBody(job.jobId, job.agreementHash), { jobId: job.jobId, agreementHash: job.agreementHash });
+  assert.equal(state.status, 200);
+});
+
+test('the same signed request again is peer_request_replayed 409 and runs nothing', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 't12');
+  const signed = await w.buyerWire.signRequest(PATHS.proposals, job.body, { jobId: job.jobId, agreementHash: job.agreementHash });
+  assert.equal((await w.send(PATHS.proposals, signed)).status, 200);
+  const replayed = await w.send(PATHS.proposals, signed);
+  assert.deepEqual({ status: replayed.status, error: replayed.body.error }, { status: 409, error: 'peer_request_replayed' });
+  assert.equal(w.effects(), 1);
+});
+
+test('a request inside a live lease answers signed 503 seller_effect_pending and calls no agent', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 't13');
+  await leaveOpen(w, () => job.post());
+  const calls = w.effects();
+  const pending = await job.post();
+  assert.deepEqual({ status: pending.status, error: pending.body.error, signed: pending.signed }, { status: 503, error: 'seller_effect_pending', signed: true });
+  assert.equal(w.effects(), calls);
+});
+
+test('two requests for one operation: one runs, the other gets seller_effect_pending; one agent call', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 't15');
+  let release;
+  w.agent.answer = () => new Promise((resolve) => { release = resolve; });
+  const running = job.post();
+  for (let turn = 0; turn < 100 && release === undefined; turn++) await new Promise(setImmediate);
+  assert.equal((await job.post()).body.error, 'seller_effect_pending');
+  release({ disposition: 'complete', contribution: { signed: true } });
+  assert.equal((await running).status, 200);
+  assert.equal(w.agent.calls.proposals, 1);
+});
+
+test('no non-context effect route reads or writes the old transport tables', async t => {
+  const w = await continuingWorld(t);
+  const old = () => {
+    const db = new DatabaseSync(w.storePath, { readonly: true });
+    try { return Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'peer_%'").all().map(({ name }) => [name, db.prepare(`SELECT count(*) AS n FROM ${name}`).get().n])); } finally { db.close(); }
+  };
+  const before = old();
+  assert.ok(Object.keys(before).length >= 4);
+  for (const path of [PATHS.commitments, PATHS.payments, PATHS.state]) assert.equal((await w.request(path)).status, 200, path);
+  await leaveOpen(w, () => w.request(PATHS.bundleRequest));
+  lapse(w);
+  assert.equal((await w.request(PATHS.bundleRequest)).status, 200, 'one recovery');
+  assert.deepEqual(old(), before);
+});
+
+test('the state and buyer-copy routes reserve nothing and touch no journal', async t => {
+  const w = await continuingWorld(t);
+  const files = w.journalFiles(), reservations = accountingRows(w).length;
+  for (const path of [PATHS.state, PATHS.bundleBuyerCopy]) assert.equal((await w.request(path)).status, 200, path);
+  assert.deepEqual(w.journalFiles(), files);
+  assert.equal(accountingRows(w).length, reservations);
+  const unknown = await w.post(PATHS.state, identityBody(jobFor('t19-unknown'), derive('t19')), { jobId: jobFor('t19-unknown'), agreementHash: derive('t19') });
+  assert.equal(unknown.status, 404, 'a job the host holds nothing for is not answered');
+  assert.equal(w.agent.agreementState(identityBody(jobFor('t19-unknown'), derive('t19')).transportIdentity).proposal, null);
+});
+
+test('an agent without callable retainsPaymentClaim or assertSettlementCredit is refused at construction', async t => {
+  const w = await routeWorld(t);
+  const { wire } = w.handle, authentication = createSellerTransportServerAuth({ sellerSigner: { claim: WORLD_SELLER.claim, sign: WORLD_SELLER.sign }, listingPin: WORLD_PIN, store: w.handle.store, now: w.clock });
+  for (const name of ['retainsPaymentClaim', 'assertSettlementCredit']) for (const value of [undefined, 'not a function', {}]) {
+    const agent = { ...w.agent, [name]: value };
+    assert.throws(() => createSellerHttpHandler(agent, { authentication, wire }), TypeError, `${name} ${typeof value}`);
+  }
+  assert.equal(typeof createSellerHttpHandler(w.agent, { authentication, wire }), 'function', 'the complete agent constructs');
+  assert.equal(w.journalFiles().length, 0);
+});
+
+test('settlement-credit hook {throws, rejects asynchronously, suspended, passes after await} × signed-200 route × {new, recover, completed replay, state read}', async t => {
+  const w = await routeWorld(t, { leaseMs: SHORT_LEASE_MS });
+  const hooks = { throws: () => { throw new Error('TEST credit lost'); }, rejects: () => Promise.reject(new Error('TEST credit rejected')),
+    suspended: () => new Promise(() => {}), 'passes after await': async () => { await Promise.resolve(); } };
+  for (const [name, hook] of Object.entries(hooks)) for (const phase of ['new', 'recover', 'completed replay', 'state read']) {
+    const job = await proposeJob(w, `t18-${name}-${phase}`.replaceAll(' ', '-'));
+    if (phase === 'recover') { await leaveOpen(w, () => job.post()); lapse(w); }
+    if (phase === 'completed replay' || phase === 'state read') assert.equal((await job.post()).status, 200);
+    let credited = 0;
+    w.agent.credit = () => { credited++; return hook(); };
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const files = w.journalFiles().length;
+    const request = phase === 'state read' ? w.post(PATHS.state, identityBody(job.jobId, job.agreementHash), { jobId: job.jobId, agreementHash: job.agreementHash }) : job.post();
+    if (name === 'suspended') {
+      for (let turn = 0; turn < 100 && credited === 0; turn++) await new Promise(setImmediate);
+      t.mock.timers.tick(10000);
+    }
+    const answered = await request;
+    t.mock.timers.reset();
+    w.agent.credit = () => {};
+    const label = `${name} on ${phase}`;
+    assert.equal(credited, 1, `${label}: the hook ran exactly once`);
+    if (name === 'passes after await') assert.equal(answered.status, 200, label);
+    else {
+      assert.deepEqual({ status: answered.status, error: answered.body.error, signed: answered.signed }, { status: 503, error: 'operation_uncertain', signed: true }, label);
+      assert.ok(!answered.text.includes('contribution'), `${label}: no success text left`);
+    }
+    if (phase === 'completed replay' && name !== 'passes after await') assert.equal(w.journalFiles().length, files + 1, 'the stored outcome is unchanged: only the nonce key was added');
+  }
+});
+
+test('NEW-C1-awaited-settlement', async t => {
+  const w = await routeWorld(t), job = await proposeJob(w, 'awaited-settlement');
+  const order = [], unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  w.agent.receiveProposal = async (body, { transport }) => {
+    const outcome = transportOutcome(transport.path, { answer: { disposition: 'complete', contribution: { signed: true } } }, { retained: false });
+    order.push('settle starts');
+    try { await transport.settle(outcome); } catch (error) { order.push('settle rejected'); throw error; }
+    order.push('settle done');
+    return outcome.value;
+  };
+  w.agent.credit = async () => { await Promise.resolve(); throw new Error('TEST credit rejected after an await'); };
+  const refused = await job.post();
+  order.push('answered');
+  assert.deepEqual(order, ['settle starts', 'settle rejected', 'answered'], 'the rejection was awaited before the response');
+  assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 503, error: 'operation_uncertain' });
+  assert.equal(w.journalFiles().length, 2, 'nothing was completed');
+  w.agent.credit = () => {};
+  lapse(w);
+  order.length = 0;
+  assert.equal((await job.post()).status, 200, 'the recovery completes once the credit holds');
+  await new Promise(setImmediate);
+  assert.deepEqual(unhandled, []);
+});
+
+test('NEW-C1-route-slot-return: a completed proposal and commitment return only their own slot; an open attempt returns none', async t => {
+  const w = await routeWorld(t), { store, capacity } = w.handle, internals = sellerStoreInternals(store);
+  w.handle.wire.retainedFor = (input) => {
+    const records = retainedFor(w.agent, input);
+    if (records !== null && [PATHS.proposals, PATHS.commitments].includes(input.path)) records.retained.allocated = true;
+    return records;
+  };
+  const figures = () => { const { used, allotted, free } = capacity.capacityReport(); return { used, allotted, free }; };
+  const slots = (jobId) => capacity.capacityReport().allocations.find((allocation) => allocation.jobId === jobId).slots;
+  const job = await proposeJob(w, 'slot-return'), open = await proposeJob(w, 'slot-open');
+  for (const { jobId } of [job, open]) internals.transaction(() => capacity.allocateWithin({ jobId, buyer: WORLD_BUYER.claim, seller: WORLD_SELLER.claim, listingPin: WORLD_PIN }));
+  const delta = (before, after) => ({ used: after.used - before.used, allotted: before.allotted - after.allotted, free: after.free - before.free });
+  const beforeOpen = figures();
+  await leaveOpen(w, () => open.post());
+  const afterOpen = figures();
+  assert.deepEqual(delta(beforeOpen, afterOpen), { used: 1, allotted: 1, free: 0 }, 'an open attempt spent its unit and returned nothing');
+  assert.equal((await job.post()).status, 200);
+  assert.deepEqual(delta(afterOpen, figures()), { used: 1, allotted: 17, free: 16 }, 'the proposal spent one unit and returned the other 16 of its own slot');
+  const beforeCommit = figures(), proposalSlot = slots(job.jobId)[PATHS.proposals];
+  assert.equal((await w.post(PATHS.commitments, { jobId: job.jobId }, { jobId: job.jobId, agreementHash: job.agreementHash })).status, 200);
+  assert.deepEqual(delta(beforeCommit, figures()), { used: 1, allotted: 17, free: 16 }, 'the commitment spent one unit and returned the other 16 of its own slot');
+  assert.deepEqual(slots(job.jobId)[PATHS.proposals], proposalSlot, 'the proposal slot did not move');
+  const beforeReplay = figures();
+  assert.equal((await job.post()).status, 200);
+  assert.deepEqual(delta(beforeReplay, figures()), { used: 1, allotted: 0, free: -1 }, 'a completed replay is charged one general unit and returns no slot');
+  lapse(w);
+  const beforeRecover = figures();
+  assert.equal((await open.post()).status, 200);
+  assert.deepEqual(delta(beforeRecover, figures()), { used: 1, allotted: 16, free: 15 }, 'the recovery spent one more unit of the slot and returned the 15 left, once');
+});
+
+test('with the guard off, a directly composed handler answers kit_operation_guard_off on every effect route with no journal file and no accounting row', async () => {
+  const handlerUrl = new URL('../src/dacs/seller-http.mjs', import.meta.url).href;
+  const options = (process.env.NODE_OPTIONS ?? '').split(' ').filter((option) => !option.includes('kit-guard-fixture'));
+  const probe = `import { createSellerHttpHandler } from ${JSON.stringify(handlerUrl)};
+    try { createSellerHttpHandler({}); console.log('constructed'); } catch (error) { console.log(error.code); }`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { env: { ...process.env, NODE_OPTIONS: options.join(' ') }, encoding: 'utf8' });
+  assert.equal(child.stdout.trim(), 'kit_operation_guard_off', child.stderr);
 });

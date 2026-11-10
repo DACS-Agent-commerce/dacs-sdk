@@ -13,7 +13,7 @@ import http from 'node:http';
 import { Readable } from 'node:stream';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { existsSync, mkdtempSync, realpathSync, rmSync,readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync,readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
@@ -170,14 +170,16 @@ function demosNode() {
     if (land) rebroadcast(hash);
     return clone(signed);
   };
-  const reader = createDemosSr2Adapter({ rpcUrl: RPC, journal: createInMemoryDemosSr2Journal(), fetchImpl, now:()=>faults.observedAt??Date.now() });
+  // The node observes at real time plus what the seller's clock was advanced by (a lease waited out), so observations stay current.
+  let advancedObservationMs = 0;
+  const reader = createDemosSr2Adapter({ rpcUrl: RPC, journal: createInMemoryDemosSr2Journal(), fetchImpl, now:()=>faults.observedAt??Date.now() + advancedObservationMs });
   // A transfer's block and inclusion time (ms), as the pay-dem observer reads them.
   const inclusion = (hash) => { const { blockNumber } = txs.get(hash); return { blockNumber, includedAt: blocks[blockNumber].content.timestamp * 1000 }; };
   // The wallet's chain reads: its account nonce, and whether a transaction was
   // applied (this node keeps no mempool, so anything else is absent).
   const accountNonce = (owner) => accountNonces.get(owner) ?? 0;
   const transactionState = (hash) => (txs.has(String(hash).toLowerCase()) ? 'applied' : 'absent');
-  return { fetchImpl, pay, create, rebroadcast, reader, creates, programs, faults, searches, inclusion, accountNonce, transactionState, blockHeight: () => blocks.length - 1, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000 };
+  return { fetchImpl, pay, create, rebroadcast, reader, creates, programs, faults, searches, inclusion, accountNonce, transactionState, blockHeight: () => blocks.length - 1, latestBlockMs: () => blocks.at(-1).content.timestamp * 1000, advanceObservations: (milliseconds) => { advancedObservationMs += milliseconds; } };
 }
 
 // The application's Deliverable producer: a report bound to the job, its
@@ -206,24 +208,23 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast; 'refuse-broadcast' signs and keeps it and the node refuses it (see refusedCreates).
-async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, lostFinish = false, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
-  let startHost = seller.startSellerHost;
-  if (agentTransform) {
-    const agentUrl = await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform);
-    const host = await privateModule(new URL('../src/host.mjs', import.meta.url), [], source =>
-      source.replace("from './dacs/seller-agent.mjs'", `from '${agentUrl}'`));
-    startHost = host.startSellerHost;
-  }
-  // Armed by the 'work-before-completion' cut: the next transport finish throws, as a process lost before it.
-  let finishCutArmed = false;
-  const finishHook = () => { if (finishCutArmed) throw new Error('TEST process lost before HTTP finish'); };
-  if (lostFinish) {
-    const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), ['setFinishHook'], source =>
-      source.replace('const REQUIRED =', 'let finishHook; function setFinishHook(value) { finishHook = value; }\nconst REQUIRED =')
-        .replace('const authentication = createSellerTransportServerAuth(', 'const finish = store.finish.bind(store); store.finish = (...args) => { finishHook(); return finish(...args); };\nconst authentication = createSellerTransportServerAuth('));
-    hostModule.setFinishHook(finishHook);
-    startHost = hostModule.startSellerHost;
-  }
+async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
+  // Armed by the 'reservation-before-work' cut: the next payment claim is reserved and then lost before any work, as by a process that
+  // died there. The 'work-before-completion' cut loses the response of the claim whose work is done, so nothing completes it.
+  let lostBeforeWork = false, lostBeforeCompletion = false;
+  const beforeWork = (work) => (...args) => {
+    if (lostBeforeWork) throw new Error('TEST process lost before the work');
+    return work(...args);
+  };
+  const cutAgent = (agent) => ({ ...agent, submitPayment: beforeWork(agent.submitPayment), reconcileTransport: beforeWork(agent.reconcileTransport) });
+  const agentUrl = agentTransform ? await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform) : null;
+  const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), ['setCutAgent'], source => {
+    const cut = source.replace('const REQUIRED =', 'let cutAgent = (agent) => agent; function setCutAgent(value) { cutAgent = value; }\nconst REQUIRED =')
+      .replace('createSellerHttpHandler(agent, { authentication, wire })', 'createSellerHttpHandler(cutAgent(agent), { authentication, wire })');
+    return agentUrl === null ? cut : cut.replace("from './dacs/seller-agent.mjs'", `from '${agentUrl}'`);
+  });
+  hostModule.setCutAgent(cutAgent);
+  const startHost = hostModule.startSellerHost;
   const sellerKey = key(17), buyerKey = key(12), now = NOW, steward = railSteward(), node = demosNode();
   // The host's and the buyer client's clock: wall time, never behind the
   // node's latest block (the node stamps its blocks at least 2 s apart, so
@@ -231,7 +232,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // stands in for the monotonic clock (this base has none) by the same amount.
   let advancedMs = 0;
   const clock = () => Math.max(NOW, node.latestBlockMs()) + advancedMs;
-  const advance = (milliseconds) => { advancedMs += milliseconds; };
+  const advance = (milliseconds) => { advancedMs += milliseconds; node.advanceObservations(milliseconds); };
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey,now:clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
@@ -263,6 +264,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const faults = { deliveryResendable: false, beforeDeliveryResendCheck: null, deliverySubmit: [], deliverySignCreate: [], deliveryBroadcast: [], deliveryRead: [], deliveryReconcile: [], signCreate: [], broadcast: [], readAccountNonce: [], sign: [], beforeDeliveryReconcile: async () => {}, agreementRead: [], artifactPublish: [], artifactRead: [], verifyReceipt: null, readRetainedThrowKind: null, readRetainedEvidenceHang: null, artifactApproval: null, evidenceReadAbsence: null, evidencePending: false };
   const evidenceBytes = (bytes) => Buffer.from(bytes).toString('utf8').startsWith(core.ARTIFACT_SEPARATORS.SettlementEvidence);
   const sellerSigner = { claim: sellerKey.claim, sign: (bytes) => {
+    if (lostBeforeCompletion && Buffer.from(bytes).toString('utf8').startsWith(DACS_SELLER_HTTP_DOMAINS.response)) throw new Error('TEST process lost before the response');
     effects.componentSigns.push(Buffer.from(bytes).toString('utf8'));
     if (faults.sign[0] === 'throw-evidence' && evidenceBytes(bytes)) { faults.sign.shift(); throw new Error('TEST the seller signer failed'); }
     return sellerKey.sign(bytes);
@@ -632,7 +634,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
     return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
-      claim: async (txHash) => { try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
+      // A claim sent while an earlier attempt of the same payment is open first waits out that attempt's lease.
+      claim: async (txHash) => { retrySeam.beforeRetry(); try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
         catch (error) { return { error: error.code, status: error.status, causeCode:error.causeCode }; } } };
   };
   const restart = async () => { await host.close(); hosts.splice(hosts.indexOf(host), 1); host = await start(); };
@@ -645,38 +648,38 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   };
   const PAYMENTS_PATH = '/dacs/v1/payments';
   const claimBody = (p, txHash) => ({ jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
-  const agreementHashes = new Map();
-  // The journal-specific setup of each cut, behind the seam. At this base the
-  // journal is the legacy transport store: 'reservation-before-work' reserves
-  // the claim through the store's own reserve (a fresh nonce for the same effect)
-  // and never finishes it, with the host stopped; 'work-before-completion' arms
-  // the finish hook on the running host. Both keep the cut's exact claim bytes.
-  const establishCut = async ({ point, jobId, path, rawBody }) => {
-    if (point === 'work-before-completion') { finishCutArmed = true; return; }
-    const text = Buffer.from(rawBody).toString(), body = JSON.parse(text);
-    const signed = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim,
-      resolveJob: () => ({ listingPin: pin, agreementHash: agreementHashes.get(jobId) }), now: clock }).request(path, body, text);
-    const store = seller.createSellerTransportStore({ path: join(dataDirectory, 'transport', 'transport.sqlite'), now: clock });
-    try {
-      const request = seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store, now: clock }).readRequest(signed.header);
-      assert.equal(store.reserve(request, body, { keepProfile: FIXTURE_PROFILE }).disposition, 'perform', 'the claim is reserved, as a running request is');
-    } finally { store.close(); }
+  // The journal-specific setup of each cut, behind the seam. 'reservation-before-work' sends the claim to the running host, which
+  // reserves its attempt in the wire journal and is then lost before any work: the attempt stays open. 'work-before-completion'
+  // lets the work finish and loses the response, so nothing completes the attempt until the cut ends.
+  const establishCut = async ({ point }) => {
+    if (point === 'work-before-completion') { lostBeforeCompletion = true; return; }
+    lostBeforeWork = true;
   };
-  // This base issues no wire lease, so the seam is in legacy mode and beforeRetry changes nothing.
-  const retrySeam = createNativeRetrySeam({ wallNow: clock, monotonicNow: () => advancedMs, advance, leaseUntil: () => null, mode: 'legacy', establishCut });
-  const cutClaim = (point, p, txHash) => {
-    agreementHashes.set(p.jobId, p.agreementHash);
-    return retrySeam.establishCut({ point, jobId: p.jobId, path: PAYMENTS_PATH, rawBody: Buffer.from(JSON.stringify(claimBody(p, txHash))) });
+  // The end of the latest lease of an attempt no end record closed, read from the wire journal's own attempt files; null when none is open.
+  const openLeaseUntil = () => {
+    const directory = join(dataDirectory, 'wire-journal');
+    if (!existsSync(directory)) return null;
+    const names = readdirSync(directory);
+    const leases = names.filter((name) => /^o-[0-9a-f]+-\d+$/.test(name) && !names.includes(`${name}.end`)).map((name) => JSON.parse(readFileSync(join(directory, name), 'utf8')).leaseUntil);
+    return leases.length === 0 ? null : Math.max(...leases);
   };
-  // A host process that died in the middle of a buyer's payment claim: the
-  // 'reservation-before-work' cut with the host stopped, then the host starts again.
+  // A claim's retry waits out the open attempt's lease: the wire answers it as pending until then.
+  const retrySeam = createNativeRetrySeam({ wallNow: clock, monotonicNow: () => advancedMs, advance, leaseUntil: openLeaseUntil, mode: 'wire', establishCut });
+  const cutClaim = async (point, p, txHash) => {
+    await retrySeam.establishCut({ point, jobId: p.jobId, path: PAYMENTS_PATH, rawBody: Buffer.from(JSON.stringify(claimBody(p, txHash))) });
+    if (point === 'reservation-before-work') {
+      const lost = await p.claim(txHash);
+      assert.ok(lost.error, `the claim is reserved and lost before its work: ${JSON.stringify(lost)}`);
+      lostBeforeWork = false;
+    }
+  };
+  // A host process that died in the middle of a buyer's payment claim: the 'reservation-before-work' cut, then the host starts again.
   const crashMidClaim = async (p, txHash) => {
-    await host.close(); hosts.splice(hosts.indexOf(host), 1);
     await cutClaim('reservation-before-work', p, txHash);
-    host = await start();
+    await restart();
   };
-  // Ends the 'work-before-completion' cut: the next finish goes through.
-  const endFinishCut = () => { finishCutArmed = false; };
+  // Ends the 'work-before-completion' cut: the next response is signed.
+  const endFinishCut = () => { lostBeforeCompletion = false; };
   // startSellerHost over these capabilities with `changes` (for refusals).
   const startShipped = (changes) => seller.startSellerHost({ ...capabilities(), dataDirectory, artifactAnchor, ...changes });
   // The host stopped and its agent composed over the same state (the caller closes it).
@@ -3427,7 +3430,7 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
 
 test('wire-payment-retained-work-before-finish', async (t) => {
   for (const checkpoint of ['claim', 'evidence-create', 'delivery-checkpoint']) {
-    const w = await world(t, { lostFinish: true });
+    const w = await world(t);
     const p = await w.purchase(), tx = p.pay(), address = paymentAddress(p);
     if (checkpoint === 'claim') w.faults.signCreate.push('throw');
     if (checkpoint === 'evidence-create') w.faults.broadcast.push('drop');

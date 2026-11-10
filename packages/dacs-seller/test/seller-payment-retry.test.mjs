@@ -17,12 +17,14 @@ import { Readable } from 'node:stream';
 import * as core from '@kynesyslabs/dacs';
 import * as transport from '../src/index.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
+import { transportOutcome } from '../src/dacs/seller-agent.mjs';
 const seller={...transport,...listingApi,agreementInput,listingPin,createSellerTransportStore};
 import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 
 let walletSequence=60;
 function key() { const w=testWallet(walletSequence++);return {...w,sign:w.signBytes,signWallet:message=>'0x'+w.signBytes(Buffer.from(message)).toString('hex')}; }
 const DELIVERED = { status: 'payment-evidenced', delivery: { status: 'delivered' } };
+const LEASE_MS = 1000;
 
 async function world(t, answers, { proposalAnswers = [{ disposition: 'complete', contribution: null }] } = {}) {
   const retained = await wireContinuationFixture(t);
@@ -34,15 +36,25 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   const material = { proposalVersion: '1', plan, buyerContribution }, proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
   const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-payment-retry-')));
-  const store = withFixtureProfile(seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:()=>NOW }));
+  let time = NOW;
+  const clock = () => time;
+  const store = withFixtureProfile(seller.createSellerTransportStore({ path: join(dir, 'peer.sqlite'),now:clock }));
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   const calls = [];
   let proposalCalls = 0;
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => structuredClone(proposalAnswers[Math.min(proposalCalls++, proposalAnswers.length - 1)]),
-    retainsPaymentClaim:()=>false,
-    submitPayment: async (body) => { calls.push(body.txHash); return structuredClone(answers[Math.min(calls.length - 1, answers.length - 1)]); } };
-  const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: () => NOW });
+    retainsPaymentClaim:()=>false, assertSettlementCredit: () => {},
+    submitPayment: async (body) => { calls.push(body.txHash); return structuredClone(answers[Math.min(calls.length - 1, answers.length - 1)]); },
+    // An explicit reconciliation-capable double: it runs the command again and classifies the answer as a first run does.
+    reconcileTransport: async ({ body, transport }) => {
+      transport.claim();
+      const answer = await (transport.path === '/dacs/v1/payments' ? facade.submitPayment(body) : facade.receiveProposal(body));
+      const outcome = transportOutcome(transport.path, { answer }, { retained: false });
+      await transport.settle(outcome);
+      return outcome;
+    } };
+  const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing, buyer: buyerKey, seller: sellerKey, store, now: clock, leaseMs: LEASE_MS });
   const handle = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({ sellerSigner: { claim: sellerKey.claim, sign: sellerKey.sign }, listingPin: pin, store,now:()=>NOW }) });
   const fetchImpl = async (url, init) => {
     const req = Readable.from([Buffer.from(init.body)]);
@@ -57,35 +69,58 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
   await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
   const claim = { jobId, txHash: 'a1'.repeat(32), payerPayingKey: buyerKey.claim, nativePaymentEvidence: 'sdk-pay-dem-intake-native-evidence/loopback-v1' };
   const pay = async (body = claim) => { try { return await client.submitPayment(body); } catch (error) { return { error: error.code, status: error.status }; } };
-  return { calls, claim, pay, proposalCalls: () => proposalCalls,
+  // The open attempt's lease ends: the next request recovers it.
+  const lapse = () => { time += LEASE_MS; };
+  return { calls, claim, pay, lapse, proposalCalls: () => proposalCalls,
     propose: () => client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) };
 }
 
-test('an indeterminate answer before the evidence checkpoint keeps nothing: the same claim reaches intake again and the delivery is then final', async (t) => {
+const PENDING = { error: 'seller_unavailable', status: undefined };
+
+test('a payment answered indeterminate before the evidence checkpoint ends null, and the next request is recover; with a reconciliation-capable agent double the same claim and a corrected claim reach intake again', async (t) => {
   const w = await world(t, [{ status: 'indeterminate', reason: 'demos-pending' }, DELIVERED]);
   assert.deepEqual(await w.pay(), { status: 'indeterminate', reason: 'demos-pending' });
-  assert.deepEqual(await w.pay(), DELIVERED, 'the transfer, now included, reaches payment intake');
-  assert.deepEqual(await w.pay(), DELIVERED, 'the delivered answer is freshly authenticated');
-  assert.equal(w.calls.length, 3);
-  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), { error: 'peer_operation_conflict', status: 409 }, 'a delivered job takes no other claim');
+  assert.deepEqual(await w.pay(), DELIVERED, 'the null end let the next request recover at once: the transfer, now included, reaches payment intake');
+  assert.deepEqual(await w.pay(), DELIVERED, 'the stored answer is signed again');
+  assert.equal(w.calls.length, 2, 'a completed operation runs no intake');
+  const corrected = await world(t, [{ status: 'indeterminate', reason: 'demos-not-found' }, DELIVERED]);
+  await corrected.pay({ ...corrected.claim, txHash: 'b2'.repeat(32) });
+  assert.deepEqual(await corrected.pay(), DELIVERED, 'nothing was bound to the first body');
+  assert.deepEqual(corrected.calls, ['b2'.repeat(32), corrected.claim.txHash]);
 });
 
-test('a corrected claim after an indeterminate answer is not a conflict: nothing was bound to the first body', async (t) => {
-  const w = await world(t, [{ status: 'indeterminate', reason: 'demos-not-found' }, DELIVERED]);
-  await w.pay({ ...w.claim, txHash: 'b2'.repeat(32) });
-  assert.deepEqual(await w.pay(), DELIVERED);
-  assert.deepEqual(w.calls, ['b2'.repeat(32), w.claim.txHash]);
-});
-
-test('a held answer after the evidence checkpoint runs the agent again on a fresh nonce; another body still conflicts', async (t) => {
+test('work the agent retains (proposal waiting, payment held, payment evidenced with delivery pending) leaves the attempt open: pending within the lease, recover after it', async (t) => {
   const held = { status: 'held', reason: 'native-payment-evidence-not-anchored', readback: 'absent' };
-  const w = await world(t, [held, held, DELIVERED]);
-  assert.deepEqual(await w.pay(), held);
-  assert.deepEqual(await w.pay({ ...w.claim, txHash: `0x${w.claim.txHash}` }), { error: 'peer_operation_conflict', status: 409 }, 'the held effect stays bound to its body');
-  assert.deepEqual(await w.pay(), held, 'the readback is still absent');
-  assert.deepEqual(await w.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
-  assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 4, 'the conflicting body is refused; the completed claim authenticates again');
+  const heldPayment = await world(t, [held, held, DELIVERED]);
+  assert.deepEqual(await heldPayment.pay(), held);
+  assert.deepEqual(await heldPayment.pay(), PENDING, 'inside the lease the open attempt is pending');
+  heldPayment.lapse();
+  assert.deepEqual(await heldPayment.pay(), held, 'after the lease the agent reconciles: the readback is still absent');
+  heldPayment.lapse();
+  assert.deepEqual(await heldPayment.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
+  assert.deepEqual(await heldPayment.pay({ ...heldPayment.claim, txHash: `0x${heldPayment.claim.txHash}` }), DELIVERED, 'the completed operation answers another claim with its stored outcome');
+  assert.equal(heldPayment.calls.length, 3);
+  const pending = [
+    { status: 'payment-evidenced', delivery: { status: 'held', reason: 'delivery readback absent' } },
+    { status: 'payment-evidenced', delivery: 'held-missing-consumed-v2-fulfilment-and-Vet-audit' },
+    { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'held-readback-only' } },
+  ];
+  const evidenced = await world(t, [...pending, DELIVERED]);
+  for (const answer of pending) {
+    assert.deepEqual(await evidenced.pay(), answer);
+    evidenced.lapse();
+  }
+  assert.deepEqual(await evidenced.pay(), DELIVERED);
+  assert.deepEqual(await evidenced.pay(), DELIVERED);
+  assert.equal(evidenced.calls.length, 4);
+  const waiting = await world(t, [], { proposalAnswers: [{ disposition: 'waiting', stage: 'lease', reason: 'TEST another worker holds the lease' }, { disposition: 'complete', contribution: null }] });
+  assert.equal(waiting.proposalCalls(), 1);
+  assert.equal((await waiting.propose().catch((error) => error.code)), 'seller_unavailable', 'the waiting proposal is pending inside the lease');
+  waiting.lapse();
+  assert.equal((await waiting.propose()).disposition, 'complete');
+  assert.equal(waiting.proposalCalls(), 2);
+  assert.equal((await waiting.propose()).disposition, 'complete');
+  assert.equal(waiting.proposalCalls(), 2, 'only the completed proposal is stored');
 });
 
 // Only payment claims and durable proposals resume through reconciliation.
@@ -105,19 +140,6 @@ test('the transport store permits retained retries for payment claims and propos
       `${path} passes the guard and is checked against its retained effect`);
   }
   assert.throws(() => store.reconcile(reservation, { jobId, path: '/dacs/v1/agreements/proposals' }, 200, '{}', { noEffect: true }), error=>error.code==='peer_reconciliation_conflict');
-});
-
-test('evidenced payment with a delivery not done yet is retried until the delivery is final', async (t) => {
-  const pending = [
-    { status: 'payment-evidenced', delivery: { status: 'held', reason: 'delivery readback absent' } },
-    { status: 'payment-evidenced', delivery: 'held-missing-consumed-v2-fulfilment-and-Vet-audit' },
-    { status: 'payment-evidenced', delivery: { status: 'delivery-ready', evidencePublication: 'held-readback-only' } },
-  ];
-  const w = await world(t, [...pending, DELIVERED]);
-  for (const answer of pending) assert.deepEqual(await w.pay(), answer);
-  assert.deepEqual(await w.pay(), DELIVERED);
-  assert.deepEqual(await w.pay(), DELIVERED);
-  assert.equal(w.calls.length, 5);
 });
 
 // An expired session delegation on a wire effect route refuses before reading back
@@ -149,6 +171,7 @@ async function delegatedWorld(t, answers, publication = null) {
   const calls = [], reconciles = [];
   const facade = { claim: sellerKey.claim, listingPin: pin, transportAgreementOf: id => retained.agent().transportAgreementOf(id), continuationEvidenceOf: id => retained.agent().continuationEvidenceOf(id),
     receiveProposal: async () => ({ disposition: 'complete', contribution: null }),
+    retainsPaymentClaim: () => false, assertSettlementCredit: () => {},
     submitPayment: async (body) => {
       calls.push(body.txHash);
       const answer = answers[Math.min(calls.length - 1, answers.length - 1)];
@@ -233,13 +256,4 @@ for (const [label, answers, enabled] of [
   }
   assert.equal(w.calls.length, agentCalls, 'the claim never runs again under the expired delegation');
   assert.equal(publication.calls.length, publications, 'no delivery evidence CREATE is asked for after expiry');
-});
-
-test('a waiting proposal keeps its HTTP retry slot until the durable responder completes', async (t) => {
-  const w = await world(t, [], { proposalAnswers: [{ disposition: 'waiting', stage: 'lease', reason: 'TEST another worker holds the lease' }, { disposition: 'complete', contribution: null }] });
-  assert.equal(w.proposalCalls(), 1);
-  assert.equal((await w.propose()).disposition, 'complete');
-  assert.equal(w.proposalCalls(), 2);
-  assert.equal((await w.propose()).disposition, 'complete');
-  assert.equal(w.proposalCalls(), 2, 'only the completed proposal is cached');
 });

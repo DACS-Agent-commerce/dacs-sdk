@@ -296,8 +296,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   buyer-copy read) opens every request and signs every answer through the SDK's
   `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
   tuple kept for the job); a request signed under the old domain is refused. The
-  transport store stays their journal; the two read routes reserve and store
-  nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
+  wire request journal holds each effect route's operation (one per seller, job
+  and route); the two read routes reserve and store nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
   first), and a delegated request for one is refused
   `peer_delegation_agreement_required`. A payment, bundle or buyer-copy request
@@ -305,9 +305,16 @@ per-client limiter so one client cannot exhaust the shared request budget.
   Agreement, admitted by the wire anew for each request, under the host's own
   signed Listing and with the commitment's receipt read now by
   `readCommitmentReceipt` (10 s deadline; its failure is `commitment_unverified`).
-  Effects are journaled before they run, so a
-  restarted host answers a completed request again and reconciles uncertain
-  work through the agent's retained state. A commitment retry first reads back
+  Effects are journaled before they run. The same signed request again is
+  `peer_request_replayed`; a request for an operation with a live attempt is
+  `seller_effect_pending`; once that attempt's lease ends, the next request
+  recovers it and asks the agent to reconcile before anything else runs; a
+  completed operation is answered again with its stored answer; a request under
+  another retained Agreement is `peer_operation_mismatch`; and after 16 lapsed
+  attempts the operation answers `seller_effect_unresolved`, with no automatic
+  reset. An attempt ends only with a final answer or with proof that
+  nothing was done, so a restarted host answers a completed request again and
+  reconciles uncertain work through the agent's retained state. A commitment retry first reads back
   the original CREATE and publishes again only with proof that nothing was signed.
   Every read of a commitment or delivery evidence during such a readback has the
   10 s and 64 KiB limits. For a commitment, a read past either is an
@@ -319,37 +326,31 @@ per-client limiter so one client cannot exhaust the shared request budget.
   admitted only by an expired delegation also signs nothing and saves no
   session or anchor state: it answers for a commitment the seller already retained and holds
   (`commitment_readback_required`) rather than adopting one.
-  Agreement state reads use isolated retained snapshots; cached payment and
-  delivery answers require current durable settlement credit (DACS-4 SB-2).
-  A payment answer that is not final is not cached as final:
+  Agreement state reads use isolated retained snapshots. Every signed 200
+  answer, replayed or new, is sent only after the agent's settlement-credit
+  check has passed (DACS-4 SB-2), awaited within 10 s; a check that fails or
+  does not finish answers `503 operation_uncertain` and sends no answer text.
+  A payment answer that is not final leaves its attempt open:
   an `indeterminate` answer before the evidence checkpoint (a transfer not yet
-  included, for example) keeps nothing, so the same claim reaches payment
-  intake again; after the checkpoint a `held` answer, or a delivery that is not
-  done yet, runs the agent's retained work again on the buyer's next request
-  (which reads back first), and a different claim for the job is still
-  refused (`peer_operation_conflict`). After the checkpoint the retained work
-  alone decides what a claim may send: a readback that fails on a retry (a
-  node or name-index outage) is a `held` answer with its cause
-  (`nativeReadCode`). A claim whose effect a thrown error or a crashed host
-  left uncertain runs again through reconciliation, from what the agent
-  retained: after the checkpoint its retained work runs again; before it
-  (a crash during the first claim) nothing was sent and every step is
-  replay-idempotent, so the same claim runs again from its start, under the
-  same gates. Either way the claim then goes back to the same retry, so a
-  paid order is not stranded by a failure the seller can retry; a first claim that ran again from its start
-  and kept nothing (a transfer not on the node, an underpaid one) is released
-  as on the ordinary path, so the buyer's corrected claim reaches payment
-  intake. Until a gate that refuses the claim (a closed buyer access, an
-  unusable rail) passes again, its claims answer `503 operation_uncertain` and
-  run again on the next one. Once the agent retains work for a claim, no
-  answer or refusal of it releases its slot: a different claim for the job is
-  refused until it is delivered. A transaction hash is read as core payment
-  intake reads it (lower case, with or without `0x`). Under a seller session
-  delegation that has expired, a held claim answers its last answer and an
-  uncertain one stays uncertain: neither runs again, since a run can sign and
-  send. A cached completed payment refresh also rechecks request and delegation
-  expiry inside the job fence and before authorizing a native CREATE; expiry
-  while waiting refuses the refresh without changing its cached claim.
+  included, for example) keeps nothing, so the attempt ends with null and the
+  next request recovers at once and runs payment intake again; after the
+  checkpoint a `held` answer, or a delivery that is not done yet, is answered
+  with its attempt left open, and the next request after the lease reads back
+  first. A retained claim stays open until it is delivered, and after the
+  checkpoint the retained work alone decides what a claim may send: a readback
+  that fails on a retry (a node or name-index outage) is a `held` answer with
+  its cause (`nativeReadCode`). A claim whose effect a thrown error or a
+  crashed host left uncertain is recovered through reconciliation, from what
+  the agent retained: after the checkpoint its retained work runs again;
+  before it nothing was sent and every step is replay-idempotent. Until a gate
+  that refuses the claim (a closed buyer access, an unusable rail) passes
+  again, its claims answer `503 operation_uncertain`. Once the agent retains
+  work for a claim, no answer or refusal of it ends its attempt with null. A
+  transaction hash is read as core payment intake reads it (lower case, with or
+  without `0x`). A completed payment is answered again with its stored
+  answer, whichever transaction a later claim names. An expired session
+  delegation refuses every effect route (`peer_delegation_expired`); readback
+  goes through the state route.
   The Deliverable is submitted again only on an absence that is
   authoritative (the agent never asked for it, or the delivery reader proved
   nothing was signed); a readback that misses or fails holds the delivery. A

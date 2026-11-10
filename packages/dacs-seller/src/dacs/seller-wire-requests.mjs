@@ -105,12 +105,12 @@ export function admitAnswerText(text) {
 
 /**
  * Open and admit one signed request on a wire route, in the wire's order: the envelope, the job's kept tuple, the exchange
- * and the retained parties and, on an effect route, the wire's recheck of current authority and expiry, which is the last
- * asynchronous step: the seller's own body checks that follow are synchronous, so the caller's reservation follows the recheck
- * at once. Nothing is reserved here and the wire journal is never written. Calls `onOpened(request)` as soon as the envelope
- * is verified, so a refusal after it can be signed.
- * Returns `{ body, readbackOnly, recheck }`: the admitted body, whether only an expired delegation authenticated the request, and
- * `recheck()`, which admits the same request again on a fresh clock for work that follows without a reservation (a cached refresh).
+ * and the retained parties. Nothing is reserved here and the wire journal is never written. Calls `onOpened(request)` as soon as
+ * the envelope is verified, so a refusal after it can be signed.
+ * Returns `{ body, readbackOnly, recheck, reserve, retainedWork }`: the admitted body, whether only an expired delegation authenticated
+ * the request, `recheck()`, which admits the same request again on a fresh clock for work that follows without a reservation (a
+ * cached refresh), `reserve`, the wire's journal reservation of an effect route (null on a read route), which re-checks current
+ * authority and expiry first, and `retainedWork`, whether the host retains a purchase stage of this route for the job.
  * Throws the wire's own refusal with its code, status and cause, `peer_unknown_job` 404 for a job the host holds nothing for
  * (only after the exchange checks pass), or the seller's body refusal.
  */
@@ -132,14 +132,13 @@ export async function admitWireRoute(wire, agent, { header, method, path, rawBod
   const check = () => ({ binding: wire.binding, local: wire.connection(), purchaseProfile: wire.store.purchaseProfile(request.jobId), seller: wire.signer.claim, listingPin: agent.listingPin,
     method, path, rawBody, now: wire.now(), requireDelegation: wire.requireDelegation, ready: wire.ready(), requestJournal: wire.journal, ...checkedAgainst,
     ...(CONTINUING_PATHS.includes(path) ? { ...wire.continuationFor({ path, request }), readCommitmentReceipt: boundedReceiptReader(wire.readCommitmentReceipt) } : {}) });
-  // Both calls leave the journal alone; `authorizeWireRequest` also runs the recheck an old-store reservation needs.
-  const admit = isReadRoute(path) || records === null ? checkWireRequest : authorizeWireRequest;
-  const checked = await admit(opened, check());
+  // Neither call writes the journal: only `checked.reserve()` does.
+  const checked = await checkWireRequest(opened, check());
   if (invalidDraft !== null) throw invalidDraft;
   if (records === null) throw new SellerTransportError('peer_unknown_job', 404);
   // A read reserves nothing, so the store's refusal of an absent tuple never meets it: a job the agent holds without a kept
   // tuple (one retained before tuples were kept) is not answered, as the effect routes refuse it at their reservation.
   if (isReadRoute(path) && wire.store.purchaseProfile(request.jobId) === null) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
   validateBody(request, checked.body);
-  return { body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, recheck: () => authorizeWireRequest(opened, check()) };
+  return { body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, recheck: () => authorizeWireRequest(opened, check()), reserve: checked.reserve, retainedWork: checkedAgainst.retained.allocated === true };
 }

@@ -7,7 +7,10 @@ import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { wireBuyer } from './wire-buyer.mjs';
 import assert from 'node:assert/strict';
 import { contentHash } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
+import { createOrdinaryCompletionPort } from '../../src/dacs/seller-http.mjs';
+import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
+import { boundPurchaseOf } from './bound-transport-store.mjs';
 import { commitmentFixture } from './commitment-fixture.mjs';
 import { NOW, seller } from './protocol-fixture.mjs';
 
@@ -49,7 +52,7 @@ export async function wireContinuationFixture(t) {
     agent: () => agent, reopen: async () => { agent.close(); agent = await f.open(); } };
 }
 
-export async function wireRouteFixture(t, { agent, listing, buyer, seller, store, now, readCommitmentReceipt = receiptReader() }) {
+export async function wireRouteFixture(t, { agent, listing, buyer, seller, store, now, readCommitmentReceipt = receiptReader(), leaseMs = 300000 }) {
   const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-fixture-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const evidenceFor = async (path, id) => {
@@ -60,8 +63,11 @@ export async function wireRouteFixture(t, { agent, listing, buyer, seller, store
   const createBuyer = () => wireBuyer({ buyer, seller, listingPin: listingPin(listing), clock: now, publicEndpoint: new URL(listing.seller.publicEndpoint).origin, readCommitmentReceipt, evidenceFor });
   const buyerWire = await createBuyer();
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing)));
-  const wire = { binding: buyerWire.binding, connection: buyerWire.connection, signer: seller, store, now, ready: () => true, requireDelegation: false,
-    journal: openWireRequestJournal(directory, { leaseMs: 300000, clock: now }), retainedFor: input => retainedFor(agent, input),
+  const journal = openWireRequestJournal(directory, { leaseMs, clock: now });
+  const { store: rawStore, capacity } = boundPurchaseOf(store);
+  const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
+  const wire = { binding: buyerWire.binding, connection: buyerWire.connection, signer: seller, store, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }), now, ready: () => true, requireDelegation: false,
+    journal, retainedFor: input => retainedFor(agent, input),
     continuationFor: input => continuationFor(agent, input, signedListing), readCommitmentReceipt };
   return { wire, buyerWire, createBuyer };
 }

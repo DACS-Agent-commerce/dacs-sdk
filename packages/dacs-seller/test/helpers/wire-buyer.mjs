@@ -20,11 +20,11 @@ const eligibilityFor = (listing, now) => () => ({
  * One binding over the fixture authority, the seller's signed discovery document, and the buyer's endpoint proof of it.
  * `buyer` and `seller` are `{ claim, sign }` signers; `clock()` is the buyer's and seller's shared test time.
  */
-export async function wireBuyer({ buyer, seller, listingPin, clock, connection = () => ({ ...TEST_CONNECTION }), readAuthority = authorityReader(), evidenceFor = async () => ({}), readCommitmentReceipt, publicEndpoint = FIXTURE_ENDPOINT }) {
+export async function wireBuyer({ buyer, seller, listingPin, clock, connection = () => ({ ...TEST_CONNECTION }), readAuthority = authorityReader(), evidenceFor = async () => ({}), readCommitmentReceipt, publicEndpoint = FIXTURE_ENDPOINT, discoveryLifetimeMs = DISCOVERY_LIFETIME_MS }) {
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: connection(), readAuthority });
   const now = clock();
   const payload = { format: DACS_SELLER_DISCOVERY_FORMAT, profile: binding.profile, seller: seller.claim, publicEndpoint, transport: [DACS_SELLER_HTTP_V1],
-    listings: [listingPin], capabilities: TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + DISCOVERY_LIFETIME_MS };
+    listings: [listingPin], capabilities: TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + discoveryLifetimeMs };
   const document = await signDiscoveryDocument(payload, seller, binding, connection());
   const listing = { seller: seller.claim, publicEndpoint, listingPin };
   const endpointProof = await verifyEndpointProof(document, { listing, binding, local: connection(), now, readListingEligibility: eligibilityFor(listing, now), readCommitmentReceipt });
