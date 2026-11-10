@@ -3,13 +3,16 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { canonicalize, contentHash, sha256Hex, logicalToStorageProgramName, createFixedPriceAgreementSigningPlan, createFixedPriceAgreementSignatureContribution, signComponentArtifact, ARTIFACT_SEPARATORS } from '@kynesyslabs/dacs';
 import { createDevnetPurchasedReportProducer, isDevnetPurchasedReport } from '../src/devnet-demo/deliverable.mjs';
-import { createDevnetDemoDeliveryCapability, readDevnetDeliveryEvidence, readDevnetPurchasedReport } from '../src/devnet-demo/native-delivery.mjs';
+import { createDevnetDemoDeliveryCapability, hasDevnetDeliveryEvidenceReader, readDevnetDeliveryEvidence, readDevnetPurchasedReport } from '../src/devnet-demo/native-delivery.mjs';
 import { submitNativeDemDelivery, reconcileNativeDemDelivery, readNativeDemDelivery, verifyNativeDemDeliveryReceipt } from '../src/dacs/native-dem-delivery-consumer.mjs';
 import { verifyAgreementCreateAuthorization, verifySignatureAgreement, signatureCommitmentAnchor } from '../src/dacs/commit-on-signature.mjs';
 import { contributionVerifier } from '../src/dacs/purchase-protocol.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 import { isNativeDeliveryEvidence } from '../src/dacs/delivery-evidence.mjs';
 import { buyer, seller, protocolFixture, NOW, JOB } from './helpers/protocol-fixture.mjs';
+
+const OTHER_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0B';
+const nextMacrotask = () => new Promise(resolve => setImmediate(resolve));
 
 async function reportFixture(text = 'TEST purchased report') {
   const f = await protocolFixture();
@@ -132,6 +135,55 @@ test('Agreement CREATE authorization checks hash, signature, exact Agreement and
   assert.throws(() => verifyAgreementCreateAuthorization(misplaced.signed, f.agreement, misplaced.logicalAddress, buyer.claim));
 });
 
+// Every change is signed by the buyer after it is made, so only the check named in
+// the label can refuse it: the hash and the signature are valid for the changed bytes.
+const NOT_AUTHORIZED = /buyer has not authorized the exact Agreement CREATE/;
+const withNonce = nonce => content => {
+  const op = content.data[1];
+  op.storageAddress = deriveStorageAddress(buyer.address, op.programName, nonce);
+  content.nonce = nonce; content.to = op.storageAddress;
+};
+for (const [label, change] of [
+  ['the sender is not the buyer', c => { c.from = seller.address; }],
+  ['the ed25519 sender is not the buyer', c => { c.from_ed25519_address = seller.address; }],
+  ['the transaction is not a storage program', c => { c.type = 'native'; }],
+  ['the nonce is zero', withNonce(0)],
+  ['the nonce is not an integer', withNonce(1.5)],
+  ['the amount is not zero', c => { c.amount = 1; }],
+  ['the transaction has a third data element', c => { c.data.push({}); }],
+  ['the first data element is not storageProgram', c => { c.data[0] = 'TEST-other'; }],
+  ['the operation is not a storage program CREATE', c => { c.data[1].operation = 'WRITE_STORAGE'; }],
+  ['the program name differs', c => { c.data[1].programName = 'TEST-other'; }],
+  ['the salt is not empty', c => { c.data[1].salt = 'TEST-salt'; }],
+  ['the encoding is not json', c => { c.data[1].encoding = 'binary'; }],
+  ['the storage location is not onchain', c => { c.data[1].storageLocation = 'offchain'; }],
+  ['the ACL is not public', c => { c.data[1].acl = { mode: 'private' }; }],
+  ['the storage address is not the derived one', c => { c.data[1].storageAddress = 'TEST-other'; c.to = 'TEST-other'; }],
+  ['the stored data differs from the Agreement', c => { c.data[1].data = { ...c.data[1].data, extra: 'TEST' }; }],
+  ['the metadata names another logical address', c => { c.data[1].metadata.logicalAddress = `dacs3:agreement:${OTHER_JOB}`; }],
+  ['the metadata names another artifact kind', c => { c.data[1].metadata.artifactKind = 'Listing'; }],
+  ['the metadata content hash differs', c => { c.data[1].metadata.contentHash = 'a'.repeat(64); }],
+  ['the metadata envelope hash differs', c => { c.data[1].metadata.envelopeHash = 'a'.repeat(64); }],
+  ['the metadata is missing', c => { delete c.data[1].metadata; }],
+]) test(`Agreement CREATE authorization is refused when ${label}`, async () => {
+  const f = await protocolFixture(), changed = signedCreate(f.agreement, change);
+  assert.throws(() => verifyAgreementCreateAuthorization(changed.signed, f.agreement, changed.logicalAddress, buyer.claim), NOT_AUTHORIZED);
+});
+
+for (const [label, arrange] of [
+  ['no signed transaction is given', () => [undefined]],
+  ['the signed transaction is empty', () => [{}]],
+  ['the hash is not lowercase hex', signed => [{ ...signed, hash: signed.hash.toUpperCase() }]],
+  ['the signature is missing', ({ content, hash }) => [{ content, hash }]],
+  ['the signature type is not ed25519', signed => [{ ...signed, signature: { ...signed.signature, type: 'secp256k1' } }]],
+  ['the expected writer is not the buyer', signed => [signed, seller.claim]],
+  ['the expected logical address is another job', signed => [signed, buyer.claim, `dacs3:agreement:${OTHER_JOB}`]],
+]) test(`Agreement CREATE authorization is refused when ${label}`, async () => {
+  const f = await protocolFixture(), valid = signedCreate(f.agreement);
+  const [signed, writer = buyer.claim, logicalAddress = valid.logicalAddress] = arrange(valid.signed);
+  assert.throws(() => verifyAgreementCreateAuthorization(signed, f.agreement, logicalAddress, writer), NOT_AUTHORIZED);
+});
+
 test('signature commitment verifies retained contributions and only enables the explicit callback path', async () => {
   const f = await protocolFixture(), plan = createFixedPriceAgreementSigningPlan(f.draft);
   const buyerContribution = await createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyer.claim, algorithm: 'ed25519', sign: buyer.signBytes });
@@ -145,6 +197,50 @@ test('signature commitment verifies retained contributions and only enables the 
   assert.equal(signatureCommitmentAnchor(anchor, consumer, false), anchor);
   assert.equal(await signatureCommitmentAnchor(anchor, consumer, true).anchorAgreement({ artifact: f.agreement }), 'TEST anchored');
   await Promise.resolve(); assert.deepEqual(calls, ['registered', 'anchor', 'commit']);
+});
+
+// An enabled switch is not enough: the anchor must also offer the hook that hands over the signed CREATE.
+for (const [label, hook] of [['absent', {}], ['undefined', { onCreateAuthorized: undefined }], ['null', { onCreateAuthorized: null }],
+  ['a string', { onCreateAuthorized: 'TEST-hook' }], ['an object', { onCreateAuthorized: {} }]]) test(`signature commitment leaves the anchor unwrapped when the hook is ${label}`, async () => {
+  const f = await protocolFixture(), calls = [];
+  const anchor = { ...hook, async anchorAgreement() { calls.push('anchor'); return 'TEST anchored'; } };
+  const wrapped = signatureCommitmentAnchor(anchor, { async commitOnSignature() { calls.push('commit'); } }, true);
+  assert.equal(wrapped, anchor);
+  assert.equal(await wrapped.anchorAgreement({ artifact: f.agreement }), 'TEST anchored');
+  await nextMacrotask(); assert.deepEqual(calls, ['anchor']);
+});
+
+test('signature commitment refuses to anchor when onCreateAuthorized throws', async () => {
+  const f = await protocolFixture(), calls = [];
+  const anchor = { onCreateAuthorized() { throw new Error('TEST hook failed'); }, async anchorAgreement() { calls.push('anchor'); return 'TEST anchored'; } };
+  const wrapped = signatureCommitmentAnchor(anchor, { async commitOnSignature() { calls.push('commit'); } }, true);
+  await assert.rejects(wrapped.anchorAgreement({ artifact: f.agreement }), /TEST hook failed/);
+  await nextMacrotask(); assert.deepEqual(calls, []);
+});
+
+test('signature commitment starts nothing when the hook never hands over a signed CREATE', async () => {
+  const f = await protocolFixture(), calls = [];
+  const anchor = { onCreateAuthorized() { calls.push('registered'); }, async anchorAgreement() { calls.push('anchor'); return 'TEST anchored'; } };
+  const wrapped = signatureCommitmentAnchor(anchor, { async commitOnSignature() { calls.push('commit'); } }, true);
+  assert.equal(await wrapped.anchorAgreement({ artifact: f.agreement }), 'TEST anchored');
+  await nextMacrotask(); assert.deepEqual(calls, ['registered', 'anchor']);
+});
+
+// An unhandled rejection fails the test run, so a commitment failure that escaped the wrapper would show here.
+for (const [label, commitOnSignature] of [['rejects', async () => { throw new Error('TEST commit failed'); }],
+  ['throws synchronously', () => { throw new Error('TEST commit failed'); }]]) test(`a failing seller commitment does not fail the anchor call: it ${label}`, async () => {
+  const f = await protocolFixture(), calls = [];
+  const anchor = { onCreateAuthorized(input, callback) { callback(signedCreate(input.artifact).signed); }, async anchorAgreement() { calls.push('anchor'); return 'TEST anchored'; } };
+  const wrapped = signatureCommitmentAnchor(anchor, { commitOnSignature(...args) { calls.push('commit'); return commitOnSignature(...args); } }, true);
+  assert.equal(await wrapped.anchorAgreement({ artifact: f.agreement }), 'TEST anchored');
+  await nextMacrotask(); assert.deepEqual(calls, ['anchor', 'commit']);
+});
+
+test('signature commitment wrapper does not expose onCreateAuthorized', async () => {
+  const anchor = { onCreateAuthorized() {}, async anchorAgreement() {} };
+  const wrapped = signatureCommitmentAnchor(anchor, { async commitOnSignature() {} }, true);
+  assert.notEqual(wrapped, anchor);
+  assert.equal('onCreateAuthorized' in wrapped, false);
 });
 
 test('native report submission uses the report predicate before reaching its anchor', async () => {
@@ -274,12 +370,100 @@ test('purchased-report reader refuses a scope that omits the Agreement hash or f
   assert.equal(calls, 0);
 });
 
+const EVIDENCE_ADDRESS = `dacs4:evidence:${JOB}`;
+const unsignedEvidence = () => ({ evidenceVersion: '1', jobId: JOB, phase: 'deliver-storage-program', outcome: 'success', observedAt: NOW,
+  dacsSdkAuditSourceHash: 'a'.repeat(64), deliverableContentHash: 'b'.repeat(64), deliverableAnchor: { kind: 'storage-program', locator: `dacs4:deliverable:${JOB}` } });
+const signEvidence = (unsigned, signer = seller) => signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: signer.claim, sign: signer.signBytes });
+
 test('delivery evidence binds the signature and exact canonical job addresses', async () => {
-  const unsigned = { evidenceVersion: '1', jobId: JOB, phase: 'deliver-storage-program', outcome: 'success', observedAt: NOW,
-    dacsSdkAuditSourceHash: 'a'.repeat(64), deliverableContentHash: 'b'.repeat(64), deliverableAnchor: { kind: 'storage-program', locator: `dacs4:deliverable:${JOB}` } };
-  const evidence = await signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
-  assert.equal(isNativeDeliveryEvidence(evidence, seller.claim, `dacs4:evidence:${JOB}`), true);
-  assert.equal(isNativeDeliveryEvidence({ ...evidence, deliverableContentHash: 'c'.repeat(64) }, seller.claim, `dacs4:evidence:${JOB}`), false);
+  const evidence = await signEvidence(unsignedEvidence());
+  assert.equal(isNativeDeliveryEvidence(evidence, seller.claim, EVIDENCE_ADDRESS), true);
+  assert.equal(isNativeDeliveryEvidence({ ...evidence, deliverableContentHash: 'c'.repeat(64) }, seller.claim, EVIDENCE_ADDRESS), false);
+});
+
+// The changed evidence is signed again by the seller, so only its own check can refuse it.
+const withoutKey = key => unsigned => Object.fromEntries(Object.entries(unsigned).filter(([name]) => name !== key));
+for (const [label, change, address] of [
+  ['an unknown key is added', u => ({ ...u, note: 'TEST' })],
+  ['the deliverable anchor is missing', withoutKey('deliverableAnchor')],
+  ['the audit hash is missing', withoutKey('dacsSdkAuditSourceHash')],
+  ['the evidence version is not 1', u => ({ ...u, evidenceVersion: '2' })],
+  ['the job id is not canonical', u => ({ ...u, jobId: JOB.toLowerCase(), deliverableAnchor: { ...u.deliverableAnchor, locator: `dacs4:deliverable:${JOB.toLowerCase()}` } }), `dacs4:evidence:${JOB.toLowerCase()}`],
+  ['the phase is not deliver-storage-program', u => ({ ...u, phase: 'deliver' })],
+  ['the outcome is not success', u => ({ ...u, outcome: 'failure' })],
+  ['the audit hash is too short', u => ({ ...u, dacsSdkAuditSourceHash: 'a'.repeat(63) })],
+  ['the audit hash is uppercase', u => ({ ...u, dacsSdkAuditSourceHash: 'A'.repeat(64) })],
+  ['the deliverable hash is too short', u => ({ ...u, deliverableContentHash: 'b'.repeat(63) })],
+  ['the deliverable hash is uppercase', u => ({ ...u, deliverableContentHash: 'B'.repeat(64) })],
+  ['the deliverable anchor is not a storage program', u => ({ ...u, deliverableAnchor: { ...u.deliverableAnchor, kind: 'file' } })],
+  ['the deliverable anchor names another job', u => ({ ...u, deliverableAnchor: { ...u.deliverableAnchor, locator: `dacs4:deliverable:${OTHER_JOB}` } })],
+  ['the deliverable anchor has an unknown key', u => ({ ...u, deliverableAnchor: { ...u.deliverableAnchor, note: 'TEST' } })],
+  ['the observation time is negative', u => ({ ...u, observedAt: -1 })],
+  ['the observation time is fractional', u => ({ ...u, observedAt: 1.5 })],
+  ['the observation time is a string', u => ({ ...u, observedAt: String(NOW) })],
+]) test(`delivery evidence is refused when ${label}`, async () => {
+  const evidence = await signEvidence(change(unsignedEvidence()));
+  assert.equal(isNativeDeliveryEvidence(evidence, seller.claim, address ?? EVIDENCE_ADDRESS), false);
+});
+
+// Each row names what differs from the valid call: the evidence, the expected writer or the logical address.
+const withSignature = (evidence, change) => ({ value: { ...evidence, signature: { ...evidence.signature, ...change } } });
+for (const [label, differs] of [
+  ['it is checked for another writer', () => ({ writer: buyer.claim })],
+  ['the logical address is another job', () => ({ address: `dacs4:evidence:${OTHER_JOB}` })],
+  ['the logical address is the deliverable address', () => ({ address: `dacs4:deliverable:${JOB}` })],
+  ['the logical address is empty', () => ({ address: '' })],
+  ['the logical address is missing', () => ({ address: undefined })],
+  ['the signature algorithm is not ed25519', evidence => withSignature(evidence, { algorithm: 'secp256k1' })],
+  ['the signature has an unknown key', evidence => withSignature(evidence, { note: 'TEST' })],
+  ['the signature value is empty', evidence => withSignature(evidence, { value: '' })],
+  ['the signature value is not a signature', evidence => withSignature(evidence, { value: 'TEST-not-a-signature' })],
+  ['the signer is not the writer', evidence => withSignature(evidence, { signer: buyer.claim })],
+  ['the evidence is null', () => ({ value: null })],
+  ['the evidence is missing', () => ({ value: undefined })],
+  ['the evidence is a string', () => ({ value: 'TEST' })],
+  ['the evidence is an array', () => ({ value: [] })],
+]) test(`delivery evidence is refused when ${label}`, async () => {
+  const evidence = await signEvidence(unsignedEvidence());
+  const { value, writer, address } = { value: evidence, writer: seller.claim, address: EVIDENCE_ADDRESS, ...differs(evidence) };
+  assert.equal(isNativeDeliveryEvidence(value, writer, address), false);
+});
+
+test('delivery evidence is refused when the buyer signed it', async () => {
+  const evidence = await signEvidence(unsignedEvidence(), buyer);
+  assert.equal(isNativeDeliveryEvidence(evidence, seller.claim, EVIDENCE_ADDRESS), false);
+  assert.equal(isNativeDeliveryEvidence({ ...evidence, signature: { ...evidence.signature, signer: seller.claim } }, seller.claim, EVIDENCE_ADDRESS), false);
+});
+
+test('delivery evidence is refused when its signature belongs to other evidence', async () => {
+  const evidence = await signEvidence(unsignedEvidence()), other = await signEvidence({ ...unsignedEvidence(), deliverableContentHash: 'c'.repeat(64) });
+  assert.equal(isNativeDeliveryEvidence({ ...evidence, signature: other.signature }, seller.claim, EVIDENCE_ADDRESS), false);
+});
+
+// The evidence reader exists only when deliveryEvidenceEnabled is set, and only for the anchor's own writer.
+const readerAnchor = reads => ({ authority: 'TEST-native', writer: seller.claim, publish: async () => { reads.push('publish'); }, read: async () => { reads.push('read'); },
+  readRetained: async input => { reads.push(input.logicalAddress); return { status: 'absent' }; }, verifyReceipt: async () => { reads.push('verifyReceipt'); } });
+const evidenceCapability = (anchor, deliveryEvidenceEnabled) => createDevnetDemoDeliveryCapability({ authority: anchor.authority, anchor, deliveryEvidenceEnabled });
+
+for (const [label, build] of [
+  ['it is left at its default', anchor => evidenceCapability(anchor)],
+  ['it is false', anchor => evidenceCapability(anchor, false)],
+  ['the capability is a copy of an enabled one', anchor => ({ ...evidenceCapability(anchor, true) })],
+  ['the capability is an unrelated object', () => ({})],
+]) test(`delivery evidence reader is unavailable unless deliveryEvidenceEnabled is set: ${label}`, async () => {
+  const reads = [], capability = build(readerAnchor(reads));
+  assert.equal(hasDevnetDeliveryEvidenceReader(capability), false);
+  await assert.rejects(readDevnetDeliveryEvidence(capability, { jobId: JOB, seller: seller.claim }), /delivery evidence reader is unavailable/);
+  assert.deepEqual(reads, []);
+});
+
+for (const [label, writer] of [['the buyer', buyer.claim], ['no seller', undefined], ['an empty seller', ''], ['an object instead of a claim', {}]]) test(`delivery evidence reader refuses a seller other than the anchor writer: ${label}`, async () => {
+  const reads = [], capability = evidenceCapability(readerAnchor(reads), true);
+  assert.equal(hasDevnetDeliveryEvidenceReader(capability), true);
+  assert.deepEqual(await readDevnetDeliveryEvidence(capability, { jobId: JOB, seller: writer }), { status: 'rejected', reason: 'delivery evidence writer differs' });
+  assert.deepEqual(reads, []);
+  assert.deepEqual(await readDevnetDeliveryEvidence(capability, { jobId: JOB, seller: seller.claim }), { status: 'absent' });
+  assert.deepEqual(reads, [EVIDENCE_ADDRESS]);
 });
 
 for (const deliveryEvidenceEnabled of [false, true]) {
