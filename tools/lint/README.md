@@ -24,6 +24,32 @@ npm run lint:prune --prefix tools/lint
 
 Don't add entries to it to get a pass. Fix the new issue, or use an `eslint-disable-next-line` comment that says why it's safe.
 
+## Layer check
+
+`layers.mjs` checks that imports in `src/` follow the layer order in `layers.json`. `layers-baseline.txt` lists the imports that already broke it. See [ARCHITECTURE.md](../../ARCHITECTURE.md#the-check).
+
+## File size check
+
+`file-size.mjs` fails when a source file in `src/` or `packages/*/src/` is over 800 lines. Source files are `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx`, not declaration files (`.d.ts`). Split a long file into smaller modules rather than raising the limit.
+
+`file-size-baseline.json` lists the files that were already longer, with their length at the time. They don't fail the run. When one of them grows, CI shows a warning on the file. When one is deleted or drops to 800 lines or fewer, the run fails until its entry is removed:
+
+```bash
+node tools/lint/file-size.mjs --prune
+```
+
+Don't add entries to get a pass. When you move or rename a listed file, rename its entry in the same change and keep the recorded length.
+
+## Shared helper check
+
+`shared-helpers.mjs` fails when a file in `src/` declares its own copy of a small helper that should exist once, in `src/internal/`: `deepFreeze`, `exactKeys`, `hasExactKeys`, `isRecord`, `nonEmpty`, `plainObject` and `plainRecord`. Import the shared one instead. If there isn't one yet, move a copy into `src/internal/`, import it from there, and remove the copies you replaced.
+
+`shared-helpers-baseline.txt` lists the copies that already existed. They don't fail the run. When one is removed, the run fails until its line is removed too (`--prune`).
+
+The check is by name. It counts top-level `function` declarations and `const` names whose value is an arrow function or a function expression, also when wrapped in parentheses, `as`, `satisfies` or `!`. Inside `src/internal/` a name may be declared once; a second declaration there counts as a copy.
+
+The file size and shared helper checks also have a `--write-baseline` flag that rewrites the list from the code. Use it only in a change that edits the check itself, and say why in that change; never use it to get a pass.
+
 ## What's left out
 
 - `test/package-consumer/`: its own project, which needs the packed packages.

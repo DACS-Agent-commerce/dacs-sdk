@@ -50,6 +50,8 @@ The admission option: `admission: { binding, currentLocal }` is required by the 
 
 Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
 
+`prepareTerms` does not return `terms.jobId`; the create path adds it.
+
 Passive: `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`
 
 ### createPurchaseService
@@ -163,6 +165,8 @@ Use main and TEMP only; detach all other schemas before a package transaction. A
 
 The required schema objects are supplied by `PURCHASE_STATE_SCHEMA`; the application owns initialization and migrations.
 
+The `job_id` column of `operations` and its unique index `operations_job_id_unique` reserve each protocol purchase's job id when the host's `createIdempotent` writes it to `job_id`; keep both when extending the schema (purchases without a protocol job store NULL). `createPurchaseService` generates the id inside the create transaction and passes it to `createIdempotent` as jobId. Construction refuses with code schema_migration_required when `operations` has no `job_id` column or no unique index on `job_id` alone; a partial unique index does not count. The reservation also depends on the host's `createIdempotent` writing jobId to `job_id` in the same insert as the terms, which the package cannot check; it must throw an `OperationError` with code job_id_collision when the index refuses the id. The service then retries with a new id, at most 3 attempts, and otherwise fails with code job_id_unavailable having written nothing.
+
 | Kind | Name |
 | --- | --- |
 | table | `accounts` |
@@ -172,6 +176,7 @@ The required schema objects are supplied by `PURCHASE_STATE_SCHEMA`; the applica
 | table | `approvals` |
 | table | `write_coordinates` |
 | table | `wallet_nonce_consumptions` |
+| index | `operations_job_id_unique` |
 | index | `operations_by_subject` |
 | index | `operations_by_account` |
 | index | `write_coordinates_by_sender` |

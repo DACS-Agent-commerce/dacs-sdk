@@ -6513,6 +6513,107 @@
       ]
     },
     {
+      "delta": "D31",
+      "subject": "delta(client): D31 pin the finality profile literal refusal",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": null,
+          "after": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5"
+        }
+      ]
+    },
+    {
+      "delta": "D31",
+      "subject": "delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5",
+          "after": "565c664bbc629707665dd65c3889ac5e08ec2d09"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 reserve each purchase job id with a unique column and a bounded retry",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "652e68fa1ad0a799754f35d604bac2ffc1376f0e",
+          "after": "615dbe0271963189f792d967d3b1acf6c2fc678f"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": "557ea59e906125decb9c56d5b2322a1d30af3321",
+          "after": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd",
+          "after": "3873c4245efd90c76e2af08f56b2d609e391cf65"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+          "before": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b",
+          "after": "a4a556aea31469b10698a07d3180bbbc8ef37d03"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": null,
+          "after": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 require a unique job_id index at construction",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3873c4245efd90c76e2af08f56b2d609e391cf65",
+          "after": "06748b818244cb1924ebb4fcc93ad5a23e99b848"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b",
+          "after": "c04831cefe549f5a2c89052f0400bcdecf8b52a7"
+        },
+        {
+          "path": "packages/dacs-client/test/readme-contract.test.mjs",
+          "before": "0f7e7d6618f09f8377893affcdd5449425e4646f",
+          "after": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 tighten job id comments and README wording",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "06748b818244cb1924ebb4fcc93ad5a23e99b848",
+          "after": "4a6010356dbd967ae75c68fb30d97060fb9f0f65"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 read schema rows with plain numbers and keep the last collision as cause",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "4a6010356dbd967ae75c68fb30d97060fb9f0f65",
+          "after": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "c04831cefe549f5a2c89052f0400bcdecf8b52a7",
+          "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P21a2aa add the fence-free observer and bounded source reads",
       "files": [
@@ -6833,6 +6934,42 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a14bf40eabc66742e0cb3c7e99093246a16c72d3",
+          "after": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee",
+          "after": "e4c39b4014f9a33823ca4c8f2e043aa1502c5313"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "1d687234da2ff434291fcea67c4488d8e6614f4d",
+          "after": "e0c3f5b5d4075fdb06535238008c1f02344442bd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6",
+          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a",
+          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0e9061d13141e783f3fdb484b97f66f9b45253c",
+          "after": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a3ab finish reservation terminal transitions, crash reconciliation and lock recovery",
       "files": [
         {
@@ -6895,6 +7032,53 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF finish the signer reservation's terminal steps and startup recovery",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "0d4803b0dcf41dd15566abe589f3756ebf2cabce",
+          "after": "7ca77023b701055eb1bf092ff0ce632846f3702b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "ed1935c77b265ee31428df33d4d85170d1d08d2b",
+          "after": "7e54669ad2d3b2af37aee198f8f4de382d598186"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "8b03bdb1392424fc58763afdabd38e9a28a82598",
+          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "3048034aa3b7af377e090e62be3f1173c1f06ee0",
+          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
+          "after": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "7e54669ad2d3b2af37aee198f8f4de382d598186",
+          "after": "bcb216547421660a2cd0de45415cce9a0ad18ba3"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9",
+          "after": "be72001c276437177160b6a87ce365b7a24d3504"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF P21a3ba sign payment-evidence CREATEs on the signer reservation",
       "files": [
         {
@@ -6946,89 +7130,6 @@
           "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
           "before": "15e7ac95a7940b8712e966a83885505142afd796",
           "after": "92d81e3b5e5bcc7381036bdc1ca189f54154e8c3"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
-          "before": "a14bf40eabc66742e0cb3c7e99093246a16c72d3",
-          "after": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
-          "before": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee",
-          "after": "e4c39b4014f9a33823ca4c8f2e043aa1502c5313"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
-          "before": "1d687234da2ff434291fcea67c4488d8e6614f4d",
-          "after": "e0c3f5b5d4075fdb06535238008c1f02344442bd"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
-          "before": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6",
-          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
-          "before": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a",
-          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
-        },
-        {
-          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
-          "before": "c0e9061d13141e783f3fdb484b97f66f9b45253c",
-          "after": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF finish the signer reservation's terminal steps and startup recovery",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
-          "before": "0d4803b0dcf41dd15566abe589f3756ebf2cabce",
-          "after": "7ca77023b701055eb1bf092ff0ce632846f3702b"
-        },
-        {
-          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
-          "before": "ed1935c77b265ee31428df33d4d85170d1d08d2b",
-          "after": "7e54669ad2d3b2af37aee198f8f4de382d598186"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
-          "before": "8b03bdb1392424fc58763afdabd38e9a28a82598",
-          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
-        },
-        {
-          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
-          "before": "3048034aa3b7af377e090e62be3f1173c1f06ee0",
-          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
-        },
-        {
-          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
-          "before": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f",
-          "after": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF refuse signing and finish the retirement when an unsigned reservation's approval was released but the retirement did not commit",
-      "files": [
-        {
-          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
-          "before": "7e54669ad2d3b2af37aee198f8f4de382d598186",
-          "after": "bcb216547421660a2cd0de45415cce9a0ad18ba3"
-        },
-        {
-          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
-          "before": "705b9c4c787df1e2a6b646fc4f3d596354b4aea9",
-          "after": "be72001c276437177160b6a87ce365b7a24d3504"
         }
       ]
     },
