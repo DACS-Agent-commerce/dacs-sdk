@@ -1,4 +1,4 @@
-// Child process for purchase-capacity.test.mjs (P11b2-T19, T25): with the shipped guard off, `reserveCoordinated` refuses before it
+// With the shipped guard off, `reserveCoordinated` refuses before it
 // inspects, classifies, runs a gate, checks the terminal session, reserves or writes; `terminalSession` refuses; and the observation
 // adapter reads a terminal name but writes no closure. Prints one line of JSON. The parent starts it without the unshipped guard fixture.
 import { mkdtempSync, realpathSync } from 'node:fs';

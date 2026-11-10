@@ -1,4 +1,4 @@
-// K5's purchase capacity on the transport store's one SQLite owner. An admitted purchase holds one allocation with a slot of 17
+// Purchase capacity on the transport store's one SQLite owner. An admitted purchase holds one allocation with a slot of 17
 // reservation units per route; a charged request spends one unit of its slot, or one general unit, as the accounting row it commits.
 // `used` is every accounting row (it never decreases), `allotted` the unspent units of the open slots of live allocations, and
 // `free` is what is left of `maxRecords`. Nothing here signs, sends or deletes a journal file.
@@ -27,10 +27,6 @@ const fail = (code, status) => { throw new SellerTransportError(code, status); }
 const sameParties = (allocation, purchase) => allocation.buyer === purchase.buyer && allocation.seller === purchase.seller
   && canonicalize(allocation.listingPin) === canonicalize(purchase.listingPin);
 const unspent = (slot) => (slot.state === 'open' ? Math.max(0, SLOT_UNITS - slot.spent) : 0);
-function deepFreeze(value) {
-  if (value !== null && typeof value === 'object') Object.values(value).forEach(deepFreeze);
-  return Object.freeze(value);
-}
 function requirePurchase(purchase) {
   if (!isCanonicalJobId(purchase?.jobId) || typeof purchase.buyer !== 'string' || typeof purchase.seller !== 'string' || !pinValid(purchase.listingPin)) {
     throw new TypeError('a purchase is a canonical job, exact buyer and seller strings and a valid Listing pin');
@@ -64,8 +60,8 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
   function snapshot(found) {
     const spent = new Map(db.prepare("SELECT route, COUNT(*) AS n FROM kit_reservations WHERE allocationId = ? AND class = 'purchase' GROUP BY route").all(found.allocationId).map((row) => [row.route, row.n]));
     const stored = JSON.parse(found.record);
-    return deepFreeze({ ...stored, state: found.state, rev: found.rev,
-      slots: Object.fromEntries(Object.entries(stored.slots).map(([route, state]) => [route, { spent: spent.get(route) ?? 0, state }])) });
+    return Object.freeze({ ...stored, listingPin: Object.freeze(stored.listingPin), state: found.state, rev: found.rev,
+      slots: Object.freeze(Object.fromEntries(Object.entries(stored.slots).map(([route, state]) => [route, Object.freeze({ spent: spent.get(route) ?? 0, state })]))) });
   }
   const byJob = (jobId) => { const found = db.prepare('SELECT * FROM kit_allocations WHERE jobId = ?').get(jobId); return found ? snapshot(found) : null; };
   const byId = (allocationId) => { const found = db.prepare('SELECT * FROM kit_allocations WHERE allocationId = ?').get(allocationId); return found ? snapshot(found) : null; };
@@ -117,7 +113,7 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
       throw new TypeError('classification needs a route, the binding, an operation view and the retained-work flag');
     }
     const exactBinding = inspection.state !== 'none' && inspection.binding === binding, { free } = totals();
-    if (inspection.state === 'completed' && exactBinding && free <= 0) return deepFreeze({ class: 'completed-at-capacity', outcome: structuredClone(inspection.outcome) });
+    if (inspection.state === 'completed' && exactBinding && free <= 0) return Object.freeze({ class: 'completed-at-capacity', outcome: Object.freeze(structuredClone(inspection.outcome)) });
     const allocation = byJob(jobId);
     if (purchaseStage(input, allocation, exactBinding)) return Object.freeze({ class: 'purchase-stage', allocationId: allocation.allocationId, allocationRev: allocation.rev, route });
     if (free < 1) fail(STORE_CAPACITY_CODE, 503);
@@ -178,9 +174,9 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
   function capacityReport() {
     const { used, allotted, free } = totals();
     const exhausted = db.prepare(`SELECT e.operationId, e.jobId, e.route, e.cause FROM kit_capacity_exhaustion e
-      JOIN kit_allocations a ON a.allocationId = e.allocationId WHERE a.state = 'live' ORDER BY a.rowid, e.route`).all().map((row) => ({ ...row }));
-    return deepFreeze({ maxRecords, used, allotted, free, allotment: allotment(), ready: free >= allotment(),
-      allocations: db.prepare('SELECT * FROM kit_allocations ORDER BY rowid').all().map(snapshot), exhausted });
+      JOIN kit_allocations a ON a.allocationId = e.allocationId WHERE a.state = 'live' ORDER BY a.rowid, e.route`).all().map((row) => Object.freeze({ ...row }));
+    return Object.freeze({ maxRecords, used, allotted, free, allotment: allotment(), ready: free >= allotment(),
+      allocations: Object.freeze(db.prepare('SELECT * FROM kit_allocations ORDER BY rowid').all().map(snapshot)), exhausted: Object.freeze(exhausted) });
   }
 
   // The coordinator's checks, which the store owns: its closure, its observer and its pending-observation barrier.

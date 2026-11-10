@@ -44,7 +44,42 @@ body read. Authenticated responses are capped at 512 KiB. Context starts are
 limited to five per buyer and twelve globally per rolling hour; only accepted
 starts count, durably, including after restart. A start exactly one hour old is
 outside that window. New work needs generatedAt within ten minutes inclusive.
-The transport journal holds at most 10,000 live nonce records and, independently, 10,000 Agreement job rows (nonce records use maxRecords; Agreement job rows use maxJobs, supplied independently by the host); new jobs at that total cap are refused before mutation. A definite no-effect completion releases its job binding only when no effect, slot, transaction or context admission still refers to it. Effect-to-job records also protect pending read effects; completed or uncertain effects keep their bindings. Existing empty bindings are reclaimed on a successful new reservation at capacity. T7–T9 and T15–T16 cover another buyer, restart, retained refusals and concurrent references. The cap remains a backstop for real retained work: at capacity new jobs return peer_job_capacity (503). D12 must reconcile that work and provide a verified terminal archive/rotation procedure under the seller-state lock; deleting the journal to restore capacity is not a supported recovery procedure. Nonce rate-retention rows cover the full minute, with at most 120 new rows per buyer per minute. Cached-effect retries and unknown-job state reads insert no rows. Expired completed/no-effect nonce rows are reclaimed before admitting new work; the effect answer remains durable. Legacy rows retain a conservative one-minute grace on upgrade. Pending or uncertain effects remain fenced and require reconciliation, rather than expiry into repeat authority. Policy defaults remain
+The transport journal holds at most 10,000 live nonce records and, independently, 10,000 jobs. The host supplies
+maxRecords and maxJobs independently. A job counts once across its Agreement row, context admission and accounting
+reservation hold. Both reserve paths share these counts and the per-buyer window. New jobs at the job limit return
+peer_job_capacity (503) before mutation unless completed work can safely retire.
+
+A job belongs to its retained buyer, seller and Listing pin even after its job row leaves. Another party gets
+peer_job_conflict (409); the earlier reserve path returns context_session_terminal (409) for a retired job
+with a terminal session. The first purchase also fixes its Agreement; a context step carries a scope hash and checks
+only the parties and pin. A closed owner refuses fresh work with context_job_closed (409). A definite no-effect end
+releases the provisional Agreement only when no effect, slot, transaction or context admission retains the job. The
+owner remains open for that buyer's corrected proposal. Retrying the refused proposal with its original nonce
+returns its saved answer even after a corrected proposal succeeds.
+
+A mutating route takes one effect per job across both reserve paths: an old-path slot or an accounted reservation the
+wire did not refuse excludes another effect with peer_operation_conflict (409). Effect-to-job records protect pending
+reads too. Completed and uncertain effects keep their bindings. Empty job bindings can be reclaimed on a successful
+reservation at capacity; owners remain. Reconciliation can make retained work eligible for retirement. Deleting the journal is not a
+supported recovery procedure.
+
+A terminal session refuses a fresh proposal or context start with context_session_terminal (409). An accounted retry
+requires an earlier reservation answered by the wire (new, recover or completed), or a reserving row held by the wire's
+operation record. In either case wireOperationView must show this request's wireOperationBinding: profile, buyer and
+Agreement or context scope hash. An operation identifies only seller, job and route, so a different binding is a fresh
+start and is refused before charging. So is an unpublished or definitely refused reservation without a matching wire
+record, including when no reader is supplied.
+
+An accounted read without a job row returns peer_unknown_job (404) before charging. A payment must carry paymentTx equal
+to the admitted body's txHash; other routes cannot carry paymentTx. Violations return wire_input_invalid (500) before
+charging.
+
+Nonce retention covers the full minute, with at most 120 new rows per buyer per minute. Cached-effect retries and
+unknown-job state reads insert no rows. Expired completed and no-effect nonces can be reclaimed before new work; the
+effect answer remains durable. Pending and uncertain effects require reconciliation and cannot expire into permission to
+repeat work.
+
+Policy defaults remain
 six writes per job, 24 writes and 96 DEM per hour, and 4 DEM per write. Unresolved
 writes count beyond the hour until completed. Configuration may lower or raise
 the PR-defined configurable limits; it cannot disable their validation.
@@ -68,8 +103,17 @@ in-process comparison in the frozen tests is a test oracle, not a kit mode.
 This experimental API supports an explicit empty seller requirement only.
 It does not claim an accepted TP-1 or G10 profile. No unpublished register
 entry is needed to interpret this local restriction, and no protocol exception
-is authorized by it. A buyer-owned verifier must issue the session challenge
-and sign the seller CVR; without that capability, context creation is refused.
+is authorized by it. In the default `counterparty` producer mode a buyer-owned
+verifier must issue the session challenge and sign the seller CVR; without that
+capability, context creation is refused.
+
+The explicit `tp1-g3-orchestrator` provider and native-anchor composition signs
+both records with the seller wallet, seller first. It uses the signed Listing's
+seller identity verbatim, makes no counterparty calls, and gives no seller session freshness.
+Both records require verified, established `finalized` receipts on every answer.
+Checkpoints reuse retained signatures; unknown signing outcomes stay held.
+The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1.
+
 Buyer-side seller requirements are not a capability of this route: an extra
 request scope field is refused. The seller is evaluated against that empty
 requirement, independently of the Listing's buyer requirement, during initial
@@ -132,13 +176,15 @@ windows, gating, repeat startup, inconsistent records and a fresh process.
 
 Challenge retention has an independent total capacity, `maxChallenges`, defaulting to `maxRecords` (10,000). A new issuance at capacity returns `context_challenge_capacity` (503) before any mutation, policy hold or provider call; identical outstanding requests still read the retained challenge. Reclamation is part of successful issuance, after all limits and unpaid-start checks. It deletes only expired rows outside the full one-hour issuance window whose bound session is in an exact DACS-5 terminal state: finalised, vet-failed, negotiate-failed, commit-failed, settle-failed, aborted-by-self, aborted-by-other or failed-substrate. Consumption or expiry alone is insufficient. This retains CORE §B.8 SN-4 state through session termination and preserves hourly counters. Cleanup inspects terminal states only when space is needed and stops once enough rows are reclaimable. T1–T6 and T14 test limits, terminal/non-terminal states, restart, replay, zero-mutation refusals and early scan termination.
 
+Accepted challenge proofs are retained with their permanent job bindings for session restoration after reclamation. These proofs never authorize a new attempt on a reclaimed nonce. On upgrade, startup verifies and imports accepted challenges from the old signed seller state before restoring sessions; repeated imports preserve the existing binding and refuse conflicts. A retired legacy admission keeps its proof and binding but takes no active challenge row, so it never charges `maxChallenges`. An old admission with no accepted wrapper, saved session or recorded bundle hash names nothing to restore and is skipped; it never authorizes. If it still has a signed job binding, which cannot move into the ledger without a bundle hash, startup refuses with `seller_job_bound` instead of freeing the job. Restoration still authenticates the exact buyer presentation and rechecks any retained Vet evidence against its source. `session-challenge-restore.test.mjs` covers upgrade, reclamation, interrupted writes and refused evidence.
+
 D12 must supply `contextSessionState({jobId})` to the transport store as a synchronous read of trusted seller-owned durable session state, retaining that source through cleanup and refusing new work for terminal sessions regardless of the requesting buyer. The callback is job-scoped: a terminal job must return its terminal state for every requester; buyer-filtered lookup is not this contract. T19 verifies a different buyer is refused after cleanup and restart. Unknown state cannot authorize cleanup. It must not use a buyer assertion, an unpaid-start timestamp, a missing record or a delivery stage as terminal proof. Without that callback, unknown state conservatively retains every challenge and capacity eventually refuses new issuance. No terminal state is inferred from timeout. Even with a wired reader, sessionless challenges are a lifetime allocation: expiry without a seller session never establishes terminal proof. Once their total reaches maxChallenges, new issuance stops. the SDK maintainer must decide whether expired, unpresented challenges for jobs with no session may end SN-4 retention, and D12 must supply a reviewed recovery procedure. The scan is bounded by the retained table and stops when enough terminal rows free capacity. D12 host lifecycle wiring remains unchecked here.
 
 VPC-4 answers carry `errorClass`: fail maps to counterparty; exhausted error or indeterminate maps to permanent. The SDK mapper supplies the solely counterparty-malformed-presentation exception; this parsed single-claim profile has no credential parser and does not infer that cause from CVR text. The client treats missing/unknown classes as indeterminate. VPC4 and B21/B31/B35 cover initial, retained, recovered and consumed answers, plus pass and unknown-decision controls.
 
 The default twelve challenges can exhaust the global hourly allowance with zero accepted starts. No policy hold is recorded for such issuance. A fourth buyer after a 5/5/2 issuance pattern waits until the hourly window moves, even though the challenges expire after one minute. T23 in d5-challenge-retention.test.mjs pins this behavior. A separate issuance allowance or outstanding-challenge policy requires D12 host qualification; this profile uses the five/twelve defaults.
 
-Retained context starts have an independent total cap, `maxContextRecords`, defaulting to `maxRecords` (10,000). Each admitted start owns one context effect, effect-to-job row and slot; all four collections stay within that cap for context traffic. `peer_context_capacity` (503) refuses fresh starts before any policy hold or new journal effect; a recognized presentation nonce is consumed on attempt. New challenge issuance refuses before SQL mutation; retained retries still read their answers. Successful new context reservation may reclaim an old admission, its completed effect, slot, effect-to-job row and expired nonce/rate rows only after the full hourly start window, the nonce rate window, expiry of every associated transport request and trusted terminal seller-session evidence. Pending/uncertain effects and unknown/non-terminal sessions stay fenced. A fresh context effect for a terminal session is refused, including after cleanup and restart. T10–T13 and B36 test these rules, counts, restart, replay and zero-mutation refusals. D12 must retain authoritative terminal state after transport cleanup; missing state eventually fills the cap and remains a stated block, rather than permission to repeat work.
+Retained context starts have an independent total cap, `maxContextRecords`, defaulting to `maxRecords` (10,000); a job counts once whether its admission or a reservation-accounting context hold retains it, and a reclaim never frees a held one. Each admitted start owns one context effect, effect-to-job row and slot; all four collections stay within that cap for context traffic. `peer_context_capacity` (503) refuses fresh starts before any policy hold or new journal effect; a recognized presentation nonce is consumed on attempt. New challenge issuance refuses before SQL mutation; retained retries still read their answers. Successful new context reservation may reclaim an old admission, its completed effect, slot, effect-to-job row and expired nonce/rate rows only after the full hourly start window, the nonce rate window, expiry of every associated transport request and trusted terminal seller-session evidence. Pending/uncertain effects and unknown/non-terminal sessions stay fenced. A fresh context effect for a terminal session is refused, including after cleanup and restart. T10–T13 and B36 test these rules, counts, restart, replay and zero-mutation refusals. D12 must retain authoritative terminal state after transport cleanup; missing state eventually fills the cap and remains a stated block, rather than permission to repeat work.
 
 Capacity lookup work is bounded by retained rows with indexed effect/job references. Opening an existing store creates indexes on peer_effect_jobs(job), peer_transactions(job) and peer_nonces(effect). Job reclamation checks legacy unmapped effects once, then selects only the needed unused jobs through indexed anti-joins, including an indexed slot-prefix check. Context reclamation runs only when capacity needs space and stops after enough trusted terminal contexts; below capacity it reads no old sessions. At a full context cap with no terminal sessions it may inspect every retained context once; D12 must supply a bounded synchronous job-state lookup. T17–T18 verify 10,000-row query plans, constant SQL statement counts, early stopping and zero-mutation refusal; T20 keeps legacy reference fences. These focused bounds do not qualify the missing public host.
 

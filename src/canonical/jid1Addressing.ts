@@ -11,7 +11,7 @@ import { DacsError } from "../errors.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";
 import { attestationAddress, paymentEvidenceAddress, ratingAddress, bundleAddress } from "./addressing.js";
 
-/** JID-3 (CORE §B.1, Standard next): validate the JID-1 jobId, then assemble the attestation address. Legacy helpers are unchanged. */
+/** JID-3 (CORE §B.1, Standard next): validate the JID-1 jobId, then assemble the attestation address. The public builder enforces the same boundary. */
 export function jid1AttestationAddress(jobId: string, scheme: string, identifier: string, recipeVersion: number): string {
   requireCanonicalJobId(jobId, "attestation address jobId");
   return attestationAddress(jobId, scheme, identifier, recipeVersion);

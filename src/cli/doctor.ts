@@ -1,5 +1,7 @@
 import { VERSION } from "../version.js";
 import { PAY_D402_AVAILABILITY } from "../rails/index.js";
+import { readBoundedDemosJson } from "../rails/demosRpc.js";
+import nodeBuildPin from "../substrate/demosNodeBuild.json" with { type: "json" };
 import { readFileSync } from "node:fs";
 
 export type DoctorStatus = "pass" | "warn" | "fail" | "skip" | "blocked";
@@ -37,11 +39,18 @@ export interface DoctorOptions {
   now?: () => Date;
   nodeVersion?: string;
   adapterFactory?: (config: { rpc: string; secret?: string }) => DoctorAdapter;
+  /** Fetch used for the node build read; defaults to the global `fetch`. */
+  fetchImpl?: typeof fetch;
 }
 
 const RUNTIME_NODE = "runtime.node";
 const RPC_REACHABLE = "rpc.reachable";
 const SUBSTRATE_ADAPTER_LOAD = "substrate.adapter-load";
+const NODE_BUILD = "node.build";
+const NODE_BUILD_UNKNOWN_SUMMARY = "node build unknown (no build RPC)";
+const NODE_BUILD_TIMEOUT_MS = 5_000;
+const NODE_BUILD_MAX_BYTES = 4 * 1024;
+const COMMIT_SHA_SUFFIX_RE = /([0-9a-f]{40})$/i;
 const SUPPORTED_NODE_RANGE_FALLBACK = "^20.19.0 || >=22.12.0";
 
 function check(
@@ -154,6 +163,11 @@ export function rpcSensitiveNeedles(rpc?: string): string[] {
   }
 }
 
+/** Drop C0/C1 control characters (no exceptions) from text that comes from a node reply. */
+function stripControlChars(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
+
 function sanitizeError(err: unknown, secrets: Array<string | undefined> = []): string {
   const raw = err instanceof Error ? err.message : String(err);
   return sanitizeText(raw, secrets);
@@ -172,6 +186,106 @@ async function defaultAdapterFactory(config: {
 }): Promise<DoctorAdapter> {
   const { DemosAdapter } = await import("../substrate/index.js");
   return new DemosAdapter(config);
+}
+
+interface NodeBuildReply {
+  version: string | undefined;
+  commitSha: string;
+}
+
+/**
+ * Read the node build from `GET <rpc origin>/version` (redirects are not followed).
+ * The caller only uses it for RPC URLs that are a bare origin: no path, query or credentials.
+ * Bytes are limited before decoding and the whole read stops at a short deadline.
+ * Throws with the real cause (HTTP status, timeout, byte limit, bad JSON) when the
+ * reply is not usable; the commit must end in a 40-hex sha or the reply is refused.
+ */
+async function readNodeBuild(rpc: string, fetchImpl: typeof fetch): Promise<NodeBuildReply> {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(new Error("node build read timed out")),
+    NODE_BUILD_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetchImpl(`${new URL(rpc).origin}/version`, {
+      method: "GET",
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    if (response.status >= 300 && response.status < 400) {
+      void response.body?.cancel().catch(() => undefined);
+      throw new Error(`node /version redirected (HTTP ${response.status}), so it is not tied to the RPC backend`);
+    }
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      throw new Error(`node /version returned HTTP ${response.status}`);
+    }
+    let reply: unknown;
+    try {
+      reply = await readBoundedDemosJson(response, NODE_BUILD_MAX_BYTES, controller.signal);
+    } catch (err) {
+      // A deadline that fires mid-body can surface as a truncated-JSON error.
+      if (controller.signal.aborted) throw controller.signal.reason;
+      // Never pass on the parse error: it quotes bytes of the reply.
+      if (err instanceof SyntaxError) throw new Error("version reply is not JSON");
+      throw err;
+    }
+    const fields = typeof reply === "object" && reply !== null && !Array.isArray(reply)
+      ? (reply as { version?: unknown; commit?: unknown })
+      : {};
+    const commitSha = typeof fields.commit === "string"
+      ? COMMIT_SHA_SUFFIX_RE.exec(fields.commit)?.[1]?.toLowerCase()
+      : undefined;
+    if (commitSha === undefined) {
+      throw new Error("node /version reply has no commit ending in a 40-hex sha");
+    }
+    return {
+      version: typeof fields.version === "string" ? stripControlChars(fields.version) : undefined,
+      commitSha,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Compare the node's build to the pin: `pass` on a match, `warn` on a difference, `skip` when unknown. */
+async function nodeBuildCheck(
+  rpc: string,
+  fetchImpl: typeof fetch,
+  secrets: Array<string | undefined>,
+): Promise<DoctorCheck> {
+  let build: NodeBuildReply;
+  try {
+    // `/version` is on the origin; with a routed RPC URL it may be a different backend.
+    const { pathname, search, username, password } = new URL(rpc);
+    if ((pathname !== "" && pathname !== "/") || search !== "") {
+      return check(NODE_BUILD, "skip", NODE_BUILD_UNKNOWN_SUMMARY, {
+        detail: "The RPC URL is routed (it has a path or query), so the origin's /version may come from a different backend; no request was made.",
+      });
+    }
+    // The origin drops user information, so the build may belong to another backend.
+    if (username !== "" || password !== "") {
+      return check(NODE_BUILD, "skip", NODE_BUILD_UNKNOWN_SUMMARY, {
+        detail: "The RPC URL has credentials, which the origin's /version request would drop, so the build may come from a different backend; no request was made.",
+      });
+    }
+    build = await readNodeBuild(rpc, fetchImpl);
+  } catch (err) {
+    // fetch reports refused, DNS and TLS failures only as the cause of "fetch failed".
+    const cause = err instanceof Error && err.cause !== undefined
+      ? `: ${sanitizeError(err.cause, secrets)}`
+      : "";
+    return check(NODE_BUILD, "skip", NODE_BUILD_UNKNOWN_SUMMARY, {
+      detail: stripControlChars(`${sanitizeError(err, secrets)}${cause}`),
+    });
+  }
+  const data = { version: build.version, commit: build.commitSha, pinned: nodeBuildPin.commitSha };
+  return build.commitSha === nodeBuildPin.commitSha
+    ? check(NODE_BUILD, "pass", "Node build matches the pinned build", { data })
+    : check(NODE_BUILD, "warn", "Node build differs from the pinned build", {
+        data,
+        remediation: `This node runs a different build than the one this SDK was tested against (${nodeBuildPin.repository}). Nothing to change if calls work; if node discovery or calls fail, report it with this check's output.`,
+      });
 }
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorReport> {
@@ -266,6 +380,15 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorRepo
         );
       }
     }
+  }
+
+  if (!options.offline && options.rpc) {
+    checks.push(
+      await nodeBuildCheck(options.rpc, options.fetchImpl ?? fetch, [
+        options.walletSecret,
+        ...rpcSensitiveNeedles(options.rpc),
+      ]),
+    );
   }
 
   if (!options.walletSecret) {

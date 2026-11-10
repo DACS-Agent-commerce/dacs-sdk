@@ -103,8 +103,8 @@ const EVIDENCE_LABEL = 'SIMULATED loopback fixture (not Demos testnet; no real f
 const SENDING_NOTE = 'Signed in this page, validated by the node, then broadcast exactly once. Never retried automatically; the server confirms the result from its own chain readback.';
 
 export class EmbeddedWalletError extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message, { cause } = {}) {
+    super(message, cause === undefined ? undefined : { cause });
     this.code = code;
   }
 }
@@ -128,7 +128,7 @@ function normalizeMnemonic(value) {
 // are read once here and never invoked unless the shape matches. A held
 // testnet transport carries only its network label: it has no rpcUrl and
 // never reaches a node.
-function readTransport(candidate) {
+function readTransport(candidate, relayOrigin = globalThis.location?.origin) {
   if (candidate === null || typeof candidate !== 'object') return null;
   const { profile, rpcUrl, network, resolveGithubUser } = candidate;
   if (typeof network !== 'string' || !network) return null;
@@ -142,7 +142,7 @@ function readTransport(candidate) {
     if (Object.keys(candidate).sort().join(',') !== expectedKeys || typeof candidate.bindingUrl !== 'string') return null;
     try {
       const rpc=new URL(rpcUrl), binding=new URL(candidate.bindingUrl);
-      if (!globalThis.location?.origin || rpc.origin !== globalThis.location.origin || binding.origin !== rpc.origin
+      if (!relayOrigin || rpc.origin !== relayOrigin || binding.origin !== rpc.origin
         || !['http:','https:'].includes(rpc.protocol) || rpc.username || rpc.password || rpc.search || rpc.hash || binding.username || binding.password || binding.search || binding.hash
         || rpc.pathname !== '/portal/api/devnet-native-wallet-rpc' || binding.pathname !== '/portal/api/devnet-native-wallet-binding') return null;
       const bindingKeys=['source','bindingVersion','bindingId','network','chainIdentity','pinVersion','endpoint','transportAuthority',...(settlement?['settlementPublication']:[]),...(delivery?['deliveryPublication']:[]),...(demo?['demoArtifactPublication']:[])];
@@ -167,9 +167,9 @@ function readTransport(candidate) {
 // Actual same-origin server capability descriptor, not approval/verification
 // supplied by the model. Every signature/send still consumes fresh server
 // network-binder fences and the normal exact wallet debit approval.
-export function createDevnetNativeWalletTransport(profile) {
+export function createDevnetNativeWalletTransport(profile, { relayOrigin } = {}) {
   const candidate={ profile:profile?.profile,network:profile?.network,rpcUrl:profile?.rpcUrl,bindingUrl:profile?.bindingUrl };
-  if(!readTransport(candidate)?.devnetNative) throw new EmbeddedWalletError('held_for_review','no same-origin native source capability is available');
+  if(!readTransport(candidate, relayOrigin)?.devnetNative) throw new EmbeddedWalletError('held_for_review','no same-origin native source capability is available');
   return Object.freeze(candidate);
 }
 
@@ -290,6 +290,43 @@ function confirmationMatches(validity, plan, debit, address, postFork) {
     && osOf(g.additional_fee, postFork) === debit.additionalFeeOs;
 }
 
+// The SDK returns a transport failure as {result: 500, response: error} instead of throwing it.
+const failureOf = (answer) => (answer?.result === 500 && answer.response instanceof Error ? answer.response : undefined);
+
+// A confirmation this session cannot match to the approved transaction is
+// indeterminate, never a node refusal; nothing is broadcast after it.
+const unmatchedConfirmation = (check) => new EmbeddedWalletError('upstream_unavailable', 'the node confirmed something this wallet cannot match to the approved transaction; it was not broadcast', { cause: new Error(check) });
+
+// The closed answer to a failed request. A write that may have reached the node
+// keeps its hash and nonce. SDK/approval errors are not echoed: they could carry request detail.
+function closedEnvelope(error) {
+  if (!(error instanceof EmbeddedWalletError)) return fail('internal_error', 'the embedded wallet could not complete the request');
+  return error.data ? { success: false, data: error.data, error: { code: error.code, message: error.message } } : fail(error.code, error.message);
+}
+
+// An EmbeddedWalletError raised inside sign (a content refusal) passes unchanged; anything else is an SDK failure.
+const signFailure = (error, message) => (error instanceof EmbeddedWalletError ? error : new EmbeddedWalletError('sdk_error', message, { cause: error }));
+
+const canonicalDebit = (totalOs, feeOs) => ({ totalDebitOs: totalOs.toString(), feeDebitOs: feeOs.toString() });
+
+// The debit finalContent reports to the signing check, or the refusal before the inner signature.
+function approvedDebit(debit) {
+  if (!debit) throw new EmbeddedWalletError('payload_mismatch', 'the finalized transaction differs from what was approved; nothing was signed');
+  return debit;
+}
+
+// The finalized native content when it is exactly the approved send, in the
+// denomination read at approval (the content's own when none was read), as
+// canonical {totalDebitOs, feeDebitOs} (the seller amount stays in the total,
+// only gas and node fees are fees); null otherwise.
+function nativeFinalDebit(c, plan, debit, address, postFork = typeof c?.amount === 'string') {
+  if (!c || c.type !== 'native' || c.nonce !== plan.nonce || !sameAddress(c.to, plan.to) || osOf(c.amount, postFork) !== plan.amountOs
+    || JSON.stringify(c.data) !== plan.data || !sameAddress(c.from, address) || !sameAddress(c.from_ed25519_address, address)
+    || c.custom_charges != null || !nativeEditsMatch(c.gcr_edits, plan, address, postFork)
+    || !feesMatch(c.transaction_fee, debit, postFork) || c.transaction_fee.rpc_address !== null) return null;
+  return canonicalDebit(debit.totalOs, debit.gasOs + debit.networkFeeOs + debit.rpcFeeOs + debit.additionalFeeOs);
+}
+
 async function sha256HexOfText(value) {
   const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -298,9 +335,9 @@ async function sha256HexOfText(value) {
 // The native source's bind and signature phases take the same RPC auth headers
 // the SDK sends with confirmTx/broadcastTx: this wallet's ed25519 signature over
 // sha256("ed25519:<address>:<timestamp>"). It signs no transaction.
-async function sourceAuthHeaders(demos, address) {
-  const identity = `ed25519:${address}`, timestamp = String(Date.now());
-  const signed = await demos.signMessage(await sha256HexOfText(`${identity}:${timestamp}`), { algorithm: 'ed25519' });
+async function sourceAuthHeaders(demos, address, stamp) {
+  const identity = `ed25519:${address}`, timestamp = String(stamp(identity));
+  const signed = await demos.signMessage(await sha256HexOfText(`${identity}:${timestamp}`), { algorithm: 'ed25519', raw: true });
   const signature = String(signed?.data ?? '').toLowerCase();
   if (signed?.type !== 'ed25519' || !SIGNATURE_HEX.test(signature)) throw new EmbeddedWalletError('sdk_error', 'the wallet could not authenticate its source binding request; nothing was signed or sent');
   return { identity, timestamp, signature: signature.replace(/^0x/, '') };
@@ -308,11 +345,11 @@ async function sourceAuthHeaders(demos, address) {
 
 // The source refuses auth headers stamped more than 2 minutes from its clock;
 // say so plainly rather than as an unavailable binding.
-function sourceRefusal(code, fallback) {
+function sourceRefusal(code, fallback, cause) {
   return new EmbeddedWalletError(code, code === 'wallet_auth_stale'
     ? 'the operator refused this wallet\'s request time: this device\'s clock is more than 2 minutes off. Correct the clock and try again; nothing was signed or sent.'
     : code === 'payment_cancelled' ? 'the operator refused this transfer: it has the terms of a cancelled payment. This attempt was refused and not sent. An earlier attempt may have been sent; the purchase\'s readback shows it.'
-    : fallback);
+    : fallback, { cause });
 }
 
 function base64UrlOfText(value) {
@@ -622,11 +659,11 @@ async function storageAnchorPlan(request, address, transport) {
     exactCreate: JSON.stringify(op), exactStorageBytes: JSON.stringify(op.data), data: JSON.stringify(c.data) };
 }
 
-async function devnetAgreementAnchorPlan(request, address, transport) {
+async function devnetAgreementAnchorPlan(request, address, transport, relayOrigin = globalThis.location?.origin) {
   const url = new URL(transport.rpcUrl);
   // Use the existing relay that converts retryable SDK HTTP failures to 500.
   // A direct/public RPC URL is not an authorized route for this offline kind.
-  if (url.origin !== globalThis.location?.origin || url.pathname !== '/portal/api/devnet-native-wallet-rpc') {
+  if (url.origin !== relayOrigin || url.pathname !== '/portal/api/devnet-native-wallet-rpc') {
     throw new EmbeddedWalletError('unsupported', 'the SR-2 anchor requires the literal loopback wallet relay');
   }
   const serialized = anchorJson(request);
@@ -682,9 +719,9 @@ async function devnetAgreementAnchorPlan(request, address, transport) {
 }
 
 
-export function createDevnetAgreementWalletTransport(profile) {
+export function createDevnetAgreementWalletTransport(profile, { relayOrigin } = {}) {
   const candidate={profile:profile?.profile,network:profile?.network,rpcUrl:profile?.rpcUrl,bindingUrl:profile?.bindingUrl,transportBinding:profile?.transportBinding,...(profile?.settlementPublication?{settlementPublication:profile.settlementPublication}:{}),...(profile?.deliveryPublication?{deliveryPublication:profile.deliveryPublication}:{}),...(profile?.demoArtifactPublication?{demoArtifactPublication:profile.demoArtifactPublication}:{})};
-  if(!readTransport(candidate)?.devnetAgreement) throw new EmbeddedWalletError('held_for_review','no exact same-origin Agreement source capability is available');
+  if(!readTransport(candidate, relayOrigin)?.devnetAgreement) throw new EmbeddedWalletError('held_for_review','no exact same-origin Agreement source capability is available');
   return Object.freeze(candidate);
 }
 
@@ -742,9 +779,9 @@ function proofHandle(context, proofUrl) {
   return handle;
 }
 
-export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, transactionTransport, validateMnemonic, anchorJournal } = {}) {
+export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, bindingRelay, stamp = () => Date.now(), recordCause } = {}) {
   if (typeof DemosCtor !== 'function') throw new TypeError('createSdkWalletSession requires the Demos SDK class as DemosCtor');
-  const transport = readTransport(transactionTransport);
+  const transport = readTransport(transactionTransport, relayOrigin);
   // Explicit caller-owned atomic journal. RAM implementations are offline
   // evidence only; production persistence/recovery is a separate integration.
   const journal = anchorJournal && ['get', 'put', 'withWalletLock'].every((k) => typeof anchorJournal[k] === 'function') ? anchorJournal : null;
@@ -864,13 +901,16 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
   // the SDK as an error envelope, never as a usable value.
   async function nodeRead(demos, started, message, data, accept) {
     let value;
+    let cause;
     try {
       value = await demos.nodeCall(message, data);
-    } catch {
+      cause = failureOf(value);
+    } catch (error) {
       value = undefined;
+      cause = error;
     }
     stillCurrent(started);
-    if (!accept(value)) throw new EmbeddedWalletError('upstream_unavailable', `the configured Demos node did not answer ${message}; nothing was signed`);
+    if (!accept(value)) throw new EmbeddedWalletError('upstream_unavailable', `the configured Demos node did not answer ${message}; nothing was signed`, { cause });
     return value;
   }
 
@@ -887,19 +927,22 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
   }
 
   // SDK confirm (node validation; nothing is executed). A thrown "[Confirm]"
-  // error is the node's refusal; anything else means it could not be asked.
+  // error or a validated valid:false answer is the node's refusal; anything
+  // else (a failure, or an answer this session cannot use) is indeterminate.
   async function confirmed(run, started) {
     let validity;
     try {
       validity = await run();
     } catch (error) {
-      if (/^\[Confirm\]/.test(String(error?.message))) throw new EmbeddedWalletError('confirm_rejected', 'the node refused to validate this transaction; it was not broadcast');
+      if (/^\[Confirm\]/.test(String(error?.message))) throw new EmbeddedWalletError('confirm_rejected', 'the node refused to validate this transaction; it was not broadcast', { cause: error });
       stillCurrent(started);
-      throw new EmbeddedWalletError('upstream_unavailable', 'the transaction could not be validated by the configured node; it was not broadcast');
+      throw new EmbeddedWalletError('upstream_unavailable', 'the transaction could not be validated by the configured node; it was not broadcast', { cause: error });
     }
-    const tx = validity?.response?.data?.transaction;
-    if (validity?.result !== 200 || validity?.response?.data?.valid !== true || !tx || typeof tx.hash !== 'string' || !HASH.test(tx.hash.toLowerCase().replace(/^0x/, ''))) {
-      throw new EmbeddedWalletError('confirm_rejected', 'the node did not validate this transaction; it was not broadcast');
+    const data = validity?.response?.data;
+    const tx = data?.transaction;
+    if (validity?.result === 200 && data?.valid === false) throw new EmbeddedWalletError('confirm_rejected', 'the node did not validate this transaction; it was not broadcast', { cause: new Error('the node answered valid:false') });
+    if (validity?.result !== 200 || data?.valid !== true || !tx || typeof tx.hash !== 'string' || !HASH.test(tx.hash.toLowerCase().replace(/^0x/, ''))) {
+      throw new EmbeddedWalletError('upstream_unavailable', 'the node answered the confirmation with something this wallet cannot use; it was not broadcast', { cause: failureOf(validity) ?? new Error('the confirmation answer is not a valid:true result with a transaction hash') });
     }
     return validity;
   }
@@ -909,10 +952,13 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
   async function broadcastOnce(demos, validity, nonce) {
     const hash = validity.response.data.transaction.hash.toLowerCase().replace(/^0x/, '');
     let res;
+    let cause;
     try {
       res = await demos.broadcast(validity);
-    } catch {
+      cause = failureOf(res);
+    } catch (error) {
       res = null;
+      cause = error;
     }
     const status = res && typeof res === 'object' ? res.result : null;
     if (status === 200) return { hash, nonce, status: 'broadcast_accepted', ...(transport.devnetNative && res.writeProof?.disposition==='included' && res.writeProof.receipt?.hash===hash ? {writeProof:structuredClone(res.writeProof)} : {}), evidenceMode: transport.devnetNative ? DEVNET_NATIVE_EVIDENCE_MODE : TRANSPORT_EVIDENCE_MODE };
@@ -921,7 +967,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     if (Number.isInteger(status) && status >= 400 && status < 500) {
       throw Object.assign(new EmbeddedWalletError('broadcast_rejected', 'the node answered the broadcast with a refusal; check the status with the server before doing anything else'), { data: { hash, nonce } });
     }
-    throw Object.assign(new EmbeddedWalletError('outcome_unknown', 'the broadcast may or may not have reached the node. It is not retried; the server checks the chain for this transaction'), { data: { hash, nonce } });
+    throw Object.assign(new EmbeddedWalletError('outcome_unknown', 'the broadcast may or may not have reached the node. It is not retried; the server checks the chain for this transaction', { cause }), { data: { hash, nonce } });
   }
 
   async function sendTransaction(params) {
@@ -936,10 +982,10 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     const plan = nativeSendPlan(tx, address);
     let networkFence=null, lease=null;
     const bindingCall = async (body) => {
-      const auth=['bind','signature'].includes(body.phase) ? await sourceAuthHeaders(demos,address) : null; if(auth) stillCurrent(started);
-      const r=await fetch(transport.bindingUrl,{ method:'POST',headers:{ 'content-type':'application/json',...auth },credentials:'same-origin',body:JSON.stringify({ address,...body }) });
+      const auth=['bind','signature'].includes(body.phase) ? await sourceAuthHeaders(demos,address,stamp) : null; if(auth) stillCurrent(started);
+      const r=(bindingRelay ? await bindingRelay({ address,...body },auth) : await fetch(transport.bindingUrl,{ method:'POST',headers:{ 'content-type':'application/json',...auth },credentials:'same-origin',body:JSON.stringify({ address,...body }) }));
       const result=await r.json(); stillCurrent(started);
-      if(!r.ok) throw sourceRefusal(result.error ?? 'network_binding_unavailable','the independently supplied network binding is unavailable; nothing is retried');
+      if(!r.ok) throw sourceRefusal(result.error ?? 'network_binding_unavailable','the independently supplied network binding is unavailable; nothing is retried',r.cause);
       return result;
     };
     if(transport.devnetNative) {
@@ -954,6 +1000,8 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     const fee = await nodeRead(demos, started, 'getNetworkParameters', {}, (v) => typeof v?.networkFee === 'number' && typeof v?.rpcFee === 'number');
     const debit = nativeDebit(plan, fee);
     if (!debit) throw new EmbeddedWalletError('unsupported', 'the node reported fees this wallet cannot show exactly before signing; nothing was signed');
+    // On an Agreement transport the denomination the node reports at approval is the one the signed content must carry.
+    const approvedPostFork = transport.devnetAgreement ? (await nodeRead(demos, started, 'getNetworkInfo', {}, (v) => typeof v?.forks?.osDenomination?.activated === 'boolean')).forks.osDenomination.activated : undefined;
     await approvedWrite(started, {
       method: 'sendTransaction',
       address,
@@ -987,33 +1035,26 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     // from/from_ed25519_address, gcr_edits and the node-reported fee.
     let signed;
     try {
-      signed = await demos.sign(structuredClone(tx), { nonce: plan.nonce });
-    } catch {
+      signed = await demos.sign(structuredClone(tx), { nonce: plan.nonce, finalContent: (content) => approvedDebit(nativeFinalDebit(content, plan, debit, address, approvedPostFork)) });
+    } catch (error) {
       stillCurrent(started);
-      throw new EmbeddedWalletError('sdk_error', 'the Demos SDK could not sign this transaction; nothing was sent');
+      throw signFailure(error, 'the Demos SDK could not sign this transaction; nothing was sent');
     }
     stillCurrent(started);
     const c = signed?.content;
-    const postFork = typeof c?.amount === 'string';
-    if (!c || c.type !== 'native' || c.nonce !== plan.nonce || !sameAddress(c.to, plan.to) || osOf(c.amount, postFork) !== plan.amountOs
-      || JSON.stringify(c.data) !== plan.data || !sameAddress(c.from, address) || !sameAddress(c.from_ed25519_address, address)
-      || c.custom_charges != null || !nativeEditsMatch(c.gcr_edits, plan, address, postFork)
-      || !feesMatch(c.transaction_fee, debit, postFork) || c.transaction_fee.rpc_address !== null
+    const postFork = approvedPostFork ?? typeof c?.amount === 'string';
+    if (!nativeFinalDebit(c, plan, debit, address, approvedPostFork)
       || typeof signed.hash !== 'string' || !HASH.test(signed.hash) || signed.signature?.type !== 'ed25519') {
       throw new EmbeddedWalletError('payload_mismatch', 'the signed transaction differs from what was approved; nothing was sent');
     }
     if(transport.devnetNative && !await anchorSignatureMatches(signed,address)) throw new EmbeddedWalletError('payload_mismatch','the SDK native signature/hash does not authenticate the original bytes');
     const originalSignedBytes=transport.devnetNative ? JSON.stringify(signed) : null;
     const validity = await confirmed(() => demos.confirm(signed), started);
-    if (validity.response.data.transaction.hash.toLowerCase().replace(/^0x/, '') !== signed.hash) {
-      throw new EmbeddedWalletError('confirm_rejected', 'the node validated a different transaction; it was not broadcast');
-    }
-    if (!confirmationMatches(validity, plan, debit, address, postFork)) {
-      throw new EmbeddedWalletError('confirm_rejected', 'the node confirmed a different amount, recipient, balance edit set or fee than was approved; it was not broadcast');
-    }
+    if (validity.response.data.transaction.hash.toLowerCase().replace(/^0x/, '') !== signed.hash) throw unmatchedConfirmation('the confirmed transaction hash differs from the signed hash');
+    if (!confirmationMatches(validity, plan, debit, address, postFork)) throw unmatchedConfirmation('the confirmation differs from the approved send');
     stillCurrent(started);
     if(transport.devnetNative) {
-      if(demos.rpc_url !== transport.rpcUrl || JSON.stringify(validity.response.data.transaction) !== originalSignedBytes) throw new EmbeddedWalletError('confirm_rejected','the native capability never changes the original signed payload bytes');
+      if(demos.rpc_url !== transport.rpcUrl || JSON.stringify(validity.response.data.transaction) !== originalSignedBytes) throw unmatchedConfirmation('the confirmed bytes differ from the original signed bytes');
       const fresh=await bindingCall({ phase:'broadcast',leaseId:lease.leaseId,hash:signed.hash });
       for(const k of ['network','chainIdentity','bindingId','endpoint','transportAuthority','connectionId']) if(fresh.binding?.[k] !== lease.binding?.[k]) throw new EmbeddedWalletError('network_binding_unavailable','the fenced transport changed before native broadcast');
     }
@@ -1027,10 +1068,10 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     if (!journal) throw new EmbeddedWalletError('not_configured', 'an explicit atomic anchor journal is required');
     const { demos, address } = live;
     const started = generation;
-    const plan = await (transport.devnetAgreement ? devnetAgreementAnchorPlan : storageAnchorPlan)(request,address,transport);
+    const plan = await (transport.devnetAgreement ? devnetAgreementAnchorPlan : storageAnchorPlan)(request,address,transport,relayOrigin);
     let binding,lease;
-    const sourcePhase=async(body)=>{const auth=['bind','signature'].includes(body.phase)?await sourceAuthHeaders(demos,address):null;if(auth)stillCurrent(started);
-      const r=await fetch(transport.bindingUrl,{method:'POST',headers:{'content-type':'application/json',...auth},body:JSON.stringify({...body,address}),credentials:'same-origin',redirect:'error'});const v=await r.json();if(!r.ok || v.error)throw sourceRefusal(v.error ?? 'network_binding_required','fresh source network binding is unavailable');return v;};
+    const sourcePhase=async(body)=>{const auth=['bind','signature'].includes(body.phase)?await sourceAuthHeaders(demos,address,stamp):null;if(auth)stillCurrent(started);
+      const r=(bindingRelay ? await bindingRelay({ address,...body },auth) : await fetch(transport.bindingUrl,{method:'POST',headers:{'content-type':'application/json',...auth},body:JSON.stringify({...body,address}),credentials:'same-origin',redirect:'error'}));const v=await r.json();if(!r.ok || v.error)throw sourceRefusal(v.error ?? 'network_binding_required','fresh source network binding is unavailable',r.cause);return v;};
     if(transport.devnetAgreement){const bound=await sourcePhase({phase:'bind'});if(bound.pending)throw new EmbeddedWalletError('outcome_unknown','an issued source transaction requires readback, never resend');binding=bound.binding;
       if(binding.chainIdentity!==transport.transportBinding.chainIdentity || binding.bindingId!==transport.transportBinding.bindingId)throw new EmbeddedWalletError('network_binding_required','fresh binding differs from signed source terms');}
     const lane = JSON.stringify([transport.network, transport.devnetAgreement ? transport.transportBinding.chainIdentity : DACS_STORAGE_ANCHOR_CHAIN_IDENTITY, address]);
@@ -1063,8 +1104,9 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
       if (await nextNonce(demos, started, address) !== plan.nonce) throw new EmbeddedWalletError('stale_plan', 'the wallet nonce changed during approval; nothing was signed');
       if(transport.devnetAgreement){lease=await sourcePhase({phase:'signature',binding});binding=lease.binding;}
       let signed;
-      try { signed = await demos.sign(structuredClone(plan.transaction), { nonce: plan.nonce }); }
-      catch { stillCurrent(started); throw new EmbeddedWalletError('sdk_error', 'the SDK could not sign the anchor; nothing was sent'); }
+      const finalContent = (content) => approvedDebit(anchorContentMatches(content, plan, debit, address, postFork) && canonicalDebit(debit.totalOs, debit.totalOs));
+      try { signed = await demos.sign(structuredClone(plan.transaction), { nonce: plan.nonce, finalContent }); }
+      catch (error) { stillCurrent(started); throw signFailure(error, 'the SDK could not sign the anchor; nothing was sent'); }
       stillCurrent(started);
       if (demos.rpc_url !== transport.rpcUrl || !anchorContentMatches(signed?.content, plan, debit, address, postFork) || !await anchorSignatureMatches(signed, address)) {
         throw new EmbeddedWalletError('payload_mismatch', 'the signed anchor differs from the approved scope, CREATE, network or debit; nothing was sent');
@@ -1078,13 +1120,13 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
         || !anchorContentMatches(c, plan, debit, address, postFork, signed.hash)
         || (data.gas_operation != null && (anchorOs(gas.network_fee, postFork, true) !== debit.networkFeeOs
           || anchorOs(gas.rpc_fee, postFork, true) !== debit.rpcFeeOs || anchorOs(gas.additional_fee, postFork, true) !== 0n))) {
-        throw new EmbeddedWalletError('confirm_rejected', 'the node changed the approved anchor or debit; it was not broadcast');
+        throw unmatchedConfirmation('the confirmation differs from the approved anchor or debit');
       }
       const confirmedNetwork = await nodeRead(demos, started, 'getNetworkInfo', {}, (v) => isPlainObject(v));
       if ((!transport.devnetAgreement && (confirmedNetwork.simulated !== true || confirmedNetwork.chainIdentity !== DACS_STORAGE_ANCHOR_CHAIN_IDENTITY)) || confirmedNetwork.forks?.osDenomination?.activated !== postFork) {
-        throw new EmbeddedWalletError('confirm_rejected', 'the fixture network changed during confirmation; it was not broadcast');
+        throw unmatchedConfirmation('the network or denomination changed during confirmation');
       }
-      if(transport.devnetAgreement){if(JSON.stringify(data.transaction)!==JSON.stringify(signed))throw new EmbeddedWalletError('confirm_rejected','the original signed CREATE bytes changed');await sourcePhase({phase:'broadcast',leaseId:lease.leaseId,hash:signed.hash});}
+      if(transport.devnetAgreement){if(JSON.stringify(data.transaction)!==JSON.stringify(signed))throw unmatchedConfirmation('the confirmed CREATE bytes differ from the original signed bytes');await sourcePhase({phase:'broadcast',leaseId:lease.leaseId,hash:signed.hash});}
       stillCurrent(started);
       // A failed/ambiguous persistence operation prevents sending. Preserve
       // the issued lane even when the broadcast answer is lost or refused.
@@ -1321,7 +1363,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
         if (!live) throw new EmbeddedWalletError('locked', 'the wallet is locked');
         if(method === 'readNativeTransfer' && transport?.devnetNative) {
           if(!Array.isArray(params) || params.length !== 1 || !HASH.test(params[0]?.hash ?? '')) throw new EmbeddedWalletError('invalid_params','readNativeTransfer expects the retained public native hash');
-          const r=await fetch(transport.bindingUrl,{ method:'POST',headers:{ 'content-type':'application/json' },credentials:'same-origin',body:JSON.stringify({ phase:'readback',address:live.address,hash:params[0].hash }) });
+          const r=(bindingRelay ? await bindingRelay({ phase:'readback',address:live.address,hash:params[0].hash },null) : await fetch(transport.bindingUrl,{ method:'POST',headers:{ 'content-type':'application/json' },credentials:'same-origin',body:JSON.stringify({ phase:'readback',address:live.address,hash:params[0].hash }) }));
           const result=await r.json(); if(!r.ok)throw new EmbeddedWalletError(result.error ?? 'readback_unavailable','native readback is unavailable; no resend is allowed');
           return ok(result);
         }
@@ -1331,10 +1373,9 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
         if (method === 'getWeb2IdentityProofPayload') return ok(await web2ProofPayload(params));
         throw new EmbeddedWalletError('unsupported', `${method} is not supported by the embedded wallet`);
       } catch (error) {
-        // A write that may have reached the node keeps its hash and nonce.
-        if (error instanceof EmbeddedWalletError) return error.data ? { success: false, data: error.data, error: { code: error.code, message: error.message } } : fail(error.code, error.message);
-        // SDK/approval errors are not echoed: they could carry request detail.
-        return fail('internal_error', 'the embedded wallet could not complete the request');
+        const envelope = closedEnvelope(error);
+        recordCause?.(envelope, error);
+        return envelope;
       }
     },
 

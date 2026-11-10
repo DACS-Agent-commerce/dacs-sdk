@@ -19,6 +19,14 @@ test('the fixture-only claim names the packaged readers and excludes operator-su
   assert.match(readme, /`broadcast` is the operator's own callback/);
 });
 
+test('the required-capability bullet does not claim the host cannot start against a real node', () => {
+  assert.doesNotMatch(readme, /so the host does not start against a real node/);
+  const bullet = readme.match(/It starts only with the whole chain to delivery:[\s\S]*?\n- It signs no completed DACS-5 bundle/)?.[0] ?? '';
+  assert.match(bullet, /accept only `TEST-` authorities and a loopback fixture node\./);
+  assert.match(bullet, /`agreementAnchor` and `artifactAnchor` only by shape/);
+  assert.match(bullet, /`broadcast`\s+is the operator's own callback/);
+});
+
 test('the absence proof is a contract for an operator-supplied anchor, not the unbuildable package anchor', () => {
   // createDevnetDemoArtifactAnchor refuses every input because
   // isDevnetDemoTransport is always false (devnet-source.mjs:13), and no part
@@ -49,6 +57,10 @@ test('the README does not claim the host checks the data directory ancestors', (
   assert.match(readme, /party\s+Vet store requires each ancestor to be owned by root or by this user/);
   assert.match(readme, /wallet journal refuses a non-sticky ancestor that others can write/);
   assert.match(readme, /host\s+checks only the data directory itself/);
+});
+
+test('the README says the old-domain client helper does not reach the routes the wire opens', () => {
+  assert.match(readme, /request signed under the old domain is refused, so\s+`createSellerTransportClientAuth` does not reach these routes/);
 });
 
 test('the inline payload bound matches the storage CREATE cap the host enforces', () => {
