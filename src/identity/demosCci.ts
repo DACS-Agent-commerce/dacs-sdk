@@ -21,6 +21,7 @@ import {
   type CciClaim,
   type CciRecord,
 } from "./cci.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 export interface DemosCciProvenance {
   /** Exact primary claim whose GCR resolution was authenticated. */
@@ -116,18 +117,6 @@ interface AuthenticatedCciState {
 
 const authenticatedCciRecords = new WeakMap<object, AuthenticatedCciState>();
 const INERT_CCI_RECEIVER = Object.freeze(Object.create(null)) as object;
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
-}
 
 const isSafeTime = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;

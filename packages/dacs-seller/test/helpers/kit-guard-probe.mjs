@@ -126,7 +126,7 @@ async function effectEntries() {
   const { storageWriteRpcSigner } = await import('../../src/devnet-demo/storage-write-recovery.mjs');
   const { createReservationAccounting, createReservationCoordinator } = await import('../../src/dacs/seller-reservation-accounting.mjs');
   const accounting = createReservationAccounting({ store: {}, now: () => 0,
-    limits: { maxJobs: 1, maxContextRecords: 1, maxNoncesPerBuyerPerWindow: 1 } });
+    limits: { maxRecords: 1, maxJobs: 1, maxContextRecords: 1, maxNoncesPerBuyerPerWindow: 1 } });
   const coordinator = createReservationCoordinator({ accounting, capacity: { classify: never('classification'), recordExhaustion: never('the exhaustion record') },
     inspectOperation: never('the inspection') });
 

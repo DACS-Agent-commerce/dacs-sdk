@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type {
   BundlePartyRole,
@@ -513,6 +513,44 @@ function concurrentWrongReceiptStore(store: FencedSessionStoreV2): FencedSession
 }
 
 describe("durable role-local terminal bundle finalization", () => {
+  test.each([undefined, null, 0, "", false, 0n, NaN, new Error("renewal failed")])("stops after a heartbeat rejection with %s", async (reason) => {
+    vi.useFakeTimers();
+    try {
+      const authority = failureAuthority();
+      const effects = roleEffects();
+      const store = createInMemoryFencedSessionStore();
+      await store.create({ jobId: authority.jobId, phase: "created", now: NOW - 1 });
+      const input = durableInput(authority, { kind: "co-signed" }, "buyer", effects);
+      const options = durability(store, transportState(), effects, "buyer-worker");
+      const renew = store.renewLease.bind(store);
+      let rejectRenewal = false;
+      vi.spyOn(store, "renewLease").mockImplementation(async (request) => {
+        if (rejectRenewal) { rejectRenewal = false; throw reason; }
+        return renew(request);
+      });
+      const sign = input.local.signer;
+      input.local.signer = async (...args) => {
+        rejectRenewal = true;
+        await vi.advanceTimersByTimeAsync(66);
+        const value = await sign(...args);
+        effects.signatures.clear();
+        return value;
+      };
+      await expect(advanceTerminalBundleDurable(input, provider("buyer", effects), options))
+        .resolves.toMatchObject({ disposition: "indeterminate", stage: "contribution-signing" });
+      const loaded = await store.load(authority.jobId);
+      expect(loaded.status).toBe("ok");
+      if (loaded.status !== "ok") throw new Error("session missing");
+      expect(loaded.record.checkpoints.some((entry) =>
+        entry.key.includes("signature:") && entry.stage === "outcome",
+      )).toBe(false);
+      expect(effects.anchorSubmits).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("completes the three-role co-signed matrix bottom-up and replays read-only", async () => {
     const authority = failureAuthority();
     const mode = { kind: "co-signed" } as const;
