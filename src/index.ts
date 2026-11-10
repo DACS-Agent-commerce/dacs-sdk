@@ -9,11 +9,10 @@ export {
  * Standards) agents across the Identify → Vet → Negotiate → Settle → Verify
  * lifecycle.
  *
- * T1 scaffold: this exports the substrate seam (SubstrateAdapter + DemosAdapter)
- * and package metadata. The agent-facing public API (`createAgent`,
- * `publishListing`, `readListing`, `enumerateListings`, `discover`,
- * `runSession`, `verifyBundle`, `getReputation`) is designed in T4 — see
- * IMPLEMENTATION.md.
+ * This root entry point exports the agent API (`createAgent` and the `Agent`
+ * methods), the settlement rails, verification and the shared types. The
+ * `DemosAdapter` class itself is on the `./substrate` subpath; the root
+ * exports only its types.
  */
 
 export { VERSION, DACS_MVP_TARGET, DACS_STANDARD_PIN } from "./version.js";
@@ -115,18 +114,15 @@ export {
 } from "./negotiate/durableRfqLifecycleStoreFs.js";
 export {
   FINALITY_COMMITMENT_SEPARATOR,
-  LEGACY_COMMITMENT_SEPARATOR,
   finalityCommitmentAddress,
   commitFixedPriceAgreement,
   commitRfqAgreement,
-  readLegacyFixedPriceAgreementCommitment,
   validateFixedPriceAgreementBinding,
   validateRfqAgreementBinding,
   type CommitmentVerificationDisposition,
   type CommitmentSignatureVerificationInput,
   type CommitmentSignatureVerifier,
   type AnchoredFinalityCommitment,
-  type AnchoredLegacyCommitment,
   type AnchoredAgreementCommitment,
   type FinalityCommitmentLookup,
   type FinalityCommitmentReader,
@@ -136,9 +132,7 @@ export {
   type CommitAgreementInput,
   type CommitFixedPriceAgreementInput,
   type CommitRfqAgreementInput,
-  type ReadLegacyFixedPriceAgreementCommitmentInput,
   type FinalizedFinalityAgreementCommitment,
-  type FinalizedLegacyAgreementCommitment,
   type FinalizedAgreementCommitment,
 } from "./negotiate/commitment.js";
 export {
@@ -222,7 +216,7 @@ export {
   isPathWithinPrivateRoot,
 } from "./filesystem/privateStore.js";
 
-// Foundation (T2): canonical form, decimals, content hashing, domain-separated signing.
+// Foundation: canonical form, decimals, content hashing, domain-separated signing.
 export {
   canonicalize,
   canonicalizeDecimal,
@@ -424,7 +418,7 @@ export {
   type VerifyDemosGcrDomainDeps,
 } from "./identity/index.js";
 
-// Discovery (§6.3.4 (b)/(c), #54): the PUBLISHED logical→native anchor binding.
+// Discovery (§6.3.4 (b)/(c)): the PUBLISHED logical→native anchor binding.
 // On Demos the native address folds in the writer's nonce, so it isn't
 // recomputable — consumers resolve through this binding, never by program name
 // (which the spec defines as an opaque write input, not a resolution key). Pure
@@ -552,7 +546,7 @@ export {
   type SealedRuleEvaluationInput,
 } from "./negotiate/index.js";
 
-// Public agent API (T4) — the headline surface a dApp dev uses.
+// Public agent API — the headline surface a dApp dev uses.
 export {
   isDacsPublicAddressV1,
   createAgent,
@@ -791,7 +785,7 @@ export {
   type ClaimQualificationAuthentication,
   type ClaimQualificationDeps,
   type ClaimQualificationEvaluation,
-  // DACS-2 §7.4.1 ParserSpec — signed recipe content rules (#49) + the engine seam.
+  // DACS-2 §7.4.1 ParserSpec — signed recipe content rules + the engine seam.
   evaluateParserSpec,
   defaultParserEngine,
   defaultParserEngineCapabilities,
@@ -804,7 +798,7 @@ export {
   type ParserEvaluation,
   type Reputation,
   type ReputationExclusion,
-  // Injectable legacy buyer-session core (F1 #14). Its historical address
+  // Injectable legacy buyer-session core. Its historical address
   // grammar is public only under an explicit compatibility name; current
   // producers export their own typed normative address functions.
   runSessionCore,
@@ -1644,7 +1638,7 @@ export {
   type SellerBundleFinalizationStatusLoad,
 } from "./seller/index.js";
 
-// Steward registries (T12/T13): resolve + pin steward-signed rails/recipes,
+// Steward registries: resolve + pin steward-signed rails/recipes,
 // dispatch the money path by rail kind.
 export {
   RAIL_REGISTRY_INDEX_ADDRESS,
@@ -1718,7 +1712,7 @@ export {
   type Registry,
 } from "./registry/index.js";
 
-// Artifact model (T3): spine artifact types, kind→separator registry, validators.
+// Artifact model: spine artifact types, kind→separator registry, validators.
 export {
   type ArtifactKind,
   type ClaimRef,

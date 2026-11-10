@@ -1,6 +1,7 @@
 // Offline child process: real provider, SDK Vet, crypto, SQLite and HTTP handler.
 // The anchor is a local fixture file; it sends no transaction or socket request.
 import {readFileSync,writeFileSync,existsSync} from 'node:fs';
+import {admitFixtureFor} from './challenge-api.mjs';
 import {join} from 'node:path';
 import {createPrivateKey,sign} from 'node:crypto';
 import {contentHash,compositeVerificationAddress,sha256Hex,identityBundleHash,canonicalize} from '@kynesyslabs/dacs';
@@ -26,6 +27,8 @@ const anchor={writer:seller,vetMode:config.vetMode,hasIntent:async address=>Bool
  const result={status:'present',artifact,receipt};data.records[logicalAddress]=result;data.creates.push(logicalAddress);data.closing=false;save();return result;
 }};
 const partyPath=join(directory,'party.sqlite'),partyBase=openPartyVetStore({path:partyPath,mode:existsSync(partyPath)?'open':'create'}),transport=createSellerTransportStore({path:join(directory,'transport.sqlite'),now:()=>config.time});
+// Each invocation follows a terminated child, so run the host's lost-owner recovery before readback.
+transport.challenges.closeLostValidations();transport.recoverLostContextReservations();
 function emitCut(){throw Object.assign(new Error('TEST committed process cut'),{code:'indeterminate'});}
 const partyStore={...partyBase,update:async(key,change)=>{
  const row=await partyBase.update(key,change);
@@ -45,7 +48,7 @@ const buyerKey=createPrivateKey(config.buyer.privateKey),counterparty={
 };
 const provider=createDevnetDemoAgreementContextProvider({anchor,counterparty,vetMode:config.vetMode,wallet:{claim:seller,signBytes:bytes=>{data.signatures.push(contentHash({bytes:Buffer.from(bytes).toString('hex')}));save();return signer.sign(bytes)}},listing:config.listing,store:partyStore,now:()=>config.time,log:()=>{}});
 const holds=[],releases=[];
-const route=createSellerContextRoute({listing:config.listing,resolveBuyer:provider.resolveBuyer,recover:provider.recoverBuyer,resumable:provider.resumableBuyer,assertBuyerAccess:()=>{},writable:()=>true,now:()=>config.time,admitWrites:async value=>{holds.push(value);return null},releaseWrites:async value=>{releases.push(value)}});
+const route=createSellerContextRoute({admitPresentation:admitFixtureFor(config.listing),listing:config.listing,resolveBuyer:provider.resolveBuyer,recover:provider.recoverBuyer,resumable:provider.resumableBuyer,assertBuyerAccess:()=>{},writable:()=>true,now:()=>config.time,admitWrites:async value=>{holds.push(value);return null},releaseWrites:async value=>{releases.push(value)}});
 const auth=createSellerTransportServerAuth({sellerSigner:signer,listingPin:config.pin,store:transport,now:()=>config.time});
 const handler=createSellerHttpHandler({claim:seller,listingPin:config.pin},{authentication:auth,context:route});
 let resumeCount=0;const original=transport.resume;transport.resume=(...args)=>{const out=original(...args);if(out.resumed)resumeCount++;return out};

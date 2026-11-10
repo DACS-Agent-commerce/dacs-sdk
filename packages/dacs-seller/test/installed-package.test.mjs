@@ -25,7 +25,7 @@ const SELLER_BIN = 'bin/dacs-seller.mjs';
 const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerContextClient', 'createSellerContextRoute', 'createSellerHttpHandler', 'createSellerTransportClientAuth',
-  'createSellerTransportServerAuth', 'createSellerTransportStore', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
+  'createSellerTransportServerAuth', 'createSellerTransportStore', 'createSellerWireClientAuth', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
 const INSTALLED_RUN_TIMEOUT_MS = 120000;
 const INSTALLED_TEST_TIMEOUT_MS = 600000;
 
@@ -133,7 +133,17 @@ test('the packed bin runs init on Node 20.19 and on the purchase range, and the 
 test('P10-T15 the packed archive contains no authority fixture', () => {
   const packed = sellerPackFiles().sort();
   assert.deepEqual(packed.filter((path) => /authority-fixture/.test(path)), []);
-  for (const file of ['src/dacs/bounded-call.mjs', 'src/dacs/kit-data-format.mjs']) assert.ok(packed.includes(file), `${file} ships`);
+  for (const file of ['src/dacs/bounded-call.mjs', 'src/dacs/kit-data-format.mjs', 'src/dacs/seller-wire-requests.mjs']) assert.ok(packed.includes(file), `${file} ships`);
+});
+
+test('no EB test double or authority fixture ships in the packed kit', () => {
+  const packed = sellerPackFiles().sort();
+  for (const file of ['src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs']) assert.ok(packed.includes(file), `${file} ships`);
+  assert.deepEqual(packed.filter((path) => /authority-fixture|effect-boundary-fixture|kit-guard-fixture|(?:^|\/)test\//.test(path)), []);
+  for (const file of ['src/dacs/effect-history.mjs', 'src/devnet-demo/durable-file.mjs']) {
+    assert.deepEqual(relativeImports(file).filter((target) => /(?:^|\/)test\//.test(target)), [], `${file} imports no test module`);
+    assert.doesNotMatch(readFileSync(join(packageDirectory, file), 'utf8'), /setKitOperationGuardForTest|authority-fixture|effect-boundary-fixture/, `${file} names no test setter or fixture`);
+  }
 });
 
 test('the import scan sees static, side-effect, re-export and literal dynamic imports', () => {
@@ -141,7 +151,7 @@ test('the import scan sees static, side-effect, re-export and literal dynamic im
   assert.deepEqual(relativeImports('src/probe.mjs', probe).sort(), ['c.mjs', 'src/dacs/a.mjs', 'src/dacs/b.mjs', 'src/util/d.mjs']);
 });
 
-test('the packed seller installs outside the repository, refuses to start while its guard is off, and serves one Listing only under the unshipped fixture loader', { timeout: INSTALLED_TEST_TIMEOUT_MS }, async (t) => {
+test('P11a1-T22: the packed host test passes with the wire buyer helper; the packed seller installs outside the repository, refuses to start while its guard is off, and serves one Listing only under the unshipped fixture loader', { timeout: INSTALLED_TEST_TIMEOUT_MS }, async (t) => {
   const manifestPath = join(packageDirectory, 'package.json');
   assert.ok(existsSync(manifestPath), 'packages/dacs-seller/package.json is the package manifest');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -162,6 +172,9 @@ test('the packed seller installs outside the repository, refuses to start while 
   const app = realpathSync(preparedPath);
   assert.ok(relative(root, app).startsWith('..') && isAbsolute(app), 'prepared consumer is outside the repository');
   assert.equal(staleSetupReason(app), null, 'setup must provision these exact sources, lock and runtime');
+  for (const helper of ['wire-buyer.mjs', 'wire-authority-fixture.mjs']) {
+    writeFileSync(join(app, helper), readFileSync(new URL(`./helpers/${helper}`, import.meta.url)));
+  }
   const { sellerPack } = JSON.parse(readFileSync(join(app, 'prepared.json'), 'utf8'));
   assert.equal(manifest.exports['./PROFILE.json'], './PROFILE.json');
 
@@ -203,6 +216,8 @@ test('the packed seller installs outside the repository, refuses to start while 
   assert.match(out.refusedConfigurations.missingRailAuthority, /^TypeError: .*requires railAuthority$/, 'the host selects its rail only from the steward-signed definition');
   assert.match(out.refusedConfigurations.missingSessionAdmission, /^TypeError: .*requires sessionAdmission$/, 'the host opens sessions only under the seller\'s session admission');
   assert.match(out.refusedConfigurations.missingJournal, /^TypeError: .*requires reconcilePaymentEvidence$/, 'the host takes payment only with the wallet journal\'s question, so a paid order always has a way on');
+  assert.match(out.refusedConfigurations.missingReadCommitmentReceipt, /requires readCommitmentReceipt/);
+  assert.match(out.refusedConfigurations.invalidReadCommitmentReceipt, /readCommitmentReceipt must be a function/);
   assert.match(out.refusedConfigurations.publicInterface, /^TypeError: .*loopback/);
   assert.match(out.refusedConfigurations.unknownOption, /^TypeError: .*anchors/);
   assert.match(out.refusedConfigurations.relativeDirectory, /^TypeError: .*dataDirectory/);
