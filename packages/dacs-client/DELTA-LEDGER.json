@@ -6623,23 +6623,23 @@
     },
     {
       "delta": "WF",
-      "subject": "delta(client): WF check that the effect boundary module is not exported without listing every export",
-      "files": [
-        {
-          "path": "packages/dacs-client/test/package-contents.test.mjs",
-          "before": "eed744fccb73e1c4c24346fffa91172a1d9029a1",
-          "after": "db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa"
-        }
-      ]
-    },
-    {
-      "delta": "WF",
       "subject": "delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up",
       "files": [
         {
           "path": "packages/dacs-client/test/effect-boundary.test.mjs",
           "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
           "after": "4e5486337d9cddb235f415cfe4bd819c78ae6593"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF check that the effect boundary module is not exported without listing every export",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/package-contents.test.mjs",
+          "before": "eed744fccb73e1c4c24346fffa91172a1d9029a1",
+          "after": "db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa"
         }
       ]
     }
