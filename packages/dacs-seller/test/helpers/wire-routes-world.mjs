@@ -1,5 +1,5 @@
 // The seller handler on its own wire journal with a counting stand-in agent, and the buyer that signs for it.
-import test, { mock } from 'node:test';
+import { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -22,7 +22,6 @@ import * as wireRequests from '../../src/dacs/seller-wire-requests.mjs';
 import { wireContinuationFixture, receiptReader } from './wire-continuation-fixture.mjs';
 import { retainedFor } from '../../src/dacs/seller-wire-requests.mjs';
 import { SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
-import { createSellerTransportStore } from './bound-transport-store.mjs';
 
 export const PATHS = DACS_SELLER_HTTP_PATHS;
 export const CONTINUING = [PATHS.payments, PATHS.bundleRequest, PATHS.bundleCountersignature];

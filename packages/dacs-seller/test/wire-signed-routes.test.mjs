@@ -16,7 +16,7 @@ import { exchange } from './helpers/d5-http-fixture.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './helpers/wire-authority-fixture.mjs';
 import { wireBuyer } from './helpers/wire-buyer.mjs';
-import { agreementInput, listingPin } from '../src/dacs/purchase-protocol.mjs';
+import { agreementInput } from '../src/dacs/purchase-protocol.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
 import { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';

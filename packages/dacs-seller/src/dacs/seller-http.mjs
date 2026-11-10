@@ -284,7 +284,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     let settled = null;
     let fenced = null;
     let counted = false;
-    let wired = false;
+    let wired;
     const store = authentication?.store;
     const answerText = (outcome) => JSON.stringify(outcome.value);
     try {
