@@ -10,8 +10,15 @@ import { describe, expect, it } from "vitest";
 // property is null, and contains() on a string is a case-insensitive substring test.
 
 const repoRoot = resolve(import.meta.dirname, "../..");
-type Job = { "runs-on"?: string };
-const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as { jobs: Record<string, Job> };
+type Job = {
+  "runs-on"?: string;
+  strategy?: { matrix?: { "node-version"?: (string | number)[] } };
+  steps?: { name?: string; if?: string }[];
+};
+const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as {
+  jobs: Record<string, Job>;
+  concurrency?: { group?: string; "cancel-in-progress"?: unknown };
+};
 const RUNS_ON = workflow.jobs["build-test"]?.["runs-on"] ?? "";
 const POOL = ["self-hosted", "linux", "x64", "dacs-pool"];
 const BLACKSMITH = "blacksmith-2vcpu-ubuntu-2404";
@@ -133,7 +140,7 @@ function evaluate(source: string, context: Record<string, Value>): Value {
 
 function route(over: {
   enabled?: string; authors?: string; blacksmith?: string; node?: string; event?: string; headRepo?: string;
-  author?: string; actor?: string; triggering?: string; labels?: string[]; prPayload?: boolean;
+  author?: string; actor?: string; triggering?: string; labels?: string[]; prPayload?: boolean; draft?: boolean;
 }) {
   const match = /^\$\{\{([\s\S]*)\}\}$/.exec(RUNS_ON.trim());
   if (!match) throw new Error("runs-on is not a single expression");
@@ -156,6 +163,7 @@ function route(over: {
           head: { repo: { full_name: over.headRepo ?? "org/repo" } },
           user: { login: over.author ?? "owner" },
           labels: (over.labels ?? []).map((name) => ({ name })),
+          draft: over.draft ?? false,
         } }
         : {},
     },
@@ -237,6 +245,15 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
       }
     });
 
+    it("never takes draft pull requests", () => {
+      for (const node of ["22", "20.19.0"]) {
+        expect(route({ blacksmith: "on", draft: true, node, enabled: "off" })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", draft: false, node })).toBe(BLACKSMITH);
+      }
+      // A draft falls through to the rules above, which still route it like any other pull request.
+      expect(route({ blacksmith: "on", draft: true })).toEqual(POOL);
+    });
+
     it("never takes pushes, merge-queue runs or fork pull requests", () => {
       for (const node of ["22", "20.19.0"]) {
         expect(route({ blacksmith: "on", event: "push", node })).toBe("ubuntu-latest");
@@ -246,5 +263,71 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
         expect(route({ blacksmith: "on", event: "pull_request_target", prPayload: true, node })).toBe("ubuntu-latest");
       }
     });
+  });
+});
+
+describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", () => {
+  const steps = workflow.jobs["build-test"]?.steps ?? [];
+  const runs = (name: string, event: string, node: string) => {
+    const step = steps.find((s) => s.name === name);
+    if (!step) throw new Error(`no step ${name}`);
+    if (step.if === undefined) return true;
+    return truthy(evaluate(step.if, { matrix: { "node-version": node }, github: { event_name: event } }));
+  };
+  const suites = [
+    "Test seller internal primitives and journals",
+    "Test (unit + conformance harness)",
+    "Test durable RFQ filesystem record-size boundaries",
+  ];
+
+  it("runs the long suites on both legs except the node 20 leg of a pull request", () => {
+    for (const name of suites) {
+      expect(runs(name, "pull_request", "22")).toBe(true);
+      expect(runs(name, "pull_request", "20.19.0")).toBe(false);
+      for (const event of ["push", "merge_group"]) {
+        expect(runs(name, event, "22")).toBe(true);
+        expect(runs(name, event, "20.19.0")).toBe(true);
+      }
+    }
+  });
+
+  // The legs come from the matrix itself, so pinning a leg (say "22" to "22.21.1") can't leave a suite running on no
+  // pull request leg while the literal cases above still pass.
+  it("runs each long suite on at least one matrix leg of a pull request, and on every leg otherwise", () => {
+    const legs = (workflow.jobs["build-test"]?.strategy?.matrix?.["node-version"] ?? []).map(String);
+    expect(legs.length).toBeGreaterThan(1);
+    for (const name of suites) {
+      expect(legs.some((node) => runs(name, "pull_request", node))).toBe(true);
+      for (const event of ["push", "merge_group"]) for (const node of legs) expect(runs(name, event, node)).toBe(true);
+    }
+    const demosdk = "Typecheck and test against demosdk 4.0.18";
+    for (const event of ["push", "merge_group"]) expect(legs.some((node) => runs(demosdk, event, node))).toBe(true);
+  });
+
+  it("runs the older-demosdk step on node 22 outside pull requests only", () => {
+    const name = "Typecheck and test against demosdk 4.0.18";
+    expect(runs(name, "pull_request", "22")).toBe(false);
+    expect(runs(name, "push", "22")).toBe(true);
+    expect(runs(name, "merge_group", "22")).toBe(true);
+    for (const event of ["pull_request", "push", "merge_group"]) expect(runs(name, event, "20.19.0")).toBe(false);
+  });
+});
+
+describe("run concurrency (.github/workflows/ci.yml)", () => {
+  const group = (event: string, ref: string, runId = 7) => {
+    const match = /^\$\{\{([\s\S]*)\}\}$/.exec(String(workflow.concurrency?.group ?? "").trim());
+    if (!match) throw new Error("concurrency group is not a single expression");
+    return evaluate(match[1] ?? "", { github: { event_name: event, ref, run_id: runId } });
+  };
+
+  it("never cancels a running run, so a phase0-completion push run always finishes", () => {
+    expect(workflow.concurrency?.["cancel-in-progress"]).toBe(false);
+  });
+
+  it("puts phase0-completion push runs in one shared group and every other run in its own", () => {
+    expect(group("push", "refs/heads/phase0-completion", 1)).toBe(group("push", "refs/heads/phase0-completion", 2));
+    expect(group("push", "refs/heads/main", 3)).toBe("ci-3");
+    expect(group("pull_request", "refs/pull/9/merge", 4)).toBe("ci-4");
+    expect(group("merge_group", "refs/heads/gh-readonly-queue/main/x", 5)).toBe("ci-5");
   });
 });

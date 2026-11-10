@@ -2,8 +2,8 @@ name: CI
 
 on:
   push:
-    # phase0-completion is the shared base of the phase 0 PRs: a run on its newest head shows whether a red PR
-    # check comes from the base or from the PR itself (older heads' unfinished runs end as cancelled, see below).
+    # phase0-completion is the shared base of the phase 0 PRs: a finished run on a recent head shows whether a red
+    # PR check comes from the base or from the PR itself (see the concurrency note below for which runs finish).
     branches: [main, phase0-completion]
   pull_request:
   merge_group:
@@ -11,15 +11,18 @@ on:
 permissions:
   contents: read
 
-# A newer phase0-completion head replaces an unfinished push run of an older one: several merges in a row otherwise
-# queue one full run each and only the newest head matters. Every other event gets its own group (run_id), so pull
-# request, merge queue and main runs are never cancelled or replaced.
-# The group keeps the run admitted LAST, not the newest commit: re-running an older head's push run (or an older run
-# admitted late) cancels the newest head's run. Re-run only the newest head; if the newest head's run shows
-# cancelled, re-run it to get the base signal back.
+# Push runs on phase0-completion share one group and a running one is never cancelled, so it always finishes: a full
+# run is longer than the gap between merges, and cancelling the running run would leave no finished run at all.
+# GitHub keeps at most one pending run in the group; a run admitted later replaces it (shown as cancelled). Runs are
+# usually admitted in push order, so the pending run is usually the newest head, but GitHub does not promise that
+# order. Every other event gets its own group (run_id), so pull request, merge queue and main runs are never cancelled
+# or replaced.
+# A re-run joins the same group and also replaces the pending run. A re-run of a run created before this setting may
+# keep that run's old workflow file, including cancel-in-progress: true. Re-run only the newest head; if its run
+# shows cancelled, re-run it to get the base signal back.
 concurrency:
   group: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/phase0-completion') && 'ci-phase0-completion-push' || format('ci-{0}', github.run_id) }}
-  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/phase0-completion' }}
+  cancel-in-progress: false
 
 jobs:
   build-test:
@@ -42,14 +45,18 @@ jobs:
     # Deleting SDK_SELF_HOSTED sends new runs back to ubuntu-latest. If no dacs-pool runner is online, a routed job
     # waits for one (GitHub has no fallback); cancel it and start a new run after deleting the variable.
     # Blacksmith (both legs): while the repository variable SDK_BLACKSMITH is 'on' (compared ignoring case, so 'ON' and
-    # 'On' also count as on), every pull_request run whose head branch is in this repository runs build-test on
-    # Blacksmith's blacksmith-2vcpu-ubuntu-2404 runners, ahead of the rules above (ci-hosted and SDK_SELF_HOSTED do not
-    # apply to it). Fork pull requests, pushes and merge-queue runs never go there and keep the rules above. To switch
+    # 'On' also count as on), every pull_request run whose head branch is in this repository and whose pull request is
+    # not a draft runs build-test on Blacksmith's blacksmith-2vcpu-ubuntu-2404 runners, ahead of the rules above
+    # (ci-hosted and SDK_SELF_HOSTED do not apply to it). Draft pull requests, fork pull requests, pushes and merge-queue
+    # runs never go there and keep the rules above. Marking a draft ready for review starts no run (the pull_request
+    # trigger has its default types); its next push or update-branch run goes to Blacksmith. A re-run of a run started
+    # while the pull request was a draft replays that event and stays off Blacksmith; push or update the branch instead.
+    # To switch
     # Blacksmith off, set SDK_BLACKSMITH to 'off' (or delete it); new runs then use the rules above. A job already
     # waiting for a Blacksmith runner (for example once the account's included minutes are used up) does not move:
     # cancel it and start a new run after switching off. A re-run reads the variable again. Job and required-check names
     # are the same on every runner.
-    runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
+    runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +104,11 @@ jobs:
           DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
         run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
 
+      # Pull requests run this suite and the two marked below on node 22 only. The node 20 leg runs them on pushes
+      # to main and phase0-completion and in main's merge queue: a node-20-only failure shows on the next
+      # phase0-completion push run that finishes after the PR merges there, and blocks main in the merge queue.
       - name: Test seller internal primitives and journals
+        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         env:
           DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
         run: npm run seller:test
@@ -439,10 +450,14 @@ jobs:
           ]) if (!compose.includes(required)) process.exit(1);
           NODE
 
+      # node 22 only on pull requests (see "Test seller internal primitives and journals").
       - name: Test (unit + conformance harness)
+        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         run: npm test
 
+      # node 22 only on pull requests (see "Test seller internal primitives and journals").
       - name: Test durable RFQ filesystem record-size boundaries
+        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         env:
           DACS_SLOW_BOUNDARY: "1"
         run: npx vitest run test/negotiate/durableRfqLifecycleStoreFs.test.ts -t "record size boundary"
@@ -480,8 +495,11 @@ jobs:
       # report replaces every 4.0.18 in this step with the new version and fixes
       # what then fails.
       # Last step: it replaces the installed SDK for the rest of this job.
+      # Not on pull requests: pushes to main and phase0-completion and main's merge queue run it, so a break against
+      # 4.0.18 shows on the next phase0-completion push, not on the PR. That includes the PR that bumps this pin: run
+      # these commands locally against the new version before opening it.
       - name: Typecheck and test against demosdk 4.0.18
-        if: matrix.node-version == '22'
+        if: matrix.node-version == '22' && github.event_name != 'pull_request'
         run: |
           npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
           test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
