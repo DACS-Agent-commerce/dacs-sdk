@@ -1948,6 +1948,7 @@ value verifySignedArtifact
 value verifyX402ReceiptClaim
 value vetCore
 value vetPhaseFailureClass
+value withRecoveredAttempts
 value x402BuyerSettlementAuthenticationHash
 value x402BuyerSettlementKey
 value x402Eip3009Nonce
