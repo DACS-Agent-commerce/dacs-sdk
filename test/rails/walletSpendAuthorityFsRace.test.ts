@@ -218,7 +218,7 @@ describe("wallet spend filesystem lock mutation races", () => {
       const policy: WalletSpendPolicyV1 = {
         policyVersion: "1",
         policyId: "spend-limit",
-        wallet: "wallet",
+        wallet: `0x${"5e".repeat(20)}`,
         chainId: "demos:testnet",
         maximumConcurrentEffects: 2,
         maximumRetainedReservations: 4,
