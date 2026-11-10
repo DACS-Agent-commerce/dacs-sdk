@@ -29,7 +29,7 @@ describe("file size check", () => {
     expect(countLines("a\nb\n")).toBe(2);
   });
 
-  it("lists source files in src/ and each package's src/, without declarations, tests or node_modules", () => {
+  it("lists source files in src/ and each package's src/, without declarations or node_modules; test/ folders are outside", () => {
     const root = repo({
       "src/a.ts": "",
       "src/types.d.ts": "",
