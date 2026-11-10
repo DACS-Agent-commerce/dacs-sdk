@@ -6982,6 +6982,18 @@
           "after": "8080ab64a3de6b4a227ea7b19ecb9d70911f035a"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged wire purchase transport and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "7d4b15aa1bbe988814e3249e2cdfc449909a9be4",
+          "after": "7d4b15aa1bbe988814e3249e2cdfc449909a9be4"
+        }
+      ]
     }
   ]
 }
