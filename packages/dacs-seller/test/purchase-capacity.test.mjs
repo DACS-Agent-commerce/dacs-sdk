@@ -325,7 +325,11 @@ test('terminal cleanup trusts only synchronous terminal state', async t => {
     fulfilled: () => Promise.resolve('finalised') };
   const w = world(t, { maxRecords: 500 }), p = w.purchase(), allocation = w.allocate(p); w.charge(p.jobId, PATHS.context, 1, allocation.allocationId);
   const before = stable(w.report());
-  for (const [name, answer] of Object.entries(answers)) { w.control.state = answer; w.capacity.releaseTerminalAllocations(); assert.equal(w.current(p.jobId).state, 'live', name); }
+  for (const [name, answer] of Object.entries(answers)) {
+    w.control.state = answer;
+    w.capacity.releaseTerminalAllocations();
+    assert.equal(w.current(p.jobId).state, 'live', name);
+  }
   await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(unhandled, []); assert.deepEqual(stable(w.report()), before);
   w.control.state = ({ jobId }) => (jobId === p.jobId ? 'finalised' : null);
   w.capacity.releaseTerminalAllocations(); const released = stable(w.report());
@@ -902,12 +906,14 @@ test('reservation-lock-map-cleanup', async t => {
 // from the work's own writes. Worlds here have a real store, capacity and admission transaction; the source is `control.state`.
 const TERMINAL_NAMES = [...TERMINAL_CONTEXT_STATES];
 const ALL_ROUTES = [PATHS.context, PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature, PATHS.payments];
-const UNKNOWN_ANSWERS = {
+const SESSION_ANSWERS = {
   null: () => null, nonterminal: () => 'negotiating', 'agent stage': () => 'proposal-open', throwing: () => { throw new Error('TEST port down'); },
   'fulfilled promise': () => Promise.resolve('finalised'), 'rejected promise': () => Promise.reject(new Error('TEST late failure')),
   'rejecting thenable': () => ({ then(_, reject) { reject(new Error('TEST thenable failure')); } }),
   'throwing then getter': () => ({ get then() { throw new Error('TEST then getter'); } }),
 };
+const unavailableAnswer = label => !['null', 'nonterminal', 'agent stage'].includes(label);
+const SESSION_UNAVAILABLE = { code: 'session_admission_unavailable', status: 503 };
 const CLOSURES_SQL = 'SELECT jobId, state, source FROM kit_terminal_closures ORDER BY jobId';
 const closures = w => w.db().prepare(CLOSURES_SQL).all().map(row => ({ ...row }));
 // A second connection sees only what has committed.
@@ -940,7 +946,7 @@ function countedRequest(w, p, route) {
 const restart = w => { w.reopen(); withCoordinator(w); };
 
 test('terminal closures and allocation releases survive restarts for every terminal state', async t => {
-  const unhandled = watchUnhandled(t), answers = Object.values(UNKNOWN_ANSWERS);
+  const unhandled = watchUnhandled(t), answers = Object.values(SESSION_ANSWERS);
   for (const [index, name] of TERMINAL_NAMES.entries()) {
     const w = world(t, { maxRecords: 500 }), p = w.purchase(), allocation = w.allocate(p); w.charge(p.jobId, PATHS.context, 1, allocation.allocationId);
     let reads = 0; w.control.state = () => { reads++; return name; };
@@ -964,10 +970,17 @@ test('terminal closures and allocation releases survive restarts for every termi
   settledRow.control.state = () => 'finalised'; settledRow.capacity.releaseTerminalAllocations();
   settledRow.control.state = () => null; settledRow.reopen();
   assert.deepEqual(settledRow.internals.terminalSession(q.jobId), { terminal: true, state: 'finalised' }); assert.equal(settledRow.admissionRow(q.jobId).contextOutcome, 'success');
-  for (const [label, answer] of Object.entries(UNKNOWN_ANSWERS)) {
+  for (const [label, answer] of Object.entries(SESSION_ANSWERS)) {
     const w = world(t, { maxRecords: 500 }), p = w.purchase(); w.allocate(p); w.control.state = answer;
     for (let restarts = 0; restarts < 2; restarts++) {
-      w.reopen(); assert.deepEqual(w.internals.terminalSession(p.jobId), { terminal: false, state: null }, label); w.capacity.releaseTerminalAllocations();
+      w.reopen();
+      if (unavailableAnswer(label)) {
+        assert.throws(() => w.internals.terminalSession(p.jobId), SESSION_UNAVAILABLE, label);
+        w.capacity.releaseTerminalAllocations();
+      } else {
+        assert.deepEqual(w.internals.terminalSession(p.jobId), { terminal: false, state: null }, label);
+        w.capacity.releaseTerminalAllocations();
+      }
     }
     await settle(); assert.deepEqual(durableClosures(w), [], label); assert.equal(w.current(p.jobId).state, 'live', label);
   }
@@ -1020,10 +1033,11 @@ test('terminal sessions refuse new effects while exact completed operations rema
   assert.equal((await attemptRoute(replayed.w, replayed.p, PATHS.proposals)).state, 'new');
   assert.equal(observed, 1, 'accounting revalidates the retained operation through the store');
   assert.deepEqual(closures(replayed.w), closureOf(replayed.p.jobId));
-  for (const [label, answer] of Object.entries(UNKNOWN_ANSWERS)) {
+  for (const [label, answer] of Object.entries(SESSION_ANSWERS)) {
     const control = await coordinated(t); control.w.control.state = onlyJob(control.p.jobId, answer);
-    assert.equal((await attemptRoute(control.w, control.p, PATHS.proposals)).state, 'new', label);
-    assert.equal(control.w.report().used, 1, label); assert.deepEqual(closures(control.w), [], label);
+    if (unavailableAnswer(label)) await assert.rejects(attemptRoute(control.w, control.p, PATHS.proposals), SESSION_UNAVAILABLE, label);
+    else assert.equal((await attemptRoute(control.w, control.p, PATHS.proposals)).state, 'new', label);
+    assert.equal(control.w.report().used, unavailableAnswer(label) ? 0 : 1, label); assert.deepEqual(closures(control.w), [], label);
   }
 });
 
@@ -1136,9 +1150,11 @@ test('issuance and reclamation preserve terminal observations across request rol
   healWrites(flushing);
   assert.equal(issueFor(flushing, 2).sessionNonce.length, 64); assert.deepEqual(durableClosures(flushing), closureOf(job(1)));
   await rejects(Promise.resolve().then(() => issueFor(flushing, 1)), 'context_session_terminal', 409); assert.equal(durableClosures(flushing).length, 1);
-  for (const [label, answer] of Object.entries(UNKNOWN_ANSWERS)) {
+  for (const [label, answer] of Object.entries(SESSION_ANSWERS)) {
     const quiet = world(t, { maxRecords: 200 }); quiet.control.state = answer;
-    assert.equal(issueFor(quiet, 1).sessionNonce.length, 64, label); assert.deepEqual(durableClosures(quiet), [], label);
+    if (unavailableAnswer(label)) assert.throws(() => issueFor(quiet, 1), SESSION_UNAVAILABLE, label);
+    else assert.equal(issueFor(quiet, 1).sessionNonce.length, 64, label);
+    assert.deepEqual(durableClosures(quiet), [], label);
   }
   await settle(); assert.deepEqual(unhandled, []);
 });
@@ -1277,8 +1293,8 @@ test('terminal-reader-installation-audit', () => {
   const root = new URL('../src/', import.meta.url), sources = new Map();
   for (const file of readdirSync(root, { recursive: true })) if (file.endsWith('.mjs')) sources.set(file, readFileSync(new URL(file, root), 'utf8'));
   const callers = pattern => [...sources].filter(([, text]) => pattern.test(text)).map(([file]) => file);
-  assert.deepEqual(callers(/\breadSessionState\(/), ['dacs/seller-transport-auth.mjs'], 'the raw port is read in one place');
-  assert.equal(sources.get('dacs/seller-transport-auth.mjs').match(/\breadSessionState\(/g).length, 1);
+  assert.deepEqual(callers(/\breadSellerSessionState\(readSessionState,/), ['dacs/seller-transport-auth.mjs'], 'the raw port is read in one place');
+  assert.equal(sources.get('dacs/seller-transport-auth.mjs').match(/\breadSellerSessionState\(readSessionState,/g).length, 1);
   assert.deepEqual(callers(/\bcontextSessionState\(/), ['dacs/seller-transport-auth.mjs'], 'the host calls no port itself');
   const store = sources.get('dacs/seller-transport-auth.mjs');
   for (const line of store.split('\n').filter(text => text.includes('TERMINAL_CONTEXT_STATES.has('))) {

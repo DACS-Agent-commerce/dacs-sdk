@@ -160,6 +160,45 @@ function gatedPolicy(w) {
   return jobId => { const gate = { entered: deferred(), barrier: deferred() }; gates.set(jobId, gate); return gate; };
 }
 const reject = (promise, code, status) => assert.rejects(promise, { code, ...(status ? { status } : {}) });
+test('begin refuses a job retired by the readiness limit sweep', async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === job(0x11) ? session : null });
+  const payload = { version: '1', kind: 'request', path: '/dacs/v1/agreements/proposals', method: 'POST', jobId: job(0x11), buyer: BUYER, seller: SELLER,
+    listingPin: PIN, profile: PROFILE, agreementHash: hash('agreement'), bodyHash: hash('{}'), nonce: Buffer.alloc(24, 1).toString('base64url'), expiresAt: T0 + 60000 };
+  await w.store.reservationAccounting.reserveAccounted({ payload, route: payload.path, operationId: wireOperationId(payload), keepProfile: PROFILE,
+    checked: { body: {}, reserve: async () => ({ state: 'completed', outcome: { status: 200, text: '{}' } }) } });
+  w.control.clock += HOUR + 61000;
+  const p = w.prepare();
+  Object.defineProperty(w.control, 'ready', { get() { session = 'finalised'; return true; } });
+  await assert.rejects(w.admission.begin(p.input), { code: 'context_job_closed', status: 409 });
+  assert.equal(w.row(p.input.jobId), null); assert.equal(w.holds.size, 0); assert.equal(w.calls.reserve, 0);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+});
+
+test('begin refuses a job retired by its admission sweep without taking a hold', async t => {
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === job(0x11) ? session : null });
+  const payload = { path: '/dacs/v1/agreements/proposals', method: 'POST', jobId: job(0x11), buyer: BUYER, seller: SELLER,
+    listingPin: PIN, agreementHash: hash('agreement'), bodyHash: hash('{}'), nonce: 'completed-proposal', expiresAt: T0 + 60000 };
+  w.store.finish(w.store.reserve(payload, {}, { keepProfile: PROFILE }), 200, '{"proposal":"kept"}');
+  w.control.clock += HOUR + 61000;
+  const p = w.prepare();
+  session = 'finalised';
+  let result, error;
+  try { result = await w.admission.begin(p.input); } catch (cause) { error = cause; }
+  const retired = w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(p.input.jobId)?.job_retired ?? 0;
+  assert.deepEqual({ code: error?.code, status: error?.status, state: w.row(p.input.jobId)?.state ?? null, retired,
+    holds: w.holds.size, policyCalls: w.calls.reserve },
+  { code: 'context_job_closed', status: 409, state: null, retired: 0, holds: 0, policyCalls: 0 });
+  assert.equal(result, undefined);
+  assert.equal(w.store.challenges.retained(p.input.nonce).failure.code, 'context_job_closed');
+  const next = w.prepare(0x22); await w.admission.begin(next.input);
+  await assert.rejects(w.admission.begin(w.prepare(0x33).input), { code: 'peer_job_capacity', status: 503 });
+  const retry = { ...payload, nonce: 'completed-proposal-retry', expiresAt: w.control.clock + 60000 };
+  assert.deepEqual(w.store.reserve(retry, {}, { keepProfile: PROFILE }),
+    { disposition: 'cached', status: 200, text: '{"proposal":"kept"}' });
+});
+
 async function running(w, p) { await w.admission.begin(p.input); return w.admission.reserveContext(p.input.jobId, w.reserveWire); }
 const openHolds = path => parsePolicyLedger(readFileSync(path, 'utf8')).rows.filter(entry => entry.contextHold && !entry.released).length;
 
@@ -1477,6 +1516,23 @@ for (const [name, terminal, elapsed] of [
   }
 });
 
+test('a stored context challenge keeps its exact answer after retirement and restart', async t => {
+  let session = null;
+  const w = world(t, { contextSessionState: () => session }), p = w.prepare();
+  const capability = await running(w, p);
+  await capability.complete(outcome);
+  const stored = w.store.challenges.attempt(p.attempt), record = w.admission.admissionRecord(p.input.jobId);
+  assert.equal(stored.kind, 'continuation');
+  session = 'finalised'; w.control.clock += 2 * HOUR;
+  await w.admission.sweep({ startup: false });
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(p.input.jobId).job_retired, 1);
+  session = null; w.reopen();
+  const changes = w.changes(), calls = structuredClone(w.calls);
+  assert.deepEqual(w.store.challenges.attempt(p.attempt), stored);
+  assert.deepEqual(w.admission.admissionRecord(p.input.jobId), record);
+  assert.deepEqual(w.calls, calls); assert.equal(w.changes(), changes);
+});
+
 test('R06 retirement rollback preserves slots and restart can retry', async t => {
   let terminal = false;
   const w = world(t, { contextSessionState: () => terminal ? 'finalised' : null }), p = w.prepare();
@@ -1862,23 +1918,20 @@ test('a refused proposal keeps its saved answer after a corrected proposal succe
 });
 
 for (const boundary of ['old', 'accounted']) for (const source of ['rejecting promise', 'throw', 'non-state']) {
-  test(`${boundary} proposal gate treats a session source returning ${source} as unknown`, async t => {
+  test(`${boundary} proposal gate refuses a session source returning ${source} without work`, async t => {
     const cause = new Error('session unavailable'); let broken = false;
     const w = world(t, { contextSessionState: () => {
       if (!broken) return null;
       if (source === 'throw') throw cause;
       return source === 'rejecting promise' ? Promise.reject(cause) : 7;
     } });
-    const args = accountingInput(job(0x11), PROPOSALS);
+    const args = accountingInput(job(0x11), PROPOSALS), before = workSnapshot(w);
     broken = true;
-    if (boundary === 'old') assert.equal(w.store.reserve(args.payload, {}, { keepProfile: PROFILE }).disposition, 'perform');
-    else {
-      args.checked.reserve = async () => ({ state: 'new' });
-      assert.equal((await w.store.reservationAccounting.reserveAccounted(args)).state, 'new');
-    }
+    const expected = { code: 'session_admission_unavailable', status: 503 };
+    if (boundary === 'old') assert.throws(() => w.store.reserve(args.payload, {}, { keepProfile: PROFILE }), expected);
+    else await assert.rejects(w.store.reservationAccounting.reserveAccounted(args), expected);
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_terminal_closures').get().n, 0);
-    assert.equal(w.calls.reserve, 0);
+    assert.deepEqual(workSnapshot(w), before); assert.equal(w.calls.reserve, 0);
   });
 }
 
@@ -1944,4 +1997,26 @@ test('failed and settled starts release both slots before a third start after re
   assert.equal(w.internals.admissionCounts().contextRecords, 0);
   await w.admission.begin(w.prepare(0x44).input);
   assert.equal(w.internals.admissionCounts().contextRecords, 1);
+});
+
+
+test('a retired completed job refuses a fresh context admission after restart', async t => {
+  const completedJob = job(0x11);
+  let session = null;
+  const w = world(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === completedJob ? session : null });
+  const first = accountingInput(completedJob, PROPOSALS).payload;
+  w.store.finish(w.store.reserve(first, {}, { keepProfile: PROFILE }), 200, '{}');
+  session = 'finalised'; w.control.clock += HOUR + 61000;
+  const next = { ...accountingInput(job(0x22), PROPOSALS).payload, nonce: hash('replacement job nonce'), expiresAt: w.control.clock + 60000 };
+  w.store.finish(w.store.reserve(next, {}, { keepProfile: PROFILE }), 422, '{}', { noEffect: true });
+  assert.equal(w.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(completedJob).job_retired, 1);
+  assert.equal(ownerRow(w, completedJob).closed, 0);
+  session = null; w.reopen();
+  const before = workSnapshot(w), challenges = w.db.prepare('SELECT COUNT(*) AS n FROM kit_challenges').get().n;
+  assert.throws(() => w.prepare(), { code: 'context_session_terminal', status: 409 });
+  assert.equal(w.row(completedJob), null);
+  assert.equal(w.calls.reserve, 0);
+  assert.equal(w.calls.wire, 0);
+  assert.equal(w.db.prepare('SELECT COUNT(*) AS n FROM kit_challenges').get().n, challenges);
+  assert.deepEqual(workSnapshot(w), before);
 });

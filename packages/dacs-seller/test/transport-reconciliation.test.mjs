@@ -16,6 +16,57 @@ import {createSellerTransportClientAuth,createSellerTransportServerAuth} from '.
 import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {SellerAgentError,transportOutcome} from '../src/dacs/seller-agent.mjs';
 import {createOperatorBuyerAccess} from '../src/devnet-demo/buyer-access.mjs';
+import {privateModule} from './helpers/private-module.mjs';
+
+const {createSellerAgent:createOperationAgent}=await privateModule(new URL('../src/dacs/seller-agent.mjs',import.meta.url),[],source=>source.replace(
+ '  return api;',
+ '  return {...api,runOperation:recoveryCall(({operation})=>operation())};',
+));
+const operationFailures=[['undefined',undefined],['null',null],['zero',0],['empty string',''],['false',false],['bigint zero',0n],['NaN',NaN],['Error',new Error('operation failed')]];
+
+for(const path of ['/dacs/v1/payments','/dacs/v1/commitments'])for(const [label,failure] of operationFailures){
+ test(`transport classifies ${label} failure as uncertain on ${path}`,()=>{
+  const result=transportOutcome(path,{error:failure});
+  assert.deepEqual([result.disposition,result.status,result.retry,result.noEffect],['indeterminate',503,false,false]);
+  assert.equal(Object.hasOwn(result,'cause'),true);
+  assert.equal(result.cause,failure);
+ });
+}
+for(const path of ['/dacs/v1/payments','/dacs/v1/commitments'])test(`fenced operations reject failures on ${path}`,async t=>{
+ const f=await agentFixture();f.agent.close();
+ let agent;t.after(()=>{agent?.close();f.close();});agent=await createOperationAgent(f.config);
+ for(const [label,failure] of operationFailures)for(const asynchronous of [false,true])await t.test(`${label} ${asynchronous?'rejection':'throw'}`,async()=>{
+  const settled=[];
+  const transport={path,check(){},settle:result=>settled.push(result)};
+  let calls=0;
+  const operation=()=>{calls++;if(asynchronous)return Promise.reject(failure);throw failure;};
+  const rejected=await agent.runOperation({jobId:JOBS[0],operation},{transport}).then(()=>false,error=>{
+   assert.equal(error,failure);
+   return true;
+  });
+  assert.equal(settled.length,1);
+  assert.deepEqual([settled[0].disposition,settled[0].status,settled[0].retry,settled[0].noEffect],['indeterminate',503,false,false]);
+  assert.equal(Object.hasOwn(settled[0],'cause'),true);
+  assert.equal(settled[0].cause,failure);
+  assert.equal(rejected,true,'the operation must reject');
+  assert.equal(calls,1);
+ });
+});
+
+test('transport recovery keeps failures uncertain',async t=>{
+ const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);
+ await agent.receiveProposal(body);
+ const input=command(agent,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash);
+ for(const [label,value] of operationFailures)await t.test(label,async()=>{
+ let checks=0;
+ const result=await agent.reconcileTransport({...input,transport:{claim:()=>({check(){checks++;throw value;}}),settle(){}}});
+ assert.ok(checks>0);
+ assert.deepEqual([result.disposition,result.status,result.retry,result.settle],['indeterminate',503,false,false]);
+ assert.equal(Object.hasOwn(result,'cause'),true);
+ assert.equal(result.cause,value);
+ });
+});
+
 function command(agent,path,body,agreementHash){const rawBody=Buffer.from(JSON.stringify(body));return{body,rawBody,request:{method:'POST',path,jobId:body.transportIdentity?.jobId??body.jobId,buyer:buyer.claim,seller:seller.claim,listingPin:agent.listingPin,agreementHash,bodyHash:core.sha256Hex(rawBody)}};}
 // Real store, server auth, HTTP handler and client. `serve` swaps the agent behind the same journal (a restart).
 async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals',storeOptions={}){
@@ -53,6 +104,18 @@ test('crash before agent, rejected proposal, then corrected receipt releases onl
 });
 test('actual resume recovers a lost fixture evidence answer after reopen without another CREATE',async()=>{
  const f=await agentFixture({lifecycle:true});try{const jobId=JOBS[0],address=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);await f.agent.commit({jobId});f.anchors.controls.failAfterWrite=address;await assert.rejects(f.agent.submitPayment({jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim}));await f.reopen();assert.notEqual((await f.agent.reconcile({jobId})).status,'held');assert.equal((await f.agent.resume({jobId})).status,'delivered');assert.equal(f.anchors.writes.filter(a=>a===address).length,1);}finally{f.close();}
+});
+test('unfinished work is read from the saved session for the route asked about',async()=>{
+ const f=await agentFixture({lifecycle:true});try{
+  const jobId=JOBS[0],kept=()=>['/dacs/v1/agreements/proposals','/dacs/v1/payments'].map(path=>f.agent.retainsUnfinishedWork({jobId,path}));
+  assert.deepEqual(kept(),[false,false],'an Agreement alone leaves nothing to finish');
+  f.anchors.controls.failAfterWrite=`dacs3:commit:${jobId}`;await assert.rejects(f.agent.commit({jobId}));await f.reopen();
+  assert.deepEqual(kept(),[true,true],'a commitment write waits for its read-back');
+  await f.agent.commit({jobId});assert.deepEqual(kept(),[false,false]);
+  f.anchors.controls.failAfterWrite=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);await assert.rejects(f.agent.submitPayment({jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim}));await f.reopen();
+  assert.deepEqual(kept(),[false,true],'a recorded payment waits for its stored answer');
+  assert.equal((await f.agent.resume({jobId})).status,'delivered');assert.deepEqual(kept(),[false,true],'delivery alone stores no answer');
+ }finally{f.close();}
 });
 for(const answer of ['waiting','indeterminate'])test(`pending proposal recovers ${answer} and keeps its exact retry slot`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);

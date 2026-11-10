@@ -176,7 +176,7 @@ describe("dacs doctor", () => {
     expect(text).toContain("dacs doctor\n");
     expect(text).toContain("mode: offline\n");
     expect(text).toContain("storage.binding-resolution: blocked");
-    expect(text).toContain("remediation: Track dacs-sdk #58");
+    expect(text).toContain("remediation: Not checked here; resolve artifacts through a published binding index");
     expect(text).not.toContain("|");
   });
 

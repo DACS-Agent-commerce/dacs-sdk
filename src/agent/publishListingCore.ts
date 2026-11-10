@@ -29,10 +29,11 @@ import {
   type ListingRailAuthorityInput,
   type PayloadVerificationCapabilityResolver,
 } from "./listingValidation.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
  * Publish a DACS-1 listing at its VERSIONED §6.3.4 address, with write-once
- * version-slot immutability (#29 / #46). Pure over injected substrate deps, so
+ * version-slot immutability. Pure over injected substrate deps, so
  * it's unit-tested without a node; Agent.publishListing wires the binding-aware
  * repository over DemosAdapter.
  *
@@ -57,7 +58,7 @@ import {
  * — `logicalAddress` + the native `ref` — so the logical→native mapping is
  * discoverable (spec point (c), via return). Carrying the logical address as
  * on-record metadata + a published index (points (b)/(c)-via-index) is the fuller
- * discovery surface, tracked with #54.
+ * discovery surface, which is not implemented here.
  */
 
 export interface PublishListingResult {
@@ -387,25 +388,6 @@ function assertContiguousHistory(
   return versions;
 }
 
-/**
- * Make the exact signed publication graph immutable before it crosses the
- * asynchronous substrate seam. Listings are JSON artifacts, so every nested
- * object/array participates in the signature scope and must be frozen.
- */
-function deepFreezePublication<T extends object>(value: T): Readonly<T> {
-  const seen = new WeakSet<object>();
-  const freeze = (candidate: object): void => {
-    if (seen.has(candidate)) return;
-    seen.add(candidate);
-    for (const nested of Object.values(candidate)) {
-      if (nested !== null && typeof nested === "object") freeze(nested);
-    }
-    Object.freeze(candidate);
-  };
-  freeze(value);
-  return value;
-}
-
 export async function publishListingCore(
   inputListing: ListingDraft,
   deps: PublishListingDeps,
@@ -588,7 +570,7 @@ export async function publishListingCore(
     listingContentHash = contentHash(
       owned as unknown as Record<string, unknown>,
     );
-    publication = deepFreezePublication(owned);
+    publication = deepFreeze(owned);
   } catch (cause) {
     throw new DacsError("signed Listing could not form an immutable publication", {
       cause,
