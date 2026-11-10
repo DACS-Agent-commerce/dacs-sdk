@@ -6514,6 +6514,7 @@
     },
     {
       "delta": "WF",
+      "sha": "0aa6608f4bb7d62c46cc41d552d3270384fb2814",
       "subject": "Apply the stricter key checks to the client transport and embedded wallet",
       "files": [
         {
