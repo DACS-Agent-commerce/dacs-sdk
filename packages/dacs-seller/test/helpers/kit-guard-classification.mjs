@@ -36,7 +36,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-reservation-accounting.mjs': { effect: { createReservationAccounting: ['reserveAccounted'] }, pure: [] },
   'src/dacs/seller-transport-auth.mjs': { effect: { createSellerTransportServerAuth: ['createSellerTransportServerAuth'], createSellerTransportClientAuth: ['createSellerTransportClientAuth'] }, pure: ['SellerTransportError', 'createSellerTransportStore', 'normalizeSellerSessionDelegationSignature', 'pinValid', 'readSellerSessionState', 'sellerContextChallengeScope', 'sellerContextScopeHash', 'sellerSessionDelegationSigningBytes', 'sellerStoreInternals', 'sellerTransportEffect', 'sellerTransportSigningBytes', 'transportStoreOf', 'validateBody', 'verifySellerSessionDelegation'] },
   'src/dacs/seller-wire-client-auth.mjs': { effect: { createSellerWireClientAuth: ['createSellerWireClientAuth'] }, pure: [] },
-  'src/dacs/seller-wire-requests.mjs': { effect: {  }, pure: ['createWireContext', 'wireAuthenticator'] },
+  'src/dacs/seller-wire-requests.mjs': { effect: {  }, pure: ['createWireContext', 'openWireRequest', 'wireAuthenticator'] },
   'src/dacs/session-admission.mjs': { effect: {  }, pure: ['hasPresenceOnlyClaim', 'identityPresentationValid', 'isOrchestratorVetMode', 'listingRevocationProblem', 'readAdmissionCapability', 'sellerBundleProblem', 'sellerRecordVerifier', 'sellerSessionPresentationProblem', 'sessionAdmissionConfig', 'sessionAdmissionProblem', 'vetAnchorReceiptProblem', 'vetRecordProblem'] },
   'src/dacs/signing-gate-bind.mjs': { effect: {  }, pure: ['bindWhenNoSigningGate'] },
   'src/dacs/wallet-transactions.mjs': { effect: {  }, pure: ['assertStorageJsonDepth', 'buildStorageProgramCreatePayload', 'deriveStorageAddress'] },
