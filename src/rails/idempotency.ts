@@ -838,6 +838,57 @@ function captureReplayAuthorization(
   });
 }
 
+/** What an SDK settle bridge declares about itself. */
+export interface SettlementBridgeTraits {
+  /**
+   * Set only by the pay-dem bridge: whether the rail it wraps was built with a
+   * `journalPreparedTransfer` hook. `false` means a crash after the broadcast
+   * leaves no record to recover from.
+   */
+  readonly journaled?: boolean;
+}
+
+/**
+ * The functions an SDK settle bridge returned. Keyed by function identity and
+ * private to the SDK: a wrapper is a different object, so `runSession` can tell a
+ * resume seam that honours `recoveryOnly` from one it cannot vouch for.
+ */
+const settlementBridges = new WeakMap<object, SettlementBridgeTraits>();
+
+/**
+ * @internal Declare that `bridge` was built by an SDK settle bridge, with what it
+ * declares. Declaring again without traits keeps what was declared. Returns
+ * `bridge`.
+ */
+export function declareSettlementBridge<T extends object>(
+  bridge: T,
+  traits?: SettlementBridgeTraits,
+): T {
+  settlementBridges.set(bridge, traits ?? settlementBridges.get(bridge) ?? {});
+  return bridge;
+}
+
+/** @internal Whether `value` is a function an SDK settle bridge returned. */
+export function isSettlementBridge(value: unknown): boolean {
+  return typeof value === "function" && settlementBridges.has(value);
+}
+
+/** @internal The traits `value` registered with, or `undefined` when it is not a bridge. */
+export function settlementBridgeTraits(value: unknown): SettlementBridgeTraits | undefined {
+  return typeof value === "function" ? settlementBridges.get(value) : undefined;
+}
+
+/**
+ * @internal For a wrapper `to` that forwards to `from`: registers `to` with
+ * `from`'s traits when `from` is a bridge, and leaves it unregistered otherwise.
+ * Returns `to`.
+ */
+export function inheritSettlementBridge<T extends object>(from: unknown, to: T): T {
+  return isSettlementBridge(from)
+    ? declareSettlementBridge(to, settlementBridgeTraits(from))
+    : to;
+}
+
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),

@@ -9,6 +9,7 @@ import type {
 } from "@x402/core/types";
 import {
   createIdempotencyStore,
+  declareSettlementBridge,
   settleThroughStore,
   settlementKey,
   type SettlementBinding,
@@ -894,7 +895,7 @@ export function x402Settle(
   if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
     throw new CounterpartyError("x402 rail must expose its positive finality policy");
   }
-  return (req) => {
+  return declareSettlementBridge((req: SettleRequest): Promise<SettleResult> => {
     const { amount, asset: agreementAsset, expectedPayee, jobId, phase, rail: railId } = req;
     if (expectedPayee !== recipientEvm) {
       throw new CounterpartyError(
@@ -953,5 +954,5 @@ export function x402Settle(
       submit,
       reconcile,
     });
-  };
+  });
 }

@@ -145,6 +145,7 @@ import {
   type ListingReadResult,
 } from "./listingDiscovery.js";
 import type { DemosWriteJournal } from "../substrate/demosWriteJournal.js";
+import { inheritSettlementBridge } from "../rails/idempotency.js";
 
 export type {
   SignatureCheck,
@@ -436,8 +437,8 @@ export interface RunSessionOptions {
    * artifacts are reused. With no settled outcome on record, the resume never
    * calls `settle`, with or without `sessionStore` or an earlier Agreement anchor:
    * it calls `resumeSettlement`, and is refused without one. That recovery-only
-   * seam must reconcile through
-   * durable rail state and never start a fresh payment, since a job id alone
+   * seam must reconcile through durable rail state and never start a fresh payment,
+   * since a job id alone
    * cannot show whether the interrupted run paid. Omit for a new session.
    */
   jobId?: string;
@@ -449,8 +450,9 @@ export interface RunSessionOptions {
    * key and reconcile every ordered `req.priorAttempts` entry before returning.
    * It is also called instead of `settle` on a resume without a recorded settled
    * outcome, even when no session record or Agreement anchor exists.
-   * Every request has `recoveryOnly` set: it
-   * must never take a fresh claim.
+   * Every request has `recoveryOnly` set: it must never take a fresh claim.
+   * Must be a function an SDK settle bridge returned; any other function is
+   * refused before a payment is made.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -2379,10 +2381,14 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         "expectedSettlementPayee",
         "Agent.runSession expectedSettlementPayee",
       );
-      const settle = stableAgentMethod<RunSessionOptions["settle"]>(
-        opts,
-        "settle",
-        "Agent.runSession settle",
+      // The isolating wrapper is a new function: carry the bridge registration over.
+      const settle = inheritSettlementBridge(
+        stableAgentData(opts, "settle", "Agent.runSession settle"),
+        stableAgentMethod<RunSessionOptions["settle"]>(
+          opts,
+          "settle",
+          "Agent.runSession settle",
+        ),
       );
       const vet = stableAgentMethod<RunSessionOptions["vet"]>(
         opts,
@@ -2404,7 +2410,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         "Agent.runSession authenticateVetFinality",
         true,
       );
-      const resumeSettlement = stableAgentMethod<
+      const isolatedResume = stableAgentMethod<
         RunSessionOptions["resumeSettlement"]
       >(
         opts,
@@ -2412,6 +2418,12 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         "Agent.runSession resumeSettlement",
         true,
       );
+      const resumeSettlement = isolatedResume === undefined
+        ? undefined
+        : inheritSettlementBridge(
+            stableAgentData(opts, "resumeSettlement", "Agent.runSession resumeSettlement"),
+            isolatedResume,
+          );
       const sessionListingValidationDeps = captureAgentListingValidationDeps(
         stableAgentData(
           opts,

@@ -10,6 +10,7 @@ import {
 import { payDemSettle } from "../../src/rails/payDem.js";
 import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
+import { registerResumeSeam } from "../support/restartableSettlement.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import { isListing, isSettlementEvidence } from "../../src/artifacts/validators.js";
@@ -143,7 +144,7 @@ async function makeDeps(store: SessionDeps["sessionStore"], over: DepOverrides =
     authenticateRecoveredArtifact: () => true,
     sessionStore: store,
   };
-  return { deps, listingRef, kv, settleCalls };
+  return { deps: registerResumeSeam(deps), listingRef, kv, settleCalls };
 }
 
 test.each(["fresh", "recovered"].flatMap((mode) =>

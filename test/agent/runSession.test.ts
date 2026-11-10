@@ -31,6 +31,13 @@ import {
 import { UnsupportedCapabilityError } from "../../src/errors.js";
 import { identityBundleHash } from "../../src/identity/index.js";
 import { signedBytes } from "../../src/crypto/index.js";
+import {
+  inheritSettlementBridge,
+  isSettlementBridge,
+  declareSettlementBridge,
+  settlementBridgeTraits,
+} from "../../src/rails/idempotency.js";
+import { registerResumeSeam } from "../support/restartableSettlement.js";
 import type {
   FinalizedVetAnchor,
   VetProduction,
@@ -158,7 +165,7 @@ const authenticateClaimedVetFinality: NonNullable<
 > = async ({ claimed }) => claimed ? structuredClone(claimed) : null;
 
 function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
-  return {
+  return registerResumeSeam({
     buyerId: BUYER_ID,
     buyerIdentityBundle: BUYER_IDENTITY,
     authenticateBuyerIdentityBundle: () => true,
@@ -183,7 +190,7 @@ function makeDeps(overrides: Partial<SessionDeps> = {}): SessionDeps {
     trustListing: true,
     validateListing: (raw) => verifiedAdmissionFor(raw as unknown as Listing),
     ...overrides,
-  };
+  });
 }
 
 function normativeDpaListing(): Listing {
@@ -2954,5 +2961,100 @@ describe("runSession settles a resume only through recovery", () => {
     expect(await runTwoFirstRuns(async () => createInMemorySessionStore())).toBe(2);
     const sharedDir = newSessionDir();
     expect(await runTwoFirstRuns(async () => createFsSessionStore({ dir: sharedDir }))).toBe(1);
+  });
+});
+
+describe("runSession reaches only a registered SDK bridge", () => {
+  const PAID: SettleResult = { ok: true, txHash: "0xabc", chainId: "eip155:11155111", payer: "0xbob", payee: "0xalice" };
+  const NOT_A_BRIDGE = /built by an SDK settle bridge/;
+  const NEEDS_JOURNAL = /requires a rail built with journalPreparedTransfer/;
+  const PAY_DEM = { ...TERMS, price: { ...TERMS.price, rail: "pay-dem" } };
+  const counting = () => {
+    const calls = { settle: 0, resume: 0 };
+    const settle = async (): Promise<SettleResult> => {
+      calls.settle += 1;
+      return PAID;
+    };
+    const resumeSettlement = async (): Promise<SettleResult> => {
+      calls.resume += 1;
+      throw new Error("no recorded settlement; refusing a fresh payment");
+    };
+    return { calls, settle, resumeSettlement };
+  };
+  const messageOf = (run: Promise<unknown>) => run.then(() => "", (error: Error) => error.message);
+
+  test("a resume seam that is not an SDK bridge is refused before any payment", async () => {
+    const { calls, settle, resumeSettlement } = counting();
+    const deps = { ...makeDeps({ settle, sessionStore: undefined }), resumeSettlement };
+    await expect(runSessionCore("stor-listing", TERMS, deps, "job-1")).rejects.toThrow(NOT_A_BRIDGE);
+    expect(calls.settle + calls.resume).toBe(0);
+  });
+
+  test("repeated unregistered recovery refuses with zero claims and payments after process restart", async () => {
+    const { calls, settle, resumeSettlement } = counting();
+    const dir = mkdtempSync(join(tmpdir(), "dacs-session-"));
+    for (let restart = 0; restart < 2; restart += 1) {
+      const deps = {
+        ...makeDeps({ settle, sessionStore: await createFsSessionStore({ dir }) }),
+        resumeSettlement,
+      };
+      await expect(runSessionCore("stor-listing", TERMS, deps, "job-1")).rejects.toThrow(NOT_A_BRIDGE);
+    }
+    expect(calls.settle + calls.resume).toBe(0);
+  });
+
+  describe("a pay-dem session needs a bridge over a rail with a prepared-transfer journal", () => {
+    const attempt = async (terms: SessionTerms, traits: { journaled?: boolean }) => {
+      const { calls, settle, resumeSettlement } = counting();
+      let listed = 0;
+      const deps = makeDeps({
+        settle,
+        resumeSettlement: declareSettlementBridge(resumeSettlement, traits),
+        sessionStore: undefined,
+        readListing: async () => { listed += 1; return LISTING; },
+      });
+      const error = await messageOf(runSessionCore("stor-listing", terms, deps, "job-1"));
+      return { error, calls, listed };
+    };
+
+    test("a pay-dem session on a bridge with no journal is refused before the listing is read", async () => {
+      const { error, calls, listed } = await attempt(PAY_DEM, { journaled: false });
+      expect(error).toMatch(NEEDS_JOURNAL);
+      expect(listed + calls.settle + calls.resume).toBe(0);
+    });
+
+    test("a journaled bridge and a bridge that declares nothing are not refused for it", async () => {
+      expect((await attempt(PAY_DEM, { journaled: true })).error).not.toMatch(NEEDS_JOURNAL);
+      expect((await attempt(PAY_DEM, {})).error).not.toMatch(NEEDS_JOURNAL);
+    });
+
+    test("a pay-dem first run whose settle bridge has no journal is refused without a resumeSettlement", async () => {
+      const { calls, settle } = counting();
+      let listed = 0;
+      const deps = makeDeps({
+        settle: declareSettlementBridge(settle, { journaled: false }),
+        sessionStore: undefined,
+        readListing: async () => { listed += 1; return LISTING; },
+      });
+      const error = await messageOf(runSessionCore("stor-listing", PAY_DEM, deps));
+      expect(error).toMatch(NEEDS_JOURNAL);
+      expect(error).toMatch(/nothing was anchored or paid/);
+      expect(listed + calls.settle + calls.resume).toBe(0);
+    });
+
+    test("a pay-dem session under rail id demos-native:DEM over a rail with no journal is refused", async () => {
+      const registryRail = { ...TERMS, price: { ...TERMS.price, rail: "demos-native:DEM" } };
+      const { error, calls, listed } = await attempt(registryRail, { journaled: false });
+      expect(error).toMatch(NEEDS_JOURNAL);
+      expect(error).toMatch(/an earlier run of this job may have paid/);
+      expect(listed + calls.settle + calls.resume).toBe(0);
+    });
+
+    test("a wrapper around a bridge carries what the bridge declared", () => {
+      const bridge = declareSettlementBridge(async () => PAID, { journaled: false });
+      const wrapper = inheritSettlementBridge(bridge, async () => PAID);
+      expect(settlementBridgeTraits(wrapper)).toEqual({ journaled: false });
+      expect(isSettlementBridge(inheritSettlementBridge(async () => PAID, async () => PAID))).toBe(false);
+    });
   });
 });
