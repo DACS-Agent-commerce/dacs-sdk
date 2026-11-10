@@ -581,8 +581,9 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
       for (const place of ["invocation", "vetRecordRef", "requirement"] as const) {
         const entries = structuredClone(sellerSignedPair);
         Object.assign(place === "invocation" ? entries[1] : entries[1][place], { vetMode: orchestrator });
-        expect(checkIn(entries, undefined)).not.toBeNull();
-        expect(checkIn(entries, counterparty)).not.toBeNull();
+        const editedRoster = { buyer, seller: { ...sellerSigned, vetRecordRef: entries[1].vetRecordRef } };
+        expect(checkIn(entries, undefined, editedRoster)).not.toBeNull();
+        expect(checkIn(entries, counterparty, editedRoster)).not.toBeNull();
         expect(isSellerFulfilmentVetInvocationMismatch(entries[1], {
           jobId, buyerClaim, sellerClaim, buyerRequirement,
           bindings: new Map([[canonicalize(entries[1].vetRecordRef), { primaryClaim: sellerClaim, roles: new Set(["seller"]) }]]),
