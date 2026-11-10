@@ -6515,6 +6515,7 @@
     {
       "delta": "WF",
       "subject": "delta(client): WF P13a1 sign and verify seller traffic through the wire",
+      "compact": true,
       "files": [
         {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"652e68fa1ad0a799754f35d604bac2ffc1376f0e","after":"0beb91038714306005ecd3ad79faf4a5b9cb441e"},
         {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"3b37b663b20165b7a8a14a8a25ee62bf662cc5e6","after":"4b27d7047e0557f0439250ad6d8690fc5f2241aa"},
@@ -6540,6 +6541,7 @@
     {
       "delta": "WF",
       "subject": "delta(client): WF P13a1 bound seller signing and authority reads by the request deadline",
+      "compact": true,
       "files": [
         {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"0beb91038714306005ecd3ad79faf4a5b9cb441e","after":"e43129e16f7d027fb24b9e2ecef24eb56a908393"},
         {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"4b27d7047e0557f0439250ad6d8690fc5f2241aa","after":"add72c0add7c8188d6cc86e7476207a4882c93af"},
@@ -6552,6 +6554,7 @@
       "delta": "WF",
       "subject": "test(client): cover changed signed response bytes",
       "sha": "cedf85a39a23d95242c9b3a393ca6206d2550ef1",
+      "compact": true,
       "files": [
         {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"add72c0add7c8188d6cc86e7476207a4882c93af","after":"add72c0add7c8188d6cc86e7476207a4882c93af"},
         {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":"e4a43f5d39bc6806039a4f3f7421d0874504effc","after":"38eeb443a089821c4d313f54db21022689d7b1ff"}
@@ -6560,6 +6563,7 @@
     {
       "delta": "WF",
       "subject": "delta(client): WF record the merged buyer seller client and refresh package pins",
+      "compact": true,
       "files": [
         {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"add72c0add7c8188d6cc86e7476207a4882c93af","after":"add72c0add7c8188d6cc86e7476207a4882c93af"}
       ]
@@ -6567,6 +6571,7 @@
     {
       "delta": "WF",
       "subject": "delta(client): WF isolate wire authentication adapter",
+      "compact": true,
       "files": [
         {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"e43129e16f7d027fb24b9e2ecef24eb56a908393","after":"652e68fa1ad0a799754f35d604bac2ffc1376f0e"},
         {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"add72c0add7c8188d6cc86e7476207a4882c93af","after":"eb89bc99364dc00d325530e5249981917b9cdb87"},
