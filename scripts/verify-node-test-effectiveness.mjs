@@ -37,7 +37,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = join("packages", "dacs-node");
 const CHILD_ENV = "DACS_NODE_EFFECTIVENESS_CHILD";
-const READINESS_TEST = "testEffectiveness.test.ts";
+const EFFECTIVENESS_TEST = "testEffectiveness.test.ts";
 const RUN_TIMEOUT_MS = 240_000;
 const TOTAL_BUDGET_MS = 900_000;
 
@@ -290,7 +290,7 @@ async function prepareCopy(root) {
   await cp(join(repoRoot, HOST, "src"), join(host, "src"), { recursive: true });
   await cp(join(repoRoot, HOST, "test"), join(host, "test"), {
     recursive: true,
-    filter: (source) => !source.endsWith(READINESS_TEST),
+    filter: (source) => !source.endsWith(EFFECTIVENESS_TEST),
   });
   const hostModules = join(repoRoot, HOST, "node_modules");
   if (existsSync(hostModules)) {
