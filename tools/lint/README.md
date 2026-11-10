@@ -46,6 +46,10 @@ Don't add entries to get a pass.
 
 `shared-helpers-baseline.txt` lists the copies that already existed. They don't fail the run. When one is removed, the run fails until its line is removed too (`--prune`).
 
+The check is by name. It counts top-level `function` declarations and `const` names whose value is an arrow function or a function expression.
+
+The file size and shared helper checks also have a `--write-baseline` flag that rewrites the list from the code. Use it only in a change that edits the check itself, and say why in that change; never use it to get a pass.
+
 ## What's left out
 
 - `test/package-consumer/`: its own project, which needs the packed packages.

@@ -2,7 +2,7 @@
 // Stops new private copies of small helpers that src/ should define once, in
 // src/internal/. Existing copies are listed in shared-helpers-baseline.txt.
 // See tools/lint/README.md.
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -100,7 +100,7 @@ function main(argv) {
   }
   for (const copy of added) {
     const [path, name] = copy.split(" ");
-    console.error(`${path}: declares its own ${name}; import the one in ${SHARED_HOME}, or move one copy there and import it`);
+    console.error(`${path}: declares its own ${name}; import the shared one from ${SHARED_HOME}, or create it there from one copy and import it`);
   }
   for (const line of stale) {
     console.error(`${BASELINE_FILE}: "${line}" no longer occurs; run with --prune to remove it`);
@@ -110,6 +110,6 @@ function main(argv) {
   return failed === 0 ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exitCode = main(process.argv.slice(2));
 }
