@@ -52,7 +52,7 @@ function listFiles(repoRoot) {
 // TypeScript in any form, declaration files included: a .d.ts can import too.
 const isSourceFile = (path) => /\.[cm]?tsx?$/.test(path);
 
-// "./x.js" names x.ts (or x.d.ts), ".mjs" and ".cjs" name ".mts" and ".cts", "./dir" names
+// "./x.js" names x.ts (or x.d.ts), ".mjs" and ".cjs" name ".mts" and ".cts" (or their .d forms), "./dir" names
 // dir/index.ts, and data files ("./x.json") name themselves.
 function resolveSpecifier(fromPath, specifier, known) {
   const base = posix.normalize(posix.join(posix.dirname(fromPath), specifier));
@@ -60,7 +60,9 @@ function resolveSpecifier(fromPath, specifier, known) {
     base.replace(/\.js$/, ".ts"),
     base.replace(/\.js$/, ".d.ts"),
     base.replace(/\.mjs$/, ".mts"),
+    base.replace(/\.mjs$/, ".d.mts"),
     base.replace(/\.cjs$/, ".cts"),
+    base.replace(/\.cjs$/, ".d.cts"),
     `${base}.ts`,
     `${base}.d.ts`,
     `${base}/index.ts`,
