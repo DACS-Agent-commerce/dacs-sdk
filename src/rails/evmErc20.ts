@@ -2,6 +2,8 @@ import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
 import {
   createIdempotencyStore,
+  declareSettlementBridge,
+  settleThroughStore,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -267,7 +269,7 @@ export function evmErc20Settle(
   if (!Number.isSafeInteger(finalityBlocks) || finalityBlocks <= 0) {
     throw new DacsError("evm-erc20 rail must expose its positive finality policy");
   }
-  return (req) => {
+  return declareSettlementBridge((req: SettleRequest): Promise<SettleResult> => {
     const { amount, asset, expectedPayee, jobId, phase, rail: railId } = req;
     const phaseIndex = req.phaseIndex ?? 0;
     if (expectedPayee !== recipientEvm) {
@@ -296,11 +298,14 @@ export function evmErc20Settle(
         recipientEvm,
         amount,
       }, effectFence);
-    return store.once(
-      settlementKey(railId, jobId, phaseIndex),
+    return settleThroughStore({
+      store,
+      recoveryOnly: req.recoveryOnly,
+      label: "evm-erc20",
+      key: settlementKey(railId, jobId, phaseIndex),
       binding,
       submit,
       reconcile,
-    );
-  };
+    });
+  });
 }

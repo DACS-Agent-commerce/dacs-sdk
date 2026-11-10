@@ -143,9 +143,10 @@ requirements are tested against this separate empty seller requirement.
 
 
 Challenge protocol: POST the context scope without `buyerBundleHash` to
-`/dacs/v1/agreements/context/challenge`, using the authenticated transport and
-its scope hash. The signed response contains `sessionNonce` (256 random bits
-in lowercase hex) and `expiresAt` (one minute). Copy that nonce into the buyer
+`/dacs/v1/agreements/context/challenge`, signed through the SDK's wire (a handler
+composed with `context` and `wire`) with the scope hash as the envelope's
+`agreementHash`. The signed response contains `sessionNonce` (256 random bits
+in lowercase hex) and `expiresAt` (ten minutes). Copy that nonce into the buyer
 bundle before producing its presentation, then hash the bundle and send the
 normal context scope. Issuance is limited to five per buyer and twelve globally
 per rolling hour by default, and is also subject to unpaid-start limits. An
