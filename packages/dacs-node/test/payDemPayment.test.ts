@@ -495,7 +495,12 @@ describe("native DEM buyer payment track", () => {
     }
   });
 
-  it("commits the signed hash and rechecks its fence before broadcast", async () => {
+  it.each([
+    ["", {}],
+    [" and keeps a lagging nonce read's diagnostic out of the settlement", {
+      message: "pay-dem: account nonce read for 7 was rejected; payment is final",
+    }],
+  ] as const)("commits the signed hash and rechecks its fence before broadcast%s", async (_case, diagnostic) => {
     const database = await open(join(root(), "buyer.sqlite"));
     putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
     const events: string[] = [];
@@ -530,6 +535,7 @@ describe("native DEM buyer payment track", () => {
           blockNumber: 42,
           txRefKind: "demos",
           networkFeeOs: "1000000000",
+          ...diagnostic,
         };
       },
     });

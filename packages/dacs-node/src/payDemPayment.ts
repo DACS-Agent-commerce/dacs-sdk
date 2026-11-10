@@ -935,7 +935,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           if (!plainObject(raw) || raw.execution !== "executed") {
             throw new DacsPayDemBuyerPaymentError("pay-dem-chain-execution-unconfirmed");
           }
-          const { execution: _execution, ...settlementData } = raw;
+          const { execution: _execution, message: _message, ...settlementData } = raw;
           settlement = captureSettlement(settlementData, payment);
           await claim!.permit.settle(walletSettlement(payment, settlement));
           await options.publishNotice({
