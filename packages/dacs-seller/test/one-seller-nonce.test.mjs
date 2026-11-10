@@ -212,7 +212,7 @@ async function hostFixture(t, edit = source => source) {
   let current;
   // These nonce tests leave the wire journal unused, but its handle must still satisfy the context's construction check.
   const api = await privateModule(new URL('../src/host.mjs', import.meta.url), ['testStore', 'setStartupFailure'], source => edit(
-    source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', '({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());')));
+    source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', 'const journal = Object.freeze({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());')));
   const start = async changes => current = await api.startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor,
     dataDirectory, tp1Network: testNetwork(), now: () => NOW, ...changes });
   t.after(async () => { await current?.close(); await rm(dataDirectory, { recursive: true, force: true }); });
@@ -245,6 +245,7 @@ test(card('T14'), async t => {
 
 test(card('T20'), async t => {
   for (const reopen of [false, true]) for (const variant of ['unknown', 'consumed', 'mismatched']) await t.test(`${variant} reopened=${reopen}`, async t => {
+    // Job slots are not under test: the finished prior job keeps its slot until its session ends, so leave room for the second job.
     const f = await fixture(t, { store: { maxRecords: 1, maxJobs: 2 } }), input = await f.input(), body = structuredClone(input.body);
     // Leave a completed, expired transport nonce at capacity before each signed refusal.
     const prior = f.request({scope:f.scope(JOB2)}, '/dacs/v1/agreements/proposals');
@@ -828,8 +829,9 @@ test('R09 ledger refusal precedes retained recovery', async t => {
 
 test('R09 rejected retained body keeps challenges unchanged', async t => {
   const { f, input } = await legacyOperation(t), before = recoverySnapshot(f);
-  const store = { ...f.store, classify: () => { throw new Error('TEST classification failed'); } };
-  assert.throws(() => f.route.onRejectedBody(input.request, input.body, store), { code: 'context_challenge_mismatch' });
+  const failure = new Error('TEST classification failed');
+  const store = { ...f.store, classify: () => { throw failure; } };
+  assert.throws(() => f.route.onRejectedBody(input.request, input.body, store), error => error === failure);
   assert.doesNotThrow(() => f.route.onRejectedBody(input.request, input.body, f.store));
   assert.deepEqual(recoverySnapshot(f), before); assert.equal(f.calls.effects, 0);
 });

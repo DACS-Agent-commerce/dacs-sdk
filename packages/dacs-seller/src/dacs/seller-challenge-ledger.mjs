@@ -163,8 +163,8 @@ function replayAnswer(row, input) {
  * `transaction(fn, rollback = false)` runs fn synchronously in BEGIN IMMEDIATE and returns its result.
  * `now()` is the seller clock in ms; `generation` identifies this process, drawn after the seller state
  * lock is held. `sessionState({ jobId })` is the store's observation adapter: a synchronous DACS-5 name or null
- * (the adapter reads a throw or a promise as unknown), whose errors propagate. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
- * over durable rows. `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
+ * (the adapter reads a throw or a promise as unknown), whose errors propagate. `admissionCounts({ jobId })` returns `{ contextRecords, starts, buyerStarts(buyer) }`
+ * over durable rows (`jobId` is the job being issued for, so a count may leave out a record that job already holds). `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
  * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
  * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class);
  * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
@@ -309,8 +309,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   }
 
   // K1 steps 14-15: the context-record count, then the unpaid start counts.
-  function enforceAdmissionLimits(buyer) {
-    const counts = requireSynchronous(admissionCounts(), 'admissionCounts');
+  function enforceAdmissionLimits(buyer, jobId) {
+    const counts = requireSynchronous(admissionCounts({ jobId }), 'admissionCounts');
     if (!isRecord(counts) || typeof counts.buyerStarts !== 'function') throw new TypeError('admissionCounts must answer { contextRecords, starts, buyerStarts(buyer) }');
     if (readCount(counts.contextRecords, 'contextRecords') >= capacity.maxContextRecords) fail('peer_context_capacity', 503);
     if (readCount(counts.starts, 'starts') >= capacity.maxStartsPerHour) fail('unpaid_start_limit', 429);
@@ -334,7 +334,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!live) {
       enforceIssuanceLimits(buyer, jobRows.length, time);
       reclaimed = planReclamation(time);
-      enforceAdmissionLimits(buyer);
+      enforceAdmissionLimits(buyer, jobId);
     }
     // A reused nonce is answered only while the seller may still answer: it skips the counts and the writes, not step 16.
     assertStillAllowed(origin, authorization);

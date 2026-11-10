@@ -433,10 +433,12 @@ export interface RunSessionOptions {
   >;
   /**
    * Resume an interrupted session by passing the prior run's jobId. Anchored
-   * artifacts are reused. Crash-safe no-repayment across processes additionally
-   * requires both `sessionStore` and a durable/idempotent `resumeSettlement`
-   * implementation; a job id alone cannot prove what happened after a lost rail
-   * response. Omit for a new session.
+   * artifacts are reused. If the earlier run anchored the Agreement but not the
+   * payment evidence, and no settled outcome is on record, the resume never
+   * calls `settle`, with or without `sessionStore`: it calls `resumeSettlement`,
+   * and is refused without one. That
+   * seam must reconcile through a durable rail store, since a job id alone
+   * cannot show whether the interrupted run paid. Omit for a new session.
    */
   jobId?: string;
   /** Optional durable buyer-session lifecycle store used for restart recovery. */
@@ -445,6 +447,9 @@ export interface RunSessionOptions {
    * Reconcile a previously claimed payment whose durable session record still
    * has only an intent or ambiguous outcome. Must use the same rail idempotency
    * key and reconcile every ordered `req.priorAttempts` entry before returning.
+   * It is also called instead of `settle` whenever an earlier run anchored the
+   * Agreement but not the payment evidence and no settled outcome is on record,
+   * with or without `sessionStore`.
    */
   resumeSettlement?: (req: SettleRequest) => Promise<SettleResult>;
   /**
@@ -580,7 +585,7 @@ export interface AgentConfig {
    * unchanged.
    *
    * A substrate fault on the native read is not a refusal and propagates, as
-   * on the native path (#70): `verifyBundle` rejects, and so does the whole
+   * on the native path: `verifyBundle` rejects, and so does the whole
    * `getReputation` batch that contains the bundle. Both are retryable.
    *
    * `signal` aborts when {@link AgentConfig.attestationAnchorReceiptTimeoutMs}
@@ -916,7 +921,7 @@ export interface DemosBackedAdapter extends SubstrateAdapter {
 }
 
 /**
- * The DACS agent surface (T4). The small set of calls a dApp dev uses; the
+ * The DACS agent surface. The small set of calls a dApp dev uses; the
  * adapter, artifact model, and signing are wired underneath.
  */
 export interface Agent {
@@ -1009,7 +1014,7 @@ export interface Agent {
    * excluded from the score and reported in the result. A substrate fault
    * while reading any bundle or its artifacts, including a PC-2 anchor's
    * native address, is not an exclusion: the whole batch rejects with it and
-   * returns no partial result (#70). The call is retryable.
+   * returns no partial result. The call is retryable.
    */
   getReputation(primaryClaim: string, bundleRefs: string[]): Promise<Reputation>;
 }
@@ -1249,10 +1254,8 @@ function missingAdapterCapability(name: string): never {
 /**
  * Build the Agent surface over an ALREADY-CONNECTED adapter. Split out from
  * {@link createAgent} so the full lifecycle (incl. the `runSession` dep wiring
- * that #41 verification depends on) is exercisable in a NON-LIVE test against an
- * in-memory adapter — the public-Agent path was previously only reachable via a
- * live, environment-skipped test, which let the missing `verifyListing` wiring
- * ship. Not exported from the package barrel; internal test seam.
+ * that listing signature verification depends on) is exercisable in a NON-LIVE
+ * test against an in-memory adapter. Not exported from the package barrel; internal test seam.
  */
 export function buildAgent<TAdapter extends SubstrateAdapter>(
   adapter: TAdapter,
@@ -1817,7 +1820,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
               outcome,
             );
             // CORE §5.1 step 5: fetch only the exact verified native address,
-            // never a name-index result. Substrate faults propagate (#70).
+            // never a name-index result. Substrate faults propagate.
             const value = await publicReads.readAnchor(receipt.nativeAddress);
             // DEMOS-MAPPING: a Demos not-found read is indeterminate, not
             // established absence (e.g. a node lagging the verified write).
@@ -1852,7 +1855,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           ? publicReads.readAnchor(resolved.address)
           : null;
       },
-      // Explicit pre-#308 compatibility for legacy SDK bundles whose refs were
+      // Explicit pre-normative compatibility for legacy SDK bundles whose refs were
       // keyed only by an SDK artifact kind and the enclosing job id.
       resolveRef: async (kind, jobId, parties, legacyRef) => {
         if (kind === "dacs-2-composite" && legacyRef) {
@@ -2144,10 +2147,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
         throw new DacsError("publishListing has no configured binding index");
       }
       const targetVersion = listing.listingVersion;
-      // Versioned, write-once publish (§6.3.4, #29/#46) — pure core over the
+      // Versioned, write-once publish (§6.3.4) — pure core over the
       // binding-aware repository. Do not use anchorAddress() here: on current
       // Demos it predicts the NEXT nonce-derived create address and cannot
-      // locate an existing version slot (#70).
+      // locate an existing version slot.
       let publication: BoundArtifactWriteResult | undefined;
       const result = await publishListingCore(listing, {
         sign,
@@ -2340,9 +2343,9 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
     async verifyBundle(ref: string): Promise<BundleVerification> {
       // Bundle signature verification (§7.7) PLUS dereferencing each referenced
       // artifact and hash-checking it. Normative DACS-2 §7.5.2 refs resolve the
-      // signed storage-program locator directly. Pre-#308 MVP refs alone use
+      // signed storage-program locator directly. Pre-normative MVP refs alone use
       // owner-bound name resolution (kind, jobId → name → address), because
-      // their physical address folds in the writer's create-time nonce (#70).
+      // their physical address folds in the writer's create-time nonce.
       return verifyBundleAtRef(ref);
     },
 
@@ -2614,8 +2617,8 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
           authenticateBuyerIdentityBundle: ({ bundle, signedBytes: bytes }) =>
             buyerIdentityPresentationVerifier({ bundle, signedBytes: bytes }),
           readListing: (ref) => publicReads.readAnchor(ref),
-          // Temporary reduced-MVP agreement writer. DACS-3 AgreementSignature[]
-          // migration is owned by #98; it is deliberately not coerced into a
+          // Temporary reduced-MVP agreement writer. It does not produce DACS-3
+          // AgreementSignature[] and is deliberately not coerced into a
           // ComponentSignature envelope here.
           sign: (artifact, separator) =>
             buildSignedArtifact(
@@ -2633,7 +2636,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
               })
             ).address,
           // Resume resolves BY NAME (owner = this agent), failing closed on an
-          // indeterminate lookup rather than re-anchoring/re-settling (#70).
+          // indeterminate lookup rather than re-anchoring/re-settling.
           resolveAnchor: async (name) => {
             const r = await publicReads.resolveAnchorByName(
               name,
@@ -2646,9 +2649,10 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
               ? { status: "present", ref: r.address, value }
               : { status: "indeterminate", reason: "resolved address was not readable" };
           },
-          // #41 — verify the listing against the key in its own agentId before
-          // vetting or settlement. Without this the money path would run on an
-          // unverified listing (and the gate below would throw).
+          // Verify the listing against the key in its own agentId before
+          // vetting or settlement, so the money path only runs on a verified
+          // listing (and runSessionCore's listing-verification requirement
+          // is met).
           verifyListing: async (raw, sellerClaim) => {
             if (expectedContentHash !== null) {
               try {
@@ -2839,7 +2843,7 @@ export function buildAgent<TAdapter extends SubstrateAdapter>(
       for (const ref of bundleRefs) {
         // A substrate fault (any read, including a PC-2 native read) rejects
         // the whole batch rather than excluding one bundle, as on the native
-        // path (#70). The call is retryable; nothing partial is returned.
+        // path. The call is retryable; nothing partial is returned.
         const verdict = await verifyBundleAtRef(ref);
         if (
           verdict.ok &&
