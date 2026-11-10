@@ -4,7 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DacsError } from "../../src/errors.js";
-import { settlementBridgeTraits } from "../../src/rails/idempotency.js";
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  settlementBridgeTraits,
+} from "../../src/rails/idempotency.js";
 import {
   PayDemIncludedNonceVisibilityError,
   createPayDemRail,
@@ -1222,7 +1226,7 @@ describe("createPayDemRail nonce coordination", () => {
 describe("payDemSettle bridge registration", () => {
   const declared = async (config: { journalPreparedTransfer?: () => Promise<void> }) => {
     const rail = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret", ...config });
-    return settlementBridgeTraits(payDemSettle(rail));
+    return settlementBridgeTraits(payDemSettle(rail, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) }));
   };
 
   it("payDemSettle declares whether the rail it wraps has a prepared-transfer journal", async () => {
@@ -1232,7 +1236,7 @@ describe("payDemSettle bridge registration", () => {
 
   it("payDemSettle over a hand-built rail declares nothing", () => {
     const handBuilt = { address: WALLET, settle: vi.fn() };
-    expect(settlementBridgeTraits(payDemSettle(handBuilt))).toEqual({});
+    expect(settlementBridgeTraits(payDemSettle(handBuilt, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) }))).toEqual({});
   });
 });
 

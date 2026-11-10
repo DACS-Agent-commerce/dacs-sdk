@@ -40,7 +40,11 @@ import {
 import type { SubstrateAdapter } from "../../src/substrate/SubstrateAdapter.js";
 import { x402Settle, type X402Rail } from "../../src/rails/x402.js";
 import { payDemSettle, type PayDemRail } from "../../src/rails/payDem.js";
-import { declareSettlementBridge } from "../../src/rails/idempotency.js";
+import {
+  createIdempotencyStore,
+  createInMemorySettlementLog,
+  declareSettlementBridge,
+} from "../../src/rails/idempotency.js";
 import { verifySettlementEvidence } from "../../src/agent/verifySettlementEvidence.js";
 
 // Regression for #71: the PUBLIC Agent.runSession() path must wire the #41
@@ -402,7 +406,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
           recipientEvm,
           asset,
-        }),
+        }, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(boundRail.settle).toHaveBeenCalledTimes(1);
@@ -425,7 +429,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
           recipientEvm,
           asset,
-        }),
+        }, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
       }),
     ).rejects.toThrow(/x402 destination mismatch/);
     expect(omittedRail.settle).not.toHaveBeenCalled();
@@ -556,7 +560,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           deliveryPhase: "deliver-attested-payload",
           deliveryFormat: "application/json",
         },
-        settle: payDemSettle(rail, { network: "demos:testnet" }),
+        settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(transfer).toHaveBeenCalledOnce();

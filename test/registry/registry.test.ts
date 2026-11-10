@@ -5,6 +5,7 @@ import { buildSignedArtifact, type Signer } from "../../src/agent/signedArtifact
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
 import type { AnchorReceipt } from "../../src/artifacts/types.js";
 import { contentHash } from "../../src/canonical/index.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import {
   ed25519Sign,
   ed25519Verify,
@@ -1689,6 +1690,7 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
       evmPrivateKey: TEST_EVM_KEY,
       paywall,
       rpcUrl: "https://sepolia.base.org",
+      settlementStore: createIdempotencyStore(createInMemorySettlementLog()),
     });
     expect(typeof settle).toBe("function");
   });
@@ -1778,6 +1780,7 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
       evmPrivateKey: TEST_EVM_KEY,
       paywall,
       rpcUrl: "https://sepolia.base.org",
+      settlementStore: createIdempotencyStore(createInMemorySettlementLog()),
     });
     expect(typeof settle).toBe("function");
   });
@@ -1801,6 +1804,7 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
           recipient: paywall.recipientEvm,
         },
         rpcUrl: "https://sepolia.base.org",
+        settlementStore: createIdempotencyStore(createInMemorySettlementLog()),
       }),
     ).rejects.toThrow(/does not match authenticated rail network/);
   });
@@ -1829,6 +1833,7 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
         recipient: paywall.recipientEvm,
       },
       rpcUrl: "https://sepolia.base.org",
+      settlementStore: createIdempotencyStore(createInMemorySettlementLog()),
     });
     expect(typeof settle).toBe("function");
   });
@@ -1842,6 +1847,7 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
         evmPrivateKey: TEST_EVM_KEY,
         paywall,
         rpcUrl: "https://sepolia.base.org",
+        settlementStore: createIdempotencyStore(createInMemorySettlementLog()),
       }),
     ).rejects.toThrow(/finalityBlocks/);
   });

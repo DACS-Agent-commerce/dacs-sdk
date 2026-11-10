@@ -3,6 +3,7 @@ import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
 import { DacsError } from "../../src/errors.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import {
   createX402Rail,
   dacsX402AuthorizationNonce,
@@ -741,7 +742,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       network: NETWORK,
       recipientEvm: RECIPIENT,
       asset: "0xtoken",
-    });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
     expect(() =>
       settle({
         rail: "pay-x402",
@@ -779,7 +780,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       recipientEvm: RECIPIENT,
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // resolved token id
       phaseIndex: 3,
-    });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     // runSession passes the human Price.asset symbol; the bridge must NOT use it
     // for the guard — it uses the rail-configured on-chain token id.
@@ -827,7 +828,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       // no phaseIndex on the paywall — the old wiring omitted it to the rail,
       // which (with requireSessionBinding) threw on every settle.
-    });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await settle({
       rail: "pay-x402",
@@ -865,7 +866,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       network: NETWORK,
       recipientEvm: RECIPIENT,
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "j1" });
 

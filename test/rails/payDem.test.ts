@@ -561,7 +561,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
     cfg: { recipient?: string; network?: string } = { recipient: PAYEE_CLAIM, network: "demos" },
   ) => {
     const rail: PayDemRail = { address: PAYER, settle: (p) => payDemSettleCore(p, client) };
-    return payDemSettle(rail, cfg);
+    return payDemSettle(rail, cfg, { store: createIdempotencyStore(createInMemorySettlementLog()) });
   };
   const req = (over: Record<string, unknown> = {}) => ({
     rail: "pay-dem",
@@ -630,7 +630,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return payDemSettleCore(params, client);
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
     const first = await settle(req());
     expect(Object.isFrozen(first)).toBe(true);
     expect(Object.isFrozen(first.finality)).toBe(true);
@@ -682,7 +682,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return payDemSettleCore(params, client);
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await expect(settle(req())).resolves.toMatchObject({
       ok: false,
@@ -796,12 +796,12 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       settle: vi.fn(async (params) => payDemSettleCore(params, client)),
     };
 
-    await expect(payDemSettle(rail, { network: "demos" })(req({ phase: "deliver" })))
+    await expect(payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) })(req({ phase: "deliver" })))
       .rejects.toThrow(/requires phase "pay-dem", got "deliver"/);
     await expect(payDemSettle(rail, {
       network: "demos",
       railId: "demos-native:DEM",
-    })(req({ rail: "pay-dem" })))
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) })(req({ rail: "pay-dem" })))
       .rejects.toThrow(/request rail "pay-dem" does not match authenticated descriptor/);
     expect(rail.settle).not.toHaveBeenCalled();
   });
@@ -1260,7 +1260,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       network: "demos",
       railId: "demos-native:DEM",
       phaseIndex: 6,
-    });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await expect(settle(req({
       rail: "demos-native:DEM",
@@ -1279,7 +1279,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
       settle: vi.fn(),
     };
 
-    await expect(payDemSettle(rail)(req({ amount: "0" })))
+    await expect(payDemSettle(rail, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) })(req({ amount: "0" })))
       .rejects.toThrow(/amount must be > 0/);
     expect(rail.settle).not.toHaveBeenCalled();
   });
@@ -1294,7 +1294,7 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
         return payDemSettleCore(input, client);
       },
     };
-    const settle = payDemSettle(rail, { network: "demos" });
+    const settle = payDemSettle(rail, { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await settle(req({ rail: "demos-native:DEM", jobId: "job-7", phaseIndex: 2 }));
 
