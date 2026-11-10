@@ -29,7 +29,7 @@ import { wireBuyer } from './helpers/wire-buyer.mjs';
 import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportStore, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 
 const HOST_URL = new URL('../src/host.mjs', import.meta.url);
 const PACKAGE_DIRECTORY = fileURLToPath(new URL('../', import.meta.url));
@@ -211,6 +211,32 @@ function storeFixture(t, options = {}) {
 }
 
 // ================================================================ host tests
+
+test('host returns a completed proposal after its session ends', async (t) => {
+  let terminal = false;
+  const f = await hostFixture(t);
+  const host = await f.start({ contextSessionState: () => terminal ? 'finalised' : null });
+  const body = await f.proposal(host);
+  const { jobId, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const signed = await buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash });
+  const first = await postSigned(host, signed);
+  assert.equal(first.status, 200);
+  assert.equal(JSON.parse(first.bytes).disposition, 'complete');
+  await verifiedAnswer(buyerWire, first);
+
+  terminal = true;
+  const fresh = await buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash });
+  assert.notEqual(fresh.payload.nonce, signed.payload.nonce);
+  const retry = await postSigned(host, fresh);
+  assert.equal(retry.status, 200, retry.bytes.toString());
+  assert.deepEqual(retry.bytes, first.bytes);
+  await verifiedAnswer(buyerWire, retry);
+
+  const replay = await postSigned(host, signed);
+  assert.equal(replay.status, 409, replay.bytes.toString());
+  assert.equal(JSON.parse(replay.bytes).error, 'peer_request_replayed');
+});
 
 test('P10-T01 start creates a private, owned, real-path journal directory, opens it with the 300 s lease and leaves no probe files', async (t) => {
   const f = await hostFixture(t);
@@ -435,6 +461,7 @@ test('the reader each signed request calls is bounded: a stalled read is pending
       const body = await f.proposal(host, jobId(`stalled-${index}`));
       return buyerWire.signRequest(PROPOSALS, body, { jobId: body.transportIdentity.jobId, agreementHash: body.transportIdentity.agreementHash });
     }));
+    assert.equal(new Set(proposals.map(({ payload }) => payload.nonce)).size, HANDLER_CONCURRENCY);
     const [overflow, afterwards] = [await unknownStateRequest(buyerWire, 'overflow'), await unknownStateRequest(buyerWire, 'afterwards')];
     stall = true;
     mock.timers.enable({ apis: ['setTimeout'] });
@@ -791,14 +818,63 @@ test('a context step carrying a tuple is refused with nothing kept; after a cont
   assert.deepEqual(w.store.purchaseProfile(job), PROFILE);
 });
 
-test('the store exports no tuple writer, and a tuple row for a job with no peer_jobs row is refused by its foreign key', (t) => {
-  const w = storeFixture(t);
-  assert.deepEqual(Object.keys(w.store).filter((name) => /keep|profile/i.test(name)), ['purchaseProfile']);
-  const db = new DatabaseSync(w.path);
-  t.after(() => db.close());
-  db.pragma('foreign_keys = ON');
-  assert.throws(() => db.prepare('INSERT INTO kit_purchase_profiles VALUES (?, ?, ?)').run(jobId('orphan'), canonicalize(PROFILE), T), { code: 'SQLITE_CONSTRAINT_FOREIGNKEY' });
-  assert.equal(w.tuples(), 0);
+test('keepPurchaseProfileWithin validates synchronously and persists or rolls back detached tuples', (t) => {
+  const w = storeFixture(t), job = jobId('detached');
+  let port = sellerStoreInternals(w.store);
+  assert.equal(Object.isFrozen(port), true);
+  assert.equal(typeof port.keepPurchaseProfileWithin, 'function');
+  assert.equal(w.store.keepPurchaseProfileWithin, undefined);
+  assert.throws(() => sellerStoreInternals({ ...w.store }), TypeError);
+  assert.throws(() => port.keepPurchaseProfileWithin(job, PROFILE), /transaction/);
+  port.transaction(() => {
+    assert.throws(() => port.keepPurchaseProfileWithin('bad-job', PROFILE), { code: 'peer_job_invalid' });
+    for (const profile of [null, { ...PROFILE, extra: 1 }]) assert.throws(() => port.keepPurchaseProfileWithin(job, profile), MISMATCH);
+    assert.throws(() => port.keepPurchaseProfileWithin(job, PROFILE, NaN), { code: 'peer_clock_invalid' });
+    assert.equal(port.keepPurchaseProfileWithin(job, PROFILE), undefined);
+  });
+  assert.deepEqual([w.jobs(), w.tuples()], [0, 1]);
+  assert.equal(port.db.prepare('SELECT kept_at FROM kit_purchase_profiles WHERE job = ?').get(job).kept_at, T);
+  w.advance(123); port.transaction(() => port.keepPurchaseProfileWithin(job, PROFILE));
+  assert.equal(port.db.prepare('SELECT kept_at FROM kit_purchase_profiles WHERE job = ?').get(job).kept_at, T);
+  assert.throws(() => port.transaction(() => port.keepPurchaseProfileWithin(job, OTHER_PROFILE)), MISMATCH);
+  assert.throws(() => port.transaction(() => { port.keepPurchaseProfileWithin(jobId('rolled-back'), PROFILE); throw new Error('tuple-cut'); }), /tuple-cut/);
+  const exec = port.db.exec.bind(port.db);
+  port.db.exec = sql => { if (sql === 'COMMIT') throw new Error('commit-cut'); return exec(sql); };
+  assert.throws(() => port.transaction(() => port.keepPurchaseProfileWithin(jobId('commit-cut'), PROFILE)), /commit-cut/);
+  port.db.exec = exec;
+  w.reopen(); port = sellerStoreInternals(w.store);
+  assert.deepEqual(w.store.purchaseProfile(job), PROFILE);
+  assert.equal(w.store.purchaseProfile(jobId('rolled-back')), null);
+  assert.equal(w.store.purchaseProfile(jobId('commit-cut')), null);
+  assert.deepEqual(port.db.pragma('foreign_key_list(kit_purchase_profiles)'), []);
+});
+
+test('R20 detached adoption and successive terminal retirement', (t) => {
+  const ended = new Set(), w = storeFixture(t, { maxJobs: 1, contextSessionState: ({ jobId }) => ended.has(jobId) ? 'finalised' : null });
+  const port = sellerStoreInternals(w.store), first = jobId('adopt');
+  port.transaction(() => port.keepPurchaseProfileWithin(first, PROFILE));
+  assert.equal(port.admissionCounts().contextRecords, 0);
+  for (let i = 0; i < 3; i++) {
+    const job = i === 0 ? first : jobId(`successive-${i}`);
+    if (i === 0) {
+      assert.throws(() => w.store.reserve(w.request(job), {}, { keepProfile: OTHER_PROFILE }), MISMATCH);
+      port.db.exec("CREATE TRIGGER adoption_once BEFORE INSERT ON kit_purchase_profiles BEGIN SELECT RAISE(ABORT, 'second tuple insert'); END");
+    }
+    const request = w.request(job), effect = w.store.reserve(request, {}, { keepProfile: PROFILE });
+    if (i === 0) {
+      assert.equal(port.db.prepare('SELECT kept_at FROM kit_purchase_profiles WHERE job = ?').get(job).kept_at, T);
+      port.db.exec('DROP TRIGGER adoption_once');
+    }
+    assert.equal(effect.disposition, 'perform'); w.store.finish(effect, 200, '{}');
+    if (i > 0) assert.equal(w.store.purchaseProfile(i === 1 ? first : jobId(`successive-${i - 1}`)), null);
+    ended.add(job); w.advance(61000);
+  }
+  port.db.exec("CREATE TRIGGER capacity_cut BEFORE INSERT ON peer_effects BEGIN SELECT RAISE(ABORT, 'capacity-cut'); END");
+  assert.throws(() => w.store.reserve(w.request(jobId('capacity-cut')), {}, { keepProfile: PROFILE }), /capacity-cut/);
+  assert.deepEqual(w.store.purchaseProfile(jobId('successive-2')), PROFILE, 'reclamation rolls back with the reservation');
+  w.reopen(); assert.deepEqual(w.store.purchaseProfile(jobId('successive-2')), PROFILE);
+  sellerStoreInternals(w.store).db.exec('DROP TRIGGER capacity_cut');
+  assert.equal(w.store.reserve(w.request(jobId('last')), {}, { keepProfile: PROFILE }).disposition, 'perform');
 });
 
 test('P10-T13 a tuple kept before a crash is present after restart; one not kept is absent', async (t) => {
@@ -817,17 +893,39 @@ test('P10-T13 a tuple kept before a crash is present after restart; one not kept
 });
 
 test('a job removed after a no-effect answer takes its kept tuple with it, also when the answer comes after a restart, so the job can be proposed again under another tuple', async (t) => {
-  const w = storeFixture(t);
-  const removed = jobId('removed');
-  const reservation = w.store.reserve(w.request(removed), {}, { keepProfile: PROFILE });
-  w.reopen();
-  assert.equal(w.tuples(), 1);
-  w.store.finish(reservation, 409, '{}', { noEffect: true });
-  assert.equal(w.jobs(), 0, 'the provisional job is gone');
-  assert.equal(w.tuples(), 0, 'and so is its tuple');
-  w.reopen();
-  assert.equal(w.store.reserve(w.request(removed), {}, { keepProfile: OTHER_PROFILE }).disposition, 'perform');
-  assert.deepEqual(w.store.purchaseProfile(removed), OTHER_PROFILE);
+  for (const via of ['finish', 'reconcile']) await t.test(via, (t) => {
+    const w = storeFixture(t), removed = jobId('removed'), request = w.request(removed);
+    let reservation = w.store.reserve(request, {}, { keepProfile: PROFILE });
+    if (via === 'reconcile') w.store.finish(reservation, 503, '{}');
+    w.reopen(); assert.equal(w.tuples(), 1);
+    if (via === 'reconcile') reservation = w.store.reserve(request, {}, { keepProfile: PROFILE });
+    if (via === 'finish') w.store.finish(reservation, 409, '{}', { noEffect: true });
+    else w.store.reconcile(reservation, request, 409, '{}', { noEffect: true });
+    assert.equal(w.jobs(), 0, 'the provisional job is gone');
+    assert.equal(w.tuples(), 0, 'and so is its tuple');
+    w.reopen();
+    assert.throws(() => w.store.reserve(w.request(removed, { buyer: claim('foreign') }), {}, { keepProfile: OTHER_PROFILE }), { code: 'peer_job_conflict', status: 409 });
+    assert.equal(w.tuples(), 0);
+    assert.equal(w.store.reserve(w.request(removed), {}, { keepProfile: OTHER_PROFILE }).disposition, 'perform');
+    assert.deepEqual(w.store.purchaseProfile(removed), OTHER_PROFILE);
+    assert.throws(() => w.store.reserve(w.request(removed, { buyer: claim('foreign') }), {}, { keepProfile: OTHER_PROFILE }), { code: 'peer_job_conflict', status: 409 });
+  });
+});
+
+test('R20 no-effect cleanup rolls back on tuple deletion failure', async t => {
+  for (const via of ['finish', 'reconcile']) await t.test(via, t => {
+    const w = storeFixture(t), job = jobId('cleanup-cut'), request = w.request(job);
+    let effect = w.store.reserve(request, {}, { keepProfile: PROFILE });
+    if (via === 'reconcile') { w.store.finish(effect, 503, '{}'); effect = w.store.reserve(request, {}, { keepProfile: PROFILE }); }
+    const cleanup = () => via === 'finish' ? w.store.finish(effect, 409, '{}', { noEffect: true }) : w.store.reconcile(effect, request, 409, '{}', { noEffect: true });
+    sellerStoreInternals(w.store).db.exec("CREATE TRIGGER deletion_cut BEFORE DELETE ON kit_purchase_profiles BEGIN SELECT RAISE(ABORT, 'deletion-cut'); END");
+    assert.throws(cleanup, /deletion-cut/);
+    w.reopen(); assert.deepEqual([w.jobs(), w.tuples()], [1, 1]);
+    assert.deepEqual(w.store.purchaseProfile(job), PROFILE);
+    sellerStoreInternals(w.store).db.exec('DROP TRIGGER deletion_cut'); cleanup();
+    w.reopen(); assert.deepEqual([w.jobs(), w.tuples()], [0, 0]);
+    assert.equal(w.store.reserve(w.request(job), {}, { keepProfile: OTHER_PROFILE }).disposition, 'perform');
+  });
 });
 
 test('a job retired for capacity after a restart takes its kept tuple with it', async (t) => {
@@ -918,13 +1016,14 @@ test('P10-T18 through the real guarded store\'s classify, its dry-run reserve an
   assert.equal(replay.text, first.text, 'and replays its answer');
   assert.equal(w.effects().writes, 1, 'without new work');
 
-  w.store.reserve(await proposal(other), {}, {});
+  // Explicitly select the legacy path through the fixture tuple adapter.
+  w.store.reserve(await proposal(other), {}, { keepProfile: undefined });
   const dryRuns = async (store, label) => {
     const [matching, different, untupled, legacy, brandNew] = await Promise.all([proposal(job), proposal(job), proposal(other), proposal(other), proposal(jobId('t18-new'))]);
     assert.equal(store.classify(matching, {}, { keepProfile: PROFILE }), 'known', `${label}: the matching tuple answers as reserve would`);
     assert.throws(() => store.classify(different, {}, { keepProfile: OTHER_PROFILE }), MISMATCH, `${label}: a different tuple is refused`);
     assert.throws(() => store.classify(untupled, {}, { keepProfile: PROFILE }), MISMATCH, `${label}: an existing job with no kept tuple is refused`);
-    assert.equal(store.classify(legacy, {}), 'known', `${label}: an absent tuple is the legacy path`);
+    assert.equal(store.classify(legacy, {}, { keepProfile: undefined }), 'known', `${label}: an absent tuple is the legacy path`);
     assert.equal(store.classify(brandNew, {}, { keepProfile: PROFILE }), 'start', `${label}: a new job classifies start`);
     assert.equal(tuples(), 1, `${label}: a dry run keeps no tuple`);
   };
@@ -936,4 +1035,29 @@ test('P10-T18 through the real guarded store\'s classify, its dry-run reserve an
   const afterRestart = await contextRequest();
   assert.equal(reopened.classify(afterRestart.request, afterRestart.body), 'known', 'the context retry classifies known after restart');
   await dryRuns(reopened, 'restarted store');
+});
+
+
+test('R20 detached profiles do not hold job slots', t => {
+  const w = storeFixture(t, { maxJobs: 1 }), detached = jobId('profile-only');
+  const port = sellerStoreInternals(w.store);
+  port.transaction(() => port.keepPurchaseProfileWithin(detached, PROFILE));
+  assert.equal(w.store.reserve(w.request(jobId('active')), {}, { keepProfile: OTHER_PROFILE }).disposition, 'perform');
+  w.reopen(); assert.deepEqual(w.store.purchaseProfile(detached), PROFILE);
+  assert.throws(() => w.store.reserve(w.request(jobId('full')), {}, { keepProfile: PROFILE }), { code: 'peer_job_capacity', status: 503 });
+});
+
+test('started host signed proposal creates accounting and wire operation records', async (t) => {
+  const f = await hostFixture(t), host = await f.start();
+  const body = await f.proposal(host), { jobId: id, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const answer = await postSigned(host, await buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash }));
+  const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
+  try {
+    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations').all(), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
+  } finally { db.close(); }
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, 1);
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length, 1);
+  assert.ok(answer.header, 'the started host signs the result');
 });

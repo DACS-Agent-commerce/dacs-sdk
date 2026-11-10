@@ -24,6 +24,10 @@ npm run lint:prune --prefix tools/lint
 
 Don't add entries to it to get a pass. Fix the new issue, or use an `eslint-disable-next-line` comment that says why it's safe.
 
+## Layer check
+
+`layers.mjs` checks that imports in `src/` follow the layer order in `layers.json`. `layers-baseline.txt` lists the imports that already broke it. See [ARCHITECTURE.md](../../ARCHITECTURE.md#the-check).
+
 ## What's left out
 
 - `test/package-consumer/`: its own project, which needs the packed packages.
