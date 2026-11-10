@@ -16,8 +16,8 @@ async function accountingFixture(t, options = {}) {
   const path = join(dir, 'transport.sqlite'), journal = new Map();
   let time = T0, sequence = 0;
   const now = () => time;
-  const wireOperationView = target => journal.get(wireOperationId(target)) ?? { state: 'none' };
-  let store = createSellerTransportStore({ path, now, wireOperationView, ...options });
+  const readers = { wireOperationView: target => journal.get(wireOperationId(target)) ?? { state: 'none' }, retainsUnfinishedWork: () => false };
+  let store = createSellerTransportStore({ path, now, ...readers, ...options });
   const db = new DatabaseSync(path);
   t.after(() => { db.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
   const payload = (change = {}) => ({ version: '1', kind: 'request', method: 'POST', path: PROPOSALS,
@@ -40,7 +40,7 @@ async function accountingFixture(t, options = {}) {
     rows: () => rows('kit_reservations'), holds: () => rows('kit_job_holds'), jobRows: () => rows('peer_jobs'),
     files: () => [...journal].map(([id, view]) => JSON.stringify([id, view])).sort(),
     setTime: value => { time = value; },
-    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, wireOperationView, ...options }); },
+    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, ...readers, ...options }); },
   };
 }
 

@@ -2260,6 +2260,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // intent, a contribution or a commitment): the transport then never
     // releases its proposal effect. Synchronous and read only.
     retainsProposalWork: (jobId) => proposalWork(jobId),
+    // Whether an attempt on this route that ended without a stored answer left
+    // work a retry must finish: a commitment write with no read-back yet or, for
+    // a payment claim, any payment this seller recorded for the job (a recorded
+    // payment is finished only by its stored answer). The transport then never
+    // retires the job on that attempt. Synchronous and read only.
+    retainsUnfinishedWork: ({ jobId, path }) => {
+      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      return Boolean((session?.commitCreatedAt && !session.commitment && !session.signatureCommitmentHeld) ||
+        (path === '/dacs/v1/payments' && (session?.payment || session?.paymentWork || session?.nativeEvidenceWork || durable?.settlementBoundTo(jobId))));
+    },
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     // For the host that holds the seller state lock: releases the job lock rows
     // of holders that are gone and returns [{ job, owner, reason }]; undefined

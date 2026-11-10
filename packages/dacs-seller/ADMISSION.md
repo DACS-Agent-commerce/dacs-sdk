@@ -69,7 +69,10 @@ wire did not refuse excludes another effect with peer_operation_conflict (409). 
 reads too. Completed and uncertain effects keep their bindings. Empty job bindings can be reclaimed on a successful
 reservation at capacity; owners remain. Reconciliation can make retained work eligible for retirement. Deleting the journal is not a
 supported recovery procedure. Accounted holds release their active slots through store retirement once all associated
-work is absent or terminal and its nonce and context-start retention windows have elapsed. Retirement keeps reservation
+work is absent or terminal and its nonce and context-start retention windows have elapsed. An operation whose last
+attempt ended without a stored answer is terminal only when retainsUnfinishedWork answers false. A commitment write
+with no read-back, or on the payment route any payment the seller recorded, is work a retry must finish and keeps the
+job counted until that operation completes. A reader that throws, or a store given none, keeps it too. Retirement keeps reservation
 and hold rows, preserves ownership, and never refunds used purchase units. Completed effects and their context admission
 proofs remain available for retries after restart; retired proofs do not count as active slots.
 
@@ -205,8 +208,8 @@ The default twelve challenges can exhaust the global hourly allowance with zero 
 Context starts have an independent active-record cap, maxContextRecords, defaulting to maxRecords (10,000).
 A job counts once across its context admissions and accounting hold. Active work retains its slots until it is absent
 or terminal and every nonce and context-start retention window has elapsed. Retirement preserves accounting records
-and ownership while freeing job and context capacity. Pending or uncertain effects and unknown or nonterminal sessions
-retain their slots until retirement is safe. Retired jobs refuse fresh starts and recovery even after restart; completed requests still
+and ownership while freeing job and context capacity. Pending or uncertain effects, ended attempts that left work for a
+retry, and unknown or nonterminal sessions retain their slots until retirement is safe. Retired jobs refuse fresh starts and recovery even after restart; completed requests still
 require their authenticated binding before replay. peer_context_capacity (503) refuses fresh starts before a policy hold
 or wire effect; a recognized presentation nonce is consumed on attempt. Challenge issuance refuses at capacity before
 SQL mutation, while retained retries can read their answers.

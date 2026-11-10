@@ -276,16 +276,19 @@ const SELLER_CONTEXT_START_LIMITS = Object.freeze({ maxStartsPerHour: 12, maxSta
  * `contextStartLimits` are the route's own unpaid-start limits, which the ledger enforces too.
  * `contextRecords` is the counter step 4 of reservation accounting reads; it defaults to the union of the
  * retained context records (old admissions and K1 rows, intent rows included), and only tests replace it.
+ * `retainsUnfinishedWork({ jobId, path })` is synchronous and says whether the seller keeps work a retry
+ * on that route must finish; an operation that ended without a stored answer lets its job retire only when
+ * it answers false, so never when it throws or is not given.
  * Returns the store, whose `challenges` is the ledger; `recoverLostContextReservations()` runs only
  * while the caller holds the seller state lock. Throws on an unusable option or storage.
  */
 export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs = maxRecords, maxChallenges = maxRecords, maxContextRecords = maxRecords, contextSessionState = () => null,
   contextStartLimits = SELLER_CONTEXT_START_LIMITS, generation = randomBytes(16).toString('hex'), ready = () => true, stopped = () => false,
-  maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), contextRecords, wireOperationView = () => null }) {
+  maxNoncesPerBuyerPerWindow = 120, nonceWindowMs = 60000, now = () => Date.now(), contextRecords, wireOperationView = () => null, retainsUnfinishedWork = () => true }) {
   if (typeof path !== 'string' || !isAbsolute(path) || !uint(maxRecords) || maxRecords === 0) throw new Error('a persistent absolute path and positive store capacity are required');
   if (!uint(maxJobs) || maxJobs === 0) throw new Error('positive job capacity required');
   if (!uint(maxChallenges) || maxChallenges === 0 || typeof contextSessionState !== 'function') throw new Error('positive challenge capacity and seller session-state reader required');
-  if (typeof wireOperationView !== 'function') throw new Error('wire operation reader must be a function');
+  if (typeof wireOperationView !== 'function' || typeof retainsUnfinishedWork !== 'function') throw new Error('wire operation and unfinished work readers must be functions');
   if (!uint(maxContextRecords) || maxContextRecords === 0) throw new Error('positive context capacity required');
   if (![maxNoncesPerBuyerPerWindow, nonceWindowMs].every(n => uint(n) && n > 0)) throw new Error('positive nonce limits required');
   if (!['maxStartsPerHour', 'maxStartsPerBuyerPerHour'].every(key => uint(contextStartLimits?.[key]) && contextStartLimits[key] > 0)) throw new TypeError('positive context start limits required');
@@ -522,7 +525,7 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
             if (READ_ROUTES.has(route)) return false;
             try {
               const state = wireOperationView({ jobId: job, seller: get('SELECT seller FROM kit_job_holds WHERE jobId = ?', job).seller, path: route })?.state;
-              return !(['ended', 'completed'].includes(state) || (state === 'none' && refused));
+              return !(state === 'completed' || (state === 'ended' && retainsUnfinishedWork({ jobId: job, path: route }) === false) || (state === 'none' && refused));
             } catch { return true; }
           }) ||
           get("SELECT 1 FROM peer_effect_jobs m LEFT JOIN peer_effects e ON e.effect = m.effect WHERE m.job = ? AND e.state IS NULL", job) ||

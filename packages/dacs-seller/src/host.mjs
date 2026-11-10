@@ -284,7 +284,7 @@ export async function startSellerHost(options) {
     // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, generation, stopped: stopRequested, contextSessionState,
-      wireOperationView: (target) => inspectWireOperation(journal, target) });
+      wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.

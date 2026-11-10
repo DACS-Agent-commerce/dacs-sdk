@@ -37,7 +37,8 @@ none of these signatures; what your own signer does with them is up to it.
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
 the host retire that job's challenge and context slots. Completed answers and
-their admission proofs remain available for retries. An unknown name,
+their admission proofs remain available for retries. A terminal name does not
+retire a job whose payment or commitment a retry must still finish. An unknown name,
 an agent stage name or an unreadable answer keeps them. A throw, Promise or
 non-null non-string refuses issuance and new work with `session_admission_unavailable`
 503 and its cause; only explicit `null` means unknown. Promise results are ignored

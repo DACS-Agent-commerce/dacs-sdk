@@ -539,6 +539,8 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         if (row.job !== retained.job) fail('seller_state_corrupt');
         return retained.contested !== true && retained.claims?.length === 1 && Number.isSafeInteger(retained.claims[0].phaseIndex) ? retained.job : null;
       },
+      // Whether a verified payment was first claimed for this job, credited or contested.
+      settlementBoundTo: (jobId) => Boolean(get('SELECT 1 FROM seller_settlements WHERE job=?', jobId)),
       // A signature leaves signOnce only after its completion record, written
       // under the job fence. So a retained intent for the same bytes is a
       // signing that released nothing (its signer threw, or its holder died or

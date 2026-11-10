@@ -237,8 +237,11 @@ test('hold-release a stored completed operation proves completion without a curr
   assert.equal(f.rows().at(-1).state, 'completed');
 });
 
-for (const state of ['pending', 'unknown', 'reader-throws', 'no-effect', 'absent', 'refused']) test(`hold-release checks every operation: ${state}`, async t => {
-  const [f, session] = await fixture(t, state === 'unknown' ? { wireOperationView: () => null } : state === 'reader-throws' ? { wireOperationView: () => { throw new Error('unavailable'); } } : {});
+// What the seller says of an attempt that ended with no stored answer: it keeps work, cannot say, or is never asked.
+const WORK = { 'work-kept': () => true, 'work-unreadable': () => { throw new Error('unavailable'); }, 'work-unread': undefined };
+for (const state of ['pending', 'unknown', 'reader-throws', 'no-effect', ...Object.keys(WORK), 'absent', 'refused']) test(`hold-release checks every operation: ${state}`, async t => {
+  const [f, session] = await fixture(t, state === 'unknown' ? { wireOperationView: () => null } : state === 'reader-throws' ? { wireOperationView: () => { throw new Error('unavailable'); } }
+    : state in WORK ? { retainsUnfinishedWork: WORK[state] } : {});
   await completed(f);
   if (state === 'absent') {
     await f.reserve(f.args(f.payload({ path: CONTEXT })));
@@ -246,11 +249,11 @@ for (const state of ['pending', 'unknown', 'reader-throws', 'no-effect', 'absent
     await assert.rejects(f.reserve(f.args(f.payload({ path: CONTEXT }), { checked: { reserve: async () => { throw new SellerTransportError('context_refused', 409); } } })), { code: 'context_refused' });
   } else {
     const input = await f.admitContext(), effect = await f.reserve(input);
-    if (state === 'no-effect') completeWireEffect(f.journal, effect, null);
+    if (state === 'no-effect' || state in WORK) completeWireEffect(f.journal, effect, null);
   }
   session.state = 'finalised'; f.setTime(T0 + HOUR + 1);
   const before = proof(f);
-  if (['pending', 'unknown', 'reader-throws', 'absent'].includes(state)) {
+  if (['pending', 'unknown', 'reader-throws', 'absent'].includes(state) || state in WORK) {
     retire(f); await assert.rejects(next(f), capacity); assert.deepEqual(proof(f), before);
   } else {
     assert.equal((await next(f)).state, 'new'); assert.equal(retired(f)[0].job_retired, 1);
