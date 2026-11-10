@@ -260,6 +260,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 
 - `P11b1L2` (WF) — the buyer coordinator treats an authenticated HTTP 404 `peer_unknown_job` as absence only during proposal reconciliation, so the first proposal reaches the wire host. Publication and seller-contribution refusals keep their classifications. The buyer package's seller HTTP client (`src/dacs/seller-http.mjs`) now passes the exact response bytes to the response verifier and awaits it within the call's deadline, so an unsigned, invalidly signed or changed-body 404 ends the call as an unavailable answer (`response-auth`, or `timeout` for a stalled verifier) instead of reaching the refusal path. Offline wire/coordinator tests, including the buyer package's own client, cover authentication failures and both sides of dispatch; the package integrity pins record the exact changed bytes.
 
+- `P52c` (WF) — the public, testnet-pinned, read-only Demos chain reader (`src/substrate/demos.mjs`, new export `./substrate/demos`, whose only name is `createDemosPublicChainReader`). It wraps `createDemosChainReader` from `src/dacs/chain.mjs`, which is unchanged, and offers a frozen object of nine reads and five metadata fields with no identity, passive-transfer or request method. The first read checks the pinned identity before its own request; only a successful check is shared. `observePurchaseTransfer` reports an included transfer as unavailable. The root still exports no chain reader.
+
 ## Commit register
 
 | Delta | Exact commit subject | Resolved commit |
@@ -1113,6 +1115,19 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` | b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5 |
 | D31 | delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` | 565c664bbc629707665dd65c3889ac5e08ec2d09 |
+| WF | delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/src/substrate/demos.mjs:1` | bda7c603b0ec336b8d633c1a2976098b6277b389 |
+| | `packages/dacs-client/test/helpers/public-demos-reader-node.mjs:1` | d96f4f1c7bf7ac0e485b8cc0f366eb778f561cd5 |
+| | `packages/dacs-client/test/helpers/public-demos-reader-purchase.mjs:1` | a128c6978a07bd5f9b8d1e3ed72898565fe31533 |
+| | `packages/dacs-client/test/package-contents.test.mjs:1` | 2cc98f9293fb88da1db38152d03b8cfa1861195b |
+| | `packages/dacs-client/test/packed-consumer.test.mjs:1` | 8e433835a01a81de01ea3a4d6f377270905ae434 |
+| | `packages/dacs-client/test/public-api.test.mjs:1` | 864ac07cb6e9d025adb5a776d41143bd139a801f |
+| | `packages/dacs-client/test/public-demos-reader-construction.test.mjs:1` | c9bb95cb0d3ce5b24fb1f43015bc828db1d995c0 |
+| | `packages/dacs-client/test/public-demos-reader-consumers.test.mjs:1` | 1abbf24badfff4341a1746a121e70079bb27105e |
+| | `packages/dacs-client/test/public-demos-reader-errors.test.mjs:1` | 1b8071e6367724b5b4ca7120b5a9effc7280f6a5 |
+| | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` | 4f4db2f55ef80d013e7d6d90323f7603b91d10c9 |
+| | `packages/dacs-client/test/public-demos-reader-purchase-observation.test.mjs:1` | 402f6c02881cd173bda5b8b974d481122072251f |
+| | `packages/dacs-client/test/public-demos-reader-surface.test.mjs:1` | 042048f96e210c436f14068e67636a078e46e8ca |
 
 ## Complete commit and file inventory
 
@@ -3526,6 +3541,27 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/HOLD.json:1` |
 | delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/HOLD.json:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/README.md:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/package.json:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/src/substrate/demos.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/helpers/public-demos-reader-node.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/helpers/public-demos-reader-purchase.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/package-contents.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/packed-consumer.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-api.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-construction.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-consumers.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-errors.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-first-read.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-purchase-observation.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `packages/dacs-client/test/public-demos-reader-surface.test.mjs:1` |
+| delta(client): WF P52c add the testnet-pinned read-only Demos chain reader at ./substrate/demos | `scripts/release-policy.json:1` |
 
 ## Original moved files
 
