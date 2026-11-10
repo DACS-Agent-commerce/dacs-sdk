@@ -191,8 +191,8 @@ authenticate_registry() {
   require_bounded_http || return 1
   local auth_password
   auth_password=$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))') || return
+  # Account creation is sent once: a repeat after a lost reply gets 409 "already registered".
   auth_response=$(curl "${http_json_curl[@]}" \
-    --retry 3 --retry-all-errors --retry-delay 2 --retry-max-time 45 \
     --request PUT "$host_registry/-/user/org.couchdb.user:dacs-ci" \
     --header 'content-type: application/json' \
     --data "{\"name\":\"dacs-ci\",\"password\":\"$auth_password\",\"email\":\"ci@example.invalid\",\"type\":\"user\",\"roles\":[]}" \

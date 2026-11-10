@@ -103,8 +103,10 @@ function consumerLock(lock, manifest, core, seller, node, corePack, sellerPack, 
       if (!key) throw new Error("root lock lacks production dependency " + name + " of " + parent);
       if (selected[key]) continue;
       const entry = structuredClone(lock.packages[key]);
-      if (entry.link || !entry.integrity || !entry.resolved) throw new Error("production dependency is not pinned: " + key);
-      delete entry.dev; delete entry.devOptional; delete entry.optional;
+      // A package only optional edges reach stays marked optional: the install omits it, so it may be a platform build or
+      // a git dependency (demosdk's wallet adapters reach both) that the lock cannot pin.
+      if (entry.link || (!entry.optional && (!entry.integrity || !entry.resolved))) throw new Error("production dependency is not pinned: " + key);
+      delete entry.dev; delete entry.devOptional;
       selected[key] = entry;
       queue.push(key);
     }
