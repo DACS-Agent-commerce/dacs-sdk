@@ -1,3 +1,4 @@
+import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 import { issueChallenge, attemptChallenge } from './helpers/challenge-api.mjs';
 import test from 'node:test';
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
@@ -21,7 +22,7 @@ function world(t, options = {}) {
     contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId] ?? null, ...options };
   // hostStart: what the host does with the lock held, right after it opens the store.
   const reopen = ({ hostStart = false, ...changes } = {}) => {
-    store?.close(); store = createSellerTransportStore({ ...config, ...changes });
+    store?.close(); store = withFixtureProfile(createSellerTransportStore({ ...config, ...changes }));
     if (hostStart) { store.challenges.closeLostValidations(); store.recoverLostContextReservations(); }
     return store;
   };
