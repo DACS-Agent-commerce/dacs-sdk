@@ -58,6 +58,7 @@ import {
 } from "./bundleSemantics.js";
 import type { StrictCompositeVerification } from "./compositeVerification.js";
 import type { EvidenceBoundBundleVerification } from "./evidenceBoundBundle.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 /**
  * Attestation-bundle verification (DACS-5). Two independent checks must BOTH
@@ -302,172 +303,6 @@ export interface VerifyBundleDeps {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-function deepFreezeSnapshot<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) return value;
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreezeSnapshot(child, seen);
-  }
-  return Object.freeze(value);
-}
-
-function snapshotRecord(
-  value: Record<string, unknown> | null,
-): Record<string, unknown> | null {
-  if (value === null) return null;
-  // Check resolver-owned bytes before cloning. structuredClone invokes getters
-  // and erases custom prototypes, which must not launder a non-wire artifact
-  // into a valid-looking signed record.
-  if (!isExactJsonRecord(value)) return null;
-  try {
-    const captured = deepFreezeSnapshot(structuredClone(value));
-    return isExactJsonRecord(captured) ? captured : null;
-  } catch {
-    return null;
-  }
-}
-
-function captureBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps | null {
-  try {
-    const readArtifactSource = deps.readArtifact.bind(deps);
-    const resolveAttestationSource = deps.resolveAttestationRef?.bind(deps);
-    const resolveListingSource = deps.resolveListingRef?.bind(deps);
-    const resolveLegacySource = deps.resolveRef?.bind(deps);
-    const resolveKeySource = deps.resolvePublicKey.bind(deps);
-    const verifySource = deps.verify.bind(deps);
-    const verifyEvidenceSource = deps.verifyEvidence?.bind(deps);
-    const verifyCompositeSource = deps.verifyCompositeRecord?.bind(deps);
-    const verifyEvidenceBoundSource = deps.verifyEvidenceBound?.bind(deps);
-    return Object.freeze({
-      readArtifact: async (ref: string) =>
-        snapshotRecord(await readArtifactSource(ref)),
-      ...(resolveAttestationSource
-        ? {
-            resolveAttestationRef: async (
-              ref: Readonly<AttestationRef>,
-              jobId: string,
-              parties: readonly BundleParty[],
-              outcome?: AnyAttestationBundle["outcome"],
-            ) =>
-              snapshotRecord(
-                await resolveAttestationSource(
-                  deepFreezeSnapshot(structuredClone(ref)),
-                  jobId,
-                  deepFreezeSnapshot(structuredClone(parties)),
-                  outcome,
-                ),
-              ),
-          }
-        : {}),
-      ...(resolveListingSource
-        ? {
-            resolveListingRef: async (
-              listingRef: Readonly<ListingPin>,
-              parties: readonly BundleParty[],
-            ) =>
-              snapshotRecord(
-                await resolveListingSource(
-                  deepFreezeSnapshot(structuredClone(listingRef)),
-                  deepFreezeSnapshot(structuredClone(parties)),
-                ),
-              ),
-          }
-        : {}),
-      ...(resolveLegacySource
-        ? {
-            resolveRef: async (
-              kind: string,
-              jobId: string,
-              parties: readonly BundleParty[],
-              ref?: Readonly<LegacyMvpAttestationRef>,
-            ) =>
-              snapshotRecord(
-                await resolveLegacySource(
-                  kind,
-                  jobId,
-                  deepFreezeSnapshot(structuredClone(parties)),
-                  ref === undefined
-                    ? undefined
-                    : deepFreezeSnapshot(structuredClone(ref)),
-                ),
-              ),
-          }
-        : {}),
-      resolvePublicKey: async (did: string) => {
-        const key = await resolveKeySource(did);
-        return key === null ? null : Uint8Array.from(key);
-      },
-      verify: async (
-        bytes: Uint8Array,
-        signature: Uint8Array,
-        publicKey: Uint8Array,
-      ) =>
-        (await verifySource(
-          Uint8Array.from(bytes),
-          Uint8Array.from(signature),
-          Uint8Array.from(publicKey),
-        )) === true,
-      ...(verifyEvidenceSource
-        ? {
-            verifyEvidence: async (
-              evidence: Record<string, unknown>,
-              context: BundleEvidenceVerificationContext,
-            ) => {
-              const raw = await verifyEvidenceSource(
-                deepFreezeSnapshot(structuredClone(evidence)),
-                deepFreezeSnapshot(structuredClone(context)),
-              );
-              const captured = snapshotRecord(
-                raw as unknown as Record<string, unknown>,
-              );
-              if (!captured) {
-                throw new TypeError("evidence verifier returned a non-wire verdict");
-              }
-              return captured as unknown as BundleEvidenceVerificationResult;
-            },
-          }
-        : {}),
-      ...(verifyCompositeSource
-        ? {
-            verifyCompositeRecord: async (
-              record: Readonly<CompositeVerificationRecord>,
-              bundle: Readonly<ReadableAttestationBundle>,
-            ) => {
-              const raw = await verifyCompositeSource(
-                deepFreezeSnapshot(structuredClone(record)),
-                deepFreezeSnapshot(structuredClone(bundle)),
-              );
-              const captured = snapshotRecord(
-                raw as unknown as Record<string, unknown>,
-              );
-              if (!captured) {
-                throw new TypeError("composite verifier returned a non-wire verdict");
-              }
-              return captured as StrictCompositeVerification;
-            },
-          }
-        : {}),
-      ...(verifyEvidenceBoundSource
-        ? {
-            verifyEvidenceBound: async (bundle: Readonly<Record<string, unknown>>) => {
-              const raw = await verifyEvidenceBoundSource(
-                deepFreezeSnapshot(structuredClone(bundle)),
-              );
-              const captured = snapshotRecord(raw as unknown as Record<string, unknown>);
-              if (!captured) throw new TypeError("EBFAB verifier returned a non-wire verdict");
-              return captured as unknown as EvidenceBoundBundleVerification;
-            },
-          }
-        : {}),
-    });
-  } catch {
-    return null;
-  }
-}
-
 function bindMethod<T>(candidate: T, owner: object): T {
   return Function.prototype.bind.call(candidate as Function, owner) as T;
 }
@@ -633,8 +468,8 @@ function captureVerifyBundleDeps(deps: VerifyBundleDeps): VerifyBundleDeps {
             deps,
             );
             const raw = await callback(
-              deepFreezeSnapshot(structuredClone(record)),
-              deepFreezeSnapshot(structuredClone(bundle)),
+              deepFreeze(structuredClone(record)),
+              deepFreeze(structuredClone(bundle)),
             );
             return snapshotDependencyRecord(
               raw,
@@ -1722,7 +1557,7 @@ export async function verifyBundleCore(
         ) {
           try {
             const rawDecision = await deps.verifyAlternativePaymentProjection(
-              deepFreezeSnapshot({
+              deepFreeze({
                 bundle: structuredClone(bundle as AnyAttestationBundle),
                 listing: structuredClone(prefetchedNormativeListing),
                 agreement: structuredClone(agreementArtifact),

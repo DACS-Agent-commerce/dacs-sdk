@@ -81,12 +81,14 @@ const paymentPending = (answer) => answer?.status === 'held' || (answer?.status 
  * false`, proof that no work of exactly this command is kept. A recovery
  * settles only what the store accepts (completion, or a proposal/payment retry
  * or release), and under an expired delegation only completion. */
-export function transportOutcome(path, { answer, error, held, cause = error } = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
+export function transportOutcome(path, result = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
+  const { answer, error, held, cause = error } = result;
+  const failed = Object.hasOwn(result, 'error');
   const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
   const refusal = error instanceof SellerAgentError && NO_EFFECT_ERRORS.has(error.code);
   const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
-  if (held !== undefined || (error && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
-    ...(cause === undefined ? {} : { cause, causeCode: readFailureCode(cause) }) };
+  if (held !== undefined || (failed && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
+    ...(failed || cause !== undefined ? { cause, causeCode: readFailureCode(cause) } : {}) };
   const noEffect = rejected && !resumed && !retained;
   const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
   const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
@@ -574,17 +576,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     sessions.delete(jobId);
     await restore(session);
     if (!transport) return fn(input);
-    let result;
-    try { transport.check();const answer=await transportAuthority.run(transport,()=>fn(input,{transport}));transport.check();result={answer}; } catch (error) { result = { error }; }
+    let result, failed = false;
+    try { transport.check();const answer=await transportAuthority.run(transport,()=>fn(input,{transport}));transport.check();result={answer}; } catch (error) { failed = true; result = { error }; }
     transport.settle?.(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
-    if (result.error) throw result.error;
+    if (failed) throw result.error;
     return result.answer;
   }).catch((error) => {
-    if (error.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
+    if (error?.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
     // The store's fence rejects a non-canonical job before the operation's own
     // validation runs. It is the same definite no-effect refusal the operation
     // would have raised, not an uncertain outcome.
-    if (error.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+    if (error?.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     throw error;
   }) : async(input,{transport}={})=>{transport?.check();const answer=await fn(input,{transport});transport?.check();return answer;};
 
@@ -2223,6 +2225,14 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     transportAgreementOf: (jobId) => {
       const session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId));
       return structuredClone(session?.agreement ?? session?.proposal?.plan?.draft ?? null);
+    },
+    /**
+     * The job's durable commitment and Agreement as JSON texts, `{ commitmentText, agreementText }`, or null when either is not
+     * retained. Read-only: it never signs or reads the chain. Throws the durable state's read or validation errors.
+     */
+    continuationEvidenceOf: (jobId) => {
+      const session = sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId));
+      return session?.commitment && session.agreement ? { commitmentText: JSON.stringify(session.commitment), agreementText: JSON.stringify(session.agreement) } : null;
     },
     stageOf: (jobId) => sessionView(durable?.loadSession(jobId) ?? sessions.get(jobId))?.stage ?? null,
     deliveryStateOf: (jobId) => {
