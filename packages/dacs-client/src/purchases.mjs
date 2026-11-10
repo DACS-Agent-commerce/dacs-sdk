@@ -221,12 +221,21 @@ export function createPublicPurchaseService(options) {
   return createPurchaseService(options, () => !purchaseActionsAdmitted());
 }
 
+// Schema rows as plain objects with numbers, whatever the host's connection
+// defaults for bigint and array rows are.
+function schemaRows(db, sql, ...parameters) {
+  const statement = db.prepare(sql);
+  statement.setReturnArrays?.(false);
+  statement.setReadBigInts(false);
+  return statement.all(...parameters);
+}
+
 // True when a unique index on operations covers exactly the job_id column.
 function hasUniqueJobIdIndex(db) {
-  return db.prepare('PRAGMA index_list(operations)').all()
+  return schemaRows(db, 'PRAGMA index_list(operations)')
     .filter(index => index.unique === 1 && index.partial === 0)
     .some(index => {
-      const columns = db.prepare(`PRAGMA index_info(${JSON.stringify(index.name)})`).all();
+      const columns = schemaRows(db, 'SELECT name FROM pragma_index_info(?)', index.name);
       return columns.length === 1 && columns[0].name === 'job_id';
     });
 }
@@ -244,7 +253,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     throw new OperationError('invalid_configuration', 'chainReadTimeoutMs must be an integer from 1 to 60000');
   }
   const approvalTtlMs = PURCHASE_APPROVAL_TTL_MS;
-  const operationColumns = db.prepare('PRAGMA table_info(operations)').all();
+  const operationColumns = schemaRows(db, 'PRAGMA table_info(operations)');
   if (!operationColumns.some(column => column.name === 'handoff_expires_at')) {
     throw new OperationError('schema_migration_required', 'Migrate operations to include handoff_expires_at and provision explicit portal lifetimes before constructing the purchase service.');
   }
@@ -381,13 +390,17 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // job_id_collision is retried with a new id; any other error propagates. Each
   // refused insert rolls back its own savepoint, so a failure writes nothing.
   function createReservingJobId(createWith) {
+    let lastCollision;
     for (let attempt = 0; attempt < JOB_ID_ATTEMPTS; attempt += 1) {
       const jobId = generateJobId();
       if (!isCanonicalJobId(jobId)) throw new OperationError('invalid_job_id', 'the job id generator returned a value that is not a canonical job id; nothing was prepared');
       try { return createWith(jobId); }
-      catch (error) { if (error?.code !== 'job_id_collision') throw error; }
+      catch (error) {
+        if (error?.code !== 'job_id_collision') throw error;
+        lastCollision = error;
+      }
     }
-    throw new OperationError('job_id_unavailable', `no unused job id was found in ${JOB_ID_ATTEMPTS} attempts; nothing was prepared`);
+    throw new OperationError('job_id_unavailable', `no unused job id was found in ${JOB_ID_ATTEMPTS} attempts; nothing was prepared`, undefined, { cause: lastCollision });
   }
 
   async function prepare({ accountId, listingId, version, seller, idempotencyKey, walletAddress, protocol: mode }) {

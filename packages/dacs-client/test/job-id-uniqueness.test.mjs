@@ -2,6 +2,7 @@
 // written in the same insert as the terms, inside the create transaction.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import { generateCanonicalJobId, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from './helpers/purchase-admission-hook.mjs';
 
@@ -11,6 +12,7 @@ const { createPurchaseService } = await import('../src/purchases.mjs');
 const { OFFLINE_AGREEMENT_MODE } = await import('../src/dacs/protocol-purchases.mjs');
 const { createCoordinateStore } = await import('../src/dacs/wallet-transactions.mjs');
 const { OperationError } = await import('../src/client-errors.mjs');
+const { PURCHASE_STATE_SCHEMA } = await import('../src/purchase-state-schema.mjs');
 const { createOperationStore } = await import('./helpers/purchase-integrity-operations.mjs');
 const { openDatabase, transaction, isUniqueViolation } = await import('./helpers/purchase-integrity-database.mjs');
 
@@ -110,7 +112,7 @@ test('three collisions fail closed and write nothing', async (t) => {
   const w = world(t, { generateJobId: () => FIRST });
   await w.prepare('TEST-key-1');
   const before = w.db.prepare('SELECT count(*) n FROM operation_events').get().n;
-  await assert.rejects(w.prepare('TEST-key-2'), { code: 'job_id_unavailable' });
+  await assert.rejects(w.prepare('TEST-key-2'), (error) => error.code === 'job_id_unavailable' && error.cause?.code === 'job_id_collision');
   assert.equal(w.generated.length, 1 + JOB_ID_ATTEMPTS);
   assert.equal(w.rows().length, 1);
   assert.equal(w.db.prepare('SELECT count(*) n FROM operation_events').get().n, before);
@@ -163,5 +165,34 @@ test('construction refuses a unique index that covers only some rows', (t) => {
 
 test('construction accepts the shipped schema', (t) => {
   const w = world(t);
+  assert.doesNotThrow(() => createPurchaseService(w.options));
+});
+
+const ROW_FORMATS = [['readBigInts', { readBigInts: true }], ['returnArrays', { returnArrays: true }]];
+
+// The same host options, on a connection that formats result rows differently.
+function optionsOnConnection(t, w, connectionOptions, setup = '') {
+  const db = new DatabaseSync(':memory:', connectionOptions);
+  t.after(() => db.close());
+  db.exec(PURCHASE_STATE_SCHEMA + setup);
+  return { ...w.options, db };
+}
+
+for (const [name, connectionOptions] of ROW_FORMATS) {
+  test(`construction accepts the shipped schema on a ${name} connection`, (t) => {
+    const w = world(t);
+    assert.doesNotThrow(() => createPurchaseService(optionsOnConnection(t, w, connectionOptions)));
+  });
+
+  test(`construction refuses a job_id column without a unique index on a ${name} connection`, (t) => {
+    const w = world(t);
+    const options = optionsOnConnection(t, w, connectionOptions, 'DROP INDEX operations_job_id_unique;');
+    assert.throws(() => createPurchaseService(options), { code: 'schema_migration_required', message: /job_id/ });
+  });
+}
+
+test('construction reads an index name containing a double quote', (t) => {
+  const w = world(t);
+  w.db.exec('DROP INDEX operations_job_id_unique; CREATE UNIQUE INDEX "operations_job_id""unique" ON operations(job_id)');
   assert.doesNotThrow(() => createPurchaseService(w.options));
 });

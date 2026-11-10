@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "7b4c22855e08c0b132514ae8470cc4ca53f28562"
+        "blob": "f65bc397caf44d1c3e2de177dfd87428330afe25"
       },
       "DELTA-LEDGER.json": {
-        "blob": "e68908a1c9b65a7884b855c00e0138e756055aae"
+        "blob": "8eb058555d9c4e80a3345054dfb79580991f6121"
       },
       "DELTA-MAP.md": {
-        "blob": "245f10b3c0cf9a43e3090b14a3d74cc0cc8863c3"
+        "blob": "9269f93d9e199387f64ccefed76fd242589c545a"
       },
       "DELTA-NOTES.md": {
         "blob": "54185a5749902e45fe8ce26e9623388c0eaa4bd2"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "c711fe9c0da22ade227eecbfcdf20a0507079447"
+        "blob": "39f616e000c9d143e67b2fd62cddd1a365529477"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "8f8482ca73a01ff87e2b905c9561a26096237337"
+        "blob": "1c4c503e20f1ee6f782a8b8c2726560034bd9095"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1250,7 +1250,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "4a6010356dbd967ae75c68fb30d97060fb9f0f65"
+        "blob": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1760,7 +1760,7 @@
         "blob": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
       },
       "test/job-id-uniqueness.test.mjs": {
-        "blob": "c04831cefe549f5a2c89052f0400bcdecf8b52a7"
+        "blob": "6841b7b79dece95e51c8b46abf549d0370fb4789"
       },
       "test/native-adapter-auth.test.mjs": {
         "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"

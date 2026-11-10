@@ -6572,6 +6572,22 @@
           "after": "4a6010356dbd967ae75c68fb30d97060fb9f0f65"
         }
       ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 read schema rows with plain numbers and keep the last collision as cause",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "4a6010356dbd967ae75c68fb30d97060fb9f0f65",
+          "after": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "c04831cefe549f5a2c89052f0400bcdecf8b52a7",
+          "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
+        }
+      ]
     }
   ]
 }
