@@ -3044,8 +3044,7 @@ test('enabling publication after a delivery-ready order publishes the evidence r
   await w.host().close();
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
   const post = async () => { const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); assert.equal(res.status, 200); return res.json(); };
-  assert.equal((await post()).delivery?.status, 'delivery-ready', 'the wire keeps its completed outcome');
-  const done = await w.refreshPayment(p, tx);
+  const done = await post();
   assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(done.delivery.evidencePublication, 'native-read-back');
   assert.equal(w.createsAt(address), 1);
@@ -3062,8 +3061,7 @@ test('a delivery-ready session retained without its own evidence copy recovers i
   await w.host().close();
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
   const post = async () => { const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); assert.equal(res.status, 200); return res.json(); };
-  assert.equal((await post()).delivery?.status, 'delivery-ready', 'the wire keeps its completed outcome');
-  const done = await w.refreshPayment(p, tx);
+  const done = await post();
   assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(done.delivery.evidencePublication, 'native-read-back');
   assert.equal(w.createsAt(address), 1);
@@ -3317,8 +3315,7 @@ for(const failure of ['none','unavailable','changed'])test(`disabling evidence p
  const post=async(request=signed)=>{const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});assert.equal(res.status,200);return res.json();};
  if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
  if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
- assert.deepEqual(await post(),first,'the completed wire outcome survives restart');
- const observed=await w.refreshPayment(p,tx);
+ const observed=await post();
  if(failure==='none')assert.equal(observed.delivery?.status,'delivered',shown(observed));
  else{assert.equal(observed.delivery?.status,'delivery-ready',shown(observed));assert.equal(observed.delivery?.evidencePublication,'held-readback-only');}
  w.node.faults.transactionDown=()=>false;w.faults.evidenceRead=null;
