@@ -113,6 +113,28 @@ describe("layer check", () => {
     ]);
   });
 
+  it("resolves .js, .mjs and .cjs paths to their TypeScript and declaration files", () => {
+    const root = repo({
+      "src/proto/a.ts": "",
+      "src/proto/b.d.ts": "",
+      "src/proto/c.mts": "",
+      "src/proto/d.d.mts": "",
+      "src/proto/e.cts": "",
+      "src/proto/f.d.cts": "",
+      "src/index.ts": ["a.js", "b.js", "c.mjs", "d.mjs", "e.cjs", "f.cjs"]
+        .map((name) => `import type {} from "./proto/${name}";`).join("\n"),
+    });
+    const { imports } = collectImports(root);
+    expect(imports.map((entry: { to: string }) => entry.to)).toEqual([
+      "src/proto/a.ts",
+      "src/proto/b.d.ts",
+      "src/proto/c.mts",
+      "src/proto/d.d.mts",
+      "src/proto/e.cts",
+      "src/proto/f.d.cts",
+    ]);
+  });
+
   it("resolves folder imports to index.ts and data imports to the data file", () => {
     const root = repo({
       "src/proto/index.ts": `export const proto = 1;`,
