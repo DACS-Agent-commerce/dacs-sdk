@@ -15,7 +15,7 @@
 // supported: a free lease read there proves nothing.
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 
@@ -77,6 +77,17 @@ const sameInode = (a, b) => a?.ino === b.ino && a.dev === b.dev;
 /** The path of lease `id` under state directory `dir`. */
 export const leaseFile = (dir, id) => join(dir, HOLDERS, `${id}.sqlite`);
 
+// Closes what a failed takeLease opened, then removes the lease file it created,
+// so a retry can create it again. `created` is the file's identity once read, or
+// null when reading it failed: the path is then still the file just made with
+// O_EXCL, so it is removed. A failure here never replaces the error that made
+// takeLease fail.
+function discardFailedLease(file, created, lease, fd) {
+  try { lease?.close(); } catch { /* the error that failed takeLease stands */ }
+  try { closeSync(fd); } catch { /* likewise */ }
+  try { if (!created || sameInode(lstatSync(file), created)) unlinkSync(file); } catch { /* likewise */ }
+}
+
 /**
  * Takes this process's lifetime lease on `dir` once per canonical directory (an
  * alias or trailing slash reaches the same lease); it is never released before
@@ -84,7 +95,8 @@ export const leaseFile = (dir, id) => join(dir, HOLDERS, `${id}.sqlite`);
  * descriptor for it would drop the POSIX lock. So the file is always new, made
  * 0600 whatever the umask (opened read-only, SQLite would take only a shared
  * lock), and the descriptor that created it stays open. Returns the lease id;
- * throws ProcessLeaseError, and registers nothing, when the lease can't be taken.
+ * throws ProcessLeaseError, and registers nothing, when the lease can't be taken;
+ * a failed call removes the file it created, so a later call can try again.
  */
 export function takeLease(dir) {
   const canonical = realpathSync(dir);
@@ -96,10 +108,11 @@ export function takeLease(dir) {
   const file = leaseFile(canonical, PROCESS_LEASE_ID);
   let fd;
   try { fd = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600); } catch (error) { if (error.code === 'EEXIST') refuse('seller_state_lease_unavailable'); throw error; }
-  let lease;
+  let lease, created = null;
   try {
+    created = fstatSync(fd);
     fchmodSync(fd, 0o600);
-    const created = fstatSync(fd), stat = lstatSync(file);
+    const stat = lstatSync(file);
     if (!privateEntry(stat, 'isFile') || (stat.mode & 0o777) !== 0o600 || !sameInode(stat, created)) refuse('seller_state_file_unsafe');
     lease = new Database(file);
     try { lease.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN EXCLUSIVE'); } catch { refuse('seller_state_lease_unavailable'); }
@@ -109,7 +122,7 @@ export function takeLease(dir) {
     try { locked = lstatSync(file); } catch { /* removed */ }
     if (!sameInode(locked, created)) refuse('seller_state_lease_unavailable');
   } catch (error) {
-    try { lease?.close(); } finally { closeSync(fd); }
+    discardFailedLease(file, created, lease, fd);
     throw error;
   }
   LEASES.set(canonical, { lease, fd });
