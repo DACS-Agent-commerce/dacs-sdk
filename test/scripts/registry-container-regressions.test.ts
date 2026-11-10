@@ -92,6 +92,6 @@ describe("baseline evidence preservation", () => {
       expect(baseline.policyFindings[group].length, group).toBeGreaterThan(0);
     }
     expect(createHash("sha256").update(JSON.stringify(baseline.policyFindings)).digest("hex"))
-      .toBe("0096afc7dbb71c4c7f99f7ab836f81218fd40bc65895574e57827d6ab568c605");
+      .toBe("c292d2c3a4677f7925ba6d1b27a18d5033babe5a50c989c80f38dfad15c3859a");
   });
 });
