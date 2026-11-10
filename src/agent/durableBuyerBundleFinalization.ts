@@ -49,6 +49,7 @@ import {
   type VerifyCompletedSellerBundleCounterSignatureRequestInput,
   type VerifyFinalizedSellerBundleInput,
 } from "../seller/bundleFinalization.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const MAX_CAS_ATTEMPTS = 16;
 const MAX_RELEASE_ATTEMPTS = 8;
@@ -415,19 +416,6 @@ async function callbackResult<T>(
     throw new TypeError(`${subject} cannot return a proxy`);
   }
   return value instanceof Promise ? await value : value;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    value instanceof Uint8Array ||
-    Object.isFrozen(value)
-  ) return value;
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return Object.freeze(value);
 }
 
 function immutable<T>(value: T): T {
@@ -1302,7 +1290,8 @@ class DurableBuyerCoordinator {
     await this.#renew();
     const fence = this.#fence(idempotencyKey);
     let heartbeat = Promise.resolve();
-    let heartbeatError: unknown;
+    const noError = Symbol();
+    let heartbeatError: unknown = noError;
     const interval = Math.max(
       1,
       Math.min(30_000, Math.floor(this.#durability.leaseTtlMs / 3)),
@@ -1311,7 +1300,7 @@ class DurableBuyerCoordinator {
       heartbeat = heartbeat
         .then(() => this.#renew())
         .catch((error: unknown) => {
-          heartbeatError ??= error;
+          if (heartbeatError === noError) heartbeatError = error;
         });
     }, interval);
     timer.unref();
@@ -1319,7 +1308,7 @@ class DurableBuyerCoordinator {
       const result = await callbackResult(operation(fence), "buyer effect callback");
       clearInterval(timer);
       await heartbeat;
-      if (heartbeatError) throw heartbeatError;
+      if (heartbeatError !== noError) throw heartbeatError;
       await this.#renew();
       return result;
     } finally {

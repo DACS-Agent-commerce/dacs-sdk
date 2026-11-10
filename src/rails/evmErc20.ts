@@ -242,7 +242,7 @@ export async function createEvmErc20Rail(
 }
 
 /**
- * Bridge an EvmErc20Rail to the runSession `settle` seam. SAFE BY DEFAULT (#43):
+ * Bridge an EvmErc20Rail to the runSession `settle` seam. SAFE BY DEFAULT:
  * the transfer is submitted AT MOST ONCE per `(railId, jobId, phaseIndex)` through
  * an idempotency store — a concurrent retry or a resume after a settle→anchor
  * crash reconciles the prior submission instead of sending another transfer. The

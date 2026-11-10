@@ -1,6 +1,7 @@
 // Environment configuration. Every live dependency is optional and reported as
 // explicitly unconfigured rather than silently replaced by a fixture.
 import { join } from 'node:path';
+import { PURCHASE_LIMITS } from './purchase-limits.mjs';
 import { SwitchFileError, loadSwitchFiles } from './switch-files.mjs';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
@@ -233,6 +234,8 @@ export function loadConfig(env = process.env) {
   const dataDir = env.DACS_DATA_DIR || join(process.cwd(), '.data');
   const demAmountEncoding = env.DACS_DEM_AMOUNT_ENCODING || 'os-string';
   if (!['os-string', 'dem-number'].includes(demAmountEncoding)) throw new ConfigError('DACS_DEM_AMOUNT_ENCODING must be os-string (post denomination fork) or dem-number');
+  const nonceSlotProof = env.DACS_NONCE_SLOT_PROOF || 'off';
+  if (!['off', 'account'].includes(nonceSlotProof)) throw new ConfigError('DACS_NONCE_SLOT_PROOF must be off, or account once P40 has shown that the bound network counts one account nonce for every key it accepts');
 
   const config = {
     publicOrigin,
@@ -270,6 +273,7 @@ export function loadConfig(env = process.env) {
         }
       : null,
     demAmountEncoding,
+    nonceSlotProof,
     fundingHelpUrl: env.DACS_FUNDING_HELP_URL ? parseFundingUrl('DACS_FUNDING_HELP_URL', env.DACS_FUNDING_HELP_URL) : '',
     showcaseReportView,
     purchaseLimits: Object.freeze({

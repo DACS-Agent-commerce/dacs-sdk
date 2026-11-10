@@ -23,7 +23,33 @@ concurrency:
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    # The node 22 leg can run on the project's own one-job runners (label dacs-pool) for our own pull requests only,
+    # when ALL of these hold:
+    #   - the repository variable SDK_SELF_HOSTED is 'on';
+    #   - the event is pull_request and the head branch is in this repository;
+    #   - the PR author, the account that triggered the run (github.triggering_actor) AND the account whose event
+    #     started it (github.actor, which a re-run keeps: re-running someone else's push still runs their code) are
+    #     all listed in the repository variable SDK_SELF_HOSTED_AUTHORS (comma-separated logins, no spaces; unset
+    #     or empty means nobody);
+    #   - the pull request does not carry the label ci-hosted (urgent work stays on hosted runners). The labels come
+    #     from the event that started the run, and a re-run replays that event, so a label added later only takes
+    #     effect on the next push (or a close and reopen).
+    # Pushes and merge-queue runs (which can contain other people's merged code), fork pull requests, everyone
+    # else's runs and every other job use ubuntu-latest.
+    # This expression is only a routing filter: a branch can edit its own copy of this file. The boundary is on the
+    # runners, maintained outside this repository: they check every job against the same rules before any step
+    # runs and stop the runner for anything else.
+    # Deleting SDK_SELF_HOSTED sends new runs back to ubuntu-latest. If no dacs-pool runner is online, a routed job
+    # waits for one (GitHub has no fallback); cancel it and start a new run after deleting the variable.
+    # Blacksmith (both legs): while the repository variable SDK_BLACKSMITH is 'on' (compared ignoring case, so 'ON' and
+    # 'On' also count as on), every pull_request run whose head branch is in this repository runs build-test on
+    # Blacksmith's blacksmith-2vcpu-ubuntu-2404 runners, ahead of the rules above (ci-hosted and SDK_SELF_HOSTED do not
+    # apply to it). Fork pull requests, pushes and merge-queue runs never go there and keep the rules above. To switch
+    # Blacksmith off, set SDK_BLACKSMITH to 'off' (or delete it); new runs then use the rules above. A job already
+    # waiting for a Blacksmith runner (for example once the account's included minutes are used up) does not move:
+    # cancel it and start a new run after switching off. A re-run reads the variable again. Job and required-check names
+    # are the same on every runner.
+    runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -457,13 +483,14 @@ jobs:
       - name: Typecheck and test against demosdk 4.0.18
         if: matrix.node-version == '22'
         run: |
-          npm install --no-save --no-audit @kynesyslabs/demosdk@4.0.18
+          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
           test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
           npm run typecheck
           npm run host:typecheck
           npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
           # Every client file this area promises under 4.0.18, named one by one; later changes append theirs. No glob selects one.
-          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs
+          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs packages/dacs-client/test/node-wallet-demosdk.test.mjs packages/dacs-client/test/node-wallet-final-content.test.mjs packages/dacs-client/test/node-wallet-fresh-child.test.mjs
+          node --test packages/dacs-client/test/delta-ledger-gate.test.mjs
 
   postgres-wallet-authority:
     runs-on: ubuntu-latest
@@ -594,6 +621,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm ci --no-audit
       - run: npm run build
+      - run: npm run host:build
+      - run: node --test packages/dacs-client/test/node-wallet-fresh-child.test.mjs
       - name: Check both packed JavaScript entry points at the engine floor
         run: |
           client_minimum="$RUNNER_TEMP/client-minimum"

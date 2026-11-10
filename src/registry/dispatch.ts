@@ -22,7 +22,7 @@ import {
 
 /**
  * Dispatch an authenticated DACS-4 RailDefinition to a concrete executor by
- * `railType`. This makes the money path registry-driven (T6) while RAV-R5's
+ * `railType`. This makes the money path registry-driven while RAV-R5's
  * private resolver provenance prevents a caller-created structural object from
  * becoming payment authority.
  */

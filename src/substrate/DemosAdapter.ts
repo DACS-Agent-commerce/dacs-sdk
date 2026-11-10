@@ -18,6 +18,7 @@ import {
   rawPublicKey,
 } from "../crypto/index.js";
 import { DacsError, SubstrateError } from "../errors.js";
+import { readBoundedDemosJson } from "../rails/demosRpc.js";
 import {
   assertDemosCciResponseBounds,
   parseClaimRef,
@@ -64,10 +65,10 @@ import type {
 } from "./demosWriteJournal.js";
 
 /**
- * Address-derivation salt. EMPTY per the observed on-chain convention
- * (DACS-Standard #242) — `deriveStorageAddress` hashes
- * `{deployer}:{programName}:{nonce}:{salt}`, and live deals derive with an empty
- * salt. (Was `"dacs:v1"`, which produced addresses no live reader could match.)
+ * Address-derivation salt. EMPTY per the observed on-chain convention:
+ * `deriveStorageAddress` hashes `{deployer}:{programName}:{nonce}:{salt}`, and
+ * live deals derive with an empty salt. Any other salt yields addresses that
+ * live readers cannot match.
  */
 const ANCHOR_SALT = "";
 const DEFAULT_ANCHOR_TIMEOUT_MS = 120_000;
@@ -80,7 +81,12 @@ const WRITE_ONCE_VISIBILITY_TIMEOUT_MS = 120_000;
 const WRITE_ONCE_VISIBILITY_POLL_MS = 500;
 const DAHR_INCLUSION_TIMEOUT_MS = 120_000;
 const DAHR_INCLUSION_POLL_MS = 500;
-const STORAGE_SEARCH_PAGE_SIZE = 100;
+/** @internal Items requested per storage-program search page; also the most one page may hold. */
+export const STORAGE_SEARCH_PAGE_SIZE = 100;
+/** @internal Wire bytes allowed for one storage-program search reply, including its RPC envelope. */
+export const STORAGE_SEARCH_MAX_RESPONSE_BYTES = 1024 * 1024;
+/** @internal Deadline for one storage-program search request, in milliseconds. */
+export const STORAGE_SEARCH_TIMEOUT_MS = 15_000;
 const STORAGE_SEARCH_MAX_PAGES = 100;
 const RECEIPT_HISTORY_PAGE_SIZE = 100;
 const RECEIPT_HISTORY_MAX_PAGES = 100;
@@ -298,7 +304,7 @@ export interface DemosRawClient {
   // Only the fields the SDK reads. No index signatures: demosdk's `NetworkInfo`
   // and `AddressInfo` interfaces have none. Under 4.0.16 its declarations do
   // not resolve with NodeNext, so they type as `any`; from 4.0.18 they resolve
-  // and must be assignable here (#339).
+  // and must be assignable here.
   getNetworkInfo(): Promise<
     | {
         forks?: {
@@ -506,12 +512,9 @@ function serializeSignedTransaction(value: unknown): string {
 }
 
 /**
- * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`.
- *
- * T1 scaffold status: `connect` / `getAddress` are wired to the real SDK so the
- * package provably reaches a Demos RPC. The substrate operations (`anchor`,
- * `readAnchor`, `proxyFetch`, `resolveIdentity`, `sign`) are defined by the seam
- * but land in later tasks — see the per-method task refs.
+ * The one concrete SubstrateAdapter, wrapping `@kynesyslabs/demosdk`. It
+ * connects to a Demos RPC and implements `anchor`, `readAnchor`, `proxyFetch`,
+ * `resolveIdentity` and `sign` against it.
  */
 export class DemosAdapter implements SubstrateAdapter {
   readonly #demos: Demos;
@@ -719,7 +722,9 @@ export class DemosAdapter implements SubstrateAdapter {
    * demosdk 4.0.x's `StorageProgram.searchByName()` catches every transport/RPC
    * error and returns `[]`, which makes a lookup failure indistinguishable from
    * genuine absence. Immutable publication must fail closed, so this adapter
-   * uses the same public nodeCall request while preserving failures.
+   * uses the same public nodeCall request while preserving failures. Each
+   * page reply is byte-bounded before decode, limited to one page of items and
+   * given a deadline (see requestStorageSearchPage).
    */
   private async searchStorageProgramsByName(
     query: string,
@@ -728,10 +733,8 @@ export class DemosAdapter implements SubstrateAdapter {
     const found = new Map<string, StorageProgramListItem>();
     for (let page = 0; page < STORAGE_SEARCH_MAX_PAGES; page += 1) {
       const offset = page * STORAGE_SEARCH_PAGE_SIZE;
-      const response = await fetch(this.config.rpc, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const payload = await this.requestStorageSearchPage(
+        JSON.stringify({
           method: "nodeCall",
           params: [
             {
@@ -748,23 +751,25 @@ export class DemosAdapter implements SubstrateAdapter {
             },
           ],
         }),
-      });
-      if (!response.ok) {
+      );
+      if (
+        !isRecord(payload) ||
+        payload.result !== 200 ||
+        !Array.isArray(payload.response)
+      ) {
         throw new SubstrateError(
-          `storage-program search failed with HTTP ${response.status}`,
-        );
-      }
-      const payload = (await response.json()) as {
-        result?: number;
-        response?: unknown;
-      };
-      if (payload.result !== 200 || !Array.isArray(payload.response)) {
-        throw new SubstrateError(
-          `storage-program search returned an invalid RPC response (result=${String(payload.result)})`,
+          `storage-program search returned an invalid RPC response (result=${
+            isRecord(payload) ? String(payload.result) : "none"
+          })`,
         );
       }
 
       const pageItems = payload.response as StorageProgramListItem[];
+      if (pageItems.length > STORAGE_SEARCH_PAGE_SIZE) {
+        throw new SubstrateError(
+          `storage-program search returned more items than requested (${pageItems.length} > ${STORAGE_SEARCH_PAGE_SIZE})`,
+        );
+      }
       for (const item of pageItems) {
         if (
           !item ||
@@ -784,6 +789,53 @@ export class DemosAdapter implements SubstrateAdapter {
     throw new SubstrateError(
       `storage-program search exceeded ${STORAGE_SEARCH_MAX_PAGES} pages`,
     );
+  }
+
+  /**
+   * POST one search request and decode its reply. The reply is limited to
+   * STORAGE_SEARCH_MAX_RESPONSE_BYTES before it is decoded, and the whole
+   * request, body included, must finish within STORAGE_SEARCH_TIMEOUT_MS.
+   * Rejects on HTTP failure, byte excess, invalid JSON or timeout; the caller
+   * checks the RPC envelope.
+   */
+  private async requestStorageSearchPage(requestBody: string): Promise<unknown> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const cause = new SubstrateError("storage-program search timed out");
+        controller.abort(cause);
+        reject(cause);
+      }, STORAGE_SEARCH_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([
+        (async () => {
+          const response = await fetch(this.config.rpc, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: requestBody,
+            signal: controller.signal,
+          });
+          if (!response.ok) {
+            void response.body?.cancel().catch(() => undefined);
+            throw new SubstrateError(
+              `storage-program search failed with HTTP ${response.status}`,
+            );
+          }
+          return await readBoundedDemosJson(
+            response,
+            STORAGE_SEARCH_MAX_RESPONSE_BYTES,
+            controller.signal,
+          );
+        })(),
+        timedOut,
+      ]);
+    } finally {
+      clearTimeout(timer);
+      // Also cancels an abandoned body once the request has settled.
+      controller.abort();
+    }
   }
 
   private async resolveChainIdentity(): Promise<string> {
@@ -1600,7 +1652,7 @@ export class DemosAdapter implements SubstrateAdapter {
   /**
    * SR-2 anchoring via Demos Storage Programs. A logical name maps to one
    * storage program, created at `deriveStorageAddress(writer, name, nonce, "")`
-   * where `nonce` is the writer's NEXT account nonce (#58 / DACS-Standard #242) —
+   * where `nonce` is the writer's NEXT account nonce —
    * the node enforces sequential nonces and rejects the skeleton default 0. First
    * write creates the program (public-read ACL); later writes update it in place
    * at that address.
@@ -1610,9 +1662,9 @@ export class DemosAdapter implements SubstrateAdapter {
    */
   /**
    * The account nonce a NEW storage program will be created under: the writer's
-   * next nonce (`getAddressNonce` + 1) per DACS-Standard #242. The node enforces
-   * sequential nonces and REJECTS the skeleton default of 0, so a fixed nonce
-   * made every live create fail (#58).
+   * next nonce (`getAddressNonce` + 1). The node enforces sequential nonces
+   * and REJECTS the skeleton default of 0, so a fixed nonce cannot create a
+   * program.
    */
   private async nextAnchorNonce(key = this.walletQueueKey()): Promise<number> {
     const chainNext =
@@ -1633,7 +1685,7 @@ export class DemosAdapter implements SubstrateAdapter {
   /**
    * The storage address a name would anchor to, for THIS writer, right now.
    *
-   * IMPORTANT (#58 / DACS-Standard #242): this is NOT third-party derivable. The
+   * IMPORTANT: this is NOT third-party derivable. The
    * physical address folds in the writer's account nonce at create time, so only
    * the writer can compute it, and only BEFORE the create lands. A reader that
    * doesn't know the write nonce MUST resolve by program name through the node's
@@ -1710,7 +1762,7 @@ export class DemosAdapter implements SubstrateAdapter {
     }
 
     // A new program uses the live next account nonce and the same empty salt as
-    // current Demos writes (#58 / DACS-Standard #242). This must happen inside
+    // current Demos writes. This must happen inside
     // the same-wallet queue so another SDK write cannot consume the nonce first.
     const programName = logicalToStorageProgramName(name);
     const nonce = await this.nextAnchorNonce(key);
@@ -3089,7 +3141,7 @@ export class DemosAdapter implements SubstrateAdapter {
   }
 
   /**
-   * Anchor to an explicit completion level (#57). The total timeout covers the
+   * Anchor to an explicit completion level. The total timeout covers the
    * wallet queue, owner-bound lookup, nonce acquisition, signing, broadcast,
    * inclusion, and exact canonical readback. The process queue protects adapter
    * instance state while the durable chain+wallet journal serializes and fences
@@ -3295,7 +3347,7 @@ export class DemosAdapter implements SubstrateAdapter {
    *
    * This is deliberately separate from update-capable {@link anchor}: listing
    * version slots and other immutable artifacts must never flow through an
-   * update path. Existing programs are resolved by NAME and OWNER (#70), not by
+   * update path. Existing programs are resolved by NAME and OWNER, not by
    * predicting the writer's next nonce-derived address. New programs use only
    * `createStorageProgram`, wait for authenticated canonical inclusion and an
    * exact owner/provenance-bound native readback, then let the secondary name
@@ -3763,7 +3815,7 @@ export class DemosAdapter implements SubstrateAdapter {
 
   /**
    * SR-2 discovery — resolve a logical program NAME to its storage address,
-   * bound to the expected writer (#58 / DACS-Standard #242).
+   * bound to the expected writer.
    *
    * This is the reader-side counterpart to {@link anchorAddress}: because the
    * physical address folds in the writer's create-time nonce, a third party
@@ -3853,7 +3905,7 @@ export class DemosAdapter implements SubstrateAdapter {
       candidates = await this.searchStorageProgramsByName(programName, true);
     } catch (e) {
       // A failed name lookup is NOT an absence — treat it as indeterminate so a
-      // caller never mistakes a substrate hiccup for "never created" (#70).
+      // caller never mistakes a substrate hiccup for "never created".
       return {
         status: "indeterminate",
         reason: `name lookup failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -4049,7 +4101,7 @@ export class DemosAdapter implements SubstrateAdapter {
    * Resolves by address: a ref that is (or contains) an address returns its
    * identity graph (all eight production GCR contexts; parseCciRecord reads it).
    * Requires demosdk ≥ 4.0.12 — 4.0.6's auth-header path 401s against the public
-   * nodes on gcr_routine (issue #20). Reverse claim-ref resolution is
+   * nodes on gcr_routine. Reverse claim-ref resolution is
    * findSubjectsByClaim below.
    */
   async resolveIdentity(ref: string): Promise<ResolvedIdentity> {
@@ -4096,7 +4148,7 @@ export class DemosAdapter implements SubstrateAdapter {
     const identities = new Identities();
     // Guard and call in one branch so `platform` narrows away "domain":
     // demosdk's web2 context has no "domain", which its types enforce once
-    // they resolve with NodeNext (4.0.18; 4.0.16's are `any`) (#339).
+    // they resolve with NodeNext (4.0.18; 4.0.16's are `any`).
     let accounts;
     if (parsed.kind === "web2") {
       if (parsed.platform === "domain") {

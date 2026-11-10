@@ -132,6 +132,24 @@ test('records of another boot, another host, no identity or another shape are do
   }
 });
 
+test('a clock value that is not a non-negative safe integer is refused before anything is written', async t => {
+  const values = { NaN, 'a fraction': 1.5, 'a negative integer': -1, 'a string': '5', 'Infinity': Infinity, 'an unsafe integer': 2 ** 53, 'undefined': undefined, 'null': null };
+  for (const [name, value] of Object.entries(values)) {
+    const dir = await directory(t);
+    await assert.rejects(acquireSellerStateLock(dir, { now: () => value }), { name: 'TypeError', message: /non-negative safe integer/ }, name);
+    assert.deepEqual(await readdir(dir), [], name);
+  }
+});
+
+test('a lock taken with a whole-number clock value records it and is read back as held', async t => {
+  for (const at of [0, 1_700_000_000_000, Number.MAX_SAFE_INTEGER]) {
+    const dir = await directory(t), lock = await acquireSellerStateLock(dir, { now: () => at });
+    assert.equal(JSON.parse(await readFile(lockPath(dir), 'utf8')).acquiredAt, at);
+    await assert.rejects(acquireSellerStateLock(dir), refused('held'));
+    lock.release();
+  }
+});
+
 test('a record whose lease file is missing is doubt, whatever its PID shows', async t => {
   const dir = await directory(t), { record } = await deadHolder(t, dir);
   await writeFile(lockPath(dir), JSON.stringify({ ...record, process: randomUUID() }));
@@ -201,6 +219,55 @@ test('takeLease refuses an unsafe holders directory, an existing lease file or a
   assert.throws(() => takeLease(join(open, 'TEST-file')), { code: 'seller_state_directory_unsafe' });
 });
 
+test('a fault while taking a lease removes the file it created, and the next takeLease works', async t => {
+  const dir = await directory(t);
+  faultOnce(t, 'fchmodSync');
+  assert.throws(() => takeLease(dir), { code: 'EIO', message: 'TEST injected fchmodSync fault' });
+  assert.deepEqual(await readdir(join(dir, 'holders')), []);
+  assert.equal(takeLease(dir), PROCESS_LEASE_ID);
+  assert.equal(leaseState(dir, PROCESS_LEASE_ID), 'held');
+});
+
+test('a fault reading the new lease file\'s identity removes the file, and the next takeLease works', async t => {
+  const dir = await directory(t);
+  faultOnce(t, 'fstatSync');
+  assert.throws(() => takeLease(dir), { code: 'EIO', message: 'TEST injected fstatSync fault' });
+  assert.deepEqual(await readdir(join(dir, 'holders')), []);
+  assert.equal(takeLease(dir), PROCESS_LEASE_ID);
+  assert.equal(leaseState(dir, PROCESS_LEASE_ID), 'held');
+});
+
+test('a fault checking the new lease file at its path removes the file, and the next takeLease works', async t => {
+  const dir = await directory(t), path = join(dir, 'holders', `${PROCESS_LEASE_ID}.sqlite`);
+  faultOnce(t, 'lstatSync', file => file === path);
+  assert.throws(() => takeLease(dir), { code: 'EIO', message: 'TEST injected lstatSync fault' });
+  assert.deepEqual(await readdir(join(dir, 'holders')), []);
+  assert.equal(takeLease(dir), PROCESS_LEASE_ID);
+});
+
+test('a failed takeLease keeps its own error when the identity read, the close and the removal all fail', async t => {
+  const dir = await directory(t);
+  faultOnce(t, 'fstatSync');
+  faultOnce(t, 'closeSync');
+  faultOnce(t, 'unlinkSync');
+  assert.throws(() => takeLease(dir), { message: 'TEST injected fstatSync fault' });
+});
+
+test('a failed takeLease keeps its own error when closing the descriptor also fails', async t => {
+  const dir = await directory(t);
+  faultOnce(t, 'fchmodSync');
+  faultOnce(t, 'closeSync');
+  assert.throws(() => takeLease(dir), { message: 'TEST injected fchmodSync fault' });
+  assert.deepEqual(await readdir(join(dir, 'holders')), []);
+});
+
+test('a failed takeLease leaves a file that replaced its own at the lease path', async t => {
+  const dir = await directory(t), path = join(dir, 'holders', `${PROCESS_LEASE_ID}.sqlite`);
+  faultOnce(t, 'fchmodSync', () => { fs.unlinkSync(path); fs.writeFileSync(path, 'TEST other file', { mode: 0o600 }); return true; });
+  assert.throws(() => takeLease(dir), { code: 'EIO' });
+  assert.equal(await readFile(path, 'utf8'), 'TEST other file');
+});
+
 const isFile = fd => fs.fstatSync(fd).isFile(), isDirectory = fd => fs.fstatSync(fd).isDirectory();
 for (const [name, fault] of [['temporary sync', ['fsyncSync', isFile]], ['link', ['linkSync']], ['directory sync', ['fsyncSync', isDirectory]]]) {
   test(`a fault at ${name} leaves no published lock, and the next acquire works`, async t => {
@@ -252,6 +319,32 @@ test('a stale handle never removes a later holder', async t => {
   await writeFile(lockPath(dir), 'TEST another holder');
   second.release();
   assert.equal(await readFile(lockPath(dir), 'utf8'), 'TEST another holder');
+});
+
+test('a release whose removal failed keeps the lock and succeeds when called again', async t => {
+  const dir = await directory(t), lock = await acquireSellerStateLock(dir);
+  faultOnce(t, 'unlinkSync', file => file === lock.path);
+  assert.throws(() => lock.release(), { code: 'EIO' });
+  assert.equal(await exists(lock.path), true);
+  lock.release();
+  assert.equal(await exists(lock.path), false);
+  (await acquireSellerStateLock(dir)).release();
+});
+
+test('a release whose directory sync failed syncs the directory again when called again', async t => {
+  const dir = await directory(t), lock = await acquireSellerStateLock(dir);
+  faultOnce(t, 'fsyncSync', isDirectory);
+  assert.throws(() => lock.release(), { code: 'EIO' });
+  assert.equal(await exists(lock.path), false);
+  const real = fs.fsyncSync;
+  let directorySyncs = 0;
+  fs.fsyncSync = function (fd) { if (isDirectory(fd)) directorySyncs++; return real.call(this, fd); };
+  syncBuiltinESMExports();
+  t.after(() => { fs.fsyncSync = real; syncBuiltinESMExports(); });
+  lock.release();
+  assert.equal(directorySyncs, 1);
+  lock.release();
+  assert.equal(directorySyncs, 1);
 });
 
 test('a lock released between the failed link and its read gets one fresh attempt', async t => {
