@@ -6513,6 +6513,28 @@
       ]
     },
     {
+      "delta": "D31",
+      "subject": "delta(client): D31 pin the finality profile literal refusal",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": null,
+          "after": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5"
+        }
+      ]
+    },
+    {
+      "delta": "D31",
+      "subject": "delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5",
+          "after": "565c664bbc629707665dd65c3889ac5e08ec2d09"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "sha": "0aa6608f4bb7d62c46cc41d552d3270384fb2814",
       "subject": "Apply the stricter key checks to the client transport and embedded wallet",
