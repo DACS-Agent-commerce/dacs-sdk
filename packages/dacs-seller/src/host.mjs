@@ -284,14 +284,14 @@ export async function startSellerHost(options) {
     // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, now, generation, stopped: stopRequested, contextSessionState,
-      wireOperationView: (target) => inspectWireOperation(journal, target) });
+      wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // This host holds the state lock, so a validator or context step left by an earlier process has no run left:
     // the challenge validators close as lost, then each pending context step ends or becomes uncertain.
     store.challenges.closeLostValidations();
     store.recoverLostContextReservations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
-    const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
+    const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased,
       agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE });
     opened.push(() => agent.close());
     // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
