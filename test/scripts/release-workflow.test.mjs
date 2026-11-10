@@ -13,7 +13,8 @@ const step = run => {
 };
 
 test("required build CI runs the workflow contract regression", () => {
-  const contract = ci.jobs["build-test"].steps.find(step => step.run === "node --test test/scripts/release-workflow.test.mjs");
+  // build-test-main holds every build-test step except the sharded seller and client suites (build-test).
+  const contract = ci.jobs["build-test-main"].steps.find(step => step.run === "node --test test/scripts/release-workflow.test.mjs");
   assert.ok(contract);
   assert.equal(contract.if, undefined);
   assert.ok(!contract["continue-on-error"]);
@@ -27,7 +28,7 @@ test("build CI builds the Node host kit before any step that runs the client tes
   const steps = ci.jobs["build-test"].steps;
   const hostBuild = steps.findIndex(step => step.run === "npm run host:build");
   assert.notEqual(hostBuild, -1);
-  const clientTests = steps.flatMap((step, index) => /npm test --workspace @kynesyslabs\/dacs-client\b/.test(step.run ?? "") ? [index] : []);
+  const clientTests = steps.flatMap((step, index) => /npm test --workspace @kynesyslabs\/dacs-client\b|node scripts\/run-client-tests\.mjs/.test(step.run ?? "") ? [index] : []);
   assert.ok(clientTests.length > 0);
   for (const index of clientTests) assert.ok(hostBuild < index, `"${steps[index].name}" runs before the Node host kit is built`);
 });
