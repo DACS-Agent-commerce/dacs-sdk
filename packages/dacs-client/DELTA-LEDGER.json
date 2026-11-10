@@ -6513,29 +6513,206 @@
       ]
     },
     {
+      "delta": "D31",
+      "subject": "delta(client): D31 pin the finality profile literal refusal",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": null,
+          "after": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5"
+        }
+      ]
+    },
+    {
+      "delta": "D31",
+      "subject": "delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5",
+          "after": "565c664bbc629707665dd65c3889ac5e08ec2d09"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 reserve each purchase job id with a unique column and a bounded retry",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "652e68fa1ad0a799754f35d604bac2ffc1376f0e",
+          "after": "615dbe0271963189f792d967d3b1acf6c2fc678f"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": "557ea59e906125decb9c56d5b2322a1d30af3321",
+          "after": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd",
+          "after": "3873c4245efd90c76e2af08f56b2d609e391cf65"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+          "before": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b",
+          "after": "a4a556aea31469b10698a07d3180bbbc8ef37d03"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": null,
+          "after": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 require a unique job_id index at construction",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3873c4245efd90c76e2af08f56b2d609e391cf65",
+          "after": "06748b818244cb1924ebb4fcc93ad5a23e99b848"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b",
+          "after": "c04831cefe549f5a2c89052f0400bcdecf8b52a7"
+        },
+        {
+          "path": "packages/dacs-client/test/readme-contract.test.mjs",
+          "before": "0f7e7d6618f09f8377893affcdd5449425e4646f",
+          "after": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 tighten job id comments and README wording",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "06748b818244cb1924ebb4fcc93ad5a23e99b848",
+          "after": "4a6010356dbd967ae75c68fb30d97060fb9f0f65"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 read schema rows with plain numbers and keep the last collision as cause",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "4a6010356dbd967ae75c68fb30d97060fb9f0f65",
+          "after": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "c04831cefe549f5a2c89052f0400bcdecf8b52a7",
+          "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P13a1 sign and verify seller traffic through the wire",
       "compact": true,
       "files": [
-        {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"652e68fa1ad0a799754f35d604bac2ffc1376f0e","after":"0beb91038714306005ecd3ad79faf4a5b9cb441e"},
-        {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"3b37b663b20165b7a8a14a8a25ee62bf662cc5e6","after":"4b27d7047e0557f0439250ad6d8690fc5f2241aa"},
-        {"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":"68a8a8946386f010d7a157a25e184bfb52370108","after":"cbbff1c08f2b7986c2a55298652234a1b1b6b606"},
-        {"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":null,"after":"b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5"},
-        {"path":"packages/dacs-client/src/dacs/source-demo-seller-transport.mjs","before":"208a59efea2ceed0f8b76d96aaf66444ac51cc40","after":"14350d302f2efcecf790150cd2fcaec4244982d0"},
-        {"path":"packages/dacs-client/src/index.mjs","before":"8eef30db35c285a915231522e0b73a8c407e9384","after":"dd10aa2b3ebe253b092d9543850079587b5bca27"},
-        {"path":"packages/dacs-client/src/public-admission.mjs","before":"3f31bdea587a0f038d5a8fcc892b053dbd129fff","after":"62265d0764ad8c81d23cb12217ef1b3e9f35fe8d"},
-        {"path":"packages/dacs-client/test/helpers/buyer-chain-readback-flow.mjs","before":"f2895f71dc8e79dc7359522fe48af6a59e7921d6","after":"836362d71eb834d43f168eec3aca5b617018946d"},
-        {"path":"packages/dacs-client/test/helpers/commitment-node-junk.mjs","before":"d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4","after":"4dda0ebff0f1a5312c4337040ed7b5308461f8b8"},
-        {"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":null,"after":"2f963c44c336dd77647d12ced651a9df7bc4b9e4"},
-        {"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"37ab6d1fe442415929f81c40d6a56651b6dd530e","after":"163637c51827c8cf0c5b04979d0ad008a24b6bfb"},
-        {"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc","after":"a95ef03f4a7088ebf2d776b544529efa9af3bd3b"},
-        {"path":"packages/dacs-client/test/helpers/source-demo-flow.mjs","before":"407e9d3ccb1db981727e9c22a2c0b9ca96443421","after":"40670eef3d1060b4690ecf90343f5cd4d4153176"},
-        {"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"fe1c4055b77e3a13b3cf24492a645f08fb2b190b","after":"3ebe27b3481988b9dedeaabec489c44e791a2891"},
-        {"path":"packages/dacs-client/test/helpers/wire-client-fixture.mjs","before":null,"after":"d0403f064afb87caf0a366d62dca51a9410ad00a"},
-        {"path":"packages/dacs-client/test/sweep-contracts.test.mjs","before":"dac6e6aae63aac269c0a84197ce2b77d3211eb35","after":"49d984bfcf705c7d3d1928720d9f8f0d759f8c0b"},
-        {"path":"packages/dacs-client/test/wire-delegation.test.mjs","before":null,"after":"e346741a630e7700b726316460a6a4898de04b02"},
-        {"path":"packages/dacs-client/test/wire-purchase-format.test.mjs","before":null,"after":"abee1bf19ddddb09fe8660d71e5487bde4fbdc8a"},
-        {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":null,"after":"15b6cee99bc61e26789ca19e1a36494f6fb322bc"}
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "652e68fa1ad0a799754f35d604bac2ffc1376f0e",
+          "after": "0beb91038714306005ecd3ad79faf4a5b9cb441e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "3b37b663b20165b7a8a14a8a25ee62bf662cc5e6",
+          "after": "4b27d7047e0557f0439250ad6d8690fc5f2241aa"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "68a8a8946386f010d7a157a25e184bfb52370108",
+          "after": "cbbff1c08f2b7986c2a55298652234a1b1b6b606"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": null,
+          "after": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/source-demo-seller-transport.mjs",
+          "before": "208a59efea2ceed0f8b76d96aaf66444ac51cc40",
+          "after": "14350d302f2efcecf790150cd2fcaec4244982d0"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "8eef30db35c285a915231522e0b73a8c407e9384",
+          "after": "dd10aa2b3ebe253b092d9543850079587b5bca27"
+        },
+        {
+          "path": "packages/dacs-client/src/public-admission.mjs",
+          "before": "3f31bdea587a0f038d5a8fcc892b053dbd129fff",
+          "after": "62265d0764ad8c81d23cb12217ef1b3e9f35fe8d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/buyer-chain-readback-flow.mjs",
+          "before": "f2895f71dc8e79dc7359522fe48af6a59e7921d6",
+          "after": "836362d71eb834d43f168eec3aca5b617018946d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk.mjs",
+          "before": "d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4",
+          "after": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+          "before": null,
+          "after": "2f963c44c336dd77647d12ced651a9df7bc4b9e4"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs",
+          "before": "37ab6d1fe442415929f81c40d6a56651b6dd530e",
+          "after": "163637c51827c8cf0c5b04979d0ad008a24b6bfb"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs",
+          "before": "8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc",
+          "after": "a95ef03f4a7088ebf2d776b544529efa9af3bd3b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-demo-flow.mjs",
+          "before": "407e9d3ccb1db981727e9c22a2c0b9ca96443421",
+          "after": "40670eef3d1060b4690ecf90343f5cd4d4153176"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-demo-seller.mjs",
+          "before": "fe1c4055b77e3a13b3cf24492a645f08fb2b190b",
+          "after": "3ebe27b3481988b9dedeaabec489c44e791a2891"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+          "before": null,
+          "after": "d0403f064afb87caf0a366d62dca51a9410ad00a"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "dac6e6aae63aac269c0a84197ce2b77d3211eb35",
+          "after": "49d984bfcf705c7d3d1928720d9f8f0d759f8c0b"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-delegation.test.mjs",
+          "before": null,
+          "after": "e346741a630e7700b726316460a6a4898de04b02"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-purchase-format.test.mjs",
+          "before": null,
+          "after": "abee1bf19ddddb09fe8660d71e5487bde4fbdc8a"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": null,
+          "after": "15b6cee99bc61e26789ca19e1a36494f6fb322bc"
+        }
       ]
     },
     {
@@ -6543,11 +6720,157 @@
       "subject": "delta(client): WF P13a1 bound seller signing and authority reads by the request deadline",
       "compact": true,
       "files": [
-        {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"0beb91038714306005ecd3ad79faf4a5b9cb441e","after":"e43129e16f7d027fb24b9e2ecef24eb56a908393"},
-        {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"4b27d7047e0557f0439250ad6d8690fc5f2241aa","after":"add72c0add7c8188d6cc86e7476207a4882c93af"},
-        {"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":"b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5","after":"767519509759e6d77c030f38e5601eab455922a0"},
-        {"path":"packages/dacs-client/test/wire-delegation.test.mjs","before":"e346741a630e7700b726316460a6a4898de04b02","after":"cd60876eb390082bbb372c2fe29f3827488e0af5"},
-        {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":"15b6cee99bc61e26789ca19e1a36494f6fb322bc","after":"e4a43f5d39bc6806039a4f3f7421d0874504effc"}
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "0beb91038714306005ecd3ad79faf4a5b9cb441e",
+          "after": "e43129e16f7d027fb24b9e2ecef24eb56a908393"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "4b27d7047e0557f0439250ad6d8690fc5f2241aa",
+          "after": "add72c0add7c8188d6cc86e7476207a4882c93af"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
+          "after": "767519509759e6d77c030f38e5601eab455922a0"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-delegation.test.mjs",
+          "before": "e346741a630e7700b726316460a6a4898de04b02",
+          "after": "cd60876eb390082bbb372c2fe29f3827488e0af5"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": "15b6cee99bc61e26789ca19e1a36494f6fb322bc",
+          "after": "e4a43f5d39bc6806039a4f3f7421d0874504effc"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged buyer seller client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "add72c0add7c8188d6cc86e7476207a4882c93af",
+          "after": "add72c0add7c8188d6cc86e7476207a4882c93af"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF isolate wire authentication adapter",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "e43129e16f7d027fb24b9e2ecef24eb56a908393",
+          "after": "652e68fa1ad0a799754f35d604bac2ffc1376f0e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "add72c0add7c8188d6cc86e7476207a4882c93af",
+          "after": "eb89bc99364dc00d325530e5249981917b9cdb87"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "cbbff1c08f2b7986c2a55298652234a1b1b6b606",
+          "after": "68a8a8946386f010d7a157a25e184bfb52370108"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "767519509759e6d77c030f38e5601eab455922a0",
+          "after": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/source-demo-seller-transport.mjs",
+          "before": "14350d302f2efcecf790150cd2fcaec4244982d0",
+          "after": "208a59efea2ceed0f8b76d96aaf66444ac51cc40"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "dd10aa2b3ebe253b092d9543850079587b5bca27",
+          "after": "8eef30db35c285a915231522e0b73a8c407e9384"
+        },
+        {
+          "path": "packages/dacs-client/src/public-admission.mjs",
+          "before": "62265d0764ad8c81d23cb12217ef1b3e9f35fe8d",
+          "after": "3f31bdea587a0f038d5a8fcc892b053dbd129fff"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/buyer-chain-readback-flow.mjs",
+          "before": "836362d71eb834d43f168eec3aca5b617018946d",
+          "after": "f2895f71dc8e79dc7359522fe48af6a59e7921d6"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk.mjs",
+          "before": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8",
+          "after": "d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+          "before": "2f963c44c336dd77647d12ced651a9df7bc4b9e4",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs",
+          "before": "163637c51827c8cf0c5b04979d0ad008a24b6bfb",
+          "after": "37ab6d1fe442415929f81c40d6a56651b6dd530e"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs",
+          "before": "a95ef03f4a7088ebf2d776b544529efa9af3bd3b",
+          "after": "8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-demo-flow.mjs",
+          "before": "40670eef3d1060b4690ecf90343f5cd4d4153176",
+          "after": "407e9d3ccb1db981727e9c22a2c0b9ca96443421"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-demo-seller.mjs",
+          "before": "3ebe27b3481988b9dedeaabec489c44e791a2891",
+          "after": "fe1c4055b77e3a13b3cf24492a645f08fb2b190b"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "49d984bfcf705c7d3d1928720d9f8f0d759f8c0b",
+          "after": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-authentication.test.mjs",
+          "before": null,
+          "after": "c105cadb85dac6be089bcfd69e053dae8aacdecb"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-delegation.test.mjs",
+          "before": "cd60876eb390082bbb372c2fe29f3827488e0af5",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/wire-purchase-format.test.mjs",
+          "before": "abee1bf19ddddb09fe8660d71e5487bde4fbdc8a",
+          "after": null
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": "e4a43f5d39bc6806039a4f3f7421d0874504effc",
+          "after": null
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged purchase protocol and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "615dbe0271963189f792d967d3b1acf6c2fc678f",
+          "after": "615dbe0271963189f792d967d3b1acf6c2fc678f"
+        }
       ]
     },
     {
@@ -6556,42 +6879,16 @@
       "sha": "cedf85a39a23d95242c9b3a393ca6206d2550ef1",
       "compact": true,
       "files": [
-        {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"add72c0add7c8188d6cc86e7476207a4882c93af","after":"add72c0add7c8188d6cc86e7476207a4882c93af"},
-        {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":"e4a43f5d39bc6806039a4f3f7421d0874504effc","after":"38eeb443a089821c4d313f54db21022689d7b1ff"}
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF record the merged buyer seller client and refresh package pins",
-      "compact": true,
-      "files": [
-        {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"add72c0add7c8188d6cc86e7476207a4882c93af","after":"add72c0add7c8188d6cc86e7476207a4882c93af"}
-      ]
-    },
-    {
-      "delta": "WF",
-      "subject": "delta(client): WF isolate wire authentication adapter",
-      "compact": true,
-      "files": [
-        {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"e43129e16f7d027fb24b9e2ecef24eb56a908393","after":"652e68fa1ad0a799754f35d604bac2ffc1376f0e"},
-        {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"add72c0add7c8188d6cc86e7476207a4882c93af","after":"eb89bc99364dc00d325530e5249981917b9cdb87"},
-        {"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":"cbbff1c08f2b7986c2a55298652234a1b1b6b606","after":"68a8a8946386f010d7a157a25e184bfb52370108"},
-        {"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":"767519509759e6d77c030f38e5601eab455922a0","after":"b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5"},
-        {"path":"packages/dacs-client/src/dacs/source-demo-seller-transport.mjs","before":"14350d302f2efcecf790150cd2fcaec4244982d0","after":"208a59efea2ceed0f8b76d96aaf66444ac51cc40"},
-        {"path":"packages/dacs-client/src/index.mjs","before":"dd10aa2b3ebe253b092d9543850079587b5bca27","after":"8eef30db35c285a915231522e0b73a8c407e9384"},
-        {"path":"packages/dacs-client/src/public-admission.mjs","before":"62265d0764ad8c81d23cb12217ef1b3e9f35fe8d","after":"3f31bdea587a0f038d5a8fcc892b053dbd129fff"},
-        {"path":"packages/dacs-client/test/helpers/buyer-chain-readback-flow.mjs","before":"836362d71eb834d43f168eec3aca5b617018946d","after":"f2895f71dc8e79dc7359522fe48af6a59e7921d6"},
-        {"path":"packages/dacs-client/test/helpers/commitment-node-junk.mjs","before":"4dda0ebff0f1a5312c4337040ed7b5308461f8b8","after":"d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4"},
-        {"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":"2f963c44c336dd77647d12ced651a9df7bc4b9e4","after":null},
-        {"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"163637c51827c8cf0c5b04979d0ad008a24b6bfb","after":"37ab6d1fe442415929f81c40d6a56651b6dd530e"},
-        {"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"a95ef03f4a7088ebf2d776b544529efa9af3bd3b","after":"8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc"},
-        {"path":"packages/dacs-client/test/helpers/source-demo-flow.mjs","before":"40670eef3d1060b4690ecf90343f5cd4d4153176","after":"407e9d3ccb1db981727e9c22a2c0b9ca96443421"},
-        {"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"3ebe27b3481988b9dedeaabec489c44e791a2891","after":"fe1c4055b77e3a13b3cf24492a645f08fb2b190b"},
-        {"path":"packages/dacs-client/test/sweep-contracts.test.mjs","before":"49d984bfcf705c7d3d1928720d9f8f0d759f8c0b","after":"dac6e6aae63aac269c0a84197ce2b77d3211eb35"},
-        {"path":"packages/dacs-client/test/wire-authentication.test.mjs","before":null,"after":"c105cadb85dac6be089bcfd69e053dae8aacdecb"},
-        {"path":"packages/dacs-client/test/wire-delegation.test.mjs","before":"cd60876eb390082bbb372c2fe29f3827488e0af5","after":null},
-        {"path":"packages/dacs-client/test/wire-purchase-format.test.mjs","before":"abee1bf19ddddb09fe8660d71e5487bde4fbdc8a","after":null},
-        {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":"e4a43f5d39bc6806039a4f3f7421d0874504effc","after":null}
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "add72c0add7c8188d6cc86e7476207a4882c93af",
+          "after": "add72c0add7c8188d6cc86e7476207a4882c93af"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": "e4a43f5d39bc6806039a4f3f7421d0874504effc",
+          "after": "38eeb443a089821c4d313f54db21022689d7b1ff"
+        }
       ]
     },
     {
@@ -6599,23 +6896,103 @@
       "subject": "delta(client): WF activate wire purchase transport",
       "compact": true,
       "files": [
-        {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"652e68fa1ad0a799754f35d604bac2ffc1376f0e","after":"0beb91038714306005ecd3ad79faf4a5b9cb441e"},
-        {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"eb89bc99364dc00d325530e5249981917b9cdb87","after":"4b27d7047e0557f0439250ad6d8690fc5f2241aa"},
-        {"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":"68a8a8946386f010d7a157a25e184bfb52370108","after":"cbbff1c08f2b7986c2a55298652234a1b1b6b606"},
-        {"path":"packages/dacs-client/src/dacs/source-demo-seller-transport.mjs","before":"208a59efea2ceed0f8b76d96aaf66444ac51cc40","after":"14350d302f2efcecf790150cd2fcaec4244982d0"},
-        {"path":"packages/dacs-client/src/index.mjs","before":"8eef30db35c285a915231522e0b73a8c407e9384","after":"dd10aa2b3ebe253b092d9543850079587b5bca27"},
-        {"path":"packages/dacs-client/src/public-admission.mjs","before":"3f31bdea587a0f038d5a8fcc892b053dbd129fff","after":"62265d0764ad8c81d23cb12217ef1b3e9f35fe8d"},
-        {"path":"packages/dacs-client/test/helpers/buyer-chain-readback-flow.mjs","before":"f2895f71dc8e79dc7359522fe48af6a59e7921d6","after":"836362d71eb834d43f168eec3aca5b617018946d"},
-        {"path":"packages/dacs-client/test/helpers/commitment-node-junk.mjs","before":"d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4","after":"4dda0ebff0f1a5312c4337040ed7b5308461f8b8"},
-        {"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":null,"after":"2f963c44c336dd77647d12ced651a9df7bc4b9e4"},
-        {"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"37ab6d1fe442415929f81c40d6a56651b6dd530e","after":"163637c51827c8cf0c5b04979d0ad008a24b6bfb"},
-        {"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc","after":"a95ef03f4a7088ebf2d776b544529efa9af3bd3b"},
-        {"path":"packages/dacs-client/test/helpers/source-demo-flow.mjs","before":"407e9d3ccb1db981727e9c22a2c0b9ca96443421","after":"40670eef3d1060b4690ecf90343f5cd4d4153176"},
-        {"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"fe1c4055b77e3a13b3cf24492a645f08fb2b190b","after":"3ebe27b3481988b9dedeaabec489c44e791a2891"},
-        {"path":"packages/dacs-client/test/sweep-contracts.test.mjs","before":"dac6e6aae63aac269c0a84197ce2b77d3211eb35","after":"49d984bfcf705c7d3d1928720d9f8f0d759f8c0b"},
-        {"path":"packages/dacs-client/test/wire-delegation.test.mjs","before":null,"after":"e346741a630e7700b726316460a6a4898de04b02"},
-        {"path":"packages/dacs-client/test/wire-purchase-format.test.mjs","before":null,"after":"abee1bf19ddddb09fe8660d71e5487bde4fbdc8a"},
-        {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":null,"after":"8080ab64a3de6b4a227ea7b19ecb9d70911f035a"}
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "652e68fa1ad0a799754f35d604bac2ffc1376f0e",
+          "after": "0beb91038714306005ecd3ad79faf4a5b9cb441e"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "eb89bc99364dc00d325530e5249981917b9cdb87",
+          "after": "4b27d7047e0557f0439250ad6d8690fc5f2241aa"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-transport-auth.mjs",
+          "before": "68a8a8946386f010d7a157a25e184bfb52370108",
+          "after": "cbbff1c08f2b7986c2a55298652234a1b1b6b606"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/source-demo-seller-transport.mjs",
+          "before": "208a59efea2ceed0f8b76d96aaf66444ac51cc40",
+          "after": "14350d302f2efcecf790150cd2fcaec4244982d0"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "8eef30db35c285a915231522e0b73a8c407e9384",
+          "after": "dd10aa2b3ebe253b092d9543850079587b5bca27"
+        },
+        {
+          "path": "packages/dacs-client/src/public-admission.mjs",
+          "before": "3f31bdea587a0f038d5a8fcc892b053dbd129fff",
+          "after": "62265d0764ad8c81d23cb12217ef1b3e9f35fe8d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/buyer-chain-readback-flow.mjs",
+          "before": "f2895f71dc8e79dc7359522fe48af6a59e7921d6",
+          "after": "836362d71eb834d43f168eec3aca5b617018946d"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/commitment-node-junk.mjs",
+          "before": "d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4",
+          "after": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+          "before": null,
+          "after": "2f963c44c336dd77647d12ced651a9df7bc4b9e4"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs",
+          "before": "37ab6d1fe442415929f81c40d6a56651b6dd530e",
+          "after": "163637c51827c8cf0c5b04979d0ad008a24b6bfb"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs",
+          "before": "8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc",
+          "after": "a95ef03f4a7088ebf2d776b544529efa9af3bd3b"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-demo-flow.mjs",
+          "before": "407e9d3ccb1db981727e9c22a2c0b9ca96443421",
+          "after": "40670eef3d1060b4690ecf90343f5cd4d4153176"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/source-demo-seller.mjs",
+          "before": "fe1c4055b77e3a13b3cf24492a645f08fb2b190b",
+          "after": "3ebe27b3481988b9dedeaabec489c44e791a2891"
+        },
+        {
+          "path": "packages/dacs-client/test/sweep-contracts.test.mjs",
+          "before": "dac6e6aae63aac269c0a84197ce2b77d3211eb35",
+          "after": "49d984bfcf705c7d3d1928720d9f8f0d759f8c0b"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-delegation.test.mjs",
+          "before": null,
+          "after": "e346741a630e7700b726316460a6a4898de04b02"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-purchase-format.test.mjs",
+          "before": null,
+          "after": "abee1bf19ddddb09fe8660d71e5487bde4fbdc8a"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": null,
+          "after": "8080ab64a3de6b4a227ea7b19ecb9d70911f035a"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged wire purchase transport and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "7d4b15aa1bbe988814e3249e2cdfc449909a9be4",
+          "after": "7d4b15aa1bbe988814e3249e2cdfc449909a9be4"
+        }
       ]
     },
     {
@@ -6623,11 +7000,43 @@
       "subject": "delta(client): WF bound seller calls by deadline",
       "compact": true,
       "files": [
-        {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"0beb91038714306005ecd3ad79faf4a5b9cb441e","after":"e43129e16f7d027fb24b9e2ecef24eb56a908393"},
-        {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"4b27d7047e0557f0439250ad6d8690fc5f2241aa","after":"add72c0add7c8188d6cc86e7476207a4882c93af"},
-        {"path":"packages/dacs-client/src/dacs/seller-wire-authentication.mjs","before":"b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5","after":"767519509759e6d77c030f38e5601eab455922a0"},
-        {"path":"packages/dacs-client/test/wire-delegation.test.mjs","before":"e346741a630e7700b726316460a6a4898de04b02","after":"cd60876eb390082bbb372c2fe29f3827488e0af5"},
-        {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":"8080ab64a3de6b4a227ea7b19ecb9d70911f035a","after":"38eeb443a089821c4d313f54db21022689d7b1ff"}
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "0beb91038714306005ecd3ad79faf4a5b9cb441e",
+          "after": "e43129e16f7d027fb24b9e2ecef24eb56a908393"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "4b27d7047e0557f0439250ad6d8690fc5f2241aa",
+          "after": "add72c0add7c8188d6cc86e7476207a4882c93af"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5",
+          "after": "767519509759e6d77c030f38e5601eab455922a0"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-delegation.test.mjs",
+          "before": "e346741a630e7700b726316460a6a4898de04b02",
+          "after": "cd60876eb390082bbb372c2fe29f3827488e0af5"
+        },
+        {
+          "path": "packages/dacs-client/test/wire-request-signing.test.mjs",
+          "before": "8080ab64a3de6b4a227ea7b19ecb9d70911f035a",
+          "after": "38eeb443a089821c4d313f54db21022689d7b1ff"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged seller request deadlines and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "55fe0f9880f83618ff0b362041b51ec2451e47b7",
+          "after": "55fe0f9880f83618ff0b362041b51ec2451e47b7"
+        }
       ]
     },
     {
@@ -6668,6 +7077,23 @@
           "path": "packages/dacs-client/test/wire-continuation-evidence.test.mjs",
           "before": null,
           "after": "d6407d953cdd85617b4bcce9c409d3d18beed67c"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged continuing routes and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "59045ea5468ed7253dad7637f62b975b2b3226e0",
+          "after": "59045ea5468ed7253dad7637f62b975b2b3226e0"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "7de38417501b62e785e7a84181b057a76f5810fe",
+          "after": "7de38417501b62e785e7a84181b057a76f5810fe"
         }
       ]
     },
@@ -6759,6 +7185,23 @@
           "path": "packages/dacs-client/src/dacs/seller-http.mjs",
           "before": "b88097dc5621acb7affa393aade0133f1c873923",
           "after": "b88097dc5621acb7affa393aade0133f1c873923"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged response bytes client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "b88097dc5621acb7affa393aade0133f1c873923",
+          "after": "b88097dc5621acb7affa393aade0133f1c873923"
+        },
+        {
+          "path": "packages/dacs-client/src/index.mjs",
+          "before": "b8234d43cd1d70e1a78029f548e01469f51f0a56",
+          "after": "b8234d43cd1d70e1a78029f548e01469f51f0a56"
         }
       ]
     },
@@ -6972,6 +7415,23 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged stored request bytes client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "c993d159786433207d171ee4383c7aa2b860ceb5",
+          "after": "c993d159786433207d171ee4383c7aa2b860ceb5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f80404d442afea5c691c15c3b729ec10ea9bf319",
+          "after": "f80404d442afea5c691c15c3b729ec10ea9bf319"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the stored-request buyer seller client after the merge and refresh package pins",
       "files": [
         {
@@ -7161,6 +7621,28 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged authenticated retries client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "b7f98682851f39cb7130cc8e410ea8a783ed09c5",
+          "after": "b7f98682851f39cb7130cc8e410ea8a783ed09c5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f0834ba649d3a26ad1136f96195fea50feb9d8c3",
+          "after": "f0834ba649d3a26ad1136f96195fea50feb9d8c3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "fc66e463671c98bddf7d8da31761a7c79046d88f",
+          "after": "fc66e463671c98bddf7d8da31761a7c79046d88f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the authenticated-retry buyer seller client after the merge and refresh package pins",
       "files": [
         {
@@ -7271,6 +7753,28 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged recorded suspension client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "23db67d4be5c8be2b7b27aa8723434d490fbc821",
+          "after": "23db67d4be5c8be2b7b27aa8723434d490fbc821"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "a7bde64bb0b01a411fe520bb19a8d973fb05775c",
+          "after": "a7bde64bb0b01a411fe520bb19a8d973fb05775c"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "b0b53ae4d5f19dd08211fadab2054d49f17b2b26",
+          "after": "b0b53ae4d5f19dd08211fadab2054d49f17b2b26"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the recorded-suspension buyer seller client after the merge and refresh package pins",
       "files": [
         {
@@ -7280,6 +7784,27 @@
         }
       ]
     },
-    {"delta":"WF","subject":"delta(client): WF let the buyer seller client reach a public https endpoint","compact":true,"files":[{"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"a7bde64bb0b01a411fe520bb19a8d973fb05775c","after":"e7699f94686e7c440f22f2dd0f2baad4020fdb21"},{"path":"packages/dacs-client/test/helpers/wire-client-fixture.mjs","before":"106b9d16fdbbd28db6ebadd36ea5d0ba94b702f0","after":"62844ba6781ce69c4ef194b652d8322be2723007"},{"path":"packages/dacs-client/test/seller-public-endpoint.test.mjs","before":null,"after":"2b7317dc8922c4c33abc4a9ce65fe3a0eccbd2a7"}]}
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF let the buyer seller client reach a public https endpoint",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "a7bde64bb0b01a411fe520bb19a8d973fb05775c",
+          "after": "e7699f94686e7c440f22f2dd0f2baad4020fdb21"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+          "before": "106b9d16fdbbd28db6ebadd36ea5d0ba94b702f0",
+          "after": "62844ba6781ce69c4ef194b652d8322be2723007"
+        },
+        {
+          "path": "packages/dacs-client/test/seller-public-endpoint.test.mjs",
+          "before": null,
+          "after": "2b7317dc8922c4c33abc4a9ce65fe3a0eccbd2a7"
+        }
+      ]
+    }
   ]
 }
