@@ -12,8 +12,9 @@ import {
   type PayDemPreparedTransfer,
   type PayDemSettlementReconcile,
 } from "../rails/payDem.js";
-import type {
-  SettlementIdempotencyStore,
+import {
+  inheritSettlementBridge,
+  type SettlementIdempotencyStore,
 } from "../rails/idempotency.js";
 import {
   isAuthenticatedRailDefinition,
@@ -105,7 +106,7 @@ function bindDescriptorRequest(
   executor: (req: SettleRequest) => Promise<SettleResult>,
 ): (req: SettleRequest) => Promise<SettleResult> {
   const expectedPhase = descriptor.phaseHandler;
-  return async (req) => {
+  const bound = async (req: SettleRequest): Promise<SettleResult> => {
     // Capture the two authority-bearing request fields once, then overwrite any
     // accessor/proxy values copied by the compatibility spread below. The rail
     // executor must receive the same descriptor id and phase that this gate
@@ -128,6 +129,7 @@ function bindDescriptorRequest(
       phase: requestPhase,
     });
   };
+  return inheritSettlementBridge(executor, bound);
 }
 
 async function enforceAvailability(
@@ -311,10 +313,16 @@ function captureSettlementStore(
     "readOutcome",
     "pay-dem settlement store readOutcome",
   );
+  const recover = optionalDispatchMethod<NonNullable<SettlementIdempotencyStore["recover"]>>(
+    source,
+    "recover",
+    "pay-dem settlement store recover",
+  );
   const wrapper: SettlementIdempotencyStore = {
     once: (key, binding, submit, reconcile) =>
       once(key, binding, submit, reconcile),
     ...(readOutcome === undefined ? {} : { readOutcome }),
+    ...(recover === undefined ? {} : { recover }),
   };
   return Object.freeze(wrapper);
 }
