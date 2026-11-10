@@ -37,6 +37,8 @@ Doctor CLI rules:
 
 ## Layout
 
+Which folders may import which is set out in [ARCHITECTURE.md](./ARCHITECTURE.md).
+
 ```
 src/
   agent/             createAgent, the Agent lifecycle (vet, negotiate, settle, fulfil, verify) and reputation
