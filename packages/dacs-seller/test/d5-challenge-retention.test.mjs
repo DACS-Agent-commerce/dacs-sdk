@@ -1,3 +1,4 @@
+import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 import { issueChallenge, attemptChallenge } from './helpers/challenge-api.mjs';
 import test from 'node:test';
 import { createHash, createPrivateKey, createPublicKey, sign } from 'node:crypto';
@@ -6,7 +7,6 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
-import { withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 const { createSellerTransportClientAuth, createSellerTransportServerAuth, sellerContextScopeHash, sellerContextChallengeScope, sellerTransportEffect, SELLER_CONTEXT_PATH } = await import('../src/dacs/seller-transport-auth.mjs');
 const { createSellerTransportStore } = await import('./helpers/bound-transport-store.mjs');
 const buyer = 'did:demos:agent:' + 'a'.repeat(64), seller = 'did:demos:agent:' + 'b'.repeat(64);
@@ -20,7 +20,7 @@ function world(t, options = {}) {
   writeFileSync(states, '{}');
   let time = 1800000000000, store;
   const config = { path, now: () => time, maxRecords: 1, contextStartLimits: { maxStartsPerHour: 1, maxStartsPerBuyerPerHour: 1 },
-    contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId], ...options };
+    contextSessionState: ({ jobId }) => JSON.parse(readFileSync(states, 'utf8'))[jobId] ?? null, ...options };
   // hostStart: what the host does with the lock held, right after it opens the store.
   const reopen = ({ hostStart = false, ...changes } = {}) => {
     store?.close(); store = withFixtureProfile(createSellerTransportStore({ ...config, ...changes }));
@@ -184,7 +184,7 @@ test('terminal job cleanup keeps unresolved effects and retention windows', t =>
   }
 });
 
-// Terminal-observation metadata (a closure and the release of an existing allocation, SA-18) is counted apart from the work's own writes.
+// Terminal-observation metadata (a closure and the release of an existing allocation) is counted apart from the work's own writes.
 const OBSERVATION_METADATA = /^\s*(INSERT OR IGNORE INTO kit_terminal_closures|UPDATE kit_allocations)/i;
 function noMutations(work) {
   const prepare = DatabaseSync.prototype.prepare, exec = DatabaseSync.prototype.exec, mutations = [];
@@ -478,7 +478,7 @@ test('T18 context capacity uses indexed nonce lookups and stops after enough ter
     if (method === 'issue') issue('room');
     else if (method === 'reserve') assert.equal(w.store.reserve(context(w, 'room'), contextBody('room'), { admit: () => w.now() }).disposition, 'perform');
     else noMutations(() => assert.equal(w.store.classify(context(w, 'room'), contextBody('room'), { admit: () => w.now() }), 'start'));
-    // The first run reads the port once; its closure then answers for that admission, so later runs read nothing (SA-18).
+    // The first run reads the port once; its closure then answers for that admission, so later runs read nothing.
     assert.equal(calls.filter(job => oldJobs.has(job)).length, method === 'classify' ? 1 : 0, 'stop after one reclaimable admission');
     assert.equal(w.count('peer_context_admissions'), 10000, 'planning retains rows; reserve replaces only the necessary row');
   }
@@ -738,7 +738,7 @@ test('buyer nonce quota survives reopen and nonce cleanup until the full rate wi
   const first = request(w, 0, { expiresAt: w.now() + 10 });
   w.store.finish(w.store.reserve(first, {}), 409, '{}', { noEffect: true }); w.reopen();
   noMutations(() => assert.throws(() => w.store.classify(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' }));
-  const secondHandle = withFixtureProfile(createSellerTransportStore({ ...options, path: w.path, now: w.now }));
+  const secondHandle = createSellerTransportStore({ ...options, path: w.path, now: w.now });
   try { assert.throws(() => secondHandle.reserve(request(w, 1), {}), { code: 'peer_buyer_nonce_limit' }); }
   finally { secondHandle.close(); }
   w.advance(20);

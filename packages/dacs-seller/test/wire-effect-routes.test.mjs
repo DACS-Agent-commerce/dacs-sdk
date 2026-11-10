@@ -28,7 +28,9 @@ async function completionWorld(t, { commitOnSignature = false } = {}) {
   const w = { f, store, internals, capacity, port };
   internals.transaction(() => capacity.allocateWithin({ jobId: JOB, buyer: BUYER.claim, seller: SELLER.claim, listingPin: PIN }));
   w.allocation =(jobId = JOB) => capacity.capacityReport().allocations.find(allocation => allocation.jobId === jobId);
+  // Any route but the proposal refuses a job the host has not seen, so a job is first made known by its proposal.
   w.issue = async (path = PATHS.proposals, { retainedWork = true, jobId = JOB } = {}) => {
+    if (path !== PATHS.proposals && !f.jobRows().some(row => row.job === jobId)) await w.issue(PATHS.proposals, { retainedWork, jobId });
     const input = { ...(await f.admit(f.payload({ path, jobId }))), contextStart: false, paymentTx: null, retainedWork };
     return { effect: await coordinator.reserveCoordinated(input), key: nonceKey(input.payload), path, jobId };
   };

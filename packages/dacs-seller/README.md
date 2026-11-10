@@ -37,8 +37,8 @@ none of these signatures; what your own signer does with them is up to it.
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
 the host reclaim that job's retained challenge and context rows; an unknown name,
-an agent stage name, a throw or a Promise answer keeps them. A Promise answer
-counts as unknown: its result is ignored and its rejection is observed. A source
+an agent stage name or an unreadable answer keeps them. A throw, Promise or
+non-string answer is unknown. Promise results are ignored and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host without the capability reclaims nothing. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
@@ -53,13 +53,14 @@ new ones as not ready. A successful context completion returns only the context
 slot; an aborted start, a failed or non-validated context and a terminal DACS-5
 session (checked once at startup) return every open slot. Returned units never
 reduce what has been charged. The host composes a reservation coordinator: one
-in-process mutex per operation covers inspecting the journal, classifying the
-request against these units, committing its accounting row and recording the
-reservation's result, so a request that is only told `pending` spends no purchase
-unit. A request that cannot take the mutex within 10,000 ms is answered 503
-`seller_effect_pending` with nothing written. The routes do not yet reserve through
-the coordinator: that, and the periodic terminal cleanup, come with the routes that
-use them.
+in-process mutex per operation covers journal inspection, capacity classification,
+accounting and recording the reservation result. A request that cannot acquire
+the mutex within 10,000 ms receives 503 `seller_effect_pending` before inspection
+or writes. Context reservations borrow the admission transaction's job lease
+without acquiring or releasing another mutex. Admission and accounting accept
+capacity through their internal ports.
+HTTP routes use the transport journal directly; terminal allocation cleanup runs
+at startup.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the old store's checks, startup cleanup and the coordinator) is kept as a durable,
@@ -71,9 +72,9 @@ pending, so no later transaction or request passes it. A closure answers termina
 after a restart whatever the port then says; an unknown, nonterminal or
 asynchronous answer creates none. The coordinator refuses a request for a closed job
 `context_session_terminal` (409) after inspecting its operation and before any
-accounting, unless that operation already completed under the request's binding; it
-first runs the gates registered with `addPreAccountingGate`, which are synchronous
-and read-only. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
+accounting, unless that operation already completed under the request's binding. After the
+terminal check, the coordinator runs the synchronous, read-only gates registered
+with `addPreAccountingGate` in registration order. Completed operations bypass both checks. `terminalSession(jobId)`, reached through `sellerStoreInternals(store)`,
 is the one synchronous check for other callers, and the purchase capacity must be
 built on a store before any reader runs. These observation writes are counted apart
 from the challenge, admission and reservation writes, which a refusal still leaves
@@ -107,7 +108,8 @@ const host = await startSellerHost({
   nativePaymentEvidence, // createNativePaymentEvidenceConsumer({ ..., anchorEvidence: journal.anchorEvidence }):
                          // payment evidence anchored by the wallet journal (below), and its readback; the
                          // agent reads the signed CREATE's projection from the same journal
-  demDeliveryContext,    // createDemDeliveryContext(...): the Vet context the Agreement derives from
+  demDeliveryContext,    // createDemDeliveryContext({ ..., vetMode: KIT_TP1_VET_MODE }): the Vet context the
+                         // Agreement derives from; the host runs in that one mode (see the Vet paragraph)
   nativeDemDelivery,     // createNativeDemDeliveryCapability(...): Deliverable publication and readback
   railAuthority,         // { rail, stewardClaim, stewardPublicKey, railRegistryVersion, production }: the
                          // steward-signed demos-native:DEM RailDefinition (PA-1, in-code) and local policy
@@ -163,8 +165,24 @@ refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerTransportServerAuth`, `createSellerContextRoute` and the buyer
-side `createSellerAgentClient`, `createSellerContextClient` and
-`createSellerTransportClientAuth`. A host mounts the Vet and Agreement context
+side `createSellerAgentClient`, `createSellerContextClient`,
+`createSellerTransportClientAuth` and `createSellerWireClientAuth`. The host
+answers every route but the challenge and the context step through the wire,
+under the wire domain with a TP-1 profile in each request, and refuses a
+request signed by `createSellerTransportClientAuth` there
+(`tp1_profile_missing`). The buyer's `authentication` for
+`createSellerAgentClient` is `createSellerWireClientAuth({ signer, binding,
+connection, endpointProof, publicEndpoint, seller, resolveJob })`: it signs
+and verifies every route but the challenge and the context step through the
+wire, from the `binding` of `bindTp1Profile` and the `endpointProof` of
+`verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`, over the seller's
+signed discovery document), and `resolveJob(jobId)` gives the approved job's
+`{ listingPin, agreementHash }`. Pass a `createSellerTransportClientAuth` as its
+`fallback` to sign the challenge and the context step, which still use the old
+server auth; without a `fallback` they are refused before anything is signed. Signing (the
+`resolveJob` and `evidenceFor` lookups, the buyer's authority read and a
+`fallback`) must finish within `signingTimeoutMs` (default 10,000 ms), or the
+request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
 route by passing `createSellerContextRoute({ ... })` as the `context` option of
 `createSellerHttpHandler(agent, { authentication, context })`. The handler's
 `agent` comes only from `createSellerAgent`
@@ -180,8 +198,8 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createSellerContextClient`,
-`createSellerTransportStore`, `createSellerTransportServerAuth` and
-`createSellerTransportClientAuth`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerTransportServerAuth`,
+`createSellerTransportClientAuth` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -295,7 +313,8 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `commitments/signature` when enabled), payment and bundle routes, including the
   buyer-copy read) opens every request and signs every answer through the SDK's
   `./wire` (domain `dacs-seller-http:v1`, the host's bound TP-1 profile and the
-  tuple kept for the job); a request signed under the old domain is refused. The
+  tuple kept for the job); a request signed under the old domain is refused, so
+  `createSellerTransportClientAuth` does not reach these routes. The
   transport store stays their journal; the two read routes reserve and store
   nothing. A job the seller holds nothing for gets a signed 404 `peer_unknown_job`
   (a payment, bundle or buyer-copy request gets 409 `peer_agreement_uncommitted`
@@ -649,6 +668,24 @@ per-client limiter so one client cannot exhaust the shared request budget.
   it cannot yet pin and recover an authenticated job registry snapshot.
   Direct `runFulfilmentCore` and durable wrapper callers also refuse them by
   default, as does the exported invocation check.
+  **TP-1 G3 orchestrator mode (W).** `createDemDeliveryContext` and
+  `createSellerAgent` take one `vetMode` (default `counterparty`, with its own
+  rule above); the agent's must equal its context capability's
+  (`vet_mode_mismatch`). Under `tp1-g3-orchestrator` the seller verifies both
+  records, the seller's own too (its reference `signer` and the record's
+  signature are the seller's), only a `finalized` receipt counts (an `included`
+  or `accepted` one is refused; an absent or unreadable one is retried with the
+  session kept), and the seller's bundle must be exactly the Listing's, with no
+  fresh presentation. Every session retains its mode, and an agent of the other
+  mode (or of any mode, for a session saved before the mode was kept, which is
+  `counterparty`) refuses to continue it at every entry with `vet_mode_mismatch`
+  and changes nothing. The mode is composed in code; no request, Listing or
+  environment variable selects it. `startSellerHost` fixes it to
+  `KIT_TP1_VET_MODE` (`"tp1-g3-orchestrator"`, exported by
+  `@kynesyslabs/dacs-seller/src/host.mjs`), takes no `vetMode` option, and refuses
+  a `demDeliveryContext` made in another mode with `vet_mode_mismatch` before it
+  takes the state lock. Label:
+  "The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1."
   `acceptsPresenceOnlyVetRequirements: true` is only for callers that perform
   strict replay with authenticated job-bound authority and need no completed
   bundle. ST-11 completed-bundle finalization and
@@ -797,8 +834,11 @@ per-client limiter so one client cannot exhaust the shared request budget.
   payment evidence (`native_evidence_required`), so these capabilities and the supported Listing size are checked before
   commitment or payment intake. Actual delivery still depends on valid producer
   output and available operator capabilities. These
-  capabilities accept only `TEST-` authorities and a loopback fixture node
-  (below), so the host does not start against a real node.
+  capabilities accept only `TEST-` authorities and a loopback fixture node.
+  The host checks `agreementAnchor` and `artifactAnchor` only by shape, and
+  the wallet journal's `broadcast` is the operator's own callback, so those
+  can still reach a real node; keep them on the fixture too (see the start of
+  this file).
 - It signs no completed DACS-5 bundle (`bundle_finalization_unavailable`
   from both the bundle request and the countersignature, after the delivery
   check): the ST-11 finalizer, which needs finalized and independently
