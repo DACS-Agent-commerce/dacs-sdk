@@ -16,10 +16,10 @@ origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
 `agreementAnchor` and `artifactAnchor` only by shape, and the wallet journal's
 `broadcast` is the operator's own callback, so an operator-supplied anchor or
 broadcast can still reach a real Demos node: keep them on the fixture too. It
-is not qualified for mainnet. The standalone host retains all jobs and refuses
-new jobs before admission after `maxJobs` (default 10,000); terminal DACS-5
-bundle completion is not wired, and transport-row reclamation needs the
-`contextSessionState` capability described below.
+is not qualified for mainnet. The standalone host preserves job ownership and refuses
+new jobs before admission at `maxJobs` (default 10,000) unless completed work
+can safely retire. Terminal DACS-5 bundle completion is not wired; slot retirement
+needs the `contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
@@ -36,7 +36,9 @@ none of these signatures; what your own signer does with them is up to it.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
-the host reclaim that job's retained challenge and context rows; an unknown name,
+the host retire that job's challenge and context slots. Completed answers and
+their admission proofs remain available for retries. A terminal name does not
+retire a job whose payment or commitment a retry must still finish. An unknown name,
 an agent stage name or an unreadable answer keeps them. A throw, Promise or
 non-null non-string refuses issuance and new work with `session_admission_unavailable`
 503 and its cause; only explicit `null` means unknown. Promise results are ignored
@@ -67,7 +69,7 @@ const host = await startSellerHost({
   deliverableProducer,  // synchronous, deterministic (input) -> JSON bound to the Agreement and settlement
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
-  maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
+  maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
   port,                  // optional local port, 0 to 65535; default 0 (an ephemeral port)

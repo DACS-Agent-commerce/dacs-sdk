@@ -104,7 +104,11 @@ jobs:
           DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
         run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
 
+      # Pull requests run this suite and the two marked below on node 22 only. The node 20 leg runs them on pushes
+      # to main and phase0-completion and in main's merge queue: a node-20-only failure shows on the next
+      # phase0-completion push run that finishes after the PR merges there, and blocks main in the merge queue.
       - name: Test seller internal primitives and journals
+        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         env:
           DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
         run: npm run seller:test
@@ -448,10 +452,14 @@ jobs:
           ]) if (!compose.includes(required)) process.exit(1);
           NODE
 
+      # node 22 only on pull requests (see "Test seller internal primitives and journals").
       - name: Test (unit + conformance harness)
+        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         run: npm test
 
+      # node 22 only on pull requests (see "Test seller internal primitives and journals").
       - name: Test durable RFQ filesystem record-size boundaries
+        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         env:
           DACS_SLOW_BOUNDARY: "1"
         run: npx vitest run test/negotiate/durableRfqLifecycleStoreFs.test.ts -t "record size boundary"
@@ -489,8 +497,11 @@ jobs:
       # report replaces every 4.0.18 in this step with the new version and fixes
       # what then fails.
       # Last step: it replaces the installed SDK for the rest of this job.
+      # Not on pull requests: pushes to main and phase0-completion and main's merge queue run it, so a break against
+      # 4.0.18 shows on the next phase0-completion push, not on the PR. That includes the PR that bumps this pin: run
+      # these commands locally against the new version before opening it.
       - name: Typecheck and test against demosdk 4.0.18
-        if: matrix.node-version == '22'
+        if: matrix.node-version == '22' && github.event_name != 'pull_request'
         run: |
           npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
           test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
