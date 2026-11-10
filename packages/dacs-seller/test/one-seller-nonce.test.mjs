@@ -10,6 +10,8 @@ import { canonicalize, generateCanonicalJobId, identityBundleHash, sha256Hex } f
 import { createSellerTransportStore, createSellerTransportServerAuth, createSellerTransportClientAuth,
   sellerContextScopeHash, sellerContextChallengeScope, SELLER_CONTEXT_PATH, SELLER_CONTEXT_CHALLENGE_PATH,
   sellerSessionDelegationSigningBytes, SellerTransportError } from '../src/dacs/seller-transport-auth.mjs';
+import { TP1_APPROVED_IDENTITY_RECORD, TP1_PROFILE_ID, TP1_PROFILE_REVISION, TP1_BASE_REVISION } from '@kynesyslabs/dacs/wire';
+import { createSellerChallengeLedger } from '../src/dacs/seller-challenge-ledger.mjs';
 import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
 import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { KIT_TP1_VET_MODE } from '../src/host.mjs';
@@ -26,7 +28,7 @@ import { exchange } from './helpers/d5-http-fixture.mjs';
 import { admittedSession } from './helpers/challenge-api.mjs';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
-import { testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { testNetwork, withFixtureProfile } from './helpers/wire-authority-fixture.mjs';
 
 const T0 = Date.UTC(2026, 9, 27, 12), HOUR = 3600000, DEADLINE = 10000;
 const buyer = testWallet(1), seller = testWallet(2);
@@ -73,7 +75,7 @@ async function fixture(t, options = {}) {
   const calls = { access: 0, known: 0, admission: 0, holds: 0, effects: 0, releases: 0 };
   const policy = { access: () => {}, known: () => true, hold: () => null, ...options.policy,
     admission: options.policy?.admission ?? (({ jobId, bundle }) => admittedSession({ jobId, bundle, bundleHash: identityBundleHash(bundle), seller: seller.claim, listingPin: pin })) };
-  const open = () => store = createSellerTransportStore({ path, now: () => time, generation: `TEST-generation-${++generation}`, ...options.store });
+  const open = () => store = withFixtureProfile(createSellerTransportStore({ path, now: () => time, generation: `TEST-generation-${++generation}`, ...options.store }));
   open(); t.after(() => store.close());
   const route = createSellerContextRoute({ listing, now: () => time, writable: () => true,
     assertBuyerAccess: async value => { calls.access++; return policy.access(value); },
@@ -207,6 +209,7 @@ async function hostFixture(t, edit = source => source) {
   // The host builds its own durable directory, ledger and signing mode, and fixes the Vet mode (`vetMode` is an agent option, not a host option).
   for (const name of ['durableDirectory', 'commitOnSignature', 'challengeLedger', 'vetMode']) delete config[name];
   let current;
+  // These nonce tests leave the wire journal unused, but its handle must still satisfy the context's construction check.
   const api = await privateModule(new URL('../src/host.mjs', import.meta.url), ['testStore', 'setStartupFailure'], source => edit(
     source.replace("const generation = randomBytes(16).toString('hex');", "if (failStartup) throw new Error('TEST generation source failed'); const generation = randomBytes(16).toString('hex');").replace('const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });', 'const journal = Object.freeze({});').replace('const REQUIRED =', 'let testStore; let failStartup = false; function setStartupFailure(value) { failStartup = value; }\nconst REQUIRED =').replace('opened.push(() => store.close());', 'testStore = store; opened.push(() => store.close());')));
   const start = async changes => current = await api.startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor,
@@ -241,7 +244,8 @@ test(card('T14'), async t => {
 
 test(card('T20'), async t => {
   for (const reopen of [false, true]) for (const variant of ['unknown', 'consumed', 'mismatched']) await t.test(`${variant} reopened=${reopen}`, async t => {
-    const f = await fixture(t, { store: { maxRecords: 1 } }), input = await f.input(), body = structuredClone(input.body);
+    // Job slots are not under test: the finished prior job keeps its slot until its session ends, so leave room for the second job.
+    const f = await fixture(t, { store: { maxRecords: 1, maxJobs: 2 } }), input = await f.input(), body = structuredClone(input.body);
     // Leave a completed, expired transport nonce at capacity before each signed refusal.
     const prior = f.request({scope:f.scope(JOB2)}, '/dacs/v1/agreements/proposals');
     const reservation = f.store.reserve(prior, {}); f.store.finish(reservation, 200, '{}');
@@ -696,4 +700,328 @@ test('operator-proposal-validator-owner-crash', async t => {
     const retry = await refusalOf(c.proposal(bundle), 'session_not_admitted', 409);
     assert.match(retry.message, /context_challenge_failed.*validator_lost|validator_lost/); assert.equal(c.f.store.challenges.retained(sessionNonce).state, 'failed'); assert.equal(c.admitReads(), 1);
   });
+});
+
+// ---- late fixes on the one ledger (P09bbL3) ----
+const presentAnswer = scope => ({ disposition: 'present', value: { scope, input: {} } });
+
+test('context-journal-answers-bytes-the-ledger-never-saw', async t => {
+  for (const stage of ['completed', 'interrupted']) await t.test(stage, async t => {
+    const f = await fixture(t), earlierNonce = sha256Hex('TEST nonce from before the ledger');
+    const input = await f.input(JOB, bundle => { bundle.sessionNonce = earlierNonce; });
+    const first = f.store.reserve(input.request, input.body, { admit: f.now });
+    if (stage === 'completed') f.store.finish(first, 200, JSON.stringify(presentAnswer(input.body.scope)));
+    f.policy.recover = () => presentAnswer(input.body.scope);
+    f.reopen();
+    const reservation = await f.route.reserve(f.request(input.body), input.body, f.store);
+    assert.equal(reservation.disposition, stage === 'completed' ? 'cached' : 'uncertain');
+    assert.equal(f.store.challenges.retained(earlierNonce), null); assert.equal(f.calls.admission, 0); assert.equal(f.calls.effects, 0);
+  });
+});
+
+test('context-reserve-after-a-known-answer-starts-no-new-work', async t => {
+  const f = await fixture(t), input = await f.input(JOB, bundle => { bundle.sessionNonce = sha256Hex('TEST nonce from before the ledger'); });
+  const knownAnswerStore = { challenges: f.store.challenges, classify: () => 'known', reserve: (...args) => f.store.reserve(...args) };
+  assert.equal((await errorOf(f.route.reserve(input.request, input.body, knownAnswerStore))).code, 'peer_context_unadmitted');
+  assert.equal(f.rows('peer_effects').length, 0); assert.equal(f.calls.holds, 0); assert.equal(f.calls.effects, 0);
+});
+
+test('context-journal-readback-after-delegation-expiry', async t => {
+  const f = await fixture(t), input = await f.input(), session = testWallet(3);
+  f.policy.recover = () => presentAnswer(input.body.scope);
+  const first = await f.route.reserve(input.request, input.body, f.store);
+  f.store.finish(first, 200, JSON.stringify(presentAnswer(input.body.scope)));
+  const payload = { version: '1', kind: 'seller-session-delegation', buyer: buyer.claim, sessionPublicKey: session.claim.slice('did:demos:agent:'.length),
+    seller: seller.claim, listingPin: f.pin, jobId: JOB, notBefore: T0, expiresAt: T0 + 1000 };
+  const delegation = { payload, signature: buyer.signBytes(sellerSessionDelegationSigningBytes(payload)).toString('base64url') };
+  f.advance(1000);
+  const auth = createSellerTransportServerAuth({ sellerSigner: signer(seller), listingPin: f.pin, store: f.store, now: f.now, requireDelegation: true });
+  const client = createSellerTransportClientAuth({ sessionSigner: signer(session), delegation, seller: seller.claim, now: f.now, lifetimeMs: 100,
+    resolveJob: () => ({ listingPin: f.pin, agreementHash: sellerContextScopeHash(input.body.scope) }) });
+  const text = JSON.stringify(input.body), { header } = await client.request(SELLER_CONTEXT_PATH, input.body, text);
+  const request = auth.readRequest(header); auth.validate(request, { method: 'POST', path: SELLER_CONTEXT_PATH, rawBody: Buffer.from(text), body: input.body });
+  assert.equal(auth.readbackOnly(request), true);
+  const reservation = await f.route.reserve(request, input.body, auth.store);
+  assert.equal(reservation.disposition, 'cached'); assert.equal(reservation.status, 200); assert.equal(f.calls.effects, 0);
+});
+
+test('host-refuses-issuance-when-the-session-reader-fails', async t => {
+  for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
+    const source = unreadableSource(name), f = await hostFixture(t); let broken = false;
+    await f.start({ contextSessionState: () => broken ? source.read() : null });
+    const issue = () => f.api.testStore.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope'));
+    assert.match(issue().sessionNonce, /^[0-9a-f]{64}$/);
+    const before = challengeRowsAt(f.path); broken = true;
+    assert.throws(issue, error => unavailable(error, source)); assert.deepEqual(challengeRowsAt(f.path), before);
+  });
+});
+
+// Each source retains the exact offending value so error causes are checked by identity.
+function unreadableSource(name) {
+  const thrown = new Error('TEST session source failed');
+  const answer = name === 'thenable' ? { then(_resolve, reject) { reject(thrown); } } : 7;
+  return { name, thrown, answer, read() { if (name === 'throws') throw thrown; return answer; } };
+}
+function unavailable(error, source) {
+  assert.ok(error instanceof SellerTransportError, error.stack); assert.equal(error.code, 'session_admission_unavailable'); assert.equal(error.status, 503);
+  if (source.name === 'throws') assert.equal(error.cause, source.thrown);
+  else { assert.ok(error.cause instanceof TypeError); assert.equal(error.cause.cause, source.answer); }
+  return true;
+}
+const recoveryTables = ['kit_challenges', 'peer_effects', 'peer_effect_jobs', 'peer_jobs', 'peer_context_admissions', 'kit_purchase_profiles', 'kit_context_reservations'];
+const recoverySnapshot = f => recoveryTables.map(table => [table, f.rows(table)]);
+const proposalInput = (f, jobId = JOB) => {
+  const body = { jobId, proposal: {} }, request = f.request({ scope: f.scope(jobId) }, '/dacs/v1/agreements/proposals');
+  return { body, request: { ...request, bodyHash: sha256Hex(JSON.stringify(body)) } };
+};
+async function legacyOperation(t, stage = 'completed') {
+  const f = await fixture(t), input = await f.input(JOB, bundle => { bundle.sessionNonce = sha256Hex('TEST earlier session'); });
+  const wire = await f.http(input.body), auth = createSellerTransportServerAuth({ sellerSigner: signer(seller), listingPin: f.pin, store: f.store, now: f.now });
+  input.request = auth.readRequest(wire.header);
+  auth.validate(input.request, { method: 'POST', path: SELLER_CONTEXT_PATH, rawBody: Buffer.from(wire.text), body: input.body });
+  const reservation = f.store.reserve(input.request, input.body, { admit: f.now });
+  if (stage === 'completed') f.store.finish(reservation, 200, JSON.stringify(presentAnswer(input.body.scope)));
+  f.policy.recover = () => presentAnswer(input.body.scope);
+  f.reopen(); f.closeLost();
+  return { f, input, reservation, wire };
+}
+
+test('R09 retained recovery respects ledger state and envelope nonce', async t => {
+  for (const stage of ['completed', 'interrupted']) for (const fresh of [false, true]) await t.test(`${stage} ${fresh ? 'fresh' : 'same'} envelope`, async t => {
+    const { f, input, wire: firstWire } = await legacyOperation(t, stage), before = recoverySnapshot(f);
+    const wire = fresh ? await f.http(input.body) : firstWire;
+    const auth = createSellerTransportServerAuth({ sellerSigner: signer(seller), listingPin: f.pin, store: f.store, now: f.now });
+    const request = auth.readRequest(wire.header);
+    auth.validate(request, { method: 'POST', path: SELLER_CONTEXT_PATH, rawBody: Buffer.from(wire.text), body: input.body });
+    const reservation = await f.route.reserve(request, input.body, auth.store);
+    assert.equal(reservation.disposition, stage === 'completed' ? 'cached' : 'uncertain');
+    assert.deepEqual(recoverySnapshot(f), before);
+    const key = `${buyer.claim}:${request.nonce}`;
+    assert.ok(f.rows('peer_nonces').some(row => row.nonce === key));
+    assert.ok(f.rows('peer_nonce_retention').some(row => row.nonce === key));
+    assert.equal(f.rows('peer_nonces').length, fresh ? 2 : 1);
+    assert.equal(f.calls.admission, 0); assert.equal(f.calls.holds, 0); assert.equal(f.calls.effects, 0);
+    assert.equal(f.calls.releases, stage === 'completed' ? 1 : 0);
+  });
+});
+
+test('R09 ledger refusal precedes retained recovery', async t => {
+  for (const state of ['issued', 'attempted', 'failed']) await t.test(state, async t => {
+    const f = await fixture(t), input = await f.input();
+    f.store.reserve(input.request, input.body, { admit: f.now });
+    if (state !== 'issued') {
+      const attempt = f.store.challenges.attempt({ nonce: input.nonce, jobId: JOB, buyer: buyer.claim, path: 'context',
+        challengeScopeHash: sellerContextScopeHash(sellerContextChallengeScope(input.body.scope)), presentationHash: sha256Hex(canonicalize(input.body.buyerIdentityBundle)) });
+      assert.equal(attempt.kind, 'validate');
+      if (state === 'failed') f.store.challenges.recordFailed(attempt.owner, input.nonce, 'TEST refused');
+    }
+    const before = recoverySnapshot(f); let classified = 0;
+    const store = { ...f.store, classify() { classified++; throw new Error('TEST classifier must not run'); } };
+    if (state === 'issued') {
+      assert.equal((await f.route.reserve(input.request, input.body, store)).disposition, 'uncertain');
+      assert.equal(f.calls.admission, 1);
+    } else {
+      const error = await errorOf(f.route.reserve(input.request, input.body, store));
+      assert.equal(error.code, state === 'attempted' ? 'context_attempt_pending' : 'context_challenge_failed');
+      assert.equal(error.status, state === 'attempted' ? 503 : 409);
+      if (state === 'failed') assert.equal(error.cause, 'TEST refused');
+      assert.deepEqual(recoverySnapshot(f), before);
+    }
+    assert.equal(classified, 0); assert.equal(f.calls.holds, 0); assert.equal(f.calls.effects, 0);
+  });
+});
+
+test('R09 rejected retained body keeps challenges unchanged', async t => {
+  const { f, input } = await legacyOperation(t), before = recoverySnapshot(f);
+  const failure = new Error('TEST classification failed');
+  const store = { ...f.store, classify: () => { throw failure; } };
+  assert.throws(() => f.route.onRejectedBody(input.request, input.body, store), error => error === failure);
+  assert.doesNotThrow(() => f.route.onRejectedBody(input.request, input.body, f.store));
+  assert.deepEqual(recoverySnapshot(f), before); assert.equal(f.calls.effects, 0);
+});
+
+test('R09 unavailable retained proof keeps uncertainty', async t => {
+  const { f, input } = await legacyOperation(t, 'interrupted');
+  f.policy.recover = () => { throw new Error('TEST retained source unavailable'); };
+  const before = recoverySnapshot(f), wire = await f.http(input.body), response = await exchange(wire.handler, wire);
+  assert.equal(response.status, 503); assert.deepEqual(recoverySnapshot(f), before);
+  assert.equal(f.calls.releases, 0); assert.equal(f.calls.effects, 0); assert.equal(f.calls.holds, 0);
+});
+
+test('R13 standalone ledger maps unreadable authority', async t => {
+  for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, t => {
+    const source = unreadableSource(name), db = new Database(':memory:'); t.after(() => db.close());
+    const ledger = createSellerChallengeLedger({ db, transaction: fn => db.transaction(fn)(), now: () => T0, generation: 'TEST generation',
+      sessionState: source.read, admissionCounts: () => ({ contextRecords: 0, starts: 0, buyerStarts: () => 0 }), ready: () => true, stopped: () => false });
+    assert.throws(() => ledger.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope'), { assertStillLive() {} }), error => unavailable(error, source));
+    assert.equal(db.prepare('SELECT count(*) n FROM kit_challenges').get().n, 0);
+  });
+});
+
+test('R13 mapped session error preserves its identity', async t => {
+  const error = new SellerTransportError('session_admission_unavailable', 503, { cause: new Error('TEST original cause') });
+  const f = await fixture(t, { store: { contextSessionState: () => { throw error; } } });
+  assert.throws(() => f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')), actual => actual === error);
+  assert.equal(f.rows().length, 0);
+});
+
+test('R19 transport gates refuse unreadable authority', async t => {
+  for (const gate of ['proposal', 'context start', 'resume', 'claim', 'claim check', 'assertPending']) for (const name of ['throws', 'thenable', 'non-state']) await t.test(`${gate}: ${name}`, async t => {
+    const source = unreadableSource(name); let broken = false;
+    const f = await fixture(t, { store: { contextSessionState: () => broken ? source.read() : null } });
+    let invoke;
+    if (gate === 'context start') {
+      const input = await f.input(); invoke = () => f.store.reserve(input.request, input.body, { admit: f.now });
+    } else if (gate === 'resume') {
+      const input = await f.input(), first = f.store.reserve(input.request, input.body, { admit: f.now });
+      f.store.finish(first, 503, '{}');
+      const retained = f.store.reserve(input.request, input.body);
+      invoke = () => f.store.resume(retained, input.request);
+    } else {
+      const { request, body } = proposalInput(f);
+      if (gate === 'proposal') invoke = () => f.store.reserve(request, body);
+      else {
+        const first = f.store.reserve(request, body);
+        if (gate === 'assertPending') invoke = () => f.store.assertPending(first);
+        else {
+          f.store.finish(first, 503, '{}');
+          const retained = f.store.reserve(request, body);
+          invoke = gate === 'claim' ? () => f.store.claim(retained, request) : f.store.claim(retained, request).check;
+        }
+      }
+    }
+    const before = recoverySnapshot(f); broken = true;
+    assert.throws(invoke, error => unavailable(error, source)); assert.deepEqual(recoverySnapshot(f), before);
+    assert.equal(f.calls.effects, 0); assert.equal(f.calls.holds, 0);
+  });
+});
+
+test('R19 unreadable reclamation keeps the old holder', async t => {
+  for (const name of ['throws', 'thenable', 'non-state']) await t.test(name, async t => {
+    const source = unreadableSource(name); let broken = false, terminal = false;
+    const f = await fixture(t, { store: { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === JOB ? terminal ? 'finalised' : broken ? source.read() : null : null } });
+    const { request, body } = proposalInput(f);
+    const profile = { id: TP1_PROFILE_ID, revision: TP1_PROFILE_REVISION, base: TP1_BASE_REVISION,
+      chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, pinVersion: TP1_APPROVED_IDENTITY_RECORD.pinVersion };
+    const first = f.store.reserve(request, body, { keepProfile: profile }); f.store.finish(first, 200, '{}');
+    f.advance(HOUR + 1); const before = recoverySnapshot(f), nonces = [f.rows('peer_nonces'), f.rows('peer_nonce_retention')]; broken = true;
+    const next = proposalInput(f, JOB2);
+    assert.throws(() => f.store.reserve(next.request, next.body), error => { assert.ok(['peer_job_capacity', 'session_admission_unavailable'].includes(error.code)); assert.equal(error.status, 503); return true; });
+    assert.deepEqual(recoverySnapshot(f), before); assert.deepEqual([f.rows('peer_nonces'), f.rows('peer_nonce_retention')], nonces);
+    terminal = true; assert.equal(f.store.reserve(next.request, next.body).disposition, 'perform');
+    assert.ok(!f.rows('peer_jobs').some(row => row.job === JOB));
+  });
+});
+
+test('R19 explicit unknown and terminal controls', async t => {
+  for (const state of [null, 'negotiating', 'finalised']) await t.test(String(state), async t => {
+    const f = await fixture(t, { store: { contextSessionState: () => state } }), { request, body } = proposalInput(f);
+    if (state === 'finalised') assert.throws(() => f.store.reserve(request, body), { code: 'context_session_terminal', status: 409 });
+    else assert.equal(f.store.reserve(request, body).disposition, 'perform');
+  });
+});
+
+test('R21 duplicate cannot reconcile a live validator', async t => {
+  const hold = barrier(), entered = barrier();
+  const f = await fixture(t, { policy: { hold: () => { entered.resolve(); return hold.promise; } } }), input = await f.input();
+  const original = f.route.reserve(input.request, input.body, f.store);
+  await entered.promise;
+  const before = recoverySnapshot(f), wire = await f.http(input.body);
+  try {
+    const response = await exchange(wire.handler, wire);
+    assert.equal(response.status, 503); assert.equal(JSON.parse(response.text).error, 'context_attempt_pending');
+    assert.deepEqual(recoverySnapshot(f), before); assert.equal(f.calls.releases, 0);
+  } finally { hold.resolve(null); }
+  assert.equal((await original).disposition, 'perform');
+});
+
+test('R21 pending context is fenced without a validator', async t => {
+  for (const ledger of ['absent', 'accepted']) await t.test(ledger, async t => {
+    const f = await fixture(t), input = await f.input(JOB, bundle => { if (ledger === 'absent') bundle.sessionNonce = sha256Hex('TEST old challenge'); });
+    if (ledger === 'accepted') await f.route.reserve(input.request, input.body, f.store);
+    else f.store.reserve(input.request, input.body, { admit: f.now });
+    let proofs = 0; f.policy.recover = () => { proofs++; return presentAnswer(input.body.scope); };
+    const before = recoverySnapshot(f), releases = f.calls.releases, wire = await f.http(input.body), response = await exchange(wire.handler, wire);
+    assert.equal(response.status, 503); assert.equal(JSON.parse(response.text).error, 'operation_uncertain');
+    assert.deepEqual(recoverySnapshot(f), before); assert.equal(proofs, 0); assert.equal(f.calls.releases, releases);
+    assert.equal(f.calls.effects, 0);
+  });
+});
+
+test('R21 direct store refuses pending context reconciliation', async t => {
+  const f = await fixture(t), input = await f.input(), first = f.store.reserve(input.request, input.body, { admit: f.now });
+  const retained = f.store.reserve(input.request, input.body), before = recoverySnapshot(f);
+  assert.equal(first.disposition, 'perform'); assert.equal(retained.disposition, 'uncertain');
+  assert.throws(() => f.store.reconcile(retained, input.request, 200, '{}'), { code: 'peer_reconciliation_conflict', status: 503 });
+  assert.deepEqual(recoverySnapshot(f), before);
+});
+
+
+test('R10 expired HTTP readback never resumes a retained effect', async t => {
+  for (const stage of ['completed', 'uncertain']) await t.test(stage, async t => {
+    const { f, input } = await legacyOperation(t, stage === 'completed' ? stage : 'interrupted'), session = testWallet(3);
+    f.policy.recover = () => stage === 'completed' ? presentAnswer(input.body.scope) : null;
+    f.policy.resumable = () => ({ writes: 1 });
+    const payload = { version: '1', kind: 'seller-session-delegation', buyer: buyer.claim, sessionPublicKey: session.claim.slice('did:demos:agent:'.length),
+      seller: seller.claim, listingPin: f.pin, jobId: JOB, notBefore: T0, expiresAt: T0 + 1000 };
+    const delegation = { payload, signature: buyer.signBytes(sellerSessionDelegationSigningBytes(payload)).toString('base64url') };
+    f.advance(1000);
+    const auth = createSellerTransportServerAuth({ sellerSigner: signer(seller), listingPin: f.pin, store: f.store, now: f.now, requireDelegation: true });
+    const client = createSellerTransportClientAuth({ sessionSigner: signer(session), delegation, seller: seller.claim, now: f.now, lifetimeMs: 100,
+      resolveJob: () => ({ listingPin: f.pin, agreementHash: sellerContextScopeHash(input.body.scope) }) });
+    const text = JSON.stringify(input.body), { header } = await client.request(SELLER_CONTEXT_PATH, input.body, text);
+    let resumes = 0;
+    const context = { ...f.route, resume: (...args) => { resumes++; return f.route.resume(...args); } };
+    const handler = createSellerHttpHandler({ claim: seller.claim, listingPin: f.pin, transportAgreementOf: () => null }, { authentication: auth, context });
+    const before = recoverySnapshot(f), response = await exchange(handler, { text, header, url: SELLER_CONTEXT_PATH });
+    assert.equal(response.status, stage === 'completed' ? 200 : 503); assert.deepEqual(recoverySnapshot(f), before);
+    assert.equal(resumes, 0); assert.equal(f.calls.holds, 0); assert.equal(f.calls.effects, 0); assert.equal(f.calls.admission, 0);
+    assert.equal(f.rows('peer_nonces').length, 2);
+  });
+});
+
+
+test('R09 retained readback enforces the fresh buyer nonce window', async t => {
+  const f = await fixture(t, { store: { maxNoncesPerBuyerPerWindow: 1 } }), input = await f.input();
+  f.policy.recover = () => presentAnswer(input.body.scope);
+  const firstWire = await f.http(input.body), auth = createSellerTransportServerAuth({ sellerSigner: signer(seller), listingPin: f.pin, store: f.store, now: f.now });
+  const request = auth.readRequest(firstWire.header);
+  auth.validate(request, { method: 'POST', path: SELLER_CONTEXT_PATH, rawBody: Buffer.from(firstWire.text), body: input.body });
+  const first = await f.route.reserve(request, input.body, auth.store); f.store.finish(first, 200, JSON.stringify(presentAnswer(input.body.scope)));
+  const wire = await f.http(input.body), before = recoverySnapshot(f), nonces = f.rows('peer_nonces');
+  const replay = await exchange(wire.handler, firstWire); assert.equal(replay.status, 200);
+  const fresh = await exchange(wire.handler, wire); assert.equal(fresh.status, 429); assert.equal(JSON.parse(fresh.text).error, 'peer_buyer_nonce_limit');
+  assert.deepEqual(recoverySnapshot(f), before); assert.deepEqual(f.rows('peer_nonces'), nonces);
+
+});
+
+
+test('R09 rejected legacy body preserves its original HTTP refusal', async t => {
+  const f = await fixture(t), input = await f.input(JOB, bundle => { bundle.sessionNonce = sha256Hex('TEST older challenge'); });
+  input.body.legacy = true;
+  const wire = await f.http(input.body), auth = createSellerTransportServerAuth({ sellerSigner: signer(seller), listingPin: f.pin, store: f.store, now: f.now });
+  const request = auth.readRequest(wire.header);
+  const first = f.store.reserve(request, input.body, { admit: f.now }); f.store.finish(first, 200, '{}');
+  const before = recoverySnapshot(f), response = await exchange(wire.handler, wire);
+  assert.equal(response.status, 409); assert.equal(JSON.parse(response.text).error, 'peer_context_mismatch');
+  assert.deepEqual(recoverySnapshot(f), before); assert.equal(f.calls.admission, 0); assert.equal(f.calls.effects, 0);
+});
+
+
+test('R09 cached readback revalidates retained source proof', async t => {
+  const { f, input } = await legacyOperation(t); let proofs = 0;
+  f.policy.recover = () => { proofs++; throw new Error('TEST retained Vet records unavailable'); };
+  const before = recoverySnapshot(f), wire = await f.http(input.body), response = await exchange(wire.handler, wire);
+  assert.equal(response.status, 503); assert.equal(proofs, 1); assert.deepEqual(recoverySnapshot(f), before);
+  assert.equal(f.calls.effects, 0); assert.equal(f.calls.holds, 0);
+});
+
+
+test('R13 a wrongly tagged source error keeps its cause under unavailable 503', async t => {
+  const cause = new SellerTransportError('session_admission_unavailable', 409);
+  const f = await fixture(t, { store: { contextSessionState: () => { throw cause; } } });
+  assert.throws(() => f.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, sha256Hex('TEST scope')), error => {
+    assert.equal(error.code, 'session_admission_unavailable'); assert.equal(error.status, 503); assert.equal(error.cause, cause); return true;
+  });
+  assert.equal(f.rows().length, 0);
 });
