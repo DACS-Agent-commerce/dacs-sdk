@@ -19,7 +19,7 @@ The SDK takes an agent through five steps: identify, vet, negotiate, settle and 
 
 Inside a layer, the folders also have a fixed order, so that two folders never depend on each other. The full order, lowest first, is in [`tools/lint/layers.json`](./tools/lint/layers.json). For example, inside **protocol** the order is `identity`, `discovery`, `negotiate`, `rails`, `registry`, `agent`, `seller`: `rails` may import `negotiate`, but `negotiate` may not import `rails`.
 
-The workspace packages under `packages/` sit on top of all of this. They import the SDK by its package name (`@kynesyslabs/dacs` and its subpaths), never by a path into `src/`.
+The workspace packages under `packages/` sit on top of all of this. Their source imports the SDK by its package name (`@kynesyslabs/dacs` and its subpaths), never by a path into `src/`.
 
 ## Why it is layered this way
 
@@ -29,7 +29,7 @@ The workspace packages under `packages/` sit on top of all of this. They import 
 
 ## The check
 
-`tools/lint/layers.mjs` reads every import in `src/`, works out which part of the order each file belongs to, and fails when an import points up the order. It reads every TypeScript file there, declaration files included, and counts plain imports, `import type`, `export … from`, `import x = require()`, `require()`, dynamic `import()` and `import("…")` types, with the path in quotes or in a template string. An `import()` or `require()` whose path is computed fails the check, because it cannot be checked. A type-only import still ties two parts together, so it follows the same rule.
+`tools/lint/layers.mjs` reads the imports in `src/`, works out which part of the order each file belongs to, and fails when an import points up the order. It reads every TypeScript file there, declaration files included, and counts plain imports, `import type`, `export … from`, `import x = require()`, `require()`, dynamic `import()` and `import("…")` types, with the path in quotes or in a template string. An `import()` or `require()` whose path is computed fails the check, because it cannot be checked. A type-only import still ties two parts together, so it follows the same rule.
 
 Run it from the repository root after installing the linter's dependencies:
 
@@ -41,7 +41,7 @@ node tools/lint/layers.mjs
 CI runs it in the `lint` workflow.
 
 It also fails when:
-- a file in `src/` is not covered by any entry in `layers.json`; add the new folder or file to the order;
+- a TypeScript file in `src/` is not covered by any entry in `layers.json`; add the new folder or file to the order;
 - an import names a file that does not exist.
 
 ### Imports that already broke the rule
