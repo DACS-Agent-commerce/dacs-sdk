@@ -2771,7 +2771,7 @@ describe("runSession settles a resume only through recovery", () => {
     expect(calls.resume).toBe(2);
   });
 
-  test.each(["settling", "an-unknown-phase"])(
+  test.each(["negotiated", "settling", "an-unknown-phase"])(
     "a session record in phase %s with no settlement checkpoint never calls settle",
     async (phase) => {
       const { calls, settle, resumeSettlement } = counting();
@@ -2856,15 +2856,15 @@ describe("runSession settles a resume only through recovery", () => {
     expect(calls.settle).toBe(1);
   });
 
-  test("a first run that failed after creating its session record still settles when resumed by jobId", async () => {
+  test("a first run that failed after creating its session record only recovers when resumed by jobId", async () => {
     const { calls, settle, resumeSettlement } = counting();
     const sessionStore = failingBindOnce();
     const deps = makeDeps({ settle, resumeSettlement, sessionStore });
 
     await expect(runSessionCore("stor-listing", TERMS, deps)).rejects.toThrow(/failed after the session record/);
-    const res = await runSessionCore("stor-listing", TERMS, deps, deps.newJobId());
-    expect(res.outcome).toBe("completed");
-    expect(calls.settle).toBe(1);
+    await expect(runSessionCore("stor-listing", TERMS, deps, deps.newJobId())).rejects.toThrow(NO_RECORD);
+    expect(calls.settle).toBe(0);
+    expect(calls.resume).toBe(1);
   });
 
   test("a first run without a jobId still settles through settle", async () => {

@@ -234,26 +234,59 @@ describe("conformance/tp1-register.json", () => {
     expect(register.qualification.every((q: { result: string }) => q.result === "not checked")).toBe(true);
   });
 
-  it("L2 and G10 state the included-status false-success risk and give the executed-payment check and the hold as intended only", () => {
-    const text = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
-    const register = JSON.parse(text("conformance/tp1-register.json"));
-    const row = (id: string) => register.rows.find((r: { id: string }) => r.id === id) as Record<string, string>;
+  const text = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
+  const register = () => JSON.parse(text("conformance/tp1-register.json"));
+  const row = (id: string) => register().rows.find((r: { id: string }) => r.id === id) as Record<string, string>;
+  const tableRow = (document: string, id: string) => document.split("\n").find((line) => line.startsWith(`| ${id} |`)) ?? "";
+
+  it("L2 and G10 describe the executed-record check as current, not as a change still to land", () => {
+    const declaration = text("docs/testnet-profile-tp1.md");
+    const page = text("docs/about-the-testnet-release.md");
+    const stale = /not (?:yet )?in this draft|not on this branch|until it lands|Until that check lands|Until then a failed payment|pending the SDK's executed-payment check|pending a separate SDK change|pending the separate SDK change|would also appear on a failed payment|returned as success by the buyer rail|does not present it as an implemented protection/;
+    for (const [name, document] of [["register", text("conformance/tp1-register.json")], ["declaration", declaration], ["page", page]] as const) {
+      expect(document, name).not.toMatch(stale);
+    }
+    for (const id of ["L2", "G10"]) {
+      expect(row(id).label, id).not.toMatch(/^Intended/);
+      expect(tableRow(declaration, id), `declaration ${id} label`).toContain(`"${row(id).label}"`);
+      expect(tableRow(page, id), `page ${id} label`).toContain(`"${row(id).label}"`);
+      expect(row(id).tp1, id).toMatch(/reads the node's transaction record/);
+    }
+    expect(row("L2").summary).toMatch(/reads the transaction record bound to the signed transfer and reports success only when that record shows this exact transfer executed/);
+    expect(row("G10").summary).toMatch(/^A failed pay-dem transfer reported as `included` is not counted as paid/);
+    expect(row("G10").summary).toMatch(/errorClass `permanent` and a bound failure proof/);
+    expect(tableRow(declaration, "L2")).toMatch(/reads the transaction record bound to the signed transfer/);
+    expect(tableRow(declaration, "G10")).toMatch(/`permanent`/);
+    expect(tableRow(page, "L2")).toMatch(/reads the transaction record bound to the signed transfer/);
+    expect(page.slice(0, page.indexOf("\n## "))).toMatch(/\*\*Known limits of the payment check\.\*\*[^]*reads the\s+transaction\s+record/);
+  });
+
+  it("L2 and G10 keep the still-open limits: seller observer, deployed node status and BFT finality", () => {
     const declaration = text("docs/testnet-profile-tp1.md");
     const page = text("docs/about-the-testnet-release.md");
     for (const id of ["L2", "G10"]) {
-      expect(row(id).label, id).toMatch(/^Intended, pending the SDK's executed-payment check and composition qualification: "/);
-      expect(row(id).tp1, id).toMatch(/^Intended behaviour, pending /);
-      expect(row(id).tp1, id).toMatch(/Current behaviour[^.]* returned as success/);
-      expect(declaration, `declaration ${id} label`).toContain(`| ${row(id).label} |`);
-      expect(page, `page ${id} label`).toContain(`| ${row(id).label} |`);
+      expect(row(id).status, id).toBe("open");
+      expect(row(id).blocksPublication, id).toBe(true);
+      expect(row(id).blocksPublicationNote, id).toMatch(/seller observer/);
+      expect(row(id).blocksPublicationNote, id).toMatch(/deployed node/);
     }
     expect(row("L2").tp1).toContain("This statement covers only the buyer rail");
-    expect(register.qualification.some((q: { subject: string; result: string }) => q.subject.includes("seller pay-dem observer") && q.result === "not checked")).toBe(true);
+    expect(row("L2").tp1).toMatch(/BFT finality is not independently proven/);
+    expect(register().qualification.some((q: { subject: string; result: string }) => q.subject.includes("seller pay-dem observer") && q.result === "not checked")).toBe(true);
     expect(declaration).toContain("This statement covers only the buyer rail");
     expect(page).toContain("The seller observer is separately not checked");
-    expect(row("G10").summary).toMatch(/^A failed pay-dem transfer reported as `included` would be returned as success/);
-    expect(row("G10").tp1).toMatch(/does not present it as an implemented protection until an effect-path test proves it/);
-    expect(page.slice(0, page.indexOf("\n## "))).toMatch(/\*\*Known problem: a failed payment can be reported as paid\.\*\*/);
+    expect(page.slice(0, page.indexOf("\n## "))).toMatch(/status behaviour remains\s+unqualified/);
+  });
+
+  it("G11 describes receivers resolving the DID scheme to canonical bytes, refusing only claims that are non-canonical beyond it", () => {
+    const wording = [["register summary", row("G11").summary], ["declaration", tableRow(text("docs/testnet-profile-tp1.md"), "G11")], ["page", tableRow(text("docs/about-the-testnet-release.md"), "G11")]] as const;
+    for (const [name, line] of wording) {
+      expect(line, name).not.toMatch(/refuses? (?:an )?uppercase|uppercase `?DID:`? (?:is|are) refused|instead of resolving/);
+      expect(line, name).toMatch(/`DID:` scheme/);
+      expect(line, name).toMatch(/lowercase/);
+    }
+    expect(row("G11").status).toBe("closed");
+    expect(row("G11").tp1).toMatch(/resolve a DID: scheme spelling and verify and hash the canonical did: bytes/);
   });
 });
 
@@ -279,7 +312,7 @@ describe("import closure", () => {
     // runs, and the pure modules it loads: its pricing, RFQ and pay-alternative (APR-3) checks. None does I/O; the
     // built-in list above is unchanged.
     const modules = [...seen].map((href) => href.replace(/^.*\/src\//, ""));
-    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^negotiate\/(?:jobId|commitment|fixedPrice|rfq|channel)\.ts$|^rails\/payAlternative\.ts$|^errors\.ts$/;
+    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^internal\/(?:deepFreeze|arrayBufferView)\.ts$|^negotiate\/(?:jobId|commitment|fixedPrice|rfq|channel)\.ts$|^rails\/payAlternative\.ts$|^errors\.ts$/;
     expect(modules.filter((module) => !allowed.test(module))).toEqual([]);
     for (const module of ["wire/index.ts", "wire/journal.ts", "wire/commitment.ts", "canonical/rawJson.ts", "artifacts/validators.ts", "negotiate/jobId.ts", "negotiate/commitment.ts"]) {
       expect(modules, module).toContain(module);

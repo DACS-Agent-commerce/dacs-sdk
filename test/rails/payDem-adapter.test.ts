@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DacsError } from "../../src/errors.js";
@@ -7,6 +10,11 @@ import {
   createPayDemRail,
   payDemSettle,
 } from "../../src/rails/payDem.js";
+import {
+  createPayDemFundedRail,
+  executePayDemFundedRun,
+  readPayDemFundedPreparedTransfer,
+} from "../integration/pay-dem-funded-run.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
 const RECIPIENT = `0x${"cd".repeat(32)}`;
@@ -130,9 +138,64 @@ beforeEach(() => {
   sdk.waitForNonce.mockResolvedValue(undefined);
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe("createPayDemRail nonce coordination", () => {
+  it("funded live rail waits for delayed inclusion without another broadcast", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    sdk.nodeCall.mockImplementation(async () => Date.now() < 120_000
+      ? { state: "pending" }
+      : { state: "included", blockNumber: 42 });
+    const journalPreparedTransfer = vi.fn(async () => undefined);
+    const rail = await createPayDemFundedRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+      journalPreparedTransfer,
+    });
+    const result = rail.settle({ recipient: RECIPIENT, amount: "1" });
+    const completed = vi.fn();
+    void result.then(completed);
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(completed).not.toHaveBeenCalled();
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(59_000);
+    await expect(result).resolves.toMatchObject({
+      ok: true, execution: "executed", txHash: TX_HASH, blockNumber: 42,
+    });
+    expect(journalPreparedTransfer).toHaveBeenCalledTimes(1);
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.getTxByHash).toHaveBeenCalledWith(TX_HASH);
+    expect(sdk.nodeCall.mock.calls.every(([message, args]) =>
+      message === "getTransactionStatus" && args.hash === TX_HASH)).toBe(true);
+  });
+
+  it("funded live rail retains an unresolved hash at its observation deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    sdk.nodeCall.mockResolvedValue({ state: "pending" });
+    const rail = await createPayDemFundedRail({
+      rpc: "https://node.test",
+      secret: "test-secret",
+    });
+    const result = rail.settle({ recipient: RECIPIENT, amount: "1" });
+    const completed = vi.fn();
+    void result.then(completed);
+
+    await vi.advanceTimersByTimeAsync(179_500);
+    expect(completed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(result).resolves.toMatchObject({ ok: false, txHash: TX_HASH });
+    expect(await result).not.toHaveProperty("execution");
+    expect(await result).not.toHaveProperty("blockNumber");
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+    expect(sdk.getTxByHash).not.toHaveBeenCalled();
+  });
+
   it("preserves signed and confirmed wire key order through broadcast", async () => {
     const signed = {
       content: {
@@ -469,6 +532,52 @@ describe("createPayDemRail nonce coordination", () => {
     ).rejects.toThrow(/no valid transaction nonce/);
     expect(sdk.confirm).not.toHaveBeenCalled();
     expect(sdk.broadcast).not.toHaveBeenCalled();
+  });
+
+  it("persists the real rail's prepared record through the live funded journal before broadcast", async () => {
+    const directory = await mkdtemp(join(process.cwd(), ".paydem-live-guard-"));
+    try {
+      const { result } = await executePayDemFundedRun({
+        directory,
+        runId: "offline-rail-guard",
+        payer: WALLET,
+        payee: RECIPIENT,
+        amountOs: "1000000000",
+        maxTotalDebitOs: "2000000000",
+        network: "demos",
+      }, async (armed, journalPreparedTransfer) => {
+        sdk.broadcast.mockImplementation(async () => {
+          await expect(readPayDemFundedPreparedTransfer(armed)).resolves.toEqual({
+            txHash: TX_HASH,
+            nonce: 7,
+            payer: WALLET.slice(2),
+            payee: RECIPIENT.slice(2),
+            amountOs: "1000000000",
+            denomination: "os",
+            maxTotalDebitOs: "2000000000",
+            confirmedTotalDebitOs: "2000000000",
+            confirmedRecordFeeOs: "1000000000",
+            network: "demos",
+          });
+          return { response: { hash: TX_HASH } };
+        });
+        const rail = await createPayDemRail({
+          rpc: "https://node.test",
+          secret: "test-secret",
+          network: "demos",
+          maxTotalDebitOs: 2_000_000_000n,
+          journalPreparedTransfer,
+        });
+        return rail.settle({ recipient: RECIPIENT, amount: "1000000000" });
+      });
+      expect(result).toMatchObject({ ok: true, txHash: TX_HASH });
+      expect(sdk.broadcast).toHaveBeenCalledTimes(1);
+      await expect(sdk.broadcast.mock.results[0]?.value).resolves.toEqual({
+        response: { hash: TX_HASH },
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("journals validated immutable transfer facts immediately before broadcast", async () => {
