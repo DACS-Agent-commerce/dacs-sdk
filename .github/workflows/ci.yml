@@ -37,10 +37,14 @@ jobs:
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
-        run: echo "matrix=$(node scripts/ci-shards.mjs plan --event "$EVENT_NAME")" >> "$GITHUB_OUTPUT"
+        # The assignment fails the step (bash -e) if the plan command fails, instead of writing an empty matrix.
+        run: |
+          matrix=$(node scripts/ci-shards.mjs plan --event "$EVENT_NAME")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   build-test:
-    # The node 22 leg can run on the project's own one-job runners (label dacs-pool) for our own pull requests only,
+    # The node 22 leg can run on the project's own one-job runners (label dacs-pool) for our own pull requests only
+    # (one pool job per node 22 shard, plus build-test-main's node 22 job: 5 on a pull request),
     # when ALL of these hold:
     #   - the repository variable SDK_SELF_HOSTED is 'on';
     #   - the event is pull_request and the head branch is in this repository;
@@ -68,8 +72,8 @@ jobs:
     # To switch
     # Blacksmith off, set SDK_BLACKSMITH to 'off' (or delete it); new runs then use the rules above. A job already
     # waiting for a Blacksmith runner (for example once the account's included minutes are used up) does not move:
-    # cancel it and start a new run after switching off. A re-run reads the variable again. Job and required-check names
-    # are the same on every runner.
+    # cancel it and start a new run after switching off. A re-run reads the variable again. Job names are the same
+    # on every runner; the required checks are build-test-result's, whichever runner these jobs used.
     # The same routing applies to build-test-main.
     runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     needs: build-test-plan

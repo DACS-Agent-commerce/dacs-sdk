@@ -346,7 +346,8 @@ describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", 
     expect(SHARD.needs).toBe("build-test-plan");
     expect(SHARD.strategy?.matrix).toBe("${{ fromJSON(needs.build-test-plan.outputs.matrix) }}");
     const planStep = (workflow.jobs["build-test-plan"]?.steps ?? []).find((s) => s.run?.includes("ci-shards.mjs plan"));
-    expect(planStep?.run).toBe('echo "matrix=$(node scripts/ci-shards.mjs plan --event "$EVENT_NAME")" >> "$GITHUB_OUTPUT"');
+    // The plan is assigned first, so a failing plan command fails the step (bash -e) rather than writing an empty matrix.
+    expect(planStep?.run).toBe('matrix=$(node scripts/ci-shards.mjs plan --event "$EVENT_NAME")\necho "matrix=$matrix" >> "$GITHUB_OUTPUT"\n');
     expect(planStep?.env?.EVENT_NAME).toBe("${{ github.event_name }}");
   });
 

@@ -20,10 +20,11 @@ export const NODE_LEGS = ["20.19.0", "22"];
 export const SHARDS = { seller: 2, client: 2 };
 export const DEFAULT_WEIGHT = 30;
 
-// Seconds per file on the hosted runner, from the build-test (node 22) job of run 42764000210 (2026-11-10).
-// client: the time between consecutive "[client-tests] <file>" lines. seller: one process for all files, so per-file
-// times come from timing each file alone on a project test machine, scaled to add up to that job's 2636 s seller
-// step; seller-host-native-delivery.test.mjs ran on its own for about 2000 s of it (05:53 to 06:26 in that log).
+// Seconds per file on the hosted runner, from one build-test (node 22) job of the one-job layout. client: the time
+// between consecutive "[client-tests] <file>" lines in that job's log. seller: one process for all files, so per-file
+// times come from timing each file alone on a test machine, scaled to add up to that job's seller step, with
+// seller-host-native-delivery.test.mjs set to the time it ran on its own in that log. The weights only balance the
+// shards; a missing or stale entry never drops a file (see check).
 export const WEIGHTS = {
   seller: {
     "admission-docs.test.mjs": 1,
