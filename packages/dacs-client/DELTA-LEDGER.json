@@ -7026,6 +7026,18 @@
           "after": "38eeb443a089821c4d313f54db21022689d7b1ff"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged seller request deadlines and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "55fe0f9880f83618ff0b362041b51ec2451e47b7",
+          "after": "55fe0f9880f83618ff0b362041b51ec2451e47b7"
+        }
+      ]
     }
   ]
 }
