@@ -1,15 +1,17 @@
 // Narrow HTTP transport for the seller agent (seller-agent.mjs) and the
 // buyer-side client the plugin uses to reach it.
 //
-// Server/client stay loopback-only. Existing unauthenticated fixture callers
-// remain supported. Supplying an authentication adapter enables signed peer
-// requests, independently signed seller responses and a durable intent journal.
+// The server stays loopback-only. The client reaches loopback endpoints, and,
+// when given a wire authentication, a public https origin (`isPublicEndpoint`).
+// Existing unauthenticated fixture callers remain supported. Supplying an
+// authentication adapter enables signed peer requests, independently signed
+// seller responses and a durable intent journal.
 // In that mode every answer is verified on its exact received bytes and then
 // classified (seller-response-class.mjs). Only an authenticated definite
 // refusal or failed bootstrap becomes SellerRefusedError; unsigned, malformed,
 // interrupted, ambiguous, held, suspended or readback-only answers are
 // unavailable, with their class and cause kept.
-import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { SellerAgentError } from './seller-agent-error.mjs';
 import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
 import { canonicalize, admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
@@ -263,9 +265,11 @@ function answerOrError(verdict, answer, status) {
  * clock supplies `now()` and `sleep(ms)` so a test injects time.
  */
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, classifyAnswer = classifySellerAnswer, requestRecords, clock = SELLER_CLOCK }) {
-  const base = new URL(String(url).replace(/\/$/, ''));
-  if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
-    throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
+  const endpoint = String(url);
+  const base = new URL(endpoint.replace(/\/$/, ''));
+  const signedPublicEndpoint = authentication && isPublicEndpoint(endpoint);
+  if (!signedPublicEndpoint && (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash)) {
+    throw new Error('seller agent endpoint must be a public https origin given a wire authentication, or loopback, without credentials, query or fragment');
   }
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/$/, '');

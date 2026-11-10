@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "00f1bbe9dc8790072d2821884eaa8c5e9730c163"
+        "blob": "782321ee827d8918fa60998efff391f492914a74"
       },
       "DELTA-LEDGER.json": {
-        "blob": "892a4a683b2f8bd6f2245e15a4c82d4781bcbe32"
+        "blob": "a7c3d47c514fab78a0a23e62db65d8f7aab7e2c1"
       },
       "DELTA-MAP.md": {
-        "blob": "31875b30d2c9bb58c2fe71cddd11e84899ea8389"
+        "blob": "c58f35497cf45ae358038925340753b8b3573605"
       },
       "DELTA-NOTES.md": {
-        "blob": "728fc3e3882057bd485bdb01514784c9afc46b17"
+        "blob": "68704de043193d6eb7fc6b870d8ce6688e6c2395"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "75cc3422489fbcbcf1b80eebf41520809c59d747"
+        "blob": "cf7163ad912ac3524531f9dc9884e56ed9844397"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "747c438a4e6f8002428ae60f82367ae48d968970"
+        "blob": "a70f81baf5791d5a835dd2d800b9a98b5a9f6cd0"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1175,7 +1175,7 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "a7bde64bb0b01a411fe520bb19a8d973fb05775c"
+        "blob": "e7699f94686e7c440f22f2dd0f2baad4020fdb21"
       },
       "src/dacs/seller-response-class.mjs": {
         "blob": "8ca70e7f5d3217388527c8dcab289193b2848780"
@@ -1769,7 +1769,7 @@
         "blob": "764309a83279905a9684713aab2102e70c992c1c"
       },
       "test/helpers/wire-client-fixture.mjs": {
-        "blob": "106b9d16fdbbd28db6ebadd36ea5d0ba94b702f0"
+        "blob": "62844ba6781ce69c4ef194b652d8322be2723007"
       },
       "test/helpers/wire-committed-purchase.mjs": {
         "blob": "c458b4582cc4b2aef338c9525dd0b69a0ec1ff57"
@@ -1902,6 +1902,9 @@
       },
       "test/runtime-floor.test.mjs": {
         "blob": "6c920248367b799050ce5f473574a6a9ca927f1e"
+      },
+      "test/seller-public-endpoint.test.mjs": {
+        "blob": "2b7317dc8922c4c33abc4a9ce65fe3a0eccbd2a7"
       },
       "test/seller-response-classification.test.mjs": {
         "blob": "cc30e5ad0590631f781343edc60dcff1c0eecd2e"

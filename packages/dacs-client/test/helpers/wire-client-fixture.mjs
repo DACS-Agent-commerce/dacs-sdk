@@ -27,7 +27,8 @@ export const code = (expected) => (error) => error.code === expected;
 export const PUBLIC_ENDPOINT = 'https://127.0.0.1:19001';
 export const validReceipt =Object.assign(async () => 'valid', { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
 // pin, agreementHash, ready and readCommitmentReceipt (null: a proof without a receipt reader) let a test commit a real purchase.
-export async function world(t, { pin: committedPin, agreementHash = sha256Hex('agreement'), ready = true, readCommitmentReceipt = validReceipt } = {}) {
+// publicEndpoint is the seller origin the discovery proof and the signed requests name.
+export async function world(t, { pin: committedPin, agreementHash = sha256Hex('agreement'), ready = true, readCommitmentReceipt = validReceipt, publicEndpoint = PUBLIC_ENDPOINT } = {}) {
   setPurchaseAdmission('testnet-tp1');
   t.after(() => setPurchaseAdmission('held'));
   const buyer = party(1), seller = party(2), session = party(3), other = party(4), local = { ...LOCAL };
@@ -45,7 +46,6 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
     }
   });
   const admission = { binding, currentLocal: () => ({ ...local }) }, pin = committedPin ?? { listingId: 'tp1-vector-listing', version: 1, contentHash: sha256Hex('contracts-vector-listing') };
-  const publicEndpoint = PUBLIC_ENDPOINT;
   const document = await wire.signDiscoveryDocument({
     format: 'dacs-seller-discovery/v1', profile: binding.profile, seller: seller.claim, publicEndpoint,
     transport: ['dacs-seller-http/v1'], listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready, issuedAt: T0, expiresAt: T0 + 120000
