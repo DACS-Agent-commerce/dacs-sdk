@@ -1,5 +1,5 @@
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
@@ -13,12 +13,68 @@ const lockRace = vi.hoisted(() => ({
   releaseTarget: "",
   releaseEntered: undefined as (() => void) | undefined,
   releaseResume: undefined as Promise<void> | undefined,
+  ownerReadTarget: "",
+  ownerMoveFrom: "",
+  ownerMoveTo: "",
+  ownerReplacementToken: "",
+  ownerInspectionError: "",
+  inspectionTarget: "",
+  publishGateReplacement: false,
+  gateReplacementPublished: false,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    readFile: async (...args: Parameters<typeof actual.readFile>) => {
+      const result = await actual.readFile(...args);
+      if (String(args[0]) === lockRace.ownerReadTarget) {
+        lockRace.ownerReadTarget = "";
+        if (lockRace.ownerInspectionError || lockRace.publishGateReplacement) {
+          lockRace.inspectionTarget = lockRace.ownerMoveFrom;
+        } else {
+          await actual.rename(lockRace.ownerMoveFrom, lockRace.ownerMoveTo);
+          if (lockRace.ownerReplacementToken) {
+            const ownerPath = lockRace.ownerMoveTo.endsWith(".quarantine")
+              ? join(lockRace.ownerMoveTo, "owner.json")
+              : lockRace.ownerMoveTo;
+            await actual.writeFile(ownerPath, JSON.stringify({
+              pid: process.pid,
+              hostname: hostname(),
+              token: lockRace.ownerReplacementToken,
+              createdAt: Date.now(),
+            }), { mode: 0o600 });
+          }
+        }
+      }
+      return result;
+    },
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      if (String(args[0]) === lockRace.inspectionTarget) {
+        lockRace.inspectionTarget = "";
+        if (lockRace.publishGateReplacement) {
+          lockRace.publishGateReplacement = false;
+          const observed = await actual.lstat(...args);
+          await actual.rename(lockRace.ownerMoveFrom, lockRace.ownerMoveTo);
+          const candidate = `${lockRace.ownerMoveFrom}.test-successor.candidate`;
+          await actual.mkdir(candidate, { mode: 0o700 });
+          await actual.writeFile(join(candidate, "owner.json"), JSON.stringify({
+            pid: process.pid,
+            hostname: hostname(),
+            token: lockRace.ownerReplacementToken,
+            createdAt: Date.now(),
+          }), { mode: 0o600 });
+          await actual.rename(candidate, lockRace.ownerMoveFrom);
+          lockRace.gateReplacementPublished = true;
+          return observed;
+        }
+        throw Object.assign(new Error("lock inspection failed"), {
+          code: lockRace.ownerInspectionError,
+        });
+      }
+      return actual.lstat(...args);
+    },
     rename: async (
       oldPath: Parameters<typeof actual.rename>[0],
       newPath: Parameters<typeof actual.rename>[1],
@@ -72,7 +128,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 
-import type { WalletSpendStateV1 } from "../../src/rails/walletSpendAuthority.js";
+import {
+  createWalletSpendAuthorityV1,
+  type WalletSpendPolicyV1,
+  type WalletSpendReservationV1,
+  type WalletSpendStateV1,
+} from "../../src/rails/walletSpendAuthority.js";
 import { createFsWalletSpendStateStoreV1 } from "../../src/rails/walletSpendAuthorityFs.js";
 
 const KEY = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
@@ -88,6 +149,14 @@ afterEach(async () => {
   lockRace.releaseTarget = "";
   lockRace.releaseEntered = undefined;
   lockRace.releaseResume = undefined;
+  lockRace.ownerReadTarget = "";
+  lockRace.ownerMoveFrom = "";
+  lockRace.ownerMoveTo = "";
+  lockRace.ownerReplacementToken = "";
+  lockRace.ownerInspectionError = "";
+  lockRace.inspectionTarget = "";
+  lockRace.publishGateReplacement = false;
+  lockRace.gateReplacementPublished = false;
   await Promise.all(roots.splice(0).map((root) =>
     rm(root, { recursive: true, force: true })));
 });
@@ -124,7 +193,160 @@ function advance(
 const wait = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+function armOwnerMove(dir: string, scope: string, kind: "gate" | "lock"): void {
+  const locks = join(dir, "locks");
+  lockRace.ownerMoveFrom = join(locks, `${scope}.${kind === "gate" ? "reclaim" : "lock"}`);
+  lockRace.ownerReadTarget = kind === "gate"
+    ? join(lockRace.ownerMoveFrom, "owner.json") : lockRace.ownerMoveFrom;
+  lockRace.ownerMoveTo = join(locks, kind === "gate"
+    ? `reclaim-${scope.length}-${scope}.test-moved.quarantine`
+    : `lock-${scope.length}-${scope}.test-moved.stale`);
+}
+
 describe("wallet spend filesystem lock mutation races", () => {
+  test.each(["gate", "lock", "gate replacement"] as const)(
+    "cleans up a committed effect after %s displacement",
+    async (kind) => {
+      const dir = await fixture();
+      const store = await createFsWalletSpendStateStoreV1({
+        dir,
+        integrityKey: KEY,
+        lockStaleMs: 20,
+        lockPollMs: 1,
+        lockTimeoutMs: 400,
+      });
+      const policy: WalletSpendPolicyV1 = {
+        policyVersion: "1",
+        policyId: "spend-limit",
+        wallet: "wallet",
+        chainId: "demos:testnet",
+        maximumConcurrentEffects: 2,
+        maximumRetainedReservations: 4,
+        assets: [{
+          asset: "TOKEN",
+          maximumPerOrderDebit: "100",
+          maximumNetworkFeeDebit: "10",
+          minimumReserve: "0",
+          rollingWindowMs: 60,
+          maximumRollingEffects: 4,
+          maximumRollingDebit: "100",
+          maximumCumulativeDebit: "100",
+          maximumCounterpartyDebit: "100",
+        }],
+      };
+      const wallet = createWalletSpendAuthorityV1(policy, {
+        store,
+        readBalance: async () => "1000",
+        authenticateRecovery: async () => true,
+        now: () => 1_000,
+      });
+      const reservation: WalletSpendReservationV1 = {
+        reservationVersion: "1",
+        reservationId: "first",
+        jobId: "job-first",
+        phaseIndex: 0,
+        phase: "payment",
+        agreementHash: "a".repeat(64),
+        settlementBindingHash: "b".repeat(64),
+        railId: "test-rail",
+        railDefinitionHash: "c".repeat(64),
+        wallet: policy.wallet,
+        chainId: policy.chainId,
+        payee: "seller",
+        finality: { model: "bft-final" },
+        debits: [{
+          asset: "TOKEN",
+          purpose: "service",
+          expectedAmount: "20",
+          maximumAmount: "20",
+        }],
+      };
+      const claim = await wallet.reserve(reservation);
+      if (claim.status !== "reserved") throw new Error("expected reservation");
+      const [record] = await readdir(join(dir, "records"));
+      if (!record) throw new Error("expected durable record");
+      const scope = record.slice(0, -".json".length);
+      armOwnerMove(dir, scope, kind === "lock" ? "lock" : "gate");
+
+      if (kind === "gate replacement") {
+        lockRace.publishGateReplacement = true;
+        lockRace.ownerReplacementToken = "other-live-owner";
+        await expect(claim.permit.beginEffect()).rejects.toThrow(
+          "wallet spend mutation gate changed during release",
+        );
+        expect(lockRace.gateReplacementPublished).toBe(true);
+        const locks = join(dir, "locks");
+        const quarantines = (await readdir(locks)).filter((name) =>
+          name.endsWith(".quarantine"));
+        expect.soft(quarantines).not.toContain(basename(lockRace.ownerMoveTo));
+        const successors = quarantines.filter((name) =>
+          name !== basename(lockRace.ownerMoveTo));
+        expect(successors).toHaveLength(1);
+        // The successor releases its own quarantine after its publication check.
+        for (const name of successors) {
+          const path = join(locks, name);
+          expect(JSON.parse(await readFile(join(path, "owner.json"), "utf8")))
+            .toMatchObject({ pid: process.pid, token: lockRace.ownerReplacementToken });
+          await rm(path, { recursive: true });
+        }
+      } else {
+        await expect(claim.permit.beginEffect()).resolves.toBeUndefined();
+      }
+      await expect(store.read?.(scope)).resolves.toMatchObject({
+        reservations: [{ reservationId: "first", stage: "effect-pending" }],
+      });
+      expect.soft(await readdir(join(dir, "locks"))).toEqual([]);
+      await expect(wallet.reserve({
+        ...reservation,
+        reservationId: "next",
+        jobId: "job-next",
+      })).resolves.toMatchObject({ status: "reserved" });
+    },
+  );
+
+  test.each(["gate", "lock"] as const)(
+    "preserves another live owner's %s quarantine during release",
+    async (kind) => {
+      const dir = await fixture();
+      const scope = "d".repeat(64);
+      const store = await createFsWalletSpendStateStoreV1({
+        dir,
+        integrityKey: KEY,
+        lockPollMs: 1,
+        lockTimeoutMs: 100,
+      });
+      armOwnerMove(dir, scope, kind);
+      lockRace.ownerReplacementToken = "other-live-owner";
+
+      await expect(store.transact(scope, (current) => advance(current, "committed")))
+        .rejects.toThrow(/ownership was (lost|superseded)/);
+      const ownerPath = kind === "gate"
+        ? join(lockRace.ownerMoveTo, "owner.json") : lockRace.ownerMoveTo;
+      expect(JSON.parse(await readFile(ownerPath, "utf8"))).toMatchObject({
+        pid: process.pid,
+        token: "other-live-owner",
+      });
+      const operation = vi.fn((current: Readonly<WalletSpendStateV1> | null) =>
+        advance(current, "unexpected"));
+      await expect(store.transact(scope, operation)).rejects.toThrow(/timed out/);
+      expect(operation).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["gate", "lock"] as const)(
+    "propagates a %s inspection error during release",
+    async (kind) => {
+      const dir = await fixture();
+      const scope = "e".repeat(64);
+      const store = await createFsWalletSpendStateStoreV1({ dir, integrityKey: KEY });
+      armOwnerMove(dir, scope, kind);
+      lockRace.ownerInspectionError = "EACCES";
+
+      await expect(store.transact(scope, (current) => advance(current, "committed")))
+        .rejects.toMatchObject({ code: "EACCES", message: "lock inspection failed" });
+    },
+  );
+
   test("serializes repeated competing stale reclaimers before successor publication", async () => {
     const dir = await fixture();
     const firstStore = await createFsWalletSpendStateStoreV1({
