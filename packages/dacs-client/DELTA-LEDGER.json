@@ -6513,6 +6513,107 @@
       ]
     },
     {
+      "delta": "D31",
+      "subject": "delta(client): D31 pin the finality profile literal refusal",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": null,
+          "after": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5"
+        }
+      ]
+    },
+    {
+      "delta": "D31",
+      "subject": "delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5",
+          "after": "565c664bbc629707665dd65c3889ac5e08ec2d09"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 reserve each purchase job id with a unique column and a bounded retry",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "652e68fa1ad0a799754f35d604bac2ffc1376f0e",
+          "after": "615dbe0271963189f792d967d3b1acf6c2fc678f"
+        },
+        {
+          "path": "packages/dacs-client/src/purchase-state-schema.mjs",
+          "before": "557ea59e906125decb9c56d5b2322a1d30af3321",
+          "after": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
+        },
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd",
+          "after": "3873c4245efd90c76e2af08f56b2d609e391cf65"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/purchase-integrity-operations.mjs",
+          "before": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b",
+          "after": "a4a556aea31469b10698a07d3180bbbc8ef37d03"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": null,
+          "after": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 require a unique job_id index at construction",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3873c4245efd90c76e2af08f56b2d609e391cf65",
+          "after": "06748b818244cb1924ebb4fcc93ad5a23e99b848"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b",
+          "after": "c04831cefe549f5a2c89052f0400bcdecf8b52a7"
+        },
+        {
+          "path": "packages/dacs-client/test/readme-contract.test.mjs",
+          "before": "0f7e7d6618f09f8377893affcdd5449425e4646f",
+          "after": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 tighten job id comments and README wording",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "06748b818244cb1924ebb4fcc93ad5a23e99b848",
+          "after": "4a6010356dbd967ae75c68fb30d97060fb9f0f65"
+        }
+      ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 read schema rows with plain numbers and keep the last collision as cause",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "4a6010356dbd967ae75c68fb30d97060fb9f0f65",
+          "after": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "c04831cefe549f5a2c89052f0400bcdecf8b52a7",
+          "after": "6841b7b79dece95e51c8b46abf549d0370fb4789"
+        }
+      ]
+    },
+    {
       "delta": "WF",
       "subject": "delta(client): WF P16a1a dispatch history on the durable journal and the actor fence",
       "files": [
