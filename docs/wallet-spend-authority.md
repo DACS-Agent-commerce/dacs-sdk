@@ -24,6 +24,13 @@ asset policies. Each asset policy sets:
 - lifetime cumulative and per-counterparty limits; and
 - an optional authenticated operator-approval threshold.
 
+The wallet is a 20-byte (EVM) or 32-byte (Demos) hex address, with or without
+the `0x` prefix and in any letter case. The authority stores and hashes it as
+`0x` and lowercase hex, so every spelling of one wallet shares one lineage, one
+budget and one policy hash, and `canonicalWalletSpendWalletV1()` returns that
+form. A policy naming anything else is refused when the authority is created.
+A reservation keeps the spelling it was reserved under.
+
 Service amounts are exact: `expectedAmount` and `maximumAmount` must match.
 Network fees retain both an estimate and a hard ceiling. Mixed-asset EVM
 payments use one service debit for the token and one network-fee debit for the
