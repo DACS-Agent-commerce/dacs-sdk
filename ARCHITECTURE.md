@@ -25,7 +25,7 @@ The workspace packages under `packages/` sit on top of all of this. They import 
 
 - **Each part can be read on its own.** Protocol code can be understood without knowing how files are written or how the network is reached.
 - **Tests stay small.** The lower a piece of code sits, the less it needs set up around it to be tested.
-- **There are no circular imports.** A circle between two folders means neither can change without the other.
+- **The order rules out circular imports.** A circle between two folders means neither can change without the other. The imports that still form circles today are all on the list of known violations below, so the number can only go down.
 
 ## The check
 
