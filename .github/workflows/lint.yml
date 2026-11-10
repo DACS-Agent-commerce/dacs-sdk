@@ -30,3 +30,6 @@ jobs:
 
       - name: Layer check
         run: node tools/lint/layers.mjs
+
+      - name: File size check
+        run: node tools/lint/file-size.mjs
