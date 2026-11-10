@@ -4,8 +4,12 @@ import {
   autoAcceptInstanceBytes,
   COMPOSITE_DOMAIN_SEPARATORS,
   dacsXSeparator,
+  ed25519Sign,
+  ed25519Verify,
   isCompositeSeparator,
   isRegisteredSeparator,
+  privateKeyFromSeed,
+  publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
   signArtifact,
@@ -30,6 +34,56 @@ const GOLDEN = {
 
 const seed = Uint8Array.from(Buffer.from(GOLDEN.seed, "hex"));
 const pub = rawPublicKey(publicKeyFromSeed(seed));
+
+const rfcVectors = [
+  {
+    seed: "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    publicKey: "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    message: "",
+    signature: "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155" +
+      "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+  },
+  {
+    seed: "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+    publicKey: "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    message: "72",
+    signature: "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da" +
+      "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+  },
+];
+
+describe("Ed25519 verification", () => {
+  it.each(rfcVectors)("accepts an RFC 8032 vector", ({ seed, publicKey, message, signature }) => {
+    const bytes = Buffer.from(message, "hex");
+    const key = publicKeyFromRaw(Buffer.from(publicKey, "hex"));
+    expect(Buffer.from(rawPublicKey(publicKeyFromSeed(Buffer.from(seed, "hex")))).toString("hex")).toBe(publicKey);
+    expect(Buffer.from(ed25519Sign(bytes, privateKeyFromSeed(Buffer.from(seed, "hex")))).toString("hex")).toBe(signature);
+    expect(ed25519Verify(bytes, Buffer.from(signature, "hex"), key)).toBe(true);
+  });
+
+  it("refuses altered signatures and non-canonical S", () => {
+    const message = Buffer.from("signed message");
+    const key = privateKeyFromSeed(seed);
+    const signature = Buffer.from(ed25519Sign(message, key));
+    const publicKey = publicKeyFromSeed(seed);
+    expect(ed25519Verify(message, signature, publicKey)).toBe(true);
+    const altered = Buffer.from(signature);
+    altered[0] = altered[0]! ^ 1;
+    expect(ed25519Verify(message, altered, publicKey)).toBe(false);
+    const nonCanonical = Buffer.from(signature);
+    Buffer.from("edd3f55c1a631258d69cf7a2def9de14" + "00000000000000000000000000000010", "hex").copy(nonCanonical, 32);
+    expect(ed25519Verify(message, nonCanonical, publicKey)).toBe(false);
+  });
+
+  it.each([
+    "01" + "00".repeat(31),
+    "00".repeat(32),
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+    "ed" + "ff".repeat(30) + "7f",
+  ])("refuses a small-order or non-canonical public key", (hex) => {
+    expect(ed25519Verify(Buffer.from("message"), Buffer.from("01" + "00".repeat(63), "hex"), publicKeyFromRaw(Buffer.from(hex, "hex")))).toBe(false);
+  });
+});
 
 describe("signing (§B.7)", () => {
   it("derives the golden public key from the seed", () => {

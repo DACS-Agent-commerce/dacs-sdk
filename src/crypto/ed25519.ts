@@ -12,6 +12,19 @@ import { DacsError } from "../errors.js";
 // turned into a Node KeyObject without extra dependencies.
 const PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+const FIELD_PRIME = (1n << 255n) - 19n;
+const GROUP_ORDER = (1n << 252n) + 27742317777372353535851937790883648493n;
+const SMALL_ORDER_Y = new Set([
+  0n, 1n, FIELD_PRIME - 1n,
+  2707385501144840649318225287225658788936804267575313519463743609750303402022n,
+  FIELD_PRIME - 2707385501144840649318225287225658788936804267575313519463743609750303402022n,
+]);
+
+function littleEndianInteger(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (let i = bytes.length - 1; i >= 0; i--) value = (value << 8n) | BigInt(bytes[i]!);
+  return value;
+}
 
 /** Build an Ed25519 private key from its 32-byte seed. */
 export function privateKeyFromSeed(seed: Uint8Array): KeyObject {
@@ -69,5 +82,8 @@ export function ed25519Verify(
   signature: Uint8Array,
   publicKey: KeyObject,
 ): boolean {
+  if (signature.length !== 64 || littleEndianInteger(signature.subarray(32)) >= GROUP_ORDER) return false;
+  const y = littleEndianInteger(rawPublicKey(publicKey)) & ((1n << 255n) - 1n);
+  if (y >= FIELD_PRIME || SMALL_ORDER_Y.has(y)) return false;
   return nodeVerify(null, message, publicKey, signature);
 }
