@@ -6647,6 +6647,7 @@
     {
       "delta": "WF",
       "subject": "test(client): cover changed signed response bytes",
+      "sha": "cedf85a39a23d95242c9b3a393ca6206d2550ef1",
       "files": [
         {
           "path": "packages/dacs-client/src/dacs/seller-http.mjs",

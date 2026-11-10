@@ -1135,7 +1135,7 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/src/dacs/seller-wire-authentication.mjs:1` | 767519509759e6d77c030f38e5601eab455922a0 |
 | | `packages/dacs-client/test/wire-delegation.test.mjs:1` | cd60876eb390082bbb372c2fe29f3827488e0af5 |
 | | `packages/dacs-client/test/wire-request-signing.test.mjs:1` | e4a43f5d39bc6806039a4f3f7421d0874504effc |
-| WF | test(client): cover changed signed response bytes | Git subject selector (must resolve exactly once after publication checkpoint) |
+| WF | test(client): cover changed signed response bytes | Git commit selector cedf85a39a23d95242c9b3a393ca6206d2550ef1 |
 | | `packages/dacs-client/src/dacs/seller-http.mjs:9`, `packages/dacs-client/src/dacs/seller-http.mjs:114`, `packages/dacs-client/src/dacs/seller-http.mjs:188`, `packages/dacs-client/src/dacs/seller-http.mjs:190`, `packages/dacs-client/src/dacs/seller-http.mjs:229`, `packages/dacs-client/src/dacs/seller-http.mjs:232`, `packages/dacs-client/src/dacs/seller-http.mjs:233`, `packages/dacs-client/src/dacs/seller-http.mjs:235`, `packages/dacs-client/src/dacs/seller-http.mjs:238`, `packages/dacs-client/src/dacs/seller-http.mjs:243`, `packages/dacs-client/src/dacs/seller-http.mjs:245`, `packages/dacs-client/src/dacs/seller-http.mjs:248`, `packages/dacs-client/src/dacs/seller-http.mjs:252`, `packages/dacs-client/src/dacs/seller-http.mjs:255`, `packages/dacs-client/src/dacs/seller-http.mjs:259`, `packages/dacs-client/src/dacs/seller-http.mjs:268` | add72c0add7c8188d6cc86e7476207a4882c93af |
 | | `packages/dacs-client/test/wire-request-signing.test.mjs:1` | 38eeb443a089821c4d313f54db21022689d7b1ff |
 
@@ -3610,6 +3610,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | test(client): cover changed signed response bytes | `packages/dacs-client/HOLD.json:1` |
 | test(client): cover changed signed response bytes | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | test(client): cover changed signed response bytes | `packages/dacs-client/test/wire-request-signing.test.mjs:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/HOLD.json:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): permit recorded test changes | `packages/dacs-client/scripts/delta-map.mjs:1` |
 
 ## Original moved files
 
