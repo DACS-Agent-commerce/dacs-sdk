@@ -12,7 +12,8 @@
  *  - a shared `phaseSummary` index whose `kind`/`outcome`/`errorClass` differ.
  *
  * Fault pairs compare `faultedParty` plus outcome class; legacy pairs perspective-flip the
- * counterparty copy before comparison; mixed pairs require the absolute fault to belong to the
+ * counterparty copy before comparison, or agree when the absolute parties each copy can blame
+ * overlap; mixed pairs require the absolute fault to belong to the
  * legacy implied set. Advisory-only differences (finalisedAt skew, one-sided ratingRefs,
  * anchoredByRole, amendment ordering) are NOT divergence — they're excluded by
  * only comparing outcome + per-phase outcome/errorClass, so a party can't force a
@@ -63,6 +64,19 @@ function phasesByIndex(bundle: DivergenceBundle): Map<number, Record<string, unk
   return out;
 }
 
+/**
+ * Can both role-relative copies blame the same absolute party? In a three-party session two
+ * `aborted-by-other` copies from opposite anchors each blame "anyone but me", and agree when
+ * they meet at the orchestrator.
+ */
+function impliedFaultSetsIntersect(a: DivergenceBundle, b: DivergenceBundle): boolean {
+  const bImplied = legacyImpliedFaultSet(b as Record<string, unknown>);
+  for (const party of legacyImpliedFaultSet(a as Record<string, unknown>)) {
+    if (bImplied.has(party)) return true;
+  }
+  return false;
+}
+
 /** Do two bundle copies canonically diverge (§10.4.3)? */
 export function bundlesDiverge(a: DivergenceBundle, b: DivergenceBundle): boolean {
   const aClass = bundleOutcomeClass(a.outcome);
@@ -109,7 +123,9 @@ export function bundlesDiverge(a: DivergenceBundle, b: DivergenceBundle): boolea
       (a.anchoredByRole === "buyer" && b.anchoredByRole === "seller") ||
       (a.anchoredByRole === "seller" && b.anchoredByRole === "buyer");
     const reconciledB = oppositeAnchors ? perspectiveFlip(b.outcome) : b.outcome;
-    if (a.outcome !== reconciledB) return true;
+    if (a.outcome !== reconciledB && !(oppositeAnchors && impliedFaultSetsIntersect(a, b))) {
+      return true;
+    }
   }
 
   const ai = phasesByIndex(a);
