@@ -338,6 +338,24 @@ describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", (
 });
 
 describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", () => {
+  // Before the split every leg prepared the locked seller consumer; the seller shards now prepare it, and
+  // build-test-main prepares it on a leg where no seller shard runs (node 20 on a pull request, #1338).
+  it("prepares the locked seller consumer on every leg of every event, in main only where no seller shard runs", () => {
+    const name = "Prepare locked seller consumer";
+    const main = (MAIN.steps ?? []).find((s) => s.name === name);
+    const shard = (SHARD.steps ?? []).find((s) => s.name === name);
+    expect(main?.run).toBe(shard?.run);
+    for (const event of EVENTS) {
+      const sellerLegs = (shards.plan(event) as Entry[]).filter((entry) => holds(shard?.if, { matrix: entry, github: { event_name: event } }))
+        .map((entry) => entry["node-version"]);
+      const mainLegs = MAIN_LEGS.filter((node) => holds(main?.if, { matrix: { "node-version": node }, github: { event_name: event } }));
+      expect(mainLegs.filter((node) => sellerLegs.includes(node)), event).toEqual([]);
+      expect([...new Set([...sellerLegs, ...mainLegs])].sort(), event).toEqual([...MAIN_LEGS].sort());
+    }
+    const steps = (MAIN.steps ?? []).map((s) => s.run);
+    expect(steps.indexOf("npm run host:build")).toBeLessThan(steps.indexOf(main?.run));
+  });
+
   it("routes build-test-main exactly like build-test", () => {
     expect(MAIN["runs-on"]).toBe(RUNS_ON);
   });

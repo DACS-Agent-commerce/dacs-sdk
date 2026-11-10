@@ -45,7 +45,8 @@ test('P06 CI wiring: ci.yml gains exactly one `run: npm run kit-client:test` ste
   const { steps } = jobs.find((job) => job.steps.includes(harness[0]));
   const position = (command) => steps.indexOf(stepsRunning(command, steps)[0]);
   assert.ok(position(HARNESS_STEP) > position('npm run build'), 'runs after Build');
-  assert.ok(position(HARNESS_STEP) > position(SELLER_STEP), 'runs after the seller tests');
+  // Since the build-test split the seller suite runs in its own shard jobs, so no step order ties the two together.
+  if (position(SELLER_STEP) !== -1) assert.ok(position(HARNESS_STEP) > position(SELLER_STEP), 'runs after the seller tests');
 });
 
 test('P06 runner wiring: the kit-client:test script names the harness test files, so the repository file-selection check finds every one', () => {
