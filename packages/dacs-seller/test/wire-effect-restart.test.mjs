@@ -41,7 +41,7 @@ test('NEW-C1-null-lost-reply', async t => {
   const other = await proposalFor(job.jobId, NOW + 1000), original = w.agent.transportAgreementOf;
   w.agent.transportAgreementOf = () => structuredClone(other.body.proposal.plan.draft);
   const rebound = await w.post(PATHS.proposals, other.body, { jobId: job.jobId, agreementHash: other.agreementHash });
-  assert.deepEqual({ status: rebound.status, error: rebound.body.error }, { status: 409, error: 'peer_operation_mismatch' }, 'the operation kept its binding');
+  assert.deepEqual({ status: rebound.status, error: rebound.body.error }, { status: 409, error: 'peer_job_conflict' }, 'the operation kept its binding');
   w.agent.transportAgreementOf = original;
   w.agent.answer = undefined;
   const reconciledBefore = w.agent.calls.reconciled;

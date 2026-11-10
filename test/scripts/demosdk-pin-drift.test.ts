@@ -96,6 +96,8 @@ describe("scheduled demosdk pin drift check", () => {
 });
 
 // Runs the real ci.yml step script with a stub npm/npx and returns the calls it made.
+// `node --test` is recorded and not run, because the scratch folder holds no test files;
+// every other node call (the installed-version check) runs on the real binary.
 function runPinnedStep(registryBody: string, installedVersion = PINNED) {
   const directory = scratch();
   const calls = join(directory, "npm-calls.log");
@@ -106,7 +108,9 @@ if [ "$1" = install ]; then
   printf '{"version":"${installedVersion}"}' > node_modules/@kynesyslabs/demosdk/package.json
 fi
 exit 0`;
-  const path = stubBin(directory, { npm, npx: "exit 0" });
+  const node = `if [ "$1" = --test ]; then echo "node $*" >> '${calls}'; exit 0; fi
+exec '${process.execPath}' "$@"`;
+  const path = stubBin(directory, { node, npm, npx: "exit 0" });
   const script = join(directory, "step.sh");
   writeFileSync(script, workflowStepScript(PIN_STEP, ciPath));
   const result = runBash(["-e", script], { cwd: directory, env: { PATH: path } });
@@ -128,6 +132,19 @@ describe("pull-request demosdk step", () => {
   it("installs the pinned version", () => {
     const { calls } = runPinnedStep(registryReplying([PINNED]));
     expect(calls.some((call) => call.startsWith("install") && call.includes(`@kynesyslabs/demosdk@${PINNED}`))).toBe(true);
+  });
+
+  it("installs the pinned version without running install scripts", () => {
+    const { calls } = runPinnedStep(registryReplying([PINNED]));
+    const install = calls.find((call) => call.startsWith("install"));
+    expect(install).toContain("--ignore-scripts");
+  });
+
+  it("runs the client loading suite by its own file name after the pinned install", () => {
+    const { result, calls } = runPinnedStep(registryReplying([PINNED]));
+    expect(result.status).toBe(0);
+    // The step names every client file one by one and later changes append theirs, so the loading suite is one whole argument, never a glob.
+    expect(calls.some((call) => call.startsWith("node --test") && call.split(" ").includes("packages/dacs-client/test/node-demos-loading.test.mjs"))).toBe(true);
   });
 
   it("still fails when the installed demosdk is not the pinned version", () => {

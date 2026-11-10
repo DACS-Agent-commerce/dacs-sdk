@@ -1,12 +1,11 @@
 // Unshipped test helper: a buyer that signs with the wire's `signWireRequest` against a seller-signed fixture
 // discovery document, and the `authentication` adapter `createSellerAgentClient` takes. Its `verifyResponse`
 // returns the Promise from `verifyWireResponse` over the exact received bytes.
-import { DACS_SELLER_DISCOVERY_FORMAT, DACS_SELLER_HTTP_PATHS, DACS_SELLER_HTTP_V1, TP1_APPROVED_IDENTITY_RECORD, TP1_CAPABILITIES, TP1_COMMIT_PHASE, bindTp1Profile, signDiscoveryDocument, signWireRequest, verifyEndpointProof, verifyWireResponse } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_DISCOVERY_FORMAT, DACS_SELLER_HTTP_V1, TP1_APPROVED_IDENTITY_RECORD, TP1_CAPABILITIES, TP1_COMMIT_PHASE, bindTp1Profile, signDiscoveryDocument, signWireRequest, verifyEndpointProof, verifyWireResponse } from '@kynesyslabs/dacs/wire';
+import { WIRE_ROUTE_PATHS } from '../../src/dacs/seller-wire-requests.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
 
 export const FIXTURE_ENDPOINT = 'https://seller.example.invalid';
-/** The routes the kit answers through the wire; the others still use the old server auth. */
-export const WIRE_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.state, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature, DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature, DACS_SELLER_HTTP_PATHS.bundleBuyerCopy]);
 const DISCOVERY_LIFETIME_MS = 600_000;
 const LISTING_WINDOW_MS = 86_400_000;
 const REQUEST_LIFETIME_MS = 30_000;
@@ -67,8 +66,8 @@ export function mixedAuthentication(options, jobFor, old) {
   const wired = new WeakSet();
   return {
     request: async (path, body, text) => {
-      const signed = await (WIRE_PATHS.includes(path) ? wire : old).request(path, body, text);
-      if (WIRE_PATHS.includes(path)) wired.add(signed.payload);
+      const signed = await (WIRE_ROUTE_PATHS.includes(path) ? wire : old).request(path, body, text);
+      if (WIRE_ROUTE_PATHS.includes(path)) wired.add(signed.payload);
       return signed;
     },
     verifyResponse: (request, received) => (wired.has(request) ? wire : old).verifyResponse(request, received),

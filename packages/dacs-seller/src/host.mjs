@@ -41,9 +41,11 @@ import { existsSync, mkdirSync, opendirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { isAbsolute, join } from 'node:path';
+import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, WireError, admitWireArtifact, bindTp1Profile, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { boundedCall, isBoundedCallTimeout } from './dacs/bounded-call.mjs';
 import { deliverableJournalFor } from './dacs/deliverable-wallet-journal.mjs';
+import { demDeliveryContextVetMode } from './dacs/dem-delivery-context-consumer.mjs';
 import { assertKitDataFormat } from './dacs/kit-data-format.mjs';
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { createSellerAgent } from './dacs/seller-agent.mjs';
@@ -52,13 +54,17 @@ import { createOrdinaryCompletionPort, createSellerHttpHandler } from './dacs/se
 import { createPurchaseCapacity } from './dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from './dacs/seller-reservation-accounting.mjs';
 import { createSellerTransportServerAuth, createSellerTransportStore, sellerStoreInternals } from './dacs/seller-transport-auth.mjs';
-import { continuationFor, retainedFor } from './dacs/seller-wire-requests.mjs';
+import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { stopRequested } from './devnet-demo/stop-request.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
 import { isPrivateDirectory } from './private-directory.mjs';
 
+/** The one Vet mode the kit host runs its agent in: the TP-1 G3 orchestrator mode,
+ * in which the seller verifies and signs both Vet records. No option, environment
+ * variable, Listing member or request field selects another. */
+export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
   'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'tp1Network', 'readCommitmentReceipt']);
 const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'host', 'port', 'now', 'contextSessionState']);
@@ -67,7 +73,7 @@ const TP1_NETWORK_KEYS = Object.freeze(['connection', 'readAuthority']);
 const TP1_AUTHORITY_TIMEOUT_MS = 10000;
 // One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
-// The permanent reservation budget of the wire accounting rows (moves to seller.json in P30).
+// The permanent reservation budget of the wire accounting rows.
 const DEFAULT_MAX_RECORDS = 10000;
 const JOURNAL_DIRECTORY = 'wire-journal';
 const TRANSPORT_STORE_FILE = join('transport', 'transport.sqlite');
@@ -221,6 +227,8 @@ function assertJournalHoldsNoAccounting(journalDirectory) {
 // unknown, malformed or not private, and with the startup error otherwise
 // (carrying `cleanupError` when cleanup fails; an AggregateError with the
 // startup error as `cause` when that error cannot carry the property).
+// The host runs in KIT_TP1_VET_MODE only: a `demDeliveryContext` made in another
+// mode is refused with a TypeError (code `vet_mode_mismatch`) before the lock.
 // The startup errors include the binding's own (`tp1_*`, with the reader's
 // error kept as the cause; `tp1_authority_timeout` after 10,000 ms), which come
 // before the state lock and any file; `kit_store_format_unsupported` for a data
@@ -254,6 +262,9 @@ export async function startSellerHost(options) {
   }
   // CORE §5.1: the Deliverable resume, when there is one, comes only from the journal whose guarded submit the capability is.
   deliverableJournalFor(nativeDemDelivery, resumeDeliverableCreate);
+  if (demDeliveryContextVetMode(demDeliveryContext) !== KIT_TP1_VET_MODE) {
+    throw Object.assign(new TypeError(`the seller host runs in the ${KIT_TP1_VET_MODE} Vet mode: demDeliveryContext must be created with vetMode: KIT_TP1_VET_MODE`), { code: 'vet_mode_mismatch' });
+  }
   checkTp1Network(tp1Network);
   // Refuses an unbindable connection before the lock and any file; the signed routes keep the binding.
   const binding = await bindApprovedProfile(tp1Network);
@@ -276,7 +287,6 @@ export async function startSellerHost(options) {
     // The store comes first: its one challenge ledger is the agent's only challenge store, and the agent checks the
     // sessions it restores against that ledger.
     mkdirSync(transport, { recursive: true, mode: 0o700 });
-    // The challenge ledger issues only while the whole purchase allotment fits; until the capacity exists nothing is ready.
     let capacity;
     const capacityReady = () => capacity?.fitsNewPurchase() === true;
     const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, ready: capacityReady, contextSessionState });
@@ -291,7 +301,7 @@ export async function startSellerHost(options) {
     capacity.releaseTerminalAllocations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
     const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
-      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs });
+      agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE });
     opened.push(() => agent.close());
     // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
     for (const { job, reason } of agent.releaseStaleLocks()) {
@@ -303,16 +313,15 @@ export async function startSellerHost(options) {
     // Opened so that a journal the wire refuses stops startup with its detail; the signed routes take the handle.
     const journal = openWireRequestJournal(journalDirectory, { leaseMs: KIT_JOURNAL_LEASE_MS, clock: now });
     let stopping = false;
-    // The seller takes new purchases until it stops and while a whole purchase allotment fits; every later readiness term is ANDed in by the PR that owns it (SA-7).
+    // New purchases require room for a whole allotment while the seller is running.
     const sellerReady = () => !stopping && capacityReady();
     // Every effect route reserves through it under one mutex per operation, inspected from this journal; the context route's job
     // lease is validated once the host composes the admission transaction. The completion port ends the attempts it issued.
-    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
+    const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
-    // The context every signed route on `./wire` uses (its journal is the wire request journal). The binding is read once at
-    // startup; a later connection is never compared.
-    const wire = Object.freeze({ binding, connection: tp1Network.connection, signer, journal, store, reservations, completion, ready: sellerReady, now, requireDelegation: false,
-      retainedFor: (request) => retainedFor(agent, request, { store, capacity }), continuationFor: (request) => continuationFor(agent, request, signedListing), readCommitmentReceipt });
+    // The one context every signed route on `./wire` uses (its journal is the wire request journal). Each signed request and
+    // answer reads the operator's connection again through it.
+    const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion });
     // The state directories and the new transport database entry are durable
     // before listen permits an answer. SQLite's FULL synchronous mode syncs the
     // database file, not the directory entry naming it, so an answer sent before

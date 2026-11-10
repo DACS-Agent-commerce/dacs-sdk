@@ -106,7 +106,7 @@ for(const mode of ['complete','retry','noEffect','pending','uncertain'])test(`co
  if(keep)assert.equal(rows(w,'peer_effects')[0].state,mode);
 });
 for(const buyerLimit of [false,true])test(`${buyerLimit?'buyer':'global'} start-limit refusal preserves a prior completed nonce`,async t=>{
- const w=await world(t,{maxRecords:1,limits:{maxStartsPerHour:buyerLimit?10:1,maxStartsPerBuyerPerHour:buyerLimit?1:10}});
+ const w=await world(t,{maxRecords:1,maxJobs:2,limits:{maxStartsPerHour:buyerLimit?10:1,maxStartsPerBuyerPerHour:buyerLimit?1:10}});
  await exchange(w.handler,await w.wire());w.advance(60000);
  const next=await w.wire({jobId:JOBS[1]}),p=w.auth.readRequest(next.header),body=JSON.parse(next.text);
  await assert.rejects(w.route.reserve(p,body,w.store),{code:buyerLimit?'buyer_unpaid_start_limit':'unpaid_start_limit'});

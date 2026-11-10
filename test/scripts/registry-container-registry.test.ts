@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -108,11 +108,59 @@ describe("stage failure propagation", () => {
     writeFileSync(join(releaseSet, "release-provenance.json"),
       JSON.stringify({ version: packageVersion, source: { clean: true } }));
     const result = runStages(`
+npm() { echo 11.19.0; }
 run_bounded() { return 7; }
 build_release_set
 echo reached`, { acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
     expect(result.status, result.stderr).not.toBe(0);
     expect(result.stdout).not.toContain("reached");
+  });
+
+  it("packs the release set with the bootstrapped npm and never installs a client from the registry", () => {
+    const { root, artifactStage, releaseSet } = stageRoots();
+    writeFileSync(join(releaseSet, "release-provenance.json"),
+      JSON.stringify({ version: packageVersion, source: { clean: true } }));
+    const calls = join(root, "calls");
+    const result = runStages(`
+npm() { echo 11.19.0; }
+run_bounded() { printf '%s\\n' "$*" >> "$calls"; }
+build_release_set
+echo reached`, { calls, acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual([
+      "npm run conformance:sync", `npm run release:set:verify -- --output-dir ${releaseSet}`]);
+  });
+
+  it("exports the prefix of the bootstrapped npm so later host stages do not read the runner's bundled npm", () => {
+    const { root, artifactStage, releaseSet } = stageRoots();
+    writeFileSync(join(releaseSet, "release-provenance.json"),
+      JSON.stringify({ version: packageVersion, source: { clean: true } }));
+    const prefix = join(root, "bootstrap", "prefix");
+    mkdirSync(join(prefix, "bin"), { recursive: true });
+    writeFileSync(join(prefix, "bin", "npm"), "#!/bin/sh\necho 11.19.0\n", { mode: 0o755 });
+    const result = runStages(`
+run_bounded() { :; }
+build_release_set
+printf '%s\\n' "$npm_config_prefix"`, { PATH: `${join(prefix, "bin")}:${process.env.PATH ?? ""}`,
+      acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim().split("\n").at(-1)).toBe(realpathSync(prefix));
+  });
+
+  it.each(["10.9.9", "11.19.1", ""])("refuses the release-set stage when the npm client is %j, not the bootstrapped 11.19.0", found => {
+    const { root, artifactStage, releaseSet } = stageRoots();
+    writeFileSync(join(releaseSet, "release-provenance.json"),
+      JSON.stringify({ version: packageVersion, source: { clean: true } }));
+    const calls = join(root, "calls");
+    const result = runStages(`
+npm() { echo "$found"; }
+run_bounded() { printf '%s\\n' "$*" >> "$calls"; }
+build_release_set
+echo reached`, { found, calls, acceptance_root: join(root, "acceptance"), artifact_stage: artifactStage, release_set: releaseSet });
+    expect(result.status).toBe(1);
+    expect(result.stdout).not.toContain("reached");
+    expect(result.stderr).toContain("acceptance-bootstrap.mjs");
+    expect(existsSync(calls)).toBe(false);
   });
 
   it("fails registry start when a pinned image pull fails", () => {

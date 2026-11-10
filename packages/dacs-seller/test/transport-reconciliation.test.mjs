@@ -10,7 +10,6 @@ import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {agentFixture} from './helpers/seller-agent-isolated-fixture.mjs';
 import {proposalAdmissionFixture} from './helpers/proposal-admission-fixture.mjs';
 import {railSteward} from './helpers/rail-authority-fixture.mjs';
-import {withFixtureProfile} from './helpers/wire-authority-fixture.mjs';
 import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
 import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 import {createSellerTransportClientAuth,createSellerTransportServerAuth} from '../src/dacs/seller-transport-auth.mjs';
@@ -21,7 +20,7 @@ function command(agent,path,body,agreementHash){const rawBody=Buffer.from(JSON.s
 // Real store, server auth, HTTP handler and client. `serve` swaps the agent behind the same journal (a restart).
 async function transport(t,agent,dir,body,path='/dacs/v1/agreements/proposals',storeOptions={}){
  const now=storeOptions.now??(()=>NOW);
- const store=withFixtureProfile(createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now,...storeOptions}));t.after(()=>store.close());
+ const store=createSellerTransportStore({path:join(dir,'TEST-recovery.sqlite'),now,...storeOptions});t.after(()=>store.close());
  let hash=body.proposal?.plan.agreementHash??core.contentHash(agent.transportAgreementOf(body.jobId));
  const client=createSellerTransportClientAuth({buyerSigner:{claim:buyer.claim,sign:buyer.signBytes},seller:seller.claim,resolveJob:()=>({listingPin:agent.listingPin,agreementHash:hash}),now});
  const auth=createSellerTransportServerAuth({sellerSigner:{claim:seller.claim,sign:seller.signBytes},listingPin:agent.listingPin,store,now});
@@ -92,7 +91,7 @@ test('recovery does not run a proposal again after its context session ended and
  assert.equal(w.store.reserve(w.request,body).disposition,'perform');state='aborted-by-self';const signed=f.signed.length;
  await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
- // The session's end is kept as a closure (SA-18), so the port no longer reporting it does not reopen the proposal.
+ // The session's end is kept as a closure, so the port no longer reporting it does not reopen the proposal.
  state=null;await assert.rejects(w.peer.propose(body),{code:'seller_unavailable'});
  assert.equal(f.signed.length,signed);assert.equal(agent.durableSessionOf(JOB),null);
  assert.equal(w.store.reserve({...w.request,nonce:'TEST-terminal-inspection-00001'},body).disposition,'uncertain','the effect was held, not released');
@@ -126,7 +125,7 @@ for(const retained of ['pending contribution','uncertain contribution','signatur
   assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before,'terminal attempts sign nothing');
   assert.equal(w.store.reserve(inspection,body).disposition,'uncertain');assert.equal(agent.retainsProposalWork(JOB),true);
  }
- // The session's end is kept as a closure (SA-18): the port no longer reporting it leaves the work retained and still refused.
+ // The session's end is kept as a closure: the port no longer reporting it leaves the work retained and still refused.
  state=null;
  await assert.rejects(w.peer.propose(body),{name:'SellerUnavailableError',code:'seller_unavailable'});
  assert.equal(statuses.at(-1),503);assert.equal(signatures().length,before);

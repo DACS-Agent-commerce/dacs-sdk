@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import DatabaseSync from 'better-sqlite3';
 import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
-import { retainedFor } from '../src/dacs/seller-wire-requests.mjs';
 import { NOW } from './helpers/protocol-fixture.mjs';
 import { BUYER as WORLD_BUYER, PIN as WORLD_PIN, SELLER as WORLD_SELLER, continuingWorld, derive, identityBody, jobFor, proposalFor, proposeJob, world as routeWorld } from './helpers/wire-routes-world.mjs';
 import { sha256Hex } from '@kynesyslabs/dacs';
@@ -34,7 +33,9 @@ async function completionWorld(t, { commitOnSignature = false } = {}) {
   const w = { f, store, internals, capacity, port };
   internals.transaction(() => capacity.allocateWithin({ jobId: JOB, buyer: BUYER.claim, seller: SELLER.claim, listingPin: PIN }));
   w.allocation =(jobId = JOB) => capacity.capacityReport().allocations.find(allocation => allocation.jobId === jobId);
+  // Any route but the proposal refuses a job the host has not seen, so a job is first made known by its proposal.
   w.issue = async (path = PATHS.proposals, { retainedWork = true, jobId = JOB } = {}) => {
+    if (path !== PATHS.proposals && !f.jobRows().some(row => row.job === jobId)) await w.issue(PATHS.proposals, { retainedWork, jobId });
     const input = { ...(await f.admit(f.payload({ path, jobId }))), contextStart: false, paymentTx: null, retainedWork };
     return { effect: await coordinator.reserveCoordinated(input), key: nonceKey(input.payload), path, jobId };
   };
@@ -457,7 +458,7 @@ test('a completion the journal refuses as superseded answers signed 503 operatio
   assert.equal((await job.post()).text, successor.text, 'the successor\'s outcome stands');
 });
 
-test('A14 a request whose host-retained binding changed is peer_operation_mismatch 409 while open, after completion and after a restart; the agent is not called', async t => {
+test('A14 a request whose host-retained binding changed is peer_job_conflict 409 while open, after completion and after a restart; the agent is not called', async t => {
   const w = await routeWorld(t), job = await proposeJob(w, 't10');
   const other = await proposalFor(job.jobId, NOW + 1000);
   const mismatched = () => w.post(PATHS.proposals, other.body, { jobId: job.jobId, agreementHash: other.agreementHash });
@@ -471,8 +472,8 @@ test('A14 a request whose host-retained binding changed is peer_operation_mismat
     if (label !== 'while open') w.agent.transportAgreementOf = () => structuredClone(other.body.proposal.plan.draft);
     const files = w.journalFiles().length;
     const refused = await mismatched();
-    assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 409, error: 'peer_operation_mismatch' }, label);
-    assert.equal(w.journalFiles().length, files + 1, `${label}: the refused request still published its nonce key`);
+    assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 409, error: 'peer_job_conflict' }, label);
+    assert.equal(w.journalFiles().length, files, `${label}: the refused request published nothing, as the accounting refused it first`);
     assert.equal(w.agent.calls.proposals, calls, `${label}: the agent was not called`);
   }
 });
@@ -620,12 +621,11 @@ test('NEW-C1-awaited-settlement', async t => {
 });
 
 test('NEW-C1-route-slot-return: a completed proposal and commitment return only their own slot; an open attempt returns none', async t => {
-  const w = await routeWorld(t), { store, capacity } = w.handle, internals = sellerStoreInternals(store);
-  w.handle.wire.retainedFor = (input) => {
-    const records = retainedFor(w.agent, input);
-    if (records !== null && [PATHS.proposals, PATHS.commitments].includes(input.path)) records.retained.allocated = true;
-    return records;
-  };
+  const w = await routeWorld(t);
+  // The wire context is frozen: the host's retained-purchase check reads this capacity, which holds a live allocation on these two routes.
+  w.handle.wireOverrides = { capacity: { retainedAllocated: ({ route }) => [PATHS.proposals, PATHS.commitments].includes(route) } };
+  w.reopen();
+  const { store, capacity } = w.handle, internals = sellerStoreInternals(store);
   const figures = () => { const { used, allotted, free } = capacity.capacityReport(); return { used, allotted, free }; };
   const slots = (jobId) => capacity.capacityReport().allocations.find((allocation) => allocation.jobId === jobId).slots;
   const job = await proposeJob(w, 'slot-return'), open = await proposeJob(w, 'slot-open');

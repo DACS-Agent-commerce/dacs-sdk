@@ -18,9 +18,8 @@ import { agreementInput, listingPin } from '../../src/dacs/purchase-protocol.mjs
 import { createOrdinaryCompletionPort, createSellerHttpHandler } from '../../src/dacs/seller-http.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
-import * as wireRequests from '../../src/dacs/seller-wire-requests.mjs';
 import { wireContinuationFixture, receiptReader } from './wire-continuation-fixture.mjs';
-import { retainedFor } from '../../src/dacs/seller-wire-requests.mjs';
+import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
 import { SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth, createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { createSellerTransportStore } from './bound-transport-store.mjs';
 
@@ -75,8 +74,8 @@ export async function statementsDuring(work) {
 export function stubAgent() {
   const drafts = new Map();
   const agent = {
-    claim: seller.claim, listingPin: PIN, retains: false, credit: () => {}, onWork: () => {}, answer: undefined,
-    calls: { proposals: 0, commits: 0, states: 0, reconciled: 0, payments: 0 },
+    claim: seller.claim, listingPin: PIN, retains: false, credit: () => {}, onWork: () => {}, answer: undefined, fenced: undefined,
+    calls: { proposals: 0, commits: 0, signatureCommits: 0, states: 0, reconciled: 0, payments: 0 },
     transportAgreementOf: (jobId) => structuredClone(drafts.get(jobId) ?? null),
     retainsProposalWork: (jobId) => agent.retains && drafts.has(jobId),
     retainsPaymentClaim: () => agent.retains,
@@ -86,10 +85,14 @@ export function stubAgent() {
       agent.onWork('proposal', body);
       transport?.check();
       drafts.set(body.transportIdentity.jobId, body.proposal.plan.draft);
+      // As the real agent does, an answer may be settled inside the job fence (`fenced`) before the route returns.
+      if (agent.fenced !== undefined) await transport.settle({ status: 200, value: agent.fenced });
       return agent.answer ? agent.answer() : { disposition: 'complete', contribution: { signed: true } };
     },
     commit: async (body) => { agent.calls.commits++; agent.onWork('commit', body); return agent.answer ? agent.answer() : { status: 'committed', jobId: body.jobId }; },
+    commitOnSignature: async (body) => { agent.calls.signatureCommits++; return { status: 'committed', jobId: body.jobId }; },
     readCommitment: async ({ jobId }) => { agent.onWork('commit-read'); return { status: 'committed', jobId }; },
+    continuationEvidenceOf: () => null,
     agreementState: (identity) => { agent.calls.states++; return { proposal: null, contribution: null, jobId: identity.jobId }; },
     submitPayment: async () => { agent.calls.payments++; agent.onWork('payment'); return { status: 'payment-evidenced', delivery: { status: 'delivered' } }; },
     reconcileTransport: async ({ request, transport }) => {
@@ -102,7 +105,7 @@ export function stubAgent() {
 }
 
 /** One seller: a transport store, a bound profile, the wire journal and the handler, with a buyer that signs for it. */
-export async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader(), fixture = null, leaseMs = JOURNAL_LEASE_MS } = {}) {
+export async function world(t, { maxJobs, maxRecords, readAuthority = authorityReader(), fixture = null, leaseMs = JOURNAL_LEASE_MS, commitOnSignature = true } = {}) {
   const pin = fixture ? listingPin(fixture.listing) : PIN;
   const directory = await mkdtemp(join(tmpdir(), 'TEST-wire-routes-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -141,10 +144,12 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
   agent.commitOnSignature = agent.commit;
   agent.calls.bundles = 0;
   if (fixture) {
-    agent.transportAgreementOf = (jobId) => fixture.agent().transportAgreementOf(jobId);
+    // The durable agent already committed this job; the host holds it from the proposal its wire route admitted, which is when the store keeps the tuple.
+    const proposed = agent.transportAgreementOf;
+    agent.transportAgreementOf = (jobId) => proposed(jobId) === null ? null : fixture.agent().transportAgreementOf(jobId);
     agent.continuationEvidenceOf = (jobId) => fixture.agent().continuationEvidenceOf(jobId);
   }
-  const handle = { store: null, handler: null, finishFails: false };
+  const handle = { store: null, handler: null, finishFails: false, wireOverrides: {} };
   const mount = () => {
     if (fixture) fixture.admittedListing = admitWireArtifact(Buffer.from(JSON.stringify(fixture.listing)));
     const store = createUnboundStore({ path: storePath, maxJobs, maxRecords, now: clock });
@@ -159,15 +164,18 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
     const reserveCoordinated = reservations.reserveCoordinated.bind(reservations);
     reservations.reserveCoordinated = (...args) => { state.readsAtReserve = state.authorityReads + 1; return reserveCoordinated(...args); };
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
-    const wire = { binding: buyerWire.binding, connection, signer: sellerSigner, journal, store, reservations, completion, ready: () => state.ready, now: clock, requireDelegation: false,
-      retainedFor: (input) => retainedFor(agent, input),
-      continuationFor: (input) => fixture ? wireRequests.continuationFor(agent, input, fixture.admittedListing ?? fixture.listing) : {},
-      readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader() };
-    Object.assign(handle, { store, capacity, wire, handler: createSellerHttpHandler(agent, { authentication, wire, commitOnSignature: true }) });
+    const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
+      signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
+    Object.assign(handle, { store, capacity, authentication, wire, handler: createSellerHttpHandler(agent, { authentication, wire, commitOnSignature }) });
   };
   mount();
   t.after(() => handle.store.close());
   const reopen = () => { handle.store.close(); handle.finishFails = false; mount(); };
+  /** Runs `work` on a restarted seller whose wire context takes `overrides` (the context is frozen), then restarts it again without them. */
+  const withWire = async (overrides, work) => {
+    handle.wireOverrides = overrides; reopen();
+    try { return await work(); } finally { handle.wireOverrides = {}; reopen(); }
+  };
   const answerOf = (res, payload) => ({ status: res.status, text: res.text, body: JSON.parse(res.text), header: res.headers?.[SELLER_TRANSPORT_HEADER], signed: res.headers?.[SELLER_TRANSPORT_HEADER] !== undefined, payload });
   const send = async (path, { text, header, payload = null }) => answerOf(await exchange(handle.handler, { url: path, text, header }), payload);
   /** A request the buyer's `signWireRequest` signs, sent through the handler. */
@@ -192,7 +200,7 @@ export async function world(t, { maxJobs, maxRecords, readAuthority = authorityR
       notBefore: NOW - SKEW_MS, expiresAt, profile: buyerWire.binding.profile, ...rest };
     return { payload, signature: BUYER.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url') };
   };
-  return { directory, leaseMs, state, agent, signing, buyerWire, handle, mount, reopen, post, send, verified, rows, journalFiles, effects, payloadFor, headerFor, delegationFor, storePath, clock };
+  return { directory, leaseMs, state, agent, signing, buyerWire, handle, mount, reopen, withWire, post, send, verified, rows, journalFiles, effects, payloadFor, headerFor, delegationFor, storePath, clock };
 }
 
 export const proposeJob = async (w, label) => {
