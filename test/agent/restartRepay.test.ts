@@ -252,7 +252,7 @@ describe("resume with a session store that never saw the earlier run", () => {
     const bridge = evmErc20Settle(rail, cfg, { store: durableRailStore });
     const second = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee", { resumeSettlement: bridge });
     await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1"))
-      .rejects.toThrow(/no recorded settlement outcome/);
+      .rejects.toThrow(/no settlement record; settlement remains unresolved/);
     expect(counter.transfers).toBe(0);
   });
 
@@ -280,7 +280,7 @@ describe("resume with a session store that never saw the earlier run", () => {
     const second = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee",
       { sessionStore, resumeSettlement: bridge });
     await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1"))
-      .rejects.toThrow(/no recorded settlement outcome/);
+      .rejects.toThrow(/no settlement record; settlement remains unresolved/);
     expect(counter.transfers).toBe(0);
   });
 });

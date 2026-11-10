@@ -945,14 +945,24 @@ export function x402Settle(
     };
     // At-most-once per (railId, jobId, phaseIndex) uses the caller's durable
     // settlement store. A reconciled resubmit does not rebuild the x402
-    // authorization/session binding (SB-3) by itself. A durable recovery may
-    // replay only when `reconcile` returns an authorization bound to this exact
-    // deterministic EIP-3009 nonce; absence alone still fails closed.
-    return store.once(
-      settlementKey(railId, jobId, phaseIndex),
-      binding,
-      submit,
-      reconcile,
-    );
+    // authorization/session binding by itself. A `recoveryOnly` request, which
+    // every runSession resume sends, never submits. Only a direct call without
+    // `recoveryOnly` may replay, and only when `reconcile` returns an
+    // authorization bound to this exact deterministic EIP-3009 nonce; absence
+    // alone still fails closed.
+    const key = settlementKey(railId, jobId, phaseIndex);
+    if (!req.recoveryOnly) return store.once(key, binding, submit, reconcile);
+    // Look the record up before `once`, which would write an intent: a refused
+    // recovery must leave nothing behind that blocks a later settlement.
+    return (async () => {
+      if (store.readOutcome === undefined) {
+        throw new DacsError("x402 recovery requires read-only settlement outcome lookup; settlement remains unresolved");
+      }
+      const recorded = await store.readOutcome(key, binding);
+      if (recorded === null && (store.hasRecord === undefined || !await store.hasRecord(key, binding))) {
+        throw new DacsError("x402 recovery has no settlement record; settlement remains unresolved");
+      }
+      return store.once(key, binding, submit, reconcile);
+    })();
   };
 }

@@ -702,14 +702,33 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     expect(rail.transferCalls).toBe(0);
   });
 
-  test("EVM recovery without a rail record never transfers", async () => {
+  test("EVM recovery without a rail record writes nothing, so a later settle pays exactly once", async () => {
     const rail = countingRail();
+    const log = createInMemorySettlementLog();
+    const claims: string[] = [];
     const settle = evmErc20Settle(rail, cfg, {
-      store: createIdempotencyStore(createInMemorySettlementLog()),
+      store: createIdempotencyStore({
+        ...log,
+        claimIntent: async (input) => {
+          const claim = await log.claimIntent(input);
+          claims.push(claim.status);
+          return claim;
+        },
+      }),
     });
-    await expect(settle({ ...req, recoveryOnly: true }))
-      .rejects.toThrow(/no recorded settlement outcome/);
-    expect(rail.transferCalls).toBe(0);
+    const key = settlementKey(req.rail, req.jobId, 0);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(settle({ ...req, recoveryOnly: true }))
+        .rejects.toThrow(/evm-erc20 recovery has no settlement record; settlement remains unresolved/);
+      expect(rail.transferCalls).toBe(0);
+      expect(claims).toEqual([]);
+      expect(await log.readOutcome?.(key)).toBeNull();
+    }
+    const paid = await settle(req);
+    expect(rail.transferCalls).toBe(1);
+    expect(claims).toEqual(["acquired"]);
+    await expect(settle({ ...req, recoveryOnly: true })).resolves.toEqual(paid);
+    expect(rail.transferCalls).toBe(1);
   });
 
   test("direct EVM bridge rejects a destination mismatch before transfer", async () => {
