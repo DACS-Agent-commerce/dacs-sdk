@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "101eee65431d864f53d34ce950889f41869a4945"
+        "blob": "6287e63c1ca0c99f45aae8038d93e04ef7eed28e"
       },
       "DELTA-LEDGER.json": {
-        "blob": "48ec14b588037525abaf6d9e4c3e3f1e21efc161"
+        "blob": "8cb73fc5d410b1a6c38d095111e7b3bb64b34973"
       },
       "DELTA-MAP.md": {
-        "blob": "cc105ac9969b4e2addeecabe01bed46aabdd62e9"
+        "blob": "fafa9c0403a2464b1f95296793275e76d4aadcf3"
       },
       "DELTA-NOTES.md": {
         "blob": "99896f36cc6629bace61b758b8acd291329b2564"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "c13f237ceee5741bb93a6fd15d3e80e2788e88e0"
+        "blob": "776d79fee6f489a41fdd3262149ce4b8fe3cfbfb"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "1132137cccf49a91839b60154cd35d22a570f4f0"
+        "blob": "3866bdb92efd40a0f1bdcf4cdb6585b64c91420e"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1058,7 +1058,7 @@
         "blob": "e6a34244e6d9bf4855c487cbff1b366bc6ceb11b"
       },
       "scripts/delta-map.mjs": {
-        "blob": "7a5844ce742cde4d2f1ee168b5ec59f7fd2270f0"
+        "blob": "65d4159d1902788181ba63abc1d87e53b13aa341"
       },
       "scripts/delta-provenance.test.mjs": {
         "blob": "bba7f276ba8bccac9ff4947697b5cb1bce36abf8"
@@ -1154,7 +1154,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "652e68fa1ad0a799754f35d604bac2ffc1376f0e"
+        "blob": "615dbe0271963189f792d967d3b1acf6c2fc678f"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1250,10 +1250,10 @@
         "blob": "e57dba177ef9a6ae96f696d2f6b1aa4fc9ceabec"
       },
       "src/purchase-state-schema.mjs": {
-        "blob": "557ea59e906125decb9c56d5b2322a1d30af3321"
+        "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "f13c4e5bc349628e21cb213b5d03e0d82f5ff6dd"
+        "blob": "e1329e8bbd087158c9c1162ded0228c2bee0cd6a"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1338,6 +1338,9 @@
       },
       "test/completion-readiness.test.mjs": {
         "blob": "923878fe95df659ad6e0e363fce339d4a826a074"
+      },
+      "test/completion-receipt-profile.test.mjs": {
+        "blob": "565c664bbc629707665dd65c3889ac5e08ec2d09"
       },
       "test/config-nonce-slot-proof.test.mjs": {
         "blob": "e18570d5cd4b514b98c9b4b8b8177ff7eba80c12"
@@ -1655,7 +1658,7 @@
         "blob": "c27c8df3b9da919daca704a40375be52dae7e89c"
       },
       "test/helpers/purchase-integrity-operations.mjs": {
-        "blob": "8b91a598be9918d7177fdb04c4c35cdf9d41df0b"
+        "blob": "a4a556aea31469b10698a07d3180bbbc8ef37d03"
       },
       "test/helpers/purchase-tx-exit-worker.mjs": {
         "blob": "08bae608954a74b5e42262c5ac39746363ed42b3"
@@ -1785,6 +1788,9 @@
       },
       "test/intent-canonical-depth.test.mjs": {
         "blob": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
+      },
+      "test/job-id-uniqueness.test.mjs": {
+        "blob": "6841b7b79dece95e51c8b46abf549d0370fb4789"
       },
       "test/native-adapter-auth.test.mjs": {
         "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"
@@ -1922,7 +1928,7 @@
         "blob": "aa0be667f8a71c8b7a687588757106bef3ca3cd8"
       },
       "test/readme-contract.test.mjs": {
-        "blob": "0f7e7d6618f09f8377893affcdd5449425e4646f"
+        "blob": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
       },
       "test/rpc-byte-budget.test.mjs": {
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"

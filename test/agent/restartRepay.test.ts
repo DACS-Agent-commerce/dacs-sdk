@@ -239,7 +239,7 @@ describe("resume with a session store that never saw the earlier run", () => {
     expect(counter.transfers).toBe(1);
   });
 
-  test("a crash before paying resumes through a durable resumeSettlement and pays once", async () => {
+  test("a crash before the rail records intent refuses recovery without paying", async () => {
     const { counter, rail, cfg, evmTerms } = evmFixture();
     const kv = new Map<string, Record<string, unknown>>();
     const crash = { hit: true }; // evidence anchoring does not crash in this case
@@ -251,11 +251,12 @@ describe("resume with a session store that never saw the earlier run", () => {
     expect(counter.transfers).toBe(0);
     const bridge = evmErc20Settle(rail, cfg, { store: durableRailStore });
     const second = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee", { resumeSettlement: bridge });
-    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1")).resolves.toBeDefined();
-    expect(counter.transfers).toBe(1);
+    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1"))
+      .rejects.toThrow(/no recorded settlement/);
+    expect(counter.transfers).toBe(0);
   });
 
-  test("a durable session store with the job but no claim resumes through resumeSettlement and pays once", async () => {
+  test("a durable session store with the job but no rail claim refuses recovery", async () => {
     const { counter, rail, cfg, evmTerms } = evmFixture();
     const kv = new Map<string, Record<string, unknown>>();
     const crash = { hit: true }; // evidence anchoring does not crash in this case
@@ -272,13 +273,14 @@ describe("resume with a session store that never saw the earlier run", () => {
     await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/lookup for/);
     expect(counter.transfers).toBe(0);
     expect((await sessionStore.load("job-1")).status).toBe("ok");
-    // Without resumeSettlement the resume is refused; with it, the job completes once.
+    // Neither the session record nor a recovery seam authorizes a new rail claim.
     const refused = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
     await expect(runSessionCore(refused.listingRef, evmTerms, refused.deps, "job-1"))
       .rejects.toThrow(/resumeSettlement is required/);
     const second = await makeDeps(bridge, kv, crash, "pay-evm-erc20", "0xpayee",
       { sessionStore, resumeSettlement: bridge });
-    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1")).resolves.toBeDefined();
-    expect(counter.transfers).toBe(1);
+    await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1"))
+      .rejects.toThrow(/no recorded settlement/);
+    expect(counter.transfers).toBe(0);
   });
 });
