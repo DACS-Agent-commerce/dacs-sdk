@@ -2,7 +2,11 @@ import { types as nodeTypes } from "node:util";
 
 import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
 import { createPayDemExecutionAuthority } from "./payDemExecutionAuthority.js";
-import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import type {
+  SettleRequest,
+  SettleResult,
+  SettlementRecoveryAttempt,
+} from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import {
   snapshotCanonicalJsonRead,
@@ -15,6 +19,7 @@ export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddre
 import {
   createIdempotencyStore,
   declareSettlementBridge,
+  inheritSettlementBridge,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -2671,4 +2676,28 @@ export function payDemSettle(
   };
   const journaled = railJournals.get(rail);
   return declareSettlementBridge(bridge, journaled === undefined ? {} : { journaled });
+}
+
+/**
+ * The resume seam for an operator who read a transaction hash from the
+ * prepared-transfer journal. For a recovery request that carries no history it
+ * calls `attempts` and forwards the request with what it returns; a request that
+ * already carries history, or is not a recovery, is forwarded unchanged. The
+ * wrapper keeps `bridge`'s registration and declared traits, so `runSession`
+ * accepts it. It only adds history: the bridge still decides whether the
+ * payment landed, and still never pays on a recovery request.
+ *
+ * @returns A function with the same shape as `bridge`.
+ * @throws Whatever `attempts` or `bridge` throws; nothing is caught.
+ */
+export function withRecoveredAttempts(
+  bridge: (req: SettleRequest) => Promise<SettleResult>,
+  attempts: (req: Readonly<SettleRequest>) => Promise<readonly SettlementRecoveryAttempt[]>,
+): (req: SettleRequest) => Promise<SettleResult> {
+  const recovering = async (req: SettleRequest): Promise<SettleResult> => {
+    if (req.recoveryOnly !== true || (req.priorAttempts?.length ?? 0) > 0) return bridge(req);
+    const found = await attempts(req);
+    return bridge(found.length === 0 ? req : { ...req, priorAttempts: found });
+  };
+  return inheritSettlementBridge(bridge, recovering);
 }
