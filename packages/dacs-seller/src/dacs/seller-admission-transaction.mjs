@@ -176,10 +176,10 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     return held;
   }
 
-  // Check readiness and start limits after the store's capacity guard; recheck context capacity after policy awaits.
+  // Sweep before the store's closure guard; recheck context capacity after policy awaits.
   function checkLimits(buyer, ownRow) {
     if (ready() !== true) fail('seller_not_ready', 503);
-    retireSlotsWithin(clock(), undefined, { capacity: true, keepContexts: true, jobs: [] });
+    retireSlotsWithin(clock(), undefined, { capacity: true, jobs: [] });
     const counts = admissionCounts();
     if (ownRow && counts.contextRecords - 1 >= limits.maxContextRecords) fail('peer_context_capacity', 503);
     if (counts.starts >= limits.maxStartsPerHour) fail('unpaid_start_limit', 429);
@@ -268,7 +268,7 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
       db.exec('SAVEPOINT admission_intent');
       try {
         if (!repeated) { requireOwner(input); verified = true; }
-        reserveAdmissionWithin(input, row.createdAt); checkLimits(input.buyer, false);
+        checkLimits(input.buyer, false); reserveAdmissionWithin(input, row.createdAt);
         db.prepare('INSERT INTO kit_context_admissions VALUES (?, ?, ?, ?, ?, ?)').run(row.jobId, row.buyer, null, row.state, row.rev, JSON.stringify(row));
         db.exec('RELEASE admission_intent');
       } catch (error) {

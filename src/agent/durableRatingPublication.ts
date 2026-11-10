@@ -19,10 +19,10 @@ import type {
 import type { VerifiedRead } from "../discovery/verifiedRead.js";
 import { DacsError } from "../errors.js";
 import { isCanonicalClaimReference, sameCanonicalClaimIdentity } from "../identity/claimReference.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const EFFECT_KIND = "artifact-publication" as const;
 const EFFECT_SCHEMA = "dacs-rating-publication-effect/v1" as const;
-const RESULT_SCHEMA = "dacs-rating-publication/v1" as const;
 
 export interface RatingPublicationEffectLease {
   owner: string;
@@ -305,16 +305,6 @@ interface CapturedPublicationInput {
   expectedOwner: string;
 }
 
-function deepFreeze<T>(value: T): Readonly<T> {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) {
-    return value;
-  }
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child);
-  }
-  return Object.freeze(value);
-}
-
 function exactKeys(
   value: Record<string, unknown>,
   expected: readonly string[],
@@ -440,10 +430,6 @@ function effectIdentity(captured: CapturedPublicationInput) {
     bindingHash: sha256Hex(canonicalize(effectInput)),
     idempotencyKey: `dacs-rating:${logicalAddress}`,
   };
-}
-
-function isHash(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 }
 
 function captureCompletedResult(

@@ -3,12 +3,53 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { completeWireEffect } from '@kynesyslabs/dacs/wire';
 import { createSellerTransportStore, sellerStoreInternals, SELLER_CONTEXT_PATH } from '../src/dacs/seller-transport-auth.mjs';
 import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { accountingFixture, BUYER, SELLER, JOB, JOB2, PIN, T0, CONTEXT, PROPOSALS } from './helpers/reservation-accounting-fixture.mjs';
 
 const HOUR = 3600000;
 const LIVE_JOB = '01' + '3'.repeat(24), NEXT_JOB = '01' + 'Z'.repeat(24), CHALLENGE_JOB = '01' + '5'.repeat(24);
+
+for (const context of [false, true]) for (const restart of [false, true]) test(`a retired job refuses recovery of an ended ${context ? 'context' : 'proposal'} operation${restart ? ' after restart' : ''}`, async t => {
+  let session = null;
+  const f = await accountingFixture(t, { maxJobs: 1, maxContextRecords: 1,
+    contextSessionState: ({ jobId }) => jobId === JOB ? session : null });
+  if (context) completeWireEffect(f.journal, await f.reserve(await f.admit()), { status: 200, text: '{}' });
+  completeWireEffect(f.journal, await f.reserve(context ? await f.admitContext() : await f.admit()), null);
+  session = 'finalised'; f.setTime(T0 + 2 * HOUR);
+  let port = sellerStoreInternals(f.store());
+  port.transaction(() => port.retireSlotsWithin(f.now(), JOB));
+  assert.equal(f.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
+  if (restart) { session = null; f.reopen(); port = sellerStoreInternals(f.store()); }
+  const retry = context ? await f.admitContext() : await f.admit();
+  let charges = 0;
+  retry.checkCapacityWithin = () => { charges++; return { class: 'general', allocationId: null }; };
+  const before = { rows: f.rows(), holds: f.holds(), files: f.files() };
+  // Observe both jobs before checking refusal, so a failure shows the capacity consequence.
+  let result, error;
+  try { result = await f.reserve(retry); } catch (cause) { error = cause; }
+  const after = { rows: f.rows(), holds: f.holds(), files: f.files() };
+  const next = await f.reserve(await f.admit(f.payload({ jobId: JOB2 })));
+  assert.deepEqual({ retry: result?.state ?? null, code: error?.code, next: next.state, charges },
+    { retry: null, code: 'context_job_closed', next: 'new', charges: 0 });
+  assert.deepEqual(after, before);
+  assert.equal(port.admissionCounts().contextRecords, 0);
+  await assert.rejects(f.reserve(await f.admit(f.payload({ jobId: NEXT_JOB }))), { code: 'peer_job_capacity', status: 503 });
+});
+
+test('a completed context retains its answer through retirement and restart with spare capacity', t => {
+  const w = fixture(t), request = w.payload(JOB, { path: CONTEXT });
+  const answer = { disposition: 'cached', status: 200, text: '{"context":"kept"}' };
+  w.store.finish(w.store.reserve(request, { scope: { jobId: JOB } }, { admit: w.now }), answer.status, answer.text);
+  w.terminal('finalised'); w.advance(2 * HOUR);
+  const port = sellerStoreInternals(w.store);
+  port.transaction(() => port.retireSlotsWithin(w.now(), JOB));
+  assert.equal(port.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
+  w.terminal(null); w.reopen();
+  const retry = w.payload(JOB, { path: CONTEXT });
+  assert.deepEqual(w.store.reserve(retry, { scope: { jobId: JOB } }, { admit: () => assert.fail('a completed retry must not admit work') }), answer);
+});
 function fixture(t, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'slot-retirement-'));
   const path = join(directory, 'transport.sqlite');
@@ -28,7 +69,10 @@ test('completed proposal and payment retries stay cached with spare job capacity
   w.store.finish(w.store.reserve(first, {}, { keepProfile: FIXTURE_PROFILE }), 200, '{"proposal":"kept"}');
   const payment = w.payload(JOB, { path: '/dacs/v1/payments' });
   w.store.finish(w.store.reserve(payment, { txHash: 'c'.repeat(64) }, { keepProfile: FIXTURE_PROFILE }), 200, '{"payment":"received"}');
-  w.terminal('finalised'); w.advance(61000);
+  w.terminal('finalised'); w.advance(2 * HOUR);
+  const port = sellerStoreInternals(w.store);
+  port.transaction(() => port.retireSlotsWithin(w.now(), JOB));
+  assert.equal(port.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
   w.store.reserve(w.payload(JOB2), {}, { keepProfile: FIXTURE_PROFILE });
   w.terminal(null); w.reopen();
   assert.deepEqual(w.store.reserve(w.payload(), {}, { keepProfile: FIXTURE_PROFILE }), { disposition: 'cached', status: 200, text: '{"proposal":"kept"}' });
@@ -42,7 +86,7 @@ test('retired jobs reject fresh work after restart with unknown session state', 
   const port = sellerStoreInternals(w.store);
   port.transaction(() => port.retireSlotsWithin(w.now(), JOB));
   w.terminal(null); w.reopen();
-  assert.throws(() => w.store.reserve(w.payload(), {}, { keepProfile: FIXTURE_PROFILE }), { code: 'context_session_terminal', status: 409 });
+  assert.throws(() => w.store.reserve(w.payload(JOB, { bodyHash: 'd'.repeat(64) }), {}, { keepProfile: FIXTURE_PROFILE }), { code: 'context_session_terminal', status: 409 });
 });
 
 test('one reserve below capacity does not read every finished job session', t => {
@@ -124,7 +168,7 @@ test('one reserve reuses a genuinely reclaimable job and context slot', t => {
   assert.equal(w.store.reserve(w.payload(JOB2, { path: CONTEXT }), { scope: { jobId: JOB2 } }, { admit: w.now }).disposition, 'perform');
   const port = sellerStoreInternals(w.store);
   assert.equal(port.admissionCounts().contextRecords, 1);
-  assert.deepEqual(port.db.prepare('SELECT job FROM peer_context_admissions').all(), [{ job: JOB2 }]);
+  assert.deepEqual(port.db.prepare('SELECT job FROM peer_context_admissions ORDER BY job').all(), [JOB, JOB2].sort().map(job => ({ job })));
   assert.equal(port.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
 });
 
@@ -178,6 +222,41 @@ for (const maxContextRecords of [1, 2]) test(`capacity retirement finds an activ
     contextSessionState: ({ jobId }) => [JOB, NEXT_JOB].includes(jobId) ? 'finalised' : null });
   t.after(() => store.close());
   const port = sellerStoreInternals(store);
-  port.transaction(() => port.retireSlotsWithin(w.now(), undefined, { capacity: true, keepContexts: true }));
+  port.transaction(() => port.retireSlotsWithin(w.now(), undefined, { capacity: true }));
   assert.equal(port.db.prepare('SELECT COUNT(*) AS n FROM peer_jobs WHERE job = ?').get(NEXT_JOB).n, 0);
+});
+
+
+test('a retired job refuses a fresh accounted context and preserves job capacity after restart', async t => {
+  let session = null;
+  const f = await accountingFixture(t, { maxJobs: 1, contextSessionState: ({ jobId }) => jobId === JOB ? session : null });
+  const first = f.payload();
+  f.store().finish(f.store().reserve(first, {}, { keepProfile: FIXTURE_PROFILE }), 200, '{}');
+  session = 'finalised'; f.setTime(T0 + HOUR + 61000);
+  f.store().finish(f.store().reserve(f.payload({ jobId: JOB2 }), {}, { keepProfile: FIXTURE_PROFILE }), 422, '{}', { noEffect: true });
+  assert.equal(f.db.prepare('SELECT job_retired FROM kit_slot_retirements WHERE job = ?').get(JOB).job_retired, 1);
+  assert.equal(f.db.prepare('SELECT closed FROM kit_job_owners WHERE job = ?').get(JOB).closed, 0);
+  session = null; f.reopen();
+  const context = await f.admitContext(), rows = f.rows(), holds = f.holds(), files = f.files();
+  await assert.rejects(f.reserve(context), { code: 'context_job_closed', status: 409 });
+  assert.deepEqual(f.rows(), rows);
+  assert.deepEqual(f.holds(), holds);
+  assert.deepEqual(f.files(), files);
+  assert.equal(sellerStoreInternals(f.store()).admissionCounts().contextRecords, 0);
+  assert.equal((await f.reserve(f.args(f.payload({ jobId: JOB2 })))).state, 'new');
+  await assert.rejects(f.reserve(f.args(f.payload({ jobId: NEXT_JOB }))), { code: 'peer_job_capacity', status: 503 });
+});
+
+test('old reserve refuses fresh work when its sweep retires the job', async t => {
+  let session = null;
+  const f = await accountingFixture(t, { maxJobs: 1,
+    contextSessionState: ({ jobId }) => jobId === JOB ? session : null });
+  completeWireEffect(f.journal, await f.reserve(await f.admit()), { status: 200, text: '{"proposal":"kept"}' });
+  f.setTime(T0 + 2 * HOUR); session = 'finalised';
+  const fresh = f.payload({ path: '/dacs/v1/bundles/buyer-copy' });
+  const before = { rows: f.rows(), holds: f.holds(), files: f.files() };
+  assert.throws(() => f.store().reserve(fresh, {}, { keepProfile: FIXTURE_PROFILE }),
+    { code: 'context_session_terminal', status: 409 });
+  assert.deepEqual({ rows: f.rows(), holds: f.holds(), files: f.files() }, before);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM peer_nonces').get().n, 0);
 });

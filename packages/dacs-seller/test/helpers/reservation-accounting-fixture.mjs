@@ -33,8 +33,9 @@ export async function accountingFixture(t, options = {}) {
   let time = T0, sequence = 0;
   const now = () => time;
   // The store reads the wire's own record of an operation, as the host does with its journal.
-  const wireOperationView = target => inspectWireOperation(journal, target);
-  let store = createSellerTransportStore({ path, now, wireOperationView, ...options });
+  // No seller agent runs here, so unless a test says otherwise no ended attempt leaves work behind.
+  const readers = { wireOperationView: target => inspectWireOperation(journal, target), retainsUnfinishedWork: () => false };
+  let store = createSellerTransportStore({ path, now, ...readers, ...options });
   const db = new DatabaseSync(path);
   const journal = openWireRequestJournal(journalDir, { clock: now, leaseMs: 300000 });
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: TEST_CONNECTION, readAuthority: authorityReader() });
@@ -105,7 +106,7 @@ export async function accountingFixture(t, options = {}) {
   };
   return { dir, path, db, journal, journalDir, payload, admit, admitContext, payment, args, reserve, rows, files, nonces, now,
     store: () => store, setTime: value => { time = value; },
-    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, wireOperationView, ...options }); },
+    reopen: () => { store.close(); store = createSellerTransportStore({ path, now, ...readers, ...options }); },
     tuples: () => db.prepare('SELECT COUNT(*) AS n FROM kit_purchase_profiles').get().n,
     payments: () => db.prepare('SELECT * FROM kit_payment_transactions').all(),
     jobRows: () => db.prepare('SELECT * FROM peer_jobs ORDER BY rowid').all(),
