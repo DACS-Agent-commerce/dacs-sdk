@@ -364,16 +364,16 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "5de79ad1594d57ab57a5d3676f48fab9ff9899e0"
+        "blob": "036004b2c26a95d7312f6d134bb7bb8b9ba5c60c"
       },
       "DELTA-LEDGER.json": {
-        "blob": "6aaf21b7d09f30e8e0f023174a1937536833a762"
+        "blob": "0a4ac3febc88dc47913934715772a7860da09e54"
       },
       "DELTA-MAP.md": {
-        "blob": "72ceb6a0f18d42a77d2b3154873b76203892dcb7"
+        "blob": "09a80e47a2d896d418983549ccb31d2fa3045985"
       },
       "DELTA-NOTES.md": {
-        "blob": "13c4298bffefb54576eac96d02b04a1c9761613a"
+        "blob": "9a7d670bfc948ace23f2521535a8ca12f11eab2c"
       },
       "HOLD.json": {
         "control": "record"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "c147cdf37f1e04c5aacb534c6d334d524129f2e9"
+        "blob": "091100f59cea0248fa1243294b829d0605feebf9"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "12a473953d5f0c9c64942d6efbdce79e8e39b165"
+        "blob": "35b551f547af9df3aad031890b17d18d63f1a7ce"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1154,7 +1154,7 @@
         "blob": "c2420945f3a5c5dbb1c3101923fd27af3e27398f"
       },
       "src/dacs/protocol-purchases.mjs": {
-        "blob": "e43129e16f7d027fb24b9e2ecef24eb56a908393"
+        "blob": "652e68fa1ad0a799754f35d604bac2ffc1376f0e"
       },
       "src/dacs/purchase-admission-state.mjs": {
         "blob": "ec0266be22fb1f4c059dabec10517a33022f5503"
@@ -1172,7 +1172,7 @@
         "blob": "dcfdf8dae69a8fc700512a6fff68176b52d97dab"
       },
       "src/dacs/seller-http.mjs": {
-        "blob": "add72c0add7c8188d6cc86e7476207a4882c93af"
+        "blob": "eb89bc99364dc00d325530e5249981917b9cdb87"
       },
       "src/dacs/seller-session-lifecycle.mjs": {
         "blob": "86fd5777a41c76183f2b3383898400469bdc60b3"
@@ -1184,13 +1184,13 @@
         "blob": "14a0693cb2484eb39c9db122914b46ef31503757"
       },
       "src/dacs/seller-transport-auth.mjs": {
-        "blob": "cbbff1c08f2b7986c2a55298652234a1b1b6b606"
+        "blob": "68a8a8946386f010d7a157a25e184bfb52370108"
       },
       "src/dacs/seller-wire-authentication.mjs": {
-        "blob": "767519509759e6d77c030f38e5601eab455922a0"
+        "blob": "b69efa8ce26bbf679fb80bea0a62fa62a5d8b2c5"
       },
       "src/dacs/source-demo-seller-transport.mjs": {
-        "blob": "14350d302f2efcecf790150cd2fcaec4244982d0"
+        "blob": "208a59efea2ceed0f8b76d96aaf66444ac51cc40"
       },
       "src/dacs/verification.mjs": {
         "blob": "de51f5bc8faf3b14b707783e03bc8e303fb44ca5"
@@ -1223,13 +1223,13 @@
         "blob": "0dcfab473d1256f9de295bc65c0f04926e1ceb62"
       },
       "src/index.mjs": {
-        "blob": "dd10aa2b3ebe253b092d9543850079587b5bca27"
+        "blob": "8eef30db35c285a915231522e0b73a8c407e9384"
       },
       "src/portal-capability.mjs": {
         "blob": "d6200b11094df0e624dd644d980ac3bc7444868d"
       },
       "src/public-admission.mjs": {
-        "blob": "62265d0764ad8c81d23cb12217ef1b3e9f35fe8d"
+        "blob": "3f31bdea587a0f038d5a8fcc892b053dbd129fff"
       },
       "src/public-guidance.mjs": {
         "blob": "3e30100bbe51407035a50afcb5f1ef2c991040fa"
@@ -1457,7 +1457,7 @@
         "blob": "0dfaa97df64033fb3e15553fae6649b3c626a90d"
       },
       "test/helpers/buyer-chain-readback-flow.mjs": {
-        "blob": "836362d71eb834d43f168eec3aca5b617018946d"
+        "blob": "f2895f71dc8e79dc7359522fe48af6a59e7921d6"
       },
       "test/helpers/buyer-chain-readback-identity.mjs": {
         "blob": "318991bcfc372a7dde19bd2eadd128b7352b5432"
@@ -1469,7 +1469,7 @@
         "blob": "7b01073b114cfa4def9f44dbe1f6b795eab207dd"
       },
       "test/helpers/commitment-node-junk.mjs": {
-        "blob": "4dda0ebff0f1a5312c4337040ed7b5308461f8b8"
+        "blob": "d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4"
       },
       "test/helpers/current-broker-interactions.mjs": {
         "blob": "2926448f6d3377e2de395be177a6bd71aa9ba92e"
@@ -1557,9 +1557,6 @@
       },
       "test/helpers/journal-child-process.mjs": {
         "blob": "89b2de8333c1d4f31e0e38b0db45aaa1f7a17c39"
-      },
-      "test/helpers/legacy-seller-client-auth.mjs": {
-        "blob": "2f963c44c336dd77647d12ced651a9df7bc4b9e4"
       },
       "test/helpers/listener-guard.mjs": {
         "blob": "7915bac5268baf9bfafa259cbe710f1731caf917"
@@ -1670,10 +1667,10 @@
         "blob": "ac95f05b892947a1e4f7f514eefdc800f9a70d3f"
       },
       "test/helpers/review-commit-phase-coverage-world.mjs": {
-        "blob": "163637c51827c8cf0c5b04979d0ad008a24b6bfb"
+        "blob": "37ab6d1fe442415929f81c40d6a56651b6dd530e"
       },
       "test/helpers/review-commit-retry-coverage-world.mjs": {
-        "blob": "a95ef03f4a7088ebf2d776b544529efa9af3bd3b"
+        "blob": "8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc"
       },
       "test/helpers/review-native-delivery-coverage-reader.mjs": {
         "blob": "1c72fcb289c3e50dc7309e449ed192c0d0032490"
@@ -1724,10 +1721,10 @@
         "blob": "af55ec94a37734d03db8c1d6d9c1330dc49d3065"
       },
       "test/helpers/source-demo-flow.mjs": {
-        "blob": "40670eef3d1060b4690ecf90343f5cd4d4153176"
+        "blob": "407e9d3ccb1db981727e9c22a2c0b9ca96443421"
       },
       "test/helpers/source-demo-seller.mjs": {
-        "blob": "3ebe27b3481988b9dedeaabec489c44e791a2891"
+        "blob": "fe1c4055b77e3a13b3cf24492a645f08fb2b190b"
       },
       "test/helpers/sqlite-engine-floor.mjs": {
         "blob": "eac4f2e9c7337c76fb7478050fc95c617f5fb999"
@@ -1934,16 +1931,10 @@
         "blob": "8cb570e3a627217ee42631ff4ea5e105edfef014"
       },
       "test/sweep-contracts.test.mjs": {
-        "blob": "49d984bfcf705c7d3d1928720d9f8f0d759f8c0b"
+        "blob": "dac6e6aae63aac269c0a84197ce2b77d3211eb35"
       },
-      "test/wire-delegation.test.mjs": {
-        "blob": "cd60876eb390082bbb372c2fe29f3827488e0af5"
-      },
-      "test/wire-purchase-format.test.mjs": {
-        "blob": "abee1bf19ddddb09fe8660d71e5487bde4fbdc8a"
-      },
-      "test/wire-request-signing.test.mjs": {
-        "blob": "38eeb443a089821c4d313f54db21022689d7b1ff"
+      "test/wire-authentication.test.mjs": {
+        "blob": "c105cadb85dac6be089bcfd69e053dae8aacdecb"
       }
     },
     "plannedRepins": {

@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createOperatorSellerSessions } from '../../src/devnet-demo/operator-sessions.mjs';
-import { createSellerTransportClientAuth } from './legacy-seller-client-auth.mjs';
+import { createSellerTransportClientAuth } from '../../src/dacs/seller-transport-auth.mjs';
 import { startDevnetAgreementTransportHarness } from './devnet-agreement-transport-harness.mjs';
 import { startSourceDemoSeller } from './source-demo-seller.mjs';
 import { createSourceDemoSellerTransport } from '../../src/dacs/source-demo-seller-transport.mjs';
