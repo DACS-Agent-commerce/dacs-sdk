@@ -1474,6 +1474,7 @@ value buyerBundleFinalizationCheckpointKey
 value canonicalDemosAgentPublicKey
 value canonicalSellerSettlementId
 value canonicalSignedScope
+value canonicalWalletSpendWalletV1
 value canonicalize
 value canonicalizeDecimal
 value canonicalizeNativeDomainHostname
@@ -1481,6 +1482,7 @@ value captureFixedPriceOfflineProtocolBinding
 value captureFixedPricePayDemProtocolBinding
 value captureFixedPriceX402ProtocolBinding
 value captureRatingPhaseReadyHandoff
+value captureWalletSpendPolicyV1
 value cciClaimHasProof
 value cciClaimProof
 value cciClaimRefs
