@@ -1136,6 +1136,10 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/package-contents.test.mjs:1` | db9c1e0c48cd04c71ce4046cdd6cd0b3395543aa |
 | WF | delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 4e5486337d9cddb235f415cfe4bd819c78ae6593 |
+| WF | Report a lost acknowledgement record after a successful send as eb_ack_not_persisted | Git commit selector a66660e64790f27c86c47cc1c39e69b236784086 |
+| | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` | c6a536f8fee883abd654907537ce728a0245155b |
+| | `packages/dacs-client/src/wallet/effect-history.mjs:1` | 52c03f2dddbee806d14b94b223fc2fac459e7bc6 |
+| | `packages/dacs-client/test/effect-boundary.test.mjs:1` | 8881f3e8ce7a766a3162f5dc6afe79d2360884c4 |
 
 ## Complete commit and file inventory
 
@@ -3590,6 +3594,16 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the merged effect-boundary test blob after carrying the dispatch history up | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| a66660e64790f27c86c47cc1c39e69b236784086 | `packages/dacs-client/src/wallet/effect-boundary.mjs:1` |
+| a66660e64790f27c86c47cc1c39e69b236784086 | `packages/dacs-client/src/wallet/effect-history.mjs:1` |
+| a66660e64790f27c86c47cc1c39e69b236784086 | `packages/dacs-client/test/effect-boundary.test.mjs:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/DELTA-MAP.md:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/HOLD.json:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/delta-map.mjs:1` |
+| fix(client): record the lost-acknowledgement change in the delta ledger and re-pin the freeze | `packages/dacs-client/scripts/delta-provenance.test.mjs:1` |
 
 ## Original moved files
 

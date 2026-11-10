@@ -6642,6 +6642,28 @@
           "after": "4e5486337d9cddb235f415cfe4bd819c78ae6593"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "Report a lost acknowledgement record after a successful send as eb_ack_not_persisted",
+      "sha": "a66660e64790f27c86c47cc1c39e69b236784086",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+          "before": "ea9e892b09ac6333d8cec727575d5879c875f298",
+          "after": "c6a536f8fee883abd654907537ce728a0245155b"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+          "before": "5ccc8c6f74eb51be885d17dac68c28649b34240b",
+          "after": "52c03f2dddbee806d14b94b223fc2fac459e7bc6"
+        },
+        {
+          "path": "packages/dacs-client/test/effect-boundary.test.mjs",
+          "before": "4e5486337d9cddb235f415cfe4bd819c78ae6593",
+          "after": "8881f3e8ce7a766a3162f5dc6afe79d2360884c4"
+        }
+      ]
     }
   ]
 }
