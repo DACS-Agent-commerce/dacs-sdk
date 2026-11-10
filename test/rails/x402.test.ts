@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
+import { DacsError } from "../../src/errors.js";
 import {
   createX402Rail,
   dacsX402AuthorizationNonce,
@@ -711,6 +712,20 @@ describe("x402SettleCore (buyer 402-dance)", () => {
 });
 
 describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () => {
+  test("refuses construction without a caller-supplied store", () => {
+    const settle = vi.fn();
+    const rail: X402Rail = { address: PAYER, finalityBlocks: 12, settle };
+    const construct = () => x402Settle(rail, {
+      url: "https://seller.example/deliver",
+      network: NETWORK,
+      recipientEvm: RECIPIENT,
+      asset: TOKEN,
+    }, {} as never);
+    expect(construct).toThrow(DacsError);
+    expect(construct).toThrow(/requires a caller-supplied durable store/);
+    expect(settle).not.toHaveBeenCalled();
+  });
+
   test("rejects a request/config destination mismatch before the rail or idempotency store", async () => {
     let calls = 0;
     const rail: X402Rail = {

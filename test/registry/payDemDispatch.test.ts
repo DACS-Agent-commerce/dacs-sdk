@@ -328,29 +328,19 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(capturedRecovery.reconcile).not.toBe(reconcile);
   });
 
-  test("keeps the documented process-local compatibility defaults explicit", async () => {
+  test("requires a settlement store before constructing the native rail", async () => {
     const rail = { address: "aa".repeat(32), settle: vi.fn() };
     const executor = vi.fn();
     mocks.createPayDemRail.mockResolvedValue(rail);
     mocks.payDemSettle.mockReturnValue(executor);
     const descriptor = await authenticatedDefinition();
 
-    const dispatched = await settleFromRail(descriptor, {
+    await expect(settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-    });
-    expect(typeof dispatched).toBe("function");
-
-    expect(mocks.createPayDemRail).toHaveBeenCalledWith({
-      rpc: "https://demos.example",
-      secret: "test-secret",
-      network: "demos",
-    });
-    expect(mocks.payDemSettle).toHaveBeenCalledWith(
-      rail,
-      { network: "demos", railId: DEM_RAIL_ID },
-      {},
-    );
+    })).rejects.toThrow(/caller-supplied durable settlement store/);
+    expect(mocks.createPayDemRail).not.toHaveBeenCalled();
+    expect(mocks.payDemSettle).not.toHaveBeenCalled();
   });
 
   test("the descriptor wrapper carries the registration and declared traits of the executor it binds", async () => {

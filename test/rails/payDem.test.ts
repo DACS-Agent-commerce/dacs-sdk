@@ -549,6 +549,13 @@ describe("payDemSettle (runSession seam bridge — §9.5.9 DEM→OS conversion, 
   const PAYEE_CLAIM = `did:demos:agent:${SELLER_HEX}`;
   const OTHER_HEX = "b2".repeat(32);
 
+  test("refuses construction without a caller-supplied store", () => {
+    const settle = vi.fn();
+    expect(() => payDemSettle({ address: PAYER, settle }, {}, {} as never))
+      .toThrow(/requires a caller-supplied durable store/);
+    expect(settle).not.toHaveBeenCalled();
+  });
+
   const settleWith = (
     client: ReturnType<typeof fakeClient>,
     cfg: { recipient?: string; network?: string } = { recipient: PAYEE_CLAIM, network: "demos" },

@@ -1693,6 +1693,15 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
     expect(typeof settle).toBe("function");
   });
 
+  test("x402 refuses registry construction without a settlement store", async () => {
+    const descriptor = await authenticatedRail(x402Definition());
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: TEST_EVM_KEY,
+      paywall,
+      rpcUrl: "https://sepolia.base.org",
+    })).rejects.toThrow(/caller-supplied durable settlement store/);
+  });
+
   test("rejects an unbranded structural copy before constructing a rail", async () => {
     const entry = await signedRail(x402Definition());
     await expect(
@@ -1771,6 +1780,15 @@ describe("authenticated normative rail dispatch (T6 / RAV-R5)", () => {
       rpcUrl: "https://sepolia.base.org",
     });
     expect(typeof settle).toBe("function");
+  });
+
+  test("evm-erc20 refuses registry construction without a settlement store", async () => {
+    const descriptor = await authenticatedRail(evmDefinition());
+    await expect(settleFromRail(descriptor, {
+      evmPrivateKey: TEST_EVM_KEY,
+      paywall,
+      rpcUrl: "https://sepolia.base.org",
+    })).rejects.toThrow(/caller-supplied durable settlement store/);
   });
 
   test("evm-erc20 rejects a caller network that conflicts with the definition", async () => {

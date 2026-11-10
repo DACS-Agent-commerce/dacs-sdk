@@ -42,6 +42,9 @@ const binding = (
 const KEY = "evm-erc20-usdc:job-1:0";
 
 describe("settlement idempotency store (#43)", () => {
+  test("requires a caller-supplied settlement log", () => {
+    expect(() => Reflect.apply(createIdempotencyStore, undefined, [])).toThrow(/requires a caller-supplied settlement log/);
+  });
   test("a repeated call for the same key returns the recorded result WITHOUT resubmitting", async () => {
     const store = createIdempotencyStore();
     let calls = 0;
@@ -692,6 +695,12 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     phaseIndex: 0,
   };
   const cfg = { tokenAddress: "0xtoken", network: "eip155:84532", recipientEvm: "0xpayee" };
+
+  test("refuses construction without a caller-supplied store", () => {
+    const rail = countingRail();
+    expect(() => evmErc20Settle(rail, cfg, {} as never)).toThrow(/requires a caller-supplied durable store/);
+    expect(rail.transferCalls).toBe(0);
+  });
 
   test("direct EVM bridge rejects a destination mismatch before transfer", async () => {
     const rail = countingRail();
