@@ -245,6 +245,14 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
   // Only an exact terminal state answers true. The store's observation adapter owns the session read.
   // Errors from the adapter and its cleanup barrier propagate.
   const isTerminal = (jobId) => TERMINAL_CONTEXT_STATES.has(sessionState({ jobId }));
+  // Reclamation keeps rows when the session source is unavailable; observer failures still propagate.
+  function isKnownTerminal(jobId) {
+    try { return isTerminal(jobId); }
+    catch (error) {
+      if (error?.code !== 'session_admission_unavailable' || error.status !== 503) throw error;
+      return false;
+    }
+  }
 
   function decodedRow(row) {
     return { ...row, owner: parseColumn(row.owner), failure: parseColumn(row.failure), accepted: parseColumn(row.accepted) };
@@ -303,7 +311,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (needed <= 0) return [];
     const plan = [];
     for (const row of all('SELECT nonce, jobId FROM kit_challenges WHERE expiresAt <= ? AND issuedAt <= ? ORDER BY issuedAt', time, time - CHALLENGE_WINDOW_MS)) {
-      if (isTerminal(row.jobId)) plan.push(row.nonce);
+      if (isKnownTerminal(row.jobId)) plan.push(row.nonce);
       if (plan.length === needed) return plan;
     }
     fail('context_challenge_capacity', 503);
