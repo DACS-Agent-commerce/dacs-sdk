@@ -193,7 +193,7 @@ describe("wallet spend host runtime", () => {
     });
 
     const authority = await opening;
-    expect(authority.policy).toEqual(original);
+    expect(authority.policy).toEqual({ ...original, wallet: `0x${original.wallet}` });
     expect(Object.isFrozen(authority.policy)).toBe(true);
     expect(Object.isFrozen(authority.policy.assets)).toBe(true);
     expect(Object.isFrozen(authority.policy.assets[0])).toBe(true);
