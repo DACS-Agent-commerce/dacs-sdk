@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "604d386c05870657bc4bfd1d4fb981e2b8fbcb21"
+        "blob": "5792679009d2bf74cb491fe321cf0997234b53b8"
       },
       "DELTA-LEDGER.json": {
-        "blob": "49c21eb6a121f9dae7149d0a966e65db58d7243f"
+        "blob": "9ef3cfcc784dee479ed7809968330543ffe746a4"
       },
       "DELTA-MAP.md": {
-        "blob": "a18d3cd9bf8bd0ddd922d7e177800e471d3a8716"
+        "blob": "58d7d49d4a40923d4a75c2f7c20d6336f015bfcf"
       },
       "DELTA-NOTES.md": {
         "blob": "f7105c3dc1b194aae2b66d995c52246c4e9c1d05"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "7108d978cc7f595e545a4fa7f893e46648a340e6"
+        "blob": "2d3b511b3567fb39a203221e27e9cbd76bdeb008"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1968,6 +1968,9 @@
       },
       "test/sweep-contracts.test.mjs": {
         "blob": "49d984bfcf705c7d3d1928720d9f8f0d759f8c0b"
+      },
+      "test/wire-authentication.test.mjs": {
+        "blob": "c105cadb85dac6be089bcfd69e053dae8aacdecb"
       },
       "test/wire-continuation-evidence.test.mjs": {
         "blob": "d6407d953cdd85617b4bcce9c409d3d18beed67c"
