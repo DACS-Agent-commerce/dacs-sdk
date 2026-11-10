@@ -2,7 +2,11 @@ import { types as nodeTypes } from "node:util";
 
 import { hasDefinitiveDemosFailure, type DemosFailedRecordProof } from "../agent/settlementFailure.js";
 import { createPayDemExecutionAuthority } from "./payDemExecutionAuthority.js";
-import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
+import type {
+  SettleRequest,
+  SettleResult,
+  SettlementRecoveryAttempt,
+} from "../agent/runSessionCore.js";
 import { baseUnits } from "../canonical/index.js";
 import {
   snapshotCanonicalJsonRead,
@@ -14,6 +18,8 @@ import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddre
 export { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
 import {
   createIdempotencyStore,
+  declareSettlementBridge,
+  inheritSettlementBridge,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -28,6 +34,8 @@ export const DEM_DECIMALS = 9;
 
 // Only this module owns the authority used by its factory and record reads.
 const executionAuthority = createPayDemExecutionAuthority();
+/** SDK-built rails: whether each was built with a prepared-transfer journal. A rail not in here declares nothing. */
+const railJournals = new WeakMap<object, boolean>();
 
 // Executed nonce whose account read had not caught up when its payment
 // returned, per RPC URL and payer. Shared by every rail in the process so the
@@ -1995,6 +2003,7 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       );
     },
   };
+  railJournals.set(rail, journalPreparedTransfer !== undefined);
   return executionAuthority.register(rail);
 }
 
@@ -2357,6 +2366,12 @@ export function payDemSettle(
     : stableMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
         store, "readOutcome", "pay-dem settlement store readOutcome",
       );
+  const recoverProperty = stableDataProperty(store, "recover", "pay-dem settlement store recover");
+  const storeRecover = !recoverProperty.found || recoverProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementIdempotencyStore["recover"]>>(
+        store, "recover", "pay-dem settlement store recover",
+      );
   const configuredRecipient = optionalStableString(
     cfg,
     "recipient",
@@ -2440,7 +2455,7 @@ export function payDemSettle(
   // Keep a slow submit/reconcile from being overtaken by another call for the
   // same effect. Different settlement keys remain independent.
   const operations = new Map<string, Promise<SettleResult>>();
-  return async (req) => {
+  const bridge = async (req: SettleRequest): Promise<SettleResult> => {
     const {
       amount,
       asset,
@@ -2647,7 +2662,13 @@ export function payDemSettle(
             authenticatedResults.set(key, { context, result: captured });
             return captured;
           };
-      const result = await storeOnce(
+      // A recovery request never takes a fresh claim: with no retained hash it
+      // settles only through the store's `recover`, never through `once`.
+      const storeSettle = req.recoveryOnly === true ? storeRecover : storeOnce;
+      if (storeSettle === undefined) {
+        throw new DacsError("pay-dem recovery requires a store with recover(); refusing a fresh payment");
+      }
+      const result = await storeSettle(
         key,
         binding,
         submit,
@@ -2712,4 +2733,30 @@ export function payDemSettle(
       if (operations.get(key) === operation) operations.delete(key);
     }
   };
+  const journaled = railJournals.get(rail);
+  return declareSettlementBridge(bridge, journaled === undefined ? {} : { journaled });
+}
+
+/**
+ * The resume seam for an operator who read a transaction hash from the
+ * prepared-transfer journal. For a recovery request that carries no history it
+ * calls `attempts` and forwards the request with what it returns; a request that
+ * already carries history, or is not a recovery, is forwarded unchanged. The
+ * wrapper keeps `bridge`'s registration and declared traits, so `runSession`
+ * accepts it. It only adds history: the bridge still decides whether the
+ * payment landed, and still never pays on a recovery request.
+ *
+ * @returns A function with the same shape as `bridge`.
+ * @throws Whatever `attempts` or `bridge` throws; nothing is caught.
+ */
+export function withRecoveredAttempts(
+  bridge: (req: SettleRequest) => Promise<SettleResult>,
+  attempts: (req: Readonly<SettleRequest>) => Promise<readonly SettlementRecoveryAttempt[]>,
+): (req: SettleRequest) => Promise<SettleResult> {
+  const recovering = async (req: SettleRequest): Promise<SettleResult> => {
+    if (req.recoveryOnly !== true || (req.priorAttempts?.length ?? 0) > 0) return bridge(req);
+    const found = await attempts(req);
+    return bridge(found.length === 0 ? req : { ...req, priorAttempts: found });
+  };
+  return inheritSettlementBridge(bridge, recovering);
 }
