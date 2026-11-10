@@ -1692,15 +1692,6 @@ function resolvedArtifact(
   return value.artifact;
 }
 
-function requirementRefsByKind(
-  requirements: ReadonlyMap<string, SellerBundleDependencyRequirement>,
-  kind: SellerBundleDependencyKind,
-): AttestationRef[] {
-  return [...requirements.values()]
-    .filter((requirement) => requirement.kinds.includes(kind))
-    .flatMap((requirement) => requirement.refs);
-}
-
 function roleParty(
   session: PreparedSession,
   role: "buyer" | "seller" | "orchestrator",
