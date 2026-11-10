@@ -267,6 +267,15 @@ export function composeSellerApproval({mode,policy,manual}){
   return approve;
 }
 
+const hasRequestBytes=(request,requestBytes)=>{try{return JSON.stringify(request)===requestBytes;}catch{return false;}};
+// Freeze the approved request so the bytes that were approved stay the bytes that are signed.
+function freezeRequest(value){
+  if(value&&typeof value==='object'){
+    for(const child of Object.values(value))freezeRequest(child);
+    Object.freeze(value);
+  }
+}
+
 // A shutdown that ends a manual approval does not decide it: the approval
 // throws this code, records no evidence line, and the wallet signs nothing.
 export const OPERATOR_CLOSING='operator_closing';
@@ -343,7 +352,11 @@ export function createExactOperatorApproval({maxTotalOs,evidencePath,authorize,s
     // while the policy read the ledger is refused here, and the evidence line
     // records this final decision.
     if(policyMode&&accepted){try{policyReason=stillOpenBeforePayment(request,policy);}catch{policyReason='policy-check-failed';}accepted=policyReason===null;}
-    appendFileSync(evidencePath,`${JSON.stringify({format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:request?.method??null,address:request?.address??null,totalOs:total??null,decision:accepted?'approved':'rejected',
+    // A manual approval holds only for the bytes the operator was asked about: a
+    // request changed while the answer was pending is refused and left unfrozen.
+    if(!policyMode&&accepted){accepted=hasRequestBytes(request,requestBytes);if(accepted)freezeRequest(request);}
+    const asked=policyMode?request:JSON.parse(requestBytes);
+    appendFileSync(evidencePath,`${JSON.stringify({format:EVIDENCE_FORMAT,approvalHash,requestBytes,method:asked?.method??null,address:asked?.address??null,totalOs:total??null,decision:accepted?'approved':'rejected',
       ...(policyMode&&!manualApproved?{approvalMode:'policy',policyReason,reservationId}:{}),...(validity===undefined?{}:{confirmation:validity,declaredTotalOs:declaredTotal??null,confirmedRemovalsOs:confirmedTotal?.toString()??null,countedTotalOs:total??null,...(manualApproved?{manualApproved:true}:{})}),recordedAt:policyMode?at:now()})}\n`,{encoding:'utf8',mode:0o600});
     if(policyMode&&accepted&&!manualApproved)reservations.set(input,{reservationId,approvalHash});
     return accepted;
