@@ -3583,6 +3583,21 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): WF record the merged buyer seller client and refresh package pins | `packages/dacs-client/DELTA-MAP.md:1` |
 | delta(client): WF record the merged buyer seller client and refresh package pins | `packages/dacs-client/HOLD.json:1` |
 | delta(client): WF record the merged buyer seller client and refresh package pins | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/DELTA-MAP.md:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/DELTA-NOTES.md:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/HOLD.json:1` |
+| split(client): place provenance records in follow-on part | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/DELTA-NOTES.md:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/HOLD.json:1` |
+| delta(client): record signed seller traffic provenance | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): reconcile split provenance map | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): reconcile split provenance map | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): reconcile split provenance map | `packages/dacs-client/HOLD.json:1` |
+| delta(client): reconcile split provenance map | `packages/dacs-client/scripts/check-hold.mjs:1` |
 
 ## Original moved files
 
