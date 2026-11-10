@@ -254,6 +254,17 @@ describe("payDemSettleCore (§9.5.9 native DEM)", () => {
     );
   });
 
+  test.each(["0x10", "0X10", "0b1", "0o7", "+16", "-16", "016", "00", "1e3", "1_000"])(
+    "rejects the non-canonical OS amount %j before transfer",
+    async (amount) => {
+      const client = fakeClient();
+      await expect(payDemSettleCore(params({ amount }), client)).rejects.toThrow(
+        /invalid OS base-unit amount/,
+      );
+      expect(client.sent).toBeUndefined();
+    },
+  );
+
   test("rejects a non-positive amount", async () => {
     await expect(payDemSettleCore(params({ amount: "0" }), fakeClient())).rejects.toThrow(
       /amount must be > 0/,
