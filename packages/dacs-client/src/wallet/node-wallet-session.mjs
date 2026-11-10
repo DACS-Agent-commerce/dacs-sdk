@@ -543,7 +543,7 @@ async function buildNodeComposition(options, seller) {
     const composition = Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass,
       ...(seller ? { transport: createHeldTransportFacade({ admission, transport }), observer: createNodeObserver({ owner, clock }) } : {}),
       async close() { session.lock(); await transport.close(); } });
-    if (seller) sellerReservations.set(composition, createSignerReservations({ journal, pins: expected, clock }));
+    if (seller) sellerReservations.set(composition, createSignerReservations({ journal, pins: expected }));
     return composition;
   } catch (error) {
     try { session?.lock(); await transport?.close(); } catch { /* the construction error is the one to report */ }
