@@ -63,8 +63,9 @@ after(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
-async function openSeller() {
-  const opened = await custody.openTestWalletCustody({ directory, role: 'seller', publicOrigin: ORIGIN, transactionTransport: TRANSPORT, approve: async () => true });
+async function openSeller(events = []) {
+  const approve = async () => { events.push('approval'); return true; };
+  const opened = await custody.openTestWalletCustody({ directory, role: 'seller', publicOrigin: ORIGIN, transactionTransport: TRANSPORT, approve });
   return opened.wallet;
 }
 const signMessage = { method: 'sign', params: ['TEST message'] };
@@ -74,12 +75,13 @@ test('the custody wallet built with a transport tells callers it checks authoriz
 });
 
 test('a request whose authorize refuses after the operator approved it signs nothing', async () => {
-  const wallet = await openSeller();
+  const events = [];
+  const wallet = await openSeller(events);
   const before = globalThis[STATE_NAME].signatures;
-  let checks = 0;
-  const answer = await wallet.request(signMessage, { authorize: () => { checks += 1; return 'TEST withdrawn'; } });
+  const answer = await wallet.request(signMessage, { authorize: () => { events.push('authorization'); return 'TEST withdrawn'; } });
   assert.equal(answer.success, false);
-  assert.equal(checks, 1, 'authorize ran once, after the approval');
+  assert.equal(answer.error.code, 'internal_error');
+  assert.deepEqual(events, ['approval', 'authorization'], 'authorize ran once, after the approval');
   assert.equal(globalThis[STATE_NAME].signatures, before, 'nothing was signed');
 });
 
