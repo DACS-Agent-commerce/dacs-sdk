@@ -11,7 +11,7 @@ import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
 import { createEffectFence, FENCE_ACQUIRE_TIMEOUT_MS } from '../src/wallet/effect-fence.mjs';
 import { createEffectHistory } from '../src/wallet/effect-history.mjs';
 import { boundaryWorld, createEffectBoundary, setPurchaseAdmission, flush,
-  code, signedBytes, states, cutAppend, noEffects } from './helpers/effect-boundary-fixture.mjs';
+  code, digest, signedBytes, states, cutAppend, noEffects } from './helpers/effect-boundary-fixture.mjs';
 
 // A mutex standing in for the transport owner's connection fence, with timers
 // the test fires by hand.
@@ -492,6 +492,37 @@ test('CREATE and wire replay require their composition policy while a possible n
     assert.equal(w.sent.length, kind === 'native' ? 1 : 2);
     for (const bytes of w.sent) assert.deepEqual(bytes, signedBytes);
   }
+});
+
+// A held artifact: its first pass saw a stop right after dispatch-started and withheld the bytes.
+async function heldArtifact(t) {
+  const w = await boundaryWorld(t), artifact = await w.sign();
+  cutAppend(w, 'dispatch-started', { mutate: () => { w.stopped = true; } });
+  await assert.rejects(w.send(artifact), code('writes_stopped'));
+  w.reopen(); w.stopped = false;
+  assert.deepEqual(await states(w, artifact), ['signed', 'dispatch-started', 'dispatch-withheld']);
+  return { w, artifact };
+}
+
+test('an explicit resume of a held artifact sends it once and a later resume is refused eb_readback_required', async t => {
+  const { w, artifact } = await heldArtifact(t);
+  assert.equal(await w.send(artifact, { explicit: true }), 'TEST-ack');
+  await assert.rejects(w.send(artifact, { explicit: true }), code('eb_readback_required'));
+  assert.deepEqual(w.sent, [signedBytes]);
+});
+
+test('two boundaries with their own fences resuming one held artifact at once send it once; the later pass is withheld eb_readback_required', async t => {
+  const { w, artifact } = await heldArtifact(t);
+  const fence = createEffectFence({ currentLocal: () => digest(w.currentLocal()), acquire: async () => ({ release: () => {} }),
+    setTimer: w.clock.setTimer, clearTimer: w.clock.clearTimer });
+  const other = createEffectBoundary({ ...w.options(), fence });
+  const send = bytes => { w.sent.push(Buffer.from(bytes)); return 'TEST-ack'; };
+  const outcomes = await Promise.all([w.boundary.dispatchPass(artifact, send, { explicit: true }), other.dispatchPass(artifact, send, { explicit: true })].map(outcomeOf));
+  assert.deepEqual(w.sent, [signedBytes]);
+  assert.deepEqual(outcomes.map(outcome => outcome.resolved ? outcome.value : outcome.error.code).sort(), ['TEST-ack', 'eb_readback_required']);
+  const resumed = (await states(w, artifact)).slice(3);
+  assert.equal(resumed.filter(state => state === 'dispatch-acknowledged').length, 1);
+  assert.equal(resumed.filter(state => state === 'dispatch-withheld').length, 1);
 });
 
 
