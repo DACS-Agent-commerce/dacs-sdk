@@ -6860,6 +6860,18 @@
           "after": null
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF record the merged purchase protocol and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "615dbe0271963189f792d967d3b1acf6c2fc678f",
+          "after": "615dbe0271963189f792d967d3b1acf6c2fc678f"
+        }
+      ]
     }
   ]
 }
