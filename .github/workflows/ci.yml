@@ -208,7 +208,7 @@ jobs:
         run: npm run host:build
 
       # The seller shards prepare the locked seller consumer before the seller suite. A pull request runs no node 20
-      # seller shard (#1338), so this leg prepares it here instead, as every leg did before the suites were split.
+      # seller shard, so this leg prepares it here instead, as every leg did before the suites were split.
       - name: Prepare locked seller consumer
         if: matrix.node-version != '22' && github.event_name == 'pull_request'
         env:

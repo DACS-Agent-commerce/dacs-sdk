@@ -339,11 +339,13 @@ describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", (
 
 describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", () => {
   // Before the split every leg prepared the locked seller consumer; the seller shards now prepare it, and
-  // build-test-main prepares it on a leg where no seller shard runs (node 20 on a pull request, #1338).
+  // build-test-main prepares it on a leg where no seller shard runs (node 20 on a pull request).
   it("prepares the locked seller consumer on every leg of every event, in main only where no seller shard runs", () => {
     const name = "Prepare locked seller consumer";
     const main = (MAIN.steps ?? []).find((s) => s.name === name);
     const shard = (SHARD.steps ?? []).find((s) => s.name === name);
+    expect(main).toBeDefined();
+    expect(shard).toBeDefined();
     expect(main?.run).toBe(shard?.run);
     for (const event of EVENTS) {
       const sellerLegs = (shards.plan(event) as Entry[]).filter((entry) => holds(shard?.if, { matrix: entry, github: { event_name: event } }))
