@@ -241,8 +241,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!db.inTransaction) throw new TypeError(`${entry} runs inside an open transaction`);
   }
 
-  // Only an exact terminal state answers true. `sessionState` is the store's observation adapter, which has already read an unusable
-  // port as unknown; its own errors (an unbound cleanup, a failed write) are not an answer and propagate.
+  // Only an exact terminal state answers true. The store's observation adapter owns the session read.
+  // Errors from the adapter and its cleanup barrier propagate.
   const isTerminal = (jobId) => TERMINAL_CONTEXT_STATES.has(sessionState({ jobId }));
 
   function decodedRow(row) {
