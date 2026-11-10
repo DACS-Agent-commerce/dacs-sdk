@@ -364,13 +364,13 @@
         "blob": "0d3ae2adaa1c5210ffdf7a980f428adc44d59632"
       },
       "DELTA-COMMITS.json": {
-        "blob": "e7aa51de8e2b184e367ed17bf0fa301fc136eff8"
+        "blob": "ffbbade1e0fae5ca72f394a86f21a3853d79638e"
       },
       "DELTA-LEDGER.json": {
-        "blob": "60492556ccce4c5ecd80a40abf3273b8e8b1b2ab"
+        "blob": "2ad07ec39d10abf6f8bab97a423e8e77d92f4626"
       },
       "DELTA-MAP.md": {
-        "blob": "81354129813ab0d539ce29307f77156b149b264d"
+        "blob": "4e1f1afb4b4093663465f7d5290a5016cb566cf0"
       },
       "DELTA-NOTES.md": {
         "blob": "54185a5749902e45fe8ce26e9623388c0eaa4bd2"
@@ -388,7 +388,7 @@
         "blob": "d95e7a57ababd993f625552cdc529c39ecc16f4d"
       },
       "README.md": {
-        "blob": "227961da305073ca6949d0bee3a6568379541c67"
+        "blob": "be71d85e055bb49a492793c286487b5f798d2ff3"
       },
       "evidence/PUBLICATION.md": {
         "blob": "8ba82736c13b4841701a7b7f05eb573e937ff108"
@@ -1034,7 +1034,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "81596449f9952a0331d559133291353c2ebdcb8c"
+        "blob": "3bbc962d740ccef306700cf3268b265b51685214"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "6cf5c3b87320a191e8f4d9d9aacdae19a2c1c221"
@@ -1250,7 +1250,7 @@
         "blob": "889d4044b45a739442fd21ee5722b0eb6928d7c1"
       },
       "src/purchases.mjs": {
-        "blob": "3873c4245efd90c76e2af08f56b2d609e391cf65"
+        "blob": "06748b818244cb1924ebb4fcc93ad5a23e99b848"
       },
       "src/seams/buyer-access-not-wired.mjs": {
         "blob": "3c7fd53d96e02f657590c9b3319aa717a3de1056"
@@ -1760,7 +1760,7 @@
         "blob": "bc5984c42ab96003b6183c6b71c3ae73ed0b4e8c"
       },
       "test/job-id-uniqueness.test.mjs": {
-        "blob": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b"
+        "blob": "c04831cefe549f5a2c89052f0400bcdecf8b52a7"
       },
       "test/native-adapter-auth.test.mjs": {
         "blob": "c235684fe53222ad6af5c1c77ce1c087738cefc2"
@@ -1877,7 +1877,7 @@
         "blob": "aa0be667f8a71c8b7a687588757106bef3ca3cd8"
       },
       "test/readme-contract.test.mjs": {
-        "blob": "0f7e7d6618f09f8377893affcdd5449425e4646f"
+        "blob": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
       },
       "test/rpc-byte-budget.test.mjs": {
         "blob": "d370b9a3a69a7e927e6afde4100960654d82a8bb"

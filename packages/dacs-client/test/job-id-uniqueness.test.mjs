@@ -136,3 +136,32 @@ test('construction refuses an operations table without job_id', (t) => {
   w.db.exec('DROP INDEX IF EXISTS operations_job_id_unique; ALTER TABLE operations DROP COLUMN job_id');
   assert.throws(() => createPurchaseService(w.options), { code: 'schema_migration_required' });
 });
+
+test('construction refuses an operations table with job_id but no unique index on it', (t) => {
+  const w = world(t);
+  w.db.exec('DROP INDEX operations_job_id_unique');
+  assert.throws(() => createPurchaseService(w.options), { code: 'schema_migration_required' });
+});
+
+test('construction refuses a job_id index that is not unique', (t) => {
+  const w = world(t);
+  w.db.exec('DROP INDEX operations_job_id_unique; CREATE INDEX operations_job_id_plain ON operations(job_id)');
+  assert.throws(() => createPurchaseService(w.options), { code: 'schema_migration_required' });
+});
+
+test('construction refuses a unique index that spans more than job_id', (t) => {
+  const w = world(t);
+  w.db.exec('DROP INDEX operations_job_id_unique; CREATE UNIQUE INDEX operations_job_id_pair ON operations(job_id, account_id)');
+  assert.throws(() => createPurchaseService(w.options), { code: 'schema_migration_required' });
+});
+
+test('construction refuses a unique index that covers only some rows', (t) => {
+  const w = world(t);
+  w.db.exec('DROP INDEX operations_job_id_unique; CREATE UNIQUE INDEX operations_job_id_partial ON operations(job_id) WHERE job_id IS NOT NULL');
+  assert.throws(() => createPurchaseService(w.options), { code: 'schema_migration_required' });
+});
+
+test('construction accepts the shipped schema', (t) => {
+  const w = world(t);
+  assert.doesNotThrow(() => createPurchaseService(w.options));
+});

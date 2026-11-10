@@ -221,8 +221,18 @@ export function createPublicPurchaseService(options) {
   return createPurchaseService(options, () => !purchaseActionsAdmitted());
 }
 
+// True when a unique index on operations covers exactly the job_id column.
+function hasUniqueJobIdIndex(db) {
+  return db.prepare('PRAGMA index_list(operations)').all()
+    .filter(index => index.unique === 1 && index.partial === 0)
+    .some(index => {
+      const columns = db.prepare(`PRAGMA index_info(${JSON.stringify(index.name)})`).all();
+      return columns.length === 1 && columns[0].name === 'job_id';
+    });
+}
+
 // Retained source integration; not exported by the package entry point.
-// D11: `store` is the host's PurchaseStore (purchaseStore admits only the
+// D11:`store` is the host's PurchaseStore (purchaseStore admits only the
 // package's concrete SQLite adapter); `purposes` holds the host's
 // APPROVE_PURCHASE wallet-challenge purpose. Both are checked before any
 // statement is prepared. Every action that prepares, approves, hands off or
@@ -238,7 +248,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   if (!operationColumns.some(column => column.name === 'handoff_expires_at')) {
     throw new OperationError('schema_migration_required', 'Migrate operations to include handoff_expires_at and provision explicit portal lifetimes before constructing the purchase service.');
   }
-  if (!operationColumns.some(column => column.name === 'job_id')) {
+  if (!operationColumns.some(column => column.name === 'job_id') || !hasUniqueJobIdIndex(db)) {
     throw new OperationError('schema_migration_required', 'Migrate operations to include job_id with its unique index before constructing the purchase service.');
   }
   const handoffPurchase = createPortalCapability({ db, ops, now });

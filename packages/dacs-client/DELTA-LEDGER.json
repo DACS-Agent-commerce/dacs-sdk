@@ -6529,6 +6529,27 @@
           "after": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b"
         }
       ]
+    },
+    {
+      "delta": "D32",
+      "subject": "delta(client): D32 require a unique job_id index at construction",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/purchases.mjs",
+          "before": "3873c4245efd90c76e2af08f56b2d609e391cf65",
+          "after": "06748b818244cb1924ebb4fcc93ad5a23e99b848"
+        },
+        {
+          "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+          "before": "3fcc5ba43706ec67ceae1e7e544472e7d438de0b",
+          "after": "c04831cefe549f5a2c89052f0400bcdecf8b52a7"
+        },
+        {
+          "path": "packages/dacs-client/test/readme-contract.test.mjs",
+          "before": "0f7e7d6618f09f8377893affcdd5449425e4646f",
+          "after": "2f55d19d20546e56045fdac4ccb201635a30a0b5"
+        }
+      ]
     }
   ]
 }
