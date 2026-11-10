@@ -7621,6 +7621,28 @@
     },
     {
       "delta": "WF",
+      "subject": "delta(client): WF record the merged authenticated retries client and refresh package pins",
+      "compact": true,
+      "files": [
+        {
+          "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+          "before": "b7f98682851f39cb7130cc8e410ea8a783ed09c5",
+          "after": "b7f98682851f39cb7130cc8e410ea8a783ed09c5"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+          "before": "f0834ba649d3a26ad1136f96195fea50feb9d8c3",
+          "after": "f0834ba649d3a26ad1136f96195fea50feb9d8c3"
+        },
+        {
+          "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+          "before": "fc66e463671c98bddf7d8da31761a7c79046d88f",
+          "after": "fc66e463671c98bddf7d8da31761a7c79046d88f"
+        }
+      ]
+    },
+    {
+      "delta": "WF",
       "subject": "delta(client): WF record the authenticated-retry buyer seller client after the merge and refresh package pins",
       "files": [
         {
