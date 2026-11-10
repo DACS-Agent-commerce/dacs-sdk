@@ -10,10 +10,15 @@ import { describe, expect, it } from "vitest";
 // property is null, and contains() on a string is a case-insensitive substring test.
 
 const repoRoot = resolve(import.meta.dirname, "../..");
+type Step = { name?: string; if?: string; run?: string; env?: Record<string, string> };
 type Job = {
   "runs-on"?: string;
-  strategy?: { matrix?: { "node-version"?: (string | number)[] } };
-  steps?: { name?: string; if?: string }[];
+  name?: string;
+  if?: string;
+  needs?: string | string[];
+  permissions?: Record<string, string>;
+  strategy?: { matrix?: string | { "node-version"?: (string | number)[] } };
+  steps?: Step[];
 };
 const workflow = parse(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as {
   jobs: Record<string, Job>;
@@ -256,14 +261,32 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
   });
 });
 
+// The seller and client suites run in build-test, one job per shard as `scripts/ci-shards.mjs plan` lists them for the
+// event; every other build-test step runs in build-test-main, once per Node leg. build-test-result carries the
+// required check names and passes a leg only when that leg's main job and each of its planned shards succeeded.
+const shardsPath = "../../scripts/ci-shards.mjs";
+const shards = await import(shardsPath);
+type Entry = { "node-version": string; part: string; suite: string; shard: string };
+const MAIN = workflow.jobs["build-test-main"] ?? {};
+const SHARD = workflow.jobs["build-test"] ?? {};
+const RESULT = workflow.jobs["build-test-result"] ?? {};
+const mainMatrix = MAIN.strategy?.matrix;
+const MAIN_LEGS = (typeof mainMatrix === "object" ? mainMatrix["node-version"] ?? [] : []).map(String);
+const holds = (condition: string | undefined, context: Record<string, Value>) =>
+  condition === undefined || truthy(evaluate(condition.replace(/^\$\{\{([\s\S]*)\}\}$/, "$1"), context));
+const EVENTS = ["pull_request", "push", "merge_group"];
+
+/** The Node legs on which the named build-test step runs for an event (from either job). */
+function legsRunning(name: string, event: string): string[] {
+  const main = (MAIN.steps ?? []).find((s) => s.name === name);
+  const shard = (SHARD.steps ?? []).find((s) => s.name === name);
+  if (!main === !shard) throw new Error(`step ${name} is in ${main ? "both jobs" : "neither job"}`);
+  if (main) return MAIN_LEGS.filter((node) => holds(main.if, { matrix: { "node-version": node }, github: { event_name: event } }));
+  const entries = (shards.plan(event) as Entry[]).filter((entry) => holds(shard?.if, { matrix: entry, github: { event_name: event } }));
+  return [...new Set(entries.map((entry) => entry["node-version"]))].sort();
+}
+
 describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", () => {
-  const steps = workflow.jobs["build-test"]?.steps ?? [];
-  const runs = (name: string, event: string, node: string) => {
-    const step = steps.find((s) => s.name === name);
-    if (!step) throw new Error(`no step ${name}`);
-    if (step.if === undefined) return true;
-    return truthy(evaluate(step.if, { matrix: { "node-version": node }, github: { event_name: event } }));
-  };
   const suites = [
     "Test seller internal primitives and journals",
     "Test (unit + conformance harness)",
@@ -272,34 +295,140 @@ describe("build-test steps kept off pull requests (.github/workflows/ci.yml)", (
 
   it("runs the long suites on both legs except the node 20 leg of a pull request", () => {
     for (const name of suites) {
-      expect(runs(name, "pull_request", "22")).toBe(true);
-      expect(runs(name, "pull_request", "20.19.0")).toBe(false);
-      for (const event of ["push", "merge_group"]) {
-        expect(runs(name, event, "22")).toBe(true);
-        expect(runs(name, event, "20.19.0")).toBe(true);
-      }
+      expect(legsRunning(name, "pull_request")).toEqual(["22"]);
+      for (const event of ["push", "merge_group"]) expect(legsRunning(name, event)).toEqual(["20.19.0", "22"]);
     }
   });
 
   // The legs come from the matrix itself, so pinning a leg (say "22" to "22.21.1") can't leave a suite running on no
   // pull request leg while the literal cases above still pass.
   it("runs each long suite on at least one matrix leg of a pull request, and on every leg otherwise", () => {
-    const legs = (workflow.jobs["build-test"]?.strategy?.matrix?.["node-version"] ?? []).map(String);
-    expect(legs.length).toBeGreaterThan(1);
+    expect(MAIN_LEGS.length).toBeGreaterThan(1);
+    expect(shards.NODE_LEGS).toEqual(MAIN_LEGS);
     for (const name of suites) {
-      expect(legs.some((node) => runs(name, "pull_request", node))).toBe(true);
-      for (const event of ["push", "merge_group"]) for (const node of legs) expect(runs(name, event, node)).toBe(true);
+      expect(legsRunning(name, "pull_request").length).toBeGreaterThan(0);
+      for (const event of ["push", "merge_group"]) expect(legsRunning(name, event)).toEqual([...MAIN_LEGS].sort());
     }
     const demosdk = "Typecheck and test against demosdk 4.0.18";
-    for (const event of ["push", "merge_group"]) expect(legs.some((node) => runs(demosdk, event, node))).toBe(true);
+    for (const event of ["push", "merge_group"]) expect(legsRunning(demosdk, event).length).toBeGreaterThan(0);
   });
 
-  it("runs the older-demosdk step on node 22 outside pull requests only", () => {
+  it("runs the older-demosdk step on node 22 outside pull requests only, in exactly one shard", () => {
     const name = "Typecheck and test against demosdk 4.0.18";
-    expect(runs(name, "pull_request", "22")).toBe(false);
-    expect(runs(name, "push", "22")).toBe(true);
-    expect(runs(name, "merge_group", "22")).toBe(true);
-    for (const event of ["pull_request", "push", "merge_group"]) expect(runs(name, event, "20.19.0")).toBe(false);
+    const step = (SHARD.steps ?? []).find((s) => s.name === name);
+    expect(legsRunning(name, "pull_request")).toEqual([]);
+    for (const event of ["push", "merge_group"]) {
+      expect(legsRunning(name, event)).toEqual(["22"]);
+      const entries = (shards.plan(event) as Entry[]).filter((entry) => holds(step?.if, { matrix: entry, github: { event_name: event } }));
+      expect(entries).toHaveLength(1);
+    }
+    // It replaces the installed SDK, so it stays the last step of its job.
+    expect(SHARD.steps?.at(-1)?.name).toBe(name);
+  });
+});
+
+describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", () => {
+  it("routes build-test-main exactly like build-test", () => {
+    expect(MAIN["runs-on"]).toBe(RUNS_ON);
+  });
+
+  it("takes the shard job's matrix from build-test-plan, which runs the shard plan for the event", () => {
+    expect(SHARD.needs).toBe("build-test-plan");
+    expect(SHARD.strategy?.matrix).toBe("${{ fromJSON(needs.build-test-plan.outputs.matrix) }}");
+    const planStep = (workflow.jobs["build-test-plan"]?.steps ?? []).find((s) => s.run?.includes("ci-shards.mjs plan"));
+    expect(planStep?.run).toBe('echo "matrix=$(node scripts/ci-shards.mjs plan --event "$EVENT_NAME")" >> "$GITHUB_OUTPUT"');
+    expect(planStep?.env?.EVENT_NAME).toBe("${{ github.event_name }}");
+  });
+
+  it("gives each suite step its shard from the matrix and runs it only in that suite's shards", () => {
+    const seller = (SHARD.steps ?? []).find((s) => s.run === "npm run seller:test");
+    const client = (SHARD.steps ?? []).find((s) => s.run === "node scripts/run-client-tests.mjs");
+    expect(seller?.env?.DACS_SELLER_TEST_SHARD).toBe("${{ matrix.shard }}");
+    expect(client?.env?.DACS_CLIENT_TEST_SHARD).toBe("${{ matrix.shard }}");
+    for (const event of EVENTS) {
+      for (const entry of shards.plan(event) as Entry[]) {
+        expect(holds(seller?.if, { matrix: entry })).toBe(entry.suite === "seller");
+        expect(holds(client?.if, { matrix: entry })).toBe(entry.suite === "client");
+      }
+    }
+    // Neither suite runs in build-test-main.
+    expect((MAIN.steps ?? []).filter((s) => /seller:test|run-client-tests|dacs-client$/.test(s.run ?? ""))).toEqual([]);
+  });
+
+  it("plans every shard of each suite wherever the suite runs, and only there", () => {
+    expect(shards.checkPlan()).toEqual([]);
+    expect(shards.plan("pull_request").map((e: Entry) => `${e["node-version"]} ${e.part}`)).toEqual([
+      "22 seller-1", "22 seller-2", "22 client-1", "22 client-2",
+    ]);
+    expect(shards.plan("push")).toHaveLength(6);
+  });
+
+  it("keeps the required check names on build-test-result only, one job per leg that needs every build-test job", () => {
+    expect(RESULT.name).toBe("build-test (node ${{ matrix.node-version }})");
+    const resultMatrix = RESULT.strategy?.matrix;
+    expect(typeof resultMatrix === "object" ? resultMatrix["node-version"] : undefined).toEqual(MAIN_LEGS);
+    expect(RESULT.needs).toEqual(["build-test-plan", "build-test-main", "build-test"]);
+    // always(): a failed or cancelled job it needs must fail the required check, not skip it (a skipped check passes).
+    expect(RESULT.if).toBe("${{ always() }}");
+    expect(RESULT.permissions).toEqual({ contents: "read", actions: "read" });
+    const named = Object.entries(workflow.jobs).filter(([, job]) => /^build-test \(node /.test(job.name ?? "")).map(([key]) => key);
+    expect(named).toEqual(["build-test-result"]);
+    expect(MAIN.name).toBe("build-test main (node ${{ matrix.node-version }})");
+    expect(SHARD.name).toBe("build-test shard (node ${{ matrix.node-version }}, ${{ matrix.part }})");
+    expect(shards.mainJobName("22")).toBe("build-test main (node 22)");
+    expect(shards.shardJobName("22", "seller-1")).toBe("build-test shard (node 22, seller-1)");
+  });
+
+  describe("verify", () => {
+    const passing = (event: string) => [
+      ...MAIN_LEGS.map((node) => ({ name: shards.mainJobName(node), status: "completed", conclusion: "success" })),
+      ...(shards.plan(event) as Entry[]).map((e) => ({ name: shards.shardJobName(e["node-version"], e.part), status: "completed", conclusion: "success" })),
+      { name: "build-test (node 22)", status: "in_progress", conclusion: null },
+    ];
+
+    it("passes a leg whose main job and planned shards all succeeded", () => {
+      for (const event of EVENTS) for (const node of MAIN_LEGS) expect(shards.verify(node, event, passing(event)).failures).toEqual([]);
+    });
+
+    it("fails a leg with a failed, cancelled, skipped or still-running shard", () => {
+      for (const [status, conclusion] of [["completed", "failure"], ["completed", "cancelled"], ["completed", "skipped"], ["in_progress", null]]) {
+        const jobs = passing("push").map((job) => job.name === shards.shardJobName("22", "client-2") ? { ...job, status, conclusion } : job);
+        expect(shards.verify("22", "push", jobs).failures).toEqual([`build-test shard (node 22, client-2): ${status}/${conclusion}`]);
+        expect(shards.verify("20.19.0", "push", jobs).failures).toEqual([]);
+      }
+    });
+
+    it("fails a leg whose main job or a planned shard is missing or listed twice", () => {
+      const missing = passing("push").filter((job) => job.name !== shards.shardJobName("20.19.0", "seller-2"));
+      expect(shards.verify("20.19.0", "push", missing).failures).toEqual(["build-test shard (node 20.19.0, seller-2): 0 jobs in this run, expected 1"]);
+      const noMain = passing("pull_request").filter((job) => job.name !== shards.mainJobName("20.19.0"));
+      expect(shards.verify("20.19.0", "pull_request", noMain).failures).toHaveLength(1);
+      const twice = [...passing("push"), { name: shards.mainJobName("22"), status: "completed", conclusion: "success" }];
+      expect(shards.verify("22", "push", twice).failures).toEqual(["build-test main (node 22): 2 jobs in this run, expected 1"]);
+    });
+  });
+
+  describe("file assignment", () => {
+    it("puts every file in exactly one shard, including files with no recorded weight", () => {
+      const files = ["a.test.mjs", "b.test.mjs", "new-1.test.mjs", "new-2.test.mjs", "new-3.test.mjs", ...Object.keys(shards.WEIGHTS.client)];
+      for (const suite of ["seller", "client"]) {
+        const parts: string[][] = shards.assign(suite, files);
+        expect(parts).toHaveLength(shards.SHARDS[suite]);
+        expect(parts.flat().sort()).toEqual([...files].sort());
+        expect(shards.checkPartition(suite, files).failures).toEqual([]);
+        parts.forEach((list, index) => expect(shards.shardFiles(suite, files, index + 1)).toEqual(list));
+      }
+    });
+
+    it("does not depend on the order the files are listed in", () => {
+      const files = Object.keys(shards.WEIGHTS.client);
+      expect(shards.assign("client", [...files].reverse())).toEqual(shards.assign("client", files));
+    });
+
+    it("refuses a shard count that differs from the suite's", () => {
+      expect(shards.parseShard("2/2", "seller")).toEqual({ index: 2, count: 2 });
+      for (const text of ["1/3", "3/2", "0/2", "2", "", undefined, " 1/2x"]) expect(() => shards.parseShard(text, "seller")).toThrow();
+    });
   });
 });
 
