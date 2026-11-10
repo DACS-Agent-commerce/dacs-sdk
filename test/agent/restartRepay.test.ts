@@ -338,4 +338,69 @@ describe("native payment with an undetermined first outcome", () => {
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(rail.settle).toHaveBeenCalledTimes(1);
   });
+
+  test("a resume that stops unresolved leaves the job resumable for a reconciling resume", async () => {
+    const payer = "ab".repeat(32);
+    const payee = sellerDid.split(":").at(-1)!;
+    const txHash = "34".repeat(32);
+    const kv = new Map<string, Record<string, unknown>>();
+    const rail = {
+      address: payer,
+      settle: vi.fn(async () => ({
+        ok: true as const, execution: "executed" as const,
+        txHash, chainId: "demos", payer, payee,
+        blockNumber: 42, txRefKind: "demos" as const, finality: { model: "bft-final" as const },
+        networkFeeOs: "0",
+      })),
+    };
+    const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
+    const sessionStore = createInMemorySessionStore(); // stands in for a durable store shared by every process
+    const evidenceRef = `stor:${sessionAnchorName.evidence("job-1")}`;
+
+    // Process 1: the transfer lands, then the process stops before the outcome is recorded.
+    const firstBridge = payDemSettle(rail, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) });
+    const first = await makeDeps(async (req) => {
+      await firstBridge(req);
+      throw new Error("simulated crash after the transfer landed");
+    }, kv, { hit: true }, "pay-dem", undefined, { sessionStore });
+    await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/after the transfer landed/);
+    expect(rail.settle).toHaveBeenCalledTimes(1);
+
+    // Process 2: a fresh rail store and no reconciler cannot settle the question.
+    const unresolvedBridge = payDemSettle(rail, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) });
+    const second = await makeDeps(unresolvedBridge, kv, { hit: true }, "pay-dem", undefined,
+      { sessionStore, resumeSettlement: unresolvedBridge });
+    await expect(runSessionCore(second.listingRef, demTerms, second.deps, "job-1"))
+      .rejects.toThrow(/no settlement record or reconciler; settlement remains unresolved/);
+    // The settlement claim is still held and no worker holds the job, so the
+    // next run must reconcile rather than pay, and nothing reads as final.
+    const stopped = await sessionStore.load("job-1");
+    expect(stopped.status).toBe("ok");
+    const record = stopped.status === "ok" ? stopped.record : undefined;
+    expect(record?.phase).toBe("settling");
+    expect(record?.checkpoints.filter((c) => c.key === "settle:0").map((c) => c.stage)).toEqual(["intent"]);
+    expect(record?.lease ?? undefined).toBeUndefined();
+    expect(kv.has(evidenceRef)).toBe(false);
+    expect(rail.settle).toHaveBeenCalledTimes(1);
+
+    // Process 3: a reconciler finds the transfer and the job completes on it.
+    const reconcile = vi.fn(async () => ({
+      ok: true as const, txHash, chainId: "demos", payer, payee,
+      amountOs: "1000000000", blockNumber: 42, txRefKind: "demos" as const,
+      finality: { model: "bft-final" as const }, networkFeeOs: "0",
+      execution: "executed" as const,
+    }));
+    const reconcilingBridge = payDemSettle(rail, {}, {
+      store: createIdempotencyStore(createInMemorySettlementLog()), reconcile,
+    });
+    const third = await makeDeps(reconcilingBridge, kv, { hit: true }, "pay-dem", undefined,
+      { sessionStore, resumeSettlement: reconcilingBridge });
+    await expect(runSessionCore(third.listingRef, demTerms, third.deps, "job-1"))
+      .resolves.toMatchObject({ outcome: "completed", jobId: "job-1" });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(rail.settle).toHaveBeenCalledTimes(1);
+    expect(kv.get(evidenceRef)).toMatchObject({ paymentTxRefs: [{ txHash }] });
+    const settled = await sessionStore.load("job-1");
+    expect(settled.status === "ok" ? settled.record.phase : undefined).toBe("completed");
+  });
 });
