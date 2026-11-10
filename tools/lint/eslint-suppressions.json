@@ -19,11 +19,6 @@
       "count": 1
     }
   },
-  "packages/dacs-client/src/config.mjs": {
-    "no-undef": {
-      "count": 3
-    }
-  },
   "packages/dacs-client/src/dacs/buyer-chain-readback.mjs": {
     "no-unused-vars": {
       "count": 4
@@ -259,17 +254,12 @@
   },
   "packages/dacs-seller/src/dacs/seller-transport-auth.mjs": {
     "no-unused-vars": {
-      "count": 6
+      "count": 5
     }
   },
   "packages/dacs-seller/src/dacs/session-admission.mjs": {
     "no-unused-vars": {
       "count": 3
-    }
-  },
-  "packages/dacs-seller/src/dacs/session-challenge-limits.mjs": {
-    "no-unused-vars": {
-      "count": 1
     }
   },
   "packages/dacs-seller/src/devnet-demo/agreement-context.mjs": {
