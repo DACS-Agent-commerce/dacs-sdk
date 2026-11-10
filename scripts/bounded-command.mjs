@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 export const COMMAND_TIMEOUT_SECONDS = 900;
 export const DOCKER_PULL_TIMEOUT_SECONDS = 180;
 export const COMMAND_MAX_ATTEMPTS = 3;
+// Node fires a timer longer than 2^31-1 ms after 1 ms, so a longer deadline would end the command at once.
+const COMMAND_MAX_TIMEOUT_SECONDS = Math.floor((2 ** 31 - 1) / 1000);
 const COMMAND_KILL_GRACE_MS = 250;
 // Signals whose default action ends the wrapper; each must reap the detached
 // command group first, including SIGHUP from a disconnected session.
@@ -21,7 +23,7 @@ export function runBoundedCommand(command, args, { seconds = COMMAND_TIMEOUT_SEC
   kill = (pid, signal) => { try { process.kill(-pid, signal); } catch (error) { if (error.code !== "ESRCH") throw error; } },
   // A synchronous write: a closed stderr (EPIPE) must not raise a stream error.
   diagnostic = message => { try { writeSync(2, message + "\n"); } catch { /* stderr is gone */ } } } = {}) {
-  if (!Number.isInteger(seconds) || seconds <= 0 || !Number.isInteger(attempts) || attempts < 1 || attempts > COMMAND_MAX_ATTEMPTS) {
+  if (!Number.isInteger(seconds) || seconds <= 0 || seconds > COMMAND_MAX_TIMEOUT_SECONDS || !Number.isInteger(attempts) || attempts < 1 || attempts > COMMAND_MAX_ATTEMPTS) {
     throw new Error("invalid command deadline or retry budget");
   }
   return new Promise((resolve, reject) => {
