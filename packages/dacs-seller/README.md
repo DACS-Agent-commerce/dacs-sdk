@@ -57,8 +57,8 @@ new ones as not ready. A successful context completion returns only the context
 slot; an aborted start, a failed or non-validated context and a terminal DACS-5
 session (checked once at startup) return every open slot. Returned units never
 reduce what has been charged. Admission and accounting accept capacity through
-their internal ports. HTTP routes use the transport journal directly; terminal
-allocation cleanup runs at startup.
+their internal ports. Signed routes reserve through the store's accounting;
+terminal allocation cleanup runs at startup.
 
 ```js
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
