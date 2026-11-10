@@ -827,6 +827,28 @@ per-client limiter so one client cannot exhaust the shared request budget.
   Expired unattempted challenges may be reclaimed; accepted presentations
   retain their exact admission checkpoint and their job binding for replay.
   The operator issues challenges only for buyers about to present.
+- The signed challenge route is composed directly, not by the host:
+  `createSellerHttpHandler(agent, { authentication, context, wire })` serves
+  `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the
+  `wire` context (`createWireContext`) carries the host's `stopped` predicate; without
+  one the handler refuses construction. No Agreement exists yet and the wire journal is never
+  written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
+  members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's
+  refusals); the envelope (the wire's refusals); the signed path (`peer_request_mismatch`) and
+  the scope job (`peer_job_invalid`, `peer_job_mismatch`); anything but `{ scope }` with the
+  ten challenge-scope keys (`peer_context_mismatch`); the kit guard
+  (`kit_operation_guard_off`) and the stop predicate (`seller_stopped`, with `cause`
+  `stop_check_failed` or `stop_check_invalid` when it throws or answers a non-boolean); the
+  wire's pre-Agreement admission (Listing pin, parties, delegation, `seller_not_ready`); the
+  scope against the Listing (`context_scope_invalid`, `context_generated_at`), buyer access
+  and the known job (ten seconds each, `session_admission_unavailable` with its cause);
+  then the wire's pre-Agreement admission again, so that authority, delegation or readiness
+  that closed during those callbacks refuses before anything is written; then the ledger's
+  limits and capacity and a last check of the request's and delegation's expiry
+  (`peer_expired`, `peer_delegation_expired`) before the insert. Every refusal after
+  the envelope is signed. The answer is `{ sessionNonce, expiresAt }`, signed; the same job,
+  buyer and scope get the same nonce back, also after a restart. The context step, and the
+  challenge of a handler composed without `wire`, stay on the old auth.
 - The devnet source transport and wallet custody are not part of this
   package (the payment-evidence journal composes the operator's own wallet
   primitives). The kit builders that need them (the devnet artifact
