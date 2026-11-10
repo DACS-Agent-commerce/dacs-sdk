@@ -103,7 +103,7 @@ const ANCHOR_RECEIPT_RESERVE_BYTES = 16 * 1024;
 export const SELLER_ANCHOR_ARTIFACT_BYTES = ANCHOR_REPLY_BYTES - ANCHOR_RECEIPT_RESERVE_BYTES;
 const MAX_ANCHOR_ADDRESS_LENGTH = 512, MAX_BUYER_LENGTH = 512;
 
-export async function createSellerDurableState({ dir, signer, listingPin, maxJobs = DEFAULT_SELLER_MAX_JOBS }) {
+export async function createSellerDurableState({ dir, signer, listingPin, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased = () => false }) {
   if (typeof dir !== 'string' || !isAbsolute(dir) || !/^did:demos:agent:[0-9a-f]{64}$/.test(signer?.claim) || typeof signer.sign !== 'function' || !Number.isSafeInteger(maxJobs) || maxJobs < 1) fail('seller_state_configuration_invalid');
   // A worker shares the process's leases but not its realm: keep seller state on the main thread.
   if (!isMainThread) fail('seller_state_main_thread_required');
@@ -212,6 +212,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       if (stored.revision !== row.revision || stored.session.jobId !== jobId || !isCanonicalJobId(jobId)) fail('seller_state_corrupt');
       return stored;
     }
+    // Retain sessions for retries; only the transport's released slots stop counting.
+    const activeSessionCount = () => db.prepare('SELECT job FROM seller_jobs').all()
+      .reduce((count, { job }) => count + Number(!jobSlotReleased(job)), 0);
     function effect(id) {
       const row = get('SELECT value FROM seller_effects WHERE id=?', id);
       return row ? verified(row.value, 'effect', id) : null;
@@ -389,7 +392,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
           const held = fence(jobId);
           const previous = load(jobId);
           if ((previous?.revision ?? 0) !== held.revision) fail('seller_state_fenced');
-          if (!previous && get('SELECT COUNT(*) AS n FROM seller_jobs').n >= maxJobs) fail('seller_state_capacity');
+          if (!previous && activeSessionCount() >= maxJobs) fail('seller_state_capacity');
           const revision = held.revision + 1;
           const value = authenticated('session', jobId, { revision, session });
           run('INSERT INTO seller_jobs VALUES (?,?,?) ON CONFLICT(job) DO UPDATE SET revision=excluded.revision,value=excluded.value', jobId, revision, value);
@@ -421,15 +424,13 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
             // A process can exit before saving a session. Its reservation must
             // not occupy capacity forever just because this is a different job.
             // Use the same positive exit proof as takeover, under this write
-            // transaction; live/unproven holders and saved sessions stay counted.
+            // transaction; live/unproven holders and active sessions stay counted.
             for (const reservation of db.prepare('SELECT * FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)').all()) {
               if (holderState(dir, reservation, lockHolder(reservation)) === 'exited') {
                 run('DELETE FROM seller_locks WHERE job=? AND owner=?', reservation.job, reservation.owner);
               }
             }
-            if (get(`SELECT
-            (SELECT COUNT(*) FROM seller_jobs) +
-            (SELECT COUNT(*) FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)) AS n`).n >= maxJobs) fail('seller_state_capacity');
+            if (activeSessionCount() + get('SELECT COUNT(*) AS n FROM seller_locks WHERE job NOT IN (SELECT job FROM seller_jobs)').n >= maxJobs) fail('seller_state_capacity');
           }
           run('INSERT INTO seller_locks VALUES (?,?,?)', jobId, owner, process.pid);
           return { reclaimed: Boolean(lock), revision: load(jobId)?.revision ?? 0 };
@@ -538,6 +539,8 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         if (row.job !== retained.job) fail('seller_state_corrupt');
         return retained.contested !== true && retained.claims?.length === 1 && Number.isSafeInteger(retained.claims[0].phaseIndex) ? retained.job : null;
       },
+      // Whether a verified payment was first claimed for this job, credited or contested.
+      settlementBoundTo: (jobId) => Boolean(get('SELECT 1 FROM seller_settlements WHERE job=?', jobId)),
       // A signature leaves signOnce only after its completion record, written
       // under the job fence. So a retained intent for the same bytes is a
       // signing that released nothing (its signer threw, or its holder died or

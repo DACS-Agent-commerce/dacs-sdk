@@ -144,7 +144,7 @@ test('T9 no-effect completion retains a job used by another pending read, then r
   w.store.finish(read, 200, '{}'); assert.equal(w.count('peer_jobs'), 0);
 });
 
-test('terminal completed jobs release capacity and related rows across restart', t => {
+test('terminal completed jobs release capacity and retain answers across restart', t => {
   for (const state of ['finalised', 'vet-failed', 'negotiate-failed', 'commit-failed', 'settle-failed', 'aborted-by-self', 'aborted-by-other', 'failed-substrate']) {
     const w = world(t, { maxRecords: 10, maxJobs: 1 }), first = request(w, 0);
     const body = { scope: { jobId: first.jobId } };
@@ -155,10 +155,12 @@ test('terminal completed jobs release capacity and related rows across restart',
     noMutations(() => assert.equal(w.store.classify(request(w, 1), {}), 'start'));
     assert.equal(w.count('peer_effects'), 3, 'classification preserves retained answers');
     assert.equal(w.store.reserve(request(w, 1), {}).disposition, 'perform');
-    for (const table of ['peer_jobs', 'peer_effects', 'peer_effect_jobs', 'peer_slots', 'peer_nonces', 'peer_nonce_retention']) assert.equal(w.count(table), 1, table);
-    for (const table of ['peer_transactions', 'peer_context_admissions']) assert.equal(w.count(table), 0, table);
+    for (const table of ['peer_jobs', 'peer_transactions', 'peer_context_admissions', 'peer_nonces', 'peer_nonce_retention']) assert.equal(w.count(table), 1, table);
+    for (const table of ['peer_effects', 'peer_effect_jobs', 'peer_slots']) assert.equal(w.count(table), 4, table);
     w.reopen();
-    noMutations(() => assert.throws(() => w.store.reserve({ ...first, nonce: 'again', expiresAt: w.now() + 60000 }, {}), { code: 'context_session_terminal' }));
+    assert.deepEqual(w.store.reserve({ ...first, nonce: 'again', expiresAt: w.now() + 60000 }, {}),
+      { disposition: 'cached', status: 200, text: '{ "TEST": "complete" }' });
+    noMutations(() => assert.throws(() => w.store.reserve({ ...first, nonce: 'fresh', bodyHash: 'e'.repeat(64), expiresAt: w.now() + 60000 }, {}), { code: 'context_session_terminal' }));
   }
 });
 
@@ -302,8 +304,8 @@ test('T10 total context capacity bounds admissions, effects and slots across hou
   }
 });
 
-test('T11 terminal context cleanup preserves the full hour and expired-request fence, with restart and replay refusal', t => {
-  const w = world(t, { maxContextRecords: 1 });
+test('terminal context retirement preserves the full hour and expired-request fence, with stored retries after restart', t => {
+  const w = world(t, { maxRecords: 2, maxContextRecords: 1 });
   const old = context(w, 0);
   w.store.finish(w.store.reserve(old, contextBody(0), { admit: () => w.now() }), 409, '{}');
   w.terminal(jid('job-0')); w.advance(HOUR - 1); w.reopen();
@@ -312,11 +314,13 @@ test('T11 terminal context cleanup preserves the full hour and expired-request f
   assert.equal(w.store.classify(context(w, 1), contextBody(1), { admit: () => w.now() }), 'start');
   assert.equal(w.store.contextAdmission(jid('job-0')).jobId, jid('job-0'), 'dry cleanup is read-only');
   const next = w.store.reserve(context(w, 1), contextBody(1), { admit: () => w.now() });
-  assert.equal(next.disposition, 'perform'); assert.equal(w.store.contextAdmission(jid('job-0')), null);
-  assert.equal(w.store.contextAnswer(jid('job-0')), null);
-  for (const table of ['peer_context_admissions', 'peer_effects', 'peer_effect_jobs', 'peer_slots', 'peer_nonces', 'peer_nonce_retention']) assert.equal(w.count(table), 1, table);
+  assert.equal(next.disposition, 'perform'); assert.equal(w.store.contextAdmission(jid('job-0')).jobId, jid('job-0'));
+  assert.deepEqual(w.store.contextAnswer(jid('job-0')), { status: 409, text: '{}' });
+  for (const table of ['peer_context_admissions', 'peer_effects', 'peer_effect_jobs', 'peer_slots']) assert.equal(w.count(table), 2, table);
+  for (const table of ['peer_nonces', 'peer_nonce_retention']) assert.equal(w.count(table), 1, table);
   w.reopen();
-  noMutations(() => assert.throws(() => w.store.reserve({ ...old, nonce: 'old-retry', expiresAt: w.now() + 60000 }, contextBody(0), { admit: () => w.now() }), { code: 'context_session_terminal' }));
+  assert.deepEqual(w.store.reserve({ ...old, nonce: 'old-retry', expiresAt: w.now() + 60000 }, contextBody(0),
+    { admit: () => assert.fail('a completed retry must not admit work') }), { disposition: 'cached', status: 409, text: '{}' });
 });
 
 test('T12 terminal evidence never releases pending or uncertain context effects', t => {
@@ -473,8 +477,8 @@ test('T18 context capacity uses indexed nonce lookups and stops after enough ter
     if (method === 'issue') issue('room');
     else if (method === 'reserve') assert.equal(w.store.reserve(context(w, 'room'), contextBody('room'), { admit: () => w.now() }).disposition, 'perform');
     else noMutations(() => assert.equal(w.store.classify(context(w, 'room'), contextBody('room'), { admit: () => w.now() }), 'start'));
-    assert.equal(calls.filter(job => oldJobs.has(job)).length, 1, 'stop after one reclaimable admission');
-    assert.equal(w.count('peer_context_admissions'), 10000, 'planning retains rows; reserve replaces only the necessary row');
+    assert.equal(calls.filter(job => oldJobs.has(job)).length, method === 'reserve' ? 0 : 1, 'stop after one active admission retires');
+    assert.equal(w.count('peer_context_admissions'), method === 'reserve' ? 10001 : 10000, 'retirement retains completed admission proofs');
   }
 });
 
@@ -488,7 +492,7 @@ test('T19 terminal state is job-scoped and refuses another buyer after cleanup a
   terminal.add(old.jobId); w.advance(HOUR + 1);
   assert.throws(() => w.store.classify(context(w, 0, { buyer: other }), contextBody(0)), { code: 'peer_job_conflict' });
   w.store.finish(w.store.reserve(context(w, 1), contextBody(1), { admit: () => w.now() }), 200, '{}');
-  assert.equal(w.store.contextAdmission(old.jobId), null); w.reopen();
+  assert.equal(w.store.contextAdmission(old.jobId).jobId, old.jobId); w.reopen();
   noMutations(() => {
     assert.throws(() => w.store.classify(context(w, 0, { buyer: other }), contextBody(0)), { code: 'context_session_terminal' });
     assert.throws(() => w.store.reserve(context(w, 0, { buyer: other }), contextBody(0)), { code: 'context_session_terminal' });
@@ -721,7 +725,7 @@ test('terminal context cleanup cannot admit another buyer proposal for that job 
   w.store.finish(w.store.reserve(first, contextBody(0), { admit: w.now }), 200, '{}');
   w.terminal(first.jobId, 'finalised'); w.advance(HOUR + 1);
   w.store.reserve(context(w, 1), contextBody(1), { admit: w.now });
-  assert.equal(w.store.contextAdmission(first.jobId), null); w.reopen();
+  assert.equal(w.store.contextAdmission(first.jobId).jobId, first.jobId); w.reopen();
   const attack = request(w, 0, { buyer: other, nonce: 'another-owner' });
   noMutations(() => assert.throws(() => w.store.classify(attack, {}), { code: 'context_session_terminal' }));
   assert.throws(() => w.store.reserve(attack, {}), { code: 'context_session_terminal' });
