@@ -6876,6 +6876,42 @@
           "after": "bb26d97d15d59c621b149847feebd7c7095dbe7e"
         }
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF rebuild the signer reservation as one record per signer and verify the signed bytes",
+      "files": [
+        {
+          "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+          "before": "a14bf40eabc66742e0cb3c7e99093246a16c72d3",
+          "after": "b99e53e5ea84eca0ca1e607c76ae98cd65d31da7"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+          "before": "095583a9cbbac1bbbb5cc578741caa2dd42f21ee",
+          "after": "e4c39b4014f9a33823ca4c8f2e043aa1502c5313"
+        },
+        {
+          "path": "packages/dacs-client/src/wallet/signer-reservation.mjs",
+          "before": "1d687234da2ff434291fcea67c4488d8e6614f4d",
+          "after": "e0c3f5b5d4075fdb06535238008c1f02344442bd"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-child.mjs",
+          "before": "fcf8680fd294ff31fad8add0e4a5f459291dd7a6",
+          "after": "8b03bdb1392424fc58763afdabd38e9a28a82598"
+        },
+        {
+          "path": "packages/dacs-client/test/helpers/signer-reservation-world.mjs",
+          "before": "2ab98b58381d5f76e5a2eb9a04fe4a713573269a",
+          "after": "3048034aa3b7af377e090e62be3f1173c1f06ee0"
+        },
+        {
+          "path": "packages/dacs-client/test/node-signer-reservation.test.mjs",
+          "before": "c0e9061d13141e783f3fdb484b97f66f9b45253c",
+          "after": "8dcb7f15daa80e2e2abf272b6ce867d06f40101f"
+        }
+      ]
     }
   ]
 }

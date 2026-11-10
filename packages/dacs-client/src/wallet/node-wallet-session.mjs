@@ -547,7 +547,7 @@ async function buildNodeComposition(options, seller) {
       request: request => selectedJournal.run(selected, () => session.request(request)),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
-    const reservations = seller ? createSignerReservations({ journal, pins: expected, clock }) : null;
+    const reservations = seller ? createSignerReservations({ journal, pins: expected }) : null;
     await reservations?.recover({ stateOwnership });
     const composition = Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass,
       ...(seller ? { transport: createHeldTransportFacade({ admission, transport }), observer: createNodeObserver({ owner, clock }) } : {}),
