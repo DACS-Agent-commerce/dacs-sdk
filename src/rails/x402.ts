@@ -648,26 +648,6 @@ export async function dacsX402AuthorizationNonce(input: {
   return sha256(stringToHex(preimage));
 }
 
-export type DacsX402BindingVerdict =
-  | "present-and-matches"
-  | "present-and-mismatches"
-  | "malformed";
-
-/**
- * Recompute and classify the normative textual EIP-3009 nonce form. A
- * well-formed mismatch is a hard SB-3 rejection; malformed input is an error,
- * not the absent/unverifiable fallback used when no binding can be recovered.
- */
-export async function verifyDacsX402AuthorizationNonce(
-  input: { jobId: string; phaseIndex: number },
-  presentedNonce: string,
-): Promise<DacsX402BindingVerdict> {
-  if (!/^0x[0-9a-f]{64}$/.test(presentedNonce)) return "malformed";
-  return presentedNonce === await dacsX402AuthorizationNonce(input)
-    ? "present-and-matches"
-    : "present-and-mismatches";
-}
-
 /**
  * Construct an x402 rail from an EVM key. Lazily imports @x402 + viem so the
  * SDK core stays importable without the rail's chain deps installed.
@@ -961,8 +941,8 @@ export function x402Settle(
       }, effectFence);
     // Safe by default: at-most-once per (railId, jobId, phaseIndex) via an
     // idempotency store (in-process default; inject a durable one for cross-process
-    // crash-safety). NOTE: reproducing the exact x402 authorization/session binding
-    // on a reconciled resubmit is the SB-3 work in #33. A durable recovery may
+    // crash-safety). NOTE: a reconciled resubmit does not rebuild the x402
+    // authorization/session binding (SB-3) by itself. A durable recovery may
     // replay only when `reconcile` returns an authorization bound to this exact
     // deterministic EIP-3009 nonce; absence alone still fails closed.
     return settleThroughStore({

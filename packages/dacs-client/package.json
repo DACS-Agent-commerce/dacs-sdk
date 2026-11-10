@@ -4,7 +4,8 @@
   "description": "Buyer purchase services, protocol readers and host integration seams for DACS clients.",
   "exports": {
     ".": "./src/index.mjs",
-    "./wallet/durable-journal": "./src/wallet/durable-journal.mjs"
+    "./wallet/durable-journal": "./src/wallet/durable-journal.mjs",
+    "./node-wallet": "./src/wallet/node-wallet-session.mjs"
   },
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
@@ -40,6 +41,7 @@
     "src/util/immutable-readbacks.mjs", "src/util/purchase-readback-cache.mjs",
     "src/util/text.mjs", "src/wallet/demos-quiet-hooks.mjs", "src/wallet/devnet-native-transport.mjs",
     "src/wallet/durable-journal.mjs", "src/wallet/holder-incarnation.mjs", "src/wallet/node-demos-loading.mjs",
+    "src/wallet/node-wallet-session.mjs", "src/public/portal/embedded-wallet/sdk-provider.mjs",
     "src/wallet/payload-helpers.mjs",
     "README.md", "LICENSE",
     "src/public-admission.mjs", "src/public-guidance.mjs", "src/public-verification.mjs"

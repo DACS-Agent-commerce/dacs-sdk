@@ -2237,6 +2237,41 @@ test("refuses a well-formed Demos failure proof on an x402 settlement", async ()
     .rejects.toThrow(/does not bind the payment amount and rail/);
 });
 
+test.each([undefined, null, 0, "", false, 0n, NaN, new Error("renewal failed")])("stops native publication after a heartbeat rejection with %s", async (reason) => {
+  const f = await nativeAuditFixture();
+  vi.useFakeTimers();
+  try {
+    const acquire = f.store.acquireLease.bind(f.store);
+    let rejectRenewal = false;
+    vi.spyOn(f.store, "acquireLease").mockImplementation(async (input) => {
+      if (rejectRenewal) { rejectRenewal = false; throw reason; }
+      return acquire(input);
+    });
+    const resumed = await makeDeps(f.store, { kv: f.kv, resumeSettlement: async () => f.success,
+      anchor: async (name, value) => {
+        if (name === sessionAnchorName.evidence("job-1")) {
+          rejectRenewal = true;
+          await vi.advanceTimersByTimeAsync(20_000);
+        }
+        const ref = `stor:${name}`;
+        f.kv.set(ref, value as Record<string, unknown>);
+        return ref;
+      },
+    });
+    await expect(runSessionCore(resumed.listingRef, f.demTerms, resumed.deps, "job-1"))
+      .rejects.toBe(reason);
+    expect(resumed.settleCalls.n).toBe(0);
+    const loaded = await f.store.load("job-1");
+    expect(loaded.status).toBe("ok");
+    if (loaded.status !== "ok") throw new Error("session missing");
+    expect(loaded.record.phase).not.toBe("completed");
+    expect(loaded.record.receipts.some((receipt) => receipt.kind === "bundle")).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("renews the native session fence while evidence publication waits", async () => {
   const f = await nativeAuditFixture();
   vi.useFakeTimers();

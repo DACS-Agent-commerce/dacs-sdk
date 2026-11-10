@@ -173,7 +173,7 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * Return `completed` only when the node's transaction record for the
    * prepared hash shows the transfer executed. A status-index `included`
    * alone is not execution: a node reports it for a transaction whose record
-   * `failed` (#338). Every completed settlement must attest
+   * `failed`. Every completed settlement must attest
    * `execution: "executed"` after checking a bound confirmed record. The track
    * checks and removes that attestation before storing the settlement or
    * publishing its notice. Missing or other execution evidence stays
@@ -362,7 +362,9 @@ function walletReservation(
     settlementBindingHash: payment.orderLocalBindingHash,
     railId: payment.railId,
     railDefinitionHash: payment.railDescriptorHash,
-    wallet: payment.payer,
+    // Wallet policies name the Demos wallet as the adapter reports it
+    // (`0x`-prefixed); the payment input keeps the bare canonical hex.
+    wallet: `0x${payment.payer}`,
     chainId: payment.network,
     payee: payment.payee,
     finality: Object.freeze({ model: "bft-final" }),
@@ -479,7 +481,7 @@ export function createDacsPayDemWalletSpendRecoveryAuthenticatorV1(
           typeof chain.nonce !== "number" || !Number.isSafeInteger(chain.nonce) ||
           chain.nonce < 0 || Object.is(chain.nonce, -0) || chain.nonce !== prepared.nonce ||
           chain.txHash !== prepared.txHash ||
-          chain.payer !== reservation.wallet || chain.payee !== reservation.payee ||
+          chain.payer !== payment.payer || chain.payee !== reservation.payee ||
           chain.amountOs !== payment.amountOs) {
         return false;
       }
@@ -546,7 +548,7 @@ function capturePrepared(
           !INTEGER_RE.test(value.confirmedTotalDebitOs) ||
           BigInt(value.confirmedTotalDebitOs) < BigInt(payment.amountOs) ||
           BigInt(value.confirmedTotalDebitOs) > BigInt(payment.maxTotalDebitOs))) ||
-      // The record's declared fee is kept beside the real debit, never alone (#604).
+      // The record's declared fee is kept beside the real debit, never alone.
       (value.confirmedRecordFeeOs !== undefined &&
         (value.confirmedTotalDebitOs === undefined ||
           typeof value.confirmedRecordFeeOs !== "string" ||
@@ -835,9 +837,21 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         let claim: Extract<WalletSpendReservationClaimV1, { status: "reserved" }> |
           undefined;
         let claimFailure: DacsLiveEffectExecutionControlV1 | undefined;
+        // The rail type makes the pre-broadcast hook optional. A failure is
+        // named "before broadcast" only when the hook was entered and did not
+        // pass; a rail that skipped the hook may already have broadcast.
+        let broadcastHookEntered = false;
+        let broadcastReleased = false;
+        let reserveFailed = false;
         const reserveWallet = async (): Promise<NonNullable<typeof claim>> => {
           if (claim !== undefined) return claim;
-          const next = await walletSpendAuthority.reserve(reservation);
+          let next: WalletSpendReservationClaimV1;
+          try {
+            next = await walletSpendAuthority.reserve(reservation);
+          } catch (error) {
+            reserveFailed = true;
+            throw error;
+          }
           if (next.status !== "reserved") {
             claimFailure = walletClaimControl(next);
             throw new DacsPayDemBuyerPaymentError(
@@ -906,8 +920,10 @@ export function createDacsPayDemBuyerPaymentTrackV1(
               preparedCheckpointed = true;
             },
             assertCurrentBeforeBroadcast: async () => {
+              broadcastHookEntered = true;
               await beginPreparedEffect();
               await fence.assertCurrent();
+              broadcastReleased = true;
             },
           }, railEffectFence);
           if (beginEffect === undefined) {
@@ -928,7 +944,14 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           });
         } catch {
           if (claimFailure !== undefined) return claimFailure;
-          return control("pay-dem-settlement-ambiguous");
+          // Still indeterminate either way: a prepared checkpoint may exist and
+          // only reconciliation can retire it. The reason says how far it got.
+          if (!broadcastHookEntered || broadcastReleased) {
+            return control("pay-dem-settlement-ambiguous");
+          }
+          return control(reserveFailed
+            ? "pay-dem-wallet-reservation-failed"
+            : "pay-dem-stopped-before-broadcast");
         }
         return result(settlement);
       },
