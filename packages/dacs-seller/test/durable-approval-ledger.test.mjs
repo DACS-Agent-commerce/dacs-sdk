@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { mkdir,mkdtemp,readFile,rm,writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -33,11 +34,25 @@ test('a ledger two missing levels deep is refused before any directory is create
  assert.equal(fs.existsSync(join(dir,'missing')),false);
 });
 
+const syncInChildProcess=`
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const [ledgerPath,moduleUrl]=process.argv.slice(1),synced=[],original=fs.fsyncSync;
+fs.fsyncSync=fd=>{synced.push(fs.realpathSync('/proc/self/fd/'+fd));return original(fd);};
+syncBuiltinESMExports();
+const { syncApprovalLedger }=await import(moduleUrl);
+syncApprovalLedger(ledgerPath);
+console.log(JSON.stringify({pid:process.pid,synced}));
+`;
+
 test('a retry in a fresh process syncs the leaf entry a crash left unsynced',async t=>{
  const dir=await fixture(t),path=join(dir,'leaf','ledger');
  await mkdir(dirname(path),{mode:0o700});await writeFile(path,`${JSON.stringify({record:'first'})}\n`);
- const fresh=await import('../src/devnet-demo/approval-ledger-append.mjs?fresh-process');
- const synced=recordSyncs(()=>fresh.syncApprovalLedger(path));
+ const moduleUrl=new URL('../src/devnet-demo/approval-ledger-append.mjs',import.meta.url).href;
+ const child=spawnSync(process.execPath,['--input-type=module','-e',syncInChildProcess,'--',path,moduleUrl],{encoding:'utf8'});
+ assert.equal(child.status,0,child.stderr);
+ const {pid,synced}=JSON.parse(child.stdout);
+ assert.notEqual(pid,process.pid);
  for(const expected of [path,dirname(path),dir])assert(synced.includes(expected),expected);
 });
 
