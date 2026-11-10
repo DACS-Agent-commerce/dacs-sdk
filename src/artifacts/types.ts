@@ -699,9 +699,6 @@ export type TxRef = ChainTxRef;
 /** DACS-4 §9.7 paymentAmount is the shared PriceTerm shape. */
 export type PaymentAmount = PriceTerm;
 
-/** §9.7 settlement outcome. */
-export type SettlementOutcome = "success" | "failure";
-
 /** §9.7 settlement finality models (PC-6 — the actual model applied). */
 export type SettlementFinalityModel =
   | "block-depth"

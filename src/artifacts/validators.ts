@@ -215,12 +215,6 @@ const isMinimalUnsignedDecimal = (v: unknown): v is string =>
 // spelling, so readers accept it alongside the bare hex form.
 const isIdentityBundleHash = (v: unknown): v is string =>
   isSha256(v) || (isStr(v) && /^sha256:[0-9a-f]{64}$/.test(v));
-const hasValidOptionalComponentSignature = (
-  v: Record<string, unknown>,
-): boolean =>
-  !Object.prototype.hasOwnProperty.call(v, "signatures") &&
-  (!Object.prototype.hasOwnProperty.call(v, "signature") ||
-    isComponentSignature(v.signature));
 
 // §9.7 enums — enforced so an out-of-spec value (e.g. outcome:"banana") is
 // rejected, not just any string.
