@@ -312,7 +312,7 @@ describe("import closure", () => {
     // runs, and the pure modules it loads: its pricing, RFQ and pay-alternative (APR-3) checks. None does I/O; the
     // built-in list above is unchanged.
     const modules = [...seen].map((href) => href.replace(/^.*\/src\//, ""));
-    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^negotiate\/(?:jobId|commitment|fixedPrice|rfq|channel)\.ts$|^rails\/payAlternative\.ts$|^errors\.ts$/;
+    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^internal\/(?:deepFreeze|arrayBufferView)\.ts$|^negotiate\/(?:jobId|commitment|fixedPrice|rfq|channel)\.ts$|^rails\/payAlternative\.ts$|^errors\.ts$/;
     expect(modules.filter((module) => !allowed.test(module))).toEqual([]);
     for (const module of ["wire/index.ts", "wire/journal.ts", "wire/commitment.ts", "canonical/rawJson.ts", "artifacts/validators.ts", "negotiate/jobId.ts", "negotiate/commitment.ts"]) {
       expect(modules, module).toContain(module);

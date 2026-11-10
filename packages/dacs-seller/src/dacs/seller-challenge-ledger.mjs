@@ -162,9 +162,10 @@ function replayAnswer(row, input) {
  * Creates the challenge ledger on the caller's SQLite handle and returns a frozen API.
  * `transaction(fn, rollback = false)` runs fn synchronously in BEGIN IMMEDIATE and returns its result.
  * `now()` is the seller clock in ms; `generation` identifies this process, drawn after the seller state
- * lock is held. `sessionState({ jobId })` is the store's observation adapter: a synchronous DACS-5 name or null
- * (the adapter reads a throw or a promise as unknown), whose errors propagate. `admissionCounts()` returns `{ contextRecords, starts, buyerStarts(buyer) }`
- * over durable rows. `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
+ * lock is held. `sessionState({ jobId })` is the store's synchronous observation adapter and answers with a state string or null.
+ * Its unavailable-state errors propagate at issuance; reclamation treats them as unknown and retains the row.
+ * `admissionCounts({ jobId })` returns `{ contextRecords, starts, buyerStarts(buyer) }`
+ * over durable rows (`jobId` is the job being issued for, so a count may leave out a record that job already holds). `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
  * Entries: `issue(request, challengeScopeHash, authorization)` and `issueForOperator(request)` return
  * `{ sessionNonce, expiresAt }` or throw SellerTransportError (a guard refusal keeps its own class);
  * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
@@ -241,9 +242,17 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!db.inTransaction) throw new TypeError(`${entry} runs inside an open transaction`);
   }
 
-  // Only an exact terminal state answers true. `sessionState` is the store's observation adapter, which has already read an unusable
-  // port as unknown; its own errors (an unbound cleanup, a failed write) are not an answer and propagate.
+  // Only an exact terminal state answers true. The store's observation adapter owns the session read.
+  // Errors from the adapter and its cleanup barrier propagate.
   const isTerminal = (jobId) => TERMINAL_CONTEXT_STATES.has(sessionState({ jobId }));
+  // Reclamation keeps rows when the session source is unavailable; observer failures still propagate.
+  function isKnownTerminal(jobId) {
+    try { return isTerminal(jobId); }
+    catch (error) {
+      if (error?.code !== 'session_admission_unavailable' || error.status !== 503) throw error;
+      return false;
+    }
+  }
 
   function decodedRow(row) {
     return { ...row, owner: parseColumn(row.owner), failure: parseColumn(row.failure), accepted: parseColumn(row.accepted) };
@@ -302,15 +311,15 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (needed <= 0) return [];
     const plan = [];
     for (const row of all('SELECT nonce, jobId FROM kit_challenges WHERE expiresAt <= ? AND issuedAt <= ? ORDER BY issuedAt', time, time - CHALLENGE_WINDOW_MS)) {
-      if (isTerminal(row.jobId)) plan.push(row.nonce);
+      if (isKnownTerminal(row.jobId)) plan.push(row.nonce);
       if (plan.length === needed) return plan;
     }
     fail('context_challenge_capacity', 503);
   }
 
   // K1 steps 14-15: the context-record count, then the unpaid start counts.
-  function enforceAdmissionLimits(buyer) {
-    const counts = requireSynchronous(admissionCounts(), 'admissionCounts');
+  function enforceAdmissionLimits(buyer, jobId) {
+    const counts = requireSynchronous(admissionCounts({ jobId }), 'admissionCounts');
     if (!isRecord(counts) || typeof counts.buyerStarts !== 'function') throw new TypeError('admissionCounts must answer { contextRecords, starts, buyerStarts(buyer) }');
     if (readCount(counts.contextRecords, 'contextRecords') >= capacity.maxContextRecords) fail('peer_context_capacity', 503);
     if (readCount(counts.starts, 'starts') >= capacity.maxStartsPerHour) fail('unpaid_start_limit', 429);
@@ -334,7 +343,7 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (!live) {
       enforceIssuanceLimits(buyer, jobRows.length, time);
       reclaimed = planReclamation(time);
-      enforceAdmissionLimits(buyer);
+      enforceAdmissionLimits(buyer, jobId);
     }
     // A reused nonce is answered only while the seller may still answer: it skips the counts and the writes, not step 16.
     assertStillAllowed(origin, authorization);

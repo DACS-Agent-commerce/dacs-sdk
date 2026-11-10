@@ -289,7 +289,8 @@ export async function startSellerHost(options) {
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     let capacity;
     const capacityReady = () => capacity?.fitsNewPurchase() === true;
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, ready: capacityReady, contextSessionState });
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested, ready: capacityReady, contextSessionState,
+      wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
     // The store reads the raw port only through its one observation adapter, which the capacity binds its cleanup to and then shares.
     capacity = createPurchaseCapacity({ store, now, maxRecords, sessionState: sellerStoreInternals(store).sessionState });
@@ -300,7 +301,7 @@ export async function startSellerHost(options) {
     // A purchase whose session already ended gives its unspent units back before anything is served.
     capacity.releaseTerminalAllocations();
     const artifact = boundedArtifactReads(artifactAnchor, { signal: shutdown.signal, timeoutMs: TIMEOUTS.requestTimeout });
-    const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'),
+    const agent = await createSellerAgent({ signer, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased,
       agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE });
     opened.push(() => agent.close());
     // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
@@ -316,7 +317,7 @@ export async function startSellerHost(options) {
     // New purchases require room for a whole allotment while the seller is running.
     const sellerReady = () => !stopping && capacityReady();
     const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: target => inspectWireOperation(journal, target) });
-    // The one context every signed route on `./wire` uses, with the transport store as their journal. Each signed request and
+    // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the operator's connection again through it.
     const wire = createWireContext({ binding, tp1Network, signer, store, journal, ready: sellerReady, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations });
     // The state directories and the new transport database entry are durable

@@ -89,7 +89,7 @@ export interface SellerFulfilmentExpectedVerifyResult {
  * complementary requirement body's supplier/acceptance for this job. The
  * fulfilment core binds `verifier` to the authenticated session orchestrator,
  * and rebinds the Listing-owned buyer requirement directly. This operational
- * seam is not normative provenance while DACS-Standard #331 remains open.
+ * seam is not normative provenance: the DACS Standard does not yet define one.
  */
 export interface SellerFulfilmentVetRequirementInvocation {
   vetRecordRef: AttestationRef;

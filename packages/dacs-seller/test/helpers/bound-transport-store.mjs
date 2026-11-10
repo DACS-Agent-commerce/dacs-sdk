@@ -4,9 +4,11 @@
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 
+const capacities = new WeakMap();
+
 /** Binds a purchase capacity to `store` on the clock `now` and returns the store. */
 export function bindPurchaseCapacity(store, now = () => Date.now()) {
-  createPurchaseCapacity({ store, now, sessionState: sellerStoreInternals(store).sessionState });
+  capacities.set(store, createPurchaseCapacity({ store, now, sessionState: sellerStoreInternals(store).sessionState }));
   return store;
 }
 
@@ -14,3 +16,6 @@ export function bindPurchaseCapacity(store, now = () => Date.now()) {
 export function createSellerTransportStore(options) {
   return bindPurchaseCapacity(createUnboundStore(options), options.now);
 }
+
+/** Returns the purchase capacity bound by this fixture. */
+export const purchaseCapacityOf = store => capacities.get(store);

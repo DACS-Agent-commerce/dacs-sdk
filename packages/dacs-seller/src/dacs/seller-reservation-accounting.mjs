@@ -28,7 +28,7 @@ const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isI
  * The store owns the schema and BEGIN IMMEDIATE; every check and hook runs within that same transaction.
  */
 export function createReservationAccounting({ store, now, limits, contextRecords }) {
-  if (![limits?.maxJobs, limits?.maxContextRecords, limits?.maxNoncesPerBuyerPerWindow].every(value => uint(value) && value > 0) ||
+  if (![limits?.maxRecords, limits?.maxJobs, limits?.maxContextRecords, limits?.maxNoncesPerBuyerPerWindow].every(value => uint(value) && value > 0) ||
       typeof now !== 'function') throw new TypeError('positive reservation limits required');
   const { get, run, transaction, ledger } = store;
   const countContextRecords = contextRecords ?? (() => ledger.contextCountWithin());
@@ -36,9 +36,10 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // Steps 2 to 4 count every ledger record, whichever path wrote it. A job, or its context record, already held
   // by any record takes no second slot.
   function checkLimitsWithin(payload, contextStart, at) {
+    if (ledger.recordCountWithin(at) >= limits.maxRecords) fail('peer_store_capacity', 503);
     if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
     if ((!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) ||
-        (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords)) store.retireSlotsWithin(at, undefined, { capacity: true, keepContexts: true });
+        (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords)) store.retireSlotsWithin(at, undefined, { capacity: true });
     if (!ledger.jobHeldWithin(payload.jobId) && ledger.jobCountWithin() >= limits.maxJobs) fail('peer_job_capacity', 503);
     if (contextStart && !ledger.contextHeldWithin(payload.jobId) && countContextRecords() >= limits.maxContextRecords) {
       fail('peer_context_capacity', 503);
@@ -47,9 +48,10 @@ export function createReservationAccounting({ store, now, limits, contextRecords
 
   // The job belongs to the parties and Agreement already holding it; an existing purchase must hold this exact tuple.
   // Returns whether the job has its purchase (job row) already.
-  function checkJobWithin(payload, keepProfile) {
+  function checkJobWithin(payload, keepProfile, replay) {
     if (ledger.jobConflictWithin(payload)) fail('peer_job_conflict', 409);
-    if (ledger.jobClosedWithin(payload)) fail('context_job_closed', 409);
+    if (!replay && (ledger.jobClosedWithin(payload) ||
+        ledger.jobRetiredWithin(payload.jobId))) fail('context_job_closed', 409);
     const tuple = canonicalize(keepProfile);
     if (canonicalize(payload.profile) !== tuple) fail('tp1_purchase_profile_mismatch', 500);
     const purchase = ledger.purchaseWithin(payload.jobId);
@@ -86,20 +88,26 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     const contextStart = route === SELLER_CONTEXT_PATH;
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
-    checkLimitsWithin(payload, contextStart, at);
-    const purchased = checkJobWithin(payload, keepProfile);
-    checkRouteWithin(payload, operationId);
-    const capacity = capacityWithin(input, at, key);
-    // The hold comes first: the row references it, so no charged row exists without its counted job.
+    const replay = ledger.retiredReplayWithin(payload, operationId);
+    if (replay) {
+      if (ledger.recordCountWithin(at) >= limits.maxRecords) fail('peer_store_capacity', 503);
+      if (ledger.buyerUnitsWithin(payload.buyer, at) >= limits.maxNoncesPerBuyerPerWindow) fail('peer_buyer_nonce_limit', 429);
+      if (get('SELECT key FROM kit_reservations WHERE key = ?', key)) fail('peer_request_replayed', 409);
+    } else checkLimitsWithin(payload, contextStart, at);
+    const purchased = checkJobWithin(payload, keepProfile, replay);
+    if (!replay) checkRouteWithin(payload, operationId);
+    const capacity = replay ? GENERAL_CAPACITY : capacityWithin(input, at, key);
+    // The hold comes first because every reservation row references its job.
     store.holdJobWithin(payload, contextStart);
     // The first claim for a transaction is retained for accounting only: a competing job still reaches settlement intake.
-    if (paymentTx !== null) run('INSERT OR IGNORE INTO kit_payment_transactions VALUES (?, ?, ?)', paymentTx, payload.jobId, operationId);
+    if (paymentTx !== null && !replay) run('INSERT OR IGNORE INTO kit_payment_transactions VALUES (?, ?, ?)', paymentTx, payload.jobId, operationId);
     run(`INSERT INTO kit_reservations (key, buyer, jobId, operationId, route, allocationId, class, requestHash, at, state, rev)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserving', 1)`, key, payload.buyer, payload.jobId, operationId, route,
     capacity.allocationId, capacity.class, requestHash, at);
     // The context step carries its scope hash in the agreementHash slot, so the job's first purchase request,
     // not the context start, writes its job row and tuple.
-    if (!purchased && !contextStart) store.keepJobWithin(payload, keepProfile, at);
+    if (!replay && !purchased && !contextStart) store.keepJobWithin(payload, keepProfile, at);
+    return replay;
   }
 
   // Compare-and-swap on the inserted revision: a slower or repeated path cannot overwrite a newer result.
@@ -138,7 +146,8 @@ export function createReservationAccounting({ store, now, limits, contextRecords
      * reservation's own refusal (a string code and an HTTP status), after recording it as refused{code}; any other
      * failure leaves the charged row `reserving`, never refunded.
      * The store decides whether the job and its context record are new; the context route is the context start.
-     * Throws before any row on an absent keepProfile, an unsafe clock, a full buyer window, job or context
+     * A completed replay on a retired job spends a nonce unit without spending purchase capacity or recreating the purchase.
+     * Throws before any row on an absent keepProfile, an unsafe clock, a full store, buyer window, job or context
      * capacity, a job held by other parties, a closed job (context_job_closed), a tuple mismatch, a replayed nonce key,
      * or a refusal from checkCapacityWithin. Ownership remains after the job row is removed; a no-effect end
      * releases only its provisional Agreement binding when nothing else retains the job.
@@ -150,14 +159,14 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       const input = admittedInput(options);
       const { checked, payload } = input;
       const key = sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
-      transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
+      const replay = transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
       let effect;
       try { effect = await checked.reserve(); }
       catch (error) {
         if (isDefiniteRefusal(error)) saveRefusal(key, error);
         throw error;
       }
-      if (!RESULTS.has(effect?.state)) fail('wire_input_invalid', 500);
+      if (!RESULTS.has(effect?.state) || (replay && effect.state !== 'completed')) fail('wire_input_invalid', 500);
       saveResult(key, effect.state);
       return effect;
     },
