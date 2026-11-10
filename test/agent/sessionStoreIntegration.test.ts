@@ -1352,7 +1352,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       transfers += 1;
       return { ok: true, execution: "executed", txHash: "cd".repeat(32), chainId: "demos", payer, payee,
         blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs };
-    } });
+    } }, {}, { store: createIdempotencyStore() });
     const first = await makeDeps(store, { kv, settle,
       anchor: async (name, value) => {
         if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor unavailable");

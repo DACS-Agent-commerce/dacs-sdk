@@ -87,9 +87,9 @@ async function makeDeps(settle: SessionDeps["settle"], kv: Map<string, Record<st
   return { deps, listingRef };
 }
 
-// A rail's default idempotency store lives in memory, so a restart forgets it.
+// These fixtures give each bridge a fresh in-memory store to exercise session recovery.
 // Resuming a job whose payment evidence never got anchored must not pay again.
-describe("restart with the default in-memory rail store, then resume", () => {
+describe("restart with a fresh in-memory rail store, then resume", () => {
   test("evm-erc20: resuming the same job after a crash does not transfer again", async () => {
     let transfers = 0;
     const rail = {
@@ -114,12 +114,12 @@ describe("restart with the default in-memory rail store, then resume", () => {
     };
     const kv = new Map<string, Record<string, unknown>>();
     const crash = { hit: false };
-    // Process 1: the default store lives only in this bridge instance.
-    const first = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee");
+    // Process 1: the injected store lives only in this bridge instance.
+    const first = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee");
     await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/simulated crash/);
     expect(transfers).toBe(1);
-    // Process 2: a new bridge instance, so a new empty default store.
-    const second = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee");
+    // Process 2: a new bridge instance, so a new empty store.
+    const second = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee");
     await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1"))
       .rejects.toThrow(/resumeSettlement is required/);
     expect(transfers).toBe(1);
@@ -144,10 +144,10 @@ describe("restart with the default in-memory rail store, then resume", () => {
     const demTerms = { ...terms, price: { amount: "1", asset: "DEM", decimals: 9, rail: "pay-dem" } };
     const kv = new Map<string, Record<string, unknown>>();
     const crash = { hit: false };
-    const first = await makeDeps(payDemSettle(rail), kv, crash, "pay-dem");
+    const first = await makeDeps(payDemSettle(rail, {}, { store: createIdempotencyStore() }), kv, crash, "pay-dem");
     await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow(/simulated crash/);
     expect(transfers).toBe(1);
-    const second = await makeDeps(payDemSettle(rail), kv, crash, "pay-dem");
+    const second = await makeDeps(payDemSettle(rail, {}, { store: createIdempotencyStore() }), kv, crash, "pay-dem");
     await expect(runSessionCore(second.listingRef, demTerms, second.deps, "job-1"))
       .rejects.toThrow(/resumeSettlement is required/);
     expect(transfers).toBe(1);
@@ -184,12 +184,12 @@ describe("resume with a session store that never saw the earlier run", () => {
     const { counter, rail, cfg, evmTerms } = evmFixture();
     const kv = new Map<string, Record<string, unknown>>();
     const crash = { hit: false };
-    const first = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee",
+    const first = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee",
       { sessionStore: createInMemorySessionStore() });
     await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/simulated crash/);
     expect(counter.transfers).toBe(1);
     // Process 2: the session store is new and empty, so it has no record of job-1.
-    const second = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee",
+    const second = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee",
       { sessionStore: createInMemorySessionStore() });
     await expect(runSessionCore(second.listingRef, evmTerms, second.deps, "job-1"))
       .rejects.toThrow(/resumeSettlement is required/);
@@ -200,13 +200,13 @@ describe("resume with a session store that never saw the earlier run", () => {
     const { counter, rail, cfg, evmTerms } = evmFixture();
     const kv = new Map<string, Record<string, unknown>>();
     const crash = { hit: false };
-    const first = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee");
+    const first = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee");
     await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/simulated crash/);
     expect(counter.transfers).toBe(1);
     // Process 2: one fresh store. The first resume fails on the evidence lookup
     // after the store has created its record of the job; the retry reuses it.
     const sessionStore = createInMemorySessionStore();
-    const second = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
+    const second = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
     const resolve = second.deps.resolveAnchor;
     let failNext = true;
     second.deps.resolveAnchor = async (name) => {
@@ -226,11 +226,11 @@ describe("resume with a session store that never saw the earlier run", () => {
     const { counter, rail, cfg, evmTerms } = evmFixture();
     const kv = new Map<string, Record<string, unknown>>();
     const crash = { hit: false };
-    const first = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee");
+    const first = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee");
     await expect(runSessionCore(first.listingRef, evmTerms, first.deps)).rejects.toThrow(/simulated crash/);
     const sessionStore = createInMemorySessionStore();
-    const a = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
-    const b = await makeDeps(evmErc20Settle(rail, cfg), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
+    const a = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
+    const b = await makeDeps(evmErc20Settle(rail, cfg, { store: createIdempotencyStore() }), kv, crash, "pay-evm-erc20", "0xpayee", { sessionStore });
     const results = await Promise.allSettled([
       runSessionCore(a.listingRef, evmTerms, a.deps, "job-1"),
       runSessionCore(b.listingRef, evmTerms, b.deps, "job-1"),

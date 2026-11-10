@@ -210,7 +210,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
 
   it("settles through the bridge with the real factory execution authority", async () => {
     const payDem = await rail();
-    const pending = payDemSettle(payDem)({
+    const pending = payDemSettle(payDem, {}, { store: createIdempotencyStore() })({
       rail: "pay-dem", phase: "pay-dem", amount: "9.5", asset: "DEM",
       payee: `did:demos:agent:${PAYEE_HEX}`, expectedPayee: RECIPIENT,
       jobId: "factory-bridge", phaseIndex: 0,
@@ -632,7 +632,7 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     }],
   ])("retains a failed or uncertain payment without rebroadcast after %s", async (_case, arrange) => {
     arrange();
-    const settleOnce = payDemSettle(await rail(), { network: "demos" });
+    const settleOnce = payDemSettle(await rail(), { network: "demos" }, { store: createIdempotencyStore() });
 
     const expected = {
       ok: false,

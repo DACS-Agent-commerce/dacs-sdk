@@ -49,15 +49,16 @@ export interface RailDispatchOptions {
   paywall?: { url: string; network: string; recipientEvm: string; phaseIndex?: number };
   /** Trusted EVM JSON-RPC URL — required by x402 and evm-erc20 finality. */
   rpcUrl?: string;
+  /** Durable atomic settlement store required by evm-erc20. */
+  settlementStore?: SettlementIdempotencyStore;
   /** Demos node RPC URL — required by pay-dem and pay-d402. */
   demosRpc?: string;
   /** Demos wallet secret used by pay-dem and pay-d402 to sign payments. */
   demosSecret?: string;
   /**
    * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
-   * restart recovery should supply all three of `settlementStore`,
-   * `reconcile`, and `journalPreparedTransfer`; omitting them preserves the
-   * low-level process-local compatibility behavior but is not restart-safe.
+   * restart recovery uses `settlementStore`, `reconcile`, and
+   * `journalPreparedTransfer`. The settlement store is required.
    */
   payDem?: {
     /** Maximum transfer amount plus confirmed Demos fees, in OS base units. */
@@ -215,6 +216,7 @@ interface CapturedRailDispatchOptions {
   payment: Readonly<ResolvedPaymentCoordinates>;
   evmPrivateKey?: string;
   rpcUrl?: string;
+  settlementStore?: SettlementIdempotencyStore;
   demosRpc?: string;
   demosSecret?: string;
   payDem?: Readonly<CapturedPayDemOptions>;
@@ -458,6 +460,11 @@ function captureDispatchOptions(
         "rpcUrl",
         "EVM rail RPC URL",
       ),
+      settlementStore: captureSettlementStore(optionalDispatchValue<SettlementIdempotencyStore>(
+        opts,
+        "settlementStore",
+        "evm-erc20 settlement store",
+      )),
     });
   }
   if (railType === "demos-native") {
@@ -727,6 +734,9 @@ export async function settleFromRail(
       if (!capturedOptions.rpcUrl) {
         throw new DacsError("evm-erc20 rail requires opts.rpcUrl");
       }
+      if (capturedOptions.settlementStore === undefined) {
+        throw new DacsError("evm-erc20 rail requires a caller-supplied durable settlement store");
+      }
       const network = requireMatchingNetwork(
         payment.network,
         `eip155:${capturedDescriptor.network.chainId}`,
@@ -750,7 +760,7 @@ export async function settleFromRail(
         tokenAddress: capturedDescriptor.asset.contract,
         network,
         recipientEvm,
-      }));
+      }, { store: capturedOptions.settlementStore }));
     }
     case "demos-native": {
       if (
@@ -775,6 +785,9 @@ export async function settleFromRail(
       const maxTotalDebitOs = payDem?.maxTotalDebitOs;
       const journalPreparedTransfer = payDem?.journalPreparedTransfer;
       const settlementStore = payDem?.settlementStore;
+      if (settlementStore === undefined) {
+        throw new DacsError("pay-dem rail requires a caller-supplied durable settlement store");
+      }
       const reconcile = payDem?.reconcile;
       const inclusionTimeoutMs = payDem?.inclusionTimeoutMs;
       const inclusionPollIntervalMs = payDem?.inclusionPollIntervalMs;
@@ -824,9 +837,7 @@ export async function settleFromRail(
           ? {}
           : { phaseIndex: demPhaseIndex }),
       }, {
-        ...(settlementStore === undefined
-          ? {}
-          : { store: settlementStore }),
+        store: settlementStore,
         ...(reconcile === undefined
           ? {}
           : { reconcile }),

@@ -1,3 +1,4 @@
+import { createIdempotencyStore } from "../../src/rails/idempotency.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -555,7 +556,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           deliveryPhase: "deliver-attested-payload",
           deliveryFormat: "application/json",
         },
-        settle: payDemSettle(rail, { network: "demos:testnet" }),
+        settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore() }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(transfer).toHaveBeenCalledOnce();

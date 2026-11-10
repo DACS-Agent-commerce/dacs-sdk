@@ -1,7 +1,6 @@
 import type { SettleRequest, SettleResult } from "../agent/runSessionCore.js";
 import { DacsError } from "../errors.js";
 import {
-  createIdempotencyStore,
   settlementKey,
   type SettlementBinding,
   type SettlementEffectFence,
@@ -245,8 +244,8 @@ export async function createEvmErc20Rail(
  * the transfer is submitted AT MOST ONCE per `(railId, jobId, phaseIndex)` through
  * an idempotency store — a concurrent retry or a resume after a settle→anchor
  * crash reconciles the prior submission instead of sending another transfer. The
- * default store is in-process (closes the concurrency + same-process races); pass
- * `store` backed by a durable {@link SettlementLog} for cross-process crash-safety.
+ * caller must provide `store` backed by a durable {@link SettlementLog} so the
+ * intent survives a process restart before an external transfer is submitted.
  * Reconciliation may adopt a finalized prior transfer, but a replacement transfer
  * also requires rail-specific proof that the old effect is terminal or deterministic
  * external idempotency. The plain ERC-20 rail has neither, so absence remains an
@@ -255,9 +254,12 @@ export async function createEvmErc20Rail(
 export function evmErc20Settle(
   rail: EvmErc20Rail,
   cfg: { tokenAddress: string; network: string; recipientEvm: string },
-  opts: { store?: SettlementIdempotencyStore; reconcile?: SettlementReconcile } = {},
+  opts: { store: SettlementIdempotencyStore; reconcile?: SettlementReconcile },
 ): (req: SettleRequest) => Promise<SettleResult> {
-  const store = opts.store ?? createIdempotencyStore();
+  const store = opts?.store;
+  if (store === undefined) {
+    throw new DacsError("evm-erc20 settlement requires a caller-supplied durable store");
+  }
   const tokenAddress = cfg.tokenAddress;
   const network = cfg.network;
   const recipientEvm = cfg.recipientEvm;

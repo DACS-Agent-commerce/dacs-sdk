@@ -620,11 +620,28 @@ action.
 `createPayDemRail` exposes the same boundary as the optional
 `journalPreparedTransfer` hook. Ordinary non-funded callers can omit it, but the
 low-level rail then provides only in-process hash-first observation. Across a
-process restart, at-most-once settlement still requires `payDemSettle` with a
-durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
+process restart, at-most-once settlement requires `payDemSettle` with a
+caller-supplied durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
 additionally requires an application-owned durable journal or equivalent rail
-record. With neither durable mechanism, the SDK cannot prove that a lost
-response did not move value, so applications must not automatically retry.
+record. If recovery cannot authenticate the original effect, the intent remains
+held and the application must not automatically retry the transfer.
+Both direct payment bridges require a caller-supplied store when constructed:
+
+```ts
+import { createIdempotencyStore, evmErc20Settle, payDemSettle } from "@kynesyslabs/dacs/rails";
+
+const settlementStore = createIdempotencyStore(durableSettlementLog);
+const evmSettle = evmErc20Settle(evmRail, evmConfig, { store: settlementStore });
+const demSettle = payDemSettle(demRail, {}, { store: settlementStore, reconcile: demReconcile });
+```
+
+`durableSettlementLog` is an application-provided `SettlementLog` whose intent
+claim and outcome writes survive a restart. Use a shared atomic store when
+multiple processes can settle the same job. An in-memory log is suitable only
+for isolated tests.
+
+For registry dispatch, pass the same store as top-level `settlementStore` for
+ERC-20 or as `payDem.settlementStore` for native DEM.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
 `settlementStore`, and `reconcile`. The rail's timing bounds

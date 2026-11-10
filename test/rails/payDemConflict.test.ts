@@ -133,7 +133,7 @@ describe("pay-dem retained identity conflict quarantine", () => {
       if (input.recovery?.phaseIndex === 0) { started(); await gate; }
       return freshSuccess();
     });
-    const settle = payDemSettle({ address: payer, settle: submit });
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: createIdempotencyStore() });
     const first = settle(request);
     await submitting;
     try {
