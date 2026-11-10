@@ -77,13 +77,15 @@ const sameInode = (a, b) => a?.ino === b.ino && a.dev === b.dev;
 /** The path of lease `id` under state directory `dir`. */
 export const leaseFile = (dir, id) => join(dir, HOLDERS, `${id}.sqlite`);
 
-// Closes what a failed takeLease opened, then removes the lease file if the path
-// still holds the file `created` describes, so a retry can create it again. A
-// failure here never replaces the error that made takeLease fail.
+// Closes what a failed takeLease opened, then removes the lease file it created,
+// so a retry can create it again. `created` is the file's identity once read, or
+// null when reading it failed: the path is then still the file just made with
+// O_EXCL, so it is removed. A failure here never replaces the error that made
+// takeLease fail.
 function discardFailedLease(file, created, lease, fd) {
   try { lease?.close(); } catch { /* the error that failed takeLease stands */ }
   try { closeSync(fd); } catch { /* likewise */ }
-  try { if (created && sameInode(lstatSync(file), created)) unlinkSync(file); } catch { /* likewise */ }
+  try { if (!created || sameInode(lstatSync(file), created)) unlinkSync(file); } catch { /* likewise */ }
 }
 
 /**
@@ -106,7 +108,7 @@ export function takeLease(dir) {
   const file = leaseFile(canonical, PROCESS_LEASE_ID);
   let fd;
   try { fd = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | constants.O_NOFOLLOW, 0o600); } catch (error) { if (error.code === 'EEXIST') refuse('seller_state_lease_unavailable'); throw error; }
-  let lease, created;
+  let lease, created = null;
   try {
     created = fstatSync(fd);
     fchmodSync(fd, 0o600);
