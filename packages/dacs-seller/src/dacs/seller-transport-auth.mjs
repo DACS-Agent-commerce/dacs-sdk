@@ -59,6 +59,19 @@ export class SellerTransportError extends Error {
   constructor(code, status = 401, options) { super(code, options); this.code = code; this.status = status; }
 }
 
+/** Internal synchronous session read: returns a state or null; throws unavailable 503 with the original cause. */
+export function readSellerSessionState(source, jobId) {
+  try {
+    const state = source({ jobId });
+    if (state === null || typeof state === 'string') return state;
+    if (typeof state?.then === 'function') Promise.resolve(state).then(undefined, () => {});
+    throw new TypeError('sessionState must answer a state string or null', { cause: state });
+  } catch (cause) {
+    if (cause instanceof SellerTransportError && cause.code === 'session_admission_unavailable' && cause.status === 503) throw cause;
+    throw new SellerTransportError('session_admission_unavailable', 503, { cause });
+  }
+}
+
 /** True for a Listing pin of exactly `{ listingId, version, contentHash }` with a non-empty id, a positive version and a SHA-256 hex hash. */
 export function pinValid(pin) {
   return keys(pin, ['listingId', 'version', 'contentHash']) &&
@@ -369,19 +382,8 @@ export function createSellerTransportStore({ path, maxRecords = 10000, maxJobs =
     if (rollback) flushPending(); else pending.clear();
     return result;
   }
-  // Only a synchronous string or an explicit null answers; a throw, a Promise or any other value refuses unavailable 503 with its cause,
-  // and a late rejection is observed and ignored.
-  function readPort(jobId) {
-    try {
-      const answer = readSessionState({ jobId });
-      if (answer === null || typeof answer === 'string') return answer;
-      if (typeof answer?.then === 'function') Promise.resolve(answer).then(undefined, () => {});
-      throw new TypeError('sessionState must answer a state string or null', { cause: answer });
-    } catch (cause) {
-      if (cause instanceof SellerTransportError && cause.code === 'session_admission_unavailable' && cause.status === 503) throw cause;
-      throw new SellerTransportError('session_admission_unavailable', 503, { cause });
-    }
-  }
+  // Only a synchronous string or an explicit null answers; a throw, a Promise or any other value refuses unavailable 503 with its cause.
+  const readPort = jobId => readSellerSessionState(readSessionState, jobId);
   // The job's closure answers first, then an observation still pending, then the port. Outside a transaction a terminal name is written
   // before this returns; inside one it is written by the transaction. `cleanup` re-runs the release for a job that already has a closure.
   function contextSessionState({ jobId }, source = 'session-observer') {
