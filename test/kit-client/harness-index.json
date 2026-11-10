@@ -53,7 +53,7 @@
     "today": "the client's request signer emits old-domain signing bytes",
     "target": "wire domain only",
     "owner": "P13a1",
-    "flippedBy": "P13a1"
+    "flippedBy": null
   },
   {
     "id": "K12-H7",
