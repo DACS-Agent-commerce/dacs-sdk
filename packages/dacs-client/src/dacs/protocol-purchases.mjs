@@ -21,7 +21,7 @@ import { projectDiagnostic } from '../diagnostic-projection.mjs';
 //
 // Only the source-bound native Agreement profile remains. Fixture and
 // complete simulated profiles have no admission or continuation path.
-import { admitRawJson, canonicalize, contentHash, generateCanonicalJobId, bundleAddress, decodeDemosAnchorReceiptProof, demosSignedTransactionProofHash, finalityCommitmentAddress, sha256Hex } from '@kynesyslabs/dacs';
+import { admitRawJson, canonicalize, contentHash, bundleAddress, decodeDemosAnchorReceiptProof, demosSignedTransactionProofHash, finalityCommitmentAddress, sha256Hex } from '@kynesyslabs/dacs';
 import { isDevnetAgreementTransport, DEVNET_AGREEMENT_KIND } from '../wallet/devnet-native-transport.mjs';
 import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { verifyDemosSignature, claimForAddress, decodeSignature } from '../signatures.mjs';
@@ -529,7 +529,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     keep: (operation, members) => keepCommitmentTuple({ db, ops, transaction }, operation, members) });
 
   // Terms + initial state for prepare (the caller already verified the Listing
-  // and bound the network domain).
+  // and bound the network domain). The job id is added by the create path.
   // Repeat only TLS admission after an asynchronous funds read. Static
   // protocol/listing refusals retain their original order in prepareTerms.
   function assertSellerAdmission(sellerClaim) {
@@ -549,11 +549,10 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (!support.supported) throw new OperationError('listing_not_dacs_protocol', `this Listing is not the supported fixed-price pay-dem pipeline: ${support.reasons.join('; ')}`);
     const url = assertSellerAdmission(sellerClaim);
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was prepared');
-    const jobId = generateCanonicalJobId();
     if (mode === OFFLINE_AGREEMENT_MODE && domain.network !== walletConfig.network) throw new OperationError('network_identity_mismatch', 'the injected wallet bridge is not bound to the prepared fixture network');
     if (!nativeSellerCommitment) throw new OperationError('seller_commitment_unavailable', 'native seller commitment capability required');
     return {
-      terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, jobId, orchestration: ORCHESTRATION, sellerAgent: createSellerAgentClient({ url, fetchImpl }).origin, substrate: 'source-pinned-native-fixed-price-demo; finality-held',
+      terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, orchestration: ORCHESTRATION, sellerAgent: createSellerAgentClient({ url, fetchImpl }).origin, substrate: 'source-pinned-native-fixed-price-demo; finality-held',
         ...(mode === OFFLINE_AGREEMENT_MODE && sourceCapability ? {transportBinding:sourceCapability.transportBinding} : {}),
         ...(mode === OFFLINE_AGREEMENT_MODE && (agreementContext || demDeliveryContext) ? { agreementContext: demDeliveryContext ? DEM_DELIVERY_CONTEXT_SOURCE : AGREEMENT_CONTEXT_SOURCE } : {}),
         ...(mode === OFFLINE_AGREEMENT_MODE && nativeDemDelivery ? {nativeDelivery:NATIVE_DEM_DELIVERY_SOURCE}:{}),
