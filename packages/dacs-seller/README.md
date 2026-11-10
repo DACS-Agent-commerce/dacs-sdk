@@ -40,7 +40,9 @@ the host retire that job's challenge and context slots. Completed answers and
 their admission proofs remain available for retries. A terminal name does not
 retire a job whose payment or commitment a retry must still finish. An unknown name,
 an agent stage name or an unreadable answer keeps them. A throw, Promise or
-non-string answer is unknown. Promise results are ignored and rejections observed. A source
+non-null non-string refuses issuance and new work with `session_admission_unavailable`
+503 and its cause; only explicit `null` means unknown. Promise results are ignored
+and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host without the capability reclaims nothing. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
@@ -53,7 +55,7 @@ the whole allotment free, so a seller whose budget falls below the units it has
 already charged and allotted starts, serves the purchases it holds, and refuses
 new ones as not ready. A successful context completion returns only the context
 slot; an aborted start, a failed or non-validated context and a terminal DACS-5
-session (checked once at startup) return every open slot. Returned units never
+session return every open slot. Returned units never
 reduce what has been charged. The host composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
 accounting and recording the reservation result. A request that cannot acquire
@@ -62,7 +64,7 @@ or writes. Context reservations borrow the admission transaction's job lease
 without acquiring or releasing another mutex. Admission and accounting accept
 capacity through their internal ports.
 Signed routes reserve through the store's accounting; terminal allocation cleanup
-runs at startup.
+runs at startup and when a store reader observes a terminal session.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the old store's checks, startup cleanup and the coordinator) is kept as a durable,
