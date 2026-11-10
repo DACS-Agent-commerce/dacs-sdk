@@ -4,6 +4,10 @@
 // rebroadcasts nothing itself. A new export fails the sweep until it is added
 // here. src/index.mjs only re-exports functions classified below.
 export const EXPORT_CLASSIFICATION = Object.freeze({
+  'src/cli/config.mjs': { effect: {}, pure: ['SellerConfigError', 'assertConfigBindsDirectory', 'assertSellerConfigComplete', 'listingTermsFromConfig', 'listingTermsFromListing', 'parseSellerConfig'] },
+  'src/cli/init.mjs': { effect: {}, pure: ['runInit'] },
+  'src/cli/main.mjs': { effect: {}, pure: ['main', 'parseCliArguments'] },
+  'src/cli/node-identity.mjs': { effect: {}, pure: ['deriveWalletIdentity', 'generateWalletMnemonic', 'validateMnemonic'] },
   'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall', 'isBoundedCallTimeout'] },
   'src/dacs/bounded-reads.mjs': { effect: {  }, pure: ['readFailureCode', 'readRetainedBounded'] },
   'src/dacs/commit-on-signature.mjs': { effect: { signatureCommitmentAnchor: ['signatureCommitmentAnchor'] }, pure: ['commitOnSignatureConfig', 'verifyAgreementCreateAuthorization', 'verifySignatureAgreement'] },
@@ -60,7 +64,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/private-directory.mjs': { effect: {  }, pure: ['isPrivateDirectory'] },
   'src/public/portal/seller-session-limits.mjs': { effect: {  }, pure: ['assertSellerSessionLifetime'] },
   'src/seller-diagnostics.mjs': { effect: {  }, pure: ['sellerDiagnostic'] },
-  'src/seller-key.mjs': { effect: { openSellerKey: ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'] }, pure: ['SellerKeyError', 'parseSellerKeyRecord'] },
+  'src/seller-key.mjs': { effect: { openSellerKey: ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'] }, pure: ['SellerKeyError', 'loadKeyFile', 'parseSellerKeyRecord'] },
   'src/util/bounded-resolution.mjs': { effect: {  }, pure: ['boundedResolutionValue', 'resolveWithDeadline'] },
   'src/util/http.mjs': { effect: {  }, pure: ['OutboundError', 'fetchBoundedJson'] },
   'src/util/immutable-readbacks.mjs': { effect: {  }, pure: ['createImmutableReadbacks'] },

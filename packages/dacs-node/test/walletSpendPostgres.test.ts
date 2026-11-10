@@ -39,11 +39,12 @@ import {
   createDacsWalletSpendAuthorityServiceV2,
 } from "../src/walletSpendRemote.js";
 
+const WALLET_A = `0x${"5e".repeat(20)}`;
 function policy(policyId: string): WalletSpendPolicyV1 {
   return {
     policyVersion: "1",
     policyId,
-    wallet: "wallet-a",
+    wallet: WALLET_A,
     chainId: "chain-a",
     maximumConcurrentEffects: 1,
     maximumRetainedReservations: 10,
@@ -612,8 +613,73 @@ async function fakePool(
 }
 
 describe("PostgreSQL wallet authority persistence", () => {
+  const BARE_WALLET = WALLET_A.slice(2);
+  const UPPERCASE_BARE_WALLET = BARE_WALLET.toUpperCase();
+
+  it("gives 0x, bare and uppercase spellings of one wallet one lineage key and one policy hash", () => {
+    const key = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
+    const hash = dacsWalletSpendPolicyHashV1(policy("policy-a"));
+    for (const spelling of [BARE_WALLET, UPPERCASE_BARE_WALLET, `0X${UPPERCASE_BARE_WALLET}`]) {
+      expect(dacsWalletSpendLineageKeyV1(spelling, "chain-a")).toBe(key);
+      expect(dacsWalletSpendPolicyHashV1({ ...policy("policy-a"), wallet: spelling })).toBe(hash);
+    }
+  });
+
+  it("refuses a lineage key and a policy hash for a wallet with no canonical form", () => {
+    for (const wallet of ["wallet-a", "", `0x${"5e".repeat(30)}`, ` ${WALLET_A}`]) {
+      expect(() => dacsWalletSpendLineageKeyV1(wallet, "chain-a")).toThrow(/lineage is invalid/);
+      expect(() => dacsWalletSpendPolicyHashV1({ ...policy("policy-a"), wallet }))
+        .toThrow(/20-byte or 32-byte hex address/);
+    }
+  });
+
+  it("shares one budget between two spellings of one wallet in the PostgreSQL authority", async () => {
+    const pool = await fakePool();
+    const authority = (wallet: string, operationId: string) => {
+      const selected = { ...policy("policy-a"), wallet };
+      return createWalletSpendAuthorityV1(selected, {
+        store: createDacsPostgresWalletSpendStateStoreV1({
+          pool,
+          wallet,
+          chainId: selected.chainId,
+          continuity: pool.continuity,
+          operation: () => ({ roleId: "buyer", operationId, requestHash: "3".repeat(64) }),
+        }),
+        readBalance: async () => "1000",
+        authenticateRecovery: async () => true,
+        owner: "wallet-service",
+        leaseDurationMs: 30_000,
+      });
+    };
+    const reservation = (id: string, wallet: string): WalletSpendReservationV1 => ({
+      reservationVersion: "1",
+      reservationId: id,
+      jobId: `job-${id}`,
+      phaseIndex: 0,
+      phase: "payment",
+      agreementHash: "a".repeat(64),
+      settlementBindingHash: "b".repeat(64),
+      railId: "rail-a",
+      railDefinitionHash: "c".repeat(64),
+      wallet,
+      chainId: "chain-a",
+      payee: "payee-a",
+      finality: { model: "final" },
+      debits: [{ asset: "ASSET", purpose: "service", expectedAmount: "25", maximumAmount: "25" }],
+    });
+
+    const prefixed = authority(WALLET_A, "00000000-0000-4000-8000-000000000041");
+    const bare = authority(BARE_WALLET, "00000000-0000-4000-8000-000000000042");
+    expect((await prefixed.reserve(reservation("first", WALLET_A))).status).toBe("reserved");
+    expect(await bare.reserve(reservation("second", BARE_WALLET))).toMatchObject({
+      status: "denied",
+      reason: "concurrency-limit",
+    });
+    expect(bare.policyHash).toBe(prefixed.policyHash);
+  });
+
   it("keys lineage only by canonical wallet+chain and declares unique durable tables", () => {
-    expect(dacsWalletSpendLineageKeyV1("wallet-a", "chain-a")).toBe(
+    expect(dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a")).toBe(
       dacsWalletSpendLineageKeyV1(policy("deployment-b").wallet, policy("policy-b").chainId),
     );
     expect(dacsWalletSpendPolicyHashV1(policy("policy-a"))).not.toBe(
@@ -680,7 +746,7 @@ describe("PostgreSQL wallet authority persistence", () => {
           protocolVersion: "1",
           operationId,
           policyHash: "a".repeat(64),
-          wallet: "wallet-a",
+          wallet: WALLET_A,
           chainId: "chain-a",
           operation: "reserve",
           payload: { reservation: {}, options: {} },
@@ -766,9 +832,9 @@ describe("PostgreSQL wallet authority persistence", () => {
       async connect() { throw new Error("unexpected transaction"); },
     } as unknown as DacsPostgresPoolV1;
     const store = createDacsPostgresWalletSpendStateStoreV1({
-      pool, wallet: "wallet-a", chainId: "chain-a", continuity: newContinuity(),
+      pool, wallet: WALLET_A, chainId: "chain-a", continuity: newContinuity(),
     });
-    await expect(store.read!(dacsWalletSpendLineageKeyV1("wallet-a", "chain-a")))
+    await expect(store.read!(dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a")))
       .rejects.toThrow(/lineage-missing/);
     expect(statements.some((statement) => /INSERT|UPDATE|DELETE/.test(statement))).toBe(false);
   });
@@ -1614,7 +1680,7 @@ describe("PostgreSQL wallet authority persistence", () => {
     pool.failNextConnect = true;
     const store = () => createDacsPostgresWalletSpendStateStoreV1({
       pool,
-      wallet: "wallet-a",
+      wallet: WALLET_A,
       chainId: "chain-a",
       continuity: pool.continuity,
       operation: () => ({
@@ -1629,12 +1695,12 @@ describe("PostgreSQL wallet authority persistence", () => {
     });
 
     await expect(store().transact(
-      dacsWalletSpendLineageKeyV1("wallet-a", "chain-a"), mutate,
+      dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a"), mutate,
     )).rejects.toThrow(/outcome unknown/);
     expect([...pool.candidates.values()]).toMatchObject([{ status: "prepared" }]);
 
     await expect(store().transact(
-      dacsWalletSpendLineageKeyV1("wallet-a", "chain-a"), mutate,
+      dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a"), mutate,
     )).resolves.toBe("authorized");
     expect(pool.row.revision).toBe(1);
     expect([...pool.candidates.values()]).toMatchObject([{ status: "applied" }]);
@@ -1976,7 +2042,7 @@ describe("PostgreSQL wallet authority persistence", () => {
 
   it("does not adopt a forged prepared candidate", async () => {
     const pool = await fakePool();
-    const lineage = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const lineage = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const roleId = "buyer";
     const operationId = "00000000-0000-4000-8000-000000000022";
     const requestHash = "3".repeat(64);
@@ -2002,7 +2068,7 @@ describe("PostgreSQL wallet authority persistence", () => {
       status: "prepared",
     });
     const store = createDacsPostgresWalletSpendStateStoreV1({
-      pool, wallet: "wallet-a", chainId: "chain-a", continuity: pool.continuity,
+      pool, wallet: WALLET_A, chainId: "chain-a", continuity: pool.continuity,
       operation: () => ({ roleId, operationId, requestHash }),
     });
 
@@ -2034,7 +2100,7 @@ describe("PostgreSQL wallet authority persistence", () => {
     ];
     for (const selectedCase of cases) {
       const pool = await fakePool();
-      const lineage = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+      const lineage = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
       const roleId = "buyer";
       const operationId = `00000000-0000-4000-8000-0000000000${selectedCase.suffix}`;
       const requestHash = selectedCase.suffix[0]!.repeat(64);
@@ -2058,7 +2124,7 @@ describe("PostgreSQL wallet authority persistence", () => {
       });
       const store = createDacsPostgresWalletSpendStateStoreV1({
         pool,
-        wallet: "wallet-a",
+        wallet: WALLET_A,
         chainId: "chain-a",
         continuity: pool.continuity,
         operation: () => ({ roleId, operationId, requestHash }),
@@ -2075,7 +2141,7 @@ describe("PostgreSQL wallet authority persistence", () => {
 
   it("rejects a malformed version-marked candidate value during upgrade", async () => {
     const pool = await fakePool();
-    const lineage = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const lineage = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const roleId = "buyer";
     const operationId = "00000000-0000-4000-8000-000000000033";
     const requestHash = "3".repeat(64);
@@ -2098,7 +2164,7 @@ describe("PostgreSQL wallet authority persistence", () => {
     });
     const store = createDacsPostgresWalletSpendStateStoreV1({
       pool,
-      wallet: "wallet-a",
+      wallet: WALLET_A,
       chainId: "chain-a",
       continuity: pool.continuity,
       operation: () => ({ roleId, operationId, requestHash }),
@@ -2116,7 +2182,7 @@ describe("PostgreSQL wallet authority persistence", () => {
     pool.failNextCommitAfterApply = true;
     const store = createDacsPostgresWalletSpendStateStoreV1({
       pool,
-      wallet: "wallet-a",
+      wallet: WALLET_A,
       chainId: "chain-a",
       continuity: pool.continuity,
       operation: () => ({
@@ -2129,7 +2195,7 @@ describe("PostgreSQL wallet authority persistence", () => {
       state: { ...current!, generation: current!.generation + 1 },
       value: Object.freeze({ status: "authorized", generation: 1 }),
     });
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
 
     await expect(store.transact(scope, mutate)).rejects.toThrow(/outcome unknown/);
     expect(pool.row.revision).toBe(1);
@@ -2141,7 +2207,7 @@ describe("PostgreSQL wallet authority persistence", () => {
     pool.failNextSerializableAdvance = true;
     const store = createDacsPostgresWalletSpendStateStoreV1({
       pool,
-      wallet: "wallet-a",
+      wallet: WALLET_A,
       chainId: "chain-a",
       continuity: pool.continuity,
       operation: () => ({
@@ -2150,7 +2216,7 @@ describe("PostgreSQL wallet authority persistence", () => {
         requestHash: "b".repeat(64),
       }),
     });
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
 
     await expect(store.transact(scope, (current) => ({
       state: { ...current!, generation: current!.generation + 1 },
@@ -2164,7 +2230,7 @@ describe("PostgreSQL wallet authority persistence", () => {
     const pool = await fakePool();
     const store = createDacsPostgresWalletSpendStateStoreV1({
       pool,
-      wallet: "wallet-a",
+      wallet: WALLET_A,
       chainId: "chain-a",
       continuity: pool.continuity,
       operation: () => ({
@@ -2173,7 +2239,7 @@ describe("PostgreSQL wallet authority persistence", () => {
         requestHash: "c".repeat(64),
       }),
     });
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const mutate = (value: string) => store.transact(scope, (current) => ({
       state: { ...current!, generation: current!.generation + 1 },
       value,
@@ -2191,10 +2257,10 @@ describe("PostgreSQL wallet authority persistence", () => {
 
   it("aborts an earlier callback after recovering a later mutation", async () => {
     const pool = await fakePool();
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const createStore = () => createDacsPostgresWalletSpendStateStoreV1({
       pool,
-      wallet: "wallet-a",
+      wallet: WALLET_A,
       chainId: "chain-a",
       continuity: pool.continuity,
       operation: () => ({
@@ -2549,9 +2615,9 @@ describe("PostgreSQL wallet authority persistence", () => {
   it("rejects a whole-database rollback and stale replica for a brand-new client", async () => {
     const pool = await fakePool();
     const stale = structuredClone(pool.row);
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const writer = createDacsPostgresWalletSpendStateStoreV1({
-      pool, wallet: "wallet-a", chainId: "chain-a", continuity: pool.continuity,
+      pool, wallet: WALLET_A, chainId: "chain-a", continuity: pool.continuity,
       operation: () => ({
         roleId: "buyer", operationId: "00000000-0000-4000-8000-000000000051",
         requestHash: "5".repeat(64),
@@ -2563,14 +2629,14 @@ describe("PostgreSQL wallet authority persistence", () => {
     expect(pool.row.revision).toBe(1);
     Object.assign(pool.row, stale);
     const restored = createDacsPostgresWalletSpendStateStoreV1({
-      pool, wallet: "wallet-a", chainId: "chain-a", continuity: pool.continuity,
+      pool, wallet: WALLET_A, chainId: "chain-a", continuity: pool.continuity,
     });
     await expect(restored.read!(scope)).rejects.toThrow(/continuity-head-mismatch/);
   });
 
   it("retains candidate-before-witness crashes and lets only the exact operation retry", async () => {
     const pool = await fakePool();
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const interrupted: DacsWalletSpendContinuityPinV1 = {
       ...pool.continuity,
       witness: {
@@ -2587,17 +2653,17 @@ describe("PostgreSQL wallet authority persistence", () => {
       state: { ...current!, generation: current!.generation + 1 }, value: "authorized",
     });
     await expect(createDacsPostgresWalletSpendStateStoreV1({
-      pool, wallet: "wallet-a", chainId: "chain-a", continuity: interrupted, operation,
+      pool, wallet: WALLET_A, chainId: "chain-a", continuity: interrupted, operation,
     }).transact(scope, mutate)).rejects.toThrow(/outcome-unresolved/);
     expect([...pool.candidates.values()]).toMatchObject([{ status: "prepared" }]);
     await expect(createDacsPostgresWalletSpendStateStoreV1({
-      pool, wallet: "wallet-a", chainId: "chain-a", continuity: pool.continuity, operation,
+      pool, wallet: WALLET_A, chainId: "chain-a", continuity: pool.continuity, operation,
     }).transact(scope, mutate)).resolves.toBe("authorized");
   });
 
   it("resolves an ambiguous witness CAS by exact candidate lookup", async () => {
     const pool = await fakePool();
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const ambiguous: DacsWalletSpendContinuityPinV1 = {
       ...pool.continuity,
       witness: {
@@ -2610,7 +2676,7 @@ describe("PostgreSQL wallet authority persistence", () => {
       },
     };
     const store = createDacsPostgresWalletSpendStateStoreV1({
-      pool, wallet: "wallet-a", chainId: "chain-a", continuity: ambiguous,
+      pool, wallet: WALLET_A, chainId: "chain-a", continuity: ambiguous,
       operation: () => ({
         roleId: "buyer", operationId: "00000000-0000-4000-8000-000000000053",
         requestHash: "7".repeat(64),
@@ -2625,13 +2691,13 @@ describe("PostgreSQL wallet authority persistence", () => {
   it("fails closed when restore loses the post-witness candidate", async () => {
     const pool = await fakePool();
     pool.failNextConnect = true;
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const operation = () => ({
       roleId: "buyer", operationId: "00000000-0000-4000-8000-000000000054",
       requestHash: "8".repeat(64),
     });
     const store = () => createDacsPostgresWalletSpendStateStoreV1({
-      pool, wallet: "wallet-a", chainId: "chain-a", continuity: pool.continuity, operation,
+      pool, wallet: WALLET_A, chainId: "chain-a", continuity: pool.continuity, operation,
     });
     const mutate = (current: Readonly<WalletSpendStateV1> | null) => ({
       state: { ...current!, generation: current!.generation + 1 }, value: "authorized",
@@ -2644,10 +2710,10 @@ describe("PostgreSQL wallet authority persistence", () => {
 
   it("lets one split-brain writer win witness CAS and rejects the old-head writer", async () => {
     const pool = await fakePool();
-    const scope = dacsWalletSpendLineageKeyV1("wallet-a", "chain-a");
+    const scope = dacsWalletSpendLineageKeyV1(WALLET_A, "chain-a");
     const store = (suffix: string) => createDacsPostgresWalletSpendStateStoreV1({
       pool,
-      wallet: "wallet-a",
+      wallet: WALLET_A,
       chainId: "chain-a",
       continuity: pool.continuity,
       operation: () => ({
