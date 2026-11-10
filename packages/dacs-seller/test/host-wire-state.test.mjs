@@ -10,24 +10,26 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { Dir, chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, open, rm } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import DatabaseSync from 'better-sqlite3';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
+import { TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION, assertTp1Authority } from '@kynesyslabs/dacs/wire';
 import { journalStore, reserveEffect } from '../../../dist/wire/journal.js';
 import { commitmentFixture } from './helpers/commitment-fixture.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { JOBS, T, exchange, presentContext, world } from './helpers/d5-http-fixture.mjs';
 import { privateModule } from './helpers/private-module.mjs';
-import { NOW } from './helpers/protocol-fixture.mjs';
+import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { wireBuyer } from './helpers/wire-buyer.mjs';
 import { syncDirectory } from '../src/devnet-demo/durable-file.mjs';
 import { KIT_DATA_FORMAT, assertKitDataFormat } from '../src/dacs/kit-data-format.mjs';
 import { boundedCall, isBoundedCallTimeout } from '../src/dacs/bounded-call.mjs';
-import { createSellerTransportClientAuth, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
+import { SELLER_TRANSPORT_HEADER, createSellerTransportClientAuth, createSellerTransportStore } from '../src/dacs/seller-transport-auth.mjs';
 
 const HOST_URL = new URL('../src/host.mjs', import.meta.url);
 const PACKAGE_DIRECTORY = fileURLToPath(new URL('../', import.meta.url));
@@ -43,6 +45,13 @@ const SYNC_FAILURE = 'TEST durable sync failure';
 const FORMAT_REFUSED = 'kit_store_format_unsupported';
 const ACCOUNTING_MISMATCH = 'kit_journal_accounting_mismatch';
 const PROPOSALS = '/dacs/v1/agreements/proposals';
+const STATE = '/dacs/v1/agreements/state';
+// The host's handler serves at most this many requests at once.
+const HANDLER_CONCURRENCY = 8;
+// The challenge ledger issues one buyer at most this many challenges an hour (CHALLENGE_LIMIT_DEFAULTS.maxPerBuyerPerHour).
+const PROPOSALS_PER_BUYER = 5;
+const BUYER = { claim: buyer.claim, sign: buyer.signBytes };
+const SELLER = { claim: seller.claim, sign: seller.signBytes };
 const MISMATCH = { code: 'tp1_purchase_profile_mismatch', status: 500 };
 const MARKER_TEXT = `${JSON.stringify({ format: KIT_DATA_FORMAT })}\n`;
 
@@ -92,8 +101,25 @@ const REQUIRED =`);
     for (const host of hosts) await host.close().catch(() => {});
     await rm(dataDirectory, { recursive: true, force: true });
   });
-  return { start, options, dataDirectory, ...recorded, path: (...names) => join(dataDirectory, ...names) };
+  return { start, options, dataDirectory, proposal: f.proposal, ...recorded, path: (...names) => join(dataDirectory, ...names) };
 }
+
+/** One signed request posted to a running host over loopback HTTP: `{ status, header, bytes, payload }`. */
+const postSigned = (host, { payload, header, text, path = payload.path }) => new Promise((resolve, reject) => {
+  const sent = httpRequest(`${host.url}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: header } }, (res) => {
+    const chunks = [];
+    res.on('data', (chunk) => chunks.push(chunk));
+    res.on('end', () => resolve({ status: res.statusCode, header: res.headers[SELLER_TRANSPORT_HEADER], bytes: Buffer.concat(chunks), payload }));
+  });
+  sent.on('error', reject);
+  sent.end(text);
+});
+/** A signed state read for a job the host holds nothing for: its answer is the signed 404 `peer_unknown_job`. */
+const unknownStateRequest = (buyerWire, label) => {
+  const unknown = jobId(`unknown-${label}`), agreementHash = derive(`agreement-${label}`);
+  return buyerWire.signRequest(STATE, { transportIdentity: { jobId: unknown, buyer: buyer.claim, seller: seller.claim, agreementHash } }, { jobId: unknown, agreementHash });
+};
+const verifiedAnswer = (buyerWire, { payload, header, status, bytes }) => buyerWire.authentication(() => null).verifyResponse(payload, { header, status, responseBytes: bytes });
 
 const lockReleased = (f) => assert.deepEqual(namesIn(f.dataDirectory).filter((name) => name.startsWith(LOCK_FILE_PREFIX)), [], 'the state lock is released');
 const writeMarker = (f) => writeFileSync(f.path(MARKER_FILE), MARKER_TEXT, { mode: 0o600 });
@@ -185,6 +211,32 @@ function storeFixture(t, options = {}) {
 }
 
 // ================================================================ host tests
+
+test('host returns a completed proposal after its session ends', async (t) => {
+  let terminal = false;
+  const f = await hostFixture(t);
+  const host = await f.start({ contextSessionState: () => terminal ? 'finalised' : null });
+  const body = await f.proposal(host);
+  const { jobId, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const signed = await buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash });
+  const first = await postSigned(host, signed);
+  assert.equal(first.status, 200);
+  assert.equal(JSON.parse(first.bytes).disposition, 'complete');
+  await verifiedAnswer(buyerWire, first);
+
+  terminal = true;
+  const fresh = await buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash });
+  assert.notEqual(fresh.payload.nonce, signed.payload.nonce);
+  const retry = await postSigned(host, fresh);
+  assert.equal(retry.status, 200, retry.bytes.toString());
+  assert.deepEqual(retry.bytes, first.bytes);
+  await verifiedAnswer(buyerWire, retry);
+
+  const replay = await postSigned(host, signed);
+  assert.equal(replay.status, 409, replay.bytes.toString());
+  assert.equal(JSON.parse(replay.bytes).error, 'peer_request_replayed');
+});
 
 test('P10-T01 start creates a private, owned, real-path journal directory, opens it with the 300 s lease and leaves no probe files', async (t) => {
   const f = await hostFixture(t);
@@ -375,16 +427,72 @@ test('P10-T07 table: newly created state entry (marker, seller/, transport/, wir
   });
 });
 
-test('a started host has read its connection and the authority exactly once, calling connection() on tp1Network, and keeps no re-check before it listens', async (t) => {
+test('a started host reads its connection once at startup and again for each signed request and answer, every time calling connection() on tp1Network', async (t) => {
   const f = await hostFixture(t);
-  const reads = { connection: [], authority: 0 };
+  const receivers = [];
   const reader = authorityReader();
-  const tp1Network = {
-    connection() { reads.connection.push(this); return { ...TEST_CONNECTION, connectionId: reads.connection.length === 1 ? TEST_CONNECTION.connectionId : 'vector-conn-2' }; },
-    readAuthority: (scope) => { reads.authority++; return reader(scope); },
-  };
-  await (await f.start({ tp1Network })).close();
-  assert.deepEqual(reads, { connection: [tp1Network], authority: 1 }, 'one read of each; a later connection is never compared');
+  const tp1Network = { connection() { receivers.push(this); return { ...TEST_CONNECTION }; }, readAuthority: (scope) => reader(scope) };
+  const host = await f.start({ tp1Network });
+  assert.deepEqual(receivers, [tp1Network], 'startup binds over one read');
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const answer = await postSigned(host, await unknownStateRequest(buyerWire, 'receiver'));
+  assert.equal(answer.status, 404);
+  await verifiedAnswer(buyerWire, answer);
+  assert.ok(receivers.length >= 3, `the request and its answer read the connection again (${receivers.length} reads)`);
+  assert.ok(receivers.every((receiver) => receiver === tp1Network), 'every read ran on tp1Network');
+});
+
+test('the reader each signed request calls is bounded: a stalled read is pending at 9,999 ms and ends tp1_authority_timeout at 10,000 ms with the deadline as its cause; the refusals (unsigned: the request was never authenticated) reserve nothing and free every request slot; a late answer is ignored and never unhandled', async (t) => {
+  const f = await hostFixture(t);
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  const reader = authorityReader();
+  const stalled = [];
+  let stall = false;
+  const readAuthority = (scope) => (stall ? new Promise((resolve) => { stalled.push(() => resolve(reader(scope))); }) : reader(scope));
+  try {
+    const host = await f.start({ tp1Network: testNetwork({ readAuthority }) });
+    const [binding] = f.bindings;
+    const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+    // Signed proposals up to the buyer's challenge limit; the other stalled requests are signed state reads, which need no challenge.
+    const proposals = await Promise.all(Array.from({ length: HANDLER_CONCURRENCY }, async (_, index) => {
+      if (index >= PROPOSALS_PER_BUYER) return unknownStateRequest(buyerWire, `stalled-${index}`);
+      const body = await f.proposal(host, jobId(`stalled-${index}`));
+      return buyerWire.signRequest(PROPOSALS, body, { jobId: body.transportIdentity.jobId, agreementHash: body.transportIdentity.agreementHash });
+    }));
+    const [overflow, afterwards] = [await unknownStateRequest(buyerWire, 'overflow'), await unknownStateRequest(buyerWire, 'afterwards')];
+    stall = true;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    let direct = 'pending';
+    const reading = assertTp1Authority(binding, TEST_CONNECTION, [], null).then(() => { direct = 'passed'; }, (error) => { direct = error; });
+    const answers = proposals.map((signed) => postSigned(host, signed));
+    for (let turn = 0; stalled.length < HANDLER_CONCURRENCY + 1 && turn < 1000; turn++) await flush();
+    assert.equal(stalled.length, HANDLER_CONCURRENCY + 1, 'every proposal is waiting on the reader');
+    assert.equal((await postSigned(host, overflow)).status, 429, 'the stalled requests hold every request slot');
+    let answered = 0;
+    for (const answer of answers) answer.then(() => { answered++; });
+    mock.timers.tick(AUTHORITY_DEADLINE_MS - 1);
+    await flush();
+    assert.deepEqual({ direct, answered }, { direct: 'pending', answered: 0 }, 'still waiting at 9,999 ms');
+    mock.timers.tick(1);
+    await reading;
+    const refusals = await Promise.all(answers);
+    mock.timers.reset();
+    assert.deepEqual({ code: direct.code, status: direct.status, deadline: isBoundedCallTimeout(direct.cause) }, { code: 'tp1_authority_timeout', status: 500, deadline: true });
+    for (const refusal of refusals) assert.deepEqual({ status: refusal.status, error: JSON.parse(refusal.bytes).error, signed: refusal.header !== undefined }, { status: 500, error: 'tp1_authority_timeout', signed: false });
+    for (const settleLate of stalled) settleLate();
+    await flush();
+    await flush();
+    assert.deepEqual(unhandled, []);
+    const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
+    try { assert.deepEqual(['peer_jobs', 'peer_effects', 'kit_purchase_profiles'].map((table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n), [0, 0, 0], 'nothing was reserved or kept'); } finally { db.close(); }
+    stall = false;
+    assert.equal((await postSigned(host, afterwards)).status, 404, 'a later request is answered: the slots were released');
+  } finally {
+    mock.timers.reset();
+    process.off('unhandledRejection', onUnhandled);
+  }
 });
 
 test('P10-T09 a plain-HTTP endpoint or a revision-1 chain refuses before the lock and before any file', async (t) => {
@@ -854,4 +962,19 @@ test('P10-T18 through the real guarded store\'s classify, its dry-run reserve an
   const afterRestart = await contextRequest();
   assert.equal(reopened.classify(afterRestart.request, afterRestart.body), 'known', 'the context retry classifies known after restart');
   await dryRuns(reopened, 'restarted store');
+});
+
+test('started host signed proposal creates accounting and wire operation records', async (t) => {
+  const f = await hostFixture(t), host = await f.start();
+  const body = await f.proposal(host), { jobId: id, agreementHash } = body.transportIdentity;
+  const buyerWire = await wireBuyer({ buyer: BUYER, seller: SELLER, listingPin: host.listingPin, clock: () => NOW });
+  const answer = await postSigned(host, await buyerWire.signRequest(PROPOSALS, body, { jobId: id, agreementHash }));
+  const db = new DatabaseSync(f.path(STORE_FILE), { readonly: true });
+  try {
+    assert.deepEqual(db.prepare('SELECT jobId, route, state FROM kit_reservations').all(), [{ jobId: id, route: PROPOSALS, state: 'new' }]);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM peer_effects').get().n, 0);
+  } finally { db.close(); }
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => name.startsWith('k-')).length, 1);
+  assert.equal(namesIn(f.path(JOURNAL_DIRECTORY)).filter(name => /^o-.*-0$/.test(name)).length, 1);
+  assert.ok(answer.header, 'the started host signs the result');
 });
