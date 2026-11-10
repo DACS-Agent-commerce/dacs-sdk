@@ -860,8 +860,8 @@ export type PayDemRailResult = SettleResult & (
     ok: true;
     execution: "executed";
     /**
-     * Set when the payer's account nonce read did not reach the executed nonce
-     * within `nonceVisibilityTimeoutMs`. The payment is still final.
+     * Set when the payer's account nonce read timed out or was rejected before
+     * it reached the executed nonce. The payment is still final.
      */
     message?: string;
   }
