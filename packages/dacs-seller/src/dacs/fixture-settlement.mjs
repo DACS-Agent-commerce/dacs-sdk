@@ -2,6 +2,7 @@ import { canonicalize, contentHash, identityBundleHash, paymentEvidenceAddress, 
 import { fixtureRef, signAnchorWrite, verifyFixtureRecord } from './fixture-anchors.mjs';
 import { readAdmissionCapability } from './session-admission.mjs';
 import { agreementTerms, deliverableAddress, deliveryEvidenceAddress, DEM_RAIL_DEFINITION, ed25519Deps, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
+const TX_HASH_SHAPE = /^(?:0x)?[0-9a-fA-F]{64}$/;
 const normalized = value => String(value).toLowerCase().replace(/^0x/, '');
 const same = (left, right) => canonicalize(left) === canonicalize(right);
 // Fixture settlement uses current authenticated job facts and one retained
@@ -92,8 +93,8 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
     // The durable job fence refuses a second holder; memory mode has none, so a
     // job's payment is refused, before any await, while another is in progress.
     async function submitPayment(input) {
-        if (typeof input?.txHash !== 'string')
-            error('payment_tx_hash_invalid', 'the transaction hash must be a string', 422);
+        if (typeof input?.txHash !== 'string' || !TX_HASH_SHAPE.test(input.txHash))
+            error('payment_tx_hash_invalid', 'the transaction hash must be 64 hexadecimal digits with an optional 0x prefix', 422);
         if (paying.has(input?.jobId))
             error('seller_state_busy', 'another payment for this job is in progress');
         paying.add(input?.jobId);
