@@ -6593,6 +6593,30 @@
         {"path":"packages/dacs-client/test/wire-purchase-format.test.mjs","before":"abee1bf19ddddb09fe8660d71e5487bde4fbdc8a","after":null},
         {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":"e4a43f5d39bc6806039a4f3f7421d0874504effc","after":null}
       ]
+    },
+    {
+      "delta": "WF",
+      "subject": "delta(client): WF activate wire purchase transport",
+      "compact": true,
+      "files": [
+        {"path":"packages/dacs-client/src/dacs/protocol-purchases.mjs","before":"652e68fa1ad0a799754f35d604bac2ffc1376f0e","after":"0beb91038714306005ecd3ad79faf4a5b9cb441e"},
+        {"path":"packages/dacs-client/src/dacs/seller-http.mjs","before":"eb89bc99364dc00d325530e5249981917b9cdb87","after":"4b27d7047e0557f0439250ad6d8690fc5f2241aa"},
+        {"path":"packages/dacs-client/src/dacs/seller-transport-auth.mjs","before":"68a8a8946386f010d7a157a25e184bfb52370108","after":"cbbff1c08f2b7986c2a55298652234a1b1b6b606"},
+        {"path":"packages/dacs-client/src/dacs/source-demo-seller-transport.mjs","before":"208a59efea2ceed0f8b76d96aaf66444ac51cc40","after":"14350d302f2efcecf790150cd2fcaec4244982d0"},
+        {"path":"packages/dacs-client/src/index.mjs","before":"8eef30db35c285a915231522e0b73a8c407e9384","after":"dd10aa2b3ebe253b092d9543850079587b5bca27"},
+        {"path":"packages/dacs-client/src/public-admission.mjs","before":"3f31bdea587a0f038d5a8fcc892b053dbd129fff","after":"62265d0764ad8c81d23cb12217ef1b3e9f35fe8d"},
+        {"path":"packages/dacs-client/test/helpers/buyer-chain-readback-flow.mjs","before":"f2895f71dc8e79dc7359522fe48af6a59e7921d6","after":"836362d71eb834d43f168eec3aca5b617018946d"},
+        {"path":"packages/dacs-client/test/helpers/commitment-node-junk.mjs","before":"d73a91f8b9e19139cad69c910c9cb6e56b0fc7c4","after":"4dda0ebff0f1a5312c4337040ed7b5308461f8b8"},
+        {"path":"packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs","before":null,"after":"2f963c44c336dd77647d12ced651a9df7bc4b9e4"},
+        {"path":"packages/dacs-client/test/helpers/review-commit-phase-coverage-world.mjs","before":"37ab6d1fe442415929f81c40d6a56651b6dd530e","after":"163637c51827c8cf0c5b04979d0ad008a24b6bfb"},
+        {"path":"packages/dacs-client/test/helpers/review-commit-retry-coverage-world.mjs","before":"8701e45adf0cc58bf6d3a3c3f0f18e6d42726dcc","after":"a95ef03f4a7088ebf2d776b544529efa9af3bd3b"},
+        {"path":"packages/dacs-client/test/helpers/source-demo-flow.mjs","before":"407e9d3ccb1db981727e9c22a2c0b9ca96443421","after":"40670eef3d1060b4690ecf90343f5cd4d4153176"},
+        {"path":"packages/dacs-client/test/helpers/source-demo-seller.mjs","before":"fe1c4055b77e3a13b3cf24492a645f08fb2b190b","after":"3ebe27b3481988b9dedeaabec489c44e791a2891"},
+        {"path":"packages/dacs-client/test/sweep-contracts.test.mjs","before":"dac6e6aae63aac269c0a84197ce2b77d3211eb35","after":"49d984bfcf705c7d3d1928720d9f8f0d759f8c0b"},
+        {"path":"packages/dacs-client/test/wire-delegation.test.mjs","before":null,"after":"e346741a630e7700b726316460a6a4898de04b02"},
+        {"path":"packages/dacs-client/test/wire-purchase-format.test.mjs","before":null,"after":"abee1bf19ddddb09fe8660d71e5487bde4fbdc8a"},
+        {"path":"packages/dacs-client/test/wire-request-signing.test.mjs","before":null,"after":"8080ab64a3de6b4a227ea7b19ecb9d70911f035a"}
+      ]
     }
   ]
 }
