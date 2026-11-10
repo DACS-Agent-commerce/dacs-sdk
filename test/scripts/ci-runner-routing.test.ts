@@ -145,7 +145,7 @@ function evaluate(source: string, context: Record<string, Value>): Value {
 
 function route(over: {
   enabled?: string; authors?: string; blacksmith?: string; node?: string; event?: string; headRepo?: string;
-  author?: string; actor?: string; triggering?: string; labels?: string[]; prPayload?: boolean;
+  author?: string; actor?: string; triggering?: string; labels?: string[]; prPayload?: boolean; draft?: boolean;
 }) {
   const match = /^\$\{\{([\s\S]*)\}\}$/.exec(RUNS_ON.trim());
   if (!match) throw new Error("runs-on is not a single expression");
@@ -168,6 +168,7 @@ function route(over: {
           head: { repo: { full_name: over.headRepo ?? "org/repo" } },
           user: { login: over.author ?? "owner" },
           labels: (over.labels ?? []).map((name) => ({ name })),
+          draft: over.draft ?? false,
         } }
         : {},
     },
@@ -247,6 +248,15 @@ describe("build-test runs-on routing (.github/workflows/ci.yml)", () => {
         expect(route({ blacksmith, node: "20.19.0" })).toBe("ubuntu-latest");
         expect(route({ blacksmith, enabled: "off" })).toBe("ubuntu-latest");
       }
+    });
+
+    it("never takes draft pull requests", () => {
+      for (const node of ["22", "20.19.0"]) {
+        expect(route({ blacksmith: "on", draft: true, node, enabled: "off" })).toBe("ubuntu-latest");
+        expect(route({ blacksmith: "on", draft: false, node })).toBe(BLACKSMITH);
+      }
+      // A draft falls through to the rules above, which still route it like any other pull request.
+      expect(route({ blacksmith: "on", draft: true })).toEqual(POOL);
     });
 
     it("never takes pushes, merge-queue runs or fork pull requests", () => {
@@ -377,6 +387,32 @@ describe("build-test shards (.github/workflows/ci.yml, scripts/ci-shards.mjs)", 
     expect(SHARD.name).toBe("build-test shard (node ${{ matrix.node-version }}, ${{ matrix.part }})");
     expect(shards.mainJobName("22")).toBe("build-test main (node 22)");
     expect(shards.shardJobName("22", "seller-1")).toBe("build-test shard (node 22, seller-1)");
+  });
+
+  // A required check that never reports blocks every merge, and a skipped one counts as passing. So the result job must
+  // run whatever happened to the jobs it needs, and decide from their outcomes itself.
+  it("reports a result for every outcome of the jobs it needs, failing on a failed plan or any unsuccessful job", () => {
+    const step = (RESULT.steps ?? []).find((s) => s.run?.includes("ci-shards.mjs verify"));
+    expect(step?.env?.PLAN_RESULT).toBe("${{ needs.build-test-plan.result }}");
+    const lines = (step?.run ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
+    // The plan check comes first: a failed or cancelled plan leaves the shard job skipped with no shard jobs to read.
+    expect(lines[0]).toBe('test "$PLAN_RESULT" = success || { echo "build-test plan: $PLAN_RESULT"; exit 1; }');
+    expect(lines.at(-1)).toBe('node scripts/ci-shards.mjs verify --node "$NODE_VERSION" --event "$EVENT_NAME" --jobs "$RUNNER_TEMP/jobs.jsonl"');
+    expect(step?.env?.NODE_VERSION).toBe("${{ matrix.node-version }}");
+    // No step of the result job is conditional, and the job itself is not gated on the needed jobs' results.
+    expect((RESULT.steps ?? []).filter((s) => s.if !== undefined)).toEqual([]);
+    expect(RESULT.if).toBe("${{ always() }}");
+    for (const event of EVENTS) {
+      for (const node of MAIN_LEGS) {
+        // Every shard cancelled: the leg fails once per shard. No jobs at all (as when the run is cancelled before
+        // they start): the leg fails, it does not pass on an empty list.
+        const planned = (shards.plan(event) as Entry[]).filter((e) => e["node-version"] === node);
+        const jobs = [{ name: shards.mainJobName(node), status: "completed", conclusion: "success" },
+          ...planned.map((e) => ({ name: shards.shardJobName(node, e.part), status: "completed", conclusion: "cancelled" }))];
+        expect(shards.verify(node, event, jobs).failures).toHaveLength(planned.length);
+        expect(shards.verify(node, event, []).failures.length).toBeGreaterThan(0);
+      }
+    }
   });
 
   describe("verify", () => {
