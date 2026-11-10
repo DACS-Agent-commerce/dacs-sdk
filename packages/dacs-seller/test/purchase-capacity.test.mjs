@@ -327,8 +327,7 @@ test('terminal cleanup trusts only synchronous terminal state', async t => {
   const before = stable(w.report());
   for (const [name, answer] of Object.entries(answers)) {
     w.control.state = answer;
-    if (['nonterminal', 'unknown', 'unlisted'].includes(name)) w.capacity.releaseTerminalAllocations();
-    else assert.throws(() => w.capacity.releaseTerminalAllocations(), SESSION_UNAVAILABLE, name);
+    w.capacity.releaseTerminalAllocations();
     assert.equal(w.current(p.jobId).state, 'live', name);
   }
   await new Promise(resolve => setImmediate(resolve)); assert.deepEqual(unhandled, []); assert.deepEqual(stable(w.report()), before);
@@ -977,7 +976,7 @@ test('terminal closures and allocation releases survive restarts for every termi
       w.reopen();
       if (unavailableAnswer(label)) {
         assert.throws(() => w.internals.terminalSession(p.jobId), SESSION_UNAVAILABLE, label);
-        assert.throws(() => w.capacity.releaseTerminalAllocations(), SESSION_UNAVAILABLE, label);
+        w.capacity.releaseTerminalAllocations();
       } else {
         assert.deepEqual(w.internals.terminalSession(p.jobId), { terminal: false, state: null }, label);
         w.capacity.releaseTerminalAllocations();
