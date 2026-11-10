@@ -133,7 +133,7 @@ describe("pay-dem retained identity conflict quarantine", () => {
       if (input.recovery?.phaseIndex === 0) { started(); await gate; }
       return freshSuccess();
     });
-    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: createIdempotencyStore() });
+    const settle = payDemSettle({ address: payer, settle: submit }, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) });
     const first = settle(request);
     await submitting;
     try {
@@ -176,7 +176,7 @@ describe("pay-dem retained identity conflict quarantine", () => {
 
   test("rejects another hash retained only in an indeterminate in-process result", async () => {
     const submit = vi.fn(async () => ({ ok: false as const, txHash: hashA, payer, payee, chainId: "demos" }));
-    const store = createIdempotencyStore();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
     const once = vi.spyOn(store, "once");
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
@@ -193,7 +193,7 @@ describe("pay-dem retained identity conflict quarantine", () => {
     const gate = new Promise<void>((resolve) => { finish = resolve; });
     const submit = vi.fn(async () => { started(); await gate; return freshSuccess(); });
     const reconcile = vi.fn<PayDemSettlementReconcile>(async () => failed());
-    const store = createIdempotencyStore();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
     const once = vi.spyOn(store, "once");
     const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
     const fresh = settle(request);

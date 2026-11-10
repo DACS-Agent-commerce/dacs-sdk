@@ -76,6 +76,13 @@ bridge retains at most 1,024 audit identities and never evicts them to restore
 submission authority. At capacity it refuses new keys, including requests that
 omit history; existing keys remain auditable.
 
+`resumeSettlement` requests also carry `recoveryOnly`, including when the
+session has no transaction history. The bridge checks its settlement log before
+using the submit-capable path. If the log has no record, it can return only a
+definitive transfer found by read-only reconciliation. An absent or uncertain
+result leaves settlement unresolved and sends no new transfer. A retained
+intent may be reconciled through the store after its lease expires.
+
 Native retained recovery requires `SettlementIdempotencyStore.readOutcome(key,
 binding)`; `createIdempotencyStore` implements it using the backing log's
 `readOutcome(key)`. The log returns an immutable `SettlementOutcomeRecord`, a

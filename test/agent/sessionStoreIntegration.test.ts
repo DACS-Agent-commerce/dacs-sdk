@@ -8,7 +8,7 @@ import {
   type SettleResult,
 } from "../../src/agent/runSessionCore.js";
 import { payDemSettle } from "../../src/rails/payDem.js";
-import { createIdempotencyStore } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import { createInMemorySessionStore } from "../../src/agent/sessionStore.js";
 import { ARTIFACT_SEPARATORS } from "../../src/artifacts/registry.js";
 import { signComponentArtifact } from "../../src/artifacts/signatures.js";
@@ -1174,7 +1174,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       const before = await store.load("job-1");
       const beforeEvidence = structuredClone([...kv]);
       const missingJournal = new Error("prepared-transfer journal missing");
-      const railStore = createIdempotencyStore();
+      const railStore = createIdempotencyStore(createInMemorySettlementLog());
       const once = vi.spyOn(railStore, "once");
       let broadcasts = 0;
       const audit = payDemSettle({ address: payer, settle: async () => {
@@ -1258,7 +1258,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       },
     });
     await expect(runSessionCore(first.listingRef, demTerms, first.deps)).rejects.toThrow("checkpoint crash");
-    const railStore = createIdempotencyStore();
+    const railStore = createIdempotencyStore(createInMemorySettlementLog());
     await railStore.once("pay-dem:job-1:0", {
       bindingVersion: "1", railId: "pay-dem", jobId: "job-1", phaseIndex: 0, phase: "pay-dem",
       amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer, payee,
@@ -1352,7 +1352,7 @@ describe("runSessionCore records to the durable SessionStore (#55 integration)",
       transfers += 1;
       return { ok: true, execution: "executed", txHash: "cd".repeat(32), chainId: "demos", payer, payee,
         blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" }, networkFeeOs };
-    } }, {}, { store: createIdempotencyStore() });
+    } }, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) });
     const first = await makeDeps(store, { kv, settle,
       anchor: async (name, value) => {
         if (name === sessionAnchorName.evidence("job-1")) throw new Error("anchor unavailable");

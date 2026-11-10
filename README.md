@@ -642,7 +642,8 @@ const demSettle = payDemSettle(demRail, {}, { store: settlementStore, reconcile:
 `durableSettlementLog` is an application-provided `SettlementLog` whose intent
 claim and outcome writes survive a restart. Use a shared atomic store when
 multiple processes can settle the same job. An in-memory log is suitable only
-for isolated tests.
+for isolated tests. `createIdempotencyStore` requires the log argument and
+throws if it is omitted.
 
 For registry dispatch, pass the same store as top-level `settlementStore` for
 x402 and ERC-20 or as `payDem.settlementStore` for native DEM.

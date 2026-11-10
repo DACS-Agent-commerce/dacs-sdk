@@ -42,8 +42,11 @@ const binding = (
 const KEY = "evm-erc20-usdc:job-1:0";
 
 describe("settlement idempotency store (#43)", () => {
+  test("requires a caller-supplied settlement log", () => {
+    expect(() => Reflect.apply(createIdempotencyStore, undefined, [])).toThrow(/requires a caller-supplied settlement log/);
+  });
   test("a repeated call for the same key returns the recorded result WITHOUT resubmitting", async () => {
-    const store = createIdempotencyStore();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
     let calls = 0;
     const submit = async () => ((calls += 1), ok(`0x${calls}`));
     const first = await store.once(KEY, binding(), submit);
@@ -53,7 +56,7 @@ describe("settlement idempotency store (#43)", () => {
   });
 
   test("concurrent calls for one key share a single submission (no double-submit)", async () => {
-    const store = createIdempotencyStore();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
     let calls = 0;
     const submit = async () => {
       calls += 1;
@@ -69,7 +72,7 @@ describe("settlement idempotency store (#43)", () => {
   });
 
   test("an explicit not-invoked result releases the attempt for same-term retry", async () => {
-    const store = createIdempotencyStore();
+    const store = createIdempotencyStore(createInMemorySettlementLog());
     let calls = 0;
     const submit = async () => {
       calls += 1;
@@ -444,7 +447,7 @@ describe("settlement idempotency store (#43)", () => {
   });
 
   test("rejects fresh, reconciled, and post-write results outside the retained binding", async () => {
-    await expect(createIdempotencyStore().once(
+    await expect(createIdempotencyStore(createInMemorySettlementLog()).once(
       KEY,
       binding(),
       async () => ({ ...ok("0xfresh"), payer: "0xattacker" }),
@@ -699,17 +702,27 @@ describe("evmErc20Settle bridge threads the idempotency key (#43 repro)", () => 
     expect(rail.transferCalls).toBe(0);
   });
 
+  test("EVM recovery without a rail record never transfers", async () => {
+    const rail = countingRail();
+    const settle = evmErc20Settle(rail, cfg, {
+      store: createIdempotencyStore(createInMemorySettlementLog()),
+    });
+    await expect(settle({ ...req, recoveryOnly: true }))
+      .rejects.toThrow(/no recorded settlement outcome/);
+    expect(rail.transferCalls).toBe(0);
+  });
+
   test("direct EVM bridge rejects a destination mismatch before transfer", async () => {
     const rail = countingRail();
     expect(() =>
-      evmErc20Settle(rail, cfg, { store: createIdempotencyStore() })({ ...req, expectedPayee: "0xother" }),
+      evmErc20Settle(rail, cfg, { store: createIdempotencyStore(createInMemorySettlementLog()) })({ ...req, expectedPayee: "0xother" }),
     ).toThrow(/destination mismatch/);
     expect(rail.transferCalls).toBe(0);
   });
 
   test("an explicit store dedupes repeated requests", async () => {
     const rail = countingRail();
-    const settle = evmErc20Settle(rail, cfg, { store: createIdempotencyStore() });
+    const settle = evmErc20Settle(rail, cfg, { store: createIdempotencyStore(createInMemorySettlementLog()) });
     const a = await settle(req);
     const b = await settle(req);
     expect(rail.transferCalls).toBe(1);

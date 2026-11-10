@@ -189,6 +189,8 @@ export interface SettlementReplayAuthorization {
 }
 
 export interface SettlementIdempotencyStore {
+  /** Whether this log retains an intent or outcome under the exact binding. */
+  hasRecord?(key: string, binding: Readonly<SettlementBinding>): Promise<boolean>;
   /**
    * Read and validate a recorded outcome under these exact terms, without
    * claiming an intent. Required for native retained-transaction audits.
@@ -779,11 +781,14 @@ function captureReplayAuthorization(
   });
 }
 
-/** A generation-fenced idempotency store over a durable-capable log. */
+/** A generation-fenced idempotency store over a caller-supplied settlement log. */
 export function createIdempotencyStore(
-  log: SettlementLog = createInMemorySettlementLog(),
+  log: SettlementLog,
   options: Readonly<SettlementIdempotencyStoreOptions> = {},
 ): SettlementIdempotencyStore {
+  if (log === undefined) {
+    throw new DacsError("createIdempotencyStore requires a caller-supplied settlement log");
+  }
   const policy = storeOptions(options);
   const durable = captureSettlementLog(log);
   const inflight = new Map<string, Readonly<{
@@ -800,6 +805,22 @@ export function createIdempotencyStore(
   };
 
   return {
+    async hasRecord(key, binding) {
+      const capturedBinding = frozenClone(binding, "settlement record lookup binding");
+      const bindingHash = settlementBindingHash(capturedBinding);
+      if (settlementKey(capturedBinding.railId, capturedBinding.jobId, capturedBinding.phaseIndex) !== key) {
+        throw new DacsError("settlement record lookup binding does not match its idempotency key");
+      }
+      if (durable.readOutcome === undefined) {
+        throw new DacsError("settlement log requires read-only record lookup for recovery");
+      }
+      const record = await durable.readOutcome(key);
+      if (record === null) return false;
+      if (record.bindingHash !== bindingHash) {
+        throw new DacsError(`settlement ${key} record binding conflicts with requested terms`);
+      }
+      return true;
+    },
     async readOutcome(key, binding) {
       const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
       const bindingHash = settlementBindingHash(capturedBinding);

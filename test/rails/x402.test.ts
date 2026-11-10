@@ -3,7 +3,7 @@ import { keccak256, stringToHex } from "viem";
 
 import { baseUnits } from "../../src/canonical/decimal.js";
 import { DacsError } from "../../src/errors.js";
-import { createIdempotencyStore } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import {
   createX402Rail,
   dacsX402AuthorizationNonce,
@@ -713,6 +713,20 @@ describe("x402SettleCore (buyer 402-dance)", () => {
 });
 
 describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () => {
+  test("recovery without a rail record never submits", async () => {
+    const settleRail = vi.fn();
+    const rail: X402Rail = { address: PAYER, finalityBlocks: 12, settle: settleRail };
+    const settle = x402Settle(rail, {
+      url: "https://seller.example/deliver", network: NETWORK,
+      recipientEvm: RECIPIENT, asset: TOKEN,
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
+    await expect(settle({
+      rail: "pay-x402", phase: "pay-x402", amount: "1", asset: "USDC",
+      payee: "did:example:seller", expectedPayee: RECIPIENT, jobId: "unrecorded",
+      recoveryOnly: true,
+    })).rejects.toThrow(/no recorded settlement outcome/);
+    expect(settleRail).not.toHaveBeenCalled();
+  });
   test("refuses construction without a caller-supplied store", () => {
     const settle = vi.fn();
     const rail: X402Rail = { address: PAYER, finalityBlocks: 12, settle };
@@ -742,7 +756,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       network: NETWORK,
       recipientEvm: RECIPIENT,
       asset: "0xtoken",
-    }, { store: createIdempotencyStore() });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
     expect(() =>
       settle({
         rail: "pay-x402",
@@ -780,7 +794,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       recipientEvm: RECIPIENT,
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // resolved token id
       phaseIndex: 3,
-    }, { store: createIdempotencyStore() });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     // runSession passes the human Price.asset symbol; the bridge must NOT use it
     // for the guard — it uses the rail-configured on-chain token id.
@@ -828,7 +842,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       // no phaseIndex on the paywall — the old wiring omitted it to the rail,
       // which (with requireSessionBinding) threw on every settle.
-    }, { store: createIdempotencyStore() });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await settle({
       rail: "pay-x402",
@@ -866,7 +880,7 @@ describe("x402Settle bridge (#10: on-chain token id, not the price symbol)", () 
       network: NETWORK,
       recipientEvm: RECIPIENT,
       asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    }, { store: createIdempotencyStore() });
+    }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     await settle({ rail: "pay-x402", phase: "pay-x402", amount: "1000000", asset: "USDC", payee: RECIPIENT, expectedPayee: RECIPIENT, jobId: "j1" });
 

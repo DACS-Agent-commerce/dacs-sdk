@@ -291,13 +291,17 @@ export function evmErc20Settle(
       network,
       finality: Object.freeze({ model: "block-depth", finalityBlocks }),
     }) satisfies Readonly<SettlementBinding>;
-    const submit = (effectFence?: Readonly<SettlementEffectFence>) =>
-      rail.settle({
+    const submit = (effectFence?: Readonly<SettlementEffectFence>) => {
+      if (req.recoveryOnly) {
+        throw new DacsError("evm-erc20 recovery has no recorded settlement outcome; refusing to submit");
+      }
+      return rail.settle({
         network,
         tokenAddress,
         recipientEvm,
         amount,
       }, effectFence);
+    };
     return store.once(
       settlementKey(railId, jobId, phaseIndex),
       binding,

@@ -929,8 +929,11 @@ export function x402Settle(
       )}`,
       resource: paywallUrl,
     }) satisfies Readonly<SettlementBinding>;
-    const submit = (effectFence?: Readonly<SettlementEffectFence>) =>
-      rail.settle({
+    const submit = (effectFence?: Readonly<SettlementEffectFence>) => {
+      if (req.recoveryOnly) {
+        throw new DacsError("x402 recovery has no recorded settlement outcome; refusing to submit");
+      }
+      return rail.settle({
         paywallUrl,
         network,
         recipientEvm,
@@ -939,6 +942,7 @@ export function x402Settle(
         jobId,
         phaseIndex,
       }, effectFence);
+    };
     // At-most-once per (railId, jobId, phaseIndex) uses the caller's durable
     // settlement store. A reconciled resubmit does not rebuild the x402
     // authorization/session binding (SB-3) by itself. A durable recovery may

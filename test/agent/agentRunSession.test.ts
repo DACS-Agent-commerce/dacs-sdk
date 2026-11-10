@@ -1,4 +1,4 @@
-import { createIdempotencyStore } from "../../src/rails/idempotency.js";
+import { createIdempotencyStore, createInMemorySettlementLog } from "../../src/rails/idempotency.js";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -402,7 +402,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
           recipientEvm,
           asset,
-        }, { store: createIdempotencyStore() }),
+        }, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(boundRail.settle).toHaveBeenCalledTimes(1);
@@ -425,7 +425,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           network: "eip155:84532",
           recipientEvm,
           asset,
-        }, { store: createIdempotencyStore() }),
+        }, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
       }),
     ).rejects.toThrow(/x402 destination mismatch/);
     expect(omittedRail.settle).not.toHaveBeenCalled();
@@ -556,7 +556,7 @@ describe("Agent.runSession wires the #41 listing verifier (public surface)", () 
           deliveryPhase: "deliver-attested-payload",
           deliveryFormat: "application/json",
         },
-        settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore() }),
+        settle: payDemSettle(rail, { network: "demos:testnet" }, { store: createIdempotencyStore(createInMemorySettlementLog()) }),
       }),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(transfer).toHaveBeenCalledOnce();

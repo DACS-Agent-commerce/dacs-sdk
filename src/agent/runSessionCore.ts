@@ -154,6 +154,8 @@ export interface SettleRequest {
    * settlement requests omit it.
    */
   priorAttempts?: readonly SettlementRecoveryAttempt[];
+  /** This request may reconcile an earlier settlement but must not start a payment. */
+  recoveryOnly?: true;
 }
 
 export interface SettlementRecoveryAttempt {
@@ -4405,6 +4407,7 @@ async function runSessionCoreWithFence(
     }
     const recoveryRequest: SettleRequest = {
       ...settleRequest,
+      recoveryOnly: true,
       ...(priorAttempts.length > 0 ? { priorAttempts } : {}),
     };
     await fence.assertCurrent();

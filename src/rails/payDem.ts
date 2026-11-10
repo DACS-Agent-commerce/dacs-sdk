@@ -2253,8 +2253,8 @@ function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
  *
  * SAFE BY DEFAULT: settlement is submitted at most once per
  * `(railId, jobId, phaseIndex)`. Supply a durable store and reconcile capability
- * for restart/crash recovery. A request carrying priorAttempts is a read-only audit:
- * it never claims a submit generation, even if the rail store lost its record.
+ * for restart/crash recovery. Requests carrying priorAttempts or recoveryOnly
+ * never submit, even if the rail store has no record.
  *
  * The seam is also the DEM converter (§9.5.9 step 2): the agreement's
  * `Price.amount` is a canonical DECIMAL DEM string (e.g. "5" or "5.1"), but the
@@ -2299,6 +2299,12 @@ export function payDemSettle(
     ? undefined
     : stableMethod<NonNullable<SettlementIdempotencyStore["readOutcome"]>>(
         store, "readOutcome", "pay-dem settlement store readOutcome",
+      );
+  const hasRecordProperty = stableDataProperty(store, "hasRecord", "pay-dem settlement store hasRecord");
+  const storeHasRecord = !hasRecordProperty.found || hasRecordProperty.value === undefined
+    ? undefined
+    : stableMethod<NonNullable<SettlementIdempotencyStore["hasRecord"]>>(
+        store, "hasRecord", "pay-dem settlement store hasRecord",
       );
   const configuredRecipient = optionalStableString(
     cfg,
@@ -2565,7 +2571,29 @@ export function payDemSettle(
         authenticatedResults.set(key, { context, result: captured });
         return publicPayDemResult(captured, expectedPayee);
       }
+      if (req.recoveryOnly) {
+        if (storeReadOutcome === undefined) {
+          throw new DacsError("pay-dem recovery requires read-only settlement outcome lookup; settlement remains unresolved");
+        }
+        const recorded = await storeReadOutcome(key, binding);
+        if (recorded === null &&
+            (storeHasRecord === undefined || !await storeHasRecord(key, binding))) {
+          if (reconcile === undefined) {
+            throw new DacsError("pay-dem recovery has no settlement record or reconciler; settlement remains unresolved");
+          }
+          const found = await reconcile(context);
+          if (found === null) {
+            throw new DacsError("pay-dem recovery has no settlement record or proven transfer; settlement remains unresolved");
+          }
+          const captured = capturePayDemReconciliation(found, context);
+          authenticatedResults.set(key, { context, result: captured });
+          return publicPayDemResult(captured, expectedPayee);
+        }
+      }
       const submit = async (effectFence?: Readonly<SettlementEffectFence>) => {
+        if (req.recoveryOnly) {
+          throw new DacsError("pay-dem recovery has no recorded settlement outcome; refusing to submit");
+        }
         const submitted = await railSettle({
           recipient: payeeAddress,
           amount: amountOs,
