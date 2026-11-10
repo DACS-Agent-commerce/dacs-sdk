@@ -84,6 +84,35 @@ describe("layer check", () => {
     ]);
   });
 
+  it("counts template-string paths, require forms, declaration files and .mts files", () => {
+    const problems = problemsIn({
+      "src/core/template.ts": "export const load = () => import(`../proto/flow.js`);",
+      "src/core/equals.ts": `import flow = require("../proto/flow.js"); export const a = flow;`,
+      "src/core/required.ts": `const flow = require("../proto/flow.js"); export const a = flow;`,
+      "src/core/types.d.ts": `export type T = import("../proto/flow.js").Flow;`,
+      "src/core/module.mts": `import { flow } from "../proto/flow.js"; export const a = flow;`,
+      "src/proto/flow.ts": `export type Flow = number; export const flow = 1;`,
+    });
+    expect(problems.violations.map((violation: { from: string }) => violation.from)).toEqual([
+      "src/core/equals.ts",
+      "src/core/module.mts",
+      "src/core/required.ts",
+      "src/core/template.ts",
+      "src/core/types.d.ts",
+    ]);
+  });
+
+  it("reports an import() or require() with a computed path as unresolved", () => {
+    const problems = problemsIn({
+      "src/core/a.ts": "const name = \"flow\";\nexport const load = () => import(`../proto/${name}.js`);\nexport const b = require(name);",
+      "src/proto/flow.ts": `export const flow = 1;`,
+    });
+    expect(problems.unresolved).toMatchObject([
+      { from: "src/core/a.ts", line: 2, to: "`../proto/${name}.js` (computed path)" },
+      { from: "src/core/a.ts", line: 3, to: "name (computed path)" },
+    ]);
+  });
+
   it("resolves folder imports to index.ts and data imports to the data file", () => {
     const root = repo({
       "src/proto/index.ts": `export const proto = 1;`,
