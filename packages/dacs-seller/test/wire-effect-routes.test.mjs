@@ -313,16 +313,50 @@ test('A16 a new proposal runs the agent once and completes its attempt with the 
   assert.equal(w.agent.calls.proposals, 1);
 });
 
-test('A13 a completed payments operation answers a later claim with another transaction with the stored outcome and runs no intake', async t => {
+test('a completed payments operation that reported delivery is put to the agent again, and a later claim gets the answer the agent gives now', async t => {
   const w = await continuingWorld(t);
   const first = await w.request(PATHS.payments);
   assert.equal(first.status, 200);
+  const seen = [];
+  w.agent.submitPayment = async (body, { transport }) => { seen.push({ txHash: body.txHash, check: typeof transport.check, settle: typeof transport.settle }); return { status: 'held', reason: 'the delivery cannot be read now' }; };
   const files = w.journalFiles().length;
   const later = await w.post(PATHS.payments, { ...w.bodyFor(PATHS.payments), txHash: derive('another-transaction') }, { jobId: w.jobId, agreementHash: w.agreementHash });
-  assert.equal(later.text, first.text);
-  assert.equal(w.agent.calls.payments, 1);
+  assert.deepEqual({ status: later.status, answer: later.body.status }, { status: 200, answer: 'held' }, 'the saved success is not replayed');
+  assert.deepEqual(seen, [{ txHash: derive('another-transaction'), check: 'function', settle: 'undefined' }], 'the agent was asked once, with a check and no settle');
+  await w.verified(later);
   assert.equal(w.journalFiles().length, files + 1, 'only the later request\'s nonce key was added: no new attempt');
+  w.agent.submitPayment = async () => { throw new Error('TEST the refresh failed'); };
+  const failed = await w.request(PATHS.payments);
+  assert.deepEqual({ status: failed.status, error: failed.body.error }, { status: 503, error: 'operation_uncertain' }, 'a refresh that fails is no definite answer, and never the saved success');
 });
+
+test('a delivery refresh of a completed payment is refused once its request expired while the agent waited', async t => {
+  const w = await continuingWorld(t);
+  assert.equal((await w.request(PATHS.payments)).status, 200);
+  w.agent.submitPayment = async (_body, { transport }) => { w.state.time += 5000; transport.check(); return { status: 'payment-evidenced', delivery: { status: 'delivered' } }; };
+  const refused = await w.request(PATHS.payments, { lifetimeMs: 2000 });
+  assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 408, error: 'peer_expired' });
+});
+
+for (const route of ['commitments', 'commitmentSignature']) {
+  test(`a completed commitment on ${PATHS[route]} is read again before it is sent again`, async t => {
+    const w = await continuingWorld(t);
+    const first = await w.request(PATHS[route]);
+    assert.equal(first.body.status, 'committed');
+    const commits = { ...w.agent.calls };
+    w.agent.readCommitment = async ({ jobId }) => ({ status: 'commitment-held', jobId });
+    const held = await w.request(PATHS[route]);
+    assert.deepEqual({ status: held.status, answer: held.body.status }, { status: 200, answer: 'commitment-held' }, 'what the readback answers now is sent');
+    await w.verified(held);
+    for (const [label, read] of [['fails', async () => { throw new Error('TEST the commitment cannot be read'); }], ['answers something else', async () => ({ status: 'refused' })], ['answers nothing', async () => null]]) {
+      w.agent.readCommitment = read;
+      const refused = await w.request(PATHS[route]);
+      assert.deepEqual({ status: refused.status, error: refused.body.error }, { status: 503, error: 'commitment_readback_required' }, `a readback that ${label} is retryable`);
+      assert.equal(refused.signed, true);
+    }
+    assert.deepEqual(w.agent.calls, commits, 'no replay ran the commitment again');
+  });
+}
 
 for (const route of ['proposals', 'commitments', 'commitmentSignature', 'payments', 'bundleRequest', 'bundleCountersignature']) {
   test(`A12 a recover attempt asks the agent to reconcile before any route effect, on ${PATHS[route]}`, async t => {

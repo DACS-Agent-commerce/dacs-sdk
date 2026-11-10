@@ -81,8 +81,8 @@ test('a payment answered indeterminate before the evidence checkpoint ends null,
   const w = await world(t, [{ status: 'indeterminate', reason: 'demos-pending' }, DELIVERED]);
   assert.deepEqual(await w.pay(), { status: 'indeterminate', reason: 'demos-pending' });
   assert.deepEqual(await w.pay(), DELIVERED, 'the null end let the next request recover at once: the transfer, now included, reaches payment intake');
-  assert.deepEqual(await w.pay(), DELIVERED, 'the stored answer is signed again');
-  assert.equal(w.calls.length, 2, 'a completed operation runs no intake');
+  assert.deepEqual(await w.pay(), DELIVERED, 'the completed delivery is authenticated again by the agent');
+  assert.equal(w.calls.length, 3);
   const corrected = await world(t, [{ status: 'indeterminate', reason: 'demos-not-found' }, DELIVERED]);
   await corrected.pay({ ...corrected.claim, txHash: 'b2'.repeat(32) });
   assert.deepEqual(await corrected.pay(), DELIVERED, 'nothing was bound to the first body');
@@ -98,8 +98,8 @@ test('work the agent retains (proposal waiting, payment held, payment evidenced 
   assert.deepEqual(await heldPayment.pay(), held, 'after the lease the agent reconciles: the readback is still absent');
   heldPayment.lapse();
   assert.deepEqual(await heldPayment.pay(), DELIVERED, 'the agent\'s retained work reads the anchor back and delivers');
-  assert.deepEqual(await heldPayment.pay({ ...heldPayment.claim, txHash: `0x${heldPayment.claim.txHash}` }), DELIVERED, 'the completed operation answers another claim with its stored outcome');
-  assert.equal(heldPayment.calls.length, 3);
+  assert.deepEqual(await heldPayment.pay({ ...heldPayment.claim, txHash: `0x${heldPayment.claim.txHash}` }), DELIVERED, 'the completed delivery is put to the agent again with the other claim');
+  assert.equal(heldPayment.calls.length, 4);
   const pending = [
     { status: 'payment-evidenced', delivery: { status: 'held', reason: 'delivery readback absent' } },
     { status: 'payment-evidenced', delivery: 'held-missing-consumed-v2-fulfilment-and-Vet-audit' },
@@ -112,7 +112,7 @@ test('work the agent retains (proposal waiting, payment held, payment evidenced 
   }
   assert.deepEqual(await evidenced.pay(), DELIVERED);
   assert.deepEqual(await evidenced.pay(), DELIVERED);
-  assert.equal(evidenced.calls.length, 4);
+  assert.equal(evidenced.calls.length, 5);
   const waiting = await world(t, [], { proposalAnswers: [{ disposition: 'waiting', stage: 'lease', reason: 'TEST another worker holds the lease' }, { disposition: 'complete', contribution: null }] });
   assert.equal(waiting.proposalCalls(), 1);
   assert.equal((await waiting.propose().catch((error) => error.code)), 'seller_unavailable', 'the waiting proposal is pending inside the lease');

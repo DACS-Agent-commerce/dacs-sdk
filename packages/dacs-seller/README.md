@@ -328,7 +328,10 @@ per-client limiter so one client cannot exhaust the shared request budget.
   `peer_request_replayed`; a request for an operation with a live attempt is
   `seller_effect_pending`; once that attempt's lease ends, the next request
   recovers it and asks the agent to reconcile before anything else runs; a
-  completed operation is answered again with its stored answer; a request under
+  completed operation is answered again with its stored answer, except that a
+  stored commitment is read back first (a readback that fails is
+  `503 commitment_readback_required`) and a stored payment that reported
+  delivery goes to the agent again, whose answer now is the one sent; a request under
   another retained Agreement is `peer_operation_mismatch`; and after 16 lapsed
   attempts the operation answers `seller_effect_unresolved`, with no automatic
   reset. An attempt ends only with a final answer or with proof that
@@ -366,8 +369,9 @@ per-client limiter so one client cannot exhaust the shared request budget.
   again, its claims answer `503 operation_uncertain`. Once the agent retains
   work for a claim, no answer or refusal of it ends its attempt with null. A
   transaction hash is read as core payment intake reads it (lower case, with or
-  without `0x`). A completed payment is answered again with its stored
-  answer, whichever transaction a later claim names. An expired session
+  without `0x`). A completed payment that reported delivery is put to the agent
+  again with the later claim, whichever transaction it names, and no saved
+  success is replayed. An expired session
   delegation refuses every effect route (`peer_delegation_expired`); readback
   goes through the state route.
   The Deliverable is submitted again only on an absence that is

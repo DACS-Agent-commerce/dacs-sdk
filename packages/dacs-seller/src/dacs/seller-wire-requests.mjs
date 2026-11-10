@@ -4,7 +4,7 @@
 // The operator's network, store, clock and agent reach the signed routes only through one wire context (createWireContext).
 import { types } from 'node:util';
 import { contentHash, createFixedPriceAgreementSigningPlan } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, admitWireResponseBody, authorizeWireRequest, checkWireRequest, isReadRoute, openWireEnvelope, signWireResponse } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, admitWireResponseBody, checkWireRequest, isReadRoute, openWireEnvelope, signWireResponse } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { isSmallOrderPublicKey } from './demos-claims.mjs';
 import { SellerTransportError, sellerStoreInternals, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
@@ -135,9 +135,8 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
  * Open and admit one signed request on a wire route, in the wire's order: the envelope, the job's kept tuple, the exchange
  * and the retained parties. Nothing is reserved here and the wire journal is never written. Calls `onOpened(request)` as soon
  * as the envelope is verified, so a refusal after it can be signed.
- * Returns `{ body, readbackOnly, profile, recheck, reserve, retainedWork }`: the admitted body, whether only an expired delegation
- * authenticated the request, the request's own tuple, `recheck()`, which admits the same request again on a fresh clock for work
- * that follows without a reservation (a cached refresh), `reserve`, the wire's journal reservation of an effect route (null on a
+ * Returns `{ body, readbackOnly, profile, reserve, retainedWork }`: the admitted body, whether only an expired delegation
+ * authenticated the request, the request's own tuple, `reserve`, the wire's journal reservation of an effect route (null on a
  * read route), which re-checks current authority and expiry first, and `retainedWork`, whether the host retains a purchase stage
  * of this route for the job. Records in `limits` the times the admitted request and its delegation expire.
  * Throws the wire's own refusal with its code, status and cause, `peer_unknown_job` 404 for a job the host holds nothing for
@@ -172,13 +171,13 @@ async function admitWireRoute(wire, agent, limits, { header, method, path, rawBo
   if (held && kept === null) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
   validateBody(request, checked.body);
   limits.set(request, { request: request.expiresAt, delegation: opened.delegation?.payload.expiresAt ?? Infinity });
-  return { body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, profile: request.profile, recheck: () => authorizeWireRequest(opened, check()), reserve: checked.reserve, retainedWork: retained.allocated === true };
+  return { body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, profile: request.profile, reserve: checked.reserve, retainedWork: retained.allocated === true };
 }
 
 /**
  * The authenticator of the wire routes, in the shape the handler takes from either auth: `open` admits a request
- * (`{ body, read, readbackOnly(), reserveOptions, recheck() }`; a read route reserves nowhere, an effect route reserves with the
- * request's tuple), `sign` signs an answer under the tuple kept for the job (`undefined` for a request that names another seller,
+ * (`{ body, read, readbackOnly(), assertLive(), reserveOptions, reserve, retainedWork }`; a read route reserves nowhere, an effect
+ * route reserves with the request's tuple; `assertLive()` throws once the request or its delegation has expired), `sign` signs an answer under the tuple kept for the job (`undefined` for a request that names another seller,
  * which cannot be signed for: its refusal goes out unsigned), `encode` admits the text a stored answer keeps, and `store` is the
  * raw transport store with the admitted request's expiry applied at each call (an expired request reserves and claims read-only
  * and settles no retry or removal). `readbackOnly()` reads the clock each time too. Throws for a `wire` that createWireContext
@@ -223,8 +222,9 @@ export function wireAuthenticator(wire, agent, authentication) {
     encode: admitAnswerText,
     open: async (input) => {
       let opened = null;
-      const { body, readbackOnly, profile, recheck, reserve, retainedWork } = await admitWireRoute(wire, agent, limits, { ...input, onOpened: (request) => { opened = request; input.onOpened(request); } });
-      return { body, read: isReadRoute(input.path), readbackOnly: () => readbackOnly || expired(opened), reserveOptions: { journaledOnly: readbackOnly, keepProfile: profile }, recheck, reserve, retainedWork };
+      const { body, readbackOnly, profile, reserve, retainedWork } = await admitWireRoute(wire, agent, limits, { ...input, onOpened: (request) => { opened = request; input.onOpened(request); } });
+      const assertLive = () => { const code = lapse(opened); if (code !== null) throw new SellerTransportError(code, 408); };
+      return { body, read: isReadRoute(input.path), readbackOnly: () => readbackOnly || expired(opened), assertLive, reserveOptions: { journaledOnly: readbackOnly, keepProfile: profile }, reserve, retainedWork };
     },
     sign: (request, status, text) => (request.seller !== wire.signer.claim ? undefined
       : signWireResponse(request, status, text, { signer: wire.signer, binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId), now: wire.now() })),

@@ -41,6 +41,8 @@ export { SELLER_PRE_EFFECT_REFUSALS } from './seller-agent.mjs';
 // alone: once work is retained, no answer or refusal of the claim ends its attempt.
 const PROPOSAL_PATH = '/dacs/v1/agreements/proposals';
 const PAYMENT_PATH = '/dacs/v1/payments';
+const COMMITMENT_SIGNATURE_PATH = '/dacs/v1/commitments/signature';
+const COMMITMENT_PATHS = ['/dacs/v1/commitments', COMMITMENT_SIGNATURE_PATH];
 const retainsClaim = (agent, jobId, body) => { try { return agent.retainsPaymentClaim?.(jobId, body) !== false; } catch { return true; } };
 const reportsDeliveryReady = (text) => {
   try { const answer = JSON.parse(text); return answer?.status === 'payment-evidenced' && ['delivery-ready','delivered'].includes(answer.delivery?.status); } catch { return false; }
@@ -221,9 +223,22 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   // A wire route discloses a signed 200 only after the agent's credit check has settled, within a deadline. The check runs at most once
   // per answer; a failure, a rejection or a missed deadline throws, and a result that comes later releases nothing.
   const assertCreditHeld = (jobId) => boundedCall(() => agent.assertSettlementCredit(jobId), { timeoutMs: SETTLEMENT_CREDIT_TIMEOUT_MS });
-  // A completed operation is answered from its stored outcome, run through nothing.
-  async function answerCompleted(res, request, { status, text }) {
-    const sent = await pointed(status, text, request.jobId, request.path);
+  // A completed operation is answered from its stored outcome, except that a stored commitment or delivery is only a record of it:
+  // it is read again at its source, and what the source answers now is sent, never the saved success. A failed commitment readback is
+  // retryable, never a definite refusal, since the commitment is already anchored. A delivery refresh owns no reservation: it runs the
+  // route with a frame that checks the request is still live.
+  async function answerCompleted(res, request, body, admitted, route, { status, text }) {
+    let answer = text;
+    if (status === 200 && COMMITMENT_PATHS.includes(request.path)) {
+      let read;
+      try { read = await agent.readCommitment({ jobId: request.jobId, signedProjection: body.signedProjection, signatureAgreement: request.path === COMMITMENT_SIGNATURE_PATH ? body.agreement : undefined }); }
+      catch (cause) { throw new SellerTransportError('commitment_readback_required', 503, { cause }); }
+      if (!['committed', 'commitment-held'].includes(read?.status)) throw new SellerTransportError('commitment_readback_required', 503);
+      answer = wireAuth.encode(JSON.stringify(read));
+    } else if (status === 200 && request.path === PAYMENT_PATH && reportsDeliveryReady(text)) {
+      answer = wireAuth.encode(JSON.stringify(await route(agent, body, { transport: Object.freeze({ check: admitted.assertLive }) })));
+    }
+    const sent = await pointed(status, answer, request.jobId, request.path);
     const headers = await signedHeaders(status, sent, request);
     if (status === 200) await assertCreditHeld(request.jobId);
     write(res, status, headers, sent);
@@ -274,7 +289,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     const url = request.path;
     const effect = await wire.reservations.reserveCoordinated({ checked: { body: admitted.body, reserve: admitted.reserve }, payload: request, route: url, operationId: wireOperationId(request),
       paymentTx: url === PAYMENT_PATH ? paymentTxHash(body.txHash) : null, keepProfile: request.profile, retainedWork: admitted.retainedWork });
-    if (effect.state === 'completed') return answerCompleted(res, request, effect.outcome);
+    if (effect.state === 'completed') return answerCompleted(res, request, body, admitted, route, effect.outcome);
     try { await runWireAttempt(res, request, body, rawBody, effect, route); } catch {
       // An answer that cannot be signed (a changed connection, a failed signer) is no refusal either.
       try { await send(res, 503, UNCERTAIN, request); } catch { sendUnsignedUncertain(res); }
