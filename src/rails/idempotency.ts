@@ -130,6 +130,21 @@ export interface SettlementLog {
     now: number;
     leaseDurationMs: number;
   }>): Promise<SettlementIntentClaim>;
+  /**
+   * Like `claimIntent`, but only for an intent that is already unresolved, and
+   * atomic: it never installs a new intent or a fresh lease. A key never seen,
+   * or whose attempt was released as not-invoked, answers `absent` and leaves
+   * the log unchanged; an expired unresolved intent is acquired, which does
+   * write: it takes a current lease of stage `reconcile`. Required to recover
+   * (`recover()` is refused without it).
+   */
+  claimExistingIntent?(input: Readonly<{
+    key: string;
+    bindingHash: string;
+    owner: string;
+    now: number;
+    leaseDurationMs: number;
+  }>): Promise<SettlementIntentClaim | { status: "absent" }>;
   /** True only for the exact unexpired installed generation. */
   isCurrent(input: Readonly<{
     key: string;
@@ -207,12 +222,32 @@ export interface SettlementIdempotencyStore {
   once(
     key: string,
     binding: Readonly<SettlementBinding>,
-    submit: (
-      fence?: Readonly<SettlementEffectFence>,
-    ) => Promise<SettleResult | SettlementNotInvokedResult>,
+    submit: SettlementSubmit,
+    reconcile?: SettlementReconcile,
+  ): Promise<SettleResult>;
+  /**
+   * Run one recovery-only settlement under the same protocol as `once`, which
+   * must never take a fresh claim. It returns a recorded outcome, or reconciles
+   * an expired unresolved intent: it adopts a payment that `reconcile` proves
+   * landed, and calls `submit` only under a bound replay authorization. Throws,
+   * without calling `submit` and without writing to the log, when the log holds
+   * no unresolved intent for this key (never seen, or released after a
+   * not-invoked attempt), or when the log has no `claimExistingIntent`.
+   * Required for a request with `recoveryOnly` set: a store without it cannot
+   * recover, and the request is refused rather than passed to `once`.
+   */
+  recover?(
+    key: string,
+    binding: Readonly<SettlementBinding>,
+    submit: SettlementSubmit,
     reconcile?: SettlementReconcile,
   ): Promise<SettleResult>;
 }
+
+/** The irreversible rail effect a settlement store runs under its fence. */
+type SettlementSubmit = (
+  fence?: Readonly<SettlementEffectFence>,
+) => Promise<SettleResult | SettlementNotInvokedResult>;
 
 export interface SettlementIdempotencyStoreOptions {
   owner?: string;
@@ -435,6 +470,18 @@ function captureIntentClaim(value: unknown): Readonly<SettlementIntentClaim> {
   throw new DacsError("settlement intent claim has an invalid shape");
 }
 
+/** A `claimExistingIntent` answer: a claim, or exactly `{ status: "absent" }`. */
+function captureExistingIntentClaim(
+  value: unknown,
+): Readonly<SettlementIntentClaim | { status: "absent" }> {
+  const claim = frozenClone(
+    value as SettlementIntentClaim | { status: "absent" },
+    "settlement existing intent claim",
+  ) as Readonly<SettlementIntentClaim | { status: "absent" }>;
+  if (claim.status === "absent" && hasExactKeys(claim, ["status"])) return claim;
+  return captureIntentClaim(claim);
+}
+
 function captureRecoveryGrant(value: unknown): Readonly<SettlementRecoveryGrant> {
   const grant = frozenClone(
     value as SettlementRecoveryGrant,
@@ -533,7 +580,7 @@ export function createInMemorySettlementLog(): SettlementLog {
     record.lease.generation === input.lease.generation &&
     record.lease.expiresAt > input.now;
 
-  return {
+  const log: SettlementLog = {
     async readOutcome(key) {
       const record = records.get(key);
       if (record === undefined) return null;
@@ -577,6 +624,16 @@ export function createInMemorySettlementLog(): SettlementLog {
       existing.generation = generation;
       existing.lease = lease;
       return { status: "acquired", bindingHash: existing.bindingHash, lease: cloneLease(lease) };
+    },
+    async claimExistingIntent(input) {
+      // No await between this read and `claimIntent`'s write, so it is atomic.
+      const existing = records.get(input.key);
+      if (existing === undefined ||
+          (existing.bindingHash === input.bindingHash && existing.outcome === undefined &&
+           existing.lease === undefined)) {
+        return { status: "absent" };
+      }
+      return log.claimIntent(input);
     },
     async isCurrent(input) {
       const record = records.get(input.key);
@@ -626,6 +683,7 @@ export function createInMemorySettlementLog(): SettlementLog {
       return "released";
     },
   };
+  return log;
 }
 
 /** Deterministic settlement idempotency key: `railId:jobId:phaseIndex`. */
@@ -680,15 +738,15 @@ type BoundSettlementLog = Readonly<{
   [K in keyof SettlementLog]: SettlementLog[K];
 }>;
 
-function settlementLogMethod<K extends Exclude<keyof SettlementLog, "readOutcome">>(
+function settlementLogMethod<K extends Exclude<keyof SettlementLog, "readOutcome" | "claimExistingIntent">>(
   log: SettlementLog,
   name: K,
 ): SettlementLog[K];
-function settlementLogMethod(
+function settlementLogMethod<K extends "readOutcome" | "claimExistingIntent">(
   log: SettlementLog,
-  name: "readOutcome",
+  name: K,
   optional: true,
-): SettlementLog["readOutcome"];
+): SettlementLog[K];
 function settlementLogMethod<K extends keyof SettlementLog>(
   log: SettlementLog,
   name: K,
@@ -723,6 +781,7 @@ function captureSettlementLog(log: SettlementLog): BoundSettlementLog {
   return Object.freeze({
     readOutcome: settlementLogMethod(log, "readOutcome", true),
     claimIntent: settlementLogMethod(log, "claimIntent"),
+    claimExistingIntent: settlementLogMethod(log, "claimExistingIntent", true),
     isCurrent: settlementLogMethod(log, "isCurrent"),
     grantRecovery: settlementLogMethod(log, "grantRecovery"),
     putOutcome: settlementLogMethod(log, "putOutcome"),
@@ -779,6 +838,57 @@ function captureReplayAuthorization(
   });
 }
 
+/** What an SDK settle bridge declares about itself. */
+export interface SettlementBridgeTraits {
+  /**
+   * Set only by the pay-dem bridge: whether the rail it wraps was built with a
+   * `journalPreparedTransfer` hook. `false` means a crash after the broadcast
+   * leaves no record to recover from.
+   */
+  readonly journaled?: boolean;
+}
+
+/**
+ * The functions an SDK settle bridge returned. Keyed by function identity and
+ * private to the SDK: a wrapper is a different object, so `runSession` can tell a
+ * resume seam that honours `recoveryOnly` from one it cannot vouch for.
+ */
+const settlementBridges = new WeakMap<object, SettlementBridgeTraits>();
+
+/**
+ * @internal Declare that `bridge` was built by an SDK settle bridge, with what it
+ * declares. Declaring again without traits keeps what was declared. Returns
+ * `bridge`.
+ */
+export function declareSettlementBridge<T extends object>(
+  bridge: T,
+  traits?: SettlementBridgeTraits,
+): T {
+  settlementBridges.set(bridge, traits ?? settlementBridges.get(bridge) ?? {});
+  return bridge;
+}
+
+/** @internal Whether `value` is a function an SDK settle bridge returned. */
+export function isSettlementBridge(value: unknown): boolean {
+  return typeof value === "function" && settlementBridges.has(value);
+}
+
+/** @internal The traits `value` registered with, or `undefined` when it is not a bridge. */
+export function settlementBridgeTraits(value: unknown): SettlementBridgeTraits | undefined {
+  return typeof value === "function" ? settlementBridges.get(value) : undefined;
+}
+
+/**
+ * @internal For a wrapper `to` that forwards to `from`: registers `to` with
+ * `from`'s traits when `from` is a bridge, and leaves it unregistered otherwise.
+ * Returns `to`.
+ */
+export function inheritSettlementBridge<T extends object>(from: unknown, to: T): T {
+  return isSettlementBridge(from)
+    ? declareSettlementBridge(to, settlementBridgeTraits(from))
+    : to;
+}
+
 /** A generation-fenced idempotency store over a durable-capable log. */
 export function createIdempotencyStore(
   log: SettlementLog = createInMemorySettlementLog(),
@@ -799,8 +909,10 @@ export function createIdempotencyStore(
     return value;
   };
 
-  return {
-    async readOutcome(key, binding) {
+  // `once` and `recover` share one state machine; `recoveryOnly` lets only a
+  // recorded outcome, a reconcile or a granted replay lease reach `submit`.
+  const protocol = {
+    async readOutcome(key: string, binding: Readonly<SettlementBinding>): Promise<SettleResult | null> {
       const capturedBinding = frozenClone(binding, "settlement outcome lookup binding");
       const bindingHash = settlementBindingHash(capturedBinding);
       if (settlementKey(capturedBinding.railId, capturedBinding.jobId, capturedBinding.phaseIndex) !== key) {
@@ -829,7 +941,13 @@ export function createIdempotencyStore(
       return captureBoundResult(outcome.result as SettleResult, capturedBinding,
         "settlement read-only outcome") as SettleResult;
     },
-    async once(key, binding, submit, reconcile) {
+    async settle(
+      key: string,
+      binding: Readonly<SettlementBinding>,
+      submit: SettlementSubmit,
+      reconcile: SettlementReconcile | undefined,
+      recoveryOnly: boolean,
+    ): Promise<SettleResult> {
       const capturedBinding = frozenClone(
         binding,
         "settlement idempotency binding",
@@ -855,13 +973,28 @@ export function createIdempotencyStore(
       }
 
       const operation = (async (): Promise<SettleResult> => {
-        const claim = captureIntentClaim(await durable.claimIntent({
+        const claimInput = {
           key,
           bindingHash,
           owner: policy.owner,
           now: now(),
           leaseDurationMs: policy.leaseDurationMs,
-        }));
+        };
+        // A recovery asks whether an unresolved intent exists, so it must not
+        // write one: only `claimExistingIntent`, never `claimIntent`.
+        if (recoveryOnly && durable.claimExistingIntent === undefined) {
+          throw new DacsError(
+            `settlement ${key} recovery requires a log with claimExistingIntent; refusing a fresh payment`,
+          );
+        }
+        const claim = recoveryOnly
+          ? captureExistingIntentClaim(await durable.claimExistingIntent!(claimInput))
+          : captureIntentClaim(await durable.claimIntent(claimInput));
+        if (claim.status === "absent") {
+          throw new DacsError(
+            `settlement ${key} recovery found no recorded settlement; refusing a fresh payment`,
+          );
+        }
         if (claim.status === "conflict") {
           throw new DacsError(
             `settlement ${key} is retained under different terms; refusing reuse or resubmission`,
@@ -887,7 +1020,9 @@ export function createIdempotencyStore(
         }
 
         if (claim.bindingHash !== bindingHash || claim.lease.owner !== policy.owner ||
-            (claim.lease.stage !== "fresh" && claim.lease.stage !== "reconcile")) {
+            (recoveryOnly
+              ? claim.lease.stage !== "reconcile"
+              : claim.lease.stage !== "fresh" && claim.lease.stage !== "reconcile")) {
           throw new DacsError(`settlement ${key} returned an invalid acquired generation`);
         }
 
@@ -1019,6 +1154,12 @@ export function createIdempotencyStore(
           await effectFence.assertCurrent();
         }
 
+        if (recoveryOnly && lease.stage !== "replay") {
+          // Unreachable: a recovery's claim is always `reconcile`, and that
+          // block returns, throws or leaves a granted replay lease.
+          throw new DacsError(`settlement ${key} recovery reached the rail without a replay lease`);
+        }
+
         // The reference rails assert this same fence again immediately beside
         // their irreversible request. An ordinary empty-hash failure is still
         // ambiguous; only an explicit not-invoked rail disposition releases.
@@ -1064,4 +1205,36 @@ export function createIdempotencyStore(
       }
     },
   };
+
+  return {
+    readOutcome: protocol.readOutcome,
+    once: (key, binding, submit, reconcile) => protocol.settle(key, binding, submit, reconcile, false),
+    recover: (key, binding, submit, reconcile) => protocol.settle(key, binding, submit, reconcile, true),
+  };
+}
+
+/**
+ * Settle one bridge request through `store`. A request with `recoveryOnly` set
+ * goes only to `store.recover`, never to `once`, and its result must be bound
+ * to `binding`; any other request goes to `once`. Resolves to the settlement
+ * result. Throws a `DacsError` before the rail is reached when a recovery
+ * request meets a store without `recover`, when `recover` returns a result for
+ * other terms, and otherwise what the store throws.
+ */
+export async function settleThroughStore(input: Readonly<{
+  store: SettlementIdempotencyStore;
+  recoveryOnly: boolean | undefined;
+  label: string;
+  key: string;
+  binding: Readonly<SettlementBinding>;
+  submit: SettlementSubmit;
+  reconcile?: SettlementReconcile;
+}>): Promise<SettleResult> {
+  const { store, key, binding, submit, reconcile } = input;
+  if (input.recoveryOnly !== true) return store.once(key, binding, submit, reconcile);
+  if (typeof store.recover !== "function") {
+    throw new DacsError(`${input.label} recovery requires a store with recover(); refusing a fresh payment`);
+  }
+  const recovered = await store.recover(key, binding, submit, reconcile);
+  return captureBoundResult(recovered, binding, `${input.label} recovered settlement result`) as SettleResult;
 }
