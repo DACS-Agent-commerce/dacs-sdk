@@ -573,12 +573,12 @@ export async function payDemSettleCore(
     "pay-dem transfer",
   );
 
-  let amountOs: bigint;
-  try {
-    amountOs = BigInt(amount);
-  } catch {
+  // Canonical decimal OS text only. BigInt() alone would also accept hex,
+  // binary and octal prefixes, a sign and leading zeros.
+  if (!/^(?:0|[1-9][0-9]*)$/.test(amount)) {
     throw new DacsError(`pay-dem: invalid OS base-unit amount ${amount}`);
   }
+  const amountOs = BigInt(amount);
   if (amountOs <= 0n) {
     throw new DacsError(`pay-dem: amount must be > 0 (got ${amount})`);
   }
