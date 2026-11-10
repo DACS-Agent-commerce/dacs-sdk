@@ -6500,6 +6500,17 @@
       ]
     },
     {
+      "delta": "D31",
+      "subject": "delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard",
+      "files": [
+        {
+          "path": "packages/dacs-client/test/completion-receipt-profile.test.mjs",
+          "before": "b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5",
+          "after": "565c664bbc629707665dd65c3889ac5e08ec2d09"
+        }
+      ]
+    },
+    {
       "delta": "D32",
       "subject": "delta(client): D32 reserve each purchase job id with a unique column and a bounded retry",
       "files": [

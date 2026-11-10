@@ -1105,6 +1105,8 @@ Client commits that move the buyer client onto the new wire and its public API u
 | | `packages/dacs-client/test/operator-approval-request-bytes.test.mjs:1` | da57bb91604b30e2b60a4edb7011a473fd9e5d3a |
 | D31 | delta(client): D31 pin the finality profile literal refusal | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` | b0b2a49e5bfa69e0d27ba7f6eace17f8cca47da5 |
+| D31 | delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | Git subject selector (must resolve exactly once after publication checkpoint) |
+| | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` | 565c664bbc629707665dd65c3889ac5e08ec2d09 |
 | D32 | delta(client): D32 reserve each purchase job id with a unique column and a bounded retry | Git subject selector (must resolve exactly once after publication checkpoint) |
 | | `packages/dacs-client/src/dacs/protocol-purchases.mjs:1`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:5`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:23`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:25`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:52`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:259`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:288`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:292`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:353`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:365`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:372`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:376`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:455`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:514`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:581`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:692`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:716`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:891`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1137`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1178`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1180`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1335`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1341`, `packages/dacs-client/src/dacs/protocol-purchases.mjs:1359` | 615dbe0271963189f792d967d3b1acf6c2fc678f |
 | | `packages/dacs-client/src/purchase-state-schema.mjs:1` | 889d4044b45a739442fd21ee5722b0eb6928d7c1 |
@@ -3498,6 +3500,12 @@ Full hashes below bind completed commits. Unhashed record commits use unique exa
 | delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/scripts/check-hold.mjs:1` |
 | delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/scripts/delta-map.mjs:1` |
 | delta(client): D31 pin the finality profile literal refusal | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/DELTA-COMMITS.json:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/DELTA-LEDGER.json:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/DELTA-MAP.md:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/HOLD.json:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/scripts/check-hold.mjs:1` |
+| delta(client): D31 describe the finality profile literal as a known deviation from the pinned Standard | `packages/dacs-client/test/completion-receipt-profile.test.mjs:1` |
 | delta(client): D32 reserve each purchase job id with a unique column and a bounded retry | `packages/dacs-client/DELTA-COMMITS.json:1` |
 | delta(client): D32 reserve each purchase job id with a unique column and a bounded retry | `packages/dacs-client/DELTA-LEDGER.json:1` |
 | delta(client): D32 reserve each purchase job id with a unique column and a bounded retry | `packages/dacs-client/DELTA-MAP.md:1` |
