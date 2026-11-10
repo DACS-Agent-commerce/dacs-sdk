@@ -37,6 +37,7 @@ import { createNativeRetrySeam } from './helpers/native-retry-seam.mjs';
 import { testNetwork, FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
+import { hostJobCapacityTests } from './helpers/host-job-capacity-cases.mjs';
 
 // A paid order that has healed reaches delivery: the seller prepares and sends
 // its Deliverable exactly once, and every native refresh reads it back.
@@ -208,7 +209,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast; 'refuse-broadcast' signs and keeps it and the node refuses it (see refusedCreates).
-async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true } } = {}) {
+async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true }, contextSessionState = () => null } = {}) {
   // Armed by the 'reservation-before-work' cut: the next payment claim is reserved and then lost before any work, as by a process that
   // died there. The 'work-before-completion' cut loses the response of the claim whose work is done, so nothing completes it.
   let lostBeforeWork = false, lostBeforeCompletion = false;
@@ -286,7 +287,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const inputs = new Map();
   const vettedInput = async (jobId) => {
     if (!inputs.has(jobId)) {
-      const buyerBundle = await buyerBundleFor(jobId), input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: now });
+      const buyerBundle = await buyerBundleFor(jobId), input = seller.agreementInput({ jobId, listing, buyerBundle, generatedAt: clock() });
       const sellerBundle = sellerPresentation ? sessionSeller(sellerPresentation === 'forged' ? buyerKey : sellerKey) : listing.seller.identity;
       inputs.set(jobId, { ...input, buyer: { ...input.buyer, vetRecordRef: await admission.vetRecord(jobId, buyerKey.claim, buyerBundle, { requirement: listing.buyerRequirement }) },
         seller: { identityBundle: sellerBundle, vetRecordRef: await admission.vetRecord(jobId, sellerKey.claim, sellerBundle, { requirement: SELLER_REQUIREMENT, verifier: sellerKey }) } });
@@ -608,7 +609,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery: deliveryCapability(), railAuthority: rails.authority,
-    sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), now: clock, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}),
+    sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), now: clock, contextSessionState, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}),
     ...(journalInUse ? { resumeDeliverableCreate: deliveryJournalWallet.resume } : {}) });
   const start = async () => {
     const host = await startHost({ ...capabilities(), dataDirectory, artifactAnchor });
@@ -632,14 +633,15 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
         buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock })) });
       return { ...api, commit: (...args) => { retrySeam.beforeRetry(); return api.commit(...args); } };
     };
-    const answer = await client().propose({ proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) });
+    const proposalRequest = { proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) };
+    const answer = await client().propose(proposalRequest);
     if (!expectSigned) return answer;
     assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);
     const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
     agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
     if (commit) assert.equal((await client().commit(jobId)).status, 'committed');
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
-    return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client,
+    return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client, proposalRequest, proposalAnswer: answer,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
       // A claim sent while an earlier attempt of the same payment is open first waits out that attempt's lease.
       claim: async (txHash) => { retrySeam.beforeRetry(); try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
@@ -750,6 +752,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
 
 const paymentAddress = (p) => core.paymentEvidenceAddress(p.jobId, p.payout.railId, p.payout.phaseIndex);
 const shown = (answer) => JSON.stringify(answer);
+
+hostJobCapacityTests(world);
 
 // A host must refuse presence before any Agreement signature or payment effect.
 for (const placement of ['required', 'oneOf']) {
@@ -3040,10 +3044,10 @@ test('enabling publication after a delivery-ready order publishes the evidence r
   assert.equal(first.delivery?.status, 'delivery-ready', shown(first));
   assert.equal(first.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
   assert.equal(w.createsAt(address), 0);
-  const signed = await w.signedClaim(p, tx);
+
   await w.host().close();
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
-  const post = async () => { const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); assert.equal(res.status, 200); return res.json(); };
+  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
   assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(done.delivery.evidencePublication, 'native-read-back');
@@ -3054,13 +3058,13 @@ test('enabling publication after a delivery-ready order publishes the evidence r
 test('a delivery-ready session retained without its own evidence copy recovers it from the SDK checkpoint', async (t) => {
   const w = await world(t), p = await w.purchase(), tx = p.pay(), address = evidenceAddress(p);
   assert.equal((await p.claim(tx)).delivery?.status, 'delivery-ready');
-  const signed = await w.signedClaim(p, tx);
+
   // Simulate a delivery-ready session written before this seller retained its
   // own copy: the SDK checkpoint still holds the exact signed evidence.
   await w.editRetainedSession(p.jobId, (session) => { delete session.deliveryReady.evidence; });
   await w.host().close();
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
-  const post = async () => { const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody }); assert.equal(res.status, 200); return res.json(); };
+  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
   assert.equal(done.delivery?.status, 'delivered', shown(done));
   assert.equal(done.delivery.evidencePublication, 'native-read-back');
@@ -3312,7 +3316,7 @@ for(const failure of ['none','unavailable','changed'])test(`disabling evidence p
  const first=await p.claim(tx);assert.equal(first.delivery?.status,'delivered',shown(first));
  const signed=await w.signedClaim(p,tx);await w.host().close();
  const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
- const post=async(request=signed)=>{const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});assert.equal(res.status,200);return res.json();};
+ const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});assert.equal(res.status,200);return res.json();};
  if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
  if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
  const observed=await post();

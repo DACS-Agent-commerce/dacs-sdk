@@ -16,10 +16,10 @@ origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
 `agreementAnchor` and `artifactAnchor` only by shape, and the wallet journal's
 `broadcast` is the operator's own callback, so an operator-supplied anchor or
 broadcast can still reach a real Demos node: keep them on the fixture too. It
-is not qualified for mainnet. The standalone host retains all jobs and refuses
-new jobs before admission after `maxJobs` (default 10,000); terminal DACS-5
-bundle completion is not wired, and transport-row reclamation needs the
-`contextSessionState` capability described below.
+is not qualified for mainnet. The standalone host preserves job ownership and refuses
+new jobs before admission at `maxJobs` (default 10,000) unless completed work
+can safely retire. Terminal DACS-5 bundle completion is not wired; slot retirement
+needs the `contextSessionState` capability described below.
 The live node2 deployment is unsupported; the pinned node profile is not a
 qualification for a current testnet deployment.
 
@@ -36,9 +36,13 @@ none of these signatures; what your own signer does with them is up to it.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
-the host reclaim that job's retained challenge and context rows; an unknown name,
+the host retire that job's challenge and context slots. Completed answers and
+their admission proofs remain available for retries. A terminal name does not
+retire a job whose payment or commitment a retry must still finish. An unknown name,
 an agent stage name or an unreadable answer keeps them. A throw, Promise or
-non-string answer is unknown. Promise results are ignored and rejections observed. A source
+non-null non-string refuses issuance and new work with `session_admission_unavailable`
+503 and its cause; only explicit `null` means unknown. Promise results are ignored
+and rejections observed. A source
 that is asynchronous must keep a synchronous view of its own outside SQLite
 transactions. A host without the capability reclaims nothing. Context route
 compositions set the store's `contextStartLimits` to the route's own `limits`.
@@ -51,7 +55,7 @@ the whole allotment free, so a seller whose budget falls below the units it has
 already charged and allotted starts, serves the purchases it holds, and refuses
 new ones as not ready. A successful context completion returns only the context
 slot; an aborted start, a failed or non-validated context and a terminal DACS-5
-session (checked once at startup) return every open slot. Returned units never
+session return every open slot. Returned units never
 reduce what has been charged. The host composes a reservation coordinator: one
 in-process mutex per operation covers journal inspection, capacity classification,
 accounting and recording the reservation result. A request that cannot acquire
@@ -59,8 +63,8 @@ the mutex within 10,000 ms receives 503 `seller_effect_pending` before inspectio
 or writes. Context reservations borrow the admission transaction's job lease
 without acquiring or releasing another mutex. Admission and accounting accept
 capacity through their internal ports.
-HTTP routes use the transport journal directly; terminal allocation cleanup runs
-at startup.
+Signed routes reserve through the store's accounting; terminal allocation cleanup
+runs at startup and when a store reader observes a terminal session.
 
 The first terminal DACS-5 name any reader sees (challenge issuance and reclamation,
 the old store's checks, startup cleanup and the coordinator) is kept as a durable,
@@ -98,7 +102,7 @@ const host = await startSellerHost({
   deliverableProducer,  // synchronous, deterministic (input) -> JSON bound to the Agreement and settlement
   deliverySchemaVerifier, // { schemaUrl, verify({ schemaUrl, cleartextPayload }) -> { disposition } }
                           // required when the Listing names a schema; implements that exact schema
-  maxJobs: 10000,        // shared agent/store lifetime cap; checked before challenge consumption
+  maxJobs: 10000,        // shared agent/store active job cap; checked before challenge consumption
   maxRecords: 10000,     // optional permanent reservation budget; a new purchase needs 68 units
   deliveryEvidenceEnabled, // optional boolean (default false): publish settlement evidence with delivery
   host,                  // optional literal loopback address (127.0.0.1 or ::1); default 127.0.0.1
@@ -147,6 +151,11 @@ with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
 `kit_journal_accounting_mismatch`, and nothing in the journal is changed.
+
+Signed effect routes commit reservation accounting before the wire journal
+publishes their attempt. Retries reconcile retained work after its 300 s lease;
+completed outcomes use the existing source checks before answering. Signed
+reads create no reservation rows or journal files.
 
 `buildUnsignedIdentityBundle`, `attachIdentityPresentation`,
 `buildListingDraft`, `listingSigningMessage` and `attachListingSignature`

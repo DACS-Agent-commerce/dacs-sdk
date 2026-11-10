@@ -1,5 +1,5 @@
 // P11a1a: the signed read, proposal and commitment routes on `./wire`. Every request is opened and every answer signed by
-// the wire; the old transport store stays the only journal. The handler runs over a real transport store, a bound TP1
+// the wire; reservation accounting commits before the wire journal publishes each effect. The handler runs over a real transport store, a bound TP1
 // profile and a counting stub agent; the buyer signs with `signWireRequest` (helpers/wire-buyer.mjs).
 //
 // Journal-opening cases need a runner where `/` is root-owned (K5-J0).
@@ -688,10 +688,10 @@ const assertRefusedWithoutWork = async (w, path, work, code) => {
 
 const BARRIER_REQUEST_MS = 10;
 /**
- * The final recheck between wire admission and the old store's reservation. `send` makes one request that expires
+ * The final recheck in the deferred wire reservation, after accounting commits. `send` makes one request that expires
  * BARRIER_REQUEST_MS after the check starts; time passes at that request's last authority read before the reservation. One
  * millisecond short of the expiry it is answered, at the expiry it is refused `peer_expired`, and a withdrawn authority there
- * keeps its own code; neither refusal leaves a row or reaches the agent.
+ * keeps its own code; both stay charged without publishing or reaching the agent.
  */
 async function assertFinalBarrier(w, path, send) {
   const start = w.state.authorityReads;
@@ -820,7 +820,7 @@ test('P11a1-T16: when not ready, new-purchase routes are refused signed while st
   }
 });
 
-test("P11a1-T24: on proposals, commitments, commitments/signature and payments, paused after initial admission and before the old-store reservation (round 3, change 4): a direct request, a delegated request expiring before its delegation, and equal request and delegation expiries each pass 1 ms before the request's expiry and refuse peer_expired at it, with no old-store row and no agent call. A current-authority refusal at the same barrier keeps its own code. At admission, a delegation already expired while its request is not, and a request that outlives a live delegation, each refuse peer_delegation_expired on the effect route. A late peer_delegation_expired is not tested as its own outcome: it is defence in depth (SA-1). An ordinary stored-answer retry still answers", async (t) => {
+test("P11a1-T24: request and delegation expiry and current authority are rechecked before wire publication, with late refusals charged and no agent effect", async (t) => {
   mock.method(performance, 'now', () => 0);
   const w = await continuingWorld(t);
   for (const path of [PATHS.proposals, PATHS.commitments, PATHS.commitmentSignature, PATHS.payments]) {
@@ -999,6 +999,11 @@ test("P11a1-T28: table: route (payments with a cached completed answer, commitme
   }
 });
 
+function accountingRows(w) {
+  const db = new DatabaseSync(w.storePath, { readonly: true });
+  try { return db.prepare('SELECT * FROM kit_reservations ORDER BY rowid').all(); } finally { db.close(); }
+}
+
 test('the wire authenticator reserves read-only once the request has expired, reads the clock in readbackOnly(), and treats a request it did not admit as expired', async (t) => {
   const w = await world(t);
   const auth = wireAuthenticator(w.handle.wire, w.agent, w.handle.authentication);
@@ -1011,17 +1016,18 @@ test('the wire authenticator reserves read-only once the request has expired, re
   };
   const live = await admit('reserve-live');
   assert.equal(live.opened.readbackOnly(), false);
-  assert.equal(auth.store.reserve(live.request, live.opened.body, live.opened.reserveOptions).disposition, 'perform', 'a live request reserves');
+  assert.equal((await auth.store.reserve(live.request, live.opened.body, live.opened.reserveOptions)).disposition, 'perform', 'a live request reserves');
   const lapsing = await admit('reserve-lapsing'), unadmitted = await admit('reserve-unadmitted');
   const rowsBefore = w.rows();
   w.state.time = lapsing.signed.payload.expiresAt - 1;
   assert.equal(lapsing.opened.readbackOnly(), false, 'one millisecond before expiry');
   w.state.time = lapsing.signed.payload.expiresAt;
   assert.equal(lapsing.opened.readbackOnly(), true, 'at expiry');
-  assert.throws(() => auth.store.reserve(lapsing.request, lapsing.opened.body, lapsing.opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'an expired request starts no effect');
+  await assert.rejects(auth.store.reserve(lapsing.request, lapsing.opened.body, lapsing.opened.reserveOptions), { code: 'peer_expired', status: 408 }, 'an expired request starts no effect');
   w.state.time = NOW;
-  assert.throws(() => auth.store.reserve({ ...unadmitted.request }, unadmitted.opened.body, unadmitted.opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'a request this authenticator did not admit starts no effect');
-  assert.deepEqual(w.rows(), rowsBefore, 'the refusals left nothing behind');
+  await assert.rejects(auth.store.reserve({ ...unadmitted.request }, unadmitted.opened.body, unadmitted.opened.reserveOptions), { code: 'peer_expired', status: 408 }, 'a request this authenticator did not admit starts no effect');
+  assert.equal(w.rows().peer_effects, rowsBefore.peer_effects, 'no old effect');
+  assert.deepEqual(accountingRows(w).map(row => row.state), ['new', 'refused']);
 });
 
 test('a request the wire authenticator has seen expired stays expired when the clock later reads earlier', async (t) => {
@@ -1037,6 +1043,7 @@ test('a request the wire authenticator has seen expired stays expired when the c
   assert.equal(opened.readbackOnly(), true, 'at expiry');
   w.state.time = NOW;
   assert.equal(opened.readbackOnly(), true, 'a clock corrected to an earlier time does not revive it');
-  assert.throws(() => auth.store.reserve(request, opened.body, opened.reserveOptions), { code: 'peer_delegation_expired', status: 408 }, 'and it still starts no effect');
-  assert.deepEqual(w.rows(), rowsBefore, 'nothing was reserved');
+  await assert.rejects(auth.store.reserve(request, opened.body, opened.reserveOptions), { code: 'peer_expired', status: 408 }, 'and it still starts no effect');
+  assert.equal(w.rows().peer_effects, rowsBefore.peer_effects, 'no effect was published');
+  assert.equal(accountingRows(w)[0].code, 'peer_expired', 'the late refusal stays charged');
 });

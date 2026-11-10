@@ -162,7 +162,12 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
   // store's writer in a transaction of its own, so a failure leaves neither the closure nor the release.
   function releaseTerminalAllocations() {
     if (db.inTransaction) throw new TypeError('terminal cleanup opens its own transaction');
-    for (const { jobId } of db.prepare("SELECT jobId FROM kit_allocations WHERE state = 'live'").all()) sessionState({ jobId }, 'cleanup');
+    for (const { jobId } of db.prepare("SELECT jobId FROM kit_allocations WHERE state = 'live'").all()) {
+      try { sessionState({ jobId }, 'cleanup'); }
+      catch (error) {
+        if (error?.code !== 'session_admission_unavailable' || error.status !== 503) throw error;
+      }
+    }
   }
 
   function retainedAllocated(input) {

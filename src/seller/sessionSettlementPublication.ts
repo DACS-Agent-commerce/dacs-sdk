@@ -39,6 +39,7 @@ import {
   type SellerReceiptInspectionResult,
   type SellerSettlementIdentity,
 } from "./paymentIntake.js";
+import { deepFreeze } from "../internal/deepFreeze.js";
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const INERT_RECEIVER = Object.freeze(Object.create(null)) as object;
@@ -292,17 +293,6 @@ function exactJson(value: unknown, seen = new WeakSet<object>()): boolean {
   } catch {
     return false;
   }
-}
-
-function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
-  if (value === null || typeof value !== "object" || seen.has(value as object)) {
-    return value;
-  }
-  seen.add(value as object);
-  for (const child of Object.values(value as Record<string, unknown>)) {
-    deepFreeze(child, seen);
-  }
-  return Object.freeze(value);
 }
 
 function ownedJson<T>(value: T): T | null {

@@ -17,3 +17,6 @@ export const boundPurchaseOf = (store) => ({ store: store.boundStore, capacity: 
 export function createSellerTransportStore(options) {
   return bindPurchaseCapacity(createUnboundStore(options), options.now);
 }
+
+/** Returns the purchase capacity bound by this fixture. */
+export const purchaseCapacityOf = store => boundPurchaseOf(store).capacity;

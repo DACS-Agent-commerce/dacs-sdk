@@ -68,8 +68,9 @@ export const SELLER_PRE_EFFECT_REFUSALS = Object.freeze(['vet_context_required',
 // is deliberately absent: a write may have happened. A session the seller's
 // admission did not admit (or could not answer for) kept nothing either.
 // A payment claim other than the one whose work the agent retains
-// (seller_native_evidence_conflict) is refused before anything of it runs.
-export const NO_EFFECT_ERRORS = Object.freeze(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', ...SELLER_PRE_EFFECT_REFUSALS]);
+// (seller_native_evidence_conflict) is refused before anything of it runs, and
+// so is a payment whose transaction hash is not a string (payment_tx_hash_invalid).
+export const NO_EFFECT_ERRORS = Object.freeze(['peer_job_capacity', 'session_not_admitted', 'session_admission_unavailable', 'buyer_access_closed', 'signature_commitment_disabled', 'signature_buyer_not_admitted', 'signature_agreement_invalid', 'signature_connection_unavailable', 'seller_signature_buyer_unresolved', 'unknown_job', 'not_agreed', 'agreement_not_anchored', 'agreement_anchor_invalid', 'agreement_substituted', 'not_committed', 'payment_already_recorded', 'buyer_bundle_invalid', 'buyer_bundle_unauthenticated', 'self_dealing', 'job_invalid', 'buyer_mismatch', 'seller_mismatch', 'job_taken', 'not_delivered', 'no_bundle_request', 'bundle_invalid', 'no_seller_copy', 'seller_native_evidence_conflict', 'payment_tx_hash_invalid', ...SELLER_PRE_EFFECT_REFUSALS]);
 const NO_EFFECT_CODES = new Set(NO_EFFECT_ERRORS);
 /** The answer of an operation whose outcome is not established. */
 export const UNCERTAIN = Object.freeze({ error: 'operation_uncertain', message: 'The seller operation outcome is unavailable; no completion or finality is established.' });
@@ -82,12 +83,14 @@ const paymentPending = (answer) => answer?.status === 'held' || (answer?.status 
  * false`, proof that no work of exactly this command is kept. A recovery
  * settles only what the store accepts (completion, or a proposal/payment retry
  * or release), and under an expired delegation only completion. */
-export function transportOutcome(path, { answer, error, held, cause = error } = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
+export function transportOutcome(path, result = {}, { retained = true, recovering = false, readOnly = false, resumed = false } = {}) {
+  const { answer, error, held, cause = error } = result;
+  const failed = Object.hasOwn(result, 'error');
   const payment = path === '/dacs/v1/payments', proposal = path === '/dacs/v1/agreements/proposals';
   const refusal = error instanceof SellerAgentError && NO_EFFECT_CODES.has(error.code);
   const rejected = refusal || ((proposal || answer?.code !== 'party_vet_non_pass') && (answer?.status === 'rejected' || answer?.disposition === 'rejected' || (payment && answer?.status === 'indeterminate')));
-  if (held !== undefined || (error && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
-    ...(cause === undefined ? {} : { cause, causeCode: readFailureCode(cause) }) };
+  if (held !== undefined || (failed && !refusal) || (proposal && rejected && retained)) return { disposition: 'indeterminate', reason: String(held ?? error?.code ?? answer?.reason ?? 'operation_uncertain').slice(0, 240), status: 503, value: UNCERTAIN, settle: !recovering, retry: false, noEffect: false,
+    ...(failed || cause !== undefined ? { cause, causeCode: readFailureCode(cause) } : {}) };
   const noEffect = rejected && !resumed && !retained;
   const final = ['delivered', 'delivery-ready'].includes(answer?.status) || (answer?.status === 'payment-evidenced' && !paymentPending(answer));
   const retry = !noEffect && ((proposal && ['waiting', 'indeterminate'].includes(answer?.disposition)) || (payment && (refusal ? retained : paymentPending(answer) || (retained && !final))));
@@ -177,7 +180,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // when the seller durably admitted exactly that context request for the job.
 // What the agent needs of the kit's one challenge ledger (the transport store's `challenges`).
 const CHALLENGE_LEDGER_METHODS = Object.freeze(['issueForOperator', 'attempt', 'accept', 'recordFailed', 'retained', 'jobBinding']);
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
+export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
   assertKitOperationAdmitted('createSellerAgent');
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
@@ -316,7 +319,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     finally { clearTimeout(timer); }
   };
   const pin = listingPin(listing);
-  const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin, maxJobs }) : null;
+  const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin, maxJobs, jobSlotReleased }) : null;
   let closed=false;
   const requireOpen=()=>{if(closed)throw new SellerAgentError('seller_closed','the seller agent is closed',503);};
   try {
@@ -576,17 +579,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     sessions.delete(jobId);
     await restore(session);
     if (!transport) return fn(input);
-    let result;
-    try { transport.check();const answer=await transportAuthority.run(transport,()=>fn(input,{transport}));transport.check();result={answer}; } catch (error) { result = { error }; }
+    let result, failed = false;
+    try { transport.check();const answer=await transportAuthority.run(transport,()=>fn(input,{transport}));transport.check();result={answer}; } catch (error) { failed = true; result = { error }; }
     await transport.settle?.(transportOutcome(transport.path, result, { retained: retainedWork(transport.path, jobId, input) }));
-    if (result.error) throw result.error;
+    if (failed) throw result.error;
     return result.answer;
   }).catch((error) => {
-    if (error.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
+    if (error?.code === 'seller_state_capacity') throw new SellerAgentError('peer_job_capacity', 'the seller has reached maxJobs; no new session was admitted', 503);
     // The store's fence rejects a non-canonical job before the operation's own
     // validation runs. It is the same definite no-effect refusal the operation
     // would have raised, not an uncertain outcome.
-    if (error.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
+    if (error?.code === 'seller_state_job_invalid') throw new SellerAgentError('job_invalid', 'jobId is not canonical');
     throw error;
   }) : async(input,{transport}={})=>{transport?.check();const answer=await fn(input,{transport});transport?.check();return answer;};
 
@@ -2260,6 +2263,16 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     // intent, a contribution or a commitment): the transport then never
     // releases its proposal effect. Synchronous and read only.
     retainsProposalWork: (jobId) => proposalWork(jobId),
+    // Whether an attempt on this route that ended without a stored answer left
+    // work a retry must finish: a commitment write with no read-back yet or, for
+    // a payment claim, any payment this seller recorded for the job (a recorded
+    // payment is finished only by its stored answer). The transport then never
+    // retires the job on that attempt. Synchronous and read only.
+    retainsUnfinishedWork: ({ jobId, path }) => {
+      const session = durable?.loadSession(jobId) ?? sessions.get(jobId);
+      return Boolean((session?.commitCreatedAt && !session.commitment && !session.signatureCommitmentHeld) ||
+        (path === '/dacs/v1/payments' && (session?.payment || session?.paymentWork || session?.nativeEvidenceWork || durable?.settlementBoundTo(jobId))));
+    },
     durableSessions: durable ? () => durable.sessions().map(sessionView) : undefined,
     // For the host that holds the seller state lock: releases the job lock rows
     // of holders that are gone and returns [{ job, owner, reason }]; undefined

@@ -4,7 +4,7 @@
 // The operator's network, store, clock and agent reach the signed routes only through one wire context (createWireContext).
 import { types } from 'node:util';
 import { contentHash, createFixedPriceAgreementSigningPlan } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, admitWireResponseBody, checkWireRequest, isReadRoute, openWireEnvelope, signWireResponse } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, admitWireResponseBody, checkWireRequest, completeWireEffect, inspectWireOperation, isReadRoute, openWireEnvelope, signWireResponse, wireOperationBinding, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { isSmallOrderPublicKey } from './demos-claims.mjs';
 import { SellerTransportError, sellerStoreInternals, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
@@ -121,7 +121,7 @@ function admitAnswerText(text) {
  * TypeError for a member of the wrong kind.
  */
 export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion }) {
-  const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.reserve, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
+  const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt,
@@ -133,15 +133,15 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
 
 /**
  * Open and admit one signed request on a wire route, in the wire's order: the envelope, the job's kept tuple, the exchange
- * and the retained parties. Nothing is reserved here and the wire journal is never written. Calls `onOpened(request)` as soon
- * as the envelope is verified, so a refusal after it can be signed.
+ * and the retained parties, then the tuple gate and the seller's body checks. Nothing is reserved here and the wire journal is
+ * never written. Calls `onOpened(request)` as soon as the envelope is verified, so a refusal after it can be signed.
  * Returns `{ body, readbackOnly, profile, reserve, retainedWork }`: the admitted body, whether only an expired delegation
  * authenticated the request, the request's own tuple, `reserve`, the wire's journal reservation of an effect route (null on a
  * read route), which re-checks current authority and expiry first, and `retainedWork`, whether the host retains a purchase stage
  * of this route for the job. Records in `limits` the times the admitted request and its delegation expire.
  * Throws the wire's own refusal with its code, status and cause, `peer_unknown_job` 404 for a job the host holds nothing for
- * (only after the exchange checks pass), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with no kept
- * tuple, or the seller's body refusal.
+ * (only after the exchange checks pass), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with neither
+ * a kept tuple nor a bound completed operation after retirement, or the seller's body refusal.
  */
 async function admitWireRoute(wire, agent, limits, { header, method, path, rawBody, body, onOpened }) {
   const opened = await openWireEnvelope(header, 'request', { binding: wire.binding, local: wire.local(), purchaseProfile: null, requireDelegation: wire.requireDelegation });
@@ -166,9 +166,15 @@ async function admitWireRoute(wire, agent, limits, { header, method, path, rawBo
   const checked = await checkWireRequest(opened, check());
   if (invalidDraft !== null) throw invalidDraft;
   if (records === null) throw new SellerTransportError('peer_unknown_job', 404);
-  // The one tuple gate of every wire route: a job the agent holds with no kept tuple (one retained before tuples were kept, or
-  // whose store row is gone) is never answered, and never reserved, where a new reservation would adopt the request's tuple.
-  if (held && kept === null) throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
+  // Retirement removes the active purchase tuple. Only a completed operation whose journal
+  // binds this request can replay without it; other held jobs still need their kept tuple.
+  if (held && kept === null) {
+    const view = wire.store.jobSlotReleased(request.jobId) && !isReadRoute(path)
+      ? inspectWireOperation(wire.journal, request) : null;
+    if (view?.state !== 'completed' || view.binding !== wireOperationBinding(request)) {
+      throw new SellerTransportError('tp1_purchase_profile_mismatch', 500, { cause: 'missing' });
+    }
+  }
   validateBody(request, checked.body);
   limits.set(request, { request: request.expiresAt, delegation: opened.delegation?.payload.expiresAt ?? Infinity });
   return { body: structuredClone(checked.body), readbackOnly: checked.readbackOnly, profile: request.profile, reserve: checked.reserve, retainedWork: retained.allocated === true };
@@ -179,8 +185,8 @@ async function admitWireRoute(wire, agent, limits, { header, method, path, rawBo
  * (`{ body, read, readbackOnly(), assertLive(), reserveOptions, reserve, retainedWork }`; a read route reserves nowhere, an effect
  * route reserves with the request's tuple; `assertLive()` throws once the request or its delegation has expired), `sign` signs an answer under the tuple kept for the job (`undefined` for a request that names another seller,
  * which cannot be signed for: its refusal goes out unsigned), `encode` admits the text a stored answer keeps, and `store` is the
- * raw transport store with the admitted request's expiry applied at each call (an expired request reserves and claims read-only
- * and settles no retry or removal). `readbackOnly()` reads the clock each time too. Throws for a `wire` that createWireContext
+ * accounting and wire-effect adapter. Deferred reserve rechecks expiry; an expired recovery claim grants read-only work
+ * and settles no retry or null end. `readbackOnly()` reads the clock each time too. Throws for a `wire` that createWireContext
  * did not make, whose seller or delegation rule differs from
  * `authentication`'s, or that was made for another agent than `agent` or another transport store than `authentication`'s:
  * its checks would read one agent's and one store's records while the other serves and journals the request.
@@ -190,12 +196,12 @@ export function wireAuthenticator(wire, agent, authentication) {
   if (owner === undefined) throw new TypeError('the wire option must be a createWireContext context');
   if (wire.signer.claim !== authentication?.seller || wire.requireDelegation !== authentication.requireDelegation) throw new Error('the wire context and the old authentication must name the same seller and delegation rule');
   if (owner.agent !== agent || owner.store !== transportStoreOf(authentication)) throw new Error('the wire context must be made for the handler\'s agent and the old authentication\'s transport store');
-  // The store is called again after admission (a retained effect is claimed and settled inside the agent's job fence, after
-  // asynchronous waits), so a request is read-only from the moment it or its delegation expires, as the old guarded store
-  // decided on every call. A request this authenticator did not admit is expired.
+  // A retained effect is claimed and settled inside the agent's job fence after asynchronous waits. Recovery is
+  // read-only once the request or delegation expires. A request this authenticator did not admit is expired.
   // An expiry once seen is kept, as the old guard's read-back set kept it: a clock that later reads earlier (a correction)
   // never makes the request live again.
-  const limits = new WeakMap(), lapsed = new WeakMap();
+  const limits = new WeakMap(), lapsed = new WeakMap(), admitted = new WeakMap();
+  const reservations = new WeakMap(), claimed = new WeakSet();
   const lapse = (request) => {
     if (lapsed.has(request)) return lapsed.get(request);
     const at = wire.now(), admittedLimits = limits.get(request);
@@ -205,17 +211,76 @@ export function wireAuthenticator(wire, agent, authentication) {
     return code;
   };
   const expired = (request) => lapse(request) !== null;
+  const refuse = (code = 'peer_reconciliation_conflict', status = 503) => { throw new SellerTransportError(code, status); };
+  // As the old store's guards did, proposal work ends with its context session; the session is read at each check, after the
+  // agent's own waits, because accounting's start check cannot cover work that follows it. Other routes are not fenced by it.
+  const sessionEnded = (request) => request.path === DACS_SELLER_HTTP_PATHS.proposals && wire.store.sessionTerminal(request.jobId);
+  // Inspection fences a capability already issued by reserve(); it never grants permission to recover.
+  const owned = (reservation) => {
+    const kept = reservations.get(reservation);
+    if (kept === undefined) return refuse();
+    const view = inspectWireOperation(wire.journal, kept.request);
+    const at = wire.now();
+    if (view.state !== 'pending' || view.attempt !== kept.effect.attempt || view.requestHash !== wireRequestHash(kept.request) ||
+        view.binding !== wireOperationBinding(kept.request) || !Number.isSafeInteger(at) || at < 0 || at >= kept.effect.leaseUntil) return refuse();
+    return kept;
+  };
+  const finish = (reservation, status, text, { noEffect = false, retry = false } = {}) => {
+    const { effect } = owned(reservation);
+    if (!Number.isSafeInteger(status) || status < 200 || status > 599) return refuse('peer_response_invalid');
+    if (noEffect && retry) return refuse('peer_store_conflict');
+    // An uncertain error keeps the lease open: only the lease ends an attempt whose process may have died, and it spends one
+    // of the journal's crash attempts. A retained nonterminal answer is a normal answer, not a crash: it ends the attempt
+    // with no outcome, which spends none, so the next request recovers at once and the agent reconciles it by read-back.
+    if (!retry && !noEffect && status >= 500) return;
+    completeWireEffect(wire.journal, effect, retry || noEffect ? null : { status, text });
+  };
   const store = Object.freeze({
-    reserve: (request, body, options = {}) => wire.store.reserve(request, body, expired(request) ? { ...options, journaledOnly: true } : options),
-    // An expired request may still take an effect to read it back, never to run it again.
-    claim: (reservation, request, options = {}) => wire.store.claim(reservation, request, expired(request) ? { ...options, live: false } : options),
-    // Settle against the claim's granted mode: a read-only claim never leaves an effect to run again or deletes it.
-    reconcile: (reservation, request, status, text, options = {}) => {
-      if (reservation?.live === false && (options.retry || options.noEffect)) throw new SellerTransportError(lapse(request) ?? 'peer_expired', 408);
-      return wire.store.reconcile(reservation, request, status, text, options);
+    reserve: async (request) => {
+      const checked = admitted.get(request);
+      if (checked === undefined || typeof checked.reserve !== 'function') return refuse('peer_expired', 408);
+      const current = { body: checked.body, reserve: () => {
+        const code = lapse(request);
+        if (code !== null) return refuse(code, 408);
+        return checked.reserve();
+      } };
+      const effect = await wire.store.reservationAccounting.reserveAccounted({ checked: current, payload: request, route: request.path,
+        operationId: wireOperationId(request), keepProfile: request.profile,
+        paymentTx: request.path === DACS_SELLER_HTTP_PATHS.payments ? checked.body.txHash : null });
+      if (effect.state === 'completed') return Object.freeze({ disposition: 'cached', ...effect.outcome });
+      const reservation = Object.freeze({ disposition: effect.state === 'new' ? 'perform' : 'uncertain', effectKey: effect.operationId });
+      reservations.set(reservation, { effect, request });
+      return reservation;
     },
-    finish: (...args) => wire.store.finish(...args),
-    assertPending: (reservation) => wire.store.assertPending(reservation),
+    // The wire's reserve issued this recovery capability; claim it once inside the agent's job fence.
+    claim: (reservation, request, { live = true } = {}) => {
+      const kept = owned(reservation);
+      if (kept.request !== request || reservation.disposition !== 'uncertain' || claimed.has(reservation)) return refuse();
+      const canAct = live && !expired(request);
+      // Read-only recovery is not fenced: it settles nothing and signs nothing.
+      if (canAct && sessionEnded(request)) return refuse('seller_unavailable', 503);
+      claimed.add(reservation);
+      const check = () => {
+        owned(reservation);
+        if (canAct && expired(request)) return refuse(lapse(request), 408);
+        if (canAct && sessionEnded(request)) return refuse('context_session_terminal', 409);
+      };
+      const claim = Object.freeze({ ...reservation, live: canAct, check });
+      reservations.set(claim, kept);
+      claimed.add(claim);
+      return claim;
+    },
+    reconcile: (reservation, request, status, text, options = {}) => {
+      if (!claimed.has(reservation) || reservations.get(reservation)?.request !== request) return refuse();
+      if (reservation.live === false && (options.retry || options.noEffect)) return refuse(lapse(request) ?? 'peer_expired', 408);
+      finish(reservation, status, text, options);
+    },
+    finish,
+    assertPending: (reservation) => {
+      const { request } = owned(reservation);
+      if (expired(request)) return refuse(lapse(request), 408);
+      if (sessionEnded(request)) return refuse('context_session_terminal', 409);
+    },
   });
   return Object.freeze({
     store,
@@ -223,6 +288,7 @@ export function wireAuthenticator(wire, agent, authentication) {
     open: async (input) => {
       let opened = null;
       const { body, readbackOnly, profile, reserve, retainedWork } = await admitWireRoute(wire, agent, limits, { ...input, onOpened: (request) => { opened = request; input.onOpened(request); } });
+      admitted.set(opened, { body, reserve });
       const assertLive = () => { const code = lapse(opened); if (code !== null) throw new SellerTransportError(code, 408); };
       return { body, read: isReadRoute(input.path), readbackOnly: () => readbackOnly || expired(opened), assertLive, reserveOptions: { journaledOnly: readbackOnly, keepProfile: profile }, reserve, retainedWork };
     },

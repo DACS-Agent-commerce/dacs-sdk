@@ -57,6 +57,14 @@ test('missing buyer verifier refuses before any CVR signature or native effect',
  const p=createDevnetDemoAgreementContextProvider({anchor:w.anchor,wallet:{claim:w.seller.claim,signBytes:()=>assert.fail('signature')},listing:w.listing,store:w.store});
  assert.equal((await p.resolveBuyer(w.input(),{writable:()=>true})).code,'counterparty_vet_required');assert.equal(w.records.size,0);
 });
+test('a repeated resolveBuyer without a buyer verifier answers from the stored counterparty record',async()=>{
+ const w=fixture(),input=w.input(),first=await w.provider().resolveBuyer(input);assert.equal(first.disposition,'present');
+ const {createDevnetDemoAgreementContextProvider}=await import('../src/devnet-demo/agreement-context.mjs');
+ const p=createDevnetDemoAgreementContextProvider({...w.config,counterparty:null}),signs=w.controls.signs;
+ const repeated=await p.resolveBuyer(input,{writable:()=>true});
+ assert.equal(repeated.disposition,'present');assert.deepEqual(repeated.value.input.seller.identityBundle,first.value.input.seller.identityBundle);
+ assert.equal(w.controls.signs,signs);
+});
 
 test('an existing context is suspended when fresh receipt readback loses authority',async()=>{
  const w=fixture(),p=w.provider(),input=w.input();await p.resolveBuyer(input);w.controls.receiptState='reorged';
