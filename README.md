@@ -632,7 +632,9 @@ additionally requires an application-owned durable journal or equivalent rail
 record. With neither durable mechanism, the SDK cannot prove that a lost
 response did not move value, so applications must not automatically retry.
 The x402, direct ERC-20, and native DEM payment bridges require a caller-supplied
-durable settlement store when constructed:
+settlement store when constructed. The SDK cannot check that the store is durable:
+production callers must supply one backed by durable, atomic storage, because an
+in-memory store loses its records on restart and a recreated bridge can then pay again:
 
 ```ts
 import { createIdempotencyStore, evmErc20Settle, payDemSettle, x402Settle } from "@kynesyslabs/dacs/rails";

@@ -172,7 +172,8 @@ dacs-node buyer payment track.
 Construct the bridge with a caller-supplied `SettlementIdempotencyStore` backed
 by a durable, atomic `SettlementLog`. Its intent claim must be durable before
 the rail submits a transfer. `payDemSettle` and `settleFromRail` refuse to
-construct the bridge without one; the SDK has no in-memory default.
+construct the bridge without a store; the SDK has no in-memory default. They
+cannot check that the supplied store is durable, so that is the caller's job.
 
 Custom `PayDemRail` implementations return `PayDemRailResult`. A successful
 fresh result must carry `execution: "executed"`, attesting that the rail read
