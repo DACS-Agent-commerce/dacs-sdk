@@ -104,6 +104,18 @@ test('crash before agent, rejected proposal, then corrected receipt releases onl
 test('actual resume recovers a lost fixture evidence answer after reopen without another CREATE',async()=>{
  const f=await agentFixture({lifecycle:true});try{const jobId=JOBS[0],address=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);await f.agent.commit({jobId});f.anchors.controls.failAfterWrite=address;await assert.rejects(f.agent.submitPayment({jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim}));await f.reopen();assert.notEqual((await f.agent.reconcile({jobId})).status,'held');assert.equal((await f.agent.resume({jobId})).status,'delivered');assert.equal(f.anchors.writes.filter(a=>a===address).length,1);}finally{f.close();}
 });
+test('unfinished work is read from the saved session for the route asked about',async()=>{
+ const f=await agentFixture({lifecycle:true});try{
+  const jobId=JOBS[0],kept=()=>['/dacs/v1/agreements/proposals','/dacs/v1/payments'].map(path=>f.agent.retainsUnfinishedWork({jobId,path}));
+  assert.deepEqual(kept(),[false,false],'an Agreement alone leaves nothing to finish');
+  f.anchors.controls.failAfterWrite=`dacs3:commit:${jobId}`;await assert.rejects(f.agent.commit({jobId}));await f.reopen();
+  assert.deepEqual(kept(),[true,true],'a commitment write waits for its read-back');
+  await f.agent.commit({jobId});assert.deepEqual(kept(),[false,false]);
+  f.anchors.controls.failAfterWrite=core.paymentEvidenceAddress(jobId,'demos-native:DEM',2);await assert.rejects(f.agent.submitPayment({jobId,txHash:'a'.repeat(64),payerPayingKey:buyer.claim}));await f.reopen();
+  assert.deepEqual(kept(),[false,true],'a recorded payment waits for its stored answer');
+  assert.equal((await f.agent.resume({jobId})).status,'delivered');assert.deepEqual(kept(),[false,true],'delivery alone stores no answer');
+ }finally{f.close();}
+});
 for(const answer of ['waiting','indeterminate'])test(`pending proposal recovers ${answer} and keeps its exact retry slot`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent),w=await transport(t,agent,f.dir,body);
  const first=w.store.reserve(w.request,body);assert.equal(first.disposition,'perform');
