@@ -10,16 +10,49 @@ import { afterEach, expect, test, vi } from "vitest";
 
 import { VERSION } from "../../../src/version.js";
 import { FIXED_PRICE_X402_STANDARD_REVISION } from "../../../src/commerce/index.js";
-import { DACS_NODE_LIVE_PROFILE } from "../../dacs-node/src/config.js";
-import {
+import { createDacsAgentProject } from "../src/index.js";
+
+// The built package, as a generated project loads it. A non-literal specifier
+// keeps the generator typecheck independent of the package build output.
+const DACS_NODE_PACKAGE = "@kynesyslabs/dacs-node";
+
+type DoctorProbe = (context: unknown) => unknown;
+
+interface DacsLiveDoctorOptionsV1 {
+  phase: string;
+  scope: string;
+  probes?: Readonly<Record<string, DoctorProbe>>;
+}
+
+interface DacsLiveDoctorReportV1 {
+  phase: string;
+  scope: string;
+  exitCode: number;
+  checks: readonly {
+    id: string;
+    required: boolean;
+    status: string;
+    reasonCode?: string;
+  }[];
+}
+
+interface DacsNodeDoctorSurface {
+  DACS_LIVE_DOCTOR_CHECK_IDS: readonly string[];
+  DACS_NODE_LIVE_PROFILE: string;
+  createDacsRoleServiceDoctorProbesV1: unknown;
+  formatDacsLiveDoctorTextV1: unknown;
+  runDacsLiveDoctorV1: (
+    options: DacsLiveDoctorOptionsV1 & Record<string, unknown>,
+  ) => Promise<DacsLiveDoctorReportV1>;
+}
+
+const {
   DACS_LIVE_DOCTOR_CHECK_IDS,
+  DACS_NODE_LIVE_PROFILE,
+  createDacsRoleServiceDoctorProbesV1,
   formatDacsLiveDoctorTextV1,
   runDacsLiveDoctorV1,
-  type DacsLiveDoctorOptionsV1,
-  type DacsLiveDoctorReportV1,
-} from "../../dacs-node/src/doctor.js";
-import { createDacsRoleServiceDoctorProbesV1 } from "../../dacs-node/src/serviceDoctor.js";
-import { createDacsAgentProject } from "../src/index.js";
+}: DacsNodeDoctorSurface = await import(DACS_NODE_PACKAGE);
 
 const directories: string[] = [];
 const listeners: Server[] = [];
