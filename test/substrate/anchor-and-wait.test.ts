@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -20,6 +21,28 @@ import {
 const WALLET = `0x${"ab".repeat(32)}`;
 let fixtureId = 0;
 const writeJournal = createInMemoryDemosWriteJournal();
+
+interface RecordedRead { getTransactionStatus: unknown; getTxByHash: unknown }
+
+// Recorded testnet answers (node2, demosdk 4.0.16), as the SDK returned them.
+function recordedWriteLifecycle<T>(name: string): T {
+  return JSON.parse(readFileSync(new URL(
+    `./fixtures/demos-node-replies/write-lifecycle/${name}.json`,
+    import.meta.url,
+  ), "utf8")) as T;
+}
+const pendingWrite = recordedWriteLifecycle<{
+  broadcast: unknown;
+  rounds: { B1: RecordedRead };
+}>("pending");
+const lateWrite = recordedWriteLifecycle<{
+  confirmL: { callReturned: unknown; sdkThrew: string };
+  rounds: {
+    B1: { L: RecordedRead; getAddressNonce: number; getLastBlockNumber: number };
+  };
+}>("same-nonce-late");
+/** `getTxByHash` while a write is pending: the node has no row yet. */
+const NO_ROW_YET = pendingWrite.rounds.B1.getTxByHash;
 
 function notFound(): Error {
   return Object.assign(new Error("not found"), { response: { status: 404 } });
@@ -960,7 +983,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     first.raw.getTxByHash.mockImplementation(async () =>
       canonicalConfirmed
         ? { status: "confirmed", blockNumber: 9 }
-        : { status: "pending", blockNumber: null },
+        : NO_ROW_YET,
     );
 
     const timedOut = asAnchorError(
@@ -1013,7 +1036,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     first.raw.getTxByHash.mockImplementation(async () =>
       firstIncluded
         ? { status: "confirmed", blockNumber: 1 }
-        : { status: "pending", blockNumber: null },
+        : NO_ROW_YET,
     );
 
     await expect(
@@ -1053,12 +1076,14 @@ describe("DemosAdapter.anchorAndWait", () => {
     });
     let firstIncluded = false;
     first.raw.nodeCall.mockImplementation(async () =>
-      firstIncluded ? { state: "included" } : { state: "pending" },
+      firstIncluded
+        ? { state: "included", blockNumber: 1 }
+        : { state: "pending" },
     );
     first.raw.getTxByHash.mockImplementation(async () =>
       firstIncluded
         ? { status: "confirmed", blockNumber: 1 }
-        : { status: "pending", blockNumber: null },
+        : NO_ROW_YET,
     );
 
     await first.adapter.anchorAndWait(
@@ -1092,11 +1117,11 @@ describe("DemosAdapter.anchorAndWait", () => {
       wallet,
     });
     let firstConfirmed = false;
-    first.raw.nodeCall.mockResolvedValue({ state: "included" });
+    first.raw.nodeCall.mockResolvedValue({ state: "included", blockNumber: 5 });
     first.raw.getTxByHash.mockImplementation(async () =>
       firstConfirmed
         ? { status: "confirmed", blockNumber: 5 }
-        : { status: "pending", blockNumber: null },
+        : NO_ROW_YET,
     );
 
     await first.adapter.anchorAndWait(
@@ -1727,7 +1752,7 @@ describe("DemosAdapter.anchorAndWait", () => {
 
   it("preserves immutable inclusion-timeout evidence at the shared completion deadline", async () => {
     const { adapter, raw } = await makeAdapter();
-    raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
+    raw.getTxByHash.mockResolvedValue(NO_ROW_YET);
     raw.nodeCall
       .mockResolvedValueOnce({ state: "pending" })
       .mockImplementation(() => deferred<never>().promise);
@@ -1904,12 +1929,12 @@ describe("DemosAdapter.anchorAndWait", () => {
     const second = await makeAdapter({ rpc, wallet });
     let recover = false;
     first.raw.nodeCall.mockImplementation(async () =>
-      recover ? { state: "included" } : { state: "pending" },
+      recover ? { state: "included", blockNumber: 1 } : { state: "pending" },
     );
     first.raw.getTxByHash.mockImplementation(async () =>
       recover
         ? { status: "confirmed", blockNumber: 1 }
-        : { status: "pending", blockNumber: null },
+        : NO_ROW_YET,
     );
     await first.adapter.anchorAndWait(
       "one",
@@ -2032,7 +2057,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     raw.getTxByHash.mockImplementation(async () =>
       recover
         ? { status: "confirmed", blockNumber: 9 }
-        : { status: "pending", blockNumber: null },
+        : NO_ROW_YET,
     );
 
     const timedOut = await adapter
@@ -2142,7 +2167,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     const { adapter, raw } = await makeAdapter();
     raw.tx.broadcast.mockResolvedValue({ result: 400, response: "invalid tx" });
     raw.nodeCall.mockResolvedValue({ state: "unknown" });
-    raw.getTxByHash.mockResolvedValue({ status: "pending", blockNumber: null });
+    raw.getTxByHash.mockResolvedValue(NO_ROW_YET);
 
     const error = asAnchorError(
       await adapter
@@ -2160,6 +2185,73 @@ describe("DemosAdapter.anchorAndWait", () => {
     expect(error.receipt.attempts.inclusionPolls).toBeGreaterThan(0);
   });
 
+  it("keeps polling an unknown write until the node has accepted its broadcast", async () => {
+    const { adapter, raw } = await makeAdapter();
+    const broadcast = deferred<unknown>();
+    const { L, getAddressNonce, getLastBlockNumber } = lateWrite.rounds.B1;
+    raw.tx.broadcast.mockReturnValue(broadcast.promise);
+    raw.nodeCall.mockImplementation(async (message: string) =>
+      message === "getAddressNonce" ? getAddressNonce
+        : message === "getLastBlockNumber" ? getLastBlockNumber
+          : L.getTransactionStatus);
+    raw.getTxByHash.mockResolvedValue(L.getTxByHash);
+    let settled = false;
+    const operation = adapter.anchorAndWait(
+      "unknown-until-accepted",
+      { value: 1 },
+      { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+    ).catch((caught: unknown) => caught).finally(() => {
+      settled = true;
+    });
+
+    await vi.waitFor(() =>
+      expect(raw.getTxByHash.mock.calls.length).toBeGreaterThan(3));
+    expect(settled).toBe(false);
+    broadcast.resolve(pendingWrite.broadcast);
+
+    const error = asAnchorError(await operation);
+    expect(error.code).toBe("demos-write-unresolved");
+    expect(error.receipt).toMatchObject({ state: "accepted", lastObservedState: "unknown" });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a late same-nonce write at confirm without blocking the wallet", async () => {
+    const { adapter, raw, wallet } = await makeAdapter();
+    const signedConfirm = raw.tx.confirm.getMockImplementation();
+    // demosdk's own confirm reads the recorded answer and throws on valid:false.
+    raw.tx.confirm = raw.DemosTransactions.confirm;
+    raw.call = vi.fn(async () => lateWrite.confirmL.callReturned);
+
+    const refused = asAnchorError(
+      await adapter
+        .anchorAndWait(
+          "late-same-nonce",
+          { value: 1 },
+          { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+        )
+        .catch((caught: unknown) => caught),
+    );
+    expect(refused.code).toBe("prepare-failed");
+    expect(refused.cause).toMatchObject({ message: lateWrite.confirmL.sdkThrew });
+    expect(raw.tx.broadcast).not.toHaveBeenCalled();
+    const lease = await writeJournal.acquire({
+      chainIdentity: "test-chain",
+      wallet: wallet.toLowerCase(),
+    });
+    expect(lease.snapshot.records.map((record) => record.stage)).toEqual(["prepared"]);
+    await lease.release();
+
+    raw.tx.confirm = vi.fn(signedConfirm);
+    await expect(
+      adapter.anchorAndWait(
+        "after-late-same-nonce",
+        { value: 2 },
+        { completion: "included", timeoutMs: 1_000, pollMs: 1 },
+      ),
+    ).resolves.toMatchObject({ state: "included" });
+    expect(raw.tx.broadcast).toHaveBeenCalledTimes(1);
+  });
+
   it("treats a thrown transport timeout as ambiguous until hash reconciliation", async () => {
     fixtureId += 1;
     const rpc = `https://transport-timeout-${fixtureId}.test`;
@@ -2173,12 +2265,14 @@ describe("DemosAdapter.anchorAndWait", () => {
       Object.assign(new Error("socket timed out"), { code: "ETIMEDOUT" }),
     );
     first.raw.nodeCall.mockImplementation(async () =>
-      firstIncluded ? { state: "included" } : { state: "pending" },
+      firstIncluded
+        ? { state: "included", blockNumber: 1 }
+        : { state: "pending" },
     );
     first.raw.getTxByHash.mockImplementation(async () =>
       firstIncluded
         ? { status: "confirmed", blockNumber: 1 }
-        : { status: "pending", blockNumber: null },
+        : NO_ROW_YET,
     );
 
     const error = asAnchorError(
@@ -2218,7 +2312,7 @@ describe("DemosAdapter.anchorAndWait", () => {
     raw.getTxByHash.mockImplementation(async () =>
       recover
         ? { status: "confirmed", blockNumber: 10 }
-        : { status: "pending", blockNumber: null },
+        : NO_ROW_YET,
     );
 
     const operation = adapter.anchorAndWait(
